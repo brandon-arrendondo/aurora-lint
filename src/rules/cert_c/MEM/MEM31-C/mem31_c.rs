@@ -2,7 +2,9 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::{self, FunctionSummary};
+use crate::analyze::init_state;
 use crate::analyze::macro_expand::{self, FunctionMacro};
+use crate::analyze::preproc_arms::PreprocArms;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::call_roles;
@@ -170,6 +172,11 @@ struct MemoryLeakAnalyzer<'a> {
     allocated_memory: HashMap<String, AllocInfo>,
     // Track freed memory: var_name -> (line, column) of free call
     freed_memory: HashMap<String, (usize, usize)>,
+    // Names whose entry in `freed_memory` was credited from an ALIAS rather
+    // than written at that spelling. Enough to suppress a leak, not enough to
+    // call a later free of that name a double free -- see
+    // `mark_freed_with_aliases`.
+    freed_via_alias: HashSet<String>,
     // Track variables that are returned or stored globally
     escaped_memory: HashSet<String>,
     // Track variables known to be NULL in current scope (from NULL checks)
@@ -182,8 +189,16 @@ struct MemoryLeakAnalyzer<'a> {
     in_loop: bool,
     // Track loop nesting depth for proper double-free detection
     loop_depth: usize,
-    // Track what variables are freed at each label (for goto analysis)
-    label_frees: HashMap<String, HashSet<String>>,
+    // What is freed at each label (for goto analysis): the label's byte
+    // offset and the pointers its cleanup block frees, one entry per
+    // occurrence of the name. One name can label two blocks when they sit in
+    // mutually exclusive preprocessor arms (hostap's `crypto_openssl.c` has
+    // `fail:` once per OpenSSL major version); `label_frees_for` picks the
+    // one a given `goto` can actually reach.
+    label_frees: HashMap<String, Vec<(usize, HashSet<String>)>>,
+    // Which byte offsets of this function sit in different arms of one
+    // `#if`/`#elif`/`#else` chain, and so never compile together.
+    arms: PreprocArms,
     // The freed-pointer state each goto-reachable label is actually entered
     // with: `freed_memory` snapshotted at every visited `goto L`, intersected
     // across all of them. See `visit_labeled_statement`.
@@ -296,6 +311,7 @@ struct AllocInfo {
 #[derive(Clone)]
 struct LeakBranchState {
     freed_memory: HashMap<String, (usize, usize)>,
+    freed_via_alias: HashSet<String>,
     maybe_freed: HashMap<String, (usize, usize)>,
     null_variables: HashSet<String>,
 }
@@ -304,6 +320,7 @@ impl LeakBranchState {
     fn fork(analyzer: &MemoryLeakAnalyzer) -> Self {
         Self {
             freed_memory: analyzer.freed_memory.clone(),
+            freed_via_alias: analyzer.freed_via_alias.clone(),
             maybe_freed: analyzer.maybe_freed.clone(),
             null_variables: analyzer.null_variables.clone(),
         }
@@ -311,6 +328,7 @@ impl LeakBranchState {
 
     fn restore(&self, analyzer: &mut MemoryLeakAnalyzer) {
         analyzer.freed_memory = self.freed_memory.clone();
+        analyzer.freed_via_alias = self.freed_via_alias.clone();
         analyzer.maybe_freed = self.maybe_freed.clone();
         analyzer.null_variables = self.null_variables.clone();
     }
@@ -363,6 +381,155 @@ enum Frame<'a> {
     ExitLoop {
         array_pattern: Option<LoopArrayPattern>,
     },
+    /// Fold the arm just walked into `merged`, then reset to `pre_state` and
+    /// walk the next arm of an `#if`/`#elif`/`#else` chain; restore `merged`
+    /// once the last arm has drained. See `visit_preproc_chain`.
+    PreprocNextArm {
+        remaining_reversed: Vec<Node<'a>>,
+        pre_state: Box<PreprocArmState>,
+        merged: Box<PreprocArmState>,
+    },
+}
+
+/// The analyzer state one arm of a preprocessor conditional starts from and
+/// leaves behind: `LeakBranchState` plus what the goto/label machinery has
+/// recorded, since a label and its gotos can sit wholly inside one arm.
+#[derive(Clone)]
+struct PreprocArmState {
+    branch: LeakBranchState,
+    allocated_memory: HashMap<String, AllocInfo>,
+    goto_freed_states: HashMap<String, HashMap<String, (usize, usize)>>,
+    goto_maybe_freed: HashMap<String, HashMap<String, (usize, usize)>>,
+}
+
+impl PreprocArmState {
+    fn fork(analyzer: &MemoryLeakAnalyzer) -> Self {
+        Self {
+            branch: LeakBranchState::fork(analyzer),
+            allocated_memory: analyzer.allocated_memory.clone(),
+            goto_freed_states: analyzer.goto_freed_states.clone(),
+            goto_maybe_freed: analyzer.goto_maybe_freed.clone(),
+        }
+    }
+
+    fn restore(&self, analyzer: &mut MemoryLeakAnalyzer) {
+        self.branch.restore(analyzer);
+        analyzer.allocated_memory = self.allocated_memory.clone();
+        analyzer.goto_freed_states = self.goto_freed_states.clone();
+        analyzer.goto_maybe_freed = self.goto_maybe_freed.clone();
+    }
+
+    /// Fold the state one arm ended on into this one, as the state the code
+    /// below the chain is entered with.
+    ///
+    /// Only one arm exists in any translation unit, and the walk cannot know
+    /// which, so every fact an arm establishes is kept: a pointer freed or
+    /// allocated in ANY arm is freed or allocated below the `#endif` -- the
+    /// same lenient union `finish_if` applies to a branch neither side of
+    /// which returns. The goto entry states fold the way
+    /// `record_goto_entry_state` folds one more goto: intersection for what
+    /// every jump agrees is freed, union for what some jump freed.
+    fn absorb(&mut self, other: Self) {
+        for (var, pos) in other.branch.freed_memory {
+            self.branch.freed_memory.entry(var).or_insert(pos);
+        }
+        for (var, pos) in other.branch.maybe_freed {
+            self.branch.maybe_freed.entry(var).or_insert(pos);
+        }
+        self.branch
+            .null_variables
+            .extend(other.branch.null_variables);
+        for (var, info) in other.allocated_memory {
+            self.allocated_memory.entry(var).or_insert(info);
+        }
+        for (label, state) in other.goto_freed_states {
+            match self.goto_freed_states.get_mut(&label) {
+                Some(mine) => mine.retain(|var, _| state.contains_key(var)),
+                None => {
+                    self.goto_freed_states.insert(label, state);
+                }
+            }
+        }
+        for (label, state) in other.goto_maybe_freed {
+            let union = self.goto_maybe_freed.entry(label).or_default();
+            for (var, pos) in state {
+                union.entry(var).or_insert(pos);
+            }
+        }
+    }
+}
+
+/// The arms of the conditional chain headed by `head`, in source order:
+/// `head` itself, then each node reached through the `alternative` field.
+fn preproc_chain_arms<'n>(head: Node<'n>) -> Vec<Node<'n>> {
+    let mut arms = vec![head];
+    let mut current = head;
+    while let Some(alternative) = current.child_by_field_name("alternative") {
+        arms.push(alternative);
+        current = alternative;
+    }
+    arms
+}
+
+/// Push one arm's own statements: everything but the directive's
+/// condition/name and the next arm, which `visit_preproc_chain` walks
+/// separately.
+fn push_arm_children<'a>(stack: &mut Vec<Frame<'a>>, arm: &Node<'a>) {
+    let skip = [
+        arm.child_by_field_name("condition"),
+        arm.child_by_field_name("name"),
+        arm.child_by_field_name("alternative"),
+    ];
+    for i in (0..arm.child_count()).rev() {
+        if let Some(child) = arm.child(i) {
+            if skip.iter().flatten().any(|s| s.id() == child.id()) {
+                continue;
+            }
+            stack.push(Frame::Visit(child));
+        }
+    }
+}
+
+/// The statement control reaches after `node` when it falls through, looking
+/// past the end of a preprocessor arm to the statement after its `#endif`.
+///
+/// A statement's next sibling inside an arm is, at the arm's end, the NEXT
+/// ARM (`preproc_else`/`preproc_elif` are children of the chain's head, so
+/// siblings of the head arm's statements), which control never falls into;
+/// and at the end of the last arm there is no sibling at all, though the
+/// statement after the `#endif` is exactly where control goes. A sibling
+/// that is itself a chain HEAD is different: control does enter a following
+/// `#ifdef`, and it is returned like any statement.
+fn next_statement_sibling<'n>(node: &Node<'n>) -> Option<Node<'n>> {
+    const ARM_KINDS: [&str; 5] = [
+        "preproc_if",
+        "preproc_ifdef",
+        "preproc_elif",
+        "preproc_elifdef",
+        "preproc_else",
+    ];
+    const ALTERNATIVE_KINDS: [&str; 3] = ["preproc_elif", "preproc_elifdef", "preproc_else"];
+    let mut current = *node;
+    loop {
+        match current.next_named_sibling() {
+            Some(sibling) if !ALTERNATIVE_KINDS.contains(&sibling.kind()) => return Some(sibling),
+            Some(_) | None => {
+                // At the end of an arm: climb to the chain's head and
+                // continue with what follows the `#endif`.
+                let mut arm = current.parent()?;
+                if !ARM_KINDS.contains(&arm.kind()) {
+                    return None;
+                }
+                while let Some(parent) = arm.parent().filter(|p| ARM_KINDS.contains(&p.kind())) {
+                    if parent.child_by_field_name("alternative").map(|a| a.id()) != Some(arm.id()) {
+                        break;
+                    }
+                    arm = parent;
+                }
+                current = arm;
+            }
+        }
+    }
 }
 
 fn push_children<'a>(stack: &mut Vec<Frame<'a>>, node: &Node<'a>) {
@@ -388,6 +555,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         Self {
             allocated_memory: HashMap::new(),
             freed_memory: HashMap::new(),
+            freed_via_alias: HashSet::new(),
             escaped_memory: HashSet::new(),
             null_variables: HashSet::new(),
             double_free_violations: Vec::new(),
@@ -395,6 +563,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             in_loop: false,
             loop_depth: 0,
             label_frees: HashMap::new(),
+            arms: PreprocArms::default(),
             goto_freed_states: HashMap::new(),
             goto_maybe_freed: HashMap::new(),
             maybe_freed: HashMap::new(),
@@ -453,6 +622,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             );
 
             // Pre-analysis: collect what variables are freed at each label
+            self.arms = PreprocArms::collect(&body);
             self.goto_freed_states.clear();
             self.goto_maybe_freed.clear();
             self.maybe_freed.clear();
@@ -934,7 +1104,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     // The label's own statement is only the first on its path;
                     // the rest of the cleanup block follows as siblings.
                     if self.labeled_body_falls_through(&label, source) {
-                        let mut next = label.next_named_sibling();
+                        let mut next = next_statement_sibling(&label);
                         while let Some(sibling) = next {
                             if sibling.kind() != "comment" {
                                 self.collect_frees_in_label(&sibling, source, &mut freed_vars);
@@ -942,11 +1112,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                                     break;
                                 }
                             }
-                            next = sibling.next_named_sibling();
+                            next = next_statement_sibling(&sibling);
                         }
                     }
 
-                    self.label_frees.insert(label_name, freed_vars);
+                    self.label_frees
+                        .entry(label_name)
+                        .or_default()
+                        .push((label.start_byte(), freed_vars));
                 }
             }
         }
@@ -1098,6 +1271,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     pre_state,
                 } => self.switch_next_case(remaining_reversed, pre_state, &mut stack),
                 Frame::ExitLoop { array_pattern } => self.exit_loop(array_pattern),
+                Frame::PreprocNextArm {
+                    remaining_reversed,
+                    pre_state,
+                    merged,
+                } => self.preproc_next_arm(remaining_reversed, pre_state, merged, &mut stack),
             }
         }
     }
@@ -1119,6 +1297,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             "while_statement" | "do_statement" => self.visit_while_do_statement(stack, n),
             "if_statement" => self.visit_if_statement(n, source, stack),
             "switch_statement" => self.visit_switch_statement(n, stack),
+            "preproc_if" | "preproc_ifdef" => self.visit_preproc_chain(n, stack),
             _ => push_children(stack, &n),
         }
     }
@@ -1475,6 +1654,70 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         // after the loop).
     }
 
+    /// An `#if`/`#elif`/`#else` chain is not a sequence of statements: only
+    /// one arm exists in any translation unit. aurora-lint does not
+    /// preprocess, so the tree carries every arm, and a linear walk read a
+    /// free in the OpenSSL-3 arm of hostap's `crypto_openssl.c` as already
+    /// done when it reached the legacy arm's `err:` label -- two frees that
+    /// never compile together, reported as a double free on one path (and
+    /// the legacy arm's own declarations of the same names as re-allocations
+    /// of the first arm's). Each arm is therefore walked from the state the
+    /// chain was entered with, the way a `switch` walks each case, and what
+    /// the arms leave behind is folded by `PreprocArmState::absorb` into the
+    /// state the code below the `#endif` continues from.
+    ///
+    /// A chain with no alternative (`#ifdef X ... #endif`) is left to the
+    /// plain walk: its one arm coexists with everything around it.
+    fn visit_preproc_chain<'n>(&mut self, n: Node<'n>, stack: &mut Vec<Frame<'n>>) {
+        let mut arms = preproc_chain_arms(n);
+        if arms.len() < 2 {
+            push_children(stack, &n);
+            return;
+        }
+        arms.reverse();
+        let first = arms.pop().expect("chain has at least two arms");
+        let pre_state = Box::new(PreprocArmState::fork(self));
+        stack.push(Frame::PreprocNextArm {
+            remaining_reversed: arms,
+            merged: pre_state.clone(),
+            pre_state,
+        });
+        push_arm_children(stack, &first);
+    }
+
+    fn preproc_next_arm<'n>(
+        &mut self,
+        mut remaining_reversed: Vec<Node<'n>>,
+        pre_state: Box<PreprocArmState>,
+        mut merged: Box<PreprocArmState>,
+        stack: &mut Vec<Frame<'n>>,
+    ) {
+        merged.absorb(PreprocArmState::fork(self));
+        match remaining_reversed.pop() {
+            Some(arm) => {
+                pre_state.restore(self);
+                stack.push(Frame::PreprocNextArm {
+                    remaining_reversed,
+                    pre_state,
+                    merged,
+                });
+                push_arm_children(stack, &arm);
+            }
+            None => merged.restore(self),
+        }
+    }
+
+    /// The frees at the `label` a `goto` at byte `goto_offset` reaches: the
+    /// occurrence of that name not in a preprocessor arm exclusive with the
+    /// goto's own. Under any one preprocessing there is at most one.
+    fn label_frees_for(&self, label: &str, goto_offset: usize) -> Option<&HashSet<String>> {
+        self.label_frees
+            .get(label)?
+            .iter()
+            .find(|(label_offset, _)| !self.arms.exclusive(goto_offset, *label_offset))
+            .map(|(_, frees)| frees)
+    }
+
     fn exit_loop(&mut self, array_pattern: Option<LoopArrayPattern>) {
         if let Some((alloc_info, free_info, loop_condition)) = array_pattern {
             if let Some((array_base, _)) = alloc_info {
@@ -1538,6 +1781,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 merged.entry(k).or_insert(v);
             }
             analyzer.freed_memory = merged;
+            analyzer.freed_via_alias = true_state
+                .freed_via_alias
+                .union(&else_state.freed_via_alias)
+                .cloned()
+                .collect();
             let mut maybe = true_state.maybe_freed.clone();
             for (k, v) in else_state.maybe_freed.clone() {
                 maybe.entry(k).or_insert(v);
@@ -1612,7 +1860,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         self.record_goto_entry_state(&target_label);
 
         // Get what variables are freed at the target label
-        let label_freed_vars = self.label_frees.get(&target_label).cloned();
+        let label_freed_vars = self
+            .label_frees_for(&target_label, node.start_byte())
+            .cloned();
 
         let goto_pos = node.start_position();
         for (var_name, alloc_info) in &self.allocated_memory {
@@ -1627,8 +1877,13 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
             // Check if this variable is freed at the target label
             // Also check for field expression variants (e.g., bundle->data matches bundle)
+            // and other names for the same block: a cleanup label that frees
+            // `buf` also releases the `eth = (struct ether_header *) buf`
+            // the body reads it through.
+            let aliases = self.block_aliases_of(var_name);
             let is_freed_at_label = label_freed_vars.as_ref().is_some_and(|freed| {
                 freed.contains(var_name)
+                    || aliases.iter().any(|a| freed.contains(a))
                     || freed
                         .iter()
                         .any(|f| f.starts_with(&format!("{}->", var_name)))
@@ -1881,18 +2136,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     // e.g., list->head = new_node (new_node escapes)
                     let right_var = ast_utils::get_node_text_owned(&right, source);
                     if self.allocated_memory.contains_key(&right_var) {
-                        self.escaped_memory.insert(right_var.clone());
-                        // Also mark any field allocations belonging to this container as escaped
-                        let field_prefix = format!("{}->", right_var);
-                        let fields_to_escape: Vec<String> = self
-                            .allocated_memory
-                            .keys()
-                            .filter(|k| k.starts_with(&field_prefix))
-                            .cloned()
-                            .collect();
-                        for field in fields_to_escape {
-                            self.escaped_memory.insert(field);
-                        }
+                        self.mark_escaped_with_aliases(&right_var);
                     }
                 }
                 return;
@@ -1907,6 +2151,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
             // Check if this variable was previously allocated
             let was_allocated = self.allocated_memory.contains_key(&var_name);
+
+            // The name a plain pointer-to-pointer assignment copies from, with
+            // casts and parentheses peeled off.
+            let aliased_identifier = init_state::strip_arg_casts(&right);
 
             // Check if assigning result of allocation
             if self.is_allocation_call(&right, source) {
@@ -1942,9 +2190,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         alloc_type,
                     },
                 );
-            } else if right.kind() == "identifier" {
-                // Check if assigning allocated pointer to another variable
-                let right_var = ast_utils::get_node_text_owned(&right, source);
+            } else if aliased_identifier.kind() == "identifier" {
+                // Check if assigning allocated pointer to another variable.
+                // Casts and parentheses are transparent: `o = (PACKET_OID_DATA
+                // *) buf` binds `o` to the same block as `buf`, and reading it
+                // as an opaque right-hand side left `o` holding whatever
+                // allocation record it had before while the free of `buf` was
+                // credited only to `buf`.
+                let right_var = ast_utils::get_node_text_owned(&aliased_identifier, source);
 
                 // Assignment of one pointer to another clears the freed status
                 // (e.g., buffer = temp after realloc)
@@ -2134,7 +2387,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // Check for double-free only for non-safe deallocators
             if is_safe_deallocator {
                 self.maybe_freed.remove(&var_name);
-            } else if self.freed_memory.contains_key(&var_name) {
+            } else if self.freed_memory.contains_key(&var_name)
+                && !self.freed_via_alias.contains(&var_name)
+            {
                 self.double_free_violations.push(RuleViolation {
                     rule_id: "MEM31-C".to_string(),
                     severity: Severity::High,
@@ -2209,8 +2464,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
             let free_pos = node.start_position();
 
-            // Check for double-free: if already freed, report violation
-            if self.freed_memory.contains_key(&var_name) {
+            // Check for double-free: if already freed, report violation.
+            // A mark this name only inherited from an alias is not enough --
+            // see `mark_freed_with_aliases`.
+            if self.freed_memory.contains_key(&var_name)
+                && !self.freed_via_alias.contains(&var_name)
+            {
                 self.double_free_violations.push(RuleViolation {
                     rule_id: "MEM31-C".to_string(),
                     severity: Severity::High,
@@ -2228,31 +2487,70 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 self.report_possible_double_free(&var_name, free_pos, "free");
             }
 
-            // Mark as freed
-            self.freed_memory
-                .insert(var_name.clone(), (free_pos.row + 1, free_pos.column + 1));
+            self.mark_freed_with_aliases(&var_name, (free_pos.row + 1, free_pos.column + 1));
+        }
+    }
 
-            // Also mark any aliases as freed
-            let vars_to_free: Vec<String> = self
-                .allocated_memory
-                .iter()
-                .filter_map(|(k, v)| {
-                    if let Some(original) = self.allocated_memory.get(&var_name) {
-                        if v.line == original.line && v.column == original.column {
-                            Some(k.clone())
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+    /// Every OTHER name currently holding the same block as `var_name`.
+    ///
+    /// Two names share a block when their `AllocInfo` points at the same
+    /// allocation site, which is how `process_assignment` records an alias
+    /// (`o = buf`, or `o = (T *) buf`). Whatever becomes true of the block —
+    /// it was freed, it escaped, the cleanup label releases it — is true
+    /// through every one of these spellings, and crediting only the spelling
+    /// that happens to be written reports the others as leaked.
+    fn block_aliases_of(&self, var_name: &str) -> Vec<String> {
+        let Some(original) = self.allocated_memory.get(var_name) else {
+            return Vec::new();
+        };
+        self.allocated_memory
+            .iter()
+            .filter(|(k, v)| {
+                k.as_str() != var_name && v.line == original.line && v.column == original.column
+            })
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
 
-            for v in vars_to_free {
-                self.freed_memory
-                    .insert(v, (free_pos.row + 1, free_pos.column + 1));
-            }
+    /// Mark `var_name` freed, and with it every other name holding the block.
+    ///
+    /// An alias-derived mark is remembered in `freed_via_alias`, because the
+    /// two directions are not equally safe. Suppressing a leak needs only
+    /// that the block died, which the alias record establishes. Accusing a
+    /// later `free(other_name)` of being a double free needs the two names to
+    /// denote the same block ON THAT PATH, which it does not: hostap's
+    /// `tls_init` aliases `tls_global = context` and then frees each under
+    /// `if (context != tls_global)`, a guard this walk does not read.
+    fn mark_freed_with_aliases(&mut self, var_name: &str, free_pos: (usize, usize)) {
+        self.freed_memory.insert(var_name.to_string(), free_pos);
+        self.freed_via_alias.remove(var_name);
+
+        for alias in self.block_aliases_of(var_name) {
+            self.freed_memory.insert(alias.clone(), free_pos);
+            self.freed_via_alias.insert(alias);
+        }
+    }
+
+    /// Mark `var_name` escaped, and with it the block's other names and any
+    /// allocations tracked as fields hanging off it.
+    ///
+    /// The field sweep is why returning a container does not report its
+    /// members as leaked; the alias sweep is the same reasoning one step
+    /// over. `return buf` where `rsnie = (struct rsn_ie_hdr *) buf` gives the
+    /// caller the whole block, `rsnie` included.
+    fn mark_escaped_with_aliases(&mut self, var_name: &str) {
+        self.escaped_memory.insert(var_name.to_string());
+
+        let field_prefix = format!("{}->", var_name);
+        let to_escape: Vec<String> = self
+            .allocated_memory
+            .keys()
+            .filter(|k| k.starts_with(&field_prefix))
+            .cloned()
+            .chain(self.block_aliases_of(var_name))
+            .collect();
+        for name in to_escape {
+            self.escaped_memory.insert(name);
         }
     }
 
@@ -2318,8 +2616,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     let var_name = ast_utils::get_node_text_owned(&target, source);
                     if frees && self.allocated_memory.contains_key(&var_name) {
                         let free_pos = node.start_position();
-                        self.freed_memory
-                            .insert(var_name, (free_pos.row + 1, free_pos.column + 1));
+                        self.mark_freed_with_aliases(
+                            &var_name,
+                            (free_pos.row + 1, free_pos.column + 1),
+                        );
                     }
                 }
                 param_idx += 1;
@@ -2398,19 +2698,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 if child.kind() == "identifier" {
                     let var_name = ast_utils::get_node_text_owned(&child, source);
                     if self.allocated_memory.contains_key(&var_name) {
-                        self.escaped_memory.insert(var_name.clone());
-                        // Also mark any field allocations belonging to this container as escaped
-                        // e.g., if returning "person", mark "person->name" and "person->email" as escaped
-                        let field_prefix = format!("{}->", var_name);
-                        let fields_to_escape: Vec<String> = self
-                            .allocated_memory
-                            .keys()
-                            .filter(|k| k.starts_with(&field_prefix))
-                            .cloned()
-                            .collect();
-                        for field in fields_to_escape {
-                            self.escaped_memory.insert(field);
-                        }
+                        self.mark_escaped_with_aliases(&var_name);
                     }
                 } else if self.is_allocation_call(&child, source) {
                     // Direct return of allocation is not a leak
