@@ -234,6 +234,18 @@ struct MemoryLeakAnalyzer<'a> {
     // function's own fresh allocation, not a borrowed caller struct, so it
     // stays a leak candidate.
     deref_allocated_params: HashSet<String>,
+    // Local variables bound to whatever an unrecognized call or a field/
+    // subscript read handed back (`dev = p2p_create_device(...)`, `ftpc =
+    // Curl_conn_meta_get(...)`) rather than a fresh allocation this
+    // function made itself (task 1200). Such a local is a borrowed handle
+    // into a longer-lived object -- almost always a lookup/registry
+    // accessor that already filed the object somewhere with its own
+    // teardown -- so `local->field = alloc()` through it is that object's
+    // business, not a leak candidate this function is responsible for at
+    // its own return. Cleared whenever the name is reassigned from a real
+    // allocation, so a later `dev = malloc(...)` in the same function
+    // stops treating it as borrowed.
+    borrowed_locals: HashSet<String>,
     // Local variables declared `static` (function-static storage
     // duration): CERT's own MEM31-C-EX2 exempts memory that's kept alive
     // for the remaining lifetime of the program, and a function-static
@@ -373,11 +385,12 @@ enum Frame<'a> {
         else_has_return: bool,
         true_state: LeakBranchState,
     },
-    /// Reset to `pre_state` and walk the next `switch` case, once the
-    /// previous case's own subtree has fully drained.
+    /// Reset to `pre_state`/`pre_allocated` and walk the next `switch` case,
+    /// once the previous case's own subtree has fully drained.
     SwitchNextCase {
         remaining_reversed: Vec<Node<'a>>,
         pre_state: LeakBranchState,
+        pre_allocated: HashMap<String, AllocInfo>,
     },
     /// Decrement loop-nesting bookkeeping (and, for `for`, record the array
     /// alloc/free loop-condition pattern) once the loop body's own subtree
@@ -586,6 +599,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             function_summaries,
             function_params: HashSet::new(),
             deref_allocated_params: HashSet::new(),
+            borrowed_locals: HashSet::new(),
             static_variables: HashSet::new(),
             value_only_locals: HashSet::new(),
             value_only_globals,
@@ -1367,7 +1381,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 Frame::SwitchNextCase {
                     remaining_reversed,
                     pre_state,
-                } => self.switch_next_case(remaining_reversed, pre_state, &mut stack),
+                    pre_allocated,
+                } => {
+                    self.switch_next_case(remaining_reversed, pre_state, pre_allocated, &mut stack)
+                }
                 Frame::ExitLoop { array_pattern } => self.exit_loop(array_pattern),
                 Frame::PreprocNextArm {
                     remaining_reversed,
@@ -1688,6 +1705,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         stack.push(Frame::SwitchNextCase {
             remaining_reversed: cases,
             pre_state: LeakBranchState::fork(self),
+            pre_allocated: self.allocated_memory.clone(),
         });
     }
 
@@ -1762,19 +1780,23 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         &mut self,
         mut remaining_reversed: Vec<Node<'n>>,
         pre_state: LeakBranchState,
+        pre_allocated: HashMap<String, AllocInfo>,
         stack: &mut Vec<Frame<'n>>,
     ) {
         if let Some(case) = remaining_reversed.pop() {
             pre_state.restore(self);
+            self.allocated_memory = pre_allocated.clone();
             stack.push(Frame::SwitchNextCase {
                 remaining_reversed,
                 pre_state: pre_state.clone(),
+                pre_allocated,
             });
             stack.push(Frame::Visit(case));
         }
         // else: no more cases - chain ends, self stays as whatever the last
         // case left it (pre-existing quirk, preserved: no merge/restore
-        // after the loop).
+        // after the loop) -- now true of allocated_memory too, consistent
+        // with LeakBranchState's own fields.
     }
 
     /// An `#if`/`#elif`/`#else` chain is not a sequence of statements: only
@@ -1966,6 +1988,13 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             ..Default::default()
                         });
                     }
+                } else if value.kind() == "call_expression" || value.kind() == "field_expression" {
+                    // task 1200: `struct foo *dev = lookup(...);` in
+                    // combined declaration+initializer form -- same
+                    // borrowed-handle reasoning as the plain-assignment
+                    // catch-all in process_assignment, just not reachable
+                    // through that path for this syntax shape.
+                    self.borrowed_locals.insert(var_name);
                 }
             }
         }
@@ -2173,10 +2202,29 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// Is `left` (a struct-field/array-element lvalue) a leak candidate this
     /// function should be held responsible for, or does it reach into a
     /// caller-owned/borrowed struct via a bare function parameter (task
-    /// 306)? A parameter's struct is only "owned" by this function if the
+    /// 306), or a LOCAL that merely holds a reference to a longer-lived
+    /// object this function never allocated (task 1200)?
+    ///
+    /// A parameter's struct is only "owned" by this function if the
     /// parameter itself was used as an out-parameter that this function
     /// freshly allocated into (`*param = malloc(...)`); a plain
     /// `param->field = alloc()` is always borrowed.
+    ///
+    /// A LOCAL's struct is owned unless `root` is a `borrowed_locals` entry
+    /// -- bound to whatever an unrecognized call or field/subscript read
+    /// handed back, not a fresh allocation THIS function made. Assuming
+    /// ownership just because `root` isn't a parameter was wrong: `dev =
+    /// p2p_create_device(p2p, addr)` (hostap) and `ftpc =
+    /// Curl_conn_meta_get(data->conn, ...)` (curl) both bind a local to a
+    /// handle obtained from a lookup/registry accessor, not a fresh
+    /// allocation -- the object outlives this function, owned and
+    /// eventually freed by whatever container the accessor reached into (a
+    /// peer-device list, a connection's per-protocol metadata store).
+    /// `field = alloc()` written through such a handle is a legitimate
+    /// update to a longer-lived object, not this function's own
+    /// responsibility to free before it returns. A plain local declared
+    /// with no initializing call at all (`data_container_t container;`)
+    /// is never in `borrowed_locals`, so it stays owned, same as before.
     fn is_this_function_owned_field_target(&self, left: &Node, source: &str) -> bool {
         let Some((root, saw_deref)) = self.root_identifier_of_lvalue(left, source) else {
             // Couldn't determine a root identifier (unusual lvalue shape) -
@@ -2184,7 +2232,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             return true;
         };
         if !self.function_params.contains(&root) {
-            return true;
+            return !self.borrowed_locals.contains(&root);
         }
         saw_deref && self.deref_allocated_params.contains(&root)
     }
@@ -2365,6 +2413,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // ... and escaped status: whatever the name handed away, this
                 // block is a fresh one the function owns again.
                 self.escaped_memory.remove(&var_name);
+                // ... and borrowed status: a fresh allocation IS this
+                // function's own, whatever this name held before.
+                self.borrowed_locals.remove(&var_name);
 
                 let pos = right.start_position();
                 let alloc_type = self.get_allocation_type(&right, source);
@@ -2431,6 +2482,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // leaks belongs to the ownership-escape work, not here.
                 self.freed_memory.remove(&var_name);
                 self.maybe_freed.remove(&var_name);
+                // task 1200: this name now holds whatever the unreadable
+                // right-hand side handed back -- a lookup/registry accessor
+                // (`dev = p2p_create_device(...)`) or a field/subscript read
+                // (`writer = data->req.writer_stack`) reaches a longer-lived
+                // object this function did not itself allocate, so a later
+                // `local->field = alloc()` through it is not this
+                // function's leak to report.
+                self.borrowed_locals.insert(var_name);
             }
         }
     }
