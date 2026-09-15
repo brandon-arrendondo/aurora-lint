@@ -65,36 +65,57 @@ impl CertRule for Dcl05C {
     }
 }
 
-/// Collect all pointer typedefs defined in the file (for tracking)
+/// Collect every name a typedef in this file binds to a pointer type,
+/// const-qualified and function-pointer typedefs included (this is only the
+/// "defined here, so not external" set for the external-name check).
 fn collect_pointer_typedefs(
     node: &Node,
     source: &str,
     pointer_typedefs: &mut std::collections::HashSet<String>,
 ) {
     for n in query::find_descendants_of_kind(*node, "type_definition") {
-        // Check if this typedef defines a pointer type (including const pointer typedefs)
-        if contains_pointer_declarator(&n) {
-            if let Some(typedef_name) = extract_typedef_name(&n, source) {
-                pointer_typedefs.insert(typedef_name);
+        for d in typedef_declarators(&n) {
+            let shape = TypedefShape::of(&d, source);
+            if shape.is_pointer {
+                if let Some(name) = shape.name {
+                    pointer_typedefs.insert(name);
+                }
             }
         }
     }
 }
 
-/// Check for typedef declarations that define pointer types (without const)
+/// Flag `typedef T *Name;` -- a typedef that hides a pointer, so that
+/// `const Name x` const-qualifies the pointer rather than the pointee.
+///
+/// Only the typedef's own declarator chain is read. Recursing into the whole
+/// `type_definition` subtree, as this once did, reports `typedef struct s {
+/// struct s *next; } s_t;` because a struct MEMBER is a pointer, and names the
+/// first `type_identifier` it meets (the return type of a function-pointer
+/// typedef, or the struct tag) rather than the name being defined.
+///
+/// Exempt, per the wiki: a pointer to const (`typedef const POINT *LPCPOINT`,
+/// the const already sits on the pointee) and a function pointer type
+/// ("Function pointer types are an exception to this recommendation").
 fn check_typedef_declarations(node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
     for n in query::find_descendants_of_kind(*node, "type_definition") {
-        // Check if this typedef defines a pointer type
-        if is_pointer_typedef(&n, source) {
-            // Check if it's a const pointer typedef (allowed)
-            if is_const_pointer_typedef(&n, source) {
-                // Compliant: typedef const TYPE *NAME is allowed
+        // `typedef BOOL (WINAPI *PF)(int)` with the calling-convention macro
+        // unresolved leaves an ERROR where the declarator should be; whatever
+        // it declares is not readable. An ERROR buried in a struct body is a
+        // different matter and does not disqualify the typedef's own name.
+        if has_direct_error_child(&n) {
+            continue;
+        }
+        let pointee_is_const = has_const_qualifier(&n);
+        for d in typedef_declarators(&n) {
+            if d.has_error() {
                 continue;
             }
-
-            // Extract the typedef name for better error message
-            let typedef_name =
-                extract_typedef_name(&n, source).unwrap_or_else(|| "unknown".to_string());
+            let shape = TypedefShape::of(&d, source);
+            if !shape.is_pointer || shape.is_function || pointee_is_const {
+                continue;
+            }
+            let typedef_name = shape.name.unwrap_or_else(|| "unknown".to_string());
 
             violations.push(RuleViolation {
                 rule_id: "DCL05-C".to_string(),
@@ -103,6 +124,10 @@ fn check_typedef_declarations(node: &Node, source: &str, violations: &mut Vec<Ru
                     "Typedef '{}' defines a pointer type, which can cause confusion with const-qualification",
                     typedef_name
                 ),
+                // Reported at the `typedef` keyword, not the declarator:
+                // ground_truth keys on this line for the Windows
+                // `typedef struct { ... } T, *PT;` idiom, and moving it would
+                // drop every labelled instance out of the denominator.
                 line: n.start_position().row + 1,
                 column: n.start_position().column,
                 severity: Severity::Medium,
@@ -113,55 +138,74 @@ fn check_typedef_declarations(node: &Node, source: &str, violations: &mut Vec<Ru
     }
 }
 
-/// Check if a type_definition node defines a pointer type
-fn is_pointer_typedef(node: &Node, _source: &str) -> bool {
-    // Look for pointer_declarator in the typedef
-    contains_pointer_declarator(node)
+/// The declarators a `type_definition` binds: one per name, so
+/// `typedef struct tagPOINT { ... } POINT, *LPPOINT;` yields both, and only
+/// `*LPPOINT` is a pointer.
+fn typedef_declarators<'a>(n: &Node<'a>) -> Vec<Node<'a>> {
+    let mut cursor = n.walk();
+    let found: Vec<Node<'a>> = n
+        .children_by_field_name("declarator", &mut cursor)
+        .collect();
+    found
 }
 
-/// Recursively check if node tree contains a pointer_declarator
-fn contains_pointer_declarator(node: &Node) -> bool {
-    query::find_first_descendant(*node, |n| n.kind() == "pointer_declarator").is_some()
+/// Is one of `n`'s own children an ERROR node?
+fn has_direct_error_child(n: &Node) -> bool {
+    let mut cursor = n.walk();
+    let found = n.children(&mut cursor).any(|c| c.is_error());
+    found
 }
 
-/// Extract the typedef name from a type_definition node
-fn extract_typedef_name(node: &Node, source: &str) -> Option<String> {
-    // The typedef name is usually in a type_identifier node
-    find_type_identifier(node, source)
+/// Does the typedef's specifier list carry `const` (the pointee is const)?
+/// Only direct children count: a `const` inside a struct body or a parameter
+/// list qualifies something else.
+fn has_const_qualifier(n: &Node) -> bool {
+    let mut cursor = n.walk();
+    let found = n.named_children(&mut cursor).any(|c| {
+        c.kind() == "type_qualifier" && {
+            let mut inner = c.walk();
+            let is_const = c.children(&mut inner).any(|k| k.kind() == "const");
+            is_const
+        }
+    });
+    found
 }
 
-/// Recursively find a type_identifier node
-fn find_type_identifier(node: &Node, source: &str) -> Option<String> {
-    query::find_first_descendant(*node, |n| n.kind() == "type_identifier")
-        .map(|n| get_node_text(&n, source).to_string())
+/// What one typedef declarator chain spells, read from the outside in.
+struct TypedefShape {
+    /// The chain contains a `pointer_declarator`.
+    is_pointer: bool,
+    /// The chain contains a `function_declarator`: a function or function
+    /// pointer type, which CERT exempts.
+    is_function: bool,
+    /// The `type_identifier` at the end of the chain -- the name defined.
+    name: Option<String>,
 }
 
-/// Check if a typedef is a const pointer typedef (allowed by DCL05-C)
-/// Example: typedef const TYPE *NAME;
-fn is_const_pointer_typedef(node: &Node, source: &str) -> bool {
-    // Get the full text of the typedef
-    let typedef_text = get_node_text(node, source);
-
-    // Check for "const" before the pointer
-    // Pattern: typedef const TYPE *NAME; or typedef TYPE const *NAME;
-    // Look for "const" keyword followed by pointer syntax
-    let has_const = typedef_text.contains("const");
-
-    // Check if const appears before the * in a pointer typedef
-    if !has_const {
-        return false;
-    }
-
-    // Simple pattern match: const should appear before * in the typedef
-    // This handles: typedef const TYPE *NAME;
-    if let Some(const_pos) = typedef_text.find("const") {
-        if let Some(star_pos) = typedef_text.find('*') {
-            // const should come before * for it to be a pointer-to-const
-            return const_pos < star_pos;
+impl TypedefShape {
+    fn of(declarator: &Node, source: &str) -> Self {
+        let mut shape = TypedefShape {
+            is_pointer: false,
+            is_function: false,
+            name: None,
+        };
+        let mut cur = *declarator;
+        loop {
+            match cur.kind() {
+                "pointer_declarator" => shape.is_pointer = true,
+                "function_declarator" => shape.is_function = true,
+                "type_identifier" | "identifier" => {
+                    shape.name = Some(get_node_text(&cur, source).to_string());
+                    return shape;
+                }
+                _ => {}
+            }
+            match inner_declarator(&cur) {
+                Some(next) => cur = next,
+                None => return shape,
+            }
         }
     }
-
-    false
 }
 
 /// Check for usage of external pointer typedefs (from headers like Windows.h)
