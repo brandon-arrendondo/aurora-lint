@@ -39,7 +39,16 @@ use crate::utility::cert_c::ast_utils::{
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
+
+/// What a declaration's constant initializer is made of.
+enum ConstantInit {
+    /// A literal: `0`, `-1`, `'C'`, `NULL`, `true`.
+    Literal,
+    /// A named constant: an ALL_CAPS macro or enum constant.
+    Named,
+}
 
 pub struct Msc13C {
     /// Object-like macros that expand to an unused-attribute annotation,
@@ -47,13 +56,18 @@ pub struct Msc13C {
     /// `ProjectContext::unused_attribute_macros`). The `#define` for seL4's
     /// `UNUSED` and friends lives in a header, so the per-file scan in
     /// `check()` alone cannot see it.
-    project_unused_attr_macros: RefCell<HashSet<String>>,
+    project_unused_attr_macros: RefCell<Arc<HashSet<String>>>,
+    /// Function-like macros the prescan collected project-wide (headers
+    /// included), so a macro defined in a header is known when a file
+    /// invokes it. Only consulted for names this file does not define.
+    project_function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
 }
 
 impl Msc13C {
     pub fn new() -> Self {
         Self {
-            project_unused_attr_macros: RefCell::new(HashSet::new()),
+            project_unused_attr_macros: RefCell::default(),
+            project_function_macros: RefCell::default(),
         }
     }
 
@@ -641,12 +655,17 @@ impl CertRule for Msc13C {
         // Every preprocessor branch's definition of every function-like
         // macro in this file, for the macro-hidden-use check below. Built
         // once per file, not per function.
-        let macros = collect_function_macro_alternatives(source);
+        let mut macros = collect_function_macro_alternatives(source);
+        for (name, m) in self.project_function_macros.borrow().iter() {
+            macros
+                .entry(name.clone())
+                .or_insert_with(|| vec![m.clone()]);
+        }
 
         // Object-like macros expanding to an unused-attribute annotation:
         // whatever the prescan found project-wide, plus this file's own
         // `#define`s so a single-file run still recognizes them.
-        let mut unused_attr_macros = self.project_unused_attr_macros.borrow().clone();
+        let mut unused_attr_macros = HashSet::clone(&self.project_unused_attr_macros.borrow());
         collect_unused_attribute_macro_names(source, &mut unused_attr_macros);
 
         // Walk all function definitions
@@ -657,6 +676,7 @@ impl CertRule for Msc13C {
 
     fn set_project_context(&self, context: &crate::analyze::context::ProjectContext) {
         *self.project_unused_attr_macros.borrow_mut() = context.unused_attribute_macros.clone();
+        *self.project_function_macros.borrow_mut() = context.function_macros.clone();
     }
 }
 
@@ -821,6 +841,7 @@ impl Msc13C {
         let definitions = extract_definitions(cfg, func_node, source);
         let reaching = compute_reaching_definitions(cfg, definitions);
         let single_invocation_locals = self.collect_single_invocation_locals(body, source);
+        let returned_names = self.collect_returned_names(body, source, macros);
 
         // (block_id, statement_index) -> definition indices written there.
         let mut writes_at: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
@@ -907,6 +928,21 @@ impl Msc13C {
             if self.count_reads(body, source, &def.variable, targets.as_deref()) == 0 {
                 continue;
             }
+            // A defensive initial value is not a dead store. Two shapes:
+            // `int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;` names the
+            // state the variable is in until the code says otherwise --
+            // mbedtls writes it so a glitched control flow reports failure
+            // rather than success -- and `int rc = -1;` on a variable the
+            // function returns is the default result the caller gets if
+            // every later assignment is skipped (task 1171). Narrower than
+            // clang's "any constant initializer is defensive": a bare
+            // literal on a value that is merely printed, `int x = 1; x = 2;`,
+            // still reports.
+            match self.constant_declaration_initializer(cfg, def, body, source) {
+                Some(ConstantInit::Named) => continue,
+                Some(ConstantInit::Literal) if returned_names.contains(&def.variable) => continue,
+                _ => {}
+            }
             let line = Self::line_for_byte(source, def.byte_offset);
             violations.push(RuleViolation {
                 rule_id: self.rule_id().to_string(),
@@ -924,6 +960,103 @@ impl Msc13C {
                 ),
                 ..Default::default()
             });
+        }
+    }
+
+    /// Identifiers mentioned by any `return` expression of the function --
+    /// in the body itself, or in the replacement list of a function-like
+    /// macro the body invokes (`MBEDTLS_ASN1_CHK_ADD` returns the caller's
+    /// `ret` from inside the macro, so the body shows no `return ret;`).
+    fn collect_returned_names(
+        &self,
+        body: &Node,
+        source: &str,
+        macros: &HashMap<String, Vec<FunctionMacro>>,
+    ) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for ret in query::find_descendants_of_kind(*body, "return_statement") {
+            for ident in query::find_descendants_of_kind(ret, "identifier") {
+                names.insert(get_node_text(&ident, source).to_string());
+            }
+        }
+        if macros.is_empty() {
+            return names;
+        }
+        let mut invoked = HashSet::new();
+        self.collect_invoked_names(body, source, &mut invoked);
+        for m in invoked.iter().filter_map(|n| macros.get(n)).flatten() {
+            let mut rest = m.body.as_str();
+            while let Some(pos) = rest.find("return") {
+                let after = &rest[pos + "return".len()..];
+                let stmt = after.split(';').next().unwrap_or("");
+                let mut tok = String::new();
+                for c in stmt.chars().chain(std::iter::once(' ')) {
+                    if c.is_ascii_alphanumeric() || c == '_' {
+                        tok.push(c);
+                    } else if !tok.is_empty() {
+                        if !m.params.contains(&tok) && !is_c_keyword(&tok) {
+                            names.insert(std::mem::take(&mut tok));
+                        }
+                        tok.clear();
+                    }
+                }
+                rest = after;
+            }
+        }
+        names
+    }
+
+    /// The constant `def` initialises `def.variable` with, when `def` is a
+    /// declaration and the initializer is one: a numeric or character
+    /// literal, `NULL`, `true`/`false` (`Literal`), an ALL_CAPS macro or
+    /// enum constant (`Named`), or one of those behind parentheses, a cast
+    /// or a unary minus. `None` for anything computed.
+    fn constant_declaration_initializer(
+        &self,
+        cfg: &FunctionCfg,
+        def: &Definition,
+        body: &Node,
+        source: &str,
+    ) -> Option<ConstantInit> {
+        let &(start, end) = cfg
+            .blocks
+            .get(def.block_id)?
+            .statements
+            .get(def.statement_index)?;
+        let stmt = find_node_at_range(body, start, end)?;
+        if stmt.kind() != "declaration" {
+            return None;
+        }
+        let init = query::find_first_descendant(stmt, |n| {
+            n.kind() == "init_declarator"
+                && n.child_by_field_name("declarator")
+                    .is_some_and(|d| get_identifier_from_declarator(&d, source) == def.variable)
+        })?;
+        Self::constant_expression(&init.child_by_field_name("value")?, source)
+    }
+
+    fn constant_expression(node: &Node, source: &str) -> Option<ConstantInit> {
+        match node.kind() {
+            "number_literal" | "char_literal" | "null" | "true" | "false" => {
+                Some(ConstantInit::Literal)
+            }
+            "identifier" => {
+                let text = get_node_text(node, source);
+                if text == "NULL" {
+                    Some(ConstantInit::Literal)
+                } else if ast_utils::is_likely_macro_constant(text) {
+                    Some(ConstantInit::Named)
+                } else {
+                    None
+                }
+            }
+            "parenthesized_expression" | "unary_expression" => {
+                Self::constant_expression(&node.named_child(0)?, source)
+            }
+            "cast_expression" => {
+                Self::constant_expression(&node.child_by_field_name("value")?, source)
+            }
+            _ => None,
         }
     }
 

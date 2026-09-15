@@ -8,6 +8,7 @@ use lang_parsing_substrate::query;
 use regex::Regex;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Exp36C {
@@ -15,7 +16,7 @@ pub struct Exp36C {
     /// project's packed-struct macro) across ALL scanned files, from
     /// prescan (task 395). Needed because the struct's *definition* usually
     /// lives in a header, not the file containing the cast being checked.
-    packed_structs: RefCell<HashSet<String>>,
+    packed_structs: RefCell<Arc<HashSet<String>>>,
     /// Cross-file typedef alias map. Reached through the shared
     /// [`resolve_typedef_chain`] to answer alignment for a typedef'd
     /// integer type (task 736 -- previously sqlite's `i64` -> `sqlite_int64`
@@ -23,14 +24,14 @@ pub struct Exp36C {
     /// 4-byte" default and every `(u64 *)&<i64 var>` cast fabricated an
     /// alignment mismatch. 15 labeled sqlite FPs across two adjudication
     /// passes).
-    typedef_types: RefCell<HashMap<String, String>>,
+    typedef_types: RefCell<Arc<HashMap<String, String>>>,
 }
 
 impl Exp36C {
     pub fn new() -> Self {
         Self {
-            packed_structs: RefCell::new(HashSet::new()),
-            typedef_types: RefCell::new(HashMap::new()),
+            packed_structs: RefCell::new(Arc::new(HashSet::new())),
+            typedef_types: RefCell::new(Arc::new(HashMap::new())),
         }
     }
 }

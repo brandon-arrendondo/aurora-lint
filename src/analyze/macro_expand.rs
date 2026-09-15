@@ -24,6 +24,7 @@
 //   * 2c-iii — `macro_nulls_param_indices` feeds MEM30-C to recognize "safe
 //     free" macros that free AND null their argument (`Curl_safefree`).
 
+use super::dead_regions::DeadRegions;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -34,6 +35,27 @@ pub struct FunctionMacro {
     pub params: Vec<String>,
     /// Raw replacement-list text, e.g. `(((x) < (y)) ? (x) : (y))`.
     pub body: String,
+}
+
+impl FunctionMacro {
+    /// Whether two definitions expand every invocation identically: same
+    /// arity and the same body once parameter names are replaced by their
+    /// positions. `#define f(a, b)` and `#define f(x, y)` with empty bodies
+    /// (mosquitto's `metrics__int_inc` stubs in two files) are the same
+    /// macro, not a conflict.
+    pub fn same_expansion(&self, other: &FunctionMacro) -> bool {
+        self.params.len() == other.params.len() && self.positional_body() == other.positional_body()
+    }
+
+    fn positional_body(&self) -> String {
+        let map: HashMap<String, String> = self
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.clone(), format!("__param{i}__")))
+            .collect();
+        substitute_params(&self.body, &map)
+    }
 }
 
 /// Maximum recursive-rescan depth (defense against pathological input; real
@@ -57,10 +79,17 @@ fn is_ident_char(c: char) -> bool {
 /// as `ERROR(#define) + call_expression` and never emitted as a
 /// `preproc_function_def`). The AST pass is authoritative; the textual pass only
 /// fills names the AST missed (`or_insert`), so clean files are unaffected.
+///
+/// Both passes skip a definition inside a branch the assumed platform never
+/// compiles ([`DeadRegions`], task 1142), so first-wins arbitrates only among
+/// the definitions that could actually be live: hostap's `os.h` defines
+/// `os_strdup(s)` as `_strdup(s)` under `_MSC_VER` and as `strdup(s)` in the
+/// `#else`, and the Windows body used to win.
 pub fn collect_function_macros(root: &Node, source: &str) -> HashMap<String, FunctionMacro> {
+    let dead = DeadRegions::of(source);
     let mut out = HashMap::new();
-    collect_rec(root, source, &mut out);
-    for (name, m) in collect_function_macros_textual(source) {
+    collect_rec(root, source, &dead, &mut out);
+    for (name, m) in collect_function_macros_textual_outside(source, &dead) {
         out.entry(name).or_insert(m);
     }
     out
@@ -71,16 +100,34 @@ pub fn collect_function_macros(root: &Node, source: &str) -> HashMap<String, Fun
 /// preprocessor is line-oriented, this is immune to however tree-sitter mangles
 /// the surrounding C in error-recovery regions. Applies the same exclusions as
 /// the AST pass (`#`/`##`, variadic) so the expander sees a consistent set.
+///
+/// Sees every preprocessor branch; [`collect_function_macros`] is the entry
+/// point that additionally drops platform-dead definitions.
+#[cfg(test)]
 pub fn collect_function_macros_textual(source: &str) -> HashMap<String, FunctionMacro> {
+    collect_function_macros_textual_outside(source, &DeadRegions::default())
+}
+
+fn collect_function_macros_textual_outside(
+    source: &str,
+    dead: &DeadRegions,
+) -> HashMap<String, FunctionMacro> {
     let lines: Vec<&str> = source.lines().collect();
     let mut out = HashMap::new();
     let mut i = 0;
     while i < lines.len() {
         let (logical, next) = join_continuation(&lines, i);
+        // The directive's first physical line (1-based) decides which
+        // preprocessor branch it belongs to.
+        let first_line = i + 1;
         i = next;
+        if dead.contains_line(first_line) {
+            continue;
+        }
         if let Some((name, m)) = parse_define_line(&logical) {
             // First definition wins (mirrors the AST pass): redefinitions across
-            // platform `#ifdef` branches are ambiguous, so keep the first.
+            // `#ifdef` branches the platform profile cannot settle are
+            // ambiguous, so keep the first.
             out.entry(name).or_insert(m);
         }
     }
@@ -331,10 +378,86 @@ fn join_continuation(lines: &[&str], start: usize) -> (String, usize) {
     (buf, i)
 }
 
+/// Why the collector left a function-like `#define` out of the expansion
+/// table. Every invocation of such a macro stays opaque to dataflow, which
+/// is exactly what `--report-macro-gaps` exists to surface (task 1180); the
+/// variants are the module-doc "out of scope" list, one per reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum DefineSkip {
+    /// `#define M(a, ...)` — variadic; `__VA_ARGS__` needs real cpp semantics.
+    Variadic,
+    /// The replacement list uses `#` (stringize) or `##` (token paste).
+    PasteOrStringize,
+    /// The parameter list never closes on its logical line.
+    Malformed,
+}
+
+impl DefineSkip {
+    /// One-line explanation for a report.
+    pub fn describe(self) -> &'static str {
+        match self {
+            DefineSkip::Variadic => "variadic macro (`...`/`__VA_ARGS__`) — not expanded",
+            DefineSkip::PasteOrStringize => {
+                "uses `#` (stringize) or `##` (token paste) — not expanded"
+            }
+            DefineSkip::Malformed => "parameter list never closes — not expanded",
+        }
+    }
+}
+
+/// One function-like `#define` as the line-oriented scanner saw it, before
+/// any platform-dead filtering: the name, its first physical line (1-based),
+/// and either the definition the expander would use or why it was skipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScannedDefine {
+    /// The macro name.
+    pub name: String,
+    /// First physical line of the directive, 1-based.
+    pub line: usize,
+    /// The definition the expander would hold, or why it holds none.
+    pub outcome: Result<FunctionMacro, DefineSkip>,
+}
+
+/// Every function-like `#define` in `source`, in file order, across every
+/// preprocessor branch, with the collector's own accept/skip verdict on each.
+///
+/// This is the same line scan [`collect_function_macros`] runs; it differs
+/// only in keeping the skipped definitions and their reasons, so a report can
+/// say "this macro exists but the engine will never expand it" from the same
+/// decision the engine actually made, rather than from a second heuristic.
+pub fn scan_function_macro_defines(source: &str) -> Vec<ScannedDefine> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let (logical, next) = join_continuation(&lines, i);
+        let line = i + 1;
+        i = next;
+        if let Some((name, outcome)) = classify_define_line(&logical) {
+            out.push(ScannedDefine {
+                name,
+                line,
+                outcome,
+            });
+        }
+    }
+    out
+}
+
 /// Parse one logical line as a function-like `#define`. Returns `None` for
 /// non-directives, object-like macros, variadic macros, and macros using
 /// `#`/`##`.
 fn parse_define_line(line: &str) -> Option<(String, FunctionMacro)> {
+    let (name, outcome) = classify_define_line(line)?;
+    outcome.ok().map(|m| (name, m))
+}
+
+/// Recognize one logical line as a function-like `#define`, returning the
+/// macro name and either its definition or the reason the collector skips
+/// it. `None` means the line is not a function-like `#define` at all
+/// (non-directive, or object-like — `#define NAME (x)` with a space is an
+/// object-like macro whose body is `(x)`).
+fn classify_define_line(line: &str) -> Option<(String, Result<FunctionMacro, DefineSkip>)> {
     let s = line.trim_start();
     let s = s.strip_prefix('#')?;
     let s = s.trim_start().strip_prefix("define")?;
@@ -363,20 +486,23 @@ fn parse_define_line(line: &str) -> Option<(String, FunctionMacro)> {
     }
 
     // Parse parameter list up to the matching ')'.
-    let (params, body_start) = parse_param_list(&chars, k)?;
+    let (params, body_start) = match parse_param_list(&chars, k) {
+        Ok(v) => v,
+        Err(skip) => return Some((name, Err(skip))),
+    };
     let body_raw: String = chars[body_start..].iter().collect();
     let body = strip_comments(&body_raw).trim().to_string();
 
     if body_uses_paste_or_stringize(&body) {
-        return None;
+        return Some((name, Err(DefineSkip::PasteOrStringize)));
     }
-    Some((name, FunctionMacro { params, body }))
+    Some((name, Ok(FunctionMacro { params, body })))
 }
 
 /// Parse `(p1, p2, …)` starting at `open` (an index of `'('`). Returns the
-/// parameter names and the index just past the closing `')'`. Bails on variadic
-/// (`...`) macros (`None`).
-fn parse_param_list(chars: &[char], open: usize) -> Option<(Vec<String>, usize)> {
+/// parameter names and the index just past the closing `')'`, or the reason
+/// the list cannot be used: variadic (`...`) or never closed.
+fn parse_param_list(chars: &[char], open: usize) -> Result<(Vec<String>, usize), DefineSkip> {
     debug_assert_eq!(chars[open], '(');
     let mut params = Vec::new();
     let mut cur = String::new();
@@ -397,9 +523,9 @@ fn parse_param_list(chars: &[char], open: usize) -> Option<(Vec<String>, usize)>
                     }
                     // Variadic param → unsupported.
                     if params.iter().any(|p| p.contains("...")) {
-                        return None;
+                        return Err(DefineSkip::Variadic);
                     }
-                    return Some((params, i + 1));
+                    return Ok((params, i + 1));
                 }
                 cur.push(')');
             }
@@ -411,7 +537,7 @@ fn parse_param_list(chars: &[char], open: usize) -> Option<(Vec<String>, usize)>
         }
         i += 1;
     }
-    None // unbalanced
+    Err(DefineSkip::Malformed) // unbalanced
 }
 
 /// Remove `/* … */` and `// …` comments from a macro replacement list, so the
@@ -438,18 +564,27 @@ fn strip_comments(s: &str) -> String {
     out
 }
 
-fn collect_rec(node: &Node, source: &str, out: &mut HashMap<String, FunctionMacro>) {
+fn collect_rec(
+    node: &Node,
+    source: &str,
+    dead: &DeadRegions,
+    out: &mut HashMap<String, FunctionMacro>,
+) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             match child.kind() {
                 "preproc_function_def" => {
+                    if dead.contains_node(&child) {
+                        continue;
+                    }
                     if let Some((name, m)) = parse_function_def(&child, source) {
-                        // First definition wins; redefinitions (e.g. platform
-                        // #ifdef branches) are ambiguous, so keep the first.
+                        // First definition wins; redefinitions under a
+                        // build-config `#ifdef` the platform profile cannot
+                        // settle are ambiguous, so keep the first.
                         out.entry(name).or_insert(m);
                     }
                 }
-                kind if kind.starts_with("preproc_") => collect_rec(&child, source, out),
+                kind if kind.starts_with("preproc_") => collect_rec(&child, source, dead, out),
                 _ => {}
             }
         }
@@ -1776,7 +1911,7 @@ mod tests {
         let (tree, src) = p.parse_source(src).unwrap();
         let ast_only = {
             let mut out = HashMap::new();
-            collect_rec(&tree.root_node(), &src, &mut out);
+            collect_rec(&tree.root_node(), &src, &DeadRegions::default(), &mut out);
             out
         };
         let merged = collect_function_macros(&tree.root_node(), &src);
@@ -1787,6 +1922,48 @@ mod tests {
             ast_only.keys().collect::<Vec<_>>()
         );
         assert_eq!(merged["recovered_free"].body, "free(ptr)");
+    }
+
+    #[test]
+    fn platform_dead_definition_does_not_win_first() {
+        // hostap os.h's shape: the `_MSC_VER` body comes first, so
+        // first-wins used to hand every consumer `_strdup`, a name no POSIX
+        // build ever has. The AST pass and the textual pass must agree.
+        let src = "#ifndef os_strdup
+                   #ifdef _MSC_VER
+                   #define os_strdup(s) _strdup(s)
+                   #else
+                   #define os_strdup(s) strdup(s)
+                   #endif
+                   #endif
+";
+        let mut p = CParser::new().unwrap();
+        let (tree, src) = p.parse_source(src).unwrap();
+        let macros = collect_function_macros(&tree.root_node(), &src);
+        assert_eq!(macros["os_strdup"].body, "strdup(s)");
+
+        // A build-config guard the platform profile has no opinion about
+        // still resolves first-wins, exactly as before.
+        let src = "#ifdef WPA_TRACE
+                   #define os_strdup(s) trace_strdup(s)
+                   #else
+                   #define os_strdup(s) strdup(s)
+                   #endif
+";
+        let (tree, src) = p.parse_source(src).unwrap();
+        let macros = collect_function_macros(&tree.root_node(), &src);
+        assert_eq!(macros["os_strdup"].body, "trace_strdup(s)");
+
+        // A definition only the dead platform has is dropped, not kept.
+        let src = "#ifdef _WIN32
+#define ONLY_WIN(x) win(x)
+#endif
+#define BOTH(x) x
+";
+        let (tree, src) = p.parse_source(src).unwrap();
+        let macros = collect_function_macros(&tree.root_node(), &src);
+        assert!(!macros.contains_key("ONLY_WIN"), "{:?}", macros.keys());
+        assert!(macros.contains_key("BOTH"));
     }
 
     #[test]

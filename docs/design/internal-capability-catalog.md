@@ -44,7 +44,7 @@ substitution + recursive rescanning (C11 6.10.3).
 
 | Function | Signature | Description |
 |---|---|---|
-| `collect_function_macros` | `(root: &Node, source: &str) -> HashMap<String, FunctionMacro>` | Collects `#define NAME(params) body` definitions: an AST pass over `preproc_function_def`, plus a textual error-recovery pass that recovers definitions tree-sitter buried in `ERROR` nodes (e.g. curl's `curlx_free`). |
+| `collect_function_macros` | `(root: &Node, source: &str) -> HashMap<String, FunctionMacro>` | Collects `#define NAME(params) body` definitions: an AST pass over `preproc_function_def`, plus a textual error-recovery pass that recovers definitions tree-sitter buried in `ERROR` nodes (e.g. curl's `curlx_free`). One body per name, first wins — after dropping any definition in a platform-dead branch (`dead_regions::DeadRegions`, task 1142), so hostap's `os_strdup` resolves to its `#else` `strdup(s)` rather than the `_MSC_VER` arm's `_strdup(s)`. |
 | `expand_invocation` | `(table, name: &str, args: &[String]) -> Option<String>` | Expands one invocation `name(args...)` against `table`, recursively rescanning the result. `None` if `name` isn't in `table` or arity mismatches. |
 | `macro_output_param_indices` | `(table, name) -> Vec<usize>` | Parameter indices the macro **assigns as a whole object** (`(param) = …`), e.g. curl's `CF_DATA_SAVE`. Feeds EXP33-C to recognize macro output arguments so they aren't flagged as reads of uninitialized memory. |
 | `macro_nulls_param_indices` | `(table, name) -> Vec<usize>` | Parameter indices the macro **frees-and-nulls** (`(param) = NULL` after freeing) — the "safe free" idiom (`Curl_safefree`, `mosquitto_FREE`, `SAFE_FREE`). Feeds MEM30-C to clear freed-state as if the caller wrote `free(p); p = NULL;`. |
@@ -122,9 +122,9 @@ mistake task 475 nearly made — do not add a sixth ALL_CAPS heuristic.
 **Wiring pattern:** No wiring needed for the single-file check
 (`is_defined_macro_name(name, source)` — just call it with the current
 file's source). For cross-file resolution, a rule's struct must hold a
-`RefCell<HashSet<String>>` and override `CertRule::set_project_context` to
-clone `context.defined_macro_names` into it (see DCL40-C, and MSC12-C task
-475) — the field is already collected project-wide during prescan, so a
+`RefCell<Arc<HashSet<String>>>` and override `CertRule::set_project_context`
+to take a handle on `context.defined_macro_names` (see DCL40-C, and MSC12-C
+task 475) — the field is already collected project-wide during prescan, so a
 rule only needs the two-line wiring, not its own collection pass.
 
 ### `src/analyze/embedded_js_blank.rs`
@@ -215,6 +215,38 @@ to conclude a name is undeclared.
 holds it behind an `Rc` on the file-scope frame every function clones), then
 consult it wherever a positional lookup walks backwards.
 
+### `src/analyze/dead_regions.rs`
+**Problem solved:** which of several same-named conditional definitions a
+flat `name -> fact` collector should keep. With no preprocessor, every
+collector that builds a one-entry-per-name table (`typedef_types`,
+`function_macros`, `macro_constants`, `macro_aliases`) sees every
+`#ifdef`-arm's (re)definition and needs a tie-break; first-wins and
+last-wins are each a coin flip against a platform split. hostap's
+`common.h` defines `u16` under `_MSC_VER`, `__vxworks`, and the real
+`#ifndef WPA_TYPES_DEFINED` arm in that order, so first-wins resolved every
+narrow hostap type to a Windows name nothing in a POSIX corpus defines
+(task 1142: EXP14-C lost 59 of 62 labeled hostap TPs to it).
+
+| Item | Signature | Description |
+|---|---|---|
+| `platform_assumptions` | `() -> PlatformAssumptions` | The ONE platform profile every scan assumes: `lang_parsing_substrate::posix_default_assumptions()` (`_WIN32`/`_MSC_VER`/`__CYGWIN__`/`__vxworks` undefined, `__linux__`/`__unix__` defined). Single choke point so a future `--platform` or `compile_commands.json`-derived table changes one function. |
+| `DeadRegions::of` | `(source: &str) -> DeadRegions` | Line ranges the assumed platform's preprocessor would strip: `dead_code_ranges_with_assumptions` seeded with `platform_assumptions()`, so it also covers what the unseeded scanner already proves (`#if 0`, `__cplusplus`, locally-`#define`d guards). One line-oriented pass; build once per file per collector, not per node. |
+| `DeadRegions::contains_line` / `contains_node` | `(&self, line: usize) -> bool` / `(&self, node: &Node) -> bool` | Whether a 1-based line, or a node's first line, is inside a dead region. |
+
+**Wiring pattern:** compute at the collector's entry point and *skip* any
+definition landing in a dead region, keeping the collector's existing
+tie-break for the rest — a redefinition under a build-config macro the
+profile has no opinion about (`#ifdef WPA_TRACE`, `#if __BYTE_ORDER == ...`)
+stays Neutral and is picked exactly as before. Wired into
+`prescan::collect_typedef_aliases`, `macro_expand::collect_function_macros`
+(both passes) and `const_eval::collect_preproc_defs` (constants, aliases,
+string macros). Deliberately NOT wired into the struct-bodied collectors
+(ventoy's `process.h` wraps whole struct typedefs in `#if
+defined(_MSC_VER)` and no corpus file has a same-file conditional struct
+redefinition to arbitrate) nor into `suppression.rs`'s finding filter, which
+stays on the unseeded `dead_code_ranges` — silencing every finding inside an
+`#ifdef _WIN32` block corpus-wide is a separate policy decision.
+
 ## Declaration / type / declarator resolution
 
 ### `src/utility/cert_c/ast_utils.rs` (declaration/declarator subset)
@@ -236,6 +268,9 @@ consult it wherever a positional lookup walks backwards.
 | `find_identifier_in_declarator` | `(declarator: &Node, source: &str) -> Option<String>` | Same job as `get_identifier_from_declarator` but returns `Option` instead of an empty-string sentinel. **Note: these two are NOT interchangeable** — pick based on whether the call site can handle an `Option` (task 387 documents a real regression from picking the wrong one). |
 | `function_names_in_error_declaration` | `(node: &Node, source: &str) -> Vec<String>` | The functions declared by an `ERROR` node that **is** one or more declarations tree-sitter could not finish — a prototype carrying a trailing attribute macro (`extern int sigaction(...) __THROW;`, how glibc writes most of POSIX), or a definition whose declarator is split by an `#if` (sqlite's `columnNullValue`). Such a node contains no `declaration`/`function_definition` anywhere inside it, so a walk over those kinds sees nothing; the specifiers and the `function_declarator` are right there as its children. Returns every match, not the first: recovery in a macro-heavy file can collapse a whole translation unit into one `ERROR` whose children are its top-level items (pure-ftpd's `src/ftpd.c`). Recognizes only a run of specifiers immediately followed by a function declarator, so a misparsed *call* recovered inside an `ERROR` is not read back as a declaration. Pointer-returning prototypes are unaffected (they still parse as a `declaration`), so this **supplements** the normal walk rather than replacing it — call it from the `ERROR` arm, then keep recursing. Used by the prescan collector and DCL31-C (tasks 1038, 1040, 1044). |
 | `get_function_parameters` | `(function_node: &Node, source: &str) -> Option<Vec<(String, String)>>` | Extracts `(name, full_type)` pairs for a function's parameters, correctly finding the `function_declarator` even when nested inside a `pointer_declarator` (pointer-returning functions). |
+| `restrict_parameter_indices` | `(root: &Node, source) -> HashMap<String, Vec<usize>>` | For every function the file defines or declares with at least one `restrict`-qualified parameter (`restrict`/`__restrict`/`__restrict__` as a `type_qualifier` anywhere in the parameter's declarator chain), the indices of those parameters. Recurses through preprocessor/linkage blocks and `ERROR` nodes; first form of a name wins. The one fact a call-site aliasing check needs about its callee — repeating an argument is undefined only where the parameter is restrict — and the reason EXP43-C stopped firing on every `mbedtls_mpi_add_mpi(X, X, Y)`. Also collected project-wide into `ProjectContext::restrict_params` (task 1171). |
+| `documented_nonnull_parameters` | `(root: &Node, source) -> HashMap<String, Vec<usize>>` | For every function the file defines or declares under a Doxygen comment, the indices of parameters whose `\param` block states a non-NULL precondition ("must be initialized", "must not be NULL", "must point to a valid", "must be a readable buffer" ...; the wording set is `states_nonnull`). The function's own published contract, which API00-C treats as caller-side validation and the null-state seeding treats as `NotNull` -- deliberately NOT an inference from callers (task 644). A block that merely describes the parameter does not count. Handles the attribute-macro-prefixed prototype shape (`MBEDTLS_CHECK_RETURN_TYPICAL int f(...)`) since it reads the `declaration`'s own `function_declarator` (task 1171). |
+| `ordered_parameter_names` | `(function_node: &Node, source) -> Vec<String>` | Parameter names in declaration order, `""` for an unnamed one -- the same enumeration `restrict_parameter_indices` and `documented_nonnull_parameters` index by, so their indices map back to names through this and not through `get_function_parameters`, which skips what it cannot read. |
 | `is_function_parameter` | `(function_node: &Node, var_name: &str, source: &str) -> bool` | True if `var_name` appears (word-boundary-matched) in the function's parameter list text. |
 | `is_array_parameter_type` / `is_pointer_type` / `is_signed_type` / `is_unsigned_type` | `(type_str: &str) -> bool` | Type-string classifiers over a type's textual representation (not the AST node) — array/pointer/signed-integer/unsigned-integer. |
 | `extract_struct_name_from_type` | `(type_str: &str) -> Option<&str>` | Extracts a bare struct name from a type string (`"struct MyStruct *"` → `"MyStruct"`), stripping qualifiers and pointer stars; returns `None` for primitives/stdint types. |
@@ -870,18 +905,31 @@ heuristic to disambiguate a genuinely ambiguous case, consider whether
 packed?) depend on other files, especially headers. The prescan pre-pass
 (triggered by `-d <dir>`) scans a wider directory tree once and populates
 `ProjectContext`; each rule that wants cross-file information overrides
-`CertRule::set_project_context(&self, context: &ProjectContext)` to clone
-the fields it needs into its own `RefCell` state (see DCL40-C, and MSC12-C
-task 475, for the canonical wiring pattern). **Without `-d`, this context
-is empty** — running aurora-lint by hand on a single file loses all cross-file
-recall.
+`CertRule::set_project_context(&self, context: &ProjectContext)` to take a
+handle on the fields it needs in its own `RefCell` state (see DCL40-C, and
+MSC12-C task 475, for the canonical wiring pattern). **Without `-d`, this
+context is empty** — running aurora-lint by hand on a single file loses all
+cross-file recall.
 
-| Field | Type | Description |
+**The tables are `Arc`-wrapped, and `set_project_context` runs once per rule
+per scanned file** (every file gets a fresh registry). `context.x.clone()`
+is therefore a refcount bump, and a rule must keep it that way: store the
+`Arc` as-is, never `HashMap::clone(&context.x)` or fold several tables into
+a merged set per file. Deep-copying the function summaries of a few-thousand-file
+project per rule per file was once the dominant cost of a whole scan (the
+Juliet wall-clock regression task and its follow-up, aurora_lint 1162/1190).
+A "project table plus this file's own definitions" overlay is fine when the
+project table is small (`merged_macro_aliases`), and should hold a handle
+plus a separate file-local map when it is not. `callers` is the inverted
+`call_graph`, computed once — do not re-invert it per file.
+
+| Field | Type (each wrapped in `Arc` on the struct) | Description |
 |---|---|---|
 | `known_functions` | `HashSet<String>` | Every function name found in pre-scanned `.c`/`.h` files. |
 | `header_declared_functions` | `HashSet<String>` | Functions prototyped in `.h` files — public API, shouldn't be flagged as needing `static` (DCL15-C/DCL19-C). |
 | `function_summaries` | `HashMap<String, FunctionSummary>` | Cross-file function summaries (see above) — access via `context.get_function_summary(name)`. |
 | `call_graph` | `HashMap<String, HashSet<String>>` | Function name → set of functions it calls. |
+| `callers` | `HashMap<String, HashSet<String>>` | The inverse: function name → set of functions that call it. Computed once at prescan; INT30/31/32-C, STR02-C, ENV03-C and ENV33-C read it. |
 | `macro_constants` | `HashMap<String, i64>` | `#define` constants collected across all scanned files. |
 | `macro_aliases` | `HashMap<String, String>` | `#define ALIAS identifier` function-name aliases (e.g. `SYSTEM` → `system`). |
 | `struct_field_types` | `HashMap<String, HashMap<String, String>>` | `struct_name -> field_name -> type_text`, for resolving `field_expression` types cross-file. |
@@ -893,13 +941,16 @@ recall.
 | `function_macros` | `HashMap<String, FunctionMacro>` | Cross-file function-like macro definitions — feeds `macro_expand.rs`. |
 | `defined_macro_names` | `HashSet<String>` | Every `#define NAME ...` object-like macro name across all scanned files, regardless of expansion — feeds DCL40-C and (as of task 475) MSC12-C's `is_known_macro`. **This is the field task 475 almost duplicated.** |
 | `unresolved_project_headers` | `HashSet<String>` | `#include` paths naming a **project** header that isn't on disk — the directory prefix resolves under a search root but the file doesn't (seL4's `<object/structures_gen.h>`, emitted at build time from an `.bf` spec; also `*.pb-c.h`, `*.tab.h`). Populated by `resolve_includes`, so it needs `-I`, not just `-d`. A system header merely off the `-I` path (`<sys/socket.h>`) does **not** land here. Non-empty means "part of this project's declarations are generated by a build step we can't run", which is what switches off DCL31-C's undeclared-call check (task 580). |
+| `restrict_params` | `HashMap<String, Vec<usize>>` | `function -> restrict-qualified parameter indices` from every scanned `.c`/`.h` (definitions and prototypes; first seen wins), built by `restrict_parameter_indices`. Read by EXP43-C through `set_project_context` so a callee prototyped in a header is judged by its real contract; the analysed file's own prototypes override it (task 1171). |
+| `documented_nonnull_params` | `HashMap<String, Vec<usize>>` | `function -> parameter indices with a documented non-NULL precondition`, unioned over every scanned `.c`/`.h` (definition and prototype), built by `documented_nonnull_parameters`. `prescan::apply_documented_preconditions` (run after the pre-scan and after `resolve_includes`) seeds those parameters `NotNull` in `callsite_param_null_states`, overriding the call-site vote; API00-C reads it through `set_project_context` and skips those parameters (task 1171). |
 
 **Wiring pattern (the actual mechanical steps, per DCL40-C/MSC12-C):**
-1. Add a `RefCell<T>` field to the rule's struct (e.g.
-   `cross_file_macro_names: RefCell<HashSet<String>>`).
-2. Initialize it empty in the rule's `new()`.
+1. Add a `RefCell<Arc<T>>` field to the rule's struct (e.g.
+   `cross_file_macro_names: RefCell<Arc<HashSet<String>>>`).
+2. Initialize it empty in the rule's `new()` (`RefCell::default()`).
 3. Override `fn set_project_context(&self, context: &ProjectContext)` to
-   clone the relevant `ProjectContext` field into the `RefCell`.
+   store `context.<field>.clone()` — the `Arc` handle, not a copy of the
+   table — in the `RefCell`.
 4. In the rule's check logic, read through the `RefCell` (e.g.
    `self.cross_file_macro_names.borrow().contains(name)`), typically OR'd
    with a same-file-only check (`is_defined_macro_name(name, source)`) so

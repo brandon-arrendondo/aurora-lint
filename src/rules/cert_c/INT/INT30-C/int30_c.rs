@@ -16,6 +16,7 @@ use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// Width every integer operation is performed in at minimum: C's usual
@@ -27,20 +28,20 @@ const PROMOTED_ARITH_BITS: u32 = 32;
 const OPERAND_TYPE_MAX_DEPTH: u32 = 8;
 
 pub struct Int30C {
-    project_macros: RefCell<MacroConstantMap>,
+    project_macros: RefCell<Arc<MacroConstantMap>>,
     current_macros: RefCell<MacroConstantMap>,
-    struct_field_types: RefCell<HashMap<String, HashMap<String, String>>>,
+    struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
-    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
     /// Globals written by a tainted function — see the INT32-C provenance gate.
-    global_writers: RefCell<HashMap<String, HashSet<String>>>,
+    global_writers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
     /// Per-function memo of risky variable names, keyed by function node id;
     /// cleared per file.
     risky_vars_cache: RefCell<HashMap<usize, HashSet<String>>>,
     /// Reverse call graph: callee name → the functions that call it. Backs the
     /// parameter arm of the provenance gate (`int_provenance::ParamContext`).
-    callers: RefCell<HashMap<String, HashSet<String>>>,
+    callers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
     /// Per-function memo of parameter names, keyed by function node id; cleared
     /// per file alongside `risky_vars_cache`.
     param_names_cache: RefCell<HashMap<usize, HashSet<String>>>,
@@ -52,15 +53,15 @@ pub struct Int30C {
 impl Int30C {
     pub fn new() -> Self {
         Self {
-            project_macros: RefCell::new(MacroConstantMap::new()),
+            project_macros: RefCell::new(Arc::new(MacroConstantMap::new())),
             current_macros: RefCell::new(MacroConstantMap::new()),
-            struct_field_types: RefCell::new(HashMap::new()),
+            struct_field_types: RefCell::new(Arc::new(HashMap::new())),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
-            function_summaries: RefCell::new(HashMap::new()),
-            global_writers: RefCell::new(HashMap::new()),
+            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            global_writers: RefCell::new(Arc::new(HashMap::new())),
             risky_vars_cache: RefCell::new(HashMap::new()),
-            callers: RefCell::new(HashMap::new()),
+            callers: RefCell::default(),
             param_names_cache: RefCell::new(HashMap::new()),
             pointer_facts: RefCell::new(PointerFacts::default()),
         }
@@ -211,16 +212,7 @@ impl CertRule for Int30C {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.global_writers.borrow_mut() = context.global_writers.clone();
 
-        let mut callers: HashMap<String, HashSet<String>> = HashMap::new();
-        for (caller, callees) in &context.call_graph {
-            for callee in callees {
-                callers
-                    .entry(callee.clone())
-                    .or_default()
-                    .insert(caller.clone());
-            }
-        }
-        *self.callers.borrow_mut() = callers;
+        *self.callers.borrow_mut() = context.callers.clone();
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {

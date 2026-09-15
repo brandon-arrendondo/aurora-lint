@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Arr36C {
@@ -17,7 +18,7 @@ pub struct Arr36C {
     /// how a member's type is known when its struct is declared in another
     /// file. Empty without `-d`, so it is merged with the scanned file's own
     /// declarations rather than relied on (see `collect_pointer_members`).
-    struct_field_types: RefCell<HashMap<String, HashMap<String, String>>>,
+    struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
     /// `callee name -> argument-position pairs some call site ANYWHERE in the
     /// pre-scanned project proves denote two different objects`, from the
     /// prescan. Empty without `-d`, which is what the file-local
@@ -26,15 +27,15 @@ pub struct Arr36C {
     /// `typedef struct Tag Alias;` from the prescan, `Alias -> Tag`. Without
     /// it a member reached through the alias does not resolve and falls back
     /// to naming storage (task 963).
-    struct_typedef_aliases: RefCell<HashMap<String, String>>,
+    struct_typedef_aliases: RefCell<Arc<HashMap<String, String>>>,
 }
 
 impl Arr36C {
     pub fn new() -> Self {
         Self {
-            struct_field_types: RefCell::new(HashMap::new()),
+            struct_field_types: RefCell::new(Arc::new(HashMap::new())),
             project_call_sites: RefCell::new(HashMap::new()),
-            struct_typedef_aliases: RefCell::new(HashMap::new()),
+            struct_typedef_aliases: RefCell::new(Arc::new(HashMap::new())),
         }
     }
 }
