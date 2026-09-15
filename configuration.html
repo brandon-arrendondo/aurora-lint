@@ -50,6 +50,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#manifest-file">Manifest File</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#custom-manifest-format">Custom Manifest Format</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#supported-cert-c-rules">Supported CERT C Rules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#strict-vs-relaxed-onboarding">Strict vs. Relaxed Onboarding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#tracked-but-not-implemented">Tracked but not implemented</a></li>
 </ul>
 </li>
@@ -217,6 +218,56 @@ default (the remaining 4 are tracked but not implemented — see
 </table>
 <p>For the full list, see <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code> or the rule source files
 in <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/</span></code>.</p>
+</section>
+<section id="strict-vs-relaxed-onboarding">
+<h2>Strict vs. Relaxed Onboarding<a class="headerlink" href="#strict-vs-relaxed-onboarding" title="Link to this heading"></a></h2>
+<p>Dropping aurora-lint into CI/CD against an existing codebase for the first
+time can surface a large number of findings before you have had a chance to
+triage any of them — real-world precision varies a lot by codebase (see
+<code class="docutils literal notranslate"><span class="pre">docs/tool-comparison.rst</span></code> and each project’s own
+<code class="docutils literal notranslate"><span class="pre">data/precision_audit/&lt;project&gt;/README.md</span></code> for measured figures). Two
+things help without writing a manifest at all:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--min-severity</span></code>/<code class="docutils literal notranslate"><span class="pre">--fail-on-severity</span></code> (see <a class="reference external" href="../README.md#getting-started">Getting Started</a> in the top-level README) filter what is
+printed and what fails a build, independent of the manifest.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--exclude</span></code> drops vendored code, generated files, and test harnesses
+from the scan entirely — usually the single biggest volume reduction on a
+first run.</p></li>
+</ul>
+<p>For a coarser starting point than either of those, build your own
+<strong>relaxed</strong> manifest the same way this project’s own real-world benchmark
+suite builds one per codebase (<code class="docutils literal notranslate"><span class="pre">conf/realworld/*-rules.toml</span></code> — read
+<code class="docutils literal notranslate"><span class="pre">conf/realworld/README.md</span></code> for the full discipline, summarized here):</p>
+<ol class="arabic simple">
+<li><p>Start from <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code> (the <strong>strict</strong> default —
+this is the same file aurora-lint embeds and ships) and copy it as your
+starting point, rather than writing a manifest from scratch.</p></li>
+<li><p>Disable a rule wholesale only for one of two reasons, each recorded as a
+comment on its <code class="docutils literal notranslate"><span class="pre">enabled</span> <span class="pre">=</span> <span class="pre">false</span></code> line: it is <strong>categorically
+inapplicable</strong> to your codebase (a Windows-only rule on a POSIX-only
+project, <code class="docutils literal notranslate"><span class="pre">FIO*</span></code> on a library with no file I/O), or you are
+<strong>deliberately deferring it</strong> while your team builds up triage capacity,
+with a plan to turn it back on.</p></li>
+<li><p><strong>Do not disable a rule just because it looks “advisory” or “style,” and
+do not disable one on a first impression of noise without measuring
+it first.</strong> This project shipped exactly that manifest once — thirteen
+rules turned off across seven codebases on an “advisory/style” label —
+and measuring the two codebases that kept them found six of the
+thirteen were the <em>best-precision</em> rule group in the whole suite. All
+thirteen run everywhere again. A rule that looks noisy on unfamiliar
+code is common; a rule that is actually low-value on <em>your</em> code is a
+claim worth checking against your own findings before it goes in a
+manifest, not before.</p></li>
+</ol>
+<p><strong>There is no single relaxed manifest shipped today</strong>, and that is a
+deliberate gap rather than an oversight: real-world noise is measurably
+project-dependent (that is the whole reason <code class="docutils literal notranslate"><span class="pre">conf/realworld/*.toml</span></code> files
+do not inherit from a shared base), so a one-size-fits-all “these rules are
+noisy” list would risk the exact mistake above on whichever project doesn’t
+match its assumptions. A data-driven relaxed starter, generated from
+aggregate real-world precision across this project’s own benchmark corpus
+rather than hand-picked, is tracked as a follow-up (aurora_lint task 1179’s
+companion) rather than shipped speculatively here.</p>
 </section>
 <section id="tracked-but-not-implemented">
 <h2>Tracked but not implemented<a class="headerlink" href="#tracked-but-not-implemented" title="Link to this heading"></a></h2>
