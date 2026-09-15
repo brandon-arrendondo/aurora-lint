@@ -1012,7 +1012,7 @@ impl RuleRegistry {
         registry.register(Box::new(exp07_c::Exp07C));
         registry.register(Box::new(exp08_c::Exp08C));
         registry.register(Box::new(exp09_c::Exp09C));
-        registry.register(Box::new(exp14_c::Exp14C));
+        registry.register(Box::new(exp14_c::Exp14C::default()));
         registry.register(Box::new(exp15_c::Exp15C));
         registry.register(Box::new(exp19_c::Exp19C));
         registry.register(Box::new(exp20_c::Exp20C));
@@ -1022,7 +1022,7 @@ impl RuleRegistry {
         registry.register(Box::new(exp34_c::Exp34C::new()));
         registry.register(Box::new(exp35_c::Exp35C));
         registry.register(Box::new(exp36_c::Exp36C::new()));
-        registry.register(Box::new(exp10_c::Exp10C));
+        registry.register(Box::new(exp10_c::Exp10C::new()));
         registry.register(Box::new(exp11_c::Exp11C));
         registry.register(Box::new(exp12_c::Exp12C));
         registry.register(Box::new(exp13_c::Exp13C));
@@ -1178,7 +1178,7 @@ impl RuleRegistry {
         registry.register(Box::new(pre02_c::Pre02C::new()));
         registry.register(Box::new(pre04_c::Pre04C::new()));
         registry.register(Box::new(pre30_c::Pre30C));
-        registry.register(Box::new(pre31_c::Pre31C));
+        registry.register(Box::new(pre31_c::Pre31C::new()));
         registry.register(Box::new(pre07_c::PRE07C));
         registry.register(Box::new(pre08_c::Pre08C::new()));
         registry.register(Box::new(pre09_c::Pre09C));

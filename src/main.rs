@@ -126,6 +126,15 @@ fn run() -> Result<i32> {
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
+            Arg::new("report_macro_gaps")
+                .long("report-macro-gaps")
+                .help("After the scan, report where the macro-expansion engine was blind: macro definitions it skipped (variadic, #/##, platform-dead, ambiguous or conflicting), #includes it could not resolve, and calls it could not expand or attribute. Prints a summary to stdout; --report-macro-gaps=FILE also writes every row as JSON. Never changes a finding")
+                .value_name("JSON_FILE")
+                .num_args(0..=1)
+                .default_missing_value("")
+                .require_equals(true),
+        )
+        .arg(
             Arg::new("exclude")
                 .long("exclude")
                 .help("Exclude files matching this path glob from analysis (repeatable, e.g. --exclude '**/onelua.c' --exclude 'testes/**')")
@@ -309,6 +318,9 @@ fn run() -> Result<i32> {
             eprintln!("Warning: could not query '{compiler}' for its system include directories ({reason}); its built-in headers stay out of reach.");
         }
     }
+    // Some(path) when the flag was given; the path is empty for the bare
+    // flag (summary only) and a file name when the user wants the JSON too.
+    let report_macro_gaps: Option<String> = matches.get_one::<String>("report_macro_gaps").cloned();
     let excludes: Vec<String> = matches
         .get_many::<String>("exclude")
         .map(|vals| vals.cloned().collect())
@@ -413,10 +425,12 @@ fn run() -> Result<i32> {
         load_prescan.map(|s| s.as_str()),
         compile_db.as_ref(),
         jobs,
+        report_macro_gaps.is_some(),
     )?;
 
     let mut violations = results.violations;
     let suppressed = results.suppressed;
+    let macro_gap_report = results.macro_gaps;
 
     // Post-analysis filtering
     if let Some(ref min_sev) = min_severity {
@@ -461,6 +475,24 @@ fn run() -> Result<i32> {
         violations.len(),
         suppressed.len()
     );
+
+    // The macro-gap report goes after the findings so a CI log reads
+    // "here is what we found, and here is where we could not look".
+    if let (Some(json_path), Some(report)) = (&report_macro_gaps, &macro_gap_report) {
+        const ROWS_PER_KIND: usize = 25;
+        println!();
+        print!("{}", report.render_text(ROWS_PER_KIND));
+        if !json_path.is_empty() {
+            let json = serde_json::to_string_pretty(report)?;
+            fs::write(json_path, json)
+                .with_context(|| format!("Failed to write macro-gap report to {json_path}"))?;
+            println!(
+                "Wrote macro-gap report ({} rows) to: {}",
+                report.gaps.len(),
+                json_path
+            );
+        }
+    }
 
     // Determine exit code (only unsuppressed violations count)
     if fail_on_violation && !violations.is_empty() {
