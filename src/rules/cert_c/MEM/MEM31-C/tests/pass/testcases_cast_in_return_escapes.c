@@ -54,3 +54,14 @@ void *return_conditional(int ok)
 	}
 	return ok ? p : NULL;
 }
+
+/* valkey zmalloc.c: the block is handed out through an offset into it. */
+#define PREFIX_SIZE 16
+void *return_offset_into_block(size_t size)
+{
+	void *newptr = malloc(size + PREFIX_SIZE);
+	if (newptr == NULL)
+		return NULL;
+	*((size_t *) newptr) = size;
+	return (char *) newptr + PREFIX_SIZE;
+}

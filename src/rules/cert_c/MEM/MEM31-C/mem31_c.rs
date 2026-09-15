@@ -2845,6 +2845,21 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
             return;
         }
+        // `return (char *) newptr + PREFIX_SIZE;` (valkey's zmalloc) hands
+        // out the block through an offset into it; the caller frees it
+        // through the matching subtraction.
+        if expr.kind() == "binary_expression"
+            && expr
+                .child_by_field_name("operator")
+                .is_some_and(|op| matches!(op.kind(), "+" | "-"))
+        {
+            for field in ["left", "right"] {
+                if let Some(operand) = expr.child_by_field_name(field) {
+                    self.escape_returned_block(&operand, source);
+                }
+            }
+            return;
+        }
         let Some((returned, false)) = strip_call_argument(*expr) else {
             return;
         };
