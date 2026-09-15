@@ -52,6 +52,17 @@ fn strip_call_argument(arg: Node) -> Option<(Node, bool)> {
     None
 }
 
+/// A plain `=` assignment, as opposed to a compound one (`+=`, `>>=`, ...).
+/// Only a plain assignment replaces what the name holds; a compound one
+/// adjusts the value already there, so a pointer that was freed is still the
+/// pointer that was freed.
+fn is_plain_assignment(node: &Node, source: &str) -> bool {
+    node.child_by_field_name("operator")
+        .map(|op| ast_utils::get_node_text_owned(&op, source))
+        .as_deref()
+        == Some("=")
+}
+
 pub struct Mem31C {
     function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
     value_only_globals: RefCell<Arc<HashSet<String>>>,
@@ -1950,31 +1961,58 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             } else if right.kind() == "null"
                 || ast_utils::get_node_text_owned(&right, source) == "NULL"
             {
-                // Setting to NULL doesn't free memory, potential leak if not freed before
-                // If the variable was allocated and not freed, it's a leak
-                if was_allocated && !self.freed_memory.contains_key(&var_name) {
-                    if let Some(old_alloc) = self.allocated_memory.get(&var_name) {
-                        let leaked_name =
-                            format!("{}@{}:{}", var_name, old_alloc.line, old_alloc.column);
-                        self.allocated_memory.insert(leaked_name, old_alloc.clone());
-                    }
-                }
-                // Either way the name now holds NULL, not an allocation: an
-                // unfreed one was just re-filed under its `name@line` alias
-                // above, a freed one is done with. Drop the name from every
-                // set, or the end-of-function sweep reads the still-listed
-                // allocation minus its freed mark as a leak. A later
+                // The name now holds NULL, not an allocation. A later
                 // `free(p)` is `free(NULL)`, which does nothing, so it is
                 // neither a double free nor a leak site -- `free(p); p =
                 // NULL;` is the idiom this rule's own suggestion recommends,
                 // and it read as a double free at the next `if (p) free(p);`
                 // for as long as the freed mark survived the assignment.
-                self.allocated_memory.remove(&var_name);
+                self.rebind_name(&var_name, was_allocated, true);
+                self.null_variables.insert(var_name);
+            } else if is_plain_assignment(node, source) {
+                // Any other right-hand side: an allocator wrapper this rule
+                // does not recognize (`login = curlx_strdup(tok)`), a field
+                // read (`writer = data->req.writer_stack`), a subscript. Only
+                // the three shapes above used to clear the freed mark, so
+                // `free(p); p = wrapper(); free(p);` reported a double free
+                // whenever the wrapper missed `is_allocation_call`. curl's
+                // `curlx_strdup` misses it by an underscore (the heuristic
+                // tests a `_dup` suffix) and is a macro, so no summary can
+                // rescue it either -- clearing on the assignment itself is
+                // the property that actually holds, rather than one more
+                // name. Compound assignment is excluded: `p += n` adjusts the
+                // pointer that was freed rather than replacing it.
+                //
+                // The old block is NOT re-filed as leaked here, unlike the
+                // NULL case: `p = NULL` provably drops it, whereas an opaque
+                // right-hand side may well have consumed it -- `tmp =
+                // os_realloc_array(tmp, n)` is the common shape, and re-filing
+                // reported the reallocated block as a leak at the line that
+                // grew it. Whether a reassignment through an unreadable callee
+                // leaks belongs to the ownership-escape work, not here.
                 self.freed_memory.remove(&var_name);
                 self.maybe_freed.remove(&var_name);
-                self.null_variables.insert(var_name);
             }
         }
+    }
+
+    /// The name is being given a new value, so every fact this rule holds
+    /// about the pointer it used to hold stops applying to the name: whatever
+    /// it holds now, it is not the block that was allocated or freed under
+    /// it. An allocation the name still owned is re-filed under its
+    /// `name@line:column` alias when `refile_leak` says the old block is
+    /// provably dropped rather than possibly consumed by whatever produced
+    /// the new value, so the end-of-function sweep still reports it.
+    fn rebind_name(&mut self, var_name: &str, was_allocated: bool, refile_leak: bool) {
+        if refile_leak && was_allocated && !self.freed_memory.contains_key(var_name) {
+            if let Some(old_alloc) = self.allocated_memory.get(var_name).cloned() {
+                let leaked_name = format!("{}@{}:{}", var_name, old_alloc.line, old_alloc.column);
+                self.allocated_memory.insert(leaked_name, old_alloc);
+            }
+        }
+        self.allocated_memory.remove(var_name);
+        self.freed_memory.remove(var_name);
+        self.maybe_freed.remove(var_name);
     }
 
     fn process_call(&mut self, node: &Node, source: &str) {
