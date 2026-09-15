@@ -40,6 +40,9 @@ struct FilePrescanResult {
     /// `function -> restrict-qualified parameter indices` for the functions
     /// this file defines or declares with one (task 1171).
     restrict_params: HashMap<String, Vec<usize>>,
+    /// `function -> parameter indices with a documented non-NULL
+    /// precondition` for the functions this file documents (task 1171).
+    documented_nonnull_params: HashMap<String, Vec<usize>>,
     /// The file this result came from, header or not (`source_path` is
     /// `.c`-only by design), for naming the origin of a macro definition.
     display_path: String,
@@ -95,6 +98,7 @@ impl FilePrescanResult {
             function_macros: HashMap::new(),
             macro_definition_audit: Default::default(),
             restrict_params: HashMap::new(),
+            documented_nonnull_params: HashMap::new(),
             display_path: String::new(),
             struct_field_types: HashMap::new(),
             struct_typedef_aliases: HashMap::new(),
@@ -173,6 +177,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         result.macro_definition_audit =
             crate::analyze::macro_gaps::audit_definitions(&source, &file_path.to_string_lossy());
         result.restrict_params = ast_utils::restrict_parameter_indices(&root, &source);
+        result.documented_nonnull_params = ast_utils::documented_nonnull_parameters(&root, &source);
 
         result.function_summaries = function_summary::compute_summaries(
             &root,
@@ -357,6 +362,7 @@ fn prescan_file_list(
     let mut function_macro_origin: HashMap<String, String> = HashMap::new();
     let mut macro_gaps: Vec<crate::analyze::macro_gaps::MacroGap> = Vec::new();
     let mut restrict_params: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut documented_nonnull_params: HashMap<String, Vec<usize>> = HashMap::new();
     let mut struct_field_types: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut struct_typedef_aliases: HashMap<String, String> = HashMap::new();
     let mut typedef_types: HashMap<String, String> = HashMap::new();
@@ -466,6 +472,7 @@ fn prescan_file_list(
         for (name, indices) in r.restrict_params {
             restrict_params.entry(name).or_insert(indices);
         }
+        merge_documented_params(&mut documented_nonnull_params, r.documented_nonnull_params);
         struct_field_types.extend(r.struct_field_types);
         struct_typedef_aliases.extend(r.struct_typedef_aliases);
         typedef_types.extend(r.typedef_types);
@@ -716,6 +723,7 @@ fn prescan_file_list(
         unresolved_project_headers: HashSet::new(),
         macro_gaps,
         restrict_params,
+        documented_nonnull_params,
         concurrency_reachable,
         value_only_globals,
     })
@@ -827,6 +835,40 @@ fn collect_header_declarations(node: &Node, source: &str, names: &mut HashSet<St
                     collect_header_declarations(&child, source, names);
                 }
                 _ => {}
+            }
+        }
+    }
+}
+
+/// Union `more` into `into`: a parameter documented as non-NULL on either the
+/// prototype or the definition is documented.
+fn merge_documented_params(
+    into: &mut HashMap<String, Vec<usize>>,
+    more: HashMap<String, Vec<usize>>,
+) {
+    for (name, indices) in more {
+        let entry = into.entry(name).or_default();
+        for i in indices {
+            if !entry.contains(&i) {
+                entry.push(i);
+            }
+        }
+    }
+}
+
+/// Seed every parameter with a documented non-NULL precondition as
+/// `NotNull` for the null-state analysis of its function, overriding the
+/// call-site vote. The vote observes the callers in the scan set; the doc
+/// comment is the contract every caller, seen or not, signed up to. Run
+/// after the pre-scan and after `resolve_includes`, since header prototypes
+/// carry most of the documentation (task 1171).
+pub fn apply_documented_preconditions(context: &mut super::context::ProjectContext) {
+    for (name, indices) in &context.documented_nonnull_params {
+        if let Some(summary) = context.function_summaries.get_mut(name) {
+            for &idx in indices {
+                summary
+                    .callsite_param_null_states
+                    .insert(idx, NullState::NotNull);
             }
         }
     }
@@ -5352,6 +5394,10 @@ pub fn resolve_includes(
                 for (name, indices) in ast_utils::restrict_parameter_indices(&root, &hsource) {
                     context.restrict_params.entry(name).or_insert(indices);
                 }
+                merge_documented_params(
+                    &mut context.documented_nonnull_params,
+                    ast_utils::documented_nonnull_parameters(&root, &hsource),
+                );
                 for (name, m) in header_function_macros {
                     match context.function_macros.entry(name) {
                         std::collections::hash_map::Entry::Vacant(e) => {
