@@ -36,6 +36,7 @@ struct FilePrescanResult {
     struct_typedef_aliases: HashMap<String, String>,
     typedef_types: HashMap<String, String>,
     function_pointer_typedef_names: HashSet<String>,
+    pointer_typedef_names: HashSet<String>,
     packed_structs: HashSet<String>,
     noreturn_functions: HashSet<String>,
     packed_struct_candidates: Vec<(String, String)>,
@@ -86,6 +87,7 @@ impl FilePrescanResult {
             struct_typedef_aliases: HashMap::new(),
             typedef_types: HashMap::new(),
             function_pointer_typedef_names: HashSet::new(),
+            pointer_typedef_names: HashSet::new(),
             packed_structs: HashSet::new(),
             noreturn_functions: HashSet::new(),
             packed_struct_candidates: Vec::new(),
@@ -180,6 +182,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
             &source,
             &mut result.function_pointer_typedef_names,
         );
+        collect_pointer_typedef_names(&root, &source, &mut result.pointer_typedef_names);
         collect_packed_structs(
             &root,
             &source,
@@ -337,6 +340,7 @@ fn prescan_file_list(
     let mut struct_typedef_aliases: HashMap<String, String> = HashMap::new();
     let mut typedef_types: HashMap<String, String> = HashMap::new();
     let mut function_pointer_typedef_names: HashSet<String> = HashSet::new();
+    let mut pointer_typedef_names: HashSet<String> = HashSet::new();
     let mut packed_structs: HashSet<String> = HashSet::new();
     let mut noreturn_functions: HashSet<String> = HashSet::new();
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
@@ -418,6 +422,7 @@ fn prescan_file_list(
         struct_typedef_aliases.extend(r.struct_typedef_aliases);
         typedef_types.extend(r.typedef_types);
         function_pointer_typedef_names.extend(r.function_pointer_typedef_names);
+        pointer_typedef_names.extend(r.pointer_typedef_names);
         packed_structs.extend(r.packed_structs);
         noreturn_functions.extend(r.noreturn_functions);
         packed_struct_candidates.extend(r.packed_struct_candidates);
@@ -650,6 +655,7 @@ fn prescan_file_list(
         struct_typedef_aliases,
         typedef_types,
         function_pointer_typedef_names,
+        pointer_typedef_names,
         packed_structs,
         noreturn_functions,
         defined_macro_names,
@@ -4883,6 +4889,37 @@ fn collect_function_pointer_typedef_names(node: &Node, source: &str, names: &mut
                 | "preproc_elif"
                 | "linkage_specification" => {
                     collect_function_pointer_typedef_names(&child, source, names);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Names of typedefs that hide a pointer in DCL05-C's sense, one entry per
+/// `*Name` declarator (`typedef struct tagPOINT { ... } POINT, *LPPOINT;`
+/// records `LPPOINT` only). Same traversal as
+/// `collect_function_pointer_typedef_names`; the classification is the
+/// rule's own, shared through `declarator_utils::pointer_typedef_names_in`
+/// so the prescan and the in-file check can never disagree about what a
+/// pointer typedef is (task 1188).
+fn collect_pointer_typedef_names(node: &Node, source: &str, names: &mut HashSet<String>) {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            match child.kind() {
+                "type_definition" => {
+                    names.extend(
+                        crate::utility::cert_c::declarator_utils::pointer_typedef_names_in(
+                            &child, source,
+                        ),
+                    );
+                }
+                "preproc_ifdef"
+                | "preproc_if"
+                | "preproc_else"
+                | "preproc_elif"
+                | "linkage_specification" => {
+                    collect_pointer_typedef_names(&child, source, names);
                 }
                 _ => {}
             }

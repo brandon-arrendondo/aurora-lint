@@ -216,6 +216,13 @@ pub struct ProjectContext {
     /// task 736's shared typedef-chain resolver).
     #[serde(default)]
     pub function_pointer_typedef_names: HashSet<String>,
+    /// Names of typedefs that hide a pointer in DCL05-C's sense -- a pointer
+    /// in the declarator chain, not a function pointer, not a pointer to
+    /// const (`declarator_utils::pointer_typedef_names_in`). The typedef is
+    /// usually in a header; the `const LPPOINT pt` parameter that the rule
+    /// is about is in a .c file that only names the alias (task 1188).
+    #[serde(default)]
+    pub pointer_typedef_names: HashSet<String>,
 }
 
 impl ProjectContext {
