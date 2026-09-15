@@ -135,6 +135,20 @@ pub struct ProjectContext {
     /// produces part of it" (task 580).
     #[serde(default)]
     pub unresolved_project_headers: HashSet<String>,
+    /// Every place the macro-expansion engine declined or failed to see a
+    /// definition while building this context — skipped variadic / `#`/`##`
+    /// macros, platform-dead and ambiguous definitions, cross-file conflicts,
+    /// unresolvable `#include`s. Recorded unconditionally (it is a by-product
+    /// of scans that already run) and surfaced only by `--report-macro-gaps`;
+    /// nothing in analysis reads it (task 1180).
+    #[serde(default)]
+    pub macro_gaps: Vec<super::macro_gaps::MacroGap>,
+    /// `function name -> indices of its restrict-qualified parameters`, for
+    /// every function any scanned file defines or declares with at least one.
+    /// First definition seen wins. Lets EXP43-C confine its aliasing check
+    /// to callees whose contract actually forbids aliasing (task 1171).
+    #[serde(default)]
+    pub restrict_params: HashMap<String, Vec<usize>>,
     /// Function names reachable (including the root itself) from a real
     /// concurrent-execution root: an ISR handler, a thread-spawn entry
     /// point (`pthread_create`/`thrd_create`/`CreateThread`, direct or
