@@ -9,7 +9,7 @@ import re
 import subprocess
 import tempfile
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -123,17 +123,82 @@ def _cwe_shard_dirs(cwe_dir: Path) -> list[Path] | None:
 # would race on the same `cwe_scans` row (UNIQUE(run_id, cwe_dir_name)), so
 # writing is deferred to the coordinator after `merge_shards`.
 
+def _prescan_args(cwe_dir_str: str, compile_db: str | None) -> list[str]:
+    """The cross-file context arguments every scan of a CWE shares: the whole
+    CWE dir plus Juliet's support library, and the compile database if the
+    run has one."""
+    args = [
+        "-d", cwe_dir_str,
+        "-d", str(JULIET_BASE.parent / "testcasesupport"),
+    ]
+    if compile_db:
+        args.extend(["--compile-commands", compile_db])
+    return args
+
+
+def _warm_prescan(cwe_dir_name: str, cwe_dir_str: str, manifest: str,
+                  cache_path: str, compile_db: str | None = None) -> dict:
+    """Build a sharded CWE's cross-file context once and save it for its
+    shards to load (`--save-prescan`).
+
+    Runs in a worker process. The scan target is an empty directory, so the
+    process does nothing but the prescan and the save. The manifest is the
+    shards' own: whether any enabled rule needs VRA changes what the prescan
+    computes, so a cache built under a different manifest would not be the
+    context a shard's live prescan builds.
+    """
+    start_time = time.monotonic()
+    empty_dir = tempfile.mkdtemp(prefix=f"{cwe_dir_name}_warm_")
+    try:
+        cmd = [
+            str(SQC_BIN), empty_dir,
+            "-m", manifest,
+            *_prescan_args(cwe_dir_str, compile_db),
+            "--save-prescan", cache_path,
+            "-e", os.devnull,
+            "-j", "1",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, timeout=3600)
+        duration_s = round(time.monotonic() - start_time, 1)
+        if proc.returncode != 0 or not os.path.isfile(cache_path):
+            return {
+                "cwe_dir_name": cwe_dir_name, "status": "failed",
+                "duration_s": duration_s,
+                "error": proc.stderr.decode(errors="replace")[:500]
+                or "prescan cache was not written",
+            }
+        return {"cwe_dir_name": cwe_dir_name, "status": "completed",
+                "duration_s": duration_s}
+    except subprocess.TimeoutExpired:
+        return {"cwe_dir_name": cwe_dir_name, "status": "failed",
+                "duration_s": round(time.monotonic() - start_time, 1),
+                "error": "timeout (3600s)"}
+    except Exception as e:
+        return {"cwe_dir_name": cwe_dir_name, "status": "failed",
+                "duration_s": round(time.monotonic() - start_time, 1),
+                "error": str(e)[:500]}
+    finally:
+        try:
+            os.rmdir(empty_dir)
+        except OSError:
+            pass
+
+
 def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
                     shard_dir_str: str, manifest: str, scan_id: int,
-                    keep_csv: bool = False, compile_db: str | None = None) -> dict:
+                    keep_csv: bool = False, compile_db: str | None = None,
+                    prescan_cache: str | None = None) -> dict:
     """Scan one shard: run sqc, parse its own CSV into a raw ShardPartial.
 
-    Runs in a worker process. Every shard prescans the *whole* CWE dir
-    (`-d cwe_dir`) so cross-file resolution matches the monolithic path
-    exactly, even though it only scans (PATH=) its own shard directory --
-    the measured prescan cost is ~0.8% of a big CWE's total sqc time
-    (task 388 §6.1), so repeating it per shard is cheap enough to skip the
-    save/load-prescan warm-step complexity entirely.
+    Runs in a worker process. A shard of a split CWE loads the context its
+    CWE's `_warm_prescan` saved (`--load-prescan`), so cross-file resolution
+    matches the monolithic path exactly while the whole-CWE prescan runs
+    once per CWE rather than once per shard. Task 388 measured that prescan
+    at ~0.8% of a big CWE's time and repeated it per shard to skip this
+    warm step; once the per-file scan got an order of magnitude cheaper
+    (the Juliet wall-clock regression task and its follow-ups), the repeated
+    prescan was most of a shard's time -- 11s of a 12s CWE-78 shard.
+    An unsplit CWE (no cache) still prescans its own directory (`-d`).
     """
     cwe_dir = Path(cwe_dir_str)
     shard_dir = Path(shard_dir_str)
@@ -145,13 +210,12 @@ def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
         cmd = [
             str(SQC_BIN), str(shard_dir),
             "-m", manifest,
-            "-d", str(cwe_dir),
-            "-d", str(JULIET_BASE.parent / "testcasesupport"),
-            "-e", csv_path,
-            "-j", "1",
         ]
-        if compile_db:
-            cmd.extend(["--compile-commands", compile_db])
+        if prescan_cache:
+            cmd.extend(["--load-prescan", prescan_cache])
+        else:
+            cmd.extend(_prescan_args(str(cwe_dir), compile_db))
+        cmd.extend(["-e", csv_path, "-j", "1"])
         proc = subprocess.run(cmd, capture_output=True, timeout=3600)
         duration_s = round(time.monotonic() - start_time, 1)
 
@@ -194,6 +258,223 @@ def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
                 os.unlink(csv_path)
             except OSError:
                 pass
+
+
+def _finish_cwe(db: BenchDB, scan_map: dict, cwe_dir_name: str,
+                shard_results: list[dict], warm_duration_s: float) -> str:
+    """Merge a CWE's landed shards and write its rows once. Returns the
+    DONE line's payload."""
+    scan_id = scan_map[cwe_dir_name]
+    cwe_id = _extract_cwe_id(cwe_dir_name)
+    analysis = merge_shards(
+        cwe_id, cwe_dir_name, [r["partial"] for r in shard_results])
+
+    db.insert_violations(analysis.violations)
+    db.insert_cwe_metrics({
+        "cwe_scan_id": scan_id,
+        "tp_count": analysis.tp_count,
+        "fp_count": analysis.fp_count,
+        "tp_rate_pct": analysis.tp_rate_pct,
+        "flaw_lines_total": analysis.flaw_lines_total,
+        "flaw_lines_detected": analysis.flaw_lines_detected,
+        "flaw_detection_rate_pct": analysis.flaw_detection_rate_pct,
+        "cwe_matched_tp": analysis.cwe_matched_tp,
+        "cwe_matched_fp": analysis.cwe_matched_fp,
+        "noise_count": analysis.noise_count,
+        "noise_ratio": analysis.noise_ratio,
+        "per_file_detected": analysis.per_file_detected,
+        "per_file_total": analysis.per_file_total,
+        "per_file_rate": analysis.per_file_rate,
+        "flaw_hit_detected": analysis.flaw_hit_detected,
+        "flaw_hit_total": analysis.flaw_hit_total,
+        "flaw_hit_rate": analysis.flaw_hit_rate,
+    })
+    rule_rows = [
+        {
+            "cwe_scan_id": scan_id, "rule_id": rule_id,
+            "tp_count": counts["tp"], "fp_count": counts["fp"],
+            "flaw_line_count": counts["flaw"],
+            "is_cwe_matched": counts["is_cwe_matched"],
+        }
+        for rule_id, counts in analysis.rule_breakdown.items()
+    ]
+    db.insert_rule_breakdown(rule_rows)
+
+    # Sum, not max: this CWE's stored duration_s becomes summed subprocess
+    # time across its shards plus the warm prescan step, same as how the
+    # run-level analysis_s already exceeds wall_s under CWE-level
+    # parallelism (bench/db.py sums this same field across CWEs). A sharded
+    # CWE's *wall*-clock benefit shows up in the run's total wall_s, not in
+    # its own duration_s -- don't read a flat/higher duration_s here as
+    # "sharding didn't help" (task 388). With the shared cache the
+    # whole-CWE prescan is counted once per CWE rather than once per shard,
+    # which is a real drop in the work done, not an accounting change.
+    total_duration_s = round(
+        warm_duration_s + sum(r["duration_s"] for r in shard_results), 1)
+    total_violations = sum(r["violation_count"] for r in shard_results)
+    db.update_cwe_scan(scan_id, status="completed",
+                       violation_count=total_violations,
+                       duration_s=total_duration_s,
+                       file_count=analysis.files_analyzed)
+
+    shard_note = f" ({len(shard_results)} shards)" if len(shard_results) > 1 else ""
+    return (f"{cwe_dir_name}{shard_note} | {total_duration_s}s | "
+            f"{total_violations} violations | {analysis.files_analyzed} files")
+
+
+def _build_submissions(work_items: list[tuple]) -> tuple[list[dict], dict]:
+    """Expand the work list into pool submissions, largest first.
+
+    Returns the submissions and, per CWE, how many of them it has."""
+    # Expand each CWE into 1+ shard submissions (task 388): a large CWE
+    # (>= SHARD_MIN_FILES, with sNN subdirs) becomes one submission per sNN
+    # dir; everything else stays a single submission for the whole CWE dir.
+    # Sharded or not, every submission is scheduled the same way — LPT by
+    # its own file count — so a big CWE's shards compete fairly for pool
+    # slots against smaller CWEs instead of being bound to one slot each.
+    submissions = []
+    shard_counts = {}  # cwe_dir_name -> total shard submissions expected
+
+    for cwe_dir_name, cwe_id, manifest, file_count in work_items:
+        cwe_dir = JULIET_BASE / cwe_dir_name
+        shard_dirs = _cwe_shard_dirs(cwe_dir) if file_count >= SHARD_MIN_FILES else None
+        if shard_dirs:
+            shard_counts[cwe_dir_name] = len(shard_dirs)
+            for shard_dir in shard_dirs:
+                shard_file_count = sum(1 for _ in shard_dir.glob("*.c"))
+                submissions.append({
+                    "cwe_dir_name": cwe_dir_name, "cwe_id": cwe_id,
+                    "cwe_dir": cwe_dir, "shard_dir": shard_dir,
+                    "manifest": manifest, "sort_key": shard_file_count,
+                })
+        else:
+            shard_counts[cwe_dir_name] = 1
+            submissions.append({
+                "cwe_dir_name": cwe_dir_name, "cwe_id": cwe_id,
+                "cwe_dir": cwe_dir, "shard_dir": cwe_dir,
+                "manifest": manifest, "sort_key": file_count,
+            })
+
+    submissions.sort(key=lambda s: s["sort_key"], reverse=True)
+    return submissions, shard_counts
+
+
+
+def _run_submissions(db: BenchDB, run_id: str, scan_map: dict, work_items: list[tuple],
+                     submissions: list[dict], shard_counts: dict, jobs: int,
+                     keep_csv: bool, compile_db: str | None,
+                     already_done: int, total_cwes: int) -> tuple[int, int]:
+    """Drive the worker pool until every submission has landed and every
+    CWE's rows are written. Returns (completed, failed) CWE counts."""
+    # A split CWE's shards load one shared prescan cache, built by a warm
+    # submission that must land before its shards are submitted. Warm steps
+    # go into the pool first (largest CWE first, like everything else) and
+    # the unsplit CWEs fill the remaining slots meanwhile; each CWE's shards
+    # are submitted the moment its warm step returns.
+    cache_dir = tempfile.mkdtemp(prefix=f"{run_id}_prescan_")
+    warm_items = []  # (cwe_dir_name, cwe_dir, manifest), largest first
+    for cwe_dir_name, cwe_id, manifest, file_count in work_items:
+        if shard_counts[cwe_dir_name] > 1:
+            warm_items.append((cwe_dir_name, JULIET_BASE / cwe_dir_name, manifest))
+    prescan_caches = {
+        name: os.path.join(cache_dir, f"{name}.prescan")
+        for name, _, _ in warm_items
+    }
+
+    def _discard_cache(cwe_dir_name: str) -> None:
+        cache = prescan_caches.get(cwe_dir_name)
+        if cache:
+            try:
+                os.unlink(cache)
+            except OSError:
+                pass
+
+    # Run in parallel
+    completed = 0
+    failed = 0
+    pending = {}  # cwe_dir_name -> [shard result dict, ...], until all land
+    warm_duration = {}  # cwe_dir_name -> the warm step's subprocess seconds
+    shard_failed = set()  # cwe_dir_name already marked failed; drop late siblings
+
+    def _fail_cwe(cwe_dir_name: str, detail: str) -> None:
+        nonlocal failed
+        shard_failed.add(cwe_dir_name)
+        pending.pop(cwe_dir_name, None)
+        _discard_cache(cwe_dir_name)
+        failed += 1
+        db.update_cwe_scan(scan_map[cwe_dir_name], status="failed")
+        print(f"FAIL: {cwe_dir_name} | {detail}")
+
+    with ProcessPoolExecutor(max_workers=jobs) as executor:
+        futures = {}  # future -> ("warm" | "shard", cwe_dir_name)
+
+        def _submit_shard(sub: dict) -> None:
+            scan_id = scan_map[sub["cwe_dir_name"]]
+            future = executor.submit(
+                _scan_one_shard, sub["cwe_dir_name"], sub["cwe_id"],
+                str(sub["cwe_dir"]), str(sub["shard_dir"]), sub["manifest"],
+                scan_id, keep_csv, compile_db,
+                prescan_caches.get(sub["cwe_dir_name"]),
+            )
+            futures[future] = ("shard", sub["cwe_dir_name"])
+
+        for cwe_dir_name, cwe_dir, manifest in warm_items:
+            future = executor.submit(
+                _warm_prescan, cwe_dir_name, str(cwe_dir), manifest,
+                prescan_caches[cwe_dir_name], compile_db,
+            )
+            futures[future] = ("warm", cwe_dir_name)
+        for sub in submissions:
+            if sub["cwe_dir_name"] not in prescan_caches:
+                _submit_shard(sub)
+
+        while futures:
+            done, _ = wait(list(futures), return_when=FIRST_COMPLETED)
+            for future in done:
+                kind, cwe_dir_name = futures.pop(future)
+                if cwe_dir_name in shard_failed:
+                    continue  # sibling of an already-failed CWE; drop it
+
+                try:
+                    result = future.result()
+                except Exception as e:
+                    _fail_cwe(cwe_dir_name, str(e))
+                    continue
+
+                if kind == "warm":
+                    if result["status"] != "completed":
+                        _fail_cwe(cwe_dir_name,
+                                  f"prescan | {result.get('error', 'unknown')}")
+                        continue
+                    warm_duration[cwe_dir_name] = result["duration_s"]
+                    for sub in submissions:
+                        if sub["cwe_dir_name"] == cwe_dir_name:
+                            _submit_shard(sub)
+                    continue
+
+                if result["status"] != "completed":
+                    _fail_cwe(cwe_dir_name,
+                              f"({result['shard_name']}) {result.get('error', 'unknown')}")
+                    continue
+
+                pending.setdefault(cwe_dir_name, []).append(result)
+                if len(pending[cwe_dir_name]) < shard_counts[cwe_dir_name]:
+                    continue  # more shards still in flight for this CWE
+
+                # All shards for this CWE have landed — merge and write once.
+                shard_results = pending.pop(cwe_dir_name)
+                _discard_cache(cwe_dir_name)
+                note = _finish_cwe(db, scan_map, cwe_dir_name, shard_results,
+                                   warm_duration.get(cwe_dir_name, 0.0))
+                completed += 1
+                print(f"DONE [{completed + already_done}/{total_cwes}]: {note}")
+
+    try:
+        os.rmdir(cache_dir)
+    except OSError:
+        pass
+
+    return completed, failed
 
 
 # ── Main runner ───────────────────────────────────────────────────────────────
@@ -297,139 +578,11 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     print(f"CWEs: {len(work_items)} to scan, {len(completed_cwes)} already done | Jobs: {jobs}")
     print(f"{'='*70}")
 
-    # Expand each CWE into 1+ shard submissions (task 388): a large CWE
-    # (>= SHARD_MIN_FILES, with sNN subdirs) becomes one submission per sNN
-    # dir; everything else stays a single submission for the whole CWE dir.
-    # Sharded or not, every submission is scheduled the same way — LPT by
-    # its own file count — so a big CWE's shards compete fairly for pool
-    # slots against smaller CWEs instead of being bound to one slot each.
-    submissions = []
-    shard_counts = {}  # cwe_dir_name -> total shard submissions expected
-
-    for cwe_dir_name, cwe_id, manifest, file_count in work_items:
-        cwe_dir = JULIET_BASE / cwe_dir_name
-        shard_dirs = _cwe_shard_dirs(cwe_dir) if file_count >= SHARD_MIN_FILES else None
-        if shard_dirs:
-            shard_counts[cwe_dir_name] = len(shard_dirs)
-            for shard_dir in shard_dirs:
-                shard_file_count = sum(1 for _ in shard_dir.glob("*.c"))
-                submissions.append({
-                    "cwe_dir_name": cwe_dir_name, "cwe_id": cwe_id,
-                    "cwe_dir": cwe_dir, "shard_dir": shard_dir,
-                    "manifest": manifest, "sort_key": shard_file_count,
-                })
-        else:
-            shard_counts[cwe_dir_name] = 1
-            submissions.append({
-                "cwe_dir_name": cwe_dir_name, "cwe_id": cwe_id,
-                "cwe_dir": cwe_dir, "shard_dir": cwe_dir,
-                "manifest": manifest, "sort_key": file_count,
-            })
-
-    submissions.sort(key=lambda s: s["sort_key"], reverse=True)
-
-    # Run in parallel
-    completed = 0
-    failed = 0
-    pending = {}  # cwe_dir_name -> [shard result dict, ...], until all land
-    shard_failed = set()  # cwe_dir_name already marked failed; drop late siblings
-
-    with ProcessPoolExecutor(max_workers=jobs) as executor:
-        futures = {}
-        for sub in submissions:
-            scan_id = scan_map[sub["cwe_dir_name"]]
-            future = executor.submit(
-                _scan_one_shard, sub["cwe_dir_name"], sub["cwe_id"],
-                str(sub["cwe_dir"]), str(sub["shard_dir"]), sub["manifest"],
-                scan_id, keep_csv, compile_db,
-            )
-            futures[future] = sub["cwe_dir_name"]
-
-        for future in as_completed(futures):
-            cwe_dir_name = futures[future]
-            if cwe_dir_name in shard_failed:
-                continue  # sibling of an already-failed CWE; drop it
-
-            try:
-                result = future.result()
-            except Exception as e:
-                shard_failed.add(cwe_dir_name)
-                pending.pop(cwe_dir_name, None)
-                failed += 1
-                db.update_cwe_scan(scan_map[cwe_dir_name], status="failed")
-                print(f"FAIL: {cwe_dir_name} | {e}")
-                continue
-
-            if result["status"] != "completed":
-                shard_failed.add(cwe_dir_name)
-                pending.pop(cwe_dir_name, None)
-                failed += 1
-                db.update_cwe_scan(scan_map[cwe_dir_name], status="failed")
-                print(f"FAIL: {cwe_dir_name} ({result['shard_name']}) | "
-                      f"{result.get('error', 'unknown')}")
-                continue
-
-            pending.setdefault(cwe_dir_name, []).append(result)
-            if len(pending[cwe_dir_name]) < shard_counts[cwe_dir_name]:
-                continue  # more shards still in flight for this CWE
-
-            # All shards for this CWE have landed — merge and write once.
-            shard_results = pending.pop(cwe_dir_name)
-            scan_id = scan_map[cwe_dir_name]
-            cwe_id = _extract_cwe_id(cwe_dir_name)
-            analysis = merge_shards(
-                cwe_id, cwe_dir_name, [r["partial"] for r in shard_results])
-
-            db.insert_violations(analysis.violations)
-            db.insert_cwe_metrics({
-                "cwe_scan_id": scan_id,
-                "tp_count": analysis.tp_count,
-                "fp_count": analysis.fp_count,
-                "tp_rate_pct": analysis.tp_rate_pct,
-                "flaw_lines_total": analysis.flaw_lines_total,
-                "flaw_lines_detected": analysis.flaw_lines_detected,
-                "flaw_detection_rate_pct": analysis.flaw_detection_rate_pct,
-                "cwe_matched_tp": analysis.cwe_matched_tp,
-                "cwe_matched_fp": analysis.cwe_matched_fp,
-                "noise_count": analysis.noise_count,
-                "noise_ratio": analysis.noise_ratio,
-                "per_file_detected": analysis.per_file_detected,
-                "per_file_total": analysis.per_file_total,
-                "per_file_rate": analysis.per_file_rate,
-                "flaw_hit_detected": analysis.flaw_hit_detected,
-                "flaw_hit_total": analysis.flaw_hit_total,
-                "flaw_hit_rate": analysis.flaw_hit_rate,
-            })
-            rule_rows = [
-                {
-                    "cwe_scan_id": scan_id, "rule_id": rule_id,
-                    "tp_count": counts["tp"], "fp_count": counts["fp"],
-                    "flaw_line_count": counts["flaw"],
-                    "is_cwe_matched": counts["is_cwe_matched"],
-                }
-                for rule_id, counts in analysis.rule_breakdown.items()
-            ]
-            db.insert_rule_breakdown(rule_rows)
-
-            # Sum, not max: this CWE's stored duration_s becomes summed
-            # subprocess time across its shards, same as how the run-level
-            # analysis_s already exceeds wall_s under CWE-level parallelism
-            # (bench/db.py:642 sums this same field across CWEs). A sharded
-            # CWE's *wall*-clock benefit shows up in the run's total wall_s,
-            # not in its own duration_s — don't read a flat/higher duration_s
-            # here as "sharding didn't help" (task 388).
-            total_duration_s = round(sum(r["duration_s"] for r in shard_results), 1)
-            total_violations = sum(r["violation_count"] for r in shard_results)
-            db.update_cwe_scan(scan_id, status="completed",
-                               violation_count=total_violations,
-                               duration_s=total_duration_s,
-                               file_count=analysis.files_analyzed)
-
-            completed += 1
-            shard_note = f" ({len(shard_results)} shards)" if len(shard_results) > 1 else ""
-            print(f"DONE [{completed + len(completed_cwes)}/{total_cwes}]: "
-                  f"{cwe_dir_name}{shard_note} | {total_duration_s}s | "
-                  f"{total_violations} violations | {analysis.files_analyzed} files")
+    submissions, shard_counts = _build_submissions(work_items)
+    completed, failed = _run_submissions(
+        db, run_id, scan_map, work_items, submissions, shard_counts,
+        jobs, keep_csv, compile_db, len(completed_cwes), total_cwes,
+    )
 
     # Finalize
     finished_at = datetime.now(timezone.utc).isoformat()
