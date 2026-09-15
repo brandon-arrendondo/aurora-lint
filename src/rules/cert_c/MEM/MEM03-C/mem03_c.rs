@@ -26,6 +26,7 @@ use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 #[derive(Default)]
@@ -33,12 +34,12 @@ pub struct Mem03C {
     /// Cross-file summaries: a callee whose `clears_params` names an
     /// argument position overwrites that buffer, whatever it is called
     /// (task 1127).
-    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
     /// Function-like macros, for `macro_clears_param_indices`.
-    function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     /// `#define ALIAS target` map; a callee is classified by the name its
     /// alias chain ends at.
-    project_aliases: RefCell<HashMap<String, String>>,
+    project_aliases: RefCell<Arc<HashMap<String, String>>>,
 }
 
 impl CertRule for Mem03C {

@@ -55,6 +55,12 @@ pub trait CertRule {
 
     /// Inject cross-file context gathered by the pre-scan phase.
     /// Default is a no-op; only rules that need cross-file data override this.
+    ///
+    /// Called once per rule per scanned file. The context's tables are
+    /// `Arc`-wrapped so that `context.<table>.clone()` is a handle, not a
+    /// copy; keep the handle (`RefCell<Arc<..>>`) rather than deep-copying
+    /// or merging tables here -- see the "Cross-file project context"
+    /// section of `docs/design/internal-capability-catalog.md`.
     fn set_project_context(&self, _context: &ProjectContext) {}
 
     /// Inject per-file function CFGs for flow-sensitive analysis.

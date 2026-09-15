@@ -17,6 +17,7 @@ use crate::utility::cert_c::ast_utils::{
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 // C99/C11 minimum guaranteed significant initial characters for an
@@ -40,7 +41,7 @@ pub struct Dcl40C {
     // 432): a struct's trailing attribute-position macro (e.g. hostap's
     // STRUCT_PACKED) commonly has its #define in a different file than the
     // struct definition itself.
-    cross_file_macro_names: RefCell<HashSet<String>>,
+    cross_file_macro_names: RefCell<Arc<HashSet<String>>>,
 }
 
 impl Dcl40C {
@@ -49,7 +50,7 @@ impl Dcl40C {
             function_decls: RefCell::new(HashMap::new()),
             object_decls: RefCell::new(HashMap::new()),
             truncated_external_decls: RefCell::new(HashMap::new()),
-            cross_file_macro_names: RefCell::new(HashSet::new()),
+            cross_file_macro_names: RefCell::new(Arc::new(HashSet::new())),
         }
     }
 

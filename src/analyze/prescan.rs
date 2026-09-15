@@ -16,6 +16,7 @@ use lang_parsing_substrate::query;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tree_sitter::Node;
 use walkdir::WalkDir;
 
@@ -681,34 +682,53 @@ fn prescan_file_list(
         reporter.report_prescan_complete(known_functions.len());
     }
 
+    let callers = invert_call_graph(&call_graph);
+
     Ok(ProjectContext {
-        known_functions,
-        header_declared_functions,
-        function_summaries,
-        call_graph,
-        ambiguous_call_targets,
-        macro_constants,
-        macro_aliases,
-        function_macros,
-        struct_field_types,
-        struct_typedef_aliases,
-        typedef_types,
-        function_pointer_typedef_names,
-        packed_structs,
-        noreturn_functions,
-        defined_macro_names,
-        unused_attribute_macros,
+        known_functions: Arc::new(known_functions),
+        header_declared_functions: Arc::new(header_declared_functions),
+        function_summaries: Arc::new(function_summaries),
+        call_graph: Arc::new(call_graph),
+        callers: Arc::new(callers),
+        ambiguous_call_targets: Arc::new(ambiguous_call_targets),
+        macro_constants: Arc::new(macro_constants),
+        macro_aliases: Arc::new(macro_aliases),
+        function_macros: Arc::new(function_macros),
+        struct_field_types: Arc::new(struct_field_types),
+        struct_typedef_aliases: Arc::new(struct_typedef_aliases),
+        typedef_types: Arc::new(typedef_types),
+        function_pointer_typedef_names: Arc::new(function_pointer_typedef_names),
+        packed_structs: Arc::new(packed_structs),
+        noreturn_functions: Arc::new(noreturn_functions),
+        defined_macro_names: Arc::new(defined_macro_names),
+        unused_attribute_macros: Arc::new(unused_attribute_macros),
         global_constants,
-        global_var_null_states,
-        global_writers,
+        global_var_null_states: Arc::new(global_var_null_states),
+        global_writers: Arc::new(global_writers),
         dispatch_table_callbacks,
         // Populated later by `resolve_includes`, which is the pass that
         // actually walks `#include` directives against the `-I` search path.
         unresolved_project_headers: HashSet::new(),
         macro_gaps,
-        concurrency_reachable,
-        value_only_globals,
+        concurrency_reachable: Arc::new(concurrency_reachable),
+        value_only_globals: Arc::new(value_only_globals),
     })
+}
+
+/// `callee -> {callers}` for every edge in `call_graph`.
+fn invert_call_graph(
+    call_graph: &HashMap<String, HashSet<String>>,
+) -> HashMap<String, HashSet<String>> {
+    let mut callers: HashMap<String, HashSet<String>> = HashMap::new();
+    for (caller, callees) in call_graph {
+        for callee in callees {
+            callers
+                .entry(callee.clone())
+                .or_default()
+                .insert(caller.clone());
+        }
+    }
+    callers
 }
 
 /// Forward-reachability set from every concurrency root (an ISR handler, a
@@ -775,7 +795,7 @@ pub fn prescan_sibling_headers(parent_dir: &str) -> Result<ProjectContext> {
             collect_header_declarations(
                 &tree.root_node(),
                 &source,
-                &mut context.header_declared_functions,
+                Arc::make_mut(&mut context.header_declared_functions),
             );
         }
     }
@@ -5301,15 +5321,19 @@ pub fn resolve_includes(
             let header_path = resolved.to_string_lossy().to_string();
             if let Ok((htree, hsource)) = parser.parse_file(&header_path) {
                 let root = htree.root_node();
-                collect_function_names(&root, &hsource, &mut context.known_functions);
+                collect_function_names(
+                    &root,
+                    &hsource,
+                    Arc::make_mut(&mut context.known_functions),
+                );
                 collect_header_declarations(
                     &root,
                     &hsource,
-                    &mut context.header_declared_functions,
+                    Arc::make_mut(&mut context.header_declared_functions),
                 );
                 // Collect macro constants and aliases from resolved headers
                 let header_macros = const_eval::collect_macro_constants(&root, &hsource);
-                context.macro_constants.extend(header_macros.clone());
+                Arc::make_mut(&mut context.macro_constants).extend(header_macros.clone());
 
                 let header_aliases = const_eval::collect_macro_aliases(&root, &hsource);
                 let header_taint_aliases: Vec<String> = header_aliases
@@ -5334,13 +5358,13 @@ pub fn resolve_includes(
                     &header_function_macros,
                 );
                 for (name, summary) in file_summaries {
-                    context.function_summaries.insert(name, summary);
+                    Arc::make_mut(&mut context.function_summaries).insert(name, summary);
                 }
-                context.macro_aliases.extend(header_aliases);
+                Arc::make_mut(&mut context.macro_aliases).extend(header_aliases);
                 let header_audit =
                     crate::analyze::macro_gaps::audit_definitions(&hsource, &header_path);
                 for (name, m) in header_function_macros {
-                    match context.function_macros.entry(name) {
+                    match Arc::make_mut(&mut context.function_macros).entry(name) {
                         std::collections::hash_map::Entry::Vacant(e) => {
                             e.insert(m);
                         }
@@ -5363,11 +5387,15 @@ pub fn resolve_includes(
                 context.macro_gaps.extend(header_audit.gaps);
 
                 // Collect struct field types from resolved headers
-                collect_struct_definitions(&root, &hsource, &mut context.struct_field_types);
+                collect_struct_definitions(
+                    &root,
+                    &hsource,
+                    Arc::make_mut(&mut context.struct_field_types),
+                );
                 collect_packed_structs(
                     &root,
                     &hsource,
-                    &mut context.packed_structs,
+                    Arc::make_mut(&mut context.packed_structs),
                     &mut packed_struct_candidates,
                 );
                 crate::utility::cert_c::ast_utils::collect_packed_macro_names(
@@ -5376,11 +5404,11 @@ pub fn resolve_includes(
                 );
                 crate::utility::cert_c::ast_utils::collect_defined_macro_names(
                     &hsource,
-                    &mut context.defined_macro_names,
+                    Arc::make_mut(&mut context.defined_macro_names),
                 );
                 crate::utility::cert_c::ast_utils::collect_unused_attribute_macro_names(
                     &hsource,
-                    &mut context.unused_attribute_macros,
+                    Arc::make_mut(&mut context.unused_attribute_macros),
                 );
 
                 // Enqueue transitive includes from this header
@@ -5415,7 +5443,7 @@ pub fn resolve_includes(
     // STRUCT_PACKED in utils/common.h vs. structs in common/ieee802_11_defs.h).
     for (struct_name, macro_name) in packed_struct_candidates {
         if packed_macro_names.contains(&macro_name) {
-            context.packed_structs.insert(struct_name);
+            Arc::make_mut(&mut context.packed_structs).insert(struct_name);
         }
     }
 
@@ -5425,11 +5453,11 @@ pub fn resolve_includes(
     // over the now-complete alias map. Monotone, so a rerun is harmless
     // when nothing new resolved (task 1128).
     function_summary::propagate_transitive_frees(
-        &mut context.function_summaries,
+        Arc::make_mut(&mut context.function_summaries),
         &context.macro_aliases,
     );
     function_summary::propagate_transitive_clears(
-        &mut context.function_summaries,
+        Arc::make_mut(&mut context.function_summaries),
         &context.macro_aliases,
     );
 

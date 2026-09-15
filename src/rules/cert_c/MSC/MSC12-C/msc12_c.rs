@@ -21,6 +21,7 @@ use crate::utility::cert_c::ast_utils::{
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Msc12C {
@@ -28,11 +29,11 @@ pub struct Msc12C {
     // mechanism DCL40-C uses, task 432): a bare object-like macro invoked
     // as a statement (`NODE_LOCK_SYS;`) commonly has its #define in a
     // different file (a header) than the .c file that invokes it.
-    cross_file_macro_names: RefCell<HashSet<String>>,
+    cross_file_macro_names: RefCell<Arc<HashSet<String>>>,
     // Functions this project prototypes in a `.h` header, collected during
     // pre-scan. An empty definition of one is an interface being satisfied,
     // not dead code -- see `is_declared_interface_stub`.
-    header_declared_functions: RefCell<HashSet<String>>,
+    header_declared_functions: RefCell<Arc<HashSet<String>>>,
     // Names of the `volatile`-qualified objects declared at FILE scope in
     // the translation unit currently being scanned, recomputed once per
     // file in `scan`. Needed by `condition_reads_volatile`, whose
@@ -47,8 +48,8 @@ pub struct Msc12C {
 impl Msc12C {
     pub fn new() -> Self {
         Self {
-            cross_file_macro_names: RefCell::new(HashSet::new()),
-            header_declared_functions: RefCell::new(HashSet::new()),
+            cross_file_macro_names: RefCell::new(Arc::new(HashSet::new())),
+            header_declared_functions: RefCell::new(Arc::new(HashSet::new())),
             file_scope_volatiles: RefCell::new(HashSet::new()),
         }
     }

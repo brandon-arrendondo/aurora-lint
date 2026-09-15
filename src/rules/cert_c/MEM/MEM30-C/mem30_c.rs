@@ -9,6 +9,7 @@ use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 #[derive(Default)]
@@ -16,19 +17,19 @@ pub struct Mem30C {
     /// Cross-file function-like macro definitions (from the prescan / macro
     /// engine). Used to recognize "safe free" macros that free AND null their
     /// argument (e.g. curl `Curl_safefree`).
-    function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     /// Cross-file function summaries from prescan. When a callee's `frees_params`
     /// is known from real analysis of its body, that's authoritative over the
     /// "does the function's NAME contain FREE" heuristic below — the name
     /// heuristic false-positives on functions like hostap's `plink_free_count`
     /// (a pure counter, no free at all) and misattributes multi-arg frees to
     /// the wrong parameter (task 396).
-    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
     /// Project-wide `#define ALIAS target` map, merged in `check` with this
     /// file's own, so `mbedtls_free(p)` dispatches as the literal `free` it
     /// expands to rather than through the name-contains-FREE guess
     /// (task 1128).
-    project_aliases: RefCell<HashMap<String, String>>,
+    project_aliases: RefCell<Arc<HashMap<String, String>>>,
 }
 
 impl Mem30C {
@@ -1407,7 +1408,7 @@ struct MemoryAnalyzer {
     // Cross-file function summaries from prescan. When a callee's real
     // `frees_params` is known, it overrides the name-based free heuristic
     // below (task 396) — see `process_call_expression`.
-    function_summaries: HashMap<String, FunctionSummary>,
+    function_summaries: Arc<HashMap<String, FunctionSummary>>,
     // `#define ALIAS target` map (project-wide plus this file); a callee is
     // dispatched on the name its alias chain ends at (task 1128).
     macro_aliases: HashMap<String, String>,
@@ -1417,7 +1418,7 @@ impl MemoryAnalyzer {
     fn new(
         macro_null_params: HashMap<String, Vec<usize>>,
         union_typedef_names: HashSet<String>,
-        function_summaries: HashMap<String, FunctionSummary>,
+        function_summaries: Arc<HashMap<String, FunctionSummary>>,
         macro_aliases: HashMap<String, String>,
     ) -> Self {
         Self {

@@ -9,10 +9,11 @@ use crate::utility::cert_c::float_typing;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Int33C {
-    project_macros: RefCell<MacroConstantMap>,
+    project_macros: RefCell<Arc<MacroConstantMap>>,
     /// Cached per-file macro constants (set once per check() call, avoids re-collecting per division node)
     file_macros: RefCell<MacroConstantMap>,
     /// Per-function CFGs (set by set_function_cfgs)
@@ -21,17 +22,17 @@ pub struct Int33C {
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
     /// Struct name -> field name -> field type (from project context), used to
     /// resolve the type of `obj.field` / `ptr->field` divisor operands.
-    struct_field_types: RefCell<HashMap<String, HashMap<String, String>>>,
+    struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
 }
 
 impl Int33C {
     pub fn new() -> Self {
         Self {
-            project_macros: RefCell::new(MacroConstantMap::new()),
+            project_macros: RefCell::new(Arc::new(MacroConstantMap::new())),
             file_macros: RefCell::new(MacroConstantMap::new()),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
-            struct_field_types: RefCell::new(HashMap::new()),
+            struct_field_types: RefCell::new(Arc::new(HashMap::new())),
         }
     }
 }
@@ -1546,6 +1547,8 @@ impl Int33C {
         if sft.is_empty() {
             return; // no struct field info available (e.g. no project context)
         }
+        // The table is the prescan's, shared by every rule instance; copy it
+        // (`Arc::make_mut`) only once this file actually has an alias to add.
         for line in source.lines() {
             let t = line.trim();
             let rest = match t.strip_prefix("typedef ").and_then(|r| r.strip_suffix(';')) {
@@ -1564,7 +1567,7 @@ impl Int33C {
                 continue;
             }
             if let Some(fields) = sft.get(base).cloned() {
-                sft.insert(alias.to_string(), fields);
+                Arc::make_mut(&mut *sft).insert(alias.to_string(), fields);
             }
         }
     }

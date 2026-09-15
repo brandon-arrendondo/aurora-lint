@@ -6,16 +6,17 @@ use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct DCL19C {
-    header_declared: RefCell<HashSet<String>>,
+    header_declared: RefCell<Arc<HashSet<String>>>,
 }
 
 impl DCL19C {
     pub fn new() -> Self {
         Self {
-            header_declared: RefCell::new(HashSet::new()),
+            header_declared: RefCell::new(Arc::new(HashSet::new())),
         }
     }
 }

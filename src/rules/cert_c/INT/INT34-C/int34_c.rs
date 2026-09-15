@@ -11,10 +11,11 @@ use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Int34C {
-    project_macros: RefCell<MacroConstantMap>,
+    project_macros: RefCell<Arc<MacroConstantMap>>,
     current_macros: RefCell<MacroConstantMap>,
     /// Per-function CFGs
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
@@ -24,7 +25,7 @@ pub struct Int34C {
     /// object-like and function-like alike. A shift amount naming one of
     /// these is a compile-time constant even when its replacement text
     /// can't be folded to an integer.
-    project_macro_names: RefCell<HashSet<String>>,
+    project_macro_names: RefCell<Arc<HashSet<String>>>,
     /// Function-like macro names from the pre-scanned project, so a shift
     /// amount written as `MASK(n)` is recognized as a macro invocation
     /// rather than an opaque call.
@@ -33,7 +34,7 @@ pub struct Int34C {
     /// a bound that only exists inside a `#define` (`IDR0_NUMSIDB_VAL(v)`
     /// masking `v` down to four bits) is invisible until the invocation is
     /// expanded.
-    project_function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    project_function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     /// `project_function_macros` plus the file under analysis, per-file
     /// winning -- the same merge `current_macros` does for object-like
     /// macros, and needed for the same reason: a `#define` private to one
@@ -42,7 +43,7 @@ pub struct Int34C {
     current_function_macros: RefCell<HashMap<String, FunctionMacro>>,
     /// Pre-scanned callee summaries, consulted for shift amounts written as a
     /// call: `return_range` bounds the amount when the returns fold.
-    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
     /// The subset of `function_summaries` whose every return expression is a
     /// compile-time constant, pre-projected into the name set
     /// `const_eval::ConstantNameSets` wants.
@@ -51,23 +52,23 @@ pub struct Int34C {
     /// `overflow_helpers::resolve_typedef_chain` so a left operand declared
     /// `vptr_t` reaches `unsigned long` and is measured at 64 bits, not the
     /// 32-bit floor an unrecognized spelling falls back to (task 1119).
-    typedef_types: RefCell<HashMap<String, String>>,
+    typedef_types: RefCell<Arc<HashMap<String, String>>>,
 }
 
 impl Int34C {
     pub fn new() -> Self {
         Self {
-            project_macros: RefCell::new(MacroConstantMap::new()),
+            project_macros: RefCell::new(Arc::new(MacroConstantMap::new())),
             current_macros: RefCell::new(MacroConstantMap::new()),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
-            project_macro_names: RefCell::new(HashSet::new()),
+            project_macro_names: RefCell::new(Arc::new(HashSet::new())),
             project_function_macro_names: RefCell::new(HashSet::new()),
-            project_function_macros: RefCell::new(HashMap::new()),
+            project_function_macros: RefCell::new(Arc::new(HashMap::new())),
             current_function_macros: RefCell::new(HashMap::new()),
-            function_summaries: RefCell::new(HashMap::new()),
+            function_summaries: RefCell::new(Arc::new(HashMap::new())),
             constant_returning_functions: RefCell::new(HashSet::new()),
-            typedef_types: RefCell::new(HashMap::new()),
+            typedef_types: RefCell::new(Arc::new(HashMap::new())),
         }
     }
 }
@@ -128,7 +129,7 @@ impl CertRule for Int34C {
         *self.current_macros.borrow_mut() =
             const_eval::merged_macro_constants(&self.project_macros.borrow(), node, source);
 
-        let mut fmacros = self.project_function_macros.borrow().clone();
+        let mut fmacros = HashMap::clone(&self.project_function_macros.borrow());
         fmacros.extend(macro_expand::collect_function_macros(node, source));
         *self.current_function_macros.borrow_mut() = fmacros;
 

@@ -11,6 +11,7 @@ use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// Reduce a call argument to the variable it names, reporting whether it was
@@ -52,33 +53,33 @@ fn strip_call_argument(arg: Node) -> Option<(Node, bool)> {
 }
 
 pub struct Mem31C {
-    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
-    value_only_globals: RefCell<HashSet<String>>,
-    struct_field_types: RefCell<HashMap<String, HashMap<String, String>>>,
-    struct_typedef_aliases: RefCell<HashMap<String, String>>,
-    known_functions: RefCell<HashSet<String>>,
-    function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    value_only_globals: RefCell<Arc<HashSet<String>>>,
+    struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
+    struct_typedef_aliases: RefCell<Arc<HashMap<String, String>>>,
+    known_functions: RefCell<Arc<HashSet<String>>>,
+    function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     /// Cross-file noreturn function names from the prescan, unioned in
     /// `check` with the ones this file declares for itself (task 1076).
-    noreturn_functions: RefCell<HashSet<String>>,
+    noreturn_functions: RefCell<Arc<HashSet<String>>>,
     /// Project-wide `#define ALIAS target` map, merged in `check` with this
     /// file's own. A callee is classified by the name the chain ends at, so
     /// `mbedtls_calloc(...)` is an allocation and `mbedtls_free(...)` is a
     /// literal `free`, not a `*_free`-shaped guess (task 1128).
-    project_aliases: RefCell<HashMap<String, String>>,
+    project_aliases: RefCell<Arc<HashMap<String, String>>>,
 }
 
 impl Mem31C {
     pub fn new() -> Self {
         Self {
-            function_summaries: RefCell::new(HashMap::new()),
-            value_only_globals: RefCell::new(HashSet::new()),
-            struct_field_types: RefCell::new(HashMap::new()),
-            struct_typedef_aliases: RefCell::new(HashMap::new()),
-            known_functions: RefCell::new(HashSet::new()),
-            function_macros: RefCell::new(HashMap::new()),
-            noreturn_functions: RefCell::new(HashSet::new()),
-            project_aliases: RefCell::new(HashMap::new()),
+            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            value_only_globals: RefCell::new(Arc::new(HashSet::new())),
+            struct_field_types: RefCell::new(Arc::new(HashMap::new())),
+            struct_typedef_aliases: RefCell::new(Arc::new(HashMap::new())),
+            known_functions: RefCell::new(Arc::new(HashSet::new())),
+            function_macros: RefCell::new(Arc::new(HashMap::new())),
+            noreturn_functions: RefCell::new(Arc::new(HashSet::new())),
+            project_aliases: RefCell::new(Arc::new(HashMap::new())),
         }
     }
 }
@@ -127,7 +128,7 @@ impl CertRule for Mem31C {
         // A call that never returns ends its branch exactly as `return` does.
         // The prescan set carries declarations from headers this parse never
         // sees; the per-file pass catches a helper declared only here.
-        let mut noreturn_names = self.noreturn_functions.borrow().clone();
+        let mut noreturn_names = HashSet::clone(&self.noreturn_functions.borrow());
         noreturn_names.extend(crate::analyze::noreturn::collect_noreturn_function_names(
             node, source,
         ));

@@ -59,6 +59,7 @@ use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// Everything [`pointer_typing`] needs to answer "is this operand a pointer?",
@@ -81,8 +82,8 @@ struct PointerTypes<'a> {
 }
 
 pub struct Api00C {
-    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
-    struct_field_types: RefCell<StructFieldTypes>,
+    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    struct_field_types: RefCell<Arc<StructFieldTypes>>,
     pointer_facts: RefCell<PointerFacts>,
     /// Cross-file typedef alias map, reached through the shared
     /// [`overflow_helpers::resolve_typedef_chain`] before the shift-
@@ -91,16 +92,16 @@ pub struct Api00C {
     /// instead of failing the "shift by literal < width" gate and
     /// leaving the shift as unchecked (task 1057, third consumer of
     /// task 736's shared resolver).
-    typedef_types: RefCell<HashMap<String, String>>,
+    typedef_types: RefCell<Arc<HashMap<String, String>>>,
 }
 
 impl Api00C {
     pub fn new() -> Self {
         Self {
-            function_summaries: RefCell::new(HashMap::new()),
-            struct_field_types: RefCell::new(StructFieldTypes::new()),
+            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            struct_field_types: RefCell::new(Arc::new(StructFieldTypes::new())),
             pointer_facts: RefCell::new(PointerFacts::default()),
-            typedef_types: RefCell::new(HashMap::new()),
+            typedef_types: RefCell::new(Arc::new(HashMap::new())),
         }
     }
 }

@@ -83,8 +83,8 @@ impl RepairMacros {
     /// [`ProjectContext`].
     pub fn from_context(context: &ProjectContext) -> Self {
         Self {
-            object_macros: context.defined_macro_names.clone(),
-            unused_attribute_macros: context.unused_attribute_macros.clone(),
+            object_macros: HashSet::clone(&context.defined_macro_names),
+            unused_attribute_macros: HashSet::clone(&context.unused_attribute_macros),
         }
     }
 }

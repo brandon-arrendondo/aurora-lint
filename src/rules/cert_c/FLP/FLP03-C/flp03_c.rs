@@ -55,6 +55,7 @@ use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 #[derive(Default)]
@@ -63,7 +64,7 @@ pub struct Flp03C {
     /// constant defined in a header), merged with per-file constants in
     /// the divisor-provably-{non}zero checks so a guard defined outside the
     /// file under scan is still resolved (task 617).
-    project_macros: RefCell<MacroConstantMap>,
+    project_macros: RefCell<Arc<MacroConstantMap>>,
 }
 
 /// Analyzer that tracks floating-point variables.
