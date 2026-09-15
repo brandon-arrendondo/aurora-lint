@@ -3575,17 +3575,26 @@ fn condition_true_implies_nonnull(condition: &Node, var: &str, source: &str) -> 
 /// agree on what counts as guarded, or the rule re-reports what the prescan
 /// already discounted.
 pub fn guarded_nonnull_at(site: &Node, var: &str, source: &str) -> bool {
-    guard_dominance::dominating_conditions(site)
-        .iter()
-        .any(
-            |cond| match guard_dominance::dominating_condition_branch(cond, site) {
-                Some(true) => condition_true_implies_nonnull(cond, var, source),
-                Some(false) => extract_null_checked_vars(cond, source)
-                    .iter()
-                    .any(|v| v == var),
-                None => false,
-            },
-        )
+    guarded_nonnull_in(
+        &guard_dominance::dominating_conditions_with_branches(site),
+        var,
+        source,
+    )
+}
+
+/// [`guarded_nonnull_at`] over a site's dominating conditions and their
+/// branches, already collected with
+/// [`guard_dominance::dominating_conditions_with_branches`]. The collection
+/// is the expensive half and depends only on the site, so the call-site
+/// collector below gathers it once per call and asks about each argument.
+fn guarded_nonnull_in(dominators: &[(Node, Option<bool>)], var: &str, source: &str) -> bool {
+    dominators.iter().any(|(cond, branch)| match branch {
+        Some(true) => condition_true_implies_nonnull(cond, var, source),
+        Some(false) => extract_null_checked_vars(cond, source)
+            .iter()
+            .any(|v| v == var),
+        None => false,
+    })
 }
 
 fn collect_assignments_recursive(
@@ -3906,6 +3915,11 @@ fn collect_call_expression_locals(
     let mut arg_pointee_states = Vec::new();
     let mut has_field_states = false;
     let mut has_pointee_states = false;
+    // The conditions dominating this call, collected once for all of its
+    // arguments and only if one of them asks (see `infer_call_arg_state`).
+    // Every argument sits inside the call, so the set is the same whichever
+    // argument is the site.
+    let mut dominators: Option<Vec<(Node, Option<bool>)>> = None;
     for i in 0..args_node.child_count() {
         let Some(arg) = args_node.child(i) else {
             continue;
@@ -3913,7 +3927,12 @@ fn collect_call_expression_locals(
         if matches!(arg.kind(), "," | "(" | ")") {
             continue;
         }
-        arg_states.push(infer_call_arg_state(&arg, source, local_states));
+        arg_states.push(infer_call_arg_state(
+            &arg,
+            source,
+            local_states,
+            &mut dominators,
+        ));
 
         // Collect struct field null states for this argument
         let fields = collect_arg_field_states(&arg, source, local_states);
@@ -3948,10 +3967,11 @@ fn collect_call_expression_locals(
 
 /// Infer a call argument's null state: literal-level inference first, then
 /// fall back to the local-variable state table for plain identifiers.
-fn infer_call_arg_state(
-    arg: &Node,
+fn infer_call_arg_state<'a>(
+    arg: &Node<'a>,
     source: &str,
     local_states: &HashMap<String, NullState>,
+    dominators: &mut Option<Vec<(Node<'a>, Option<bool>)>>,
 ) -> NullState {
     let state = function_summary::infer_arg_null_state(arg, source);
     if state != NullState::Unknown {
@@ -3967,8 +3987,12 @@ fn infer_call_arg_state(
         // so it cannot distinguish a guarded read from an unguarded one. Ask
         // at this argument's own position before letting a maybe-null table
         // entry vote.
-        if tabled != NullState::NotNull && guarded_nonnull_at(arg, name, source) {
-            return NullState::NotNull;
+        if tabled != NullState::NotNull {
+            let dominators = dominators
+                .get_or_insert_with(|| guard_dominance::dominating_conditions_with_branches(arg));
+            if guarded_nonnull_in(dominators, name, source) {
+                return NullState::NotNull;
+            }
         }
         return tabled;
     }

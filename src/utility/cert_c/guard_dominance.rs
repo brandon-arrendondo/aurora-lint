@@ -76,7 +76,19 @@ pub fn has_dominating_comparison(
     source: &str,
     kind: ComparisonKind,
 ) -> bool {
-    dominating_conditions(site)
+    has_dominating_comparison_in(&dominating_conditions(site), var, source, kind)
+}
+
+/// [`has_dominating_comparison`] over conditions already collected for the
+/// site, so a caller asking about several variables at one site (every
+/// argument of a call) walks the ancestors once instead of once per variable.
+pub fn has_dominating_comparison_in(
+    conditions: &[Node],
+    var: &str,
+    source: &str,
+    kind: ComparisonKind,
+) -> bool {
+    conditions
         .iter()
         .any(|cond| condition_compares_var(cond, var, source, kind))
 }
@@ -99,6 +111,10 @@ pub fn call_arg_guards(call_node: &Node, source: &str) -> Vec<bool> {
         return Vec::new();
     };
     let mut guards = Vec::new();
+    // The dominating conditions are a property of the call site, not of the
+    // argument; collect them once for every argument to consult. Lazily,
+    // since a call with no bare-identifier argument never asks.
+    let mut conditions: Option<Vec<Node>> = None;
     for i in 0..arg_list.child_count() {
         let Some(arg) = arg_list.child(i) else {
             continue;
@@ -109,9 +125,9 @@ pub fn call_arg_guards(call_node: &Node, source: &str) -> Vec<bool> {
         let inner = strip_arg_wrappers(&arg);
         guards.push(
             inner.kind() == "identifier"
-                && has_dominating_comparison(
+                && has_dominating_comparison_in(
+                    conditions.get_or_insert_with(|| dominating_conditions(call_node)),
                     &get_node_text(&inner, source),
-                    call_node,
                     source,
                     ComparisonKind::Any,
                 ),
@@ -189,6 +205,24 @@ pub fn dominating_conditions<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
     let mut conditions = enclosing_conditions(site);
     conditions.extend(preceding_if_conditions(site));
     conditions
+}
+
+/// [`dominating_conditions`] with each condition's
+/// [`dominating_condition_branch`] for `site` resolved alongside it.
+///
+/// Both halves depend on the site's position only, so a caller with several
+/// questions about one site -- one per argument of a call -- computes this
+/// once. Walking up to the enclosing function costs a `Node::parent` per
+/// level, and tree-sitter answers each of those by descending from the root,
+/// so the walk is quadratic in nesting depth and worth not repeating.
+pub fn dominating_conditions_with_branches<'a>(site: &Node<'a>) -> Vec<(Node<'a>, Option<bool>)> {
+    dominating_conditions(site)
+        .into_iter()
+        .map(|cond| {
+            let branch = dominating_condition_branch(&cond, site);
+            (cond, branch)
+        })
+        .collect()
 }
 
 /// Conditions that govern `site` by enclosing it.
