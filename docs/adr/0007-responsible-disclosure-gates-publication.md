@@ -63,6 +63,12 @@ something to undersell out of excess caution.
 - `data/precision_audit/` and `docs/upstream-disclosures.rst` are gitignored
   as of 2026-09-16; disclosure-adjudication work happens in local,
   non-git-tracked storage until promotion.
+- The adjudicated TP/FP/FN labels this work produces have a durable public
+  home once ready: `benchmark_adjudication`, a separate PR-gated repo with
+  its own reviewer checklist for exactly this ADR's concern (a free-text
+  `reason`/`provenance` field naming an unlanded defect). That repo, not
+  this one, is where labeled ground_truth becomes a shareable dataset —
+  see its README for the review process.
 - Before adding disclosure detail to README, `docs/upstream-disclosures.rst`,
   a commit message, or anything that reaches gh-pages: confirm the specific
   fix has landed upstream, not just that a report was sent.

@@ -46,11 +46,13 @@ the shared instance in anything you add. That seam is what keeps `bench/`
 usable by a fresh clone. See `benchmarking_db/docs/ownership.md` for what that
 repo owns.
 
-**The adjudication dataset** (TP/FP/FN labels) is valuable beyond aurora-lint,
-which is
-an argument for *sharing* it the way research datasets are shared — object
-storage, a hosted dataset — not for holding it in git. Keep export from
-Postgres trivial; do not let its portability become a reason to put it in-repo.
+**The adjudication dataset** (TP/FP/FN labels, `(project, codebase_commit,
+file_path, line, rule_id)`-keyed) lives in its own repo, `benchmark_adjudication`
+— PR-gated, SHA-pinned provenance, reviewed for disclosure-safety per commit
+before merge (see `docs/adr/0007`). It is a standalone dataset, not a copy of
+this repo's working data: `ground_truth` in Postgres is exported into it via
+`benchmarking_db`'s `bin/export_ground_truth_to_adjudication_repo.py`. Do not
+put it, or a mirror of it, in this repo.
 
 ### Local SQLite storage (the local-run path)
 
