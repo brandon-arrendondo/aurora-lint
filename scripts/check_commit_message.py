@@ -12,20 +12,25 @@ Originally this only pattern-matched `Co-Authored-By`, so it accumulated in
 than a line of prose. That same failure mode reopened for any OTHER trailer
 name: `Claude-Session:` (a live per-commit attribution convention, not
 hypothetical) passed silently until this was widened, because the hook
-checked one specific trailer key instead of the general shape. This version
-matches any git-trailer-shaped line (`Key: value`) that mentions Claude or
-Anthropic anywhere on the line -- in the key or the value -- so a new trailer
-name doesn't need its own hook update to be caught.
+checked one specific trailer key instead of the general shape.
+
+A hand-rolled `^Key: value$` line scan over the whole message then produced
+its own false positive: a conventional-commit subject line like `docs:
+update CLAUDE.md` is itself trailer-shaped (`docs` + `:` + rest of line), so
+mentioning this file's own name in a summary tripped the check. Git already
+has a precise, load-bearing definition of "trailer" -- the contiguous
+key:-value block at the end of the message, not any colon anywhere -- so this
+version shells out to `git interpret-trailers --parse` and only inspects what
+git itself considers a trailer. That also means a subject line or body prose
+mentioning Claude/CLAUDE.md/Anthropic passes, while `Co-Authored-By:` and any
+new trailer key naming Claude/Anthropic still doesn't.
 
 Note sqc_paper deliberately differs and KEEPS these trailers; this hook is
 tools_sqc's and must not be copied there.
 """
 import re
+import subprocess
 import sys
-
-# A git-trailer-shaped line: `SomeKey: value`. Deliberately not restricted to
-# a fixed list of trailer names -- see the module docstring for why.
-TRAILER_LINE = re.compile(r"^\s*[A-Za-z][A-Za-z0-9-]*\s*:\s*.+$", re.MULTILINE)
 
 # Matches a trailer line only when it actually names Claude or Anthropic
 # (in the key or the value), so a human co-author named in the usual way
@@ -46,10 +51,21 @@ def main() -> int:
         line for line in message.splitlines() if not line.startswith("#")
     )
 
+    result = subprocess.run(
+        ["git", "interpret-trailers", "--parse"],
+        input=body,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print("check_commit_message: git interpret-trailers failed:", file=sys.stderr)
+        print(result.stderr, file=sys.stderr)
+        return 1
+
     offenders = [
         line.strip()
-        for line in TRAILER_LINE.findall(body)
-        if AI_ATTRIBUTION.search(line)
+        for line in result.stdout.splitlines()
+        if line.strip() and AI_ATTRIBUTION.search(line)
     ]
     if not offenders:
         return 0
