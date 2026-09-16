@@ -96,3 +96,13 @@ data/precision_audit/*/gavel.db
 # mistake 2026-09-02; removed from tip in the same session.)
 data/precision_audit/*/disclosure_package/
 data/precision_audit/*/*-disclosure-package-*.zip
+
+# Precision-audit adjudication artifacts name real, not-yet-fixed upstream
+# defects (project/file/line detail) before those fixes have landed. Purged
+# from history 2026-09-16; kept locally (~/data/historical_audits) instead
+# of in-repo going forward, same pattern as data/benchmarks.db.
+data/precision_audit/
+
+# Same reasoning: names disclosed-but-unlanded upstream defects. Purged from
+# history 2026-09-16; kept privately outside the repo.
+docs/upstream-disclosures.rst

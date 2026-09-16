@@ -15,9 +15,9 @@ SQLite team fixed all nine, most the same day they were filed; hostap's
 Jouni Malinen fixed all eighteen — eight from the first disclosure within
 two weeks, ten more from a follow-up disclosure the very next day; raylib's
 three were merged the same day they were opened.
-Defect-by-defect tables, which finding started as an aurora-lint detection
-versus an audit read-through, and the process used to find them:
-[`docs/upstream-disclosures.rst`](docs/upstream-disclosures.rst).
+Defect-by-defect detail, including drafts and disclosures still in flight,
+is tracked privately until every referenced item has landed upstream, rather
+than kept as an in-repo record.
 
 All 30 came out of the same file-at-a-time adjudication audit behind the
 real-world precision figure below. Methodology:
