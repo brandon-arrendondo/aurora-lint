@@ -111,7 +111,7 @@ consults git, so a build run inside a checkout (e.g. sqlite's generated
    your working tree.
 
    Why no bump: `run_id` is `sqc-{version}-{sha}`, so the **SHA** is what
-   discriminates runs; the version added readability only. With ~5 nodes
+   discriminates runs; the version added readability only. With several nodes
    committing in parallel a per-task bump collides constantly and **silently** —
    both sides write the same string, so git reports no conflict and `doctor`
    only checks display ids. Version numbers are a **release** artifact.
@@ -157,17 +157,19 @@ consults git, so a build run inside a checkout (e.g. sqlite's generated
 
    - **Gate the delta-adjudication task on any known-but-unfixed FP driver for
      that rule.** Adjudicating a dump that a cheap follow-up fix is about to
-     shrink wastes the work — one MSC17-C structural fix took real-world
-     findings 2,024 → 376 (−81%). Search the backlog for open FP-reduction
-     tasks against the same rule and add them with `--depends-on` so `next`
-     skips the adjudication until they land; then re-measure.
+     shrink wastes the work — a structural fix to one rule's detection logic
+     can cut its real-world finding count dramatically on its own. Search the
+     backlog for open FP-reduction tasks against the same rule and add them
+     with `--depends-on` so `next` skips the adjudication until they land;
+     then re-measure.
    - Pull only that rule's new unlabeled findings:
      `bench realworld-unlabeled RUN --rule RULE_ID --project P --json`.
    - **Derive each project's in-scope file predicate from its own
-     `data/precision_audit/<project>/README.md` BEFORE batching.** One delta
-     pass found 63% of raw unlabeled findings were out-of-scope noise (test
-     harnesses, vendored deps, bindings); mosquitto alone was 73%. Scoping
-     afterwards means redoing completed batches. `data/precision_audit/` is
+     `data/precision_audit/<project>/README.md` BEFORE batching.** A sizeable
+     share of raw unlabeled findings can be out-of-scope noise (test
+     harnesses, vendored deps, bindings) — this varies sharply by project, so
+     check the README rather than assuming. Scoping afterwards means redoing
+     completed batches. `data/precision_audit/` is
      local working data, gitignored (see `docs/adr/0007`) — it's what your
      own adjudication pass produces, not something a fresh clone already
      has populated.
@@ -214,114 +216,27 @@ prose near it is a judgment call it deliberately leaves alone.
 
 ## Task tracking
 
-`todo-sqlite-cli`, with the DB resolved via the `.todo-sqlite-cli` marker at the
-repo root.
+Task tracking is maintainer infrastructure, not part of what a clone needs to
+build, test, or evaluate aurora-lint — same test as everywhere else in this
+file. The backlog lives in a `todo-sqlite-cli` database the maintainer owns
+and syncs across nodes; it is **not git-tracked and not part of this repo** —
+a fresh clone has no task DB, and doesn't need one. (Earlier revisions of
+this repo committed a `todo-sqlite-cli.db` per repo with a git merge driver
+and pack-size tuning; that setup is retired — nothing task-related is
+git-tracked anymore, so there is no DB to pull, merge, or run `doctor` on as
+part of cloning or contributing here.)
 
-**There are three task DBs, and this one holds the TOOL's backlog only.**
-
-| Repo | Owns |
-|---|---|
-| here | rule behaviour, FP/FN work, docs, packaging |
-| `benchmarking_db` | adjudication, ground_truth quality, corpus scope, derived metrics, Postgres/backup infra |
-| `sqc_paper` | paper drafting, figures, wording, submission |
-
-Do not `add` or reopen another repo's work here. Completed history was not
-duplicated when the backlogs split, so old done tasks of every kind remain in
-this DB. Same clone-experience test as everywhere else: would a stranger
-cloning this repo need it to evaluate aurora-lint on their own codebase?
-
-**Cross-repo dependency edges cannot be enforced.** Separate DBs mean no `next`
-in either repo will honour one, so record it as prose in the task's details —
-the only case where prose is correct — and **carry the urgency in the priority
-number**, which is the only signal the other node actually sees. A blocker
-parked at P5 reads as the least urgent thing in the backlog.
-
-**Route another repo's work to that repo; don't park it here.** If a session
-for it is reachable (`ListAgents`), message it. Otherwise leave a `--gate`
-here carrying a body ready to file there verbatim — a handoff nobody wrote
-down does not survive the session. To decide who owns a task, ask **which
-repo's files change**: the tag lies often enough to be useless on its own
-(`ground-truth-quality` on what is really a new-rule task, `corpus` on what
-is really a `bench/realworld_runner.py` fix, `benchmark` on a
-`docs/tool-comparison.rst` edit — all three belong here).
-
-**Display ids collide across repos and across nodes.** Each DB allocates from
-its own sequence with no reservation, so a bare "task 731" is three-ways
-ambiguous, and two nodes adding tasks the same hour routinely claim the same
-id. Consequences:
-
-- **Say which repo** whenever you cite a task in a commit message, code comment
-  or cross-repo message. "Obviously local" stopped being safe at three DBs.
-  (Ids 1-730 predate the splits and are unambiguous.)
-- **Prefer not to cite a number at all.** Write "the follow-up task" and let the
-  UUID-backed `Related:` line carry identity — it survives every `renumber`.
-- **Create the follow-up task FIRST, then link it.** Never write an id you have
-  not allocated into a task body, commit message or code comment: the number is
-  a guess about the future and is simply wrong whenever another node adds a task
-  first. `doctor` stays clean through this — the prose just quietly points at
-  something unrelated. Order: `add`, take the id it prints, then
-  `edit <parent> --add-related <newid>`.
-- Fix a duplicate id with `todo-sqlite-cli renumber <uuid> <new-id>`, then
-  repair whatever prose named the old number.
-
-**Before planning or coding, ask the DB:**
-
-- `todo-sqlite-cli next` — the one task to work on now.
-- `todo-sqlite-cli list` — all active, in-progress then partial then pending.
-- `todo-sqlite-cli show <id>` — full detail (`--verbose` for humans).
-- Every command supports `--json`.
-
-**Working a task:** `start <id>` before coding, `done <id>` when committed.
-`start` auto-pauses any prior in-progress task to `partial` and preserves its
-`started_at`, so `partial` means interrupted, not abandoned — resume with
-`start`. `stop <id>` pauses deliberately; `revert <id>` undoes a wrong start.
-
-**Logging progress:** `edit <id> --append-details "note"` appends.
-`edit <id> --details "..."` **REPLACES** the whole body — only when you mean to
-overwrite. Also on `edit`: `--add-tag`/`--rm-tag`, `--add-dep`/`--rm-dep`,
-`--add-related`/`--rm-related`, `--location`/`--clear-location`,
-`--gate`/`--no-gate`, `--title`, `--priority`.
-
-**New task:**
-`add "title" --details "..." --tag <area> --priority <1-5>` (1 = highest).
-
-**`--depends-on` vs `--related`:** use `--depends-on` when the other task must
-land FIRST (it gates `next` and shows `[blocked]` in `list`); use `--related`
-for "same defect / same cohort / read these together", which is most
-cross-references. Both are stored by UUID, so they follow a `renumber`; an
-unknown id is rejected rather than left dangling. Neither works across repos.
-
-**`--location <text>`** flags work that can only be done on a specific node,
-shown as `@location` in `list`. The established value is `benchmark-node` — a
-role, deliberately not a hostname, so it survives the hardware being replaced —
-meaning the task needs a Postgres write against `sqc_bench` or a corpus
-checkout. It is **display-only**: `list` has no filter and `next` does not skip
-on it, so keep it high-signal.
-
-**`--gate`** marks a checkpoint on an external condition rather than work to be
-done. Gates are skipped by `next`, never flagged by `aging`, and
-`list --kind gate` is a readiness dashboard.
-
-**Identity is a UUID; the integer id is a display alias.**
-
-- **Run `todo-sqlite-cli doctor` after every merge/pull that touches
-  `todo-sqlite-cli.db`.** It catches duplicate display ids, unresolved
-  `merge-conflict` tags, orphaned tag/dep rows, self-deps and cycles, and exits
-  1 so it can gate a script. The merge itself is sound (tags and deps key on
-  `task_uuid`), but two nodes that independently allocated the same display id
-  still merge to two rows sharing it — data intact, display ambiguous. The
-  driver's "0 conflicts" line does not imply otherwise.
-- `rm` does not reserve the id; a later `add` may reuse it.
-- If `show <id>` prints two tasks, pass the full UUID.
-- Because identity is a UUID, deleting a local task before merging to dodge a
-  collision is obsolete. Merge, then run `doctor`.
-
-**Release history** lives in the DB: each CHANGELOG entry is a `release`-tagged
-done task with `completed_at` set to the release date. Rebuild with
-`export-completed` (`--since`/`--until`), or slice with
-`list --status done --tag changed` (also `benchmark`, `added`, `fixed`, `task`).
-
-Pre-2026-04-20 task IDs survive as `plan-id:NN` tags.
+If you're contributing without access to that DB, you don't need it: branch,
+commit, and open a PR as normal, same as any other project. If you do have
+access (ask the maintainer), tasks for this repo are tagged so they can be
+told apart from `benchmarking_db`'s and `sqc_paper`'s within the same
+database — rule behaviour, FP/FN work, docs, and packaging belong here;
+ground_truth quality, corpus scope, and Postgres/backup infra belong to
+`benchmarking_db`; paper drafting/figures/submission belong to `sqc_paper`.
+Ask "which repo's files change" to decide, not the tag on the task, which
+lies often enough to be useless alone. Adjudication itself isn't a
+task-tracking concern at all — it's a PR to `benchmark_adjudication` (see
+above).
 
 ---
 
@@ -463,11 +378,10 @@ hard precedence in either direction is measurably wrong.
   deliverable and nobody else works in its history.)
 
   **Enforced by a `commit-msg` hook** (`scripts/check_commit_message.py`), because
-  prose alone did not hold: the trailer reached 172 commits before anyone
-  noticed. A human co-author named normally still passes. `commit-msg` is a
-  *second* hook type, so a clone that ran `pre-commit install` before the hook
-  existed has the config and no hook, silently — same shape as the merge-driver
-  trap below. One manual pass fixes it:
+  prose alone did not hold. A human co-author named normally still passes.
+  `commit-msg` is a *second* hook type, so a clone that ran `pre-commit
+  install` before the hook existed has the config and no hook, silently. One
+  manual pass fixes it:
 
   ```bash
   pre-commit install --hook-type commit-msg
@@ -478,57 +392,6 @@ hard precedence in either direction is measurably wrong.
 
 **REQUIRED:** hooks pass before a commit succeeds; if they fail, fix the cause;
 standard commit message format without AI attribution.
-
-**Pulling upstream (`todo-sqlite-cli.db`):** `.gitattributes` maps the DB to a
-merge driver, but the driver lives in **repo-local git config**, which is not
-committed — so a fresh clone has the attribute, no driver, and lands in
-conflict on every pull that touched the DB.
-
-```bash
-git config --get merge.todo-sqlite-cli.driver \
-  || todo-sqlite-cli install-merge-driver    # one-time, per clone
-git pull                                     # DB auto-merges by task UUID
-todo-sqlite-cli doctor                       # REQUIRED after every merge/pull
-```
-
-`setup-dev-environment.yml` registers the driver (and `pull.rebase` and the
-pack settings below) on any node it provisions, so the one-time step is only
-for older or hand-built clones. Note `install-merge-driver` appends the
-`.gitattributes` line unconditionally, and this repo already has it — so
-register by hand instead to avoid a duplicate:
-
-```bash
-git config merge.todo-sqlite-cli.name "todo-sqlite-cli 3-way merge driver"
-git config merge.todo-sqlite-cli.driver "todo-sqlite-cli git-merge-driver %O %A %B"
-git config pull.rebase false   # merge through the driver; see below
-```
-
-`pull.rebase false` is what makes the driver do its job when a pull races
-another node. Merging invokes it once on the two DB tips and unions them by
-task UUID; rebasing replays each local DB commit onto the new base instead,
-running the driver once per commit against a moving target for no benefit.
-Without the setting git 2.27+ just stops with *"need to specify how to
-reconcile divergent branches"*.
-
-The merge is a real 3-way union keyed on task UUID, so nothing is lost and
-dependency edges keep resolving. **Never resolve a DB conflict with
-`git checkout --ours/--theirs`** — that discards the other side's tasks
-entirely.
-
-**Pack size:** the DB is committed on nearly every task change, and git's
-default `pack.window` of 10 cannot find a good delta base among hundreds of
-versions of it, storing each close to whole. `setup-dev-environment.yml` sets
-`pack.window 250` / `pack.depth 100` (repo-local, per-clone), which cuts a DB
-commit from ~664 KiB of pack to ~38 KiB. Those affect only *future* repacks, so
-a clone provisioned earlier needs one manual pass:
-
-```bash
-git repack -a -d --window=250 --depth=100
-```
-
-That is a pure storage-layout rewrite — it never changes SHAs or history — and
-is safe on any clone at any time. Committing the DB is fine; the cost was a
-config default, not the practice.
 
 ---
 
