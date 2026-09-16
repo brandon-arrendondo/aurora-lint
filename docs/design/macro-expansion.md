@@ -44,9 +44,8 @@ C preprocessor pass.** Consequently:
 These are utlist (`DL_FOREACH_SAFE`, `LL_FOREACH`) and uthash (`HASH_FIND`,
 `HASH_ITER`) — ubiquitous single-header C libraries. The same patterns recur on
 sqlite and will recur on **any** C project using these libraries, which is why
-the cross-validation flagged it as a shared root cause (see
-`data/precision_audit/mosquitto/adversarial_verification.md`,
-memory `mosquitto-cross-validation`).
+the cross-validation flagged it as a shared root cause (adjudication detail
+in the private audit archive, memory `mosquitto-cross-validation`).
 
 ### Breadth (tech-debt surface)
 
@@ -618,9 +617,8 @@ labeled TP by `task-644-full-reaudit`). The flag is therefore a small
 reported; it is still far too small to justify running the corpus with the flag
 by default.
 
-**Delta-adjudicated 2026-09-01** (`data/precision_audit/sel4/`
-`import_delta_compile_db_task623.csv`, 39 labels, source
-`delta_compile_db_task623`). Applying each project's `scope_include` predicate
+**Delta-adjudicated 2026-09-01** (sel4, 39 labels, source
+`delta_compile_db_task623`, private audit archive). Applying each project's `scope_include` predicate
 first, per CLAUDE.md, removed the largest raw chunk before any reading:
 pure-ftpd's 38 DCL31-C removals are all in `src/ftpd.c`, and that oracle covers
 only its six SQL-logging files (it was onboarded as a CWE-89 client oracle), so

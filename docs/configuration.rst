@@ -79,8 +79,7 @@ Strict vs. Relaxed Onboarding
 Dropping aurora-lint into CI/CD against an existing codebase for the first
 time can surface a large number of findings before you have had a chance to
 triage any of them — real-world precision varies a lot by codebase (see
-``docs/tool-comparison.rst`` and each project's own
-``data/precision_audit/<project>/README.md`` for measured figures). Two
+``docs/tool-comparison.rst`` for measured figures). Two
 things help without writing a manifest at all:
 
 - ``--min-severity``/``--fail-on-severity`` (see `Getting Started

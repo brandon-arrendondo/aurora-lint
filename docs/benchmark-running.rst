@@ -230,7 +230,10 @@ inflate the violation count or dilute the precision/recall denominator.
 These globs are derived from each codebase's ground-truth oracle scope
 (``data/precision_audit/<codebase>/README.md``), which documents exactly
 which directories were ruled in/out during that codebase's adjudication
-sweep and why.
+sweep and why. ``data/precision_audit/`` is local working data, gitignored
+(see ``docs/adr/0007-responsible-disclosure-gates-publication.md``) — it's
+populated by running the adjudication workflow yourself, not shipped with
+the repo.
 
 .. important::
 
@@ -364,7 +367,8 @@ Incremental adjudication loop (need not be one-shot):
 3. ``realworld-import-labels CSV --run RUN`` --- append (existing labels are
    skipped unless ``--update`` re-adjudicates them).
 
-The first 200 labels were seeded from ``data/precision_audit/adjudication_0.4.22.csv``.
+The first 200 labels were seeded from an early adjudication pass
+(``adjudication_0.4.22.csv``).
 
 Delta-Adjudication Gate
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -407,9 +411,9 @@ Procedure:
 4. Only after ``ground_truth`` reflects the new lines is a precision/recall
    claim about the changed rule safe to publish.
 
-See ``data/precision_audit/DELTA_MEM31_TASK420.md`` for a fully worked
-example: 6 projects, 14 batches, 1,478 findings, 0.7% delta precision — a
-very different number than the aggregate raw-count comparison suggested.
+A worked example from this pattern: 6 projects, 14 batches, 1,478 findings,
+0.7% delta precision — a very different number than the aggregate raw-count
+comparison suggested.
 
 Comparing Across Runs
 ---------------------

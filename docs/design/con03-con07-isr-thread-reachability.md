@@ -77,7 +77,7 @@ suppress the bulk of the 56 context-absent FPs while preserving the known TPs
 ## Known TPs — the regression set
 
 Any implementation **must** re-verify these still fire after the change
-(pulled from `data/precision_audit/mosquitto/import_delta_batchD_task547.csv`,
+(pulled from mosquitto's task547 delta-adjudication, private audit archive —
 the only real-world project with confirmed CON03-C TPs in the labeled
 corpus):
 

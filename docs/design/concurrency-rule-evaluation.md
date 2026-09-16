@@ -32,8 +32,7 @@ benchmark run.
 | CON33-C | CWE-330, 377, 676 | 3.0% (CWE-377; 1.4% flaw-detection) | 0% (n/a — 0 TP) | 16 in-scope combined w/ CON34-C+CON37-C / 0 TP / 16 FP (task 549) |
 
 Sources: `docs/juliet-coverage.md` (generated from `data/benchmarks.db`),
-`data/precision_audit/DELTA_BATCHC_TASK546.md`,
-`DELTA_BATCHD_TASK547.md`, `DELTA_LT2_TASK549.md`.
+tasks 546/547/549 delta-adjudications (private audit archive).
 
 ### Root causes, already characterized per-finding
 

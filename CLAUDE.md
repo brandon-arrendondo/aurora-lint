@@ -165,10 +165,12 @@ consults git, so a build run inside a checkout (e.g. sqlite's generated
      `data/precision_audit/<project>/README.md` BEFORE batching.** One delta
      pass found 63% of raw unlabeled findings were out-of-scope noise (test
      harnesses, vendored deps, bindings); mosquitto alone was 73%. Scoping
-     afterwards means redoing completed batches.
+     afterwards means redoing completed batches. `data/precision_audit/` is
+     local working data, gitignored (see `docs/adr/0007`) — it's what your
+     own adjudication pass produces, not something a fresh clone already
+     has populated.
    - Batch ~110-150 findings, adjudicate, import with
-     `bench realworld-import-labels`. Worked example:
-     `data/precision_audit/DELTA_MEM31_TASK420.md`.
+     `bench realworld-import-labels`.
    - Only once `ground_truth` covers the new lines may a precision/recall
      claim about that rule be published.
 
