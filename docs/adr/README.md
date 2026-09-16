@@ -45,3 +45,5 @@ outlive any one task.
 - [0006 — Resolve an identifier to its declaration; a name is not a
   variable, and a struct tag is not a
   type](0006-resolve-identifiers-to-declarations.md)
+- [0007 — A disclosure becomes part of the published record only once it has
+  landed upstream](0007-responsible-disclosure-gates-publication.md)
