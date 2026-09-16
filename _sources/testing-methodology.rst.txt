@@ -452,8 +452,7 @@ Known Per-Rule Corpus Caveats
 all were adjudicated false positive: sqc's pre-fix switch-statement scan
 didn't expand the file's ``CASE(i,str)`` macro, so it never saw the real
 ``case`` label hidden inside and misread every invocation as a declaration
-before the first visible case (see
-``data/precision_audit/DELTA_LT1_TASK548.md``). The parser bug itself was
+before the first visible case. The parser bug itself was
 fixed in ``fea7a1a1`` — confirmed there to take that file's DCL41-C findings
 from 21 to 0 — so a current scan produces none of these findings at all,
 right or wrong; the only live question is what a *pre-fix* published DCL41-C

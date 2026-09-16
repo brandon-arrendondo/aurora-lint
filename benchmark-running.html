@@ -353,7 +353,10 @@ inflate the violation count or dilute the precision/recall denominator.
 These globs are derived from each codebase’s ground-truth oracle scope
 (<code class="docutils literal notranslate"><span class="pre">data/precision_audit/&lt;codebase&gt;/README.md</span></code>), which documents exactly
 which directories were ruled in/out during that codebase’s adjudication
-sweep and why.</p>
+sweep and why. <code class="docutils literal notranslate"><span class="pre">data/precision_audit/</span></code> is local working data, gitignored
+(see <code class="docutils literal notranslate"><span class="pre">docs/adr/0007-responsible-disclosure-gates-publication.md</span></code>) — it’s
+populated by running the adjudication workflow yourself, not shipped with
+the repo.</p>
 <div class="admonition important">
 <p class="admonition-title">Important</p>
 <p><code class="docutils literal notranslate"><span class="pre">-d</span></code>/<code class="docutils literal notranslate"><span class="pre">--directories</span></code> in a codebase’s <code class="docutils literal notranslate"><span class="pre">extra_args</span></code> does <strong>not</strong>
@@ -477,7 +480,8 @@ with no label yet (reproducible sample);</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">realworld-import-labels</span> <span class="pre">CSV</span> <span class="pre">--run</span> <span class="pre">RUN</span></code> — append (existing labels are
 skipped unless <code class="docutils literal notranslate"><span class="pre">--update</span></code> re-adjudicates them).</p></li>
 </ol>
-<p>The first 200 labels were seeded from <code class="docutils literal notranslate"><span class="pre">data/precision_audit/adjudication_0.4.22.csv</span></code>.</p>
+<p>The first 200 labels were seeded from an early adjudication pass
+(<code class="docutils literal notranslate"><span class="pre">adjudication_0.4.22.csv</span></code>).</p>
 <section id="delta-adjudication-gate">
 <h3>Delta-Adjudication Gate<a class="headerlink" href="#delta-adjudication-gate" title="Link to this heading"></a></h3>
 <div class="admonition important">
@@ -518,9 +522,9 @@ oracle.</p></li>
 <li><p>Only after <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> reflects the new lines is a precision/recall
 claim about the changed rule safe to publish.</p></li>
 </ol>
-<p>See <code class="docutils literal notranslate"><span class="pre">data/precision_audit/DELTA_MEM31_TASK420.md</span></code> for a fully worked
-example: 6 projects, 14 batches, 1,478 findings, 0.7% delta precision — a
-very different number than the aggregate raw-count comparison suggested.</p>
+<p>A worked example from this pattern: 6 projects, 14 batches, 1,478 findings,
+0.7% delta precision — a very different number than the aggregate raw-count
+comparison suggested.</p>
 </section>
 </section>
 <section id="comparing-across-runs">

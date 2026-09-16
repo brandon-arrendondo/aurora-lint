@@ -667,8 +667,7 @@ in README.md’s “Rule-suite coverage” section.</p>
 all were adjudicated false positive: sqc’s pre-fix switch-statement scan
 didn’t expand the file’s <code class="docutils literal notranslate"><span class="pre">CASE(i,str)</span></code> macro, so it never saw the real
 <code class="docutils literal notranslate"><span class="pre">case</span></code> label hidden inside and misread every invocation as a declaration
-before the first visible case (see
-<code class="docutils literal notranslate"><span class="pre">data/precision_audit/DELTA_LT1_TASK548.md</span></code>). The parser bug itself was
+before the first visible case. The parser bug itself was
 fixed in <code class="docutils literal notranslate"><span class="pre">fea7a1a1</span></code> — confirmed there to take that file’s DCL41-C findings
 from 21 to 0 — so a current scan produces none of these findings at all,
 right or wrong; the only live question is what a <em>pre-fix</em> published DCL41-C
