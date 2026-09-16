@@ -275,6 +275,7 @@ For advanced usage, CI/CD integration details, interactive UI reference, testing
 | [`docs/tool-comparison.rst`](docs/tool-comparison.rst) | aurora-lint vs cppcheck, clang-tidy, Frama-C, Infer — per-CWE precision, speed, build requirements |
 | [`docs/testing-methodology.rst`](docs/testing-methodology.rst) | How the benchmark numbers are produced, and what they exclude |
 | [CONTRIBUTORS.md](CONTRIBUTORS.md) | Who built this |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to submit a PR, DCO sign-off, licensing |
 
 ## AI Assistance
 
