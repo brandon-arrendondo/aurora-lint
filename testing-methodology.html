@@ -645,7 +645,7 @@ cppcheck and clang-tidy:</p>
 </tbody>
 </table>
 <p><em>Data from aurora-lint v0.4.120, cppcheck 2.10, clang-tidy 21.1.6 (run #118).</em></p>
-<p><strong>Why aurora-lint reports more violations</strong>: aurora-lint implements 311 CERT C rules, 307 enabled by default (both
+<p><strong>Why aurora-lint reports more violations</strong>: aurora-lint tracks 311 CERT C rules, 307 enabled by default (both
 advisory and mandatory) while cppcheck and clang-tidy implement ~20 checks each.
 The difference reflects rule coverage breadth, not false positive rate.</p>
 <p><strong>Measured precision/recall</strong>: 6.2% precision / 91.7% recall against the
@@ -993,7 +993,7 @@ the rest of the suite is substantial (measured 2026-09-02, run #226):</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Implemented</p></td>
-<td><p><strong>311</strong> (307 enabled by default)</p></td>
+<td><p><strong>|rules_total|</strong> (307 enabled by default)</p></td>
 </tr>
 <tr class="row-odd"><td><p>Have true-positive evidence somewhere</p></td>
 <td><p><strong>186</strong> — 127 from Juliet, 144 from real-world TP/FN labels</p></td>

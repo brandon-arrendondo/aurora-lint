@@ -98,11 +98,12 @@ Analysis Modules
 **Macro-expansion engine** (``src/analyze/macro_expand.rs``).
   Registry-based, name-independent modeling of function-like macro bodies —
   not a per-macro name allowlist.  ``collect_function_macros`` +
-  ``FunctionMacro`` recognize two shapes regardless of the macro's name:
-  ``macro_nulls_param_indices`` (the macro frees *and* null-writes its
-  argument — the "safe free" idiom, e.g. ``SAFE_FREE``/``mosquitto_FREE``/
-  ``Curl_safefree``) and ``macro_output_param_indices`` (the macro writes to
-  an output parameter).  Consumed by MEM30-C, MEM31-C, EXP33-C, and DCL31-C.
+  ``FunctionMacro`` back a growing set of shape predicates regardless of the
+  macro's name (as of this writing: output-param writes, the "safe free"
+  free+null idiom, generic writes, forwarding to another macro, plain frees,
+  clears, and callee-released-parameter detection — see the file's own
+  ``pub fn`` list for the current, authoritative set rather than trusting a
+  count here). Consumed by |macro_expand_rule_count| rules: |macro_expand_rule_list|.
   Before adding a name-heuristic workaround for a macro-opacity false
   positive, check whether this engine already covers it — see
   ``docs/design/macro-expansion.md`` for the full design rationale and a
@@ -191,10 +192,10 @@ Gap                             Impact
 ==============================  ====================================================
 No general macro expansion      Arbitrary macro bodies are not expanded.  A
                                 registry-based engine (``macro_expand.rs``,
-                                see above) models two recognized shapes
-                                (free+null, output-param) name-independently
-                                for MEM30/31-C, EXP33-C, DCL31-C; outside
-                                those shapes macros are still opaque function
+                                see above) name-independently recognizes a
+                                growing set of shapes for |macro_expand_rule_count|
+                                rules; outside those shapes macros are still
+                                opaque function
                                 calls, partially mitigated by
                                 ``collect_macro_aliases`` for constant-valued
                                 macros

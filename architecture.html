@@ -180,11 +180,12 @@ consumer: EXP33-C.</p>
 </dd>
 <dt><strong>Macro-expansion engine</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/macro_expand.rs</span></code>).</dt><dd><p>Registry-based, name-independent modeling of function-like macro bodies —
 not a per-macro name allowlist.  <code class="docutils literal notranslate"><span class="pre">collect_function_macros</span></code> +
-<code class="docutils literal notranslate"><span class="pre">FunctionMacro</span></code> recognize two shapes regardless of the macro’s name:
-<code class="docutils literal notranslate"><span class="pre">macro_nulls_param_indices</span></code> (the macro frees <em>and</em> null-writes its
-argument — the “safe free” idiom, e.g. <code class="docutils literal notranslate"><span class="pre">SAFE_FREE</span></code>/<code class="docutils literal notranslate"><span class="pre">mosquitto_FREE</span></code>/
-<code class="docutils literal notranslate"><span class="pre">Curl_safefree</span></code>) and <code class="docutils literal notranslate"><span class="pre">macro_output_param_indices</span></code> (the macro writes to
-an output parameter).  Consumed by MEM30-C, MEM31-C, EXP33-C, and DCL31-C.
+<code class="docutils literal notranslate"><span class="pre">FunctionMacro</span></code> back a growing set of shape predicates regardless of the
+macro’s name (as of this writing: output-param writes, the “safe free”
+free+null idiom, generic writes, forwarding to another macro, plain frees,
+clears, and callee-released-parameter detection — see the file’s own
+<code class="docutils literal notranslate"><span class="pre">pub</span> <span class="pre">fn</span></code> list for the current, authoritative set rather than trusting a
+count here). Consumed by 16 rules: ARR30-C, DCL31-C, DCL41-C, EXP10-C, EXP33-C, EXP34-C, EXP36-C, INT32-C, INT34-C, MEM03-C, MEM12-C, MEM30-C, MEM31-C, MSC13-C, MSC37-C, and PRE31-C.
 Before adding a name-heuristic workaround for a macro-opacity false
 positive, check whether this engine already covers it — see
 <code class="docutils literal notranslate"><span class="pre">docs/design/macro-expansion.md</span></code> for the full design rationale and a
@@ -313,10 +314,10 @@ custom-deallocator credit (MEM31-C)</p></td>
 <tr class="row-even"><td><p>No general macro expansion</p></td>
 <td><p>Arbitrary macro bodies are not expanded.  A
 registry-based engine (<code class="docutils literal notranslate"><span class="pre">macro_expand.rs</span></code>,
-see above) models two recognized shapes
-(free+null, output-param) name-independently
-for MEM30/31-C, EXP33-C, DCL31-C; outside
-those shapes macros are still opaque function
+see above) name-independently recognizes a
+growing set of shapes for 16
+rules; outside those shapes macros are still
+opaque function
 calls, partially mitigated by
 <code class="docutils literal notranslate"><span class="pre">collect_macro_aliases</span></code> for constant-valued
 macros</p></td>

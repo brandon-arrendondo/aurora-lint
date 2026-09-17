@@ -5,8 +5,8 @@ Manifest File
 -------------
 
 The rules manifest TOML file controls which rules are active and their severity.
-The default manifest (``rules_templates/rules-all.toml``) enables 307 of the 311 tracked rules.
-The other 4 are tracked but not implemented — see `Tracked but not implemented`_ below.
+The default manifest (``rules_templates/rules-all.toml``) enables |rules_enabled| of the |rules_total| tracked rules.
+The other |rules_disabled| are tracked but not implemented — see `Tracked but not implemented`_ below.
 
 ::
 
@@ -44,8 +44,8 @@ Custom Manifest Format
 Supported CERT C Rules
 ----------------------
 
-311 rules are tracked across 17 categories; 307 are implemented and enabled by
-default (the remaining 4 are tracked but not implemented — see
+|rules_total| rules are tracked across 17 categories; |rules_enabled| are implemented and enabled by
+default (the remaining |rules_disabled| are tracked but not implemented — see
 `Tracked but not implemented`_ below):
 
 ==========  ======  ===========================================================
@@ -127,7 +127,7 @@ companion) rather than shipped speculatively here.
 Tracked but not implemented
 ----------------------------
 
-4 of the 311 tracked rules have a rule directory and a manifest entry but no
+|rules_disabled| of the |rules_total| tracked rules have a rule directory and a manifest entry but no
 detection logic (no ``.rs`` file). This is a deliberate policy, not a gap:
 aurora-lint does not implement against incomplete CERT-C rule content, since there is
 ample well-established work to do and a stub implementation would mean

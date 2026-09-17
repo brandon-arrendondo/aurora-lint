@@ -5,7 +5,7 @@ aurora-lint Developer Guide
 aurora-lint is a terminal-based static analysis tool that validates
 C code compliance with `SEI CERT C Coding Standards
 <https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard>`_.
-It implements 311 rules (307 enabled by default) across 17 CERT C categories, using tree-sitter for fast
+It tracks |rules_total| rules (|rules_enabled| implemented and enabled by default) across 17 CERT C categories, using tree-sitter for fast
 AST-based analysis with cross-file context, control-flow graphs, and
 inter-procedural reasoning.
 
