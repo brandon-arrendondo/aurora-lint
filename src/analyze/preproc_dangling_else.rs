@@ -131,15 +131,12 @@ fn skip_blank_and_comment_lines(lines: &[&str], start: usize, end: usize) -> usi
     while i < end {
         let trimmed = lines[i].trim();
         if in_block_comment {
-            match trimmed.find("*/") {
-                Some(pos) => {
-                    in_block_comment = false;
-                    let rest = trimmed[pos + 2..].trim();
-                    if !rest.is_empty() && !rest.starts_with("//") {
-                        return i;
-                    }
+            if let Some(pos) = trimmed.find("*/") {
+                in_block_comment = false;
+                let rest = trimmed[pos + 2..].trim();
+                if !rest.is_empty() && !rest.starts_with("//") {
+                    return i;
                 }
-                None => {}
             }
             i += 1;
             continue;
