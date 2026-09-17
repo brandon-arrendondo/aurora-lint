@@ -125,7 +125,15 @@ impl Pre32C {
                 '(' => {
                     paren_depth -= 1;
                     if paren_depth < 0 {
-                        // Found unclosed open paren - look for function name
+                        // Found the nearest unclosed open paren. This is the
+                        // innermost construct enclosing the start position,
+                        // whatever it turns out to be — an `if (`, a `while (`,
+                        // a plain grouping paren, or an actual call. It is the
+                        // answer to "what, if anything, is unclosed here";
+                        // scanning further back would only walk into earlier,
+                        // already-closed statements and misattribute this
+                        // position to an unrelated call. So resolve it here,
+                        // one way or the other, and stop.
                         let mut end = i;
                         // Skip whitespace
                         while end > 0 && chars[end - 1].is_whitespace() {
@@ -147,6 +155,7 @@ impl Pre32C {
                                 });
                             }
                         }
+                        return None;
                     }
                 }
                 _ => {}
@@ -303,11 +312,6 @@ impl Pre32C {
             if text.contains(directive) {
                 return true;
             }
-        }
-
-        // Also look for macro continuation patterns
-        if text.contains("\\") && text.contains("\n") {
-            return true;
         }
 
         false
