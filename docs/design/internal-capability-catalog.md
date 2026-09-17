@@ -325,7 +325,7 @@ the wide-character `wprintf` family). Filed and closed as task 487.
 | `is_format_function` | `(name: &str) -> bool` | `is_printf_family` or `is_scanf_family`. |
 | `is_sizeof_text` | `(expr: &str) -> bool` | Word-boundary-aware `sizeof` detection over an already-extracted text snippet (not an AST node), for rule files that operate on stringified sub-expressions rather than the AST directly. |
 | `is_win32_api` | `(name: &str, base: &str) -> bool` | `name` is the Win32 API `base` under any spelling: the `<windows.h>` macro (`CreateProcess`) or the ANSI/wide entry point it expands to (`CreateProcessA`/`W`). Real Win32 C names the variant directly at least as often as the macro — every LoadLibrary/CreateProcess in Ventoy2Disk is an A/W call — so a `== "LoadLibrary"` comparison has no recall on real code. Exact suffix, so `CreateProcessAsUserW` does not match `CreateProcess`. WIN00/02/03/30-C (task 1130); WIN05-C keeps its own per-variant table because its argument positions differ by variant. |
-| `is_memory_clearing_call` / `MEMORY_CLEARING_FUNCS` | `(name: &str) -> bool` | `memset`, `memset_s`, `explicit_bzero`, `bzero`, `SecureZeroMemory`, `RtlSecureZeroMemory`, `explicit_memset` — library calls that overwrite the buffer their FIRST argument points at. The name-level half of MEM03-C's "was this sensitive buffer cleared"; a project's own zeroize wrapper is never listed here, it is recognised by what its body does (`FunctionSummary::clears_params`, `macro_clears_param_indices`). |
+| `is_memory_clearing_call` / `MEMORY_CLEARING_FUNCS` | `(name: &str) -> bool` | `memset`, `memset_s`, `explicit_bzero`, `bzero`, `SecureZeroMemory`, `RtlSecureZeroMemory`, `explicit_memset` — library calls that overwrite the buffer their FIRST argument points at. The name-level half of MEM03-C's "was this sensitive buffer cleared"; a project's own zeroize wrapper is never listed here, it is recognized by what its body does (`FunctionSummary::clears_params`, `macro_clears_param_indices`). |
 | `is_resource_acquisition_text` | `(expr: &str) -> bool` | Word-boundary-aware `fopen`/`malloc`/`calloc`/`realloc`/`open`/`socket` detection over an already-extracted text snippet — `MEM12-C`'s broader, cross-domain (file/memory/socket) "must release on every error path" concept, distinct from `is_allocator_call`'s heap-only scope. Migrated from a text-only `.contains("fopen(")`-style check (task 499); the word-boundary requirement is new (narrows out a hypothetical `myfopen(` false-match). |
 
 **Deliberately NOT folded in here** (as of task 499): `ARR30-C`'s
@@ -526,12 +526,12 @@ a run with no `-d` (task 936).
 
 ### `src/analyze/init_state.rs` (argument-shape subset)
 **Problem solved:** what a CALL ARGUMENT names, for the "did the callee write
-this variable" question. Neighbouring `argument_objects` above, which asks
+this variable" question. Neighboring `argument_objects` above, which asks
 WHICH object an argument names as a path string so two arguments can be
 compared; these answer for a single root name and need no frame. Both credit
 funnels (`init_state`'s and `null_state`'s) and EXP33-C's read predicate now
 route through them, because when they disagreed the rule reported a variable
-read-uninitialised at the very call that fills it (task 1028, tools_sqc).
+read-uninitialized at the very call that fills it (task 1028, tools_sqc).
 
 | Function | Signature | Description |
 |---|---|---|
@@ -573,7 +573,7 @@ preprocessor.
 | `try_evaluate_range_expanding` | `(node, source, macros, var_ranges, function_macros) -> Option<ValueRange>` | `try_evaluate_range` plus expansion of function-like macro invocations, which otherwise parse as opaque calls and evaluate to nothing. A driver that extracts a register field with `IDR0_NUMSIDB_VAL(reg & IDR0_NUMSIDB)` keeps its bound only through here. Separate entry point because the table is a project fact (`ProjectContext::function_macros`) most callers don't hold and expanding costs a re-parse; the expansion is evaluated with no table of its own, since `expand_invocation` has already rescanned it. |
 | `extract_loop_var_ranges` | — | Extracts value ranges for variables bounded by enclosing `for`/`while` loop conditions (`var < BOUND`, `&&`-compound conditions). |
 | `resolve_local_var_range` | — | Scans backward in the enclosing block for assignments to a variable and evaluates the RHS as a range, tracing simple copy chains (depth-limited). |
-| `resolve_local_var_range_expanding` | `(var_name, node, source, macros, loop_ranges, function_macros) -> Option<ValueRange>` | `resolve_local_var_range` with the same expansion, for a local initialised from a macro (`int lbits = LINEBITS(s);`). Pair it with `try_evaluate_range_expanding`: a bound proved inside a `#define` still has to reach the use. |
+| `resolve_local_var_range_expanding` | `(var_name, node, source, macros, loop_ranges, function_macros) -> Option<ValueRange>` | `resolve_local_var_range` with the same expansion, for a local initialized from a macro (`int lbits = LINEBITS(s);`). Pair it with `try_evaluate_range_expanding`: a bound proved inside a `#define` still has to reach the use. |
 | `expression_fits_in_signed` / `expression_fits_in_unsigned` | `(...) -> bool` | Syntactic (macro + loop-bound + local-var) check that an expression provably fits in a signed/unsigned integer of a given bit width. |
 | `expression_fits_in_signed_vra` / `expression_fits_in_unsigned_vra` | `(...) -> bool` | CFG-based value-range-analysis version of the above, falling back to the syntactic version. |
 | `expression_overflows_signed_vra` / `expression_overflows_unsigned_vra` | `(...) -> bool` | True only when the *entire* computed range lies outside the representable band (a **definite** overflow, e.g. `INT_MAX + 1`) — deliberately stronger than `!fits_*`, since a range merely straddling the bound is only a *possible* overflow. |
@@ -678,7 +678,7 @@ condition rather than a preceding statement.
 | `condition_compares_var` | `(condition: &Node, var: &str, source: &str, kind: ComparisonKind) -> bool` | Whether a condition tests `var`: either operand order, the variable nested at any depth in an operand (`x > SIZE_MAX - n`, `p->len < n`), `!var` read as `var == 0`. |
 | `mentions_var` | `(node: &Node, var: &str, source: &str) -> bool` | `var` appears as an `identifier` under `node`. Matched on the AST node, so `c` is not found in `abc` and a `p->n` field access is not a use of `n`. |
 | `call_arg_guards` | `(call_node: &Node, source: &str) -> Vec<bool>` | Per-argument "was this bounds-checked before the call?" flags for one call site, in argument order. Only a bare variable (parens and casts peeled) can be validated: `f((word_t)i)` asks about `i`, `f(get_index(cap))` and `f(i + 1)` are `false`. Aggregating these over every call site of a function is the "which parameters do all callers already check?" summary the validate-then-act split needs -- ARR30-C's per-file `build_caller_validated_params` and the prescan's project-wide `callsite_param_validated` are the same computation at two scopes. |
-| `collect_call_arg_guards` | `(node: &Node, source: &str, out: &mut HashMap<String, Vec<Vec<bool>>>)` | `call_arg_guards` for every call through a plain identifier under `node`, keyed by callee. Walks the whole subtree rather than only `function_definition` bodies, so a per-file caller and a project-wide one summarise the same set of call sites and cannot drift. A call in a static initializer has no dominating condition and is recorded as unguarded, erring toward keeping the finding. |
+| `collect_call_arg_guards` | `(node: &Node, source: &str, out: &mut HashMap<String, Vec<Vec<bool>>>)` | `call_arg_guards` for every call through a plain identifier under `node`, keyed by callee. Walks the whole subtree rather than only `function_definition` bodies, so a per-file caller and a project-wide one summarize the same set of call sites and cannot drift. A call in a static initializer has no dominating condition and is recorded as unguarded, erring toward keeping the finding. |
 | `strip_arg_wrappers` | `(node: &Node) -> Node` | Peel parentheses and casts off one call argument. |
 | `ComparisonKind` | `Any` \| `OrderingOrExtremeEquality` | Which comparisons count. Ordering operators always do; the split is about equality, which is not one thing. For a **bounds** question `len == 5` pins `len` as well as `len < 6` does (`Any`). For an **overflow** question it usually does not — `idx == BTREE_DATA_VERSION` leaves `36 + idx*4` exactly as unbounded as before, while `n == INT_MIN` before `-n` excludes precisely the value that overflows (`OrderingOrExtremeEquality`). |
 
@@ -708,7 +708,7 @@ Preprocessor wrappers (`preproc_if`/`ifdef`/`else`/`elif`) are treated as
 block-like when scanning preceding statements: aurora-lint does not preprocess, so a
 guard and the arithmetic it protects can both sit inside one `#if` and would
 otherwise not look like siblings. Dominance is the AST approximation, not a CFG
-dominator computation — `goto` into a guarded region is not modelled — which is
+dominator computation — `goto` into a guarded region is not modeled — which is
 why this needs no CFG build per query.
 
 **Related but weaker, and NOT the same primitive:**
@@ -735,7 +735,7 @@ caller.
 
 ### `src/analyze/null_state.rs` (condition predicate)
 **Problem solved:** "does this condition test this pointer for NULL?" — the
-null-flavoured sibling of `guard_dominance`'s comparison question, and the same
+null-flavored sibling of `guard_dominance`'s comparison question, and the same
 defect one layer down. Added by task 745 after API00-C's guard classifier, which
 decided polarity by matching the condition's TEXT, both missed real guards and
 credited accidental ones.
@@ -746,7 +746,7 @@ credited accidental ones.
 
 Two properties are the whole point of it:
 
-- **Operands, not text.** A guard on a *neighbouring* pointer is never credited
+- **Operands, not text.** A guard on a *neighboring* pointer is never credited
   to this one — `!h->driver || !h->drv_priv` tests neither `h` nor a parameter
   named `addr`. Text matching failed in both directions here: `"(p &&"` never
   fires on sqlite's `if( p && ... )` brace style, while `"(sc)"` matches inside
@@ -806,7 +806,7 @@ wrapper — `free(*param)`, called as `safe_free(&p)`, so the caller's own
 variable dies and an argument match by identifier never sees it),
 `has_env03_taint_source`, `returns_tainted`,
 `closes_params`, `clears_params` (the body overwrites the parameter's pointee:
-a `MEMORY_CLEARING_FUNCS` call, a file-scope function pointer initialised
+a `MEMORY_CLEARING_FUNCS` call, a file-scope function pointer initialized
 from one — mbedtls/hostap's `static void *(*const volatile memset_func)(...)
 = memset;` idiom, which exists precisely so the call is not spelled
 `memset` — or a forward to another clearer; every `#if` arm inside the
@@ -945,7 +945,7 @@ plus a separate file-local map when it is not. `callers` is the inverted
 | `function_macros` | `HashMap<String, FunctionMacro>` | Cross-file function-like macro definitions — feeds `macro_expand.rs`. |
 | `defined_macro_names` | `HashSet<String>` | Every `#define NAME ...` object-like macro name across all scanned files, regardless of expansion — feeds DCL40-C and (as of task 475) MSC12-C's `is_known_macro`. **This is the field task 475 almost duplicated.** |
 | `unresolved_project_headers` | `HashSet<String>` | `#include` paths naming a **project** header that isn't on disk — the directory prefix resolves under a search root but the file doesn't (seL4's `<object/structures_gen.h>`, emitted at build time from an `.bf` spec; also `*.pb-c.h`, `*.tab.h`). Populated by `resolve_includes`, so it needs `-I`, not just `-d`. A system header merely off the `-I` path (`<sys/socket.h>`) does **not** land here. Non-empty means "part of this project's declarations are generated by a build step we can't run", which is what switches off DCL31-C's undeclared-call check (task 580). |
-| `restrict_params` | `HashMap<String, Vec<usize>>` | `function -> restrict-qualified parameter indices` from every scanned `.c`/`.h` (definitions and prototypes; first seen wins), built by `restrict_parameter_indices`. Read by EXP43-C through `set_project_context` so a callee prototyped in a header is judged by its real contract; the analysed file's own prototypes override it (task 1171). |
+| `restrict_params` | `HashMap<String, Vec<usize>>` | `function -> restrict-qualified parameter indices` from every scanned `.c`/`.h` (definitions and prototypes; first seen wins), built by `restrict_parameter_indices`. Read by EXP43-C through `set_project_context` so a callee prototyped in a header is judged by its real contract; the analyzed file's own prototypes override it (task 1171). |
 | `documented_nonnull_params` | `HashMap<String, Vec<usize>>` | `function -> parameter indices with a documented non-NULL precondition`, unioned over every scanned `.c`/`.h` (definition and prototype), built by `documented_nonnull_parameters`. `prescan::apply_documented_preconditions` (run after the pre-scan and after `resolve_includes`) seeds those parameters `NotNull` in `callsite_param_null_states`, overriding the call-site vote; API00-C reads it through `set_project_context` and skips those parameters (task 1171). |
 
 **Wiring pattern (the actual mechanical steps, per DCL40-C/MSC12-C):**

@@ -17,7 +17,7 @@ which one new reusable logic belongs in:
   rule-specific knowledge a CERT-C detector needs: the nitty-gritty of C
   semantics that only matters for this ruleset's defect detection.
 - aurora-lint's own utility layer (`src/utility/cert_c/*.rs`,
-  `src/analyze/*.rs`, catalogued in
+  `src/analyze/*.rs`, cataloged in
   `docs/design/internal-capability-catalog.md`) — C-specific, rule-specific
   primitives: macro expansion mechanics, declarator-chain walking, type
   resolution, and similar.

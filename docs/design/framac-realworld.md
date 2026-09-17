@@ -54,8 +54,8 @@ Getting this wrong is not loudly wrong: every EVA invocation aborts with
 failures* on libcrc rather than one configuration error.
 
 `-lib-entry` is the load-bearing flag: it tells EVA to start from an arbitrary
-function with *unknown* globals rather than from a fully-initialised program
-state. That is what makes a library function analysable at all, and it is also
+function with *unknown* globals rather than from a fully-initialized program
+state. That is what makes a library function analyzable at all, and it is also
 why the results are noisier than a whole-program run would be — EVA must
 assume a hostile caller.
 
@@ -72,7 +72,7 @@ Three bounds, all overridable by environment variable:
 
 Entry points are visited breadth-first across translation units: pass 0 gives
 every TU its first entry point, pass 1 its second, and so on. Spending the
-budget depth-first would analyse the alphabetically-first handful of files
+budget depth-first would analyze the alphabetically-first handful of files
 exhaustively and never open the rest, which is a *biased* sample of the
 codebase rather than a shallow one. A budget that runs out mid-pass still
 leaves every file represented up to the depth reached.
@@ -87,7 +87,7 @@ the code worth spending a bounded budget on first.
 plus a paren-balance check for the opening brace. It is not a parse. It does
 not have to be: its only job is to *propose* entry points, and Frama-C rejects
 a name it does not know with `cannot find entry point`, which the runner
-detects, logs and skips without counting as either a failure or an analysed
+detects, logs and skips without counting as either a failure or an analyzed
 entry. A false positive costs one fast invocation. The alternative — a
 `frama-c -metrics` pass per TU purely to enumerate functions — buys accuracy
 the harness does not need at the price of an extra process per file.
@@ -104,7 +104,7 @@ the same fileset `_count_c_source` counts: under a curated cppcheck
 over one denominator. Duplicate TUs are dropped (curl compiles `lib/` twice,
 once for the shared and once for the static library), which would otherwise
 inflate both the clock and the finding count. The filtered database is written
-next to the run's other artifacts, so what was analysed is recoverable from
+next to the run's other artifacts, so what was analyzed is recoverable from
 the results directory alone.
 
 Findings outside the checkout root are discarded — a captured TU pulls in
@@ -139,7 +139,7 @@ That is a real lua run (`MAX_ENTRIES_PER_TU=4`, 180 s budget, 144.7 s used):
 541 distinct alarms across 31 of 33 translation units, led by `unaligned
 pointer creation`, `out of bounds read` and `non-finite double value`. Note
 `partial` is true even though the budget was *not* exhausted — 5 entry points
-timed out and 9 failed, so 105 of 121 were analysed. Budget exhaustion is one
+timed out and 9 failed, so 105 of 121 were analyzed. Budget exhaustion is one
 way to be partial, not the only one.
 
 `failures` is almost entirely translation units that cannot be preprocessed
@@ -175,7 +175,7 @@ Frama-C is meant to be used, and it is what a Frama-C expert doing a
 single-project audit would do. It also yields nothing here: libcrc, raylib and
 seL4 have no `main`, and on curl, sqlite and hostap the analysis exhausts any
 budget before reaching the oracle's scope. A table of six empty cells is worse
-than a labelled partial one.
+than a labeled partial one.
 
 **Frama-C's `analysis-scripts` / `frama-c-script make-wrapper` workflow.** The
 supported route for a real codebase, and the right answer if the goal were to

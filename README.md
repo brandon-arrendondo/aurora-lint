@@ -32,7 +32,7 @@ a fallback.
 
 **CERT C is open.** The standard is public and freely implementable, so the
 rules a tool enforces can be read, argued with, and checked against the
-analyzer's behaviour by anyone. Every rule aurora-lint implements cites its CERT C
+analyzer's behavior by anyone. Every rule aurora-lint implements cites its CERT C
 entry, and the false-positive work in this repo is legible for the same
 reason — you can look up what the rule actually says.
 
@@ -51,7 +51,7 @@ code exactly as they do to anyone else's, and aurora-lint is usable alongside wh
 MISRA tooling your certification process requires.
 
 Two rules from NASA JPL's Power of Ten are also implemented alongside CERT C
-(`BRULE-060` no dynamic allocation after initialisation, `BRULE-065` no
+(`BRULE-060` no dynamic allocation after initialization, `BRULE-065` no
 excessive pointer indirection). See
 [`docs/future-rulesets.rst`](docs/future-rulesets.rst) for other open
 standards that could be added and why they were not needed first.
@@ -59,7 +59,7 @@ standards that could be added and why they were not needed first.
 ## What Makes It Different
 
 **No build system. No compilation. No `compile_commands.json` required.** Point
-aurora-lint at a directory of C source and it analyses it. It parses with tree-sitter
+aurora-lint at a directory of C source and it analyzes it. It parses with tree-sitter
 rather than driving a compiler, so it needs neither your toolchain, your
 headers, your defines, nor a working build — which means it runs on code you
 *cannot* build: a partial checkout, a vendored tree, a CI job with no
@@ -75,15 +75,15 @@ false-positive work in this repo is as substantial as the rule work.
 violation as written rather than guessing which ones you meant, so it produces
 false positives — the precision and recall above are measured against a
 hand-adjudicated oracle, not asserted. What makes that workable is that the
-noise judgement is yours: per-project rule manifests
+noise judgment is yours: per-project rule manifests
 ([configuration](docs/configuration.rst)), inline and file-scoped
 [suppression](docs/suppression.rst), and severity thresholds, so you tune it
 to your codebase instead of accepting one global verdict. That same property
 is what makes it cheap to drop into a CI gate or an AI-assisted development
 loop as a repeated check.
 
-**Scope: C.** aurora-lint analyses `.c` and `.h` against CERT C. It is not a C++
-checker — it recognises C++ constructs only well enough to avoid reporting
+**Scope: C.** aurora-lint analyzes `.c` and `.h` against CERT C. It is not a C++
+checker — it recognizes C++ constructs only well enough to avoid reporting
 nonsense on a C++ header it encounters.
 
 ## Key Features
@@ -115,8 +115,8 @@ Regenerate this table with `python -m bench render-docs --realworld-run RUN`
 after a version bump or a fresh delta-adjudication.
 
 **[NIST Juliet](https://samate.nist.gov/SARD/test-suites/112) is the headline
-number**, because its defects are planted and labelled by the suite itself —
-so a true/false positive is a fact, not a judgement. 75 CWEs, 87.1% of aurora-lint's
+number**, because its defects are planted and labeled by the suite itself —
+so a true/false positive is a fact, not a judgment. 75 CWEs, 87.1% of aurora-lint's
 findings are true positives, and 43 CWEs come back with zero false positives
 and real detections.
 
@@ -281,7 +281,7 @@ For advanced usage, CI/CD integration details, interactive UI reference, testing
 
 This project was developed with assistance from [Claude](https://claude.ai) (Anthropic). Claude was used throughout the development process for code generation, rule implementation, analysis, and documentation.
 
-Claude is deliberately not listed as a commit co-author — the acknowledgement
+Claude is deliberately not listed as a commit co-author — the acknowledgment
 belongs once, here, rather than repeated across several thousand commit
 messages. See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the people involved.
 

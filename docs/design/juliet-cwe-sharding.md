@@ -113,7 +113,7 @@ So the refactor is mechanical:
    concatenates `violations`, merges the rule dicts, then calls
    `_finalize_cwe_rates` and `_build_rule_breakdown` **exactly once**.
 3. `analyze_cwe` becomes `merge_shards([analyze_shard(d) for d in
-   search_dirs])` — identical behaviour for the unsharded path, which is
+   search_dirs])` — identical behavior for the unsharded path, which is
    what makes the equivalence gate in §6.3 meaningful.
 
 **Do not** recompute rates per shard and average them. The rates are

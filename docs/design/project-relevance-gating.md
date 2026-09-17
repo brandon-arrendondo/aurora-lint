@@ -207,7 +207,7 @@ rule set that silently changes as the codebase evolves.
   still needs a bespoke decision.
 - **Interaction with existing per-project manifests**: `conf/realworld/*.toml`
   should NOT be regenerated/overwritten by this tool once it exists — those
-  are hand-adjudicated and carry oracle-labelled history. This is a
+  are hand-adjudicated and carry oracle-labeled history. This is a
   bootstrapping tool for *new* codebases without a tailored manifest yet
   (matching the README's existing fallback: "a codebase with no entry here
   falls back to the shared benchmark base").

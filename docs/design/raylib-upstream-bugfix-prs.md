@@ -42,7 +42,7 @@ RLGL: Matrix stack overflow            <- the guard fires but does NOT prevent t
 after 33rd push: stackCounter=1088421889, currentTextureId=0x40E00000   <- both clobbered
 >>> currentTextureId is now 0x40E00000 == bit pattern of 7.0f (the Matrix payload)
 ```
-The Matrix bytes literally spill into the neighbouring `State` members. After the fix the 33rd push is
+The Matrix bytes literally spill into the neighboring `State` members. After the fix the 33rd push is
 rejected (`stackCounter` stays 32, canary intact, exit 0). Repros: `raylib_pr_artifacts/repro_bug1.c`
 (asserts/aborts before fix) + `repro_bug1_fixed.c` (clean). **PR evidence:** the before/after repro
 output above (no sanitizer line, since intra-object overflows are invisible to ASan/valgrind by default —
@@ -119,7 +119,7 @@ counter incrementing past the cap.
 > Repro (33 unbalanced pushes, struct mirrors `RLGL.State` field order): the 33rd push logs the
 > overflow but still writes `stack[32]`, overwriting the adjacent `stackCounter`/`currentTextureId`
 > members with the Matrix payload (`0x40E00000` == `7.0f`); after the fix the push is rejected and the
-> neighbours are intact. (It's an intra-object write, so default ASan/valgrind don't flag it — the
+> neighbors are intact. (It's an intra-object write, so default ASan/valgrind don't flag it — the
 > repro shows the member corruption directly.)
 
 ---
@@ -227,7 +227,7 @@ default after. All three CONTRIBUTING rules met; no CLA. PR title `[rcore]`.
 members, so a *boundary* index reads the adjacent member (intra-object) and a *large* one exits the
 global:
 - `repro_bug3.c` (faithful struct, boundary index): `GetGamepadAxisCount(4) = 0x5A5A5A5A` — leaked the
-  neighbouring `ready[0]` sentinel; `GetGamepadName(4)` returns a pointer past `name[]` into adjacent
+  neighboring `ready[0]` sentinel; `GetGamepadName(4)` returns a pointer past `name[]` into adjacent
   state (first byte `0x7F`). After fix → `0` / `(null)`.
 - `repro_bug3_asan.c` (standalone array, clean sanitizer line): `AddressSanitizer: global-buffer-overflow,
   READ of size 4 ... 0 bytes to the right of global variable 'axisCount' ... of size 16, in

@@ -215,7 +215,7 @@ gap — an omission is indistinguishable from an oversight, which is a defect th
 has actually shipped. ``scripts/check_realworld_manifests.py`` (pre-commit hook
 ``check-realworld-manifests``) asserts every manifest decides every rule, and
 that every ``enabled = false`` carries a comment naming its reason.
-``libcrc`` is fully audited (every enabled-rule finding labelled); the four
+``libcrc`` is fully audited (every enabled-rule finding labeled); the four
 large codebases grow their labels incrementally.
 
 Per-Codebase Scan Scope
@@ -264,9 +264,9 @@ denominator no longer matches what's being scanned).
 
     Audited across all nine codebases, six agree and three do not — always
     in the same direction, with the scan wider than the scope, so aurora-lint emits
-    findings that can never be labelled: **sqlite 992, mosquitto 168, curl
+    findings that can never be labeled: **sqlite 992, mosquitto 168, curl
     144**. That is 1,304 findings, roughly a fifth of that run's whole
-    unlabelled pool, unadjudicable by construction. They depress label
+    unlabeled pool, unadjudicable by construction. They depress label
     coverage permanently, with work nobody is allowed to do.
 
     The sharpest case is one category of file treated two ways in the same

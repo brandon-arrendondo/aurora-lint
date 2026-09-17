@@ -50,7 +50,7 @@ The Tools
      - v1.2.0
      - **Yes**
      - n/a (bug-type indexed)
-     - Captures a compilation, then analyses.
+     - Captures a compilation, then analyzes.
 
 Coverage Is The Difference
 ==========================
@@ -82,7 +82,7 @@ Coverage Is The Difference
    * - Frama-C
      - 6
      - supported, not yet swept
-     - Value analysis; not organised as rules
+     - Value analysis; not organized as rules
 
 .. note::
 
@@ -110,7 +110,7 @@ Coverage Is The Difference
 
 .. warning::
 
-   When those columns do land, **both are partial scans and must be labelled
+   When those columns do land, **both are partial scans and must be labeled
    as such.**
 
    *Infer* captures only what preprocesses, and reports what it could not
@@ -120,7 +120,7 @@ Coverage Is The Difference
    a database from before the stash loses whole projects (52 of pure-ftpd's
    53 translation units) and must be regenerated before the sweep.
 
-   *Frama-C* is partial by construction: EVA analyses one entry point at a
+   *Frama-C* is partial by construction: EVA analyzes one entry point at a
    time and a real codebase has no single one, so the runner walks entry
    points round-robin across translation units under a wall-clock budget. A
    Frama-C finding count is a **floor**, precision is the only defensible
@@ -322,7 +322,7 @@ Real-world suite, 8 projects, run 215:
    ``duration_s = 0.0``, so its recorded aurora-lint total is 490.9 s. The ~1,190 s
    above substitutes those two projects' run-229 figures (450.4 s and
    253.1 s), which mixes runs and is therefore not a citable number. Quoting
-   the 490.9 s would be wrong in aurora-lint's favour, which is worse. Tracked as
+   the 490.9 s would be wrong in aurora-lint's favor, which is worse. Tracked as
    benchmarking_db task 740.
 
 Frama-C and Infer have no row here yet — see the note above. For an order of
@@ -408,7 +408,7 @@ Real-World Precision, Per Rule
    clang-tidy. The runner's ``_parse_cppcheck_xml`` and
    ``_parse_clang_tidy_txt`` return a count per check id and discard file and
    line, so there is no coordinate to adjudicate — and a count cannot be
-   labelled TP or FP by anyone. Competitor real-world precision is therefore
+   labeled TP or FP by anyone. Competitor real-world precision is therefore
    unmeasured, and the Juliet table above is the only cross-tool precision
    figure that exists.
 

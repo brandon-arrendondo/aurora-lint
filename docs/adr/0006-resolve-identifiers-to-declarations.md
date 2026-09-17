@@ -86,7 +86,7 @@ current recall; a rule that guesses from spelling produces findings that
 don't describe what's actually on the line — see ADR-0005, this is
 precisely how a misfire is made.
 
-The primitives already exist and are catalogued — this is a "use it, don't
+The primitives already exist and are cataloged — this is a "use it, don't
 reinvent a name match" problem, not a missing-capability problem:
 `resolve_identifier_declarator` (used to fix INT16-C and INT02-C's
 rewrite), `resolve_field_expression_type`, `resolve_typedef_chain` /

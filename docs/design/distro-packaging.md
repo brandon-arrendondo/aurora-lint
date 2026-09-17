@@ -119,7 +119,7 @@ cargo tree -e normal | grep -iE 'tree-sitter|lang-parsing' | sort -u
 
 `tree-sitter-cpp` is present only for `cpp_header::looks_like_cpp` — deciding
 whether an ambiguous `.h` is C++ — not for any C++ analysis. Dropping it would
-be a behaviour change, not a packaging cleanup.
+be a behavior change, not a packaging cleanup.
 
 ---
 
