@@ -328,6 +328,27 @@ impl Fio47C {
         None
     }
 
+    /// Number of leading call arguments that are not format-string data
+    /// (everything up to and including the format string itself): the
+    /// buffer and size for `snprintf`/`vsnprintf`, the `FILE*`/buffer for
+    /// the rest of the `f`/`s`/`v`-prefixed family, or just the format
+    /// string for plain `printf`/`scanf`. Must match `format_arg_index` in
+    /// `extract_format_string` (skip_count is always format_arg_index + 1).
+    /// Shared by `count_arguments` and `get_data_arguments` so the two can't
+    /// diverge — they used to, and the divergence shifted every zipped
+    /// specifier/argument pair for `snprintf`/`vsnprintf` (and most of the
+    /// `s`/`v`-prefixed variants) by up to 2 positions, misattributing
+    /// mismatches to the buffer, size, or even the format string literal
+    /// itself.
+    fn data_arg_skip_count(&self, function_name: &str) -> usize {
+        match function_name {
+            "snprintf" | "vsnprintf" => 3,
+            "fprintf" | "fscanf" | "sprintf" | "sscanf" | "dprintf" | "vdprintf" | "vfprintf"
+            | "vfscanf" | "vsprintf" | "vsscanf" => 2,
+            _ => 1,
+        }
+    }
+
     /// Count actual arguments passed to the function (excluding format string)
     fn count_arguments(&self, call_node: &Node, function_name: &str) -> usize {
         if let Some(args) = call_node.child_by_field_name("arguments") {
@@ -346,17 +367,7 @@ impl Fio47C {
                 }
             }
 
-            // Subtract non-data arguments (everything up to and including format string).
-            // Must match format_arg_index logic in extract_format_string.
-            let skip_count = match function_name {
-                "snprintf" | "vsnprintf" => 3,
-                "fprintf" | "fscanf" | "sprintf" | "sscanf" | "dprintf" | "vdprintf"
-                | "vfprintf" | "vfscanf" | "vsprintf" | "vsscanf" => 2,
-                _ => 1,
-            };
-            count = count.saturating_sub(skip_count);
-
-            count
+            count.saturating_sub(self.data_arg_skip_count(function_name))
         } else {
             0
         }
@@ -458,10 +469,16 @@ impl Fio47C {
             // Make sure it's a variable declaration, not a type name or function name
             if let Some(parent) = id.parent() {
                 let parent_kind = parent.kind();
-                if parent_kind == "pointer_declarator"
+                if parent_kind == "array_declarator" {
+                    // `char buf[N]` decays to a pointer wherever it's used
+                    // as a call argument, regardless of the base type's own
+                    // pointer-ness (the decl-wide `is_pointer` check above
+                    // only looks for a literal `*` and never sees this).
+                    let var_name = get_node_text(&id, source).to_string();
+                    types.insert(var_name, TypeCategory::Pointer);
+                } else if parent_kind == "pointer_declarator"
                     || parent_kind == "init_declarator"
                     || parent_kind == "declarator"
-                    || parent_kind == "array_declarator"
                 {
                     let var_name = get_node_text(&id, source).to_string();
                     types.insert(var_name, var_type.clone());
@@ -612,12 +629,7 @@ impl Fio47C {
         let mut args = Vec::new();
 
         if let Some(arguments) = call_node.child_by_field_name("arguments") {
-            let skip_count =
-                if function_name.starts_with('f') && !function_name.starts_with("fopen") {
-                    2 // Skip FILE* and format string
-                } else {
-                    1 // Skip format string only
-                };
+            let skip_count = self.data_arg_skip_count(function_name);
 
             let mut arg_idx = 0;
             for i in 0..arguments.child_count() {

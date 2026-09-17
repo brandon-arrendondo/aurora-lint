@@ -53,6 +53,32 @@
 //! both get blanked by the same local, per-block test as the other two
 //! shapes: no cross-block pairing or guard-name matching is needed.
 //!
+//! A fourth shape (task 1193; real example: curl's `lib/vtls/openssl.c`,
+//! `ossl_connect_step2`): the guarded block's content is a *complete*,
+//! self-contained fragment -- a whole `if (...) { ... }` with nothing
+//! dangling -- but the very next real line after `#endif` is a bare
+//! `else`. The block parses cleanly in isolation, but the grammar still
+//! can't attach that trailing `else` across the intervening
+//! `preproc_ifdef` sibling to the `if` inside it:
+//! ```c
+//! if (SSL_ERROR_WANT_WRITE == detail) {
+//!   return CURLE_AGAIN;
+//! }
+//! #ifdef SSL_ERROR_WANT_RETRY_VERIFY
+//! if (SSL_ERROR_WANT_RETRY_VERIFY == detail) {
+//!   return CURLE_AGAIN;
+//! }
+//! #endif
+//! else {
+//!   ...
+//! }
+//! ```
+//! Detected independently of the other three shapes (a block can need
+//! blanking for this reason even when its own content has no dangling
+//! else at all), and of what the block's content actually is -- any
+//! self-contained `#if`/`#endif` immediately followed by a bare `else`
+//! breaks the same way, not just one wrapping an `if`.
+//!
 //! tree-sitter-c's grammar has no production for a preprocessor-conditional
 //! whose content is an incomplete statement fragment like this -- GLR error
 //! recovery doesn't just isolate a small ERROR node (as with the identifier
@@ -85,6 +111,61 @@ fn strip_trailing_line_comment(s: &str) -> &str {
         Some(idx) => s[..idx].trim_end(),
         None => s,
     }
+}
+
+/// Skip forward from `start` (inclusive) to the first line in `start..end`
+/// that is neither blank nor part of a comment -- a `//` line comment, or a
+/// `/* ... */` block comment, which may span several lines. Returns `end`
+/// if no such line exists.
+///
+/// A block-scoped comment explaining *why* the guard exists (e.g. "only
+/// available on OpenSSL version above v1.1.1") commonly sits directly
+/// before the guarded `else if`, and was previously counted as the block's
+/// "first content line" itself -- so `starts_with_bare_else` tested the
+/// comment text and failed, leaving this guard's directives unblanked even
+/// though the real leading-else shape is right underneath it (curl's
+/// lib/vtls/openssl.c, the `SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED` guard).
+fn skip_blank_and_comment_lines(lines: &[&str], start: usize, end: usize) -> usize {
+    let mut i = start;
+    let mut in_block_comment = false;
+    while i < end {
+        let trimmed = lines[i].trim();
+        if in_block_comment {
+            match trimmed.find("*/") {
+                Some(pos) => {
+                    in_block_comment = false;
+                    let rest = trimmed[pos + 2..].trim();
+                    if !rest.is_empty() && !rest.starts_with("//") {
+                        return i;
+                    }
+                }
+                None => {}
+            }
+            i += 1;
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            i += 1;
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("/*") {
+            match rest.find("*/") {
+                Some(pos) => {
+                    let after = rest[pos + 2..].trim();
+                    if !after.is_empty() && !after.starts_with("//") {
+                        return i;
+                    }
+                }
+                None => {
+                    in_block_comment = true;
+                }
+            }
+            i += 1;
+            continue;
+        }
+        return i;
+    }
+    end
 }
 
 /// True if `line` (already left-trimmed) starts with the bare keyword `else`
@@ -222,7 +303,10 @@ pub fn blank_dangling_else_preproc(source: &str) -> String {
 
         if !has_branch {
             let body = (i + 1)..end_idx;
-            let first_content = body.clone().find(|&k| !lines[k].trim().is_empty());
+            let first_content = {
+                let k = skip_blank_and_comment_lines(&lines, body.start, body.end);
+                (k < body.end).then_some(k)
+            };
             let last_content = body.clone().rev().find(|&k| !lines[k].trim().is_empty());
 
             let leading_else =
@@ -231,8 +315,30 @@ pub fn blank_dangling_else_preproc(source: &str) -> String {
             let trailing_dangling_open_brace =
                 last_content.is_some_and(|k| ends_with_dangling_else_open_brace(lines[k]));
             let lone_closing_brace = block_is_lone_closing_brace(&lines, i + 1, end_idx);
+            // Fourth shape (task 1193; curl's lib/vtls/openssl.c
+            // SSL_ERROR_WANT_ASYNC/SSL_ERROR_WANT_RETRY_VERIFY guards): the
+            // block's own content is a complete, self-contained fragment --
+            // no dangling else inside it at all -- but the very next
+            // non-blank, non-comment line *after* `#endif` is a bare
+            // `else`. That else needs to bind to the if-statement this
+            // block's `#ifdef`/`#endif` wraps, but the grammar can't reach
+            // across a `preproc_ifdef` sibling to attach it, regardless of
+            // what the block's content actually is -- so this block's
+            // directives get blanked the same way, letting the else attach
+            // to the now-adjacent statement exactly as this codebase
+            // already treats every other preproc-conditional body as
+            // unconditionally reachable.
+            let else_follows_endif = {
+                let k = skip_blank_and_comment_lines(&lines, end_idx + 1, lines.len());
+                k < lines.len() && starts_with_bare_else(lines[k].trim_start())
+            };
 
-            if leading_else || trailing_else || trailing_dangling_open_brace || lone_closing_brace {
+            if leading_else
+                || trailing_else
+                || trailing_dangling_open_brace
+                || lone_closing_brace
+                || else_follows_endif
+            {
                 blank_line(&mut out, line_starts[i], lines[i].len());
                 blank_line(&mut out, line_starts[end_idx], lines[end_idx].len());
             }
@@ -486,5 +592,108 @@ int f(void) {
         // `elsewhere_flag {` must not be mistaken for `else {` -- "else" has
         // to be its own token, not a substring/prefix of a longer identifier.
         assert!(!ends_with_dangling_else_open_brace("} elsewhere_flag {"));
+    }
+
+    #[test]
+    fn fixes_leading_else_hidden_behind_a_comment() {
+        // Real curl shape (task 1193/1151; lib/vtls/openssl.c's
+        // ossl_connect_step2, guarded by
+        // SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED): a comment explaining the
+        // guard sits between `#ifdef` and the real `else if`, which used to
+        // defeat "first content line is `else`" detection entirely --
+        // leaving the guard's directives unblanked and the whole chain
+        // unparseable.
+        let src = "\
+int f(int lib, int reason) {
+    int result;
+    if ((lib == 1) && (reason == 1)) {
+        result = 10;
+    }
+#ifdef SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED
+    /* only available on newer builds */
+    else if ((lib == 1) && (reason == 2)) {
+        result = 20;
+    }
+#endif
+    else {
+        result = 30;
+    }
+    return result;
+}
+";
+        assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn fixes_trailing_else_after_complete_guarded_if() {
+        // Real curl shape (task 1193; lib/vtls/openssl.c's
+        // ossl_connect_step2, SSL_ERROR_WANT_ASYNC/SSL_ERROR_WANT_RETRY_VERIFY):
+        // the guarded block's own content is a *complete* `if (...) { ... }`
+        // with nothing dangling inside it -- so neither leading_else nor
+        // trailing_else fires on the block itself -- but the very next line
+        // after `#endif` is a bare `else` that needs to attach to the `if`
+        // this guard wraps.
+        let src = "\
+int f(int detail) {
+    if (detail == 1) {
+        return 1;
+    }
+#ifdef SSL_ERROR_WANT_RETRY_VERIFY
+    if (detail == 2) {
+        return 1;
+    }
+#endif
+    else {
+        return 0;
+    }
+}
+";
+        assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn trailing_else_after_complete_guarded_if_preserves_byte_length_and_line_count() {
+        let src = "\
+int f(int detail) {
+    if (detail == 1) {
+        return 1;
+    }
+#ifdef SSL_ERROR_WANT_RETRY_VERIFY
+    if (detail == 2) {
+        return 1;
+    }
+#endif
+    else {
+        return 0;
+    }
+}
+";
+        let fixed = blank_dangling_else_preproc(src);
+        assert_eq!(fixed.len(), src.len());
+        assert_eq!(fixed.matches('\n').count(), src.matches('\n').count());
+        let pos_orig = src.find("return 0;").unwrap();
+        let pos_fixed = fixed.find("return 0;").unwrap();
+        assert_eq!(pos_orig, pos_fixed);
+    }
+
+    #[test]
+    fn leaves_guarded_if_not_followed_by_else_untouched() {
+        // A complete #ifdef-wrapped if-statement NOT followed by a bare
+        // `else` is not this shape at all -- must be a no-op, same
+        // discipline as `leaves_ordinary_ifdef_block_untouched`.
+        let src = "\
+int f(int detail) {
+    if (detail == 1) {
+        return 1;
+    }
+#ifdef SSL_ERROR_WANT_RETRY_VERIFY
+    if (detail == 2) {
+        return 1;
+    }
+#endif
+    return 0;
+}
+";
+        assert_eq!(blank_dangling_else_preproc(src), src);
     }
 }
