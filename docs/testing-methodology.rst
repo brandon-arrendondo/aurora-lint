@@ -427,7 +427,7 @@ hostap       430        589,724        37,432        1,761         1,710
 
 *Data from aurora-lint v0.4.120, cppcheck 2.10, clang-tidy 21.1.6 (run #118).*
 
-**Why aurora-lint reports more violations**: aurora-lint implements 311 CERT C rules, 307 enabled by default (both
+**Why aurora-lint reports more violations**: aurora-lint tracks |rules_total| CERT C rules, |rules_enabled| enabled by default (both
 advisory and mandatory) while cppcheck and clang-tidy implement ~20 checks each.
 The difference reflects rule coverage breadth, not false positive rate.
 
@@ -476,7 +476,7 @@ Apples-to-Apples Concerns
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 1. **Rule coverage**: cppcheck/clang-tidy implement ~20 checks each vs. aurora-lint's
-   307 enabled rules. Raw violation counts are not directly comparable.
+   |rules_enabled| enabled rules. Raw violation counts are not directly comparable.
 
 2. **Translation unit scope**: Use consistent scope (cross-file ``-d`` flag or
    single-file) when comparing.
@@ -692,7 +692,7 @@ planted flaw line in roughly an eighth of cases. When judging headroom, the
 flaw-hit rate is the honest signal to watch for movement, not the TP rate.
 
 Juliet also exercises only part of the rule suite — 127 rules have any
-Juliet true positive, out of 311 implemented. See "Rule-suite coverage"
+Juliet true positive, out of |rules_total| implemented. See "Rule-suite coverage"
 below for what that leaves unmeasured, and
 [``docs/juliet-history.rst``](docs/juliet-history.rst) for the full
 round-by-round version history behind the table above.
@@ -711,7 +711,7 @@ the rest of the suite is substantial (measured 2026-09-02, run #226):
    * -
      - Rules
    * - Implemented
-     - **311** (307 enabled by default)
+     - **|rules_total|** (|rules_enabled| enabled by default)
    * - Have true-positive evidence somewhere
      - **186** — 127 from Juliet, 144 from real-world TP/FN labels
    * - **No true-positive evidence anywhere**

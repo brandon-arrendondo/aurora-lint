@@ -24,7 +24,7 @@ The Tools
    * - `aurora-lint <https://github.com/brandon-arrendondo/aurora-lint>`_
      - 0.4.321 / 0.4.332
      - **No**
-     - 311 implemented
+     - |rules_enabled| implemented
      - tree-sitter, no preprocessor. Uses ``compile_commands.json`` and
        ``-I``/``-D`` when given; never requires them.
    * - `cppcheck <https://cppcheck.sourceforge.io/>`_
@@ -66,7 +66,7 @@ Coverage Is The Difference
    * - aurora-lint
      - **75**
      - 9 projects
-     - 311 CERT C rules across 17 categories
+     - |rules_total| CERT C rules across 17 categories
    * - clang-tidy
      - 15
      - 8 projects

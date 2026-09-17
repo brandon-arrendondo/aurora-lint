@@ -238,13 +238,18 @@ fn test_func_name(rule_id: &str, test_type: &str, file_name: &str) -> String {
 /// Status icon and label for a rule given its computed test total.
 ///
 /// This reports whether the default manifest ENABLES the rule, which is not
-/// the same question as whether it is implemented. Every rule with a
-/// directory under `src/rules/cert_c/` is implemented; the default manifest
-/// disables four of them (`ENV04-C`, `MSC18-C`, `MSC19-C`, `MSC25-C`), and
-/// they have implementations too. Labelling `is_enabled` as "Implemented"
-/// is what produced a docs-wide disagreement over the rule count: this file
-/// emitted "Implemented Rules: 307" while README.md said 311 implemented and
-/// 307 enabled, and both were describing the same manifest.
+/// the same question as whether it is implemented. A rule with a directory
+/// under `src/rules/cert_c/` is TRACKED, not necessarily implemented: four
+/// of them (`ENV04-C`, `MSC18-C`, `MSC19-C`, `MSC25-C`) have a directory and
+/// a manifest entry but no `.rs` file and no registration in `mod.rs` --
+/// they are tracked-but-not-implemented, not implemented-but-disabled.
+/// Labelling `is_enabled` as "Implemented" is what produced a docs-wide
+/// disagreement over the rule count: this file emitted "Implemented Rules:
+/// 307" while README.md said 311 tracked and 307 implemented and enabled,
+/// and both were describing the same manifest -- but this comment itself
+/// previously overcorrected by asserting all four HAD implementations,
+/// which is false. See `scripts/check_project_facts.py` for the current,
+/// grep-verified fact rather than trusting a number or a claim in prose.
 fn rule_status(rule: &RuleInfo, total: usize) -> (&'static str, &'static str) {
     if rule.is_enabled {
         ("✅", "Enabled")
@@ -263,7 +268,7 @@ fn render_overview(
     total_tests: usize,
 ) {
     report.push_str("## Overview\n\n");
-    report.push_str(&format!("- **Implemented Rules:** {}\n", total_rules));
+    report.push_str(&format!("- **Tracked Rules:** {}\n", total_rules));
     report.push_str(&format!(
         "- **Enabled By Default:** {} ({:.1}%)\n",
         enabled_rules,
@@ -332,7 +337,7 @@ fn render_detail_sections(report: &mut String, categories: &BTreeMap<String, Vec
 
         let enabled_count = rules.iter().filter(|r| r.is_enabled).count();
         report.push_str(&format!(
-            "**Enabled By Default:** {} / {} implemented rules ({:.1}%)\n\n",
+            "**Enabled By Default:** {} / {} tracked rules ({:.1}%)\n\n",
             enabled_count,
             rules.len(),
             (enabled_count as f64 / rules.len() as f64) * 100.0

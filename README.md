@@ -247,7 +247,7 @@ aurora-lint's case is breadth and reach, not beating clang-tidy at its fifteen:
 
 | | CERT C coverage | Juliet CWEs | Needs a build? |
 |---|---|---:|---|
-| **aurora-lint** | **311 rules implemented**, 17 categories | **75** | **No** |
+| **aurora-lint** | **307 rules implemented** (311 tracked), 17 categories | **75** | **No** |
 | clang-tidy | ~20 `cert-*` checks | 15 | Yes |
 | cppcheck | ~20 (addon) | 15 | No |
 | [Infer](https://fbinfer.com/) | bug-type indexed | 10 | Yes |

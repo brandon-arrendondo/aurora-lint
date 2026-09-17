@@ -48,7 +48,7 @@ repos:
         files: \.toml$
         verbose: true
 
-      - id: check-rule-counts
+      - id: check-project-facts
         name: rule counts match the manifest
         description: >-
           Assert every rule count claimed in README.md, the docs and the
@@ -58,8 +58,12 @@ repos:
           enabled count moves whenever a rule is toggled in the default
           manifest and nothing regenerates prose. The manifest is the source
           of truth, so enabling a rule needs no edit to this check -- only to
-          whatever doc now disagrees.
-        entry: python3 scripts/check_rule_counts.py
+          whatever doc now disagrees. Renamed from check-rule-counts
+          2026-09-17: same lint, same script (now check_project_facts.py),
+          which also exports a broader fact set via --export-json for
+          docs/conf.py and sqc_paper's cross-repo snapshot -- see that
+          script's module docstring before extending this hook's scope.
+        entry: python3 scripts/check_project_facts.py
         language: system
         pass_filenames: false
         files: '(rules_templates/rules-all\.toml|README\.md|docs/.*\.(rst|md)|src/rules/cert_c/integration\.rs)$'
