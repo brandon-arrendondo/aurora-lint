@@ -348,7 +348,11 @@ name-heuristic workaround. aurora-lint has a real, name-independent
 macro-expansion
 engine (`collect_function_macros`, `macro_nulls_param_indices` for free+null
 "safe free" macros, `macro_output_param_indices` for output-param macros),
-already wired into MEM30-C, MEM31-C, EXP33-C and DCL31-C.
+already wired into a growing list of rules. Don't trust a rule list quoted
+here or anywhere else in prose — it is exactly the kind of live number this
+file's own "Maintaining this file" section warns against, and it has
+already gone stale twice. Get the current list directly:
+`grep -rl 'macro_expand::' src/rules/`.
 `docs/design/macro-expansion.md` has the rationale and a per-rule disposition
 table; its "Status" header is stale, so trust the phase stock-takes below it.
 
