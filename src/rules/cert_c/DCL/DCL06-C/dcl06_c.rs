@@ -413,7 +413,8 @@ impl Dcl06C {
 
     /// Normalize an integer literal's text to its decimal value for comparison
     /// against well-known idiom constants, stripping unsigned/long suffixes and
-    /// resolving hex form (e.g. "0xff", "0XFF", "255UL" all normalize to "255").
+    /// resolving hex or octal form (e.g. "0xff", "0XFF", "255UL", and the C
+    /// octal literal "0377", all normalize to "255").
     fn normalize_int_literal(value: &str) -> String {
         let trimmed = value.trim();
         let stripped = trimmed.trim_end_matches(['u', 'U', 'l', 'L']);
@@ -423,6 +424,21 @@ impl Dcl06C {
             .or_else(|| stripped.strip_prefix("0X"))
         {
             if let Ok(n) = u64::from_str_radix(hex, 16) {
+                return n.to_string();
+            }
+        }
+
+        // C octal literal: a leading '0' followed by one or more further
+        // octal digits (0-7) and nothing else, e.g. "0007", "0777", "0600".
+        // A bare "0" is left alone -- its decimal and octal values are the
+        // same digit anyway, and it isn't "0" followed by more digits.
+        if stripped.len() > 1
+            && stripped.starts_with('0')
+            && stripped.as_bytes()[1..]
+                .iter()
+                .all(|b| b.is_ascii_digit() && *b < b'8')
+        {
+            if let Ok(n) = u64::from_str_radix(&stripped[1..], 8) {
                 return n.to_string();
             }
         }
@@ -458,23 +474,14 @@ impl Dcl06C {
     }
 
     fn is_acceptable_integer(&self, value: &str) -> bool {
-        // Common acceptable values: 0-10 and hex equivalents
-        matches!(
-            value,
-            "0" | "1"
-                | "2"
-                | "3"
-                | "4"
-                | "5"
-                | "6"
-                | "7"
-                | "8"
-                | "9"
-                | "10"
-                | "0x0"
-                | "0x1"
-                | "0x2"
-        )
+        // Common acceptable values: 0-10, spelled in any base. Compares the
+        // normalized decimal value rather than a fixed set of spellings, so
+        // "0x8", "0x06", "0007" (decimal 8, 6, 7) are recognized the same as
+        // "8", "6", "7" -- previously only "0x0"/"0x1"/"0x2" were accepted in
+        // hex form at all, and octal spellings were never normalized, so a
+        // small in-range value written in an unlisted base was flagged as a
+        // magic number purely because of how it was spelled, not its value.
+        matches!(Self::normalize_int_literal(value).parse::<i64>(), Ok(n) if (0..=10).contains(&n))
     }
 
     /// Find all sizeof() usages and return the variable names
