@@ -2709,42 +2709,102 @@ fn credit_clears_params(
     }
 }
 
-fn credit_frees_params(
-    calls: &[Node],
+/// Credit a single call argument as freeing whichever parameter it names
+/// (by value via `frees_params`, or through its pointee via
+/// `frees_param_pointees` for the `void **` "safe free" shape), the same
+/// classification `strip_free_argument` already gives a literal `free()`
+/// argument.
+fn credit_frees_one_arg(
+    call: &Node,
+    arg: Node,
     body: &Node,
     source: &str,
     params: &[String],
     summary: &mut FunctionSummary,
 ) {
+    let Some((target, through_pointee)) = strip_free_argument(arg) else {
+        return;
+    };
+    let arg_name = target.utf8_text(source.as_bytes()).unwrap_or("");
+    let Some(idx) = params.iter().position(|p| !p.is_empty() && p == arg_name) else {
+        return;
+    };
+    if through_pointee {
+        summary.frees_param_pointees.insert(idx);
+        return;
+    }
+    summary.frees_params.insert(idx);
+    if is_unconditionally_reached_modulo_null_guard(call, body, source, arg_name) {
+        summary.unconditional_frees_params.insert(idx);
+    }
+}
+
+/// Credit `summary.frees_params`/`frees_param_pointees` (MAY-free) and
+/// `summary.unconditional_frees_params` (MUST-free) for every call in the
+/// body that releases one of `params`.
+///
+/// Three ways a call is recognized as freeing its argument, in the same
+/// preference order as the sibling `collect_frees_param_fields` (field-level
+/// frees) uses, and for the same reason: a wrapper's own summary must
+/// reflect what it actually releases, not just literal `free(param)`, or a
+/// project-local deallocator that frees through a macro or by a name-shaped
+/// helper (`crypto_ec_key_deinit` calling `EVP_PKEY_free`, hostap's
+/// `tls_deinit`, ...) reports every caller that hands it an allocation as a
+/// leak. `propagate_transitive_frees` then carries this outward through any
+/// further wrapper chain, so fixing it here is enough — no separate
+/// crediting is needed at each transitive call site.
+///
+///  1. Literal `free` — exactly one argument, as C requires.
+///  2. A function-like macro that frees (not necessarily nulls) one of its
+///     own parameter positions (`macro_expand::macro_frees_param_indices`).
+///  3. A plain call whose name matches `ast_utils::is_deallocation_call_name`
+///     (`destroy_*`/`free_*`/`..._free`/etc.) — a name-heuristic fallback
+///     for ordinary C helper functions, where the engine has nothing to
+///     say. Every argument is a candidate, as for literal `free`.
+fn credit_frees_params(
+    calls: &[Node],
+    body: &Node,
+    source: &str,
+    params: &[String],
+    function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    summary: &mut FunctionSummary,
+) {
+    use crate::analyze::macro_expand::macro_frees_param_indices;
+    use crate::utility::cert_c::ast_utils;
+
     for &call in calls {
         let Some(function) = call.child_by_field_name("function") else {
             continue;
         };
-        if function.utf8_text(source.as_bytes()).unwrap_or("") != "free" {
-            continue;
-        }
+        let func_name = function.utf8_text(source.as_bytes()).unwrap_or("");
         let Some(arguments) = call.child_by_field_name("arguments") else {
             continue;
         };
         let mut cursor = arguments.walk();
         let real: Vec<Node> = arguments.named_children(&mut cursor).collect();
-        let [arg] = real.as_slice() else {
-            continue;
-        };
-        let Some((target, through_pointee)) = strip_free_argument(*arg) else {
-            continue;
-        };
-        let arg_name = target.utf8_text(source.as_bytes()).unwrap_or("");
-        let Some(idx) = params.iter().position(|p| !p.is_empty() && p == arg_name) else {
-            continue;
-        };
-        if through_pointee {
-            summary.frees_param_pointees.insert(idx);
+
+        if func_name == "free" {
+            let [arg] = real.as_slice() else {
+                continue;
+            };
+            credit_frees_one_arg(&call, *arg, body, source, params, summary);
             continue;
         }
-        summary.frees_params.insert(idx);
-        if is_unconditionally_reached_modulo_null_guard(&call, body, source, arg_name) {
-            summary.unconditional_frees_params.insert(idx);
+
+        let macro_idxs = macro_frees_param_indices(function_macros, func_name);
+        if !macro_idxs.is_empty() {
+            for idx in macro_idxs {
+                if let Some(&arg) = real.get(idx) {
+                    credit_frees_one_arg(&call, arg, body, source, params, summary);
+                }
+            }
+            continue;
+        }
+
+        if ast_utils::is_deallocation_call_name(func_name) {
+            for &arg in &real {
+                credit_frees_one_arg(&call, arg, body, source, params, summary);
+            }
         }
     }
 }
@@ -2766,7 +2826,7 @@ fn analyze_param_usage(
     // its free-related facts must not be unioned into the cross-file
     // summary as if they always held (task 654).
     if credit_frees {
-        credit_frees_params(&sweep.calls, body, source, params, summary);
+        credit_frees_params(&sweep.calls, body, source, params, function_macros, summary);
     }
 
     // One walk for the whole body, not one per parameter.
