@@ -77,16 +77,31 @@ impl Exp02C {
                     // Exempt guarded short-circuit idioms for both && and ||.
                     // A guard is any comparison (==, !=, <, >, <=, >=), a
                     // truthiness check, or an &&/|| chain of guards.
-                    // Exempt only when the RHS carries no assignment, compound
-                    // assignment, or increment/decrement — pure function calls
-                    // are the expected payload.
                     //   `ptr != NULL && func(ptr)`
                     //   `ptr == NULL || fallback(ptr)`
                     //   `file_size > 0 && buflen >= file_size && fseek(...)`
                     //   `len == capacity && !grow(self)`
+                    //
+                    // A second, separate exemption covers the right operand
+                    // itself: a "step" that assigns and immediately tests the
+                    // assigned value (`(x = f()) == 0`, `!(x = f())`, bare
+                    // `(x = f())`) is the standard sequential fallible-step/
+                    // abort-chain idiom this codebase family uses throughout
+                    // init and crypto sequences (each `||`/`&&` link runs only
+                    // once every earlier one has succeeded/failed, which is
+                    // the entire point). The assigned value being what the
+                    // chain's own boolean logic tests means a skipped step
+                    // isn't a silent miss the way an un-tested mutation would
+                    // be. `is_step_pattern` deliberately does not cover
+                    // increment/decrement/compound-assignment: unlike a
+                    // capture-and-test assignment, those depend on prior
+                    // state, so a skipped occurrence (e.g. a guarded counter
+                    // increment) is a real correctness risk, not a
+                    // self-contained test, and must stay flagged.
                     if let Some(left) = node.child_by_field_name("left") {
                         if self.is_guard_pattern(&left, source)
-                            && !self.has_mutation_side_effects(&right, source)
+                            && (self.is_step_pattern(&right, source)
+                                || !self.has_mutation_side_effects(&right, source))
                         {
                             return;
                         }
@@ -178,6 +193,48 @@ impl Exp02C {
                             continue;
                         }
                         return self.is_guard_pattern(&child, source);
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if `node` is an assign-and-test "step": a plain assignment (`=`)
+    /// used directly, or wrapped in at most one level of negation/comparison/
+    /// parens, as the boolean value tested by `&&`/`||` — `(x = f()) == 0`,
+    /// `!(x = f())`, bare `(x = f())`. Deliberately does not match
+    /// `update_expression` (`++`/`--`) or `compound_assignment_expr`
+    /// (`+=`, etc.): those mutate based on prior state rather than capturing
+    /// a fresh return value, so a skipped occurrence isn't fully accounted
+    /// for by the surrounding boolean test the way a captured assignment is.
+    fn is_step_pattern(&self, node: &Node, source: &str) -> bool {
+        match node.kind() {
+            "assignment_expression" => true,
+            "unary_expression" => node
+                .child_by_field_name("argument")
+                .is_some_and(|arg| self.is_step_pattern(&arg, source)),
+            "binary_expression" => {
+                let is_comparison = node
+                    .child_by_field_name("operator")
+                    .map(|op| get_node_text(&op, source))
+                    .is_some_and(|op| matches!(op, "==" | "!=" | "<" | ">" | "<=" | ">="));
+                is_comparison
+                    && (node
+                        .child_by_field_name("left")
+                        .is_some_and(|l| self.is_step_pattern(&l, source))
+                        || node
+                            .child_by_field_name("right")
+                            .is_some_and(|r| self.is_step_pattern(&r, source)))
+            }
+            "parenthesized_expression" => {
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        if matches!(child.kind(), "(" | ")") {
+                            continue;
+                        }
+                        return self.is_step_pattern(&child, source);
                     }
                 }
                 false
