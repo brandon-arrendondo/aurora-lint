@@ -153,7 +153,7 @@ produce identical Juliet numbers — see the re-measurement note below.</p></td>
 <td><p>v1.2.0</p></td>
 <td><p><strong>Yes</strong></p></td>
 <td><p>n/a (bug-type indexed)</p></td>
-<td><p>Captures a compilation, then analyses.</p></td>
+<td><p>Captures a compilation, then analyzes.</p></td>
 </tr>
 </tbody>
 </table>
@@ -198,7 +198,7 @@ produce identical Juliet numbers — see the re-measurement note below.</p></td>
 <tr class="row-even"><td><p>Frama-C</p></td>
 <td><p>6</p></td>
 <td><p>supported, not yet swept</p></td>
-<td><p>Value analysis; not organised as rules</p></td>
+<td><p>Value analysis; not organized as rules</p></td>
 </tr>
 </tbody>
 </table>
@@ -227,7 +227,7 @@ column, and neither does the Speed table below.</p>
 </div>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
-<p>When those columns do land, <strong>both are partial scans and must be labelled
+<p>When those columns do land, <strong>both are partial scans and must be labeled
 as such.</strong></p>
 <p><em>Infer</em> captures only what preprocesses, and reports what it could not
 in each run’s <code class="docutils literal notranslate"><span class="pre">coverage</span></code> block.  On a database
@@ -235,7 +235,7 @@ in each run’s <code class="docutils literal notranslate"><span class="pre">cov
 (see <code class="docutils literal notranslate"><span class="pre">docs/benchmark-setup.rst</span></code>) that is the whole in-scope set;
 a database from before the stash loses whole projects (52 of pure-ftpd’s
 53 translation units) and must be regenerated before the sweep.</p>
-<p><em>Frama-C</em> is partial by construction: EVA analyses one entry point at a
+<p><em>Frama-C</em> is partial by construction: EVA analyzes one entry point at a
 time and a real codebase has no single one, so the runner walks entry
 points round-robin across translation units under a wall-clock budget. A
 Frama-C finding count is a <strong>floor</strong>, precision is the only defensible
@@ -469,7 +469,7 @@ and not needing your build.</strong></p>
 <code class="docutils literal notranslate"><span class="pre">duration_s</span> <span class="pre">=</span> <span class="pre">0.0</span></code>, so its recorded aurora-lint total is 490.9 s. The ~1,190 s
 above substitutes those two projects’ run-229 figures (450.4 s and
 253.1 s), which mixes runs and is therefore not a citable number. Quoting
-the 490.9 s would be wrong in aurora-lint’s favour, which is worse. Tracked as
+the 490.9 s would be wrong in aurora-lint’s favor, which is worse. Tracked as
 benchmarking_db task 740.</p>
 </div>
 <p>Frama-C and Infer have no row here yet — see the note above. For an order of
@@ -560,7 +560,7 @@ same defect on aurora-lint’s own count is task 910.</p>
 clang-tidy. The runner’s <code class="docutils literal notranslate"><span class="pre">_parse_cppcheck_xml</span></code> and
 <code class="docutils literal notranslate"><span class="pre">_parse_clang_tidy_txt</span></code> return a count per check id and discard file and
 line, so there is no coordinate to adjudicate — and a count cannot be
-labelled TP or FP by anyone. Competitor real-world precision is therefore
+labeled TP or FP by anyone. Competitor real-world precision is therefore
 unmeasured, and the Juliet table above is the only cross-tool precision
 figure that exists.</p>
 <p>cppcheck additionally needs a native-id-to-CERT-C mapping (or

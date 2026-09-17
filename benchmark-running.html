@@ -339,7 +339,7 @@ gap — an omission is indistinguishable from an oversight, which is a defect th
 has actually shipped. <code class="docutils literal notranslate"><span class="pre">scripts/check_realworld_manifests.py</span></code> (pre-commit hook
 <code class="docutils literal notranslate"><span class="pre">check-realworld-manifests</span></code>) asserts every manifest decides every rule, and
 that every <code class="docutils literal notranslate"><span class="pre">enabled</span> <span class="pre">=</span> <span class="pre">false</span></code> carries a comment naming its reason.
-<code class="docutils literal notranslate"><span class="pre">libcrc</span></code> is fully audited (every enabled-rule finding labelled); the four
+<code class="docutils literal notranslate"><span class="pre">libcrc</span></code> is fully audited (every enabled-rule finding labeled); the four
 large codebases grow their labels incrementally.</p>
 </section>
 <section id="per-codebase-scan-scope">
@@ -384,9 +384,9 @@ adjudicate), and the <code class="docutils literal notranslate"><span class="pre
 two claim to derive from).</p>
 <p>Audited across all nine codebases, six agree and three do not — always
 in the same direction, with the scan wider than the scope, so aurora-lint emits
-findings that can never be labelled: <strong>sqlite 992, mosquitto 168, curl
+findings that can never be labeled: <strong>sqlite 992, mosquitto 168, curl
 144</strong>. That is 1,304 findings, roughly a fifth of that run’s whole
-unlabelled pool, unadjudicable by construction. They depress label
+unlabeled pool, unadjudicable by construction. They depress label
 coverage permanently, with work nobody is allowed to do.</p>
 <p>The sharpest case is one category of file treated two ways in the same
 suite: curl excludes <code class="docutils literal notranslate"><span class="pre">include/**</span></code> here, so its installed public

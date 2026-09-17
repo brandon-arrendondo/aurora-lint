@@ -190,7 +190,7 @@ writes:
   the database there, so every in-scope translation unit preprocesses.  A
   ``capture_failures`` list that is not empty means a database written
   before that existed — re-run the playbook, which detects and rebuilds it.
-- **Frama-C** is partial by construction, because EVA analyses one entry
+- **Frama-C** is partial by construction, because EVA analyzes one entry
   point at a time and a real codebase has no single one.  Read
   ``docs/design/framac-realworld.md`` before quoting any Frama-C real-world
   number: a finding count from it is a floor, and recall is not expressible

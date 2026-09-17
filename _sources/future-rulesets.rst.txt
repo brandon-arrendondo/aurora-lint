@@ -14,7 +14,7 @@ you know why MISRA is not what aurora-lint implements. It is a fit-to-domain cho
 not a fallback:
 
 - **CERT C is open.** Public and freely implementable, so every rule aurora-lint
-  enforces can be read and checked against the analyzer's behaviour. That is
+  enforces can be read and checked against the analyzer's behavior. That is
   load-bearing for this repo specifically: the false-positive work is
   reviewable because a reader can look up what the rule actually says, and the
   ground-truth oracle's TP/FP verdicts are arguable against a published text
@@ -41,11 +41,11 @@ The Power of 10 Rules (NASA JPL, 2006)
 
 Created by Gerard J. Holzmann at NASA's Jet Propulsion Laboratory, these 10
 rules eliminate C coding practices that make code difficult to review or
-statically analyse. They complement MISRA C guidelines.
+statically analyze. They complement MISRA C guidelines.
 
 1. **Restrict control flow** — avoid complex flow constructs like ``goto`` and recursion.
 2. **Fixed loop bounds** — all loops must have fixed upper bounds (prevents runaway code).
-3. **No dynamic memory after init** — do not use dynamic memory allocation after initialisation.
+3. **No dynamic memory after init** — do not use dynamic memory allocation after initialization.
 4. **Function size limits** — no function longer than ~60 lines (one printed page).
 5. **Assertion density** — average at least two assertions per function.
 6. **Limited scope** — declare all data objects at the smallest possible scope.
@@ -57,7 +57,7 @@ statically analyse. They complement MISRA C guidelines.
 .. note::
 
    **Rules 3 and 9 are already implemented**, as ``BRULE-060`` (no dynamic
-   memory allocation after initialisation) and ``BRULE-065`` (no excessive
+   memory allocation after initialization) and ``BRULE-065`` (no excessive
    pointer indirection) in ``src/rules/brules/``. They are the only non-CERT-C
    rules aurora-lint ships, and they are enabled through
    ``src/rules/brules/rules-all.toml`` rather than the CERT C manifests. The
@@ -76,7 +76,7 @@ Multi-threading / Concurrency
 -----------------------------
 
 - Use IPC messages for task communication; avoid callbacks.
-- Task synchronisation shall not be performed through task delays.
+- Task synchronization shall not be performed through task delays.
 - Data objects in shared memory should have a single owning task with explicit ownership transfer.
 - Avoid semaphores/locks; if used, avoid nested use.
 - Use memory protection, safety margins, and barrier patterns.
@@ -107,12 +107,12 @@ The JPL standard consulted numerous earlier standards including:
 BARR-C Embedded C Coding Standard
 ===================================
 
-Barr Group's standard minimises bugs in firmware by focusing on practical rules.
-BARR-C:2018 has been fully harmonised with MISRA C:2012 in its stylistic rules.
+Barr Group's standard minimizes bugs in firmware by focusing on practical rules.
+BARR-C:2018 has been fully harmonized with MISRA C:2012 in its stylistic rules.
 Key embedded-specific areas:
 
 - Proper use of the ``volatile`` keyword for hardware registers and ISR-accessed variables.
-- File naming and organisation conventions.
+- File naming and organization conventions.
 - Comment standards.
 - Specific brace placement rules selected to reduce bugs.
 
@@ -122,7 +122,7 @@ Candidate Rules for Implementation
 Core Safety Rules (Pre-MISRA)
 -----------------------------
 
-- No dynamic memory allocation after initialisation
+- No dynamic memory allocation after initialization
 - No recursion
 - Fixed upper bounds on all loops
 - No ``goto``, ``setjmp``, ``longjmp``
@@ -149,6 +149,6 @@ Multi-threading Safety (JPL-specific)
 -------------------------------------
 
 - IPC-based task communication (not shared memory)
-- No task delays for synchronisation
+- No task delays for synchronization
 - Single-owner model for shared data
 - Avoid or strictly control semaphore use

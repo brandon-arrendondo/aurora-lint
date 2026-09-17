@@ -296,7 +296,7 @@ database still references (pure-ftpd’s <code class="docutils literal notransla
 the database there, so every in-scope translation unit preprocesses.  A
 <code class="docutils literal notranslate"><span class="pre">capture_failures</span></code> list that is not empty means a database written
 before that existed — re-run the playbook, which detects and rebuilds it.</p></li>
-<li><p><strong>Frama-C</strong> is partial by construction, because EVA analyses one entry
+<li><p><strong>Frama-C</strong> is partial by construction, because EVA analyzes one entry
 point at a time and a real codebase has no single one.  Read
 <code class="docutils literal notranslate"><span class="pre">docs/design/framac-realworld.md</span></code> before quoting any Frama-C real-world
 number: a finding count from it is a floor, and recall is not expressible
