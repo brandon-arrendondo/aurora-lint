@@ -403,10 +403,45 @@ impl Int01C {
 
                 // If it's a variable name that looks like a size but isn't size_t
                 // We detect this by checking if it's used in allocation context
-                // and has a size-related name
-                let size_related = ["length", "len", "size", "count", "sz", "n"]
+                // and has a size-related name.
+                //
+                // "n" is checked separately, per identifier token, against the
+                // Hungarian-notation shape this codebase family actually uses for
+                // count/size locals: bare `n`/`N`, a short two-letter abbreviation
+                // (`nc`, `nb`), or lowercase `n` immediately followed by an
+                // uppercase letter or digit (`nNew`, `nBytes`, `nReq`, `n2`) —
+                // rather than via substring on the whole argument text.
+                // `.contains("n")` over the whole text matches almost any
+                // identifier that has the letter anywhere in it (context,
+                // CMD_CONNECT, NULL, nodes, lpString, an SQLITE_OPEN_*_JOURNAL
+                // flag, ...), which picks the wrong argument out of the call and
+                // stops there (`return` below), never reaching the real size
+                // expression later in the same call — while still requiring one
+                // of these shapes (not a bare substring) keeps matching the very
+                // common `nNew`/`nBytes`/`nc`-style names that a plain "is it
+                // exactly 'n'" token check would otherwise miss, without also
+                // matching ordinary words that merely start with 'n'
+                // (`nodes`, `name`, `null`, `new`). The multi-character words
+                // don't have the wrong-argument problem to nearly the same
+                // degree, so they keep substring matching to still catch size
+                // words fused into a larger identifier (`blksize`, `payloadlen`).
+                let arg_lower = arg_text.to_lowercase();
+                let size_related = ["length", "len", "size", "count", "sz"]
                     .iter()
-                    .any(|&name| arg_text.to_lowercase().contains(name));
+                    .any(|&name| arg_lower.contains(name))
+                    || arg_text.split(|c: char| !c.is_alphanumeric()).any(|token| {
+                        if token.eq_ignore_ascii_case("n") {
+                            return true;
+                        }
+                        if !token.starts_with('n') {
+                            return false;
+                        }
+                        token.len() == 2
+                            || token
+                                .chars()
+                                .nth(1)
+                                .is_some_and(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                    });
 
                 if size_related {
                     // This is a heuristic - the variable name suggests a size
