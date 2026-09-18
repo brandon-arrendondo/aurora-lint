@@ -605,6 +605,70 @@ pub fn is_in_preproc_condition(node: &Node) -> bool {
     false
 }
 
+/// Whether the byte at `offset` sits on a preprocessor directive's *logical*
+/// line: the physical line it is on, or the first line of a backslash-continued
+/// run ending in it, begins (ignoring leading whitespace) with `#`.
+///
+/// The text-level companion to [`is_in_preproc_condition`], and the one to
+/// reach for when a rule is misreading a directive. They answer the same
+/// question on different inputs and neither subsumes the other:
+///
+/// - [`is_in_preproc_condition`] asks the *tree*, and is exact when tree-sitter
+///   built a `preproc_if` with a `condition` field.
+/// - This asks the *source*, and still works when it did not.
+///
+/// That distinction is the whole point. tree-sitter has no preprocessor, so a
+/// directive it cannot place is absorbed into an `ERROR` node — and then there
+/// is no `preproc_if`, no `condition` field, and nothing for the tree-level
+/// predicate to match. Measured on the real corpus (aurora_lint 1272/1284):
+/// `is_in_preproc_condition` answers `false` at *every* site where a rule was
+/// actually misreading a directive as C, because the parse damage that confuses
+/// the rule is the same damage that destroyed the nodes. A directive intact
+/// enough for the tree-level check was never the one misfiring. So a rule
+/// fixing this class needs this predicate, not that one — see ADR-0008.
+///
+/// Answers `false` for the guarded BODY of a directive, which is ordinary
+/// runtime code: body lines do not start with `#`. That is the same boundary
+/// [`is_in_preproc_condition`] draws, and the reason neither is a blanket
+/// "is this near a preprocessor" test.
+///
+/// Continuation lines are followed upward because only the first line of a
+/// multi-line `#if A && \` / `B` carries the `#`, and a rule can land on any
+/// of them.
+///
+/// Not folded into `analyze::unknown_identifier_recovery::line_is_preprocessor_directive`
+/// or `analyze::embedded_js_blank::on_directive_line`, which look similar: both
+/// are pre-parse passes with deliberately different bounds (the latter examines
+/// only the text *before* the byte, so it answers `false` when the byte is the
+/// `#` itself), and neither follows continuations. Changing them to satisfy a
+/// rule-layer caller would alter passes that run before parsing.
+pub fn is_on_preproc_directive_line(source: &str, offset: usize) -> bool {
+    let offset = offset.min(source.len());
+    let mut line_start = source[..offset].rfind('\n').map_or(0, |i| i + 1);
+
+    // Walk up through backslash-continued predecessors to the logical line's
+    // real first line, which is the only one carrying the `#`.
+    while line_start > 0 {
+        let prev_newline = line_start - 1;
+        let prev_start = source[..prev_newline].rfind('\n').map_or(0, |i| i + 1);
+        // Tolerate trailing whitespace after the backslash: C requires the
+        // backslash immediately before the newline, but real headers carry
+        // aligned continuations and compilers accept them with a warning.
+        if source[prev_start..prev_newline].trim_end().ends_with('\\') {
+            line_start = prev_start;
+        } else {
+            break;
+        }
+    }
+
+    // Bound the slice to this line. Trimming the rest of the file instead would
+    // skip over blank lines and read a later line's `#`.
+    let line_end = source[line_start..]
+        .find('\n')
+        .map_or(source.len(), |i| line_start + i);
+    source[line_start..line_end].trim_start().starts_with('#')
+}
+
 // ============================================================================
 // Identifier Extraction from Declarators
 // ============================================================================

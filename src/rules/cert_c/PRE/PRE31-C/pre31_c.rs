@@ -2,7 +2,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -87,6 +87,14 @@ impl Pre31C {
         violations: &mut Vec<RuleViolation>,
     ) {
         for call_node in query::find_descendants_of_kind(*node, "call_expression") {
+            // `#if defined(MBEDTLS_KEY_EXCHANGE_RSA_ENABLED)` is not a macro
+            // INVOCATION. When tree-sitter absorbs the directive into an ERROR,
+            // `defined(X)` reparses as a call_expression and the condition's
+            // other operands read as its "arguments" — so the rule reports a
+            // side effect in an argument list that does not exist (ADR-0008).
+            if ast_utils::is_on_preproc_directive_line(source, call_node.start_byte()) {
+                continue;
+            }
             self.check_macro_call(&call_node, source, function_macros, violations);
         }
     }

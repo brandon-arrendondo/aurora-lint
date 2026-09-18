@@ -1,6 +1,6 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, is_on_preproc_directive_line};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -32,6 +32,13 @@ impl CertRule for Exp13C {
 
         // Check for binary expressions with relational or equality operators
         for bin_node in query::find_descendants_of_kind(*node, "binary_expression") {
+            // A `#if ... __has_include(<dlfcn.h>)` whose directive tree-sitter
+            // absorbed into an ERROR reparses as ordinary operators: the `<`
+            // and `>` delimiting the header name read as a relational chain.
+            // There is no runtime comparison on the line at all (ADR-0008).
+            if is_on_preproc_directive_line(source, bin_node.start_byte()) {
+                continue;
+            }
             if let Some(operator_node) = bin_node.child_by_field_name("operator") {
                 let operator = get_node_text(&operator_node, source);
 

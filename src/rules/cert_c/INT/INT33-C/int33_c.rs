@@ -350,6 +350,14 @@ impl Int33C {
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
     ) {
+        // A `/` inside a preprocessor directive tree-sitter could not place is
+        // not a division: `#if __has_include(<sys/socket.h>)` reparses with the
+        // header PATH's separator as an operator, yielding "division by
+        // 'socket'". No arithmetic is evaluated on a directive line (ADR-0008).
+        if ast_utils::is_on_preproc_directive_line(source, node.start_byte()) {
+            return;
+        }
+
         // INT33-C concerns INTEGER divide-by-zero (UB). Floating-point division
         // by zero is well-defined (yields inf/nan), so skip when either operand
         // is float-typed — matching C's usual-arithmetic-conversion rules.
