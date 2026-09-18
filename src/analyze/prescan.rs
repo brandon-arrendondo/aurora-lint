@@ -324,8 +324,38 @@ pub fn prescan_directories(
 /// reimplementation of it being clean (task 951, this repo).
 #[cfg(test)]
 pub fn prescan_single_file(path: &Path, needs_vra: bool) -> Result<ProjectContext> {
-    let is_header = path.extension().and_then(|ext| ext.to_str()) == Some("h");
-    prescan_file_list(vec![(path.to_path_buf(), is_header)], 1, None, needs_vra)
+    prescan_files(vec![path.to_path_buf()], None, needs_vra)
+}
+
+/// Build a [`ProjectContext`] from an explicit list of `.c`/`.h` files,
+/// exactly as a `-d` prescan of a directory holding those files would.
+///
+/// This is what a scan with no `-d` runs over its own target: the scan set
+/// itself (plus, for a single-file target, its sibling headers — see
+/// [`sibling_headers`]), so the analysis has seen the definitions in the very
+/// files it is about to check. Before this, a no-`-d` run built no context at
+/// all for its target and flagged constructs that were clean the moment the
+/// same directory was named with `-d` (task 980). `-d` stays what it is: a way
+/// to add context from *outside* the target.
+pub fn prescan_files(
+    files: Vec<PathBuf>,
+    progress: Option<&dyn ProgressReporter>,
+    needs_vra: bool,
+) -> Result<ProjectContext> {
+    // A `.h` target names itself twice (once as the scan set, once among its
+    // own sibling headers, spelled `foo.h` vs `./foo.h`); prescanning it twice
+    // would double every call-site vote it holds. Dedupe on the resolved path
+    // and keep the first spelling.
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let all_files: Vec<(PathBuf, bool)> = files
+        .into_iter()
+        .filter(|p| seen.insert(std::fs::canonicalize(p).unwrap_or_else(|_| p.clone())))
+        .map(|p| {
+            let is_header = p.extension().and_then(|ext| ext.to_str()) == Some("h");
+            (p, is_header)
+        })
+        .collect();
+    prescan_file_list(all_files, 1, progress, needs_vra)
 }
 
 /// Shared by [`prescan_directories`] and [`prescan_single_file`] so that a
@@ -786,39 +816,23 @@ fn compute_concurrency_reachable(
     )
 }
 
-/// Scan only the `.h` files directly inside `parent_dir` to collect public API
-/// function declarations.
+/// Every `.h` file under `parent_dir`, for a single-file target's prescan.
 ///
-/// This is a lightweight alternative to [`prescan_directories`] used when aurora-lint
-/// is given a single `.c` file with no explicit `-d` directories.  It populates
-/// only `header_declared_functions` — the data needed by DCL15-C and DCL19-C to
-/// distinguish intentionally-public API from internal helpers.  It intentionally
-/// does **not** populate `known_functions`, `function_summaries`, or any other
-/// cross-file field, so rules that require those (DCL31-C, EXP34-C, …) continue
-/// to require an explicit `-d` flag.
-pub fn prescan_sibling_headers(parent_dir: &str) -> Result<ProjectContext> {
-    let mut context = ProjectContext::new();
-    let mut parser = CParser::new()?;
-
-    for entry in WalkDir::new(parent_dir)
+/// A lone `.c` file almost never stands without the headers beside it, so a
+/// no-`-d` scan of one file prescans those headers alongside the file itself
+/// (via [`prescan_files`]). Populating `header_declared_functions` is what
+/// lets DCL15-C and DCL19-C tell intentionally-public API from internal
+/// helpers; the rest of the header context (typedefs, macros, struct fields)
+/// comes along on the same pipeline a `-d` prescan uses, so the two can never
+/// drift. A header that can only be C++ is dropped later by `process_file`
+/// (task 571).
+pub fn sibling_headers(parent_dir: &str) -> Vec<PathBuf> {
+    WalkDir::new(parent_dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("h"))
-    {
-        if let Ok((tree, source)) = parser.parse_file(&entry.path().to_string_lossy()) {
-            // Skip a header that can only be C++ (task 571).
-            if lang_parsing_substrate::looks_like_cpp(source.as_bytes()) {
-                continue;
-            }
-            collect_header_declarations(
-                &tree.root_node(),
-                &source,
-                Arc::make_mut(&mut context.header_declared_functions),
-            );
-        }
-    }
-
-    Ok(context)
+        .map(|e| e.path().to_path_buf())
+        .collect()
 }
 
 /// Collect function declarations (prototypes) from a header file.
