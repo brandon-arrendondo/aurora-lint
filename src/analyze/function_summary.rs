@@ -2802,9 +2802,36 @@ fn credit_frees_params(
         }
 
         if ast_utils::is_deallocation_call_name(func_name) {
-            for &arg in &real {
-                credit_frees_one_arg(&call, arg, body, source, params, summary);
+            // A name shape is a guess, not evidence: this tier exists
+            // precisely because the callee has no body to read. Two limits
+            // keep the guess defensible.
+            //
+            // The callee must be spelled as a plain identifier. In
+            // `writer->cwt->do_close(data, writer)` the `_close` belongs to a
+            // struct FIELD holding a function pointer; the name says nothing
+            // about which function actually runs, so the shape is not even
+            // evidence about the right callee.
+            if function.kind() != "identifier" {
+                continue;
             }
+            // Exactly one argument may name a parameter. The wrappers this
+            // tier is for release one object (`EVP_PKEY_free(key)`), and an
+            // argument that is not a bare parameter name (`sizeof(*ctx)` in
+            // `bin_clear_free(ctx, sizeof(*ctx))`) never resolves anyway. But
+            // when SEVERAL arguments name parameters, the name says nothing
+            // about which one is released, and crediting them all makes the
+            // summary claim the function frees parameters it merely reads --
+            // curl's `Curl_cwriter_free(data, writer)` then reports every
+            // caller's `data` as freed (task 1197).
+            let mut resolving = real.iter().filter(|&&arg| {
+                strip_free_argument(arg)
+                    .map(|(t, _)| t.utf8_text(source.as_bytes()).unwrap_or(""))
+                    .is_some_and(|n| params.iter().any(|p| !p.is_empty() && p == n))
+            });
+            let (Some(&arg), None) = (resolving.next(), resolving.next()) else {
+                continue;
+            };
+            credit_frees_one_arg(&call, arg, body, source, params, summary);
         }
     }
 }
