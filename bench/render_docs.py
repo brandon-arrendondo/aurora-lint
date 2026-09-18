@@ -309,7 +309,7 @@ def render_readme_highlights(db: BenchDBLike, juliet_run_id: str,
         "(zero false positives, with real detections) |",
         f"| **Per-File Detection** | {ca['per_file_rate_pct']}% "
         f"({ca['per_file_detected']:,} / {ca['per_file_total']:,} files) |",
-        f"| **Real-World Precision / Recall** | {overall['precision_pct']}% / "
+        f"| **Real-World Precision / Recall (vs. known TPs)** | {overall['precision_pct']}% / "
         f"{overall['recall_pct']}% (v{rw_run['sqc_version']}, run #{realworld_run_id}, "
         f"{coverage_pct}% label coverage) |",
         f"| **Real-World Projects** | {', '.join(projects)} |",

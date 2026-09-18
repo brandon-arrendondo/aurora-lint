@@ -108,7 +108,7 @@ Measured, not asserted. Two benchmarks, both with published methodology.
 | **Juliet CWEs Scanned** | 79 (fast mode, CWE-matched rules) |
 | **100% Precision CWEs** | 41 (zero false positives, with real detections) |
 | **Per-File Detection** | 39.5% (19,857 / 50,256 files) |
-| **Real-World Precision / Recall** | 52.5% / 96.9% (v0.4.336, run #265, 76.1% label coverage) |
+| **Real-World Precision / Recall (vs. known TPs)** | 52.5% / 96.9% (v0.4.336, run #265, 76.1% label coverage) |
 | **Real-World Projects** | curl, hostap, libcrc, lua, mbedtls, mosquitto, pure-ftpd, raylib, seL4, sqlite, valkey, Ventoy |
 | **Basis** | `distinct/scored-projects/in_scope` (definitions `1`) |
 <!-- BENCH:HIGHLIGHTS:END -->
@@ -129,9 +129,13 @@ LLM for most labels, by hand for the rest. Real
 code is messier than a test suite and the precision figure reflects that.
 
 > **Recall is measured against *known* true positives**, not against all
-> defects present. No exhaustive false-negative hunt sits behind it — past
-> audits scoped their searches to specific bug categories — so true recall is
-> unknown and lower than the figure above.
+> defects present — the known-TP set is built mostly from the tool's own
+> adjudicated findings plus scoped audit hunts, so the figure is labeled-TP
+> retention (a regression guard), not recall. No exhaustive false-negative
+> hunt sits behind it, so true recall is unknown and lower than the figure
+> above. The one detection figure the tool had no hand in assembling is
+> Juliet's flaw-hit rate — the share of planted flaw lines it flags — which
+> is far lower; the two measure different things and belong side by side.
 
 How both numbers are produced, what they exclude, and why the Juliet
 true-positive rate is not the whole story:
