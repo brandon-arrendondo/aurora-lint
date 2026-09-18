@@ -59,6 +59,7 @@ use crate::utility::cert_c::ast_utils::{
     find_containing_for_loop, find_containing_function, find_containing_if_statement,
     find_enclosing_declaration_for_identifier, find_identifier_in_declarator,
     get_identifier_from_declarator, get_node_text, is_address_of_expression,
+    resolve_identifier_declarator,
 };
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::guard_dominance::{
@@ -130,6 +131,11 @@ pub struct Arr30C {
     /// function's own locals doesn't re-run the whole-file regex scan once
     /// per function. Cleared per file.
     cached_typedefs: RefCell<HashMap<String, usize>>,
+    /// This file's macro/enum/const constants (`collect_constants`), the
+    /// same table the prescan sizes symbolic array bounds with, kept so
+    /// `buffer_in_scope_at` can size a re-resolved declaration identically
+    /// without every caller threading the table through. Cleared per file.
+    cached_file_constants: RefCell<HashMap<String, i64>>,
 }
 
 /// Represents an index value that can be constant or variable
@@ -325,6 +331,7 @@ impl CertRule for Arr30C {
 
             // Collect macro/enum/const constants for loop bound resolution
             let macro_constants = self.collect_constants(node, source);
+            *self.cached_file_constants.borrow_mut() = macro_constants.clone();
 
             self.check_with_buffer_info(
                 node,
@@ -357,6 +364,7 @@ impl Arr30C {
             global_scope_buffers: RefCell::new(HashMap::new()),
             null_sentinel_macros: RefCell::new(HashSet::new()),
             cached_typedefs: RefCell::new(HashMap::new()),
+            cached_file_constants: RefCell::new(HashMap::new()),
         }
     }
 
@@ -1098,6 +1106,104 @@ impl Arr30C {
             .find(|s| !s.is_empty())?;
 
         Some(identifier.to_string())
+    }
+
+    /// The tracked buffer that `name` denotes AT `ident_node`, resolved by
+    /// scope rather than by spelling (ADR-0006).
+    ///
+    /// `buffers` is keyed by name, and one function may declare a name more
+    /// than once: valkey-cli.c's reshard prompt has `char buf[6]`, `char
+    /// buf[255]` and `char buf[4]` in three blocks, and server.c's backlog
+    /// check has `int mib[3]` and `int mib[2]` in mutually exclusive `#elif`
+    /// branches. The per-function prescan keeps whichever declaration it saw
+    /// LAST, so every `buf` access was reported against `buf[4]` and every
+    /// `mib` access against `mib[2]` -- a size that is not the one on the
+    /// line (task 1273; a misfire per ADR-0005).
+    ///
+    /// Resolve the occurrence to its declaration. An entry recorded on that
+    /// declaration's line is the one in scope, and stays (it may carry a
+    /// later realloc). Otherwise:
+    /// - an array declarator fixes its bound at the declaration, so the
+    ///   bound is read from there and the entry is ignored;
+    /// - a pointer declared here is sized by a later allocation, so the entry
+    ///   stands only if that allocation lies within this declaration's scope;
+    /// - failing both, nothing is known about this occurrence: silence, not
+    ///   a guess from spelling.
+    ///
+    /// An occurrence that does not resolve to a `declaration` -- a parameter,
+    /// a struct member, a name only a header declares -- keeps the name-keyed
+    /// entry, since there is nothing in this file to check it against.
+    ///
+    /// `occurrence` must be the bare `identifier` node itself. A member
+    /// access (`s.arg[7]`) names a field, not a variable, and resolving its
+    /// spelling against the enclosing scopes would bind it to an unrelated
+    /// local of the same name -- the same defect in the other direction --
+    /// so anything but an identifier keeps the entry untouched. A caller
+    /// working from parsed text passes whatever node it has; a non-identifier
+    /// is simply not resolved.
+    fn buffer_in_scope_at(
+        &self,
+        name: &str,
+        occurrence: &Node,
+        source: &str,
+        buffers: &HashMap<String, BufferInfo>,
+    ) -> Option<BufferInfo> {
+        let entry = buffers.get(name);
+        if occurrence.kind() != "identifier" {
+            return entry.cloned();
+        }
+        let Some((decl, declarator)) = resolve_identifier_declarator(occurrence, name, source)
+        else {
+            return entry.cloned();
+        };
+        // A declarator left behind by a mis-parsed initializer (the GNU
+        // register-asm form, task 912) cannot size a buffer here either.
+        if decl.kind() != "declaration" || Self::declarator_split_by_parse_error(&decl, source) {
+            return entry.cloned();
+        }
+        let decl_line = decl.start_position().row + 1;
+        if let Some(e) = entry {
+            if e.allocation_line == decl_line {
+                return Some(e.clone());
+            }
+        }
+
+        if declarator.kind() == "array_declarator" {
+            let mut buffer = self.extract_buffer_from_array_declarator(&declarator, source)?;
+            if let BufferSize::Symbolic(ref sym) = buffer.size {
+                if let Some(&value) = self.cached_file_constants.borrow().get(sym) {
+                    buffer.size = BufferSize::Static(value as usize);
+                }
+            }
+            return Some(buffer);
+        }
+
+        // Declared here as a pointer and sized elsewhere: the entry is this
+        // variable's only if its allocation sits inside the declaring block
+        // (preprocessor conditionals are textual, not a scope, so walk
+        // through them to the enclosing block).
+        let e = entry?;
+        let mut scope = decl.parent()?;
+        while scope.kind().starts_with("preproc_") {
+            scope = scope.parent()?;
+        }
+        let scope_end = scope.end_position().row + 1;
+        (e.allocation_line >= decl_line && e.allocation_line <= scope_end).then(|| e.clone())
+    }
+
+    /// The `idx`-th argument of call expression `call` when it is a bare
+    /// identifier -- the only argument shape [`Self::buffer_in_scope_at`]
+    /// can resolve. Counts arguments the way [`Self::get_function_arguments`]
+    /// does, so the index matches its returned text.
+    fn argument_identifier_node<'a>(&self, call: &Node<'a>, idx: usize) -> Option<Node<'a>> {
+        let args = (0..call.child_count())
+            .filter_map(|i| call.child(i))
+            .find(|c| c.kind() == "argument_list")?;
+        (0..args.child_count())
+            .filter_map(|j| args.child(j))
+            .filter(|a| !matches!(a.kind(), "(" | ")" | ","))
+            .nth(idx)
+            .filter(|a| a.kind() == "identifier")
     }
 
     /// Get the subscript index value (constant or variable)
@@ -2481,7 +2587,13 @@ impl Arr30C {
                         (array_name.as_str(), None)
                     };
 
-                if let Some(buffer_info) = buffers.get(actual_buffer_name) {
+                // Resolve the name to the declaration in scope at this
+                // access, not to whichever same-named declaration the
+                // prescan saw last (task 1273).
+                let resolved = node.child(0).and_then(|array_node| {
+                    self.buffer_in_scope_at(actual_buffer_name, &array_node, source, buffers)
+                });
+                if let Some(buffer_info) = resolved.as_ref() {
                     // Calculate effective buffer size for cast pointers
                     let effective_size =
                         Self::effective_buffer_size(buffer_info, element_size_bytes);
@@ -3750,7 +3862,13 @@ impl Arr30C {
                     (ptr_name.as_str(), None)
                 };
 
-            if let Some(buffer_info) = buffers.get(actual_buffer_name) {
+            let resolved = self.buffer_in_scope_at(
+                actual_buffer_name,
+                &node.child_by_field_name("left").unwrap_or(*node),
+                source,
+                buffers,
+            );
+            if let Some(buffer_info) = resolved.as_ref() {
                 match &buffer_info.size {
                     BufferSize::Static(size) | BufferSize::DynamicCalculated(size) => {
                         if let OffsetValue::Constant(off) = offset {
@@ -6841,7 +6959,15 @@ impl Arr30C {
                 let src_text = args[1].trim();
 
                 // Check if destination is a tracked buffer
-                if let Some(dest_info) = buffers.get(dest_name) {
+                if let Some(dest_info) = self
+                    .buffer_in_scope_at(
+                        dest_name,
+                        &self.argument_identifier_node(node, 0).unwrap_or(*node),
+                        source,
+                        buffers,
+                    )
+                    .as_ref()
+                {
                     // Provably safe by source content length: when the source
                     // buffer was filled by a memset whose content (+ null
                     // terminator) fits the destination, the copy cannot
@@ -6868,7 +6994,15 @@ impl Arr30C {
                     let src_size = if src_text.starts_with('"') {
                         // String literal - count characters (rough estimate)
                         Some(src_text.len() - 2) // Subtract quotes, actual length may vary
-                    } else if let Some(src_info) = buffers.get(src_text) {
+                    } else if let Some(src_info) = self
+                        .buffer_in_scope_at(
+                            src_text,
+                            &self.argument_identifier_node(node, 1).unwrap_or(*node),
+                            source,
+                            buffers,
+                        )
+                        .as_ref()
+                    {
                         // Source is also a tracked buffer
                         match src_info.size {
                             BufferSize::Static(s) | BufferSize::DynamicCalculated(s) => Some(s),
@@ -6936,7 +7070,15 @@ impl Arr30C {
                 let dest_name = args[0].trim();
                 let src_text = args[1].trim();
 
-                if let Some(dest_info) = buffers.get(dest_name) {
+                if let Some(dest_info) = self
+                    .buffer_in_scope_at(
+                        dest_name,
+                        &self.argument_identifier_node(node, 0).unwrap_or(*node),
+                        source,
+                        buffers,
+                    )
+                    .as_ref()
+                {
                     // Provably safe by source content length: a strcat into a
                     // freshly-emptied destination whose source was memset to a
                     // length that fits cannot overflow. Mirrors the strcpy gate
@@ -6989,7 +7131,15 @@ impl Arr30C {
                 let dest_name = args[0].trim();
                 let count_expr = args[2].trim();
 
-                if let Some(dest_info) = buffers.get(dest_name) {
+                if let Some(dest_info) = self
+                    .buffer_in_scope_at(
+                        dest_name,
+                        &self.argument_identifier_node(node, 0).unwrap_or(*node),
+                        source,
+                        buffers,
+                    )
+                    .as_ref()
+                {
                     // Provably safe by source content length: when the count is
                     // `strlen(src)`/`wcslen(src)`, the bytes copied equal the
                     // source's actual string length, not its buffer capacity.
@@ -7073,7 +7223,15 @@ impl Arr30C {
                 let src_name = args[1].trim();
                 let count_expr = args[2].trim();
 
-                if let Some(dest_info) = buffers.get(dest_name) {
+                if let Some(dest_info) = self
+                    .buffer_in_scope_at(
+                        dest_name,
+                        &self.argument_identifier_node(node, 0).unwrap_or(*node),
+                        source,
+                        buffers,
+                    )
+                    .as_ref()
+                {
                     // Try to parse count — handle plain numbers, N*sizeof(T), and sizeof(src) patterns
                     let count = if let Ok(c) = count_expr.parse::<usize>() {
                         Some(c)
@@ -7089,7 +7247,15 @@ impl Arr30C {
                         }
                     } else if count_expr.contains("sizeof") {
                         // sizeof(src) pattern — use source buffer size
-                        if let Some(src_info) = buffers.get(src_name) {
+                        if let Some(src_info) = self
+                            .buffer_in_scope_at(
+                                src_name,
+                                &self.argument_identifier_node(node, 1).unwrap_or(*node),
+                                source,
+                                buffers,
+                            )
+                            .as_ref()
+                        {
                             match src_info.size {
                                 BufferSize::Static(s) | BufferSize::DynamicCalculated(s) => Some(s),
                                 _ => None,
@@ -7165,7 +7331,15 @@ impl Arr30C {
             if !args.is_empty() {
                 let dest_name = args[0].trim();
 
-                if let Some(dest_info) = buffers.get(dest_name) {
+                if let Some(dest_info) = self
+                    .buffer_in_scope_at(
+                        dest_name,
+                        &self.argument_identifier_node(node, 0).unwrap_or(*node),
+                        source,
+                        buffers,
+                    )
+                    .as_ref()
+                {
                     // Only flag for known-size buffers; Dynamic-sized buffers can't be proven unsafe
                     if matches!(
                         dest_info.size,
@@ -7198,7 +7372,15 @@ impl Arr30C {
             if !args.is_empty() {
                 let dest_name = args[0].trim();
 
-                if let Some(dest_info) = buffers.get(dest_name) {
+                if let Some(dest_info) = self
+                    .buffer_in_scope_at(
+                        dest_name,
+                        &self.argument_identifier_node(node, 0).unwrap_or(*node),
+                        source,
+                        buffers,
+                    )
+                    .as_ref()
+                {
                     violations.push(self.create_library_violation(
                         node,
                         dest_name,
