@@ -988,7 +988,7 @@ impl RuleRegistry {
         registry.register(Box::new(dcl10_c::Dcl10C));
         registry.register(Box::new(dcl11_c::Dcl11C));
         registry.register(Box::new(dcl12_c::Dcl12C));
-        registry.register(Box::new(dcl13_c::Dcl13C));
+        registry.register(Box::new(dcl13_c::Dcl13C::new()));
         registry.register(Box::new(dcl15_c::Dcl15C::default()));
         registry.register(Box::new(env30_c::ENV30C));
         registry.register(Box::new(dcl16_c::Dcl16C));

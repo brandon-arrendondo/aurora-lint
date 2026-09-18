@@ -969,7 +969,10 @@ pub fn macro_nulls_param_indices(table: &HashMap<String, FunctionMacro>, name: &
 
 /// Parameter indices that a function-like macro **writes through**: either a
 /// whole-object assignment (`(param) = …`, same as
-/// [`macro_output_param_indices`]) or a write through the pointer/array itself
+/// [`macro_output_param_indices`]), a whole-object read-modify-write
+/// (`param += …`, `param ^= …`, `param++` — [`is_compound_assignment_target`];
+/// pure-ftpd's `CHACHA20_QUARTERROUND(A,B,C,D)` touches `A` and `C` only this
+/// way, task 1254), or a write through the pointer/array itself
 /// — `param->field = …`, `param[i] = …`, `*param = …`. The latter forms are
 /// deliberately *excluded* from `macro_output_param_indices` because they
 /// presuppose `param` already holds a valid address (relevant to EXP33-C's
@@ -1001,7 +1004,10 @@ pub fn macro_writes_param_indices(
     };
     let mut out = Vec::new();
     for (i, sent) in sentinels.iter().enumerate() {
-        if is_whole_assignment_target(&expanded, sent) || writes_through_pointer(&expanded, sent) {
+        if is_whole_assignment_target(&expanded, sent)
+            || is_compound_assignment_target(&expanded, sent)
+            || writes_through_pointer(&expanded, sent)
+        {
             out.push(i);
         }
     }
@@ -1637,6 +1643,64 @@ fn is_whole_assignment_target(text: &str, ident: &str) -> bool {
     find_assignment_targets(text, ident, |_| true)
 }
 
+/// True if `ident` appears in `text` as the whole-object target of a compound
+/// assignment or an increment/decrement: `ident += …`, `(ident) <<= …`,
+/// `ident++`, `--ident`. Deliberately a separate predicate from
+/// [`is_whole_assignment_target`] rather than a widening of it:
+/// [`macro_output_param_indices`] uses that one to prove an argument is *only
+/// written* (so an uninitialized scalar may be passed there), and a
+/// read-modify-write reads the object first. Deref/field/subscript forms
+/// (`*ident += …`, `ident->f++`, `ident[i] |= …`) are excluded by the same
+/// look-back as the plain-assignment scan; [`writes_through_pointer`] owns
+/// those.
+fn is_compound_assignment_target(text: &str, ident: &str) -> bool {
+    const COMPOUND_OPS: [&str; 10] = ["+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="];
+    let chars: Vec<char> = text.chars().collect();
+    let id: Vec<char> = ident.chars().collect();
+    let (n, m) = (chars.len(), id.len());
+    if m == 0 {
+        return false;
+    }
+    let mut i = 0;
+    while i + m <= n {
+        if chars[i..i + m] == id[..] {
+            let prev_ok = i == 0 || !is_ident_char(chars[i - 1]);
+            let next_ok = i + m >= n || !is_ident_char(chars[i + m]);
+            // Same look-back as `find_assignment_targets`: a `*`, `.` or `->`
+            // just before the (possibly parenthesized) identifier makes this a
+            // deref/field access, which reads `ident` rather than assigning it.
+            let mut b = i;
+            while b > 0 && (chars[b - 1].is_whitespace() || chars[b - 1] == '(') {
+                b -= 1;
+            }
+            let prev_c = if b > 0 { chars[b - 1] } else { ' ' };
+            let arrow = b >= 2 && chars[b - 1] == '>' && chars[b - 2] == '-';
+            if prev_ok && next_ok && prev_c != '.' && prev_c != '*' && !arrow {
+                // Prefix increment/decrement: `++ident` / `--(ident)`.
+                if b >= 2
+                    && ((chars[b - 1] == '+' && chars[b - 2] == '+')
+                        || (chars[b - 1] == '-' && chars[b - 2] == '-'))
+                {
+                    return true;
+                }
+                let mut j = i + m;
+                while j < n && (chars[j].is_whitespace() || chars[j] == ')') {
+                    j += 1;
+                }
+                let rest: String = chars[j..(j + 3).min(n)].iter().collect();
+                if rest.starts_with("++") || rest.starts_with("--") {
+                    return true;
+                }
+                if COMPOUND_OPS.iter().any(|op| rest.starts_with(op)) {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
 /// True if `ident` appears in `text` as a whole-object assignment whose
 /// right-hand side is the null pointer constant (`NULL` or `0`) — i.e.
 /// `ident = NULL` / `(ident) = 0`. See [`macro_nulls_param_indices`].
@@ -1700,6 +1764,39 @@ mod tests {
         let mut p = CParser::new().unwrap();
         let (tree, src) = p.parse_source(src).unwrap();
         collect_function_macros(&tree.root_node(), &src)
+    }
+
+    #[test]
+    fn writes_param_indices_sees_compound_assignment_and_increment() {
+        // pure-ftpd alt_arc4random.c (task 1254): A and C are only ever
+        // read-modify-written; B and D get a plain assignment as well.
+        let t = table(concat!(
+            "#define ROTL32(x, b) (uint32_t)(((x) << (b)) | ((x) >> (32 - (b))))\n",
+            "#define CHACHA20_QUARTERROUND(A, B, C, D) \\\n",
+            "    A += B;                               \\\n",
+            "    D = ROTL32(D ^ A, 16);                \\\n",
+            "    C += D;                               \\\n",
+            "    B = ROTL32(B ^ C, 12)\n",
+            "#define BUMP(n) ((n)++)\n",
+            "#define PRE(n) (--n)\n",
+            "#define READS(n) ((n) + 1)\n",
+        ));
+        assert_eq!(
+            macro_writes_param_indices(&t, "CHACHA20_QUARTERROUND"),
+            vec![0, 1, 2, 3]
+        );
+        assert_eq!(macro_writes_param_indices(&t, "BUMP"), vec![0]);
+        assert_eq!(macro_writes_param_indices(&t, "PRE"), vec![0]);
+        assert!(macro_writes_param_indices(&t, "READS").is_empty());
+        // `*(p) += 1` writes THROUGH p (writes_through_pointer's business), and
+        // must not be reported as a whole-object compound write of p itself.
+        assert!(!is_compound_assignment_target("(*(p) += 1)", "p"));
+        // The output-argument predicate must stay strict: a compound
+        // assignment reads its target first.
+        assert_eq!(
+            macro_output_param_indices(&t, "CHACHA20_QUARTERROUND"),
+            vec![1, 3]
+        );
     }
 
     #[test]

@@ -1,11 +1,39 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::points_to::lvalue_of;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::{ast_utils, declarator_utils};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::Node;
 
-pub struct Dcl13C;
+pub struct Dcl13C {
+    /// Function-like macro definitions from the prescan (project-wide, the
+    /// scan target included). A macro invocation parses as a
+    /// `call_expression`, and an element lvalue passed to it --
+    /// `CHACHA20_QUARTERROUND(st[0], st[4], …)` -- is a write to `st` when
+    /// the macro body assigns that parameter, which no real function call
+    /// with the same shape could be (task 1254). Handle only, per the
+    /// project-context convention in `docs/design/internal-capability-catalog.md`.
+    function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
+}
+
+impl Dcl13C {
+    pub fn new() -> Self {
+        Self {
+            function_macros: RefCell::new(Arc::new(HashMap::new())),
+        }
+    }
+}
+
+impl Default for Dcl13C {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CertRule for Dcl13C {
     fn rule_id(&self) -> &'static str {
@@ -28,8 +56,13 @@ impl CertRule for Dcl13C {
         "DCL13-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.function_macros.borrow_mut() = context.function_macros.clone();
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+        let macros = self.function_macros.borrow();
 
         // Check all function definitions and declarations
         for found in
@@ -37,7 +70,13 @@ impl CertRule for Dcl13C {
         {
             match found.kind() {
                 "function_definition" => {
-                    check_function_definition(&found, source, &mut violations, self.rule_id());
+                    check_function_definition(
+                        &found,
+                        source,
+                        &macros,
+                        &mut violations,
+                        self.rule_id(),
+                    );
                 }
                 "declaration" => {
                     // Check for function declarations (prototypes)
@@ -93,6 +132,7 @@ fn find_name_in_declarator(node: &Node, source: &str) -> Option<String> {
 fn check_function_definition(
     func_node: &Node,
     source: &str,
+    macros: &HashMap<String, FunctionMacro>,
     violations: &mut Vec<RuleViolation>,
     rule_id: &str,
 ) {
@@ -124,13 +164,13 @@ fn check_function_definition(
         // Check if this parameter is modified in the function body
         // Also check through local pointer aliases (e.g., `T *cur = param;`)
         let is_modified = if let Some(body_node) = body {
-            if is_pointer_param_modified(&body_node, &param_name, source) {
+            if is_pointer_param_modified(&body_node, &param_name, source, macros) {
                 true
             } else {
                 let aliases = collect_pointer_aliases(&body_node, &param_name, source);
                 aliases
                     .iter()
-                    .any(|alias| is_pointer_param_modified(&body_node, alias, source))
+                    .any(|alias| is_pointer_param_modified(&body_node, alias, source, macros))
             }
         } else {
             false // No body, assume not modified
@@ -349,7 +389,12 @@ fn call_writes_into_param_field(call_node: &Node, param_name: &str, source: &str
 }
 
 /// Check if a pointer parameter is modified in the function body
-fn is_pointer_param_modified(body: &Node, param_name: &str, source: &str) -> bool {
+fn is_pointer_param_modified(
+    body: &Node,
+    param_name: &str,
+    source: &str,
+    macros: &HashMap<String, FunctionMacro>,
+) -> bool {
     query::find_first_descendant(*body, |node| {
         // Check if this is an assignment where LHS writes through param
         if node.kind() == "assignment_expression" {
@@ -383,7 +428,8 @@ fn is_pointer_param_modified(body: &Node, param_name: &str, source: &str) -> boo
         // Check if param is passed to a function that may modify it
         if node.kind() == "call_expression"
             && (is_param_passed_to_modifying_call(&node, param_name, source)
-                || call_writes_into_param_field(&node, param_name, source))
+                || call_writes_into_param_field(&node, param_name, source)
+                || macro_writes_param_lvalue(&node, param_name, source, macros))
         {
             return true;
         }
@@ -391,6 +437,61 @@ fn is_pointer_param_modified(body: &Node, param_name: &str, source: &str) -> boo
         false
     })
     .is_some()
+}
+
+/// An element/field/deref lvalue of `param` (`param[i]`, `param->f`,
+/// `*param`) handed to a function-like macro whose body assigns that
+/// parameter is a write to what `param` points at.
+///
+/// This is the one call shape [`is_param_passed_to_modifying_call`] rightly
+/// ignores for a real function -- `f(st[0])` passes a *value*, so `f` cannot
+/// touch `st` -- but a macro substitutes the argument text, so
+/// `CHACHA20_QUARTERROUND(st[0], st[4], st[8], st[12])` expanding to
+/// `st[0] += st[4]; …` writes `st` on every invocation (pure-ftpd
+/// `alt_arc4random.c`, task 1254). Which parameters a macro assigns comes
+/// from `macro_expand::macro_writes_param_indices`, which expands the body
+/// (nested macros included) rather than pattern-matching its text here. A
+/// bare `param` argument is not this function's concern: the generic
+/// unknown-callee rule already treats it as potentially modified.
+fn macro_writes_param_lvalue(
+    call_node: &Node,
+    param_name: &str,
+    source: &str,
+    macros: &HashMap<String, FunctionMacro>,
+) -> bool {
+    if macros.is_empty() {
+        return false;
+    }
+    let name = match call_node.child_by_field_name("function") {
+        Some(f) if f.kind() == "identifier" => ast_utils::get_node_text(&f, source).to_string(),
+        _ => return false,
+    };
+    if !macros.contains_key(&name) {
+        return false;
+    }
+    let written = macro_expand::macro_writes_param_indices(macros, &name);
+    if written.is_empty() {
+        return false;
+    }
+    let args = match call_node.child_by_field_name("arguments") {
+        Some(a) => a,
+        None => return false,
+    };
+    let mut index = 0usize;
+    for i in 0..args.child_count() {
+        let arg = match args.child(i) {
+            Some(a) => a,
+            None => continue,
+        };
+        if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
+            continue;
+        }
+        if written.contains(&index) && is_write_through_param(&arg, param_name, source) {
+            return true;
+        }
+        index += 1;
+    }
+    false
 }
 
 /// True if `left` is a struct-field target (e.g. `container->buf`,
