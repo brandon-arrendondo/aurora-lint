@@ -2847,6 +2847,15 @@ impl Int30C {
         right_name: &str,
         source: &str,
     ) -> bool {
+        // The short-circuit check runs FIRST, because it re-derives the operand
+        // names from the node with casts peeled. The validity test below sees
+        // the caller's RAW text, so `db->size - (size_t) offset` fails it --
+        // and that is exactly the corpus shape this guard exists for
+        // (pureftpd puredb/src/puredb_read.c:307).
+        if self.short_circuit_guards_subtraction(node, source) {
+            return true;
+        }
+
         // Apply when both operands are valid operand expressions (simple identifiers
         // or field expressions like ctx->field, obj.member)
         if !self.is_valid_operand_expr(left_name) || !self.is_valid_operand_expr(right_name) {
@@ -2913,6 +2922,65 @@ impl Int30C {
                 break;
             }
             current = parent;
+        }
+        false
+    }
+
+    /// `if (offset > size || len > size - offset)` and
+    /// `if (n >= 8 && n % 8 == 0) { n -= 8; }`: a guard evaluated as an earlier
+    /// operand of the same short-circuit expression.
+    ///
+    /// Polarity is the whole point and is delegated, not guessed:
+    /// [`guard_dominance::dominating_condition_branch`] reports `true` for the
+    /// right operand of `&&` (the left ran and was true) and `false` for `||`
+    /// (the left ran and was false). A condition known FALSE proves
+    /// `left >= right` when the condition itself says `right >= left`, which is
+    /// the same implication the else-branch arm above already relies on.
+    ///
+    /// Operands are peeled with [`guard_dominance::strip_arg_wrappers`] before
+    /// comparison so the cast in `db->size - (size_t) offset` does not defeat
+    /// the name match -- the corpus instance this was written for.
+    fn short_circuit_guards_subtraction(&self, node: &Node, source: &str) -> bool {
+        let (Some(left), Some(right)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) else {
+            return false;
+        };
+        let left_peeled = guard_dominance::strip_arg_wrappers(&left);
+        let right_peeled = guard_dominance::strip_arg_wrappers(&right);
+        let left_name = get_node_text(&left_peeled, source);
+        let right_name = get_node_text(&right_peeled, source);
+        let (left_name, right_name) = (left_name.trim(), right_name.trim());
+        if !self.is_valid_operand_expr(left_name) || !self.is_valid_operand_expr(right_name) {
+            return false;
+        }
+
+        for cond in guard_dominance::dominating_conditions(node) {
+            // Only a condition reached through a short-circuit operand is new
+            // here; the enclosing-`if` shapes are the ancestor walk's job and
+            // re-answering them from this side would double-count.
+            if cond
+                .parent()
+                .is_none_or(|p| p.kind() != "binary_expression")
+            {
+                continue;
+            }
+            let Some(branch) = guard_dominance::dominating_condition_branch(&cond, node) else {
+                continue;
+            };
+            let cond_text = get_node_text(&cond, source);
+            let proved = if branch {
+                // Known true: the condition itself must say left >= right.
+                self.condition_implies_a_gte_b(&cond_text, left_name, right_name)
+            } else {
+                // Known false: its negation says left >= right when the
+                // condition says right >= left.
+                self.condition_implies_a_gte_b(&cond_text, right_name, left_name)
+            };
+            if proved {
+                return true;
+            }
         }
         false
     }
