@@ -1,6 +1,6 @@
 ---
 # Ansible playbook: base development environment for a node that will work
-# on tools_sqc itself (not just run benchmarks).
+# on aurora-lint itself (not just run benchmarks).
 #
 # Covers the three things CLAUDE.md/docs/benchmark-setup.rst assume are
 # already present but never actually provision:
@@ -63,14 +63,14 @@
 #   ansible-playbook playbooks/setup-dev-environment.yml -i "localhost," -c local \
 #     --ask-become-pass -e install_disk_guard=false
 
-- name: Set up a tools_sqc development node
+- name: Set up an aurora-lint development node
   hosts: all
   vars:
     project_dir: "{{ playbook_dir }}/.."
     # The sibling benchmarking repo, which since 2026-09-03 keeps its OWN
     # todo-sqlite-cli.db and therefore needs the same repo-local git config as
     # this one. Skipped silently when not present: a node that only clones
-    # tools_sqc is a supported setup, and most are.
+    # aurora-lint is a supported setup, and most are.
     benchmarking_db_dir: "{{ playbook_dir }}/../../benchmarking_db"
     # Override with -e dev_venv=... (e.g. an existing venv shared across
     # repos, like ~/data-enterprise/venv) to install into it instead of

@@ -10,7 +10,7 @@
 # compile_commands.json embeds absolute paths (directory + file), so it is
 # NOT portable between machines with a different bench_root -- that's why
 # this is a playbook you run on each node rather than a file checked into
-# tools_sqc's git history. Output lands inside each project's own checkout
+# aurora-lint's git history. Output lands inside each project's own checkout
 # (<bench_root>/<name>/compile_commands.json), untracked by that project's
 # git repo -- harmless there since `python -m bench corpus-check` (task 619)
 # only flags untracked/ignored *.c/*.h files, never *.json. Juliet's is
