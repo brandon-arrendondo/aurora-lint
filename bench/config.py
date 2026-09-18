@@ -61,6 +61,15 @@ _load_dotenv(PROJECT_DIR / ".env")
 # playbooks/setup-benchmark-repos.yml; see docs/benchmark-setup.rst.
 BENCH_ROOT = Path(os.environ.get("SQC_BENCH_ROOT", str(Path.home() / "toolchain"))).expanduser()
 
+# AURORA_LINT_SRC_ROOT (env var or .env) is the parent directory of the SOURCE
+# clones -- this repo is $AURORA_LINT_SRC_ROOT/aurora-lint, and a maintainer
+# node keeps benchmarking_db and sqc_paper beside it. Nothing under bench/
+# needs it to find THIS checkout (PROJECT_DIR is resolved from these files),
+# so a clone anywhere works with it unset; it exists so the docs' commands and
+# playbooks/setup-dev-environment.yml have one name for where the clones are.
+# Defaults to this checkout's own parent.
+SRC_ROOT = Path(os.environ.get("AURORA_LINT_SRC_ROOT", str(PROJECT_DIR.parent))).expanduser()
+
 # ── Juliet test suite ─────────────────────────────────────────────────────────
 JULIET_BASE = BENCH_ROOT / "benchmarks" / "juliet-test-suite-c" / "testcases"
 

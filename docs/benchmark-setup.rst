@@ -31,6 +31,19 @@ do not live in ``~/toolchain``, ``BENCH_ROOT`` silently resolves to a
 directory that does not exist. ``python -m bench corpus-check`` reports the
 resolved root and says so outright.
 
+A second, separate root names where the *source* clones are:
+``$AURORA_LINT_SRC_ROOT`` is the parent directory of this checkout
+(``$AURORA_LINT_SRC_ROOT/aurora-lint``), and on a maintainer node of the
+sibling ``benchmarking_db`` and ``sqc_paper`` clones too. It defaults to the
+checkout's own parent, so nothing here requires it; the copy-pasteable
+commands below use it so they hold on every node regardless of where the
+clone lives (``~/data`` is the conventional value, and the ``.env.example``
+default):
+
+.. code-block:: bash
+
+    export AURORA_LINT_SRC_ROOT=~/data   # parent of your aurora-lint clone
+
 Installing Comparison Tools
 ---------------------------
 
@@ -486,7 +499,7 @@ aurora-lint
 .. code-block:: bash
 
     # Build
-    cd ~/data/aurora-lint
+    cd $AURORA_LINT_SRC_ROOT/aurora-lint
     cargo build --release
 
     # Basic run
@@ -497,7 +510,7 @@ aurora-lint
 
     # When running from outside the aurora-lint repo, pass --manifest explicitly
     ./target/release/aurora-lint /path/to/source/ \
-      --manifest ~/data/aurora-lint/rules_templates/rules-all.toml \
+      --manifest $AURORA_LINT_SRC_ROOT/aurora-lint/rules_templates/rules-all.toml \
       --export results.json
 
 cppcheck
@@ -547,9 +560,9 @@ libcrc
 .. code-block:: bash
 
     # aurora-lint
-    ~/data/aurora-lint/target/release/aurora-lint ~/data/comparisons/libcrc \
+    $AURORA_LINT_SRC_ROOT/aurora-lint/target/release/aurora-lint ~/data/comparisons/libcrc \
       -d ~/data/comparisons/libcrc \
-      --manifest ~/data/aurora-lint/rules_templates/rules-all.toml \
+      --manifest $AURORA_LINT_SRC_ROOT/aurora-lint/rules_templates/rules-all.toml \
       --export ~/data/comparisons/results/aurora-lint/libcrc/results.json
 
     # cppcheck
@@ -570,9 +583,9 @@ sqlite
 .. code-block:: bash
 
     # aurora-lint
-    ~/data/aurora-lint/target/release/aurora-lint ~/data/comparisons/sqlite \
+    $AURORA_LINT_SRC_ROOT/aurora-lint/target/release/aurora-lint ~/data/comparisons/sqlite \
       -d ~/data/comparisons/sqlite \
-      --manifest ~/data/aurora-lint/rules_templates/rules-all.toml \
+      --manifest $AURORA_LINT_SRC_ROOT/aurora-lint/rules_templates/rules-all.toml \
       --export ~/data/comparisons/results/aurora-lint/sqlite/results.json
 
     # cppcheck
@@ -593,9 +606,9 @@ mosquitto
 .. code-block:: bash
 
     # aurora-lint
-    ~/data/aurora-lint/target/release/aurora-lint ~/data/comparisons/mosquitto \
+    $AURORA_LINT_SRC_ROOT/aurora-lint/target/release/aurora-lint ~/data/comparisons/mosquitto \
       -d ~/data/comparisons/mosquitto \
-      --manifest ~/data/aurora-lint/rules_templates/rules-all.toml \
+      --manifest $AURORA_LINT_SRC_ROOT/aurora-lint/rules_templates/rules-all.toml \
       --export ~/data/comparisons/results/aurora-lint/mosquitto/results.json
 
     # cppcheck
@@ -621,9 +634,9 @@ curl
 .. code-block:: bash
 
     # aurora-lint
-    ~/data/aurora-lint/target/release/aurora-lint ~/data/comparisons/curl \
+    $AURORA_LINT_SRC_ROOT/aurora-lint/target/release/aurora-lint ~/data/comparisons/curl \
       -d ~/data/comparisons/curl \
-      --manifest ~/data/aurora-lint/rules_templates/rules-all.toml \
+      --manifest $AURORA_LINT_SRC_ROOT/aurora-lint/rules_templates/rules-all.toml \
       --export ~/data/comparisons/results/aurora-lint/curl/results.json
 
     # cppcheck
@@ -649,10 +662,10 @@ hostap
 .. code-block:: bash
 
     # aurora-lint
-    ~/data/aurora-lint/target/release/aurora-lint ~/data/comparisons/hostap \
+    $AURORA_LINT_SRC_ROOT/aurora-lint/target/release/aurora-lint ~/data/comparisons/hostap \
       -d ~/data/comparisons/hostap/src \
       -d ~/data/comparisons/hostap/wpa_supplicant \
-      --manifest ~/data/aurora-lint/rules_templates/rules-all.toml \
+      --manifest $AURORA_LINT_SRC_ROOT/aurora-lint/rules_templates/rules-all.toml \
       --export ~/data/comparisons/results/aurora-lint/hostap/results.json
 
     # cppcheck
@@ -800,7 +813,7 @@ Fast re-benchmark workflow:
 .. code-block:: bash
 
     # 1. Rebuild aurora-lint
-    cd ~/data/aurora-lint && cargo build --release
+    cd $AURORA_LINT_SRC_ROOT/aurora-lint && cargo build --release
 
     # 2. Push binary to nodes (if no shared FS)
     parallel --sshloginfile $NODES_FILE --nonall \

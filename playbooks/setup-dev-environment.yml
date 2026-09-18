@@ -61,10 +61,14 @@
   hosts: all
   vars:
     project_dir: "{{ playbook_dir }}/.."
+    # Parent directory of the source clones (AURORA_LINT_SRC_ROOT, see
+    # .env.example). Defaults to this checkout's own parent, which is where
+    # the sibling repos live by convention.
+    src_root: "{{ lookup('env', 'AURORA_LINT_SRC_ROOT') | default(playbook_dir + '/../..', true) }}"
     # The sibling benchmarking repo, which needs the same repo-local git
     # config as this one. Skipped silently when not present: a node that only
     # clones aurora-lint is a supported setup, and most are.
-    benchmarking_db_dir: "{{ playbook_dir }}/../../benchmarking_db"
+    benchmarking_db_dir: "{{ src_root }}/benchmarking_db"
     # Override with -e dev_venv=... (e.g. an existing venv shared across
     # repos, like ~/data-enterprise/venv) to install into it instead of
     # creating a new dedicated one.
