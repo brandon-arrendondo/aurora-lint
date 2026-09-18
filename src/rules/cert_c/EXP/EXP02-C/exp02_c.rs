@@ -318,6 +318,30 @@ impl Exp02C {
                 if self.is_getter_in_field_access(node) {
                     return false;
                 }
+                // `defined(X)` is a preprocessor operator, not a call, and it
+                // evaluates at translation time -- there is no side effect to
+                // skip. In a well-formed parse it is a `preproc_defined` node
+                // and never reaches here; it only arrives spelled as a call
+                // when the directive landed in an ERROR region, which happens
+                // when a `#if` opens inside an unclosed `asm volatile(` and
+                // carries an `#else` (mbedtls constant_time_impl.h, sel4's
+                // x86/64 c_traps.c). `paren_preproc_guard` declines that shape
+                // on purpose -- blanking a two-armed block would silently pick
+                // a side -- so the degraded parse is what a rule actually sees.
+                //
+                // This matches on spelling, which ADR-0006 warns about, and the
+                // warning does not apply: that ADR is about resolving an
+                // identifier to a declaration, where a namesake in another
+                // scope is the hazard. `defined` is a preprocessor operator,
+                // so there is no declaration to resolve and no scope to get
+                // wrong. Cost measured across all twelve real-world codebases:
+                // 4 misfires removed, 0 other findings changed.
+                if node
+                    .child_by_field_name("function")
+                    .is_some_and(|f| get_node_text(&f, source) == "defined")
+                {
+                    return false;
+                }
                 true
             }
             // Assignment operators have side effects

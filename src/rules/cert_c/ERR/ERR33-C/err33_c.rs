@@ -15,8 +15,14 @@
 //!
 //! ## Context-Aware Exceptions:
 //! - Signal handlers: printf/fprintf return values often not checked in signal handlers
-//! - Cleanup contexts: fclose calls in error cleanup paths may not need return value checking
 //! - Error handling blocks: printf/fprintf used for error logging are typically acceptable
+//!
+//! `fclose()` gets no context exception. ERR33-C-EX1 lists the functions whose
+//! return values need not be checked and `fclose()` is not among them; an
+//! `fclose()` on an error/cleanup path can still fail (EOF, errno set) and the
+//! compliant way to discard that is an explicit `(void)fclose(fp)`. An earlier
+//! "cleanup context" heuristic suppressed exactly that shape and hid real
+//! findings (aurora_lint task 727: 13 hand-verified sites in one file).
 //!
 //! The rule uses forward-looking AST analysis to find error checking patterns in subsequent
 //! statements after assignment, with sophisticated context detection to minimize false positives.
@@ -26,9 +32,7 @@ use crate::analyze::const_eval;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::{
-    find_containing_if_statement, get_identifier_from_declarator, get_node_text,
-};
+use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -167,16 +171,6 @@ impl Err33C {
                     return;
                 }
 
-                // Special handling for fclose in cleanup contexts
-                if function_name == "fclose" {
-                    // Find the containing statement for context analysis
-                    if let Some(stmt) = self.find_containing_statement(node) {
-                        if self.is_cleanup_fclose_context(&stmt, source) {
-                            return; // Don't flag cleanup fclose calls
-                        }
-                    }
-                }
-
                 // Check if the return value is properly handled
                 if !self.is_return_value_checked(node, source) {
                     let start_point = node.start_position();
@@ -240,13 +234,6 @@ impl Err33C {
             let function_name = get_node_text(&function_node, source);
 
             if self.is_error_returning_function(function_name) {
-                // Special handling for fclose in cleanup contexts
-                if function_name == "fclose" {
-                    if self.is_cleanup_fclose_context(stmt_node, source) {
-                        return; // Don't flag cleanup fclose calls
-                    }
-                }
-
                 // Suppress formatted output functions.
                 // Checking return values of printf-family functions is
                 // impractical — failures are rare and unrecoverable.
@@ -1494,87 +1481,6 @@ impl Err33C {
     fn node_contains_or_is_ancestor(&self, potential_ancestor: &Node, target: &Node) -> bool {
         potential_ancestor.start_byte() <= target.start_byte()
             && potential_ancestor.end_byte() >= target.end_byte()
-    }
-
-    /// Check if an fclose call is in a cleanup context where return value checking is less critical
-    fn is_cleanup_fclose_context(&self, stmt_node: &Node, source: &str) -> bool {
-        // Look for patterns indicating this is cleanup fclose:
-        // 1. fclose immediately followed by return
-        // 2. fclose in error handling block (after an error condition)
-        // 3. fclose after fprintf/fwrite failures
-
-        // Enhanced: Look for specific cleanup patterns in the immediate context
-        let _stmt_text = get_node_text(&stmt_node, source);
-
-        // Check if fclose is in an error handling if-block
-        if let Some(if_stmt) = find_containing_if_statement(stmt_node) {
-            if let Some(condition) = if_stmt.child_by_field_name("condition") {
-                let condition_text = get_node_text(&condition, source);
-
-                // Check for fprintf/fwrite error conditions
-                if condition_text.contains("fprintf")
-                    && (condition_text.contains("< 0") || condition_text.contains("== -1"))
-                {
-                    return true;
-                }
-                if condition_text.contains("fwrite")
-                    && (condition_text.contains("!= ") || condition_text.contains("< "))
-                {
-                    return true;
-                }
-
-                // General error condition patterns
-                if condition_text.contains("< 0")
-                    || condition_text.contains("== NULL")
-                    || condition_text.contains("!= 0")
-                    || condition_text.contains("failed")
-                    || condition_text.contains("Failed")
-                {
-                    return true;
-                }
-            }
-        }
-
-        // Check if fclose is followed by return in the same compound statement
-        let mut current = stmt_node.parent();
-        while let Some(parent) = current {
-            if parent.kind() == "compound_statement" {
-                // More precise pattern: check statements after fclose for return
-                let fclose_byte_end = stmt_node.end_byte();
-
-                // Walk through subsequent statements in the compound statement
-                for i in 0..parent.child_count() {
-                    if let Some(child) = parent.child(i) {
-                        if child.start_byte() > fclose_byte_end {
-                            if child.kind() == "return_statement" {
-                                return true; // fclose followed by return
-                            }
-                            // If we hit a non-return statement, stop looking
-                            if self.is_statement_node(&child) {
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                break;
-            }
-            current = parent.parent();
-        }
-
-        false
-    }
-
-    /// Helper function to find containing statement
-    fn find_containing_statement<'a>(&self, node: &Node<'a>) -> Option<Node<'a>> {
-        let mut current = node.parent();
-        while let Some(parent) = current {
-            if self.is_statement_node(&parent) {
-                return Some(parent);
-            }
-            current = parent.parent();
-        }
-        None
     }
 
     // ========================================================================

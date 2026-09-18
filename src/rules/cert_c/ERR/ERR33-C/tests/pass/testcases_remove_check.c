@@ -25,7 +25,7 @@ int main() {
 
     if (fprintf(file, "Test content\n") < 0) {
         fprintf(stderr, "Failed to write to test file\n");
-        fclose(file);
+        (void)fclose(file);
         return 1;
     }
 

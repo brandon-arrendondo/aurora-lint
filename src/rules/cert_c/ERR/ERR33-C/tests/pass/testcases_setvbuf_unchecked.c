@@ -32,6 +32,8 @@ int main() {
     setvbuf(file, NULL, _IONBF, 0);
     printf("No buffering supposedly set\n");
 
-    fclose(file);
+    if (fclose(file) != 0) {
+        return 1;
+    }
     return 0;
 }
