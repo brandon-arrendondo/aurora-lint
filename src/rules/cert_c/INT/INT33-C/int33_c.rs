@@ -6,6 +6,7 @@ use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::float_typing;
+use crate::utility::cert_c::guard_dominance;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -540,6 +541,15 @@ impl Int33C {
             current = node.parent();
         }
 
+        // Guards the if-statement walk above cannot see (task 1274): the
+        // condition of a `?:` whose guarded arm holds the division, the left
+        // operand of an `&&`/`||` whose right operand holds it, an enclosing
+        // condition that proves non-zero by ordering rather than equality
+        // (`n > 0 && x / n`), a preceding `if (n == 0) break;`, and an assert.
+        if self.guarded_nonzero_at(div_node, divisor, source) {
+            return true;
+        }
+
         // Value-range analysis: check if enclosing conditions prove divisor >= 1
         // This catches patterns like `if (lower < upper) { total / (upper - lower); }`
         if self.divisor_provably_nonzero(div_node, divisor, source) {
@@ -586,6 +596,153 @@ impl Int33C {
         }
 
         false
+    }
+
+    /// Whether a condition already evaluated where the division executes, or
+    /// an assert on a statement before it, proves the divisor non-zero.
+    ///
+    /// Conditions come from `guard_dominance::dominating_conditions_with_branches`
+    /// with the branch each one took, so a true `n > 0 && x / n`, a false
+    /// `n == 0 || x / n`, the guarded arm of `n ? x / n : 0`, and a preceding
+    /// `if (n == 0) return;` all read the same way. The divisor is matched by
+    /// its whitespace-stripped text and by its base variable (`*p` -> `p`), so
+    /// a field or call divisor is recognised as written.
+    ///
+    /// An assert is credited here on purpose. `guard_dominance` leaves
+    /// `assert()` out because it compiles away under `NDEBUG`, but a division
+    /// guarded only by `assert(n != 0)` is not what this rule's finding says --
+    /// "without checking for zero" -- and a fifth of one corpus's findings were
+    /// this shape (valkey, task 1274). The check compiling out is the assert's
+    /// own well-known caveat, not an unguarded division.
+    fn guarded_nonzero_at(&self, div_node: &Node, divisor: &Node, source: &str) -> bool {
+        let mut targets = vec![guard_dominance::squeeze_text(divisor, source)];
+        let base = Self::extract_base_variable(divisor, source);
+        if !base.is_empty() && base != targets[0] {
+            targets.push(base);
+        }
+        let macros = self.file_macros.borrow();
+
+        let dominated = guard_dominance::dominating_conditions_with_branches(div_node)
+            .into_iter()
+            .any(|(cond, branch)| match branch {
+                Some(truth) => guard_dominance::condition_excludes_zero(
+                    &cond, &targets, truth, source, &macros,
+                ),
+                None => false,
+            });
+        if dominated {
+            return true;
+        }
+
+        Self::asserted_nonzero_before(div_node, &targets, source, &macros)
+    }
+
+    /// Whether an assert-shaped statement preceding `site` in one of its
+    /// enclosing blocks asserts a condition excluding zero for one of
+    /// `targets`, with no assignment to that target between the two.
+    ///
+    /// Same walk as ARR38-C's `asserted_size_bound`: preceding siblings at each
+    /// block level up to the function, looking through preprocessor wrappers
+    /// because an `assert` under `#ifndef NDEBUG` is a common spelling. The
+    /// assert is name-shape matched (`assert`, `serverAssert`, `DEBUGASSERT`,
+    /// `WPA_ASSERT`) rather than listed.
+    fn asserted_nonzero_before(
+        site: &Node,
+        targets: &[String],
+        source: &str,
+        macros: &MacroConstantMap,
+    ) -> bool {
+        const BLOCK_LIKE_KINDS: &[&str] = &[
+            "compound_statement",
+            "preproc_if",
+            "preproc_ifdef",
+            "preproc_else",
+            "preproc_elif",
+        ];
+
+        let mut current = *site;
+        while let Some(parent) = current.parent() {
+            if BLOCK_LIKE_KINDS.contains(&parent.kind()) {
+                let mut cursor = parent.walk();
+                let preceding: Vec<Node> = parent
+                    .named_children(&mut cursor)
+                    .take_while(|stmt| stmt.start_byte() < current.start_byte())
+                    .collect();
+                for (i, stmt) in preceding.iter().enumerate() {
+                    if !Self::asserts_nonzero(stmt, targets, source, macros) {
+                        continue;
+                    }
+                    // Anything assigned to the divisor after the assert and
+                    // before the division makes the assert stale.
+                    let reassigned = preceding[i + 1..]
+                        .iter()
+                        .any(|later| Self::assigns_any_of(later, targets, source));
+                    if !reassigned {
+                        return true;
+                    }
+                }
+            }
+            if parent.kind() == "function_definition" {
+                break;
+            }
+            current = parent;
+        }
+        false
+    }
+
+    /// Whether `stmt` -- or, when it is a preprocessor wrapper, any statement
+    /// inside it -- is an assert whose condition excludes zero for a target.
+    fn asserts_nonzero(
+        stmt: &Node,
+        targets: &[String],
+        source: &str,
+        macros: &MacroConstantMap,
+    ) -> bool {
+        if stmt.kind().starts_with("preproc_") {
+            let mut cursor = stmt.walk();
+            let mut inner = stmt.named_children(&mut cursor);
+            return inner.any(|s| Self::asserts_nonzero(&s, targets, source, macros));
+        }
+        let call = if stmt.kind() == "expression_statement" {
+            match stmt.named_child(0) {
+                Some(c) => c,
+                None => return false,
+            }
+        } else {
+            *stmt
+        };
+        if call.kind() != "call_expression" {
+            return false;
+        }
+        let Some(function) = call.child_by_field_name("function") else {
+            return false;
+        };
+        if !ast_utils::get_node_text(&function, source)
+            .to_ascii_lowercase()
+            .contains("assert")
+        {
+            return false;
+        }
+        call.child_by_field_name("arguments")
+            .and_then(|args| args.named_child(0))
+            .is_some_and(|cond| {
+                guard_dominance::condition_excludes_zero(&cond, targets, true, source, macros)
+            })
+    }
+
+    /// Whether any assignment or `++`/`--` anywhere under `node` writes one
+    /// of `targets`, matched on the written expression's squeezed text.
+    fn assigns_any_of(node: &Node, targets: &[String], source: &str) -> bool {
+        query::find_first_descendant(*node, |n| match n.kind() {
+            "assignment_expression" => n
+                .child_by_field_name("left")
+                .is_some_and(|lhs| targets.contains(&guard_dominance::squeeze_text(&lhs, source))),
+            "update_expression" => n
+                .child_by_field_name("argument")
+                .is_some_and(|arg| targets.contains(&guard_dominance::squeeze_text(&arg, source))),
+            _ => false,
+        })
+        .is_some()
     }
 
     /// Extract the base variable name from an expression

@@ -42,6 +42,7 @@
 //! needs no CFG build per query.
 
 use super::ast_utils::get_node_text;
+use crate::analyze::const_eval::{try_evaluate_expr, MacroConstantMap};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -743,6 +744,148 @@ pub fn condition_compares_var(
         .named_children(&mut cursor)
         .any(|child| condition_compares_var(&child, var, source, kind));
     any_child_compares
+}
+
+/// Whether `condition`, known to have evaluated to `known_true`, rules out
+/// zero for any expression in `exprs`.
+///
+/// This is the zero-flavoured sibling of [`condition_compares_var`]: that one
+/// asks whether a variable was *tested*, this one asks what the test *proved*,
+/// which needs the branch the caller got from
+/// [`dominating_condition_branch`]. `exprs` are matched on whitespace-stripped
+/// source text (outer parentheses peeled), so a caller can ask about a field
+/// access or a call the same way as about a plain variable.
+///
+/// The condition is decomposed by truth value: a true `&&` makes every conjunct
+/// a fact and a false `||` makes every disjunct false, `!` flips the truth,
+/// and parentheses are transparent. A leaf is either the expression itself
+/// (truthy when true) or a comparison of it against a constant `c` that
+/// [`try_evaluate_expr`] can resolve; with the operator flipped to put the
+/// expression on the left and negated when the leaf is known false, it
+/// excludes zero exactly when `x != 0`, `x == c` with `c != 0`, `x > c` with
+/// `c >= 0`, `x >= c` with `c >= 1`, `x < c` with `c <= 0`, or `x <= c` with
+/// `c <= -1`. Nothing is inferred from a comparison against something
+/// non-constant, or from a true `||` / false `&&`, which prove nothing about
+/// any single term.
+pub fn condition_excludes_zero(
+    condition: &Node,
+    exprs: &[String],
+    known_true: bool,
+    source: &str,
+    macros: &MacroConstantMap,
+) -> bool {
+    let cond = unwrap_parens(condition);
+    match cond.kind() {
+        "binary_expression" => {
+            let Some(op) = cond.child_by_field_name("operator").map(|o| o.kind()) else {
+                return false;
+            };
+            let (Some(left), Some(right)) = (
+                cond.child_by_field_name("left"),
+                cond.child_by_field_name("right"),
+            ) else {
+                return false;
+            };
+            match op {
+                "&&" if known_true => {
+                    condition_excludes_zero(&left, exprs, true, source, macros)
+                        || condition_excludes_zero(&right, exprs, true, source, macros)
+                }
+                "||" if !known_true => {
+                    condition_excludes_zero(&left, exprs, false, source, macros)
+                        || condition_excludes_zero(&right, exprs, false, source, macros)
+                }
+                "&&" | "||" => false,
+                "==" | "!=" | "<" | "<=" | ">" | ">=" => {
+                    comparison_excludes_zero(op, &left, &right, exprs, known_true, source, macros)
+                }
+                _ => false,
+            }
+        }
+        "unary_expression" => {
+            let is_not = cond
+                .child_by_field_name("operator")
+                .is_some_and(|o| o.kind() == "!");
+            match cond.child_by_field_name("argument") {
+                Some(arg) if is_not => {
+                    condition_excludes_zero(&arg, exprs, !known_true, source, macros)
+                }
+                _ => false,
+            }
+        }
+        // The expression itself as the whole condition: truthy means non-zero.
+        _ => known_true && exprs.iter().any(|e| e == &squeeze_text(&cond, source)),
+    }
+}
+
+/// One relational leaf of [`condition_excludes_zero`]: `left OP right` with the
+/// given truth value, where one side is an expression of interest and the
+/// other a resolvable integer constant.
+fn comparison_excludes_zero(
+    op: &str,
+    left: &Node,
+    right: &Node,
+    exprs: &[String],
+    known_true: bool,
+    source: &str,
+    macros: &MacroConstantMap,
+) -> bool {
+    let left_is_expr = exprs.iter().any(|e| e == &squeeze_text(left, source));
+    let right_is_expr = exprs.iter().any(|e| e == &squeeze_text(right, source));
+    // Normalise to `x OP c`: flip the operator when the expression is on the
+    // right (`0 < x` is `x > 0`), and give up when it is on both sides or
+    // neither.
+    let (op, constant) = match (left_is_expr, right_is_expr) {
+        (true, false) => (op, right),
+        (false, true) => (
+            match op {
+                "<" => ">",
+                "<=" => ">=",
+                ">" => "<",
+                ">=" => "<=",
+                other => other,
+            },
+            left,
+        ),
+        _ => return false,
+    };
+    let Some(c) = try_evaluate_expr(constant, source, macros) else {
+        return false;
+    };
+    // A leaf known false is its own negation.
+    let op = if known_true {
+        op
+    } else {
+        match op {
+            "==" => "!=",
+            "!=" => "==",
+            "<" => ">=",
+            "<=" => ">",
+            ">" => "<=",
+            ">=" => "<",
+            other => other,
+        }
+    };
+    match op {
+        "!=" => c == 0,
+        "==" => c != 0,
+        ">" => c >= 0,
+        ">=" => c >= 1,
+        "<" => c <= 0,
+        "<=" => c <= -1,
+        _ => false,
+    }
+}
+
+/// `node`'s source text with every whitespace character removed and any
+/// outer parentheses peeled -- the spelling [`condition_excludes_zero`]
+/// matches its `exprs` against, so `( a - b )` and `a-b` compare equal.
+pub fn squeeze_text(node: &Node, source: &str) -> String {
+    let inner = unwrap_parens(node);
+    get_node_text(&inner, source)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect()
 }
 
 /// For an `==`/`!=` test mentioning `var`, whether the *other* operand is a
