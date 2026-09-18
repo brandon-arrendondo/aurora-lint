@@ -1451,10 +1451,19 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 self.visit_declaration_or_expr(n, source, stack)
             }
             "assignment_expression" => {
-                self.process_assignment(&n, source);
+                // The call on the right runs and returns BEFORE its result is
+                // bound, and for `buf = rehash(buf)` -- a callee that releases
+                // its argument and hands back a fresh block under the same
+                // name -- that order is the whole answer. Processing the
+                // assignment first let the rebind clear the freed mark and
+                // the call then re-applied it to the NEW block, so the next
+                // `free(buf)` read as a double free (task 1294; introduced by
+                // 14f1d004 and caught by hostap's
+                // `extra_ies = p2p_pasn_service_hash(p2p, extra_ies)`).
                 if let Some(right) = n.child_by_field_name("right") {
                     self.process_nested_calls(&right, source);
                 }
+                self.process_assignment(&n, source);
             }
             "call_expression" => self.process_call(&n, source),
             "return_statement" => self.process_return(&n, source),
@@ -1485,10 +1494,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         for i in 0..n.child_count() {
             if let Some(child) = n.child(i) {
                 if child.kind() == "init_declarator" {
-                    self.process_init_declarator_child(&child, source);
+                    // Same evaluation order as the assignment arm above.
                     if let Some(value) = child.child_by_field_name("value") {
                         self.process_nested_calls(&value, source);
                     }
+                    self.process_init_declarator_child(&child, source);
                 } else {
                     pending.push(child);
                 }
