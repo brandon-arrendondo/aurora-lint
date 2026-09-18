@@ -517,7 +517,7 @@ fn normalized_text(node: &Node, source: &str) -> String {
 /// dead-defensive code, and treating it as evidence of nullability is what let
 /// hostap's `ieee802_1x_encapsulate_radius` — `sta->eapol_sm` in its first
 /// statement, `if (sta && …)` 36 lines later — report a null dereference of
-/// `sta` further down (task 1058, tools_sqc).
+/// `sta` further down (task 1058, aurora_lint).
 ///
 /// Counted as dominating: a dereference inside a condition that encloses
 /// `site` (it was evaluated to get here), and one in a preceding block-level

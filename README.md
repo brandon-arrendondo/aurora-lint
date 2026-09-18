@@ -166,11 +166,14 @@ The binary is at `target/release/aurora-lint`. Requires Rust 2021 edition (stabl
 ### Analyze a project
 
 ```bash
-# Analyze a directory (prints violations to stdout)
+# Analyze a directory (prints violations to stdout). The target is
+# pre-scanned for its own definitions, so cross-file context within it
+# is already there.
 aurora-lint /path/to/project
 
-# With cross-file context (reduces false positives)
-aurora-lint /path/to/project -d /path/to/project
+# Add context from outside the target (reduces false positives). Once -d
+# is given, name every directory you want context from, the target included.
+aurora-lint /path/to/project -d /path/to/project -d /path/to/shared/headers
 ```
 
 ### Interactive mode

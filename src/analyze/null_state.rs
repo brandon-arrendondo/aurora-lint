@@ -710,7 +710,7 @@ fn apply_cross_file_nulls_params_null(
 /// `&var.field` and `&var[i]` also name storage inside `var`, which
 /// `init_state::addressed_object_root` is what recognises -- and `&var->field`
 /// deliberately does not, because that address lies inside the pointee and so
-/// carries no claim about `var` (task 1028, tools_sqc).
+/// carries no claim about `var` (task 1028, aurora_lint).
 fn extract_output_arg_var(arg: &Node, source: &str) -> String {
     if arg.kind() == "pointer_expression" {
         let text = get_text(arg, source);

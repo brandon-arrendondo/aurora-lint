@@ -37,7 +37,8 @@ Analysis Modules
   per-rule evaluation with optional Rayon parallelism.
 
 **Cross-file pre-scan** (``src/analyze/prescan.rs``, ``context.rs``).
-  Walks ``-d`` directories collecting function definitions, header prototypes,
+  Walks the ``-d`` directories (or, with no ``-d``, the scan target itself)
+  collecting function definitions, header prototypes,
   function summaries, call graphs, macro constants/aliases, struct field types,
   global constants, and global pointer null states.  Second pass aggregates
   call-site argument null states and propagates transitive frees through
