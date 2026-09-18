@@ -22,7 +22,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, is_in_preproc_condition};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -57,6 +57,16 @@ impl CertRule for Exp02C {
 impl Exp02C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         for bin_node in query::find_descendants_of_kind(*node, "binary_expression") {
+            // `#if A && B` is evaluated by the preprocessor at translation
+            // time, so there is no runtime short-circuit and nothing to skip:
+            // a call there is a feature test (`__has_attribute(target)`,
+            // `MBEDTLS_HAS_BUILTIN(...)`), not a side effect. Reporting one
+            // names a construct that is not present. Only the condition is
+            // exempt -- code in the guarded body is ordinary runtime code and
+            // stays checked.
+            if is_in_preproc_condition(&bin_node) {
+                continue;
+            }
             self.check_binary_expression(&bin_node, source, violations);
         }
     }
