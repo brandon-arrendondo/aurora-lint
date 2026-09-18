@@ -81,7 +81,7 @@ impl Exp33C {
     /// The MUST set, not `modifies_params`: this map clears a variable's
     /// uninitialised state, so a callee that writes the output parameter on
     /// only some of its paths must not clear it. `set_flag(n, &sign)` leaves
-    /// `sign` untouched when `n == 0` (task 988, tools_sqc).
+    /// `sign` untouched when `n == 0` (task 988, aurora_lint).
     fn build_cross_file_output_params(&self) -> HashMap<String, HashSet<usize>> {
         let summaries = self.cross_file_summaries.borrow();
         let mut result = HashMap::new();
@@ -111,7 +111,7 @@ impl Exp33C {
     /// instead, and had its conditional write credited as a full one: curl's
     /// `Curl_sasl_decode_mech` writes `*len` only on a table match, and
     /// `openldap.c:730` compares `llen` on the no-match path (task 1065
-    /// bug #3, tools_sqc).
+    /// bug #3, aurora_lint).
     ///
     /// Sourced from `FunctionSummary::conditional_modifies_params`, which is
     /// PROOF of an unwritten returning path, not the MAY-minus-MUST
@@ -992,7 +992,7 @@ fn check_identifier_read(
 /// `openldap.c` is the same call with the test dropped -- it compares `llen`
 /// having only stored the returned bit for later -- which is the whole
 /// difference between the four safe call sites and the defect (task 1065
-/// bug #3, tools_sqc).
+/// bug #3, aurora_lint).
 ///
 /// The correlation itself is not proven here, and cannot be by this rule: that
 /// the write and the nonzero return happen together is a fact about the
@@ -1639,7 +1639,7 @@ fn is_read_in_pointer_expression(parent: &Node, source: &str) -> bool {
 /// `&var` and `&arr[i]` each carried their own copy of this and `&var.field`
 /// carried none, which is why `recvfrom(..., &from.ss, &fromlen)` reported
 /// `from` read-uninitialised at the very call that fills it (task 1028,
-/// tools_sqc).
+/// aurora_lint).
 fn is_address_of_read(pointer_expr: &Node, source: &str) -> bool {
     let Some(arg_list) = pointer_expr.parent() else {
         return false;
@@ -1669,7 +1669,7 @@ fn is_address_of_read(pointer_expr: &Node, source: &str) -> bool {
 /// draws that line, and asking it (rather than re-walking down) keeps the
 /// credit funnel and this read predicate answering from one traversal — they
 /// disagreed before, which is how `recvfrom(..., &from.ss, &fromlen)` reported
-/// `from` uninitialised at the call that fills it (task 1028, tools_sqc).
+/// `from` uninitialised at the call that fills it (task 1028, aurora_lint).
 fn is_addressed_subobject_root(node: &Node, parent: &Node, source: &str) -> bool {
     let mut outer = *parent;
     while let Some(next) = outer.parent() {
@@ -1850,7 +1850,7 @@ fn is_read_in_argument_list(
     // Check if this is a known initializing function (exact or suffix match).
     // `variadic_from` carries the scanf family, whose outputs are "every
     // argument past the format string" and so have no fixed index to list
-    // (task 1029, tools_sqc) -- without it `sscanf(s, "%s", name)` reads as a
+    // (task 1029, aurora_lint) -- without it `sscanf(s, "%s", name)` reads as a
     // content read of the buffer the call is about to fill.
     let mut variadic_from: Option<usize> = None;
     let output_indices: HashSet<usize> = match init_state::match_initializing_function(&func_name) {
@@ -2036,7 +2036,7 @@ fn scan_realloc_wrappers(node: &Node, source: &str, wrappers: &mut HashSet<Strin
 /// is classed conditional and every caller is reported. Prescan's
 /// `conditional_modifies_params` asks for a proven unwritten returning path
 /// instead, and `build_read_only_deref_fns` covers the parameter prescan saw
-/// no write through at all (task 1078, tools_sqc).
+/// no write through at all (task 1078, aurora_lint).
 ///
 /// The fallback still matters: a scan with no `-d` and no prescan of its own
 /// targets summarises almost nothing, and there the local read is the only

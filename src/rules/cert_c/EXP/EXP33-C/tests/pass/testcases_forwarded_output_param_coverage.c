@@ -8,7 +8,7 @@
  * a structural walk of outer's own body cannot see through. Without that
  * forwarded leg pv is demoted to a MAY-write and every caller reports `v`
  * uninitialised -- once per caller, not once per callee (task 1011,
- * tools_sqc).
+ * aurora_lint).
  *
  * The output parameter is `int *` and not sqlite's `const u8 **` on purpose:
  * EXP33-C does not report an uninitialised POINTER local at all, so a fixture
