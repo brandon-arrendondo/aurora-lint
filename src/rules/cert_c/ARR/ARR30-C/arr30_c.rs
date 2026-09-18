@@ -63,7 +63,7 @@ use crate::utility::cert_c::ast_utils::{
 };
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::guard_dominance::{
-    collect_call_arg_guards, has_dominating_comparison, ComparisonKind,
+    self, collect_call_arg_guards, has_dominating_comparison, ComparisonKind,
 };
 
 pub struct Arr30C {
@@ -1344,8 +1344,12 @@ impl Arr30C {
         // Look for pattern: var_name = constant_literal
         let func_text = &source[func_node.start_byte()..func_node.end_byte()];
 
-        // Regex pattern: var_name = digit+ OR var_name = -digit+
-        let pattern = format!(r"\b{}\s*=\s*(-?\d+)", regex::escape(var_name));
+        // Regex pattern: var_name = digit+ OR var_name = -digit+, and nothing
+        // else before the `;` -- `datalen = 1024 - 1;` is not an assignment of
+        // 1024, which is what an unanchored match made it (task 1278; the
+        // clamp `if (datalen >= 1024) datalen = 1024 - 1;` then reported
+        // `data[datalen]` as a constant index one past the end).
+        let pattern = format!(r"\b{}\s*=\s*(-?\d+)\s*;", regex::escape(var_name));
         let re = regex::Regex::new(&pattern).ok()?;
 
         // Check for non-constant assignments (e.g., var = func_call(...), var = other_var)
@@ -3333,6 +3337,7 @@ impl Arr30C {
                     node,
                     source,
                     index,
+                    buffer_info,
                     effective_size,
                     macro_constants,
                     buffer_name,
@@ -3354,6 +3359,7 @@ impl Arr30C {
         node: &Node,
         source: &str,
         index: &IndexValue,
+        buffer_info: &BufferInfo,
         effective_size: usize,
         macro_constants: &HashMap<String, i64>,
         buffer_name: &str,
@@ -3375,6 +3381,7 @@ impl Arr30C {
                 node,
                 source,
                 var,
+                buffer_info,
                 effective_size,
                 macro_constants,
                 buffer_name,
@@ -3391,6 +3398,7 @@ impl Arr30C {
         node: &Node,
         source: &str,
         var: &str,
+        buffer_info: &BufferInfo,
         effective_size: usize,
         macro_constants: &HashMap<String, i64>,
         buffer_name: &str,
@@ -3454,6 +3462,20 @@ impl Arr30C {
         ) {
             return false;
         }
+        // Guard already evaluated on the way here (task 1278): an
+        // early-return size check or a clamp, neither of which ENCLOSES the
+        // access and so neither of which `has_proper_bounds_check` below can
+        // see.
+        if self.is_bounded_by_dominating_guard(
+            var,
+            node,
+            source,
+            buffer_info,
+            effective_size,
+            macro_constants,
+        ) {
+            return false;
+        }
         if self.has_recursive_index_modification(node, var, source, effective_size) {
             return true;
         }
@@ -3466,6 +3488,261 @@ impl Arr30C {
             }
         }
         !self.has_proper_bounds_check(node, source, effective_size, macro_constants)
+    }
+
+    /// True when a guard already evaluated by the time `node` runs proves
+    /// `var < bound` for a `bound <= effective_size`, and nothing reassigns
+    /// `var` between that guard and the access (task 1278).
+    ///
+    /// Two idioms, both invisible to the enclosing-`if`/`for` checks because
+    /// the guard PRECEDES the access rather than enclosing it:
+    ///
+    /// ```c
+    /// res = readlink(path, buf, sizeof(buf));
+    /// if (res < 0 || (size_t) res >= sizeof(buf))   /* early return */
+    ///     return -1;
+    /// buf[res] = '\0';
+    ///
+    /// if (len >= sizeof(name))                       /* clamp */
+    ///     len = sizeof(name) - 1;
+    /// name[len] = '\0';
+    /// ```
+    ///
+    /// For the first, `dominating_conditions_with_branches` says the site is
+    /// reached on the condition's FALSE side (the body always leaves), and
+    /// `condition_upper_bound` reads `res < sizeof(buf)` off the false
+    /// disjunction. For the second the branch is unknown -- the body falls
+    /// through -- but its single statement assigns `var` a value below the
+    /// same bound, so `var < bound` holds on both paths. A `sizeof` of the
+    /// very array being indexed is resolved to that array's byte size, which
+    /// bounds an element index only through the element width: `res <
+    /// sizeof(buf)` on `int buf[N]` proves `res < 4N`, not `res < N`, and is
+    /// declined.
+    ///
+    /// The bound is a fact about `var` at the guard; a later assignment or
+    /// `++` breaks it, and inside a loop the guard did not itself precede, an
+    /// assignment anywhere in that loop's body does too (it runs before the
+    /// next iteration's access). Such an assignment declines the proof.
+    fn is_bounded_by_dominating_guard(
+        &self,
+        var: &str,
+        node: &Node,
+        source: &str,
+        buffer_info: &BufferInfo,
+        effective_size: usize,
+        macro_constants: &HashMap<String, i64>,
+    ) -> bool {
+        let Some(func_node) = find_containing_function(node) else {
+            return false;
+        };
+        // The array extractor records no element type, so read it off the
+        // buffer's own declaration -- resolved from the subscript's array
+        // identifier, never from the name alone (ADR-0006).
+        let elem_bytes = node
+            .child(0)
+            .filter(|array| array.kind() == "identifier")
+            .and_then(|array| {
+                let (decl, _) = resolve_identifier_declarator(&array, &buffer_info.name, source)?;
+                let ty = get_node_text(&decl.child_by_field_name("type")?, source);
+                buffer_size::sizeof_type_bytes(ty.trim())
+                    .or_else(|| Self::one_byte_typedef(ty.trim()).then_some(1))
+            });
+        let eval = |n: &Node| {
+            self.guard_bound_value(
+                n,
+                source,
+                &buffer_info.name,
+                effective_size,
+                elem_bytes,
+                macro_constants,
+            )
+        };
+        for (cond, branch) in guard_dominance::dominating_conditions_with_branches(node) {
+            let Some(guard) = cond.parent() else {
+                continue;
+            };
+            // Where the proven fact starts holding, and from where a
+            // reassignment would break it.
+            let (bound, holds_from) = match branch {
+                Some(known_true) => (
+                    guard_dominance::condition_upper_bound(&cond, var, known_true, source, &eval),
+                    cond.end_byte(),
+                ),
+                None => (
+                    self.clamp_upper_bound(&guard, &cond, var, source, &eval),
+                    guard.end_byte(),
+                ),
+            };
+            let Some(bound) = bound else {
+                continue;
+            };
+            if bound < 0 || bound as usize > effective_size {
+                continue;
+            }
+            if !self.var_reassigned_between(var, holds_from, &guard, node, &func_node, source) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Byte-wide element aliases `sizeof_type_bytes` does not know: the
+    /// kernel-style `u8`/`s8` and Windows' `BYTE`/`TCHAR`-without-UNICODE
+    /// are the ones the corpus indexes with a `sizeof(buf)` bound.
+    fn one_byte_typedef(ty: &str) -> bool {
+        matches!(ty, "u8" | "s8" | "__u8" | "__s8" | "BYTE" | "uchar")
+    }
+
+    /// The clamp idiom: `guard` is a lone `if (cond) var = value;` -- no
+    /// `else`, a consequence that is exactly one assignment to `var` -- so
+    /// after it `var` is either below what the FALSE condition proves or equal
+    /// to `value`. The exclusive bound covering both, or `None`.
+    fn clamp_upper_bound(
+        &self,
+        guard: &Node,
+        cond: &Node,
+        var: &str,
+        source: &str,
+        eval: &dyn Fn(&Node) -> Option<i64>,
+    ) -> Option<i64> {
+        if guard.kind() != "if_statement" || guard.child_by_field_name("alternative").is_some() {
+            return None;
+        }
+        let mut stmt = guard.child_by_field_name("consequence")?;
+        if stmt.kind() == "compound_statement" {
+            let mut cursor = stmt.walk();
+            let mut inner = stmt
+                .named_children(&mut cursor)
+                .filter(|c| c.kind() != "comment");
+            stmt = inner.next()?;
+            if inner.next().is_some() {
+                return None;
+            }
+        }
+        if stmt.kind() != "expression_statement" {
+            return None;
+        }
+        let assign = stmt.named_child(0)?;
+        if assign.kind() != "assignment_expression"
+            || assign.child_by_field_name("operator")?.kind() != "="
+        {
+            return None;
+        }
+        let left = assign.child_by_field_name("left")?;
+        if left.kind() != "identifier" || get_node_text(&left, source) != var {
+            return None;
+        }
+        let assigned = eval(&assign.child_by_field_name("right")?)?;
+        let when_false = guard_dominance::condition_upper_bound(cond, var, false, source, eval)?;
+        Some(when_false.max(assigned.checked_add(1)?))
+    }
+
+    /// Resolve a guard's bound expression to a value, the way the guard's
+    /// author meant it: `sizeof(<this buffer>)` is the array's byte size --
+    /// admitted as an element bound only when the elements are one byte wide
+    /// -- and `+`/`-` over such terms and constants is folded, so `sizeof(buf)
+    /// - 1` resolves even though no constant table knows the array.
+    fn guard_bound_value(
+        &self,
+        node: &Node,
+        source: &str,
+        buffer_name: &str,
+        effective_size: usize,
+        elem_bytes: Option<usize>,
+        macro_constants: &HashMap<String, i64>,
+    ) -> Option<i64> {
+        let n = guard_dominance::strip_arg_wrappers(node);
+        match n.kind() {
+            "sizeof_expression" => {
+                let operand = n
+                    .child_by_field_name("value")
+                    .map(|v| guard_dominance::strip_arg_wrappers(&v));
+                if operand.is_some_and(|o| {
+                    o.kind() == "identifier" && get_node_text(&o, source) == buffer_name
+                }) {
+                    // `res < sizeof(buf)` bounds an INDEX only when a byte is
+                    // an element; on `int buf[N]` it says `res < 4N`.
+                    return (elem_bytes == Some(1)).then_some(effective_size as i64);
+                }
+                const_eval::try_evaluate_expr(&n, source, macro_constants)
+            }
+            "binary_expression" => {
+                if let Some(v) = const_eval::try_evaluate_expr(&n, source, macro_constants) {
+                    return Some(v);
+                }
+                let op = n.child_by_field_name("operator")?.kind();
+                let l = self.guard_bound_value(
+                    &n.child_by_field_name("left")?,
+                    source,
+                    buffer_name,
+                    effective_size,
+                    elem_bytes,
+                    macro_constants,
+                )?;
+                let r = self.guard_bound_value(
+                    &n.child_by_field_name("right")?,
+                    source,
+                    buffer_name,
+                    effective_size,
+                    elem_bytes,
+                    macro_constants,
+                )?;
+                match op {
+                    "+" => l.checked_add(r),
+                    "-" => l.checked_sub(r),
+                    _ => None,
+                }
+            }
+            _ => const_eval::try_evaluate_expr(&n, source, macro_constants),
+        }
+    }
+
+    /// Whether anything writes `var` between a guard and the access it is
+    /// meant to cover: an assignment (plain or compound) or `++`/`--` whose
+    /// target is `var`, lying after `holds_from` and before the access -- or
+    /// anywhere inside a loop that encloses the access but not the guard,
+    /// since that runs before the loop's next visit to the access.
+    fn var_reassigned_between(
+        &self,
+        var: &str,
+        holds_from: usize,
+        guard: &Node,
+        site: &Node,
+        func_node: &Node,
+        source: &str,
+    ) -> bool {
+        let mut range_end = site.start_byte();
+        let mut cursor = *site;
+        while let Some(parent) = cursor.parent() {
+            if parent.id() == func_node.id() {
+                break;
+            }
+            if matches!(
+                parent.kind(),
+                "for_statement" | "while_statement" | "do_statement"
+            ) && !(parent.start_byte() <= guard.start_byte()
+                && guard.end_byte() <= parent.end_byte())
+            {
+                range_end = range_end.max(parent.end_byte());
+            }
+            cursor = parent;
+        }
+        let mut written = false;
+        Self::for_each_descendant(func_node, &mut |n| {
+            if written || n.start_byte() < holds_from || n.start_byte() >= range_end {
+                return;
+            }
+            let target = match n.kind() {
+                "assignment_expression" => n.child_by_field_name("left"),
+                "update_expression" => n.child_by_field_name("argument"),
+                _ => None,
+            };
+            if target.is_some_and(|t| t.kind() == "identifier" && get_node_text(&t, source) == var)
+            {
+                written = true;
+            }
+        });
+        written
     }
 
     /// True if `var`'s value is provably bounded by a same-buffer

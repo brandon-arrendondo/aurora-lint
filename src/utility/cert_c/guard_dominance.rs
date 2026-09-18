@@ -877,6 +877,114 @@ fn comparison_excludes_zero(
     }
 }
 
+/// The exclusive upper bound that `condition`, known to have evaluated to
+/// `known_true`, proves for `var`: `Some(b)` means `var < b` holds wherever
+/// that truth value does.
+///
+/// The bounds-flavoured sibling of [`condition_excludes_zero`], for the
+/// question a bounds rule asks of an early-return guard: after
+/// `if (res < 0 || (size_t) res >= sizeof(buf)) return -1;` control that
+/// reaches the next statement saw the condition FALSE, so both disjuncts are
+/// false and `res < sizeof(buf)`. The decomposition is the same: a true `&&`
+/// or a false `||` makes each side a fact (the tighter bound wins), `!` flips
+/// the truth, parentheses and casts are transparent -- `(size_t) res` is
+/// still a test of `res`. A leaf is `var OP c`, either operand order, with
+/// `c` resolved by the caller's `eval`, which is how a rule supplies what it
+/// alone knows (`sizeof(buf)` for the very array being indexed). Known true,
+/// `<` proves `c` and `<=` and `==` prove `c + 1`; known false, `>=` proves
+/// `c` and `>` proves `c + 1`. A true `||`, a false `&&`, a lower-bound test
+/// and an unresolved `c` prove no upper bound.
+///
+/// This says what the condition proved at the moment it was evaluated. Whether
+/// `var` still holds that value at the site is the caller's question -- see
+/// ARR30-C's reassignment check for the shape it takes.
+pub fn condition_upper_bound(
+    condition: &Node,
+    var: &str,
+    known_true: bool,
+    source: &str,
+    eval: &dyn Fn(&Node) -> Option<i64>,
+) -> Option<i64> {
+    let cond = unwrap_parens(condition);
+    match cond.kind() {
+        "binary_expression" => {
+            let op = cond.child_by_field_name("operator")?.kind();
+            let left = cond.child_by_field_name("left")?;
+            let right = cond.child_by_field_name("right")?;
+            match op {
+                "&&" if known_true => tighter(
+                    condition_upper_bound(&left, var, true, source, eval),
+                    condition_upper_bound(&right, var, true, source, eval),
+                ),
+                "||" if !known_true => tighter(
+                    condition_upper_bound(&left, var, false, source, eval),
+                    condition_upper_bound(&right, var, false, source, eval),
+                ),
+                "&&" | "||" => None,
+                "==" | "<" | "<=" | ">" | ">=" => {
+                    comparison_upper_bound(op, &left, &right, var, known_true, source, eval)
+                }
+                _ => None,
+            }
+        }
+        "unary_expression" => {
+            let is_not = cond
+                .child_by_field_name("operator")
+                .is_some_and(|o| o.kind() == "!");
+            let arg = cond.child_by_field_name("argument")?;
+            is_not
+                .then(|| condition_upper_bound(&arg, var, !known_true, source, eval))
+                .flatten()
+        }
+        _ => None,
+    }
+}
+
+/// The smaller of two optional bounds; either alone when the other is absent.
+fn tighter(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, None) => a,
+        (None, b) => b,
+    }
+}
+
+/// One relational leaf of [`condition_upper_bound`].
+fn comparison_upper_bound(
+    op: &str,
+    left: &Node,
+    right: &Node,
+    var: &str,
+    known_true: bool,
+    source: &str,
+    eval: &dyn Fn(&Node) -> Option<i64>,
+) -> Option<i64> {
+    let is_var = |n: &Node| {
+        let n = strip_arg_wrappers(n);
+        n.kind() == "identifier" && get_node_text(&n, source) == var
+    };
+    let (op, constant) = match (is_var(left), is_var(right)) {
+        (true, false) => (op, right),
+        (false, true) => (
+            match op {
+                "<" => ">",
+                "<=" => ">=",
+                ">" => "<",
+                ">=" => "<=",
+                other => other,
+            },
+            left,
+        ),
+        _ => return None,
+    };
+    let c = eval(constant)?;
+    match (op, known_true) {
+        ("<", true) | (">=", false) => Some(c),
+        ("<=", true) | ("==", true) | (">", false) => c.checked_add(1),
+        _ => None,
+    }
+}
+
 /// `node`'s source text with every whitespace character removed and any
 /// outer parentheses peeled -- the spelling [`condition_excludes_zero`]
 /// matches its `exprs` against, so `( a - b )` and `a-b` compare equal.
@@ -1637,6 +1745,77 @@ mod tests {
             .iter()
             .map(|c| dominating_condition_branch(c, &site))
             .collect()
+    }
+
+    /// The exclusive upper bound `condition_upper_bound` proves for `var` at
+    /// the `sink(` call, from every dominating condition with a known
+    /// branch; literals only, so `eval` is the plain constant evaluator.
+    fn upper_bound_at_sink(src: &str, var: &str) -> Option<i64> {
+        let tree = parse_c_code(src);
+        let site = query::find_descendants_of_kind(tree.root_node(), "call_expression")
+            .into_iter()
+            .find(|n| {
+                n.child_by_field_name("function")
+                    .is_some_and(|f| get_node_text(&f, src) == "sink")
+            })
+            .expect("fixture has a sink() call");
+        let macros = MacroConstantMap::new();
+        let eval = |n: &Node| try_evaluate_expr(n, src, &macros);
+        dominating_conditions_with_branches(&site)
+            .into_iter()
+            .filter_map(|(cond, branch)| condition_upper_bound(&cond, var, branch?, src, &eval))
+            .min()
+    }
+
+    #[test]
+    fn upper_bound_false_disjunction_with_cast() {
+        // The early-return idiom: both disjuncts are false past the guard,
+        // and the cast on `res` is transparent.
+        let src = "int f(int res) { if (res < 0 || (size_t) res >= 128) return -1; sink(res); return 0; }";
+        assert_eq!(upper_bound_at_sink(src, "res"), Some(128));
+    }
+
+    #[test]
+    fn upper_bound_true_conjunction_and_operand_order() {
+        assert_eq!(
+            upper_bound_at_sink("void f(int i) { if (i >= 0 && 10 > i) sink(i); }", "i"),
+            Some(10)
+        );
+        // `<=` known true is one past the tested value.
+        assert_eq!(
+            upper_bound_at_sink("void f(int i) { if (i <= 9) sink(i); }", "i"),
+            Some(10)
+        );
+        // `>` known false is `<=`, so again one past.
+        assert_eq!(
+            upper_bound_at_sink("void f(int i) { if (i > 9) return; sink(i); }", "i"),
+            Some(10)
+        );
+    }
+
+    #[test]
+    fn upper_bound_negation_flips_the_truth() {
+        assert_eq!(
+            upper_bound_at_sink("void f(int i) { if (!(i < 8)) return; sink(i); }", "i"),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn upper_bound_proves_nothing_from_a_true_disjunction_or_lower_bound() {
+        assert_eq!(
+            upper_bound_at_sink("void f(int i, int c) { if (i < 8 || c) sink(i); }", "i"),
+            None
+        );
+        assert_eq!(
+            upper_bound_at_sink("void f(int i) { if (i < 0) return; sink(i); }", "i"),
+            None
+        );
+        // A non-diverging guard body says nothing about the fall-through.
+        assert_eq!(
+            upper_bound_at_sink("void f(int i) { if (i >= 8) i++; sink(i); }", "i"),
+            None
+        );
     }
 
     #[test]
