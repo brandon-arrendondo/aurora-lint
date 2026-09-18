@@ -2,7 +2,7 @@
 """Generate CHANGELOG.md (Keep a Changelog format) from the task database.
 
 The project does not hand-write release notes: every shipped change is already
-a done task in `todo-sqlite-cli.db`, and every published release is an
+a done task in the fleet task database, and every published release is an
 annotated `v*` git tag. This script joins the two -- tasks completed between
 two tags become that release's section -- so the changelog is a projection of
 records that already exist rather than a second thing to keep current.
@@ -13,12 +13,23 @@ discriminates benchmark runs by SHA, see CLAUDE.md), so most versions are
 never tagged and never shipped; a release section therefore covers everything
 completed since the previous tag.
 
+Task tracking is maintainer infrastructure, not part of this repo (see
+CLAUDE.md's "Task tracking" section) -- the fleet task database lives outside
+any clone and is never available to a fresh checkout or CI. Point this script
+at it with AURORA_LINT_TASK_DB; without that (e.g. in CI), it degrades to an
+empty task list rather than failing, so `--release` still emits a valid
+(task-bullet-free) section and the release workflow doesn't hard-fail on
+infrastructure it was never meant to have. The DB now holds every project's
+tasks in one table (2026-09-09 consolidation) with a `project_name` column --
+load_tasks() filters to this repo's own tasks only.
+
 Usage:
-    python3 scripts/generate_changelog.py                  # rewrite CHANGELOG.md
+    AURORA_LINT_TASK_DB=~/data/fleet-tasks.db python3 scripts/generate_changelog.py
     python3 scripts/generate_changelog.py --check          # exit 1 if stale
     python3 scripts/generate_changelog.py --release 0.4.315  # one section, to stdout
 """
 import argparse
+import os
 import re
 import sqlite3
 import subprocess
@@ -28,7 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = REPO_ROOT / "todo-sqlite-cli.db"
+DB_PATH = Path(os.environ.get("AURORA_LINT_TASK_DB", REPO_ROOT / "todo-sqlite-cli.db")).expanduser()
 CHANGELOG_PATH = REPO_ROOT / "CHANGELOG.md"
 
 # Keep a Changelog buckets, in precedence order: a task is filed under the
@@ -118,16 +129,37 @@ def current_version():
     return m.group(1)
 
 
+def _empty_task_db_warning():
+    print(
+        f"generate_changelog.py: no usable task database at {DB_PATH} "
+        "(maintainer infrastructure, not part of this repo -- see CLAUDE.md's "
+        "\"Task tracking\" section). Proceeding with an empty task list; set "
+        "AURORA_LINT_TASK_DB to point at the fleet database for real output.",
+        file=sys.stderr,
+    )
+
+
 def load_tasks():
-    con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
-    rows = con.execute(
-        "SELECT uuid, title, completed_at FROM tasks "
-        "WHERE status = 'done' AND completed_at IS NOT NULL"
-    ).fetchall()
-    tags = {}
-    for uuid, tag in con.execute("SELECT task_uuid, tag FROM tags"):
-        tags.setdefault(uuid, set()).add(tag)
-    con.close()
+    if not DB_PATH.is_file():
+        _empty_task_db_warning()
+        return []
+    try:
+        con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        rows = con.execute(
+            "SELECT uuid, title, completed_at FROM tasks "
+            "WHERE status = 'done' AND completed_at IS NOT NULL "
+            "AND (project_name = 'aurora_lint' OR project_name IS NULL)"
+        ).fetchall()
+        tags = {}
+        for uuid, tag in con.execute("SELECT task_uuid, tag FROM tags"):
+            tags.setdefault(uuid, set()).add(tag)
+        con.close()
+    except sqlite3.OperationalError:
+        # A file exists at DB_PATH but doesn't have the expected schema --
+        # e.g. a stale/empty pre-consolidation artifact. Same degrade as a
+        # missing file, not a hard failure.
+        _empty_task_db_warning()
+        return []
     tasks = []
     for uuid, title, completed_at in rows:
         tasks.append((completed_at, title.strip(), tags.get(uuid, set())))
