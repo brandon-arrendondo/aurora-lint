@@ -20,15 +20,9 @@
 #     pre-commit hook to pass before a commit; nothing previously installed
 #     the tool or ran `pre-commit install` in the repo.
 #   - Repo-local git config -- .git/config is not tracked, so a fresh clone
-#     gets none of it. Three settings matter here: the todo-sqlite-cli merge
-#     driver that .gitattributes already names (without it every pull that
-#     touched the DB lands in conflict); pull.rebase=false, so a pull that
-#     raced another node merges through that driver instead of halting on
-#     "need to specify how to reconcile divergent branches"; and
-#     pack.window/pack.depth, which git's defaults set far too low for the
-#     ~2.3 MiB SQLite file committed on nearly every task change -- 664 KiB
-#     of pack per DB commit at the default window=10 against 38 KiB at 250.
-#     See the tasks for the numbers.
+#     gets none of it. One setting matters here: pull.rebase=false, so a pull
+#     that raced another node merges instead of halting on "need to specify
+#     how to reconcile divergent branches".
 #   - clew-trace -- .mcp.json (gitignored, written by `clew init` -- see
 #     CLAUDE.md's Code Navigation section) points at the `clew-mcp` command;
 #     without the package installed that command doesn't resolve and the
@@ -67,10 +61,9 @@
   hosts: all
   vars:
     project_dir: "{{ playbook_dir }}/.."
-    # The sibling benchmarking repo, which since 2026-09-03 keeps its OWN
-    # todo-sqlite-cli.db and therefore needs the same repo-local git config as
-    # this one. Skipped silently when not present: a node that only clones
-    # aurora-lint is a supported setup, and most are.
+    # The sibling benchmarking repo, which needs the same repo-local git
+    # config as this one. Skipped silently when not present: a node that only
+    # clones aurora-lint is a supported setup, and most are.
     benchmarking_db_dir: "{{ playbook_dir }}/../../benchmarking_db"
     # Override with -e dev_venv=... (e.g. an existing venv shared across
     # repos, like ~/data-enterprise/venv) to install into it instead of
@@ -186,67 +179,17 @@
 
     # ── Repo-local git config (uncommitted, so every clone needs it) ─────
     #
-    # Both settings below live in .git/config, which is NOT tracked. A fresh
-    # clone gets neither, and nothing in the repo makes their absence visible
-    # until it bites.
+    # The setting below lives in .git/config, which is NOT tracked. A fresh
+    # clone does not get it, and nothing in the repo makes its absence
+    # visible until it bites.
 
-    - name: Detect which repos keep a committed todo-sqlite-cli.db
+    - name: Detect which sibling repos are present on this node
       stat:
         path: "{{ item }}/.git"
-      register: todo_repos
+      register: sibling_repos
       loop:
         - "{{ project_dir }}"
         - "{{ benchmarking_db_dir }}"
-
-    - name: Tune pack settings for the tracked todo-sqlite-cli.db
-      community.general.git_config:
-        name: "{{ item.1.name }}"
-        value: "{{ item.1.value }}"
-        scope: local
-        repo: "{{ item.0.item }}"
-      when: item.0.stat.exists
-      loop: "{{ todo_repos.results | product([
-                  {'name': 'pack.window', 'value': '250'},
-                  {'name': 'pack.depth',  'value': '100'}]) | list }}"
-      loop_control:
-        label: "{{ item.0.item | basename }} {{ item.1.name }}"
-      # todo-sqlite-cli.db is a ~2.3 MiB SQLite file committed on nearly every
-      # task change -- 692 of 3,571 commits as of 2026-09-03. Git's default
-      # pack.window of 10 is far too small to find a good delta base among
-      # ~680 versions of it, so recent versions were being stored close to
-      # whole: 664 KiB of pack per DB commit against a 39 KiB historical
-      # average. At window=250 that drops to 38 KiB, and the file's total
-      # on-disk history goes 25.7 MiB -> 9.1 MiB (.git overall 58 MB -> 41 MB).
-      #
-      # Setting this only affects FUTURE repacks. A node provisioned before
-      # this task existed keeps its bloated pack until repacked once by hand:
-      #   git repack -a -d --window=250 --depth=100
-      # That is a pure storage-layout rewrite -- it never changes commit SHAs
-      # or history -- so it is safe to run on any clone at any time.
-
-    - name: Register the todo-sqlite-cli merge driver
-      community.general.git_config:
-        name: "{{ item.1.name }}"
-        value: "{{ item.1.value }}"
-        scope: local
-        repo: "{{ item.0.item }}"
-      when: item.0.stat.exists
-      loop: "{{ todo_repos.results | product([
-                  {'name': 'merge.todo-sqlite-cli.name',
-                   'value': 'todo-sqlite-cli 3-way merge driver'},
-                  {'name': 'merge.todo-sqlite-cli.driver',
-                   'value': 'todo-sqlite-cli git-merge-driver %O %A %B'}]) | list }}"
-      loop_control:
-        label: "{{ item.0.item | basename }} {{ item.1.name }}"
-      # .gitattributes maps `todo-sqlite-cli.db merge=todo-sqlite-cli` and IS
-      # committed, but the driver it names is repo-local config that is not.
-      # Without this, git falls back to the binary default and leaves the DB
-      # in conflict on every pull that touched it -- see CLAUDE.md's "PULLING
-      # FROM UPSTREAM" section.
-      #
-      # Registered by hand rather than via `todo-sqlite-cli install-merge-driver`
-      # because that command also appends the .gitattributes line
-      # unconditionally, which would duplicate the one already committed here.
 
     - name: Reconcile pulls by merging, not rebasing
       community.general.git_config:
@@ -255,22 +198,20 @@
         scope: local
         repo: "{{ item.item }}"
       when: item.stat.exists
-      loop: "{{ todo_repos.results }}"
+      loop: "{{ sibling_repos.results }}"
       loop_control:
         label: "{{ item.item | basename }}"
       # git 2.27+ refuses to pull divergent branches without being told how,
       # so without this every pull that raced another node stops with
       # "fatal: Need to specify how to reconcile divergent branches".
       #
-      # Merge is the right answer *because* of the driver registered above: a
-      # merge invokes it once on the two DB tips and unions them by task UUID.
-      # A rebase replays each local DB commit onto the new base instead,
-      # running the driver once per commit against a moving target -- more
-      # driver invocations, more chances to stop, and no benefit, since the DB
-      # is a binary blob whose history nobody reads commit-by-commit.
+      # Merge rather than rebase: several nodes commit to these repos in
+      # parallel, and a merge resolves a raced pull once instead of replaying
+      # each local commit onto a moving base.
       #
-      # Set per-repo rather than globally: the rationale is this repo's
-      # committed SQLite DB, not a general preference about pull style.
+      # Set per-repo rather than globally, so it stays a statement about how
+      # these multi-node repos are pulled, not a global preference about pull
+      # style.
 
     - name: Verify clew-mcp resolves (the command .mcp.json points at)
       command: "{{ dev_venv }}/bin/clew-mcp --help"
