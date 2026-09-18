@@ -326,6 +326,13 @@ neighbors, never a text/name match.** `docs/adr/0006` has three independent
 rules that shipped real bugs by matching on spelling instead of resolving
 scope.
 
+**Before gating a rule on whether its node has a parser `ERROR` ancestor,
+read `docs/adr/0008`.** Measured, not assumed: `ERROR` ancestry doesn't
+predict correctness in either direction, and a blanket gate would silently
+drop real findings from rules whose true output concentrates in damaged
+files. Diagnose what was actually misread instead — usually a preprocessor
+construct reaching a rule that assumes it's looking at a C expression.
+
 **NEVER add embedded unit tests in rule implementation files:**
 - ❌ NO `#[cfg(test)]` modules in `src/rules/cert_c/*/*/*.rs`
 - ❌ NO inline test functions with hardcoded C snippets
