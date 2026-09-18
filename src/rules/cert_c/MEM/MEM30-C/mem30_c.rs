@@ -210,6 +210,14 @@ fn is_fresh_allocation_name(name: &str) -> bool {
 /// first argument rather than returning a new pointer to assign back) is
 /// not that idiom, and must not be treated as invalidating its first
 /// argument (task 563).
+/// The `<stem>` of a `<stem>_init` callee name, the in-place initializer
+/// half of the `X_init(obj)` / `X_free(obj)` convention (task 1235).
+fn init_stem(function_name: &str) -> Option<&str> {
+    function_name
+        .strip_suffix("_init")
+        .filter(|stem| !stem.is_empty())
+}
+
 fn call_result_is_assigned(call_node: &Node) -> bool {
     let mut current = *call_node;
     loop {
@@ -1425,6 +1433,20 @@ struct MemoryAnalyzer {
     // `#define ALIAS target` map (project-wide plus this file); a callee is
     // dispatched on the name its alias chain ends at (task 1128).
     macro_aliases: HashMap<String, String>,
+    // Objects this function has handed to a `<stem>_init(obj)` callee, keyed
+    // by canonical lvalue, with the set of stems: `mbedtls_x509_crt_init(p)`
+    // records `p -> {"mbedtls_x509_crt"}`. A later name-shaped
+    // `<stem>_free(obj)` with the SAME stem on the SAME object does not end
+    // obj's lifetime for this caller: either the init was handed
+    // caller-owned storage and the free releases its contents (mbedtls's
+    // `X_init`/`X_free` on a malloc'd struct, followed by the real
+    // `free(p)`), or the init took a functional reference and the free drops
+    // a structural one (OpenSSL's `ENGINE_init`/`ENGINE_free`, after which
+    // `ENGINE_finish(engine)` is still legitimate). Task 1235.
+    // Function-scoped and monotone: it is evidence about the API's
+    // ownership convention, not path state, so it is not forked or merged
+    // with the branch state.
+    init_stems: HashMap<LValue, HashSet<String>>,
 }
 
 impl MemoryAnalyzer {
@@ -1449,6 +1471,7 @@ impl MemoryAnalyzer {
             union_typed_vars: HashSet::new(),
             function_summaries,
             macro_aliases,
+            init_stems: HashMap::new(),
         }
     }
 
@@ -2477,6 +2500,19 @@ impl MemoryAnalyzer {
                 }
                 _ => {
                     let upper_name = function_name.to_uppercase();
+                    // `<stem>_init(obj, ...)`: record every plain-lvalue
+                    // argument as initialized in place under `stem` (task
+                    // 1235; consumed by `is_contents_free_of_initialized`).
+                    // `function_name` borrows `self.macro_aliases`, so the
+                    // insert is on the field, not through a `&mut self` call.
+                    if let Some(stem) = init_stem(function_name) {
+                        for lv in self.call_arg_lvalues(node, source) {
+                            self.init_stems
+                                .entry(lv)
+                                .or_default()
+                                .insert(stem.to_string());
+                        }
+                    }
 
                     // A realloc-*named* wrapper (hostap's `os_realloc`: malloc
                     // new, copy, free old) is used at call sites via the
@@ -2545,6 +2581,17 @@ impl MemoryAnalyzer {
                         || upper_name == "SAFE_DELETE"
                         || upper_name == "DELETE"
                     {
+                        // `<stem>_free(obj)` after `<stem>_init(obj)` in this
+                        // function does not release obj itself (contents-free
+                        // of caller-owned storage, or a structural-reference
+                        // drop; see `init_stems`), so obj is not marked freed
+                        // and the real `free(p)` that follows is not a double
+                        // free (task 1235). It is still a use of obj, so a
+                        // prior free of it is reported.
+                        if self.is_contents_free_of_initialized(function_name, node, source) {
+                            self.check_function_args_for_freed(node, source, violations);
+                            return HashSet::new();
+                        }
                         // Treat as free() call
                         let freed_arg_ids = self.process_free_call(node, source, violations);
                         // "Safe free" macros (curl Curl_safefree, mosquitto
@@ -2565,6 +2612,55 @@ impl MemoryAnalyzer {
             }
         }
         HashSet::new()
+    }
+
+    /// The canonical lvalues of a call's plain `identifier` / `field_expression`
+    /// arguments (cast-unwrapped), in argument order.
+    fn call_arg_lvalues(&self, call: &Node, source: &str) -> Vec<LValue> {
+        let Some(arguments) = call.child_by_field_name("arguments") else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for i in 0..arguments.child_count() {
+            let Some(mut arg) = arguments.child(i) else {
+                continue;
+            };
+            if matches!(arg.kind(), "," | "(" | ")") {
+                continue;
+            }
+            if arg.kind() == "cast_expression" {
+                if let Some(value) = arg.child_by_field_name("value") {
+                    arg = value;
+                }
+            }
+            if arg.kind() != "identifier" && arg.kind() != "field_expression" {
+                continue;
+            }
+            if let Some(lv) = lvalue_of(&arg, source) {
+                out.push(resolve_canonical(&self.aliases, &lv));
+            }
+        }
+        out
+    }
+
+    /// Is this name-shaped free a `<stem>_free(obj)` whose `obj` this function
+    /// earlier passed to `<stem>_init`? The freed operand is the last argument,
+    /// as `process_free_call` assumes (task 1235).
+    fn is_contents_free_of_initialized(
+        &self,
+        function_name: &str,
+        call: &Node,
+        source: &str,
+    ) -> bool {
+        let Some(stem) = function_name.strip_suffix("_free") else {
+            return false;
+        };
+        let Some(target) = self.call_arg_lvalues(call, source).pop() else {
+            return false;
+        };
+        self.init_stems
+            .get(&target)
+            .is_some_and(|stems| stems.contains(stem))
     }
 
     /// Process free() call - mark variable as freed
