@@ -285,7 +285,7 @@ pub fn get_output_arg_indices(func_name: &str) -> Vec<usize> {
         // has no answer to give here. `variadic_output_from_index` is
         // what carries it -- and an empty list on its own used to mean
         // strictly LESS credit than not being listed at all (task 1029,
-        // tools_sqc). See the note there.
+        // aurora_lint). See the note there.
         "scanf" | "fscanf" | "sscanf" => vec![],
         "gettimeofday" => vec![0],
         "getaddrinfo" => vec![3],
@@ -312,7 +312,7 @@ pub fn get_output_arg_indices(func_name: &str) -> Vec<usize> {
 /// absence: `try_process_known_initializing_function` returned true anyway,
 /// short-circuiting the `&var` credit `process_unknown_function_call` gives
 /// every unlisted name, so `sscanf(s, "%d", &x)` left `x` uninitialised where
-/// an unlisted `getsockopt(..., &x, ...)` did not (task 1029, tools_sqc).
+/// an unlisted `getsockopt(..., &x, ...)` did not (task 1029, aurora_lint).
 ///
 /// Modelling the shape rather than falling through keeps argument 0 of
 /// `fscanf`/`sscanf` an INPUT, which the fallback would have credited: an
@@ -420,7 +420,7 @@ pub struct InitAnalysisConfig {
     /// default credited the conditional write as a full one: curl's
     /// `Curl_sasl_decode_mech(ptr, maxlen, &llen)` writes `*len` only when a
     /// mechanism name matches its table, and `openldap.c`'s caller reads
-    /// `llen` on the no-match path (task 1065 bug #3, tools_sqc).
+    /// `llen` on the no-match path (task 1065 bug #3, aurora_lint).
     ///
     /// Kept disjoint from `cross_file_output_params` by construction, and
     /// deliberately excludes parameters carrying an undischarged
@@ -1299,7 +1299,7 @@ fn try_process_macro_output_params(
     };
     // Nothing to credit, so claiming the call was handled would suppress every
     // path below -- including the stdlib table. The same short-circuit
-    // `try_process_known_initializing_function` carried (task 1029, tools_sqc).
+    // `try_process_known_initializing_function` carried (task 1029, aurora_lint).
     if out_indices.is_empty() {
         return false;
     }
@@ -1317,7 +1317,7 @@ fn try_process_macro_output_params(
             // became visible (task 1026), which populated the map, armed the
             // `true` below, and dropped the credit `stat` -> arg 1 had always
             // got from the stdlib table -- reporting `st` uninitialised at
-            // five pure-ftpd sites (task 1026 follow-up, tools_sqc).
+            // five pure-ftpd sites (task 1026 follow-up, aurora_lint).
             let name = extract_var_from_arg(arg, source);
             if !name.is_empty() {
                 if let Some(info) = state.get_mut(&name) {
@@ -1484,7 +1484,7 @@ fn try_process_known_initializing_function(
     // Nothing to credit. Claiming the call was handled anyway suppresses the
     // caller's fallback -- `process_unknown_function_call` credits `&var` for
     // any name this table does not know -- so being listed here with no output
-    // index was strictly worse than not being listed (task 1029, tools_sqc).
+    // index was strictly worse than not being listed (task 1029, aurora_lint).
     // Same "must be additive, not a short-circuit" rule as
     // `try_process_cross_file_output_params`. The mbrlen/regexec group that
     // reaches this line is still denied credit, by
@@ -1540,7 +1540,7 @@ fn process_unknown_function_call(
     let read_only_indices = config.read_only_deref_fns.get(func_name);
     // Same suppression, sourced from the prescan summary rather than from the
     // file-local scan: `conditionally_init_fns` only ever holds callees
-    // defined in the file being analysed (task 1065 bug #3, tools_sqc).
+    // defined in the file being analysed (task 1065 bug #3, aurora_lint).
     let cross_file_cond_indices = config.cross_file_conditional_output_params.get(func_name);
 
     let Some(args) = node.child_by_field_name("arguments") else {
@@ -1561,7 +1561,7 @@ fn process_unknown_function_call(
         // whole-array granularity of this model turns "may not have written
         // all of it" into a report about code that is fine. The scalar
         // output parameter is where the distinction is real (task 1065
-        // bug #3, tools_sqc).
+        // bug #3, aurora_lint).
         let skip_addr_of_arg = skip_this_arg
             || cross_file_cond_indices.is_some_and(|indices| indices.contains(&arg_idx));
         // A cast or a redundant parenthesis around the argument changes
@@ -1569,7 +1569,7 @@ fn process_unknown_function_call(
         // below are on the argument node itself -- so curl's and hostap's
         // `f((unsigned char *)&s.arr[0], n)` was never even offered to
         // `extract_var_from_arg`, which unwraps casts perfectly well once it
-        // is reached (task 1028, tools_sqc).
+        // is reached (task 1028, aurora_lint).
         let arg = strip_arg_casts(&arg);
         // &var pattern — assume function writes to it (unless this param is conditionally-init)
         if !skip_addr_of_arg && arg.kind() == "pointer_expression" {
@@ -2136,7 +2136,7 @@ pub fn strip_arg_casts<'a>(arg: &Node<'a>) -> Node<'a> {
 /// neighbouring question -- WHICH object an `&lvalue` names, as a path string,
 /// so two arguments can be compared for distinctness -- and needs a frame to
 /// answer it. This needs none: a state-map key is a root name, and only the
-/// root is wanted (task 1028, tools_sqc).
+/// root is wanted (task 1028, aurora_lint).
 pub fn addressed_object_root<'a>(lvalue: &Node<'a>) -> Option<Node<'a>> {
     match lvalue.kind() {
         "identifier" => Some(*lvalue),

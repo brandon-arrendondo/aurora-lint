@@ -22,7 +22,7 @@ pub struct FunctionSummary {
     /// is not nested inside any conditional construct other than a null test
     /// on the very pointer being freed (`if (p != NULL) free(p);`, whose
     /// skipped path has nothing to free and so leaves nothing for a caller to
-    /// use — task 988, tools_sqc), so it executes
+    /// use — task 988, aurora_lint), so it executes
     /// whenever the function itself is entered (modulo an early return
     /// before it, which the AST-position check already accounts for since
     /// it only asks "is this call inside a conditional", not "could an
@@ -44,7 +44,7 @@ pub struct FunctionSummary {
     /// nothing when `n == 0`, so the caller can still read `sign`
     /// uninitialised — the CERT wiki's own noncompliant example, which
     /// EXP33-C missed for as long as MAY was all the summary offered
-    /// (task 988, tools_sqc).
+    /// (task 988, aurora_lint).
     ///
     /// Built by DEMOTION rather than by re-derivation: a parameter leaves the
     /// set only when the AST pass found writes through it and every one of
@@ -70,7 +70,7 @@ pub struct FunctionSummary {
     /// sqlite's `fts5CsrPoslist` forwards `pa` from inside an if/else whose
     /// other arm writes it directly, so no single call site is
     /// unconditional and yet no returning path leaves `pa` untouched
-    /// (task 1011, tools_sqc).
+    /// (task 1011, aurora_lint).
     #[serde(default)]
     pub modifies_params_pending: HashMap<usize, Vec<(String, usize)>>,
     /// Parameters PROVEN to have a returning path that writes nothing through
@@ -85,7 +85,7 @@ pub struct FunctionSummary {
     /// `cf_proxy->cft->query(...)` through a function pointer — absent from
     /// MUST, and yet crediting its callers is correct. Withholding the
     /// `&var`-initializes default on "not in MUST" alone therefore reports
-    /// every such caller (task 1065 bug #3, tools_sqc).
+    /// every such caller (task 1065 bug #3, aurora_lint).
     ///
     /// So this set answers the other question outright: is there a path that
     /// reaches a `return` (or the end of a void body) having neither written
@@ -151,7 +151,7 @@ pub struct FunctionSummary {
     /// assume it is checked" — a shortcut that turns confirmed true positives
     /// into misses, since at the flagged function a safe forwarding wrapper
     /// and an unsafe one are structurally identical and only the callee's
-    /// body tells them apart (task 744, tools_sqc).
+    /// body tells them apart (task 744, aurora_lint).
     #[serde(default)]
     pub checks_null_params_before_deref: HashSet<usize>,
     /// Whether this function never returns (calls abort/exit/longjmp).
@@ -615,7 +615,7 @@ fn collect_function_summaries(
     // holding an `analyze_function` result, so the frame grew with
     // `FunctionSummary` itself: raylib's parse aborted the entire scan the
     // next time the struct gained a field, and would have again on the one
-    // after that (task 1011, tools_sqc). Depth now costs heap.
+    // after that (task 1011, aurora_lint). Depth now costs heap.
     let mut stack = vec![*node];
     while let Some(current) = stack.pop() {
         if current.kind() == "function_definition" && !is_macro_function_definition(&current) {
@@ -636,7 +636,7 @@ fn collect_function_summaries(
                 // preprocess. Folded exactly as two definitions in different
                 // files are: `merge_summary_variant` is the one place that
                 // decides what callers of a multiply-defined name are told
-                // (task 1083, tools_sqc).
+                // (task 1083, aurora_lint).
                 //
                 // The overwrite this replaces was LAST-one-wins, which is
                 // worse than arbitrary here: the `#else` stub is textually
@@ -1574,7 +1574,7 @@ fn null_guard_on(condition: &Node, source: &str, name: &str) -> Option<bool> {
 /// it there is nothing to free, so nothing survives the call for the caller
 /// to use. Marking the argument freed therefore cannot invent a
 /// use-after-free, which is the failure the MUST set exists to prevent
-/// (task 988, tools_sqc).
+/// (task 988, aurora_lint).
 ///
 /// The guard must be on the pointer being freed and on nothing else. Any
 /// other condition — a different variable, a flag, a compound test — is a
@@ -1727,7 +1727,7 @@ fn deref_write_root<'a>(lvalue: &Node<'a>, saw_deref: bool) -> Option<Node<'a>> 
 /// forwarded-write obligations are every one of them reached only from there.
 /// hostap's `ieee802_11_parse_elems`, whose body is `os_memset(elems, 0, ...)`
 /// and a forward, had 65 callers reported uninitialised on that account (task
-/// 1026, tools_sqc).
+/// 1026, aurora_lint).
 ///
 /// Name-independent by construction: resolution is
 /// `init_state::match_initializing_function`, whose suffix matcher is what
@@ -1863,19 +1863,19 @@ type WriteObligations = BTreeSet<(String, usize)>;
 /// in both arms of a trailing `if (rc == SQLITE_OK) ... else ...`: every
 /// write is nested inside a conditional, and yet no returning path leaves the
 /// outputs untouched. Judging such a function by position alone reports its
-/// callers' variables uninitialised (task 988, tools_sqc).
+/// callers' variables uninitialised (task 988, aurora_lint).
 ///
 /// One arm of that function writes `*pa` only by handing `pa` to
 /// `sqlite3Fts5ExprPoslist`, which a structural walk cannot see through. That
 /// leg returns an obligation rather than a verdict, so the interprocedural
-/// half of the answer is deferred instead of guessed (task 1011, tools_sqc).
+/// half of the answer is deferred instead of guessed (task 1011, aurora_lint).
 ///
 /// Only an if/else with BOTH arms covered counts. A bare `if` without an
 /// `else` and a loop that may run zero times are left as partial -- which is
 /// the honest reading and the one the fixture depends on: `set_flag`'s
 /// `if`/`else if` has no final `else`. A `switch` is partial too UNLESS it
 /// carries a `default`, which makes it exhaustive by construction; see
-/// `switch_writes_on_all_paths` (task 1025, tools_sqc).
+/// `switch_writes_on_all_paths` (task 1025, aurora_lint).
 ///
 /// Early `return`s are not modelled, matching the simplification
 /// `is_unconditionally_reached` already makes.
@@ -1958,7 +1958,7 @@ fn writes_on_all_paths_capped(
                 .and_then(|l| deref_write_root(&l, false))
                 .is_some_and(|root| root.utf8_text(source.as_bytes()).unwrap_or("") == param);
             // `os_memset(out, 0, n);` is a write on this path with no
-            // assignment operator to find (task 1026, tools_sqc). Asked here
+            // assignment operator to find (task 1026, aurora_lint). Asked here
             // rather than credited outright so a call under an `if` stays a
             // MAY-write, exactly as an assignment under one does.
             let library_writes_here = library_written_names(&expr, source).contains(param);
@@ -1984,7 +1984,7 @@ fn writes_on_all_paths_capped(
 /// exhaustive by construction, so if every arm writes then so does every path
 /// out of the statement. curl's `cw_get_writefunc` assigns all four of its
 /// output parameters in each of its three arms and every caller was still
-/// reported uninitialised (task 1025, tools_sqc).
+/// reported uninitialised (task 1025, aurora_lint).
 ///
 /// A conjunction over the groups, so the obligations are the union — the same
 /// shape the `if`/`else` arm has, one level wider.
@@ -2154,7 +2154,7 @@ fn forwarded_write_obligation(expr: &Node, source: &str, param: &str) -> Option<
             }
             // `Curl_ssl_random(data, (unsigned char *)rnd, sizeof(*rnd))`
             // forwards `rnd` as surely as a bare `rnd` would; matching only a
-            // bare identifier is what hid it (task 1027, tools_sqc).
+            // bare identifier is what hid it (task 1027, aurora_lint).
             let stripped = init_state::strip_arg_casts(&arg);
             if stripped.kind() == "identifier"
                 && stripped.utf8_text(source.as_bytes()).unwrap_or("") == param
@@ -2451,7 +2451,7 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
         .extend(summary.conditional_modifies_params);
     // The three output-parameter sets, each merged in the
     // direction its own meaning demands (task 1079,
-    // tools_sqc). Before this they were not merged at all:
+    // aurora_lint). Before this they were not merged at all:
     // whichever definition the parallel walk reached first
     // was inserted whole and every later one was dropped, so
     // a project shipping two definitions of a name got an
@@ -2548,7 +2548,7 @@ fn credit_modifies_params(
     // position, so it belongs in this list as well as in the MAY set --
     // otherwise `if (x) os_memset(out, 0, n);` reaches the "no write this pass
     // could see" arm below and is promoted to a MUST-write for having been
-    // invisible (task 1026, tools_sqc). `library_written_roots` already
+    // invisible (task 1026, aurora_lint). `library_written_roots` already
     // returns the root, so no `deref_write_root` here: a bare `out` handed to
     // the call is the dereference, and asking again would reject it.
     for &call in &sweep.calls {
@@ -2572,7 +2572,7 @@ fn credit_modifies_params(
         // Counting it conditional makes the standard shape
         // `rc = f(&n, ...); if (rc) return; use(n);` report uninitialised,
         // and sqlite's fts3 alone writes its outputs that way dozens of
-        // times over (task 988, tools_sqc).
+        // times over (task 988, aurora_lint).
         entry.1 |= is_unconditionally_reached_modulo_null_guard(node, body, source, name);
     }
 
@@ -2608,7 +2608,7 @@ fn credit_modifies_params(
     // it was built for: curl's `my_md5_init(void *ctx) { md5_init(ctx); }`
     // stayed flagged at every call site. That is why the obligation lattice
     // measured -2 across nine corpora while the class it aimed at was still
-    // standing (task 1027, tools_sqc).
+    // standing (task 1027, aurora_lint).
     //
     // Gated on `forwarded_argument_names` so the coverage walk is asked only
     // about parameters the body actually hands to a callee. Without a gate
@@ -2886,7 +2886,7 @@ fn analyze_param_usage(
             || line_has_arrow_or_subscript_write(body_text, param_name)
             || is_fd_set_macro_write(&sweep.calls, source, param_name)
             // `os_memset(elems, 0, sizeof(*elems))` writes the output with no
-            // assignment operator anywhere (task 1026, tools_sqc).
+            // assignment operator anywhere (task 1026, aurora_lint).
             || library_written.contains(param_name)
         {
             summary.modifies_params.insert(idx);
@@ -3414,7 +3414,7 @@ fn collect_param_passthroughs(
                             // `backend_free((unsigned char *)p)` forwards
                             // `p` as surely as a bare `p` would; matching only
                             // a bare identifier left the transitive-free walk
-                            // with no edge to follow (task 1034, tools_sqc).
+                            // with no edge to follow (task 1034, aurora_lint).
                             let stripped = init_state::strip_arg_casts(&arg);
                             if stripped.kind() == "identifier" {
                                 let arg_text = stripped.utf8_text(source.as_bytes()).unwrap_or("");
@@ -3567,7 +3567,7 @@ pub fn propagate_transitive_modifies(summaries: &mut HashMap<String, FunctionSum
         // `out` to `set_flag` on the other, and `set_flag` writes nothing when
         // `number == 0` -- so `classify` can return without writing too, and a
         // structural walk of its body alone can never see that (task 1078,
-        // tools_sqc).
+        // aurora_lint).
         let conditional_snapshot: HashMap<String, HashSet<usize>> = summaries
             .iter()
             .map(|(n, s)| (n.clone(), s.conditional_modifies_params.clone()))
@@ -3616,7 +3616,7 @@ pub fn propagate_transitive_modifies(summaries: &mut HashMap<String, FunctionSum
                 // Keeps `unconditional_modifies_params` a subset of the MAY
                 // set for a parameter that reached here through a forward and
                 // never had a direct write to put it there (task 1027,
-                // tools_sqc).
+                // aurora_lint).
                 summary.modifies_params.insert(idx);
                 changed = true;
             }
@@ -4159,7 +4159,7 @@ mod tests {
         // parsed and both produce a summary for the same name. The `#else`
         // stub is textually last, so a plain insert let the do-nothing variant
         // govern every caller -- `fill` looked like it writes nothing at all
-        // (task 1083, tools_sqc).
+        // (task 1083, aurora_lint).
         //
         // Mirrored the way the cross-file test is, so neither arm alone gives
         // this answer: the real arm alone puts index 1 in MUST, the stub arm

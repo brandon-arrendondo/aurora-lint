@@ -12,7 +12,7 @@
  * The pre-parse pass (empty_macro_blank::substitute_qualifier_alias_macros)
  * rewrites `CONST` to `const` byte-length-preservingly, so tree-sitter
  * parses the qualifier correctly and is_const reads back true (task 758,
- * tools_sqc; real shape from sqlite src/tclsqlite.h:37 which defines the
+ * aurora_lint; real shape from sqlite src/tclsqlite.h:37 which defines the
  * macro and every ext/fts5/fts5_tcl.c parameter that uses it).
  */
 

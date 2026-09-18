@@ -8,7 +8,7 @@
  * the skipped path has nothing to free and so leaves nothing for the caller to
  * use, which is the failure the MUST-free set exists to prevent. It therefore
  * enters unconditional_frees_params, and MEM30-C marks the caller's argument
- * freed at the call (task 988, tools_sqc).
+ * freed at the call (task 988, aurora_lint).
  */
 
 /*
