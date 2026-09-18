@@ -212,6 +212,15 @@ struct MemoryLeakAnalyzer<'a> {
     // at the label of a pointer in here but not in the intersection is a
     // double free on that path. See `visit_labeled_statement`.
     goto_maybe_freed: HashMap<String, HashMap<String, (usize, usize)>>,
+    // Per label, which of those frees rest on a callee's NAME alone
+    // (`freed_by_guess`) on EVERY jump that had the pointer freed: `Some`
+    // (the guessing callee) when so, `None` once any jump freed it for
+    // real. The snapshots above carry positions only, so without this a
+    // guess made before `goto fail` arrived at `fail:` as a fact and
+    // `curl_url_cleanup(u)` there was a "possible double free" of a handle
+    // `curl_url_set(u, ...)` had never freed (curl tool_xattr.c,
+    // tool_operhlp.c). See `visit_labeled_statement`.
+    goto_freed_by_guess: HashMap<String, HashMap<String, Option<String>>>,
     // Pointers freed on some, not every, path into the label the walk is
     // currently below -- consulted only by the free handlers, never by the
     // leak sweeps, which keep their must-freed reading of `freed_memory`.
@@ -425,6 +434,7 @@ struct PreprocArmState {
     allocated_memory: HashMap<String, AllocInfo>,
     goto_freed_states: HashMap<String, HashMap<String, (usize, usize)>>,
     goto_maybe_freed: HashMap<String, HashMap<String, (usize, usize)>>,
+    goto_freed_by_guess: HashMap<String, HashMap<String, Option<String>>>,
 }
 
 impl PreprocArmState {
@@ -434,6 +444,7 @@ impl PreprocArmState {
             allocated_memory: analyzer.allocated_memory.clone(),
             goto_freed_states: analyzer.goto_freed_states.clone(),
             goto_maybe_freed: analyzer.goto_maybe_freed.clone(),
+            goto_freed_by_guess: analyzer.goto_freed_by_guess.clone(),
         }
     }
 
@@ -442,6 +453,7 @@ impl PreprocArmState {
         analyzer.allocated_memory = self.allocated_memory.clone();
         analyzer.goto_freed_states = self.goto_freed_states.clone();
         analyzer.goto_maybe_freed = self.goto_maybe_freed.clone();
+        analyzer.goto_freed_by_guess = self.goto_freed_by_guess.clone();
     }
 
     /// Fold the state one arm ended on into this one, as the state the code
@@ -482,6 +494,27 @@ impl PreprocArmState {
             let union = self.goto_maybe_freed.entry(label).or_default();
             for (var, pos) in state {
                 union.entry(var).or_insert(pos);
+            }
+        }
+        for (label, state) in other.goto_freed_by_guess {
+            let mine = self.goto_freed_by_guess.entry(label).or_default();
+            for (var, guess) in state {
+                Self::fold_guess(mine, var, guess);
+            }
+        }
+    }
+
+    /// Fold one jump's reading of `var` into a label's: a guess stays a
+    /// guess only while every jump agrees.
+    fn fold_guess(into: &mut HashMap<String, Option<String>>, var: String, guess: Option<String>) {
+        match into.get_mut(&var) {
+            Some(existing) => {
+                if guess.is_none() {
+                    *existing = None;
+                }
+            }
+            None => {
+                into.insert(var, guess);
             }
         }
     }
@@ -603,6 +636,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             arms: PreprocArms::default(),
             goto_freed_states: HashMap::new(),
             goto_maybe_freed: HashMap::new(),
+            goto_freed_by_guess: HashMap::new(),
             maybe_freed: HashMap::new(),
             discarded_label_frees: HashMap::new(),
             realloc_relations: HashMap::new(),
@@ -680,6 +714,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             self.arms = PreprocArms::collect(&body);
             self.goto_freed_states.clear();
             self.goto_maybe_freed.clear();
+            self.goto_freed_by_guess.clear();
             self.maybe_freed.clear();
             self.discarded_label_frees.clear();
             self.collect_label_frees(&body, source);
@@ -1529,6 +1564,16 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     }
                 }
             }
+            // A free that every jump in only guessed is still a guess here,
+            // and `guess_forbids_double_free` must be able to see that at
+            // the label's own release of the pointer.
+            if let Some(guesses) = self.goto_freed_by_guess.get(&name).cloned() {
+                for (var, guess) in guesses {
+                    if let Some(callee) = guess {
+                        self.freed_by_guess.entry(var).or_insert(callee);
+                    }
+                }
+            }
         }
         push_children(stack, &n);
     }
@@ -1551,6 +1596,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             .or_default();
         for (var, pos) in &self.freed_memory {
             union.entry(var.clone()).or_insert(*pos);
+        }
+        let guesses = self
+            .goto_freed_by_guess
+            .entry(target_label.to_string())
+            .or_default();
+        for var in self.freed_memory.keys() {
+            let guess = self.freed_by_guess.get(var).cloned();
+            PreprocArmState::fold_guess(guesses, var.clone(), guess);
         }
     }
 
