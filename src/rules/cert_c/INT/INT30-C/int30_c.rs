@@ -54,6 +54,10 @@ pub struct Int30C {
     /// signed/unsigned dispatch cannot see `size_t` returns while the other
     /// does (task 1288).
     function_return_types: RefCell<HashMap<String, String>>,
+    /// One-level typedef alias map from the project context, resolved
+    /// through `overflow_helpers::typedef_chain_is_unsigned` in
+    /// `is_unsigned_type` (task 1288).
+    typedef_types: RefCell<Arc<HashMap<String, String>>>,
 }
 
 impl Int30C {
@@ -71,6 +75,7 @@ impl Int30C {
             param_names_cache: RefCell::new(HashMap::new()),
             pointer_facts: RefCell::new(PointerFacts::default()),
             function_return_types: RefCell::new(HashMap::new()),
+            typedef_types: RefCell::new(Arc::new(HashMap::new())),
         }
     }
 
@@ -215,6 +220,7 @@ impl CertRule for Int30C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_macros.borrow_mut() = context.macro_constants.clone();
+        *self.typedef_types.borrow_mut() = context.typedef_types.clone();
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.global_writers.borrow_mut() = context.global_writers.clone();
@@ -1770,8 +1776,19 @@ impl Int30C {
         true
     }
 
+    /// Whether a type spelling is unsigned: the C spellings, the shared
+    /// `ast_utils::is_unsigned_type` vocabulary (`uintN_t`, Win32 names),
+    /// and any typedef alias whose chain resolves to one -- the same
+    /// resolution INT32-C applies (`classify_declared_type`), so the two
+    /// rules type the same operand the same way and the signed/unsigned
+    /// dispatch between them is exhaustive (task 1288). `word_t` ->
+    /// `unsigned long` was unsigned to INT32-C and `int` here.
     fn is_unsigned_type(&self, type_str: &str) -> bool {
-        type_str.contains("unsigned") || type_str == "size_t" || type_str.contains("uint")
+        type_str.contains("unsigned")
+            || type_str == "size_t"
+            || type_str.contains("uint")
+            || ast_utils::is_unsigned_type(type_str)
+            || overflow_helpers::typedef_chain_is_unsigned(type_str, &self.typedef_types.borrow())
     }
 
     /// Returns true if the type is a narrow unsigned integer (8-bit or 16-bit).

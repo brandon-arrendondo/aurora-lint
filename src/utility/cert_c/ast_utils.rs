@@ -1448,7 +1448,14 @@ pub fn integer_type_width(type_str: &str) -> Option<u32> {
     None
 }
 
-/// Check if a type string represents an unsigned integer type
+/// Check if a type string represents an unsigned integer type.
+///
+/// Besides the C spellings, the Win32 SDK's fixed unsigned typedef names
+/// (`DWORD`, `UINT32`, `ULONG_PTR`, ...) are recognised by name: they are
+/// defined in headers the scan never reads, so no typedef chain can reach
+/// them, and without this a `(UINT32)strlen(s) + 1` allocation size was
+/// signed to one rule and untyped to the other, so neither reported it
+/// (task 1288, ventoy).
 #[allow(dead_code)]
 pub fn is_unsigned_type(type_str: &str) -> bool {
     type_str.contains("unsigned")
@@ -1456,6 +1463,41 @@ pub fn is_unsigned_type(type_str: &str) -> bool {
             type_str.trim(),
             "size_t" | "uint8_t" | "uint16_t" | "uint32_t" | "uint64_t" | "uintptr_t" | "uintmax_t"
         )
+        || is_win32_unsigned_typedef(type_str.trim())
+}
+
+/// The Win32 SDK's unsigned integer typedef names, as spelled in
+/// `<windows.h>` / `<basetsd.h>`. A fixed vocabulary, not a shape.
+pub fn is_win32_unsigned_typedef(type_str: &str) -> bool {
+    matches!(
+        type_str,
+        "BYTE"
+            | "UCHAR"
+            | "WORD"
+            | "USHORT"
+            | "DWORD"
+            | "DWORD32"
+            | "DWORD64"
+            | "DWORDLONG"
+            | "UINT"
+            | "UINT8"
+            | "UINT16"
+            | "UINT32"
+            | "UINT64"
+            | "ULONG"
+            | "ULONG32"
+            | "ULONG64"
+            | "ULONGLONG"
+            | "QWORD"
+            | "SIZE_T"
+            | "ULONG_PTR"
+            | "DWORD_PTR"
+            | "UINT_PTR"
+            | "UINT_FAST8_T"
+            | "UINT_FAST16_T"
+            | "UINT_FAST32_T"
+            | "UINT_FAST64_T"
+    )
 }
 
 // ============================================================================

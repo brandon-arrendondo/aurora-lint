@@ -2417,6 +2417,7 @@ impl Int32C {
             || type_str.starts_with("unsigned ")
             || type_str == "SIZE_MAX"
             || overflow_helpers::is_short_unsigned_typedef(type_str)
+            || ast_utils::is_unsigned_type(type_str)
     }
 
     fn could_be_int_min(&self, node: &Node, source: &str) -> bool {
