@@ -27,6 +27,8 @@ int main() {
     // Another unchecked fprintf
     fprintf(file, "Another entry: %s\n", "test");
 
-    fclose(file);
+    if (fclose(file) != 0) {
+        return 1;
+    }
     return 0;
 }

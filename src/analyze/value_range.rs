@@ -325,6 +325,10 @@ fn process_statement_for_ranges(
     state: &mut RangeMap,
     local_types: &HashMap<String, VarType>,
 ) {
+    // Before the statement's own effect: a callee may write through any
+    // `&var` it receives, wherever in the statement the call sits. Idempotent,
+    // so the bare-call and opaque-region paths below doing it again is fine.
+    widen_address_taken_call_args(node, source, state);
     match node.kind() {
         "declaration" => {
             process_declaration_range(node, source, macros, summaries, state);
@@ -766,6 +770,25 @@ fn process_update_range(node: &Node, source: &str, state: &mut RangeMap) {
     }
 }
 
+/// Widen every `&var` handed to any call anywhere inside `node`.
+///
+/// [`process_call_arg_widening_range`] only ever ran for a call that was the
+/// whole statement. A call nested in an assignment (`n = sscanf(s, "%d",
+/// &x)`), a condition (`if (sscanf(s, "%d", &x) == 1)`) or a compound
+/// assignment (`i += getVarint(p, &v)`) left its output arguments untouched,
+/// so `x` kept whatever it was initialised to and a consumer proved
+/// arithmetic on a file-derived value safe from `x == 0` (task 1256).
+fn widen_address_taken_call_args(node: &Node, source: &str, state: &mut RangeMap) {
+    if node.kind() == "call_expression" {
+        process_call_arg_widening_range(node, source, state);
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            widen_address_taken_call_args(&child, source, state);
+        }
+    }
+}
+
 /// `"call_expression"` case of [`process_expression_range`]: any variable
 /// passed as `&var` may be written to by the callee, so widen it to its
 /// full type range (conservative).
@@ -1088,47 +1111,56 @@ fn make_comparison_info(
     state: &RangeMap,
     _reversed: bool,
 ) -> Option<RangeConditionInfo> {
-    // We use bound.min for single-value bounds and bound.max for range bounds.
     // For exact comparisons (== N), bound should be exact (min == max).
     let existing = state.get(&var_name).map(|t| &t.range);
     let full = existing
         .copied()
         .unwrap_or(ValueRange::new(i64::MIN, i64::MAX));
 
+    // `bound` is a RANGE [lo, hi], and the two edges of one comparison read
+    // opposite ends of it. `x < B` being true means x < SOME value in
+    // [lo, hi], so all it proves is x <= hi-1; being false means x >= some
+    // value in it, so x >= lo. Each edge takes the endpoint that keeps every
+    // value the condition admits. Both edges once read `lo` (or `hi` for
+    // `>`/`>=`) "for safety", which is only safe for one of them: the true
+    // edge of `i < n` with an unconstrained `n` came out as i <= INT_MIN-1,
+    // contradicting any loop counter, and once an empty intersection meant
+    // a dead edge (task 1014) the whole loop body vanished (task 1256).
+    let (lo, hi) = (bound.min, bound.max);
+
     match op {
-        "<" => {
-            // x < N: true => x.max = min(x.max, N-1), false => x.min = max(x.min, N)
-            let n = bound.min; // use lower bound for safety
-            Some(RangeConditionInfo {
-                var_name,
-                true_range: Some(ValueRange::new(full.min, full.max.min(n.saturating_sub(1)))),
-                false_range: Some(ValueRange::new(full.min.max(n), full.max)),
-            })
-        }
-        "<=" => {
-            let n = bound.min;
-            Some(RangeConditionInfo {
-                var_name,
-                true_range: Some(ValueRange::new(full.min, full.max.min(n))),
-                false_range: Some(ValueRange::new(full.min.max(n.saturating_add(1)), full.max)),
-            })
-        }
-        ">" => {
-            let n = bound.max; // use upper bound for safety
-            Some(RangeConditionInfo {
-                var_name,
-                true_range: Some(ValueRange::new(full.min.max(n.saturating_add(1)), full.max)),
-                false_range: Some(ValueRange::new(full.min, full.max.min(n))),
-            })
-        }
-        ">=" => {
-            let n = bound.max;
-            Some(RangeConditionInfo {
-                var_name,
-                true_range: Some(ValueRange::new(full.min.max(n), full.max)),
-                false_range: Some(ValueRange::new(full.min, full.max.min(n.saturating_sub(1)))),
-            })
-        }
+        "<" => Some(RangeConditionInfo {
+            var_name,
+            true_range: Some(ValueRange::new(
+                full.min,
+                full.max.min(hi.saturating_sub(1)),
+            )),
+            false_range: Some(ValueRange::new(full.min.max(lo), full.max)),
+        }),
+        "<=" => Some(RangeConditionInfo {
+            var_name,
+            true_range: Some(ValueRange::new(full.min, full.max.min(hi))),
+            false_range: Some(ValueRange::new(
+                full.min.max(lo.saturating_add(1)),
+                full.max,
+            )),
+        }),
+        ">" => Some(RangeConditionInfo {
+            var_name,
+            true_range: Some(ValueRange::new(
+                full.min.max(lo.saturating_add(1)),
+                full.max,
+            )),
+            false_range: Some(ValueRange::new(full.min, full.max.min(hi))),
+        }),
+        ">=" => Some(RangeConditionInfo {
+            var_name,
+            true_range: Some(ValueRange::new(full.min.max(lo), full.max)),
+            false_range: Some(ValueRange::new(
+                full.min,
+                full.max.min(hi.saturating_sub(1)),
+            )),
+        }),
         "==" => {
             // x == N: true => [N, N]
             // false (fall-through) => x != N — mirror the != true_range narrowing.
@@ -1545,7 +1577,16 @@ fn join_predecessor_entry(
             continue;
         }
 
-        let pred_exit = exit_ranges.get(pred_id).cloned().unwrap_or_default();
+        // Every block starts with an empty exit state, so the only
+        // predecessor WITHOUT one is a block the driver withdrew as
+        // unreachable. That used to default to an empty map, which made the
+        // successor LIVE with no ranges: a dead block's successors then
+        // computed real-looking ranges from `{}`, and a `p = 0` on one arm
+        // joined with `{}` on the other came out as a definite p = [0, 0] at
+        // a point the analysis had already proved unreachable (task 1256).
+        let Some(pred_exit) = exit_ranges.get(pred_id).cloned() else {
+            continue;
+        };
 
         // `None` means the edge's condition contradicts the incoming ranges,
         // so this predecessor cannot reach the block -- same treatment as a
@@ -2739,6 +2780,129 @@ void f(void) {
         assert_eq!(
             range_at_expr(code, "data", "data + 1"),
             Some(ValueRange::new(100, 100))
+        );
+    }
+
+    /// `i < n` against an unconstrained `n` proves only `i <= INT_MAX - 1`
+    /// on the true edge. Reading the bound's LOWER end there claimed
+    /// `i <= INT_MIN - 1`, which contradicts any counter and -- once an empty
+    /// intersection prunes the edge -- makes the whole loop body dead
+    /// (task 1256).
+    #[test]
+    fn range_bound_true_edge_keeps_loop_body_live() {
+        let code = "
+void f(int n) {
+    int i = 0;
+    while (i < n) {
+        int result = i + 1;
+        i++;
+    }
+}
+";
+        let r = range_at_expr(code, "i", "i + 1").expect("loop body must be reachable");
+        assert_eq!(r.min, 0);
+        assert!(
+            r.max >= 0,
+            "true edge of `i < n` must admit i = 0, got {:?}",
+            r
+        );
+    }
+
+    /// The mirror: `n > i` with the counter on the right reaches the same
+    /// arm through the reversed operator (task 1256).
+    #[test]
+    fn range_bound_true_edge_keeps_loop_body_live_reversed() {
+        let code = "
+void f(int n) {
+    int i = 0;
+    while (n > i) {
+        int result = i + 1;
+        i++;
+    }
+}
+";
+        let r = range_at_expr(code, "i", "i + 1").expect("loop body must be reachable");
+        assert_eq!(r.min, 0);
+    }
+
+    /// Every comparison's two edges read opposite ends of a range bound: the
+    /// edge that admits MORE values takes the endpoint that keeps them. With
+    /// `b` in [10, 20], `x < b` true admits x up to 19 and false admits x
+    /// down to 10 (task 1256).
+    #[test]
+    fn range_bound_edges_use_the_admitting_endpoint() {
+        let code = "
+void f(int b) {
+    int x = 15;
+    if (b < 10) return;
+    if (b > 20) return;
+    if (x < b) {
+        int t = x + 1;
+    } else {
+        int e = x + 2;
+    }
+}
+";
+        assert_eq!(
+            range_at_expr(code, "x", "x + 1"),
+            Some(ValueRange::new(15, 15)),
+            "x = 15 satisfies x < b for b in [16, 20]"
+        );
+        assert_eq!(
+            range_at_expr(code, "x", "x + 2"),
+            Some(ValueRange::new(15, 15)),
+            "x = 15 satisfies x >= b for b in [10, 15]"
+        );
+    }
+
+    /// A dead block's successors are dead too, not "live with no ranges". A
+    /// `p = 0` on one arm below an unreachable test used to join with the
+    /// other arm's empty state into a definite p = [0, 0] at a point the
+    /// analysis had already proved unreachable, and a consumer then proved
+    /// `buf + p` safe on that value (task 1256).
+    #[test]
+    fn dead_block_successors_are_dead() {
+        let code = "
+void g(long long *out);
+void f(int flag) {
+    long long p;
+    char data;
+    data = 127;
+    if (data < 127) {
+        if (flag) { g(&p); } else { p = 0; }
+        char buf[10];
+        buf[p] = 1;
+    }
+}
+";
+        assert_eq!(range_at_expr(code, "p", "buf[p] = 1"), None);
+    }
+
+    /// A callee writes through `&x` no matter where in the statement the
+    /// call sits: an assignment's RHS and an `if` condition are the two
+    /// shapes `sscanf`-style parsing takes in real code, and both left `x`
+    /// pinned at its initialiser (task 1256).
+    #[test]
+    fn address_taken_arg_of_nested_call_is_widened() {
+        let code = "
+int sscanf(const char *s, const char *fmt, ...);
+void f(const char *s) {
+    int x = 0;
+    int n = 0;
+    n = sscanf(s, \"%d\", &x);
+    int a = x + 1;
+    if (sscanf(s, \"%d\", &n) == 1) {
+        int b = n + 1;
+    }
+}
+";
+        assert_eq!(
+            range_at_expr(code, "x", "x + 1"),
+            Some(ValueRange::new(i32::MIN as i64, i32::MAX as i64))
+        );
+        assert_eq!(
+            range_at_expr(code, "n", "n + 1"),
+            Some(ValueRange::new(i32::MIN as i64, i32::MAX as i64))
         );
     }
 
