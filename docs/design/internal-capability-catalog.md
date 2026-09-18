@@ -535,13 +535,13 @@ WHICH object an argument names as a path string so two arguments can be
 compared; these answer for a single root name and need no frame. Both credit
 funnels (`init_state`'s and `null_state`'s) and EXP33-C's read predicate now
 route through them, because when they disagreed the rule reported a variable
-read-uninitialized at the very call that fills it (task 1028, tools_sqc).
+read-uninitialized at the very call that fills it (task 1028, aurora_lint).
 
 | Function | Signature | Description |
 |---|---|---|
 | `addressed_object_root` | `(lvalue: &Node) -> Option<Node>` | The variable whose OWN storage the address in `&lvalue` points into. `&s.len` roots at `s`, `&a[i]` at `a`, `&(x)` at `x`, `&s.in.v` at `s`; `&p->f` and `&(*p).f` root at nothing. The exact complement of `function_summary::deref_write_root`, which requires a dereference somewhere on the path BEFORE the root counts (a write through `p->f` reaches storage the caller owns); here a dereference must NOT have been crossed, because an address inside `*p` says nothing about whether `p` was written. Same traversal, opposite predicate — read one before changing the other. |
 | `strip_arg_casts` | `(arg: &Node) -> Node` | `(T *)x`, `(x)`, `((T *)x)` → `x`. Casts and redundant parentheses around a call argument, discarded. Distinct from the module-private `unwrap_cast`, which strips casts ONLY because the macro output-param path wants the narrower answer; do not merge them without measuring that path. |
-| `variadic_output_from_index` | `(func_name: &str) -> Option<usize>` | The first argument index from which EVERY remaining argument is an output — the scanf family, whose outputs depend on the format string rather than on a fixed position. `get_output_arg_indices` returns fixed indices and cannot express it, which is why `scanf`/`fscanf`/`sscanf` sit there as an empty list; an empty list alone once meant strictly LESS credit than not being listed at all (task 1029, tools_sqc). Returns `None` for everything else, including the `mbrlen`/`regexec` group, whose non-writing is `is_non_initializing_function`'s call. |
+| `variadic_output_from_index` | `(func_name: &str) -> Option<usize>` | The first argument index from which EVERY remaining argument is an output — the scanf family, whose outputs depend on the format string rather than on a fixed position. `get_output_arg_indices` returns fixed indices and cannot express it, which is why `scanf`/`fscanf`/`sscanf` sit there as an empty list; an empty list alone once meant strictly LESS credit than not being listed at all (task 1029, aurora_lint). Returns `None` for everything else, including the `mbrlen`/`regexec` group, whose non-writing is `is_non_initializing_function`'s call. |
 
 **Wiring pattern:** `addressed_object_root` and `strip_arg_casts` are consumed
 by `init_state::extract_var_from_arg` /
@@ -691,7 +691,7 @@ condition rather than a preceding statement.
 | `ComparisonKind` | `Any` \| `OrderingOrExtremeEquality` | Which comparisons count. Ordering operators always do; the split is about equality, which is not one thing. For a **bounds** question `len == 5` pins `len` as well as `len < 6` does (`Any`). For an **overflow** question it usually does not — `idx == BTREE_DATA_VERSION` leaves `36 + idx*4` exactly as unbounded as before, while `n == INT_MIN` before `-n` excludes precisely the value that overflows (`OrderingOrExtremeEquality`). |
 
 **Two overlapping pairs, deliberately both present for now** (landed
-concurrently by two nodes, tools_sqc `eb02611d` and `80b2168e`/`f69ea2a0`):
+concurrently by two nodes, aurora_lint `eb02611d` and `80b2168e`/`f69ea2a0`):
 `always_diverges` and `always_leaves` answer the same question — control
 cannot fall out of the bottom of this statement — under two names, and
 `conditions_known_true_at` is the `Some(true)` half of what

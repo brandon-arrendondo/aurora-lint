@@ -309,7 +309,7 @@ enabled = true
 
 
 [rules.cert_c.ENV04-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/ENV/ENV04-C) and CERT has published no ENV04-C content to implement against; dead config, not a suppression -- see tools_sqc tasks 330 and 611
+enabled = false  # not implemented (no rule module under src/rules/cert_c/ENV/ENV04-C) and CERT has published no ENV04-C content to implement against; dead config, not a suppression -- see aurora_lint tasks 330 and 611
 
 
 [rules.cert_c.ENV30-C]
@@ -913,11 +913,11 @@ enabled = true
 
 
 [rules.cert_c.MSC18-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC18-C); dead config, not a suppression -- see tools_sqc task 342
+enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC18-C); dead config, not a suppression -- see aurora_lint task 342
 
 
 [rules.cert_c.MSC19-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC19-C); dead config, not a suppression -- see tools_sqc task 343
+enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC19-C); dead config, not a suppression -- see aurora_lint task 343
 
 
 [rules.cert_c.MSC20-C]
@@ -941,7 +941,7 @@ enabled = true
 
 
 [rules.cert_c.MSC25-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC25-C) and CERT has published no MSC25-C content to implement against; dead config, not a suppression -- see tools_sqc tasks 349 and 908
+enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC25-C) and CERT has published no MSC25-C content to implement against; dead config, not a suppression -- see aurora_lint tasks 349 and 908
 
 
 [rules.cert_c.MSC30-C]
@@ -1221,30 +1221,30 @@ enabled = true
 
 
 [rules.cert_c.WIN00-C]
-enabled = false  # categorically inapplicable (category 1): valkey has no Windows port -- src/Makefile selects Linux/FreeBSD/Darwin/SunOS/DragonFly only and no file includes windows.h/winsock2.h -- so a Win32-only rule cannot describe a defect here. Left enabled it does not stay silent: WIN03-C reported all 36 POSIX fopen() calls for lacking Windows' 'N' mode flag and WIN04-C 5 function-pointer stores for not using EncodePointer(), on the first scan (local run 224). Same disposition as libcrc's WIN* block. --detect-relevance did not gate these itself because its HANDLE identifier marker matched a comment in call_reply.c (see the tools_sqc follow-up task); that is a detector defect, not evidence of Win32 use.
+enabled = false  # categorically inapplicable (category 1): valkey has no Windows port -- src/Makefile selects Linux/FreeBSD/Darwin/SunOS/DragonFly only and no file includes windows.h/winsock2.h -- so a Win32-only rule cannot describe a defect here. Left enabled it does not stay silent: WIN03-C reported all 36 POSIX fopen() calls for lacking Windows' 'N' mode flag and WIN04-C 5 function-pointer stores for not using EncodePointer(), on the first scan (local run 224). Same disposition as libcrc's WIN* block. --detect-relevance did not gate these itself because its HANDLE identifier marker matched a comment in call_reply.c (see the aurora_lint follow-up task); that is a detector defect, not evidence of Win32 use.
 
 
 [rules.cert_c.WIN01-C]
-enabled = false  # categorically inapplicable (category 1): valkey has no Windows port -- src/Makefile selects Linux/FreeBSD/Darwin/SunOS/DragonFly only and no file includes windows.h/winsock2.h -- so a Win32-only rule cannot describe a defect here. Left enabled it does not stay silent: WIN03-C reported all 36 POSIX fopen() calls for lacking Windows' 'N' mode flag and WIN04-C 5 function-pointer stores for not using EncodePointer(), on the first scan (local run 224). Same disposition as libcrc's WIN* block. --detect-relevance did not gate these itself because its HANDLE identifier marker matched a comment in call_reply.c (see the tools_sqc follow-up task); that is a detector defect, not evidence of Win32 use.
+enabled = false  # categorically inapplicable (category 1): valkey has no Windows port -- src/Makefile selects Linux/FreeBSD/Darwin/SunOS/DragonFly only and no file includes windows.h/winsock2.h -- so a Win32-only rule cannot describe a defect here. Left enabled it does not stay silent: WIN03-C reported all 36 POSIX fopen() calls for lacking Windows' 'N' mode flag and WIN04-C 5 function-pointer stores for not using EncodePointer(), on the first scan (local run 224). Same disposition as libcrc's WIN* block. --detect-relevance did not gate these itself because its HANDLE identifier marker matched a comment in call_reply.c (see the aurora_lint follow-up task); that is a detector defect, not evidence of Win32 use.
 
 
 [rules.cert_c.WIN02-C]
-enabled = false  # categorically inapplicable (category 1): valkey has no Windows port -- src/Makefile selects Linux/FreeBSD/Darwin/SunOS/DragonFly only and no file includes windows.h/winsock2.h -- so a Win32-only rule cannot describe a defect here. Left enabled it does not stay silent: WIN03-C reported all 36 POSIX fopen() calls for lacking Windows' 'N' mode flag and WIN04-C 5 function-pointer stores for not using EncodePointer(), on the first scan (local run 224). Same disposition as libcrc's WIN* block. --detect-relevance did not gate these itself because its HANDLE identifier marker matched a comment in call_reply.c (see the tools_sqc follow-up task); that is a detector defect, not evidence of Win32 use.
+enabled = false  # categorically inapplicable (category 1): valkey has no Windows port -- src/Makefile selects Linux/FreeBSD/Darwin/SunOS/DragonFly only and no file includes windows.h/winsock2.h -- so a Win32-only rule cannot describe a defect here. Left enabled it does not stay silent: WIN03-C reported all 36 POSIX fopen() calls for lacking Windows' 'N' mode flag and WIN04-C 5 function-pointer stores for not using EncodePointer(), on the first scan (local run 224). Same disposition as libcrc's WIN* block. --detect-relevance did not gate these itself because its HANDLE identifier marker matched a comment in call_reply.c (see the aurora_lint follow-up task); that is a detector defect, not evidence of Win32 use.
 
 
 [rules.cert_c.WIN03-C]
-enabled = false  # categorically inapplicable (category 1): valkey has no Windows port -- src/Makefile selects Linux/FreeBSD/Darwin/SunOS/DragonFly only and no file includes windows.h/winsock2.h -- so a Win32-only rule cannot describe a defect here. Left enabled it does not stay silent: WIN03-C reported all 36 POSIX fopen() calls for lacking Windows' 'N' mode flag and WIN04-C 5 function-pointer stores for not using EncodePointer(), on the first scan (local run 224). Same disposition as libcrc's WIN* block. --detect-relevance did not gate these itself because its HANDLE identifier marker matched a comment in call_reply.c (see the tools_sqc follow-up task); that is a detector defect, not evidence of Win32 use.
+enabled = false  # categorically inapplicable (category 1): valkey has no Windows port -- src/Makefile selects Linux/FreeBSD/Darwin/SunOS/DragonFly only and no file includes windows.h/winsock2.h -- so a Win32-only rule cannot describe a defect here. Left enabled it does not stay silent: WIN03-C reported all 36 POSIX fopen() calls for lacking Windows' 'N' mode flag and WIN04-C 5 function-pointer stores for not using EncodePointer(), on the first scan (local run 224). Same disposition as libcrc's WIN* block. --detect-relevance did not gate these itself because its HANDLE identifier marker matched a comment in call_reply.c (see the aurora_lint follow-up task); that is a detector defect, not evidence of Win32 use.
 
 
 [rules.cert_c.WIN04-C]
-enabled = false  # categorically inapplicable (category 1): valkey has no Windows port -- src/Makefile selects Linux/FreeBSD/Darwin/SunOS/DragonFly only and no file includes windows.h/winsock2.h -- so a Win32-only rule cannot describe a defect here. Left enabled it does not stay silent: WIN03-C reported all 36 POSIX fopen() calls for lacking Windows' 'N' mode flag and WIN04-C 5 function-pointer stores for not using EncodePointer(), on the first scan (local run 224). Same disposition as libcrc's WIN* block. --detect-relevance did not gate these itself because its HANDLE identifier marker matched a comment in call_reply.c (see the tools_sqc follow-up task); that is a detector defect, not evidence of Win32 use.
+enabled = false  # categorically inapplicable (category 1): valkey has no Windows port -- src/Makefile selects Linux/FreeBSD/Darwin/SunOS/DragonFly only and no file includes windows.h/winsock2.h -- so a Win32-only rule cannot describe a defect here. Left enabled it does not stay silent: WIN03-C reported all 36 POSIX fopen() calls for lacking Windows' 'N' mode flag and WIN04-C 5 function-pointer stores for not using EncodePointer(), on the first scan (local run 224). Same disposition as libcrc's WIN* block. --detect-relevance did not gate these itself because its HANDLE identifier marker matched a comment in call_reply.c (see the aurora_lint follow-up task); that is a detector defect, not evidence of Win32 use.
 
 
 [rules.cert_c.WIN05-C]
-enabled = false  # categorically inapplicable (category 1): valkey has no Windows port -- src/Makefile selects Linux/FreeBSD/Darwin/SunOS/DragonFly only and no file includes windows.h/winsock2.h -- so a Win32-only rule cannot describe a defect here. Left enabled it does not stay silent: WIN03-C reported all 36 POSIX fopen() calls for lacking Windows' 'N' mode flag and WIN04-C 5 function-pointer stores for not using EncodePointer(), on the first scan (local run 224). Same disposition as libcrc's WIN* block. --detect-relevance did not gate these itself because its HANDLE identifier marker matched a comment in call_reply.c (see the tools_sqc follow-up task); that is a detector defect, not evidence of Win32 use.
+enabled = false  # categorically inapplicable (category 1): valkey has no Windows port -- src/Makefile selects Linux/FreeBSD/Darwin/SunOS/DragonFly only and no file includes windows.h/winsock2.h -- so a Win32-only rule cannot describe a defect here. Left enabled it does not stay silent: WIN03-C reported all 36 POSIX fopen() calls for lacking Windows' 'N' mode flag and WIN04-C 5 function-pointer stores for not using EncodePointer(), on the first scan (local run 224). Same disposition as libcrc's WIN* block. --detect-relevance did not gate these itself because its HANDLE identifier marker matched a comment in call_reply.c (see the aurora_lint follow-up task); that is a detector defect, not evidence of Win32 use.
 
 
 [rules.cert_c.WIN30-C]
-enabled = false  # categorically inapplicable (category 1): valkey has no Windows port -- src/Makefile selects Linux/FreeBSD/Darwin/SunOS/DragonFly only and no file includes windows.h/winsock2.h -- so a Win32-only rule cannot describe a defect here. Left enabled it does not stay silent: WIN03-C reported all 36 POSIX fopen() calls for lacking Windows' 'N' mode flag and WIN04-C 5 function-pointer stores for not using EncodePointer(), on the first scan (local run 224). Same disposition as libcrc's WIN* block. --detect-relevance did not gate these itself because its HANDLE identifier marker matched a comment in call_reply.c (see the tools_sqc follow-up task); that is a detector defect, not evidence of Win32 use.
+enabled = false  # categorically inapplicable (category 1): valkey has no Windows port -- src/Makefile selects Linux/FreeBSD/Darwin/SunOS/DragonFly only and no file includes windows.h/winsock2.h -- so a Win32-only rule cannot describe a defect here. Left enabled it does not stay silent: WIN03-C reported all 36 POSIX fopen() calls for lacking Windows' 'N' mode flag and WIN04-C 5 function-pointer stores for not using EncodePointer(), on the first scan (local run 224). Same disposition as libcrc's WIN* block. --detect-relevance did not gate these itself because its HANDLE identifier marker matched a comment in call_reply.c (see the aurora_lint follow-up task); that is a detector defect, not evidence of Win32 use.
 
 

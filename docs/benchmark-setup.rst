@@ -486,7 +486,7 @@ aurora-lint
 .. code-block:: bash
 
     # Build
-    cd ~/data/tools_sqc
+    cd ~/data/aurora-lint
     cargo build --release
 
     # Basic run
@@ -497,7 +497,7 @@ aurora-lint
 
     # When running from outside the aurora-lint repo, pass --manifest explicitly
     ./target/release/aurora-lint /path/to/source/ \
-      --manifest ~/data/tools_sqc/rules_templates/rules-all.toml \
+      --manifest ~/data/aurora-lint/rules_templates/rules-all.toml \
       --export results.json
 
 cppcheck
@@ -547,9 +547,9 @@ libcrc
 .. code-block:: bash
 
     # aurora-lint
-    ~/data/tools_sqc/target/release/aurora-lint ~/data/comparisons/libcrc \
+    ~/data/aurora-lint/target/release/aurora-lint ~/data/comparisons/libcrc \
       -d ~/data/comparisons/libcrc \
-      --manifest ~/data/tools_sqc/rules_templates/rules-all.toml \
+      --manifest ~/data/aurora-lint/rules_templates/rules-all.toml \
       --export ~/data/comparisons/results/aurora-lint/libcrc/results.json
 
     # cppcheck
@@ -570,9 +570,9 @@ sqlite
 .. code-block:: bash
 
     # aurora-lint
-    ~/data/tools_sqc/target/release/aurora-lint ~/data/comparisons/sqlite \
+    ~/data/aurora-lint/target/release/aurora-lint ~/data/comparisons/sqlite \
       -d ~/data/comparisons/sqlite \
-      --manifest ~/data/tools_sqc/rules_templates/rules-all.toml \
+      --manifest ~/data/aurora-lint/rules_templates/rules-all.toml \
       --export ~/data/comparisons/results/aurora-lint/sqlite/results.json
 
     # cppcheck
@@ -593,9 +593,9 @@ mosquitto
 .. code-block:: bash
 
     # aurora-lint
-    ~/data/tools_sqc/target/release/aurora-lint ~/data/comparisons/mosquitto \
+    ~/data/aurora-lint/target/release/aurora-lint ~/data/comparisons/mosquitto \
       -d ~/data/comparisons/mosquitto \
-      --manifest ~/data/tools_sqc/rules_templates/rules-all.toml \
+      --manifest ~/data/aurora-lint/rules_templates/rules-all.toml \
       --export ~/data/comparisons/results/aurora-lint/mosquitto/results.json
 
     # cppcheck
@@ -621,9 +621,9 @@ curl
 .. code-block:: bash
 
     # aurora-lint
-    ~/data/tools_sqc/target/release/aurora-lint ~/data/comparisons/curl \
+    ~/data/aurora-lint/target/release/aurora-lint ~/data/comparisons/curl \
       -d ~/data/comparisons/curl \
-      --manifest ~/data/tools_sqc/rules_templates/rules-all.toml \
+      --manifest ~/data/aurora-lint/rules_templates/rules-all.toml \
       --export ~/data/comparisons/results/aurora-lint/curl/results.json
 
     # cppcheck
@@ -649,10 +649,10 @@ hostap
 .. code-block:: bash
 
     # aurora-lint
-    ~/data/tools_sqc/target/release/aurora-lint ~/data/comparisons/hostap \
+    ~/data/aurora-lint/target/release/aurora-lint ~/data/comparisons/hostap \
       -d ~/data/comparisons/hostap/src \
       -d ~/data/comparisons/hostap/wpa_supplicant \
-      --manifest ~/data/tools_sqc/rules_templates/rules-all.toml \
+      --manifest ~/data/aurora-lint/rules_templates/rules-all.toml \
       --export ~/data/comparisons/results/aurora-lint/hostap/results.json
 
     # cppcheck
@@ -800,7 +800,7 @@ Fast re-benchmark workflow:
 .. code-block:: bash
 
     # 1. Rebuild aurora-lint
-    cd ~/data/tools_sqc && cargo build --release
+    cd ~/data/aurora-lint && cargo build --release
 
     # 2. Push binary to nodes (if no shared FS)
     parallel --sshloginfile $NODES_FILE --nonall \

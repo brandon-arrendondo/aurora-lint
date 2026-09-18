@@ -5,11 +5,11 @@ concrete DB class -- same discipline as `bench/render_docs.py`. `scripts/
 generate_juliet_coverage.py` is the only caller inside this repo, and it
 always uses `bench.db.BenchDB` against the local SQLite file.
 
-CROSS-REPO CONTRACT (tools_sqc task 954 / benchmarking_db task 749). The
+CROSS-REPO CONTRACT (aurora_lint task 954 / benchmarking_db task 749). The
 other caller is a `benchmarking_db` script that imports `render_juliet_
 coverage` and hands it a Postgres-backed handle, so the same report can be
 regenerated from the shared multi-node database instead of one checkout's
-local runs (see tools_sqc's CLAUDE.md on why the committed file must not
+local runs (see this repo's CLAUDE.md on why the committed file must not
 describe a single node's runs as a project measurement). That makes `db` an
 implicit protocol owned by this module, same reasoning as render_docs.py's
 `BenchDBLike`:

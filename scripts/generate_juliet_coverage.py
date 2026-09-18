@@ -6,7 +6,7 @@ blind -- see CLAUDE.md). A figure generated this way describes this
 checkout's own runs, not the project's measurements; benchmarking_db's own
 script drives the same rendering code (`bench.juliet_coverage.
 render_juliet_coverage`) against sqc_bench Postgres for anything committed
-as an official number (tools_sqc task 954 / benchmarking_db task 749).
+as an official number (aurora_lint task 954 / benchmarking_db task 749).
 
 Usage:
     python scripts/generate_juliet_coverage.py            # latest run

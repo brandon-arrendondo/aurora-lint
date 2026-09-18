@@ -30,7 +30,7 @@ The three checks below no longer live in one tree:
 
 | What | Where |
 |------|-------|
-| tool version, rule counts, this SOP, tasks #9/#463 | `tools_sqc` (run the SOP here) |
+| tool version, rule counts, this SOP, tasks #9/#463 | `aurora-lint` (run the SOP here) |
 | paper source, its pinned version claims | `../sqc_paper` |
 | every benchmark/oracle number, and the tasks behind them | `../benchmarking_db` (its own task DB since 2026-09-03) |
 

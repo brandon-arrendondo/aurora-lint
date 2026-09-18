@@ -309,7 +309,7 @@ enabled = true
 
 
 [rules.cert_c.ENV04-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/ENV/ENV04-C) and CERT has published no ENV04-C content to implement against; dead config, not a suppression -- see tools_sqc tasks 330 and 611
+enabled = false  # not implemented (no rule module under src/rules/cert_c/ENV/ENV04-C) and CERT has published no ENV04-C content to implement against; dead config, not a suppression -- see aurora_lint tasks 330 and 611
 
 
 [rules.cert_c.ENV30-C]
@@ -913,11 +913,11 @@ enabled = true
 
 
 [rules.cert_c.MSC18-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC18-C); dead config, not a suppression -- see tools_sqc task 342
+enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC18-C); dead config, not a suppression -- see aurora_lint task 342
 
 
 [rules.cert_c.MSC19-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC19-C); dead config, not a suppression -- see tools_sqc task 343
+enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC19-C); dead config, not a suppression -- see aurora_lint task 343
 
 
 [rules.cert_c.MSC20-C]
@@ -941,7 +941,7 @@ enabled = true
 
 
 [rules.cert_c.MSC25-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC25-C) and CERT has published no MSC25-C content to implement against; dead config, not a suppression -- see tools_sqc tasks 349 and 908
+enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC25-C) and CERT has published no MSC25-C content to implement against; dead config, not a suppression -- see aurora_lint tasks 349 and 908
 
 
 [rules.cert_c.MSC30-C]

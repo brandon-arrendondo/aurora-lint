@@ -166,7 +166,7 @@ def realworld_citation_warnings(db: BenchDBLike, realworld_run_id: int,
 
     `rw_score` is the caller's `score_realworld_run(realworld_run_id)` result.
 
-    Shared by every caller of `render_all` (tools_sqc's own `render-docs`
+    Shared by every caller of `render_all` (aurora-lint's own `render-docs`
     CLI, and any other script pointing these functions at a differently-
     backed `db`, e.g. a Postgres-backed refresh run from the benchmark
     node) so the guard logic lives in exactly one place rather than being

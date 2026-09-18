@@ -109,7 +109,7 @@ list of categorical disables, and nothing in the task DB. A later suite-wide
 backfill applied one global list to every manifest, so it could not see a gap
 unique to one of them. Both are now explicit disables. Every
 manifest carries an entry for every rule in
-`rules_templates/rules-all.toml`; tools_sqc task 997 tracks a check that keeps
+`rules_templates/rules-all.toml`; aurora_lint task 997 tracks a check that keeps
 it that way.
 
 **Enabling a rule invalidates that rule's precision figure until the new

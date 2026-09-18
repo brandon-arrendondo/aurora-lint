@@ -26,7 +26,7 @@ mentioning Claude/CLAUDE.md/Anthropic passes, while `Co-Authored-By:` and any
 new trailer key naming Claude/Anthropic still doesn't.
 
 Note sqc_paper deliberately differs and KEEPS these trailers; this hook is
-tools_sqc's and must not be copied there.
+aurora-lint's and must not be copied there.
 """
 import re
 import subprocess
@@ -76,7 +76,7 @@ def main() -> int:
         print(f"    {line}", file=sys.stderr)
     print("", file=sys.stderr)
     print(
-        "CLAUDE.md forbids per-commit AI attribution trailers in tools_sqc\n"
+        "CLAUDE.md forbids per-commit AI attribution trailers in aurora-lint\n"
         "(Co-Authored-By, Claude-Session, or any other trailer naming Claude/\n"
         "Anthropic). The contribution is acknowledged once, deliberately, in\n"
         "README.md's \"AI Assistance\" section -- do not remove that section\n"
