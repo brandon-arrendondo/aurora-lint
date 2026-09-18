@@ -171,12 +171,20 @@ Options:
 </section>
 <section id="cross-file-analysis">
 <h2>Cross-File Analysis<a class="headerlink" href="#cross-file-analysis" title="Link to this heading"></a></h2>
-<p>The <code class="docutils literal notranslate"><span class="pre">-d</span></code> / <code class="docutils literal notranslate"><span class="pre">--directories</span></code> flag enables cross-file context by pre-scanning
-directories for function definitions, type declarations, and macro aliases. This
+<p>Cross-file context comes from a pre-scan that collects function definitions,
+type declarations, and macro aliases before analysis begins. This
 significantly reduces false positives from rules like DCL31-C (unused identifiers)
 and DCL07-C (type mismatches) that would otherwise flag externally-defined symbols.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Pre-scan the project directory for cross-file context</span>
-<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">-</span><span class="n">d</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span>
+<p>With no <code class="docutils literal notranslate"><span class="pre">-d</span></code>, the target is pre-scanned itself: every <code class="docutils literal notranslate"><span class="pre">.c</span></code>/<code class="docutils literal notranslate"><span class="pre">.h</span></code> file under
+a directory target, or the file plus the headers beside it for a single-file
+target. So <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">foo.c</span></code> already knows the definitions in <code class="docutils literal notranslate"><span class="pre">foo.c</span></code>,
+and <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">src/</span></code> knows everything under <code class="docutils literal notranslate"><span class="pre">src/</span></code>, without naming the
+target a second time.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">-d</span></code> / <code class="docutils literal notranslate"><span class="pre">--directories</span></code> flag adds context from <em>outside</em> the target.
+Once any <code class="docutils literal notranslate"><span class="pre">-d</span></code> is given, the pre-scan covers exactly the <code class="docutils literal notranslate"><span class="pre">-d</span></code> directories:
+name the target too if its own definitions should stay in scope.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># The target is its own context; nothing more needed</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span>
 
 <span class="c1"># Include additional directories (e.g., shared headers, sibling modules)</span>
 <span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">-</span><span class="n">d</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">-</span><span class="n">d</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">shared</span><span class="o">/</span><span class="n">headers</span>

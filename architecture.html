@@ -127,7 +127,8 @@
 an AST; the orchestrator coordinates prescan, CFG construction, dataflow, and
 per-rule evaluation with optional Rayon parallelism.</p>
 </dd>
-<dt><strong>Cross-file pre-scan</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/prescan.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">context.rs</span></code>).</dt><dd><p>Walks <code class="docutils literal notranslate"><span class="pre">-d</span></code> directories collecting function definitions, header prototypes,
+<dt><strong>Cross-file pre-scan</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/prescan.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">context.rs</span></code>).</dt><dd><p>Walks the <code class="docutils literal notranslate"><span class="pre">-d</span></code> directories (or, with no <code class="docutils literal notranslate"><span class="pre">-d</span></code>, the scan target itself)
+collecting function definitions, header prototypes,
 function summaries, call graphs, macro constants/aliases, struct field types,
 global constants, and global pointer null states.  Second pass aggregates
 call-site argument null states and propagates transitive frees through
