@@ -26,6 +26,16 @@ use tree_sitter::Node;
 /// 16-bit arithmetic to check against.
 const PROMOTED_ARITH_BITS: u32 = 32;
 
+/// Width, in bits, of arithmetic performed on a 64-bit signed operand. The
+/// usual arithmetic conversions carry the whole operation up to the wider
+/// operand's type, so `INT_MAX` is the wrong limit to check such an
+/// operation against (task 1323).
+const WIDE_ARITH_BITS: u32 = 64;
+
+/// Depth cap on the recursive walk that asks an operand's type, matching
+/// INT30-C's cap for its own sibling walk.
+const OPERAND_TYPE_MAX_DEPTH: u32 = 8;
+
 /// `node` with any enclosing parentheses peeled, so a located subexpression
 /// can be compared against the argument it was found in.
 fn strip_outer_parens<'a>(node: &Node<'a>) -> Node<'a> {
@@ -583,6 +593,8 @@ impl Int32C {
                     let start_point = node.start_position();
                     let expr_text = get_node_text(node, source);
 
+                    let (limit_max, limit_min) =
+                        Self::limit_names(self.signed_arith_width_bits(node, source, type_map));
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
                         severity: Severity::High,
@@ -593,7 +605,11 @@ impl Int32C {
                         file_path: String::new(),
                         line: start_point.row + 1,
                         column: start_point.column + 1,
-                        suggestion: Some("Add overflow check: if ((b > 0 && a > INT_MAX - b) || (b < 0 && a < INT_MIN - b)) { /* handle error */ }".to_string()),
+                        suggestion: Some(format!(
+                            "Add overflow check: if ((b > 0 && a > {max} - b) || (b < 0 && a < {min} - b)) {{ /* handle error */ }}",
+                            max = limit_max,
+                            min = limit_min
+                        )),
                     ..Default::default()
                     });
                 }
@@ -666,6 +682,8 @@ impl Int32C {
                     let start_point = node.start_position();
                     let expr_text = get_node_text(node, source);
 
+                    let (limit_max, limit_min) =
+                        Self::limit_names(self.signed_arith_width_bits(node, source, type_map));
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
                         severity: Severity::High,
@@ -676,7 +694,11 @@ impl Int32C {
                         file_path: String::new(),
                         line: start_point.row + 1,
                         column: start_point.column + 1,
-                        suggestion: Some("Add overflow check: if ((b < 0 && a > INT_MAX + b) || (b > 0 && a < INT_MIN + b)) { /* handle error */ }".to_string()),
+                        suggestion: Some(format!(
+                            "Add overflow check: if ((b < 0 && a > {max} + b) || (b > 0 && a < {min} + b)) {{ /* handle error */ }}",
+                            max = limit_max,
+                            min = limit_min
+                        )),
                     ..Default::default()
                     });
                 }
@@ -1071,7 +1093,12 @@ impl Int32C {
 
                 // Skip if constant evaluation proves the result fits back in the
                 // assignment target, which is where the promoted result lands
-                let vra_bits = Self::stored_type_bits(&left_type);
+                let vra_bits = self.check_width_bits(
+                    Self::stored_type_bits(&left_type),
+                    node,
+                    source,
+                    type_map,
+                );
                 if self.compound_expr_fits_signed(node, source, "+", vra_bits) {
                     return;
                 }
@@ -1135,7 +1162,12 @@ impl Int32C {
 
                 // Skip if constant evaluation proves the result fits back in the
                 // assignment target, which is where the promoted result lands
-                let vra_bits = Self::stored_type_bits(&left_type);
+                let vra_bits = self.check_width_bits(
+                    Self::stored_type_bits(&left_type),
+                    node,
+                    source,
+                    type_map,
+                );
                 if self.compound_expr_fits_signed(node, source, "-", vra_bits) {
                     return;
                 }
@@ -1197,7 +1229,12 @@ impl Int32C {
 
                 // Skip if constant evaluation proves the result fits back in the
                 // assignment target, which is where the promoted result lands
-                let vra_bits = Self::stored_type_bits(&left_type);
+                let vra_bits = self.check_width_bits(
+                    Self::stored_type_bits(&left_type),
+                    node,
+                    source,
+                    type_map,
+                );
                 if self.compound_expr_fits_signed(node, source, "*", vra_bits) {
                     return;
                 }
@@ -1321,7 +1358,12 @@ impl Int32C {
             if self.is_signed_type(&left_type) {
                 // Skip if constant evaluation proves the result fits back in the
                 // assignment target, which is where the promoted result lands
-                let vra_bits = Self::stored_type_bits(&left_type);
+                let vra_bits = self.check_width_bits(
+                    Self::stored_type_bits(&left_type),
+                    node,
+                    source,
+                    type_map,
+                );
                 if self.compound_expr_fits_signed(node, source, "<<", vra_bits) {
                     return;
                 }
@@ -1392,7 +1434,12 @@ impl Int32C {
                     node,
                     source,
                     type_map,
-                    Self::stored_type_bits(&arg_type),
+                    self.check_width_bits(
+                        Self::stored_type_bits(&arg_type),
+                        node,
+                        source,
+                        type_map,
+                    ),
                 ) {
                     return;
                 }
@@ -1404,15 +1451,17 @@ impl Int32C {
                     let start_point = node.start_position();
                     let expr_text = get_node_text(node, source);
 
+                    let (limit_max, limit_min) =
+                        Self::limit_names(self.signed_arith_width_bits(node, source, type_map));
                     let message = if operator == "++" {
                         format!(
-                            "Signed integer increment '{}' may overflow at INT_MAX",
-                            expr_text
+                            "Signed integer increment '{}' may overflow at {}",
+                            expr_text, limit_max
                         )
                     } else {
                         format!(
-                            "Signed integer decrement '{}' may overflow at INT_MIN",
-                            expr_text
+                            "Signed integer decrement '{}' may overflow at {}",
+                            expr_text, limit_min
                         )
                     };
 
@@ -2463,6 +2512,122 @@ impl Int32C {
         ast_utils::is_signed_type(type_str)
     }
 
+    /// The limit macros a suggestion should name for arithmetic performed at
+    /// `bits`. A `long long` addition cannot exceed `INT_MAX`, so telling the
+    /// reader to check against it describes an overflow that is not the one
+    /// being reported (task 1323).
+    fn limit_names(bits: u32) -> (&'static str, &'static str) {
+        if bits >= WIDE_ARITH_BITS {
+            ("INT64_MAX", "INT64_MIN")
+        } else {
+            ("INT_MAX", "INT_MIN")
+        }
+    }
+
+    /// The width the arithmetic at `node` is actually performed at: 64 when
+    /// an operand is a portably-64-bit signed type, else
+    /// [`PROMOTED_ARITH_BITS`].
+    ///
+    /// [`PROMOTED_ARITH_BITS`]'s own doc scopes it to "anything `int`-wide or
+    /// NARROWER", and the rule applied it to every signed operand anyway, so
+    /// a `long long` addition was checked -- and its suggestion written --
+    /// against `INT_MAX` (task 1323). The signed counterpart of INT30-C's
+    /// `arith_width_bits` (task 916), and it splits the operand shapes the
+    /// same way, because C does: a shift is performed in the promoted type of
+    /// its LEFT operand alone, a compound assignment and `++`/`--` convert
+    /// back into their destination, and a binary expression is as wide as its
+    /// wider operand.
+    fn signed_arith_width_bits(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> u32 {
+        let wide = |n: Option<Node>| {
+            n.is_some_and(|n| self.operand_is_wide_signed(&n, source, type_map, 0))
+        };
+        let operand_wide = match node.kind() {
+            "binary_expression"
+                if node
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| matches!(get_node_text(&op, source), "<<" | ">>")) =>
+            {
+                wide(node.child_by_field_name("left"))
+            }
+            "binary_expression" => {
+                wide(node.child_by_field_name("left")) || wide(node.child_by_field_name("right"))
+            }
+            "assignment_expression" => wide(node.child_by_field_name("left")),
+            _ => wide(node.child_by_field_name("argument")),
+        };
+        if operand_wide {
+            WIDE_ARITH_BITS
+        } else {
+            PROMOTED_ARITH_BITS
+        }
+    }
+
+    /// Whether this operand's type is 64-bit signed on every data model the
+    /// pinned corpora build for, resolving an identifier to its own
+    /// declaration before consulting the file-wide map (ADR-0006) and walking
+    /// a typedef chain before matching a spelling.
+    ///
+    /// Recurses through the shapes that carry a type without changing it,
+    /// depth-capped like INT30-C's sibling because a real operand nests
+    /// arbitrarily.
+    fn operand_is_wide_signed(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+        depth: u32,
+    ) -> bool {
+        if depth > OPERAND_TYPE_MAX_DEPTH {
+            return false;
+        }
+        let typedefs = self.typedef_types.borrow();
+        let is_wide = |t: &str| overflow_helpers::is_portable_64bit_signed(t, &typedefs);
+        let recurse = |n: Option<Node>| {
+            n.is_some_and(|n| self.operand_is_wide_signed(&n, source, type_map, depth + 1))
+        };
+        match node.kind() {
+            "parenthesized_expression" => recurse(node.named_child(0)),
+            "cast_expression" => node
+                .child_by_field_name("type")
+                .is_some_and(|t| is_wide(get_node_text(&t, source))),
+            "binary_expression" => {
+                recurse(node.child_by_field_name("left"))
+                    || recurse(node.child_by_field_name("right"))
+            }
+            // An `ll`/`LL` literal is `long long` by its own suffix.
+            "number_literal" => {
+                let text = get_node_text(node, source).to_ascii_lowercase();
+                text.ends_with("ll") && !text.ends_with("ull")
+            }
+            "identifier" => {
+                let name = get_node_text(node, source);
+                match ast_utils::resolve_identifier_declared_type(node, name, source) {
+                    Some(declared) => is_wide(&declared),
+                    None => type_map.get(name).is_some_and(|t| is_wide(t)),
+                }
+            }
+            "field_expression" => {
+                let sft = self.struct_field_types.borrow();
+                ast_utils::resolve_field_expression_type(node, source, type_map, &sft)
+                    .is_some_and(|t| is_wide(&t))
+            }
+            "call_expression" => match node.child_by_field_name("function") {
+                Some(f) if f.kind() == "identifier" => self
+                    .function_return_types
+                    .borrow()
+                    .get(get_node_text(&f, source))
+                    .is_some_and(|t| is_wide(t)),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
     /// Storage width of a type as `classify_declared_type` spells it.
     ///
     /// This is the width a *value* is kept at, never the width arithmetic is
@@ -2483,8 +2648,35 @@ impl Int32C {
         source: &str,
         type_map: &HashMap<String, String>,
     ) -> bool {
-        let bits = self.result_width_bits(node, source, type_map);
+        let bits = self.check_width_bits(
+            self.result_width_bits(node, source, type_map),
+            node,
+            source,
+            type_map,
+        );
         self.expression_fits_in(node, source, type_map, bits)
+    }
+
+    /// The width a fit check should be made against, given the destination
+    /// width the caller computed.
+    ///
+    /// A NARROW destination keeps its own width: that is the
+    /// truncating-store channel, where an `int`-wide result is checked
+    /// against the `short` or `char` it is being stored back into. Anything
+    /// `int`-wide or wider is the overflow channel instead, and there the
+    /// question is how wide the arithmetic itself is -- `INT_MAX` is simply
+    /// not the limit a `long long` operation can exceed (task 1323).
+    fn check_width_bits(
+        &self,
+        destination_bits: u32,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> u32 {
+        if destination_bits < PROMOTED_ARITH_BITS {
+            return destination_bits;
+        }
+        self.signed_arith_width_bits(node, source, type_map)
     }
 
     /// [`const_eval::expression_fits_in_signed_vra`] over this rule's macro

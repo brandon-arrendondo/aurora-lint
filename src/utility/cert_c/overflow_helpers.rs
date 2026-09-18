@@ -493,6 +493,46 @@ pub fn resolve_typedef_chain(type_name: &str, typedef_types: &HashMap<String, St
     current
 }
 
+/// Whether `type_name` -- a declared type spelling, possibly a typedef alias
+/// -- names a SIGNED integer type that is 64-bit under every data model the
+/// pinned corpora build for, resolving the alias chain first so a project's
+/// own name for it counts (sqlite's `i64` -> `sqlite3_int64` ->
+/// `sqlite_int64` -> `long long int`, valkey's `mstime_t`).
+///
+/// The signed counterpart of INT30-C's `is_portable_64bit_unsigned`, and it
+/// makes the same exclusion for the same reason: plain `long` is absent,
+/// because it is 64-bit on LP64 and 32-bit on LLP64 and curl builds for
+/// both. Treating it as wide would silently suppress an overflow that is
+/// real on Windows -- hostap's `os_time_t` (`typedef long os_time_t`) stays
+/// 32-bit-modelled here on purpose.
+///
+/// A pointer spelling is never an arithmetic width: `char *` carries the
+/// word size but pointer arithmetic is not this question.
+pub fn is_portable_64bit_signed(type_name: &str, typedef_types: &HashMap<String, String>) -> bool {
+    let resolved = resolve_typedef_chain(type_name, typedef_types);
+    let base = resolved
+        .replace("volatile ", "")
+        .replace("const ", "")
+        .replace("_Atomic ", "");
+    let base = base.trim();
+    if base.contains('*') {
+        return false;
+    }
+    matches!(
+        base,
+        "int64_t"
+            | "int_least64_t"
+            | "int_fast64_t"
+            | "intmax_t"
+            | "intptr_t"
+            | "ptrdiff_t"
+            | "long long"
+            | "long long int"
+            | "signed long long"
+            | "signed long long int"
+    )
+}
+
 /// Recursively resolve a (possibly multi-level) typedef chain -- e.g.
 /// `paddr_t` -> `word_t` -> `unsigned long` -- to decide whether the type it
 /// ultimately names is unsigned. See [`resolve_typedef_chain`] for the
