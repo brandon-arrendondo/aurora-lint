@@ -622,6 +622,60 @@ fn without_d_flag_reports_undeclared_function() {
 }
 
 #[test]
+fn without_d_flag_directory_target_is_its_own_context() {
+    // Same helper_compute, but the target is the directory holding both the
+    // caller and helpers/helper.c. With no -d the scan set itself is
+    // prescanned (task 980), so the definition is known without naming the
+    // directory a second time with -d.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let (code, _, _) = run_aurora_lint(&[
+        fixtures().join("project").to_str().unwrap(),
+        "-m",
+        manifest_dcl31().to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    assert!(
+        violations.is_empty(),
+        "A directory target must see its own helpers/helper.c without -d: {content}"
+    );
+}
+
+#[test]
+fn without_d_flag_single_file_sees_its_own_definitions() {
+    // A single-file target with no -d: the two callees are defined later in
+    // the same file. Before task 980 only sibling headers were consulted and
+    // the file's own definitions were never prescanned, so both calls were
+    // flagged -- and vanished the moment the same file's directory was
+    // passed with -d.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let (code, _, _) = run_aurora_lint(&[
+        fixtures()
+            .join("intrafile/forward_call.c")
+            .to_str()
+            .unwrap(),
+        "-m",
+        manifest_dcl31().to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    assert!(
+        violations.is_empty(),
+        "A single-file target must see its own later definitions without -d: {content}"
+    );
+}
+
+#[test]
 fn with_d_flag_suppresses_cross_file_function() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");

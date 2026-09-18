@@ -73,15 +73,25 @@ Full Command Reference
 Cross-File Analysis
 -------------------
 
-The ``-d`` / ``--directories`` flag enables cross-file context by pre-scanning
-directories for function definitions, type declarations, and macro aliases. This
+Cross-file context comes from a pre-scan that collects function definitions,
+type declarations, and macro aliases before analysis begins. This
 significantly reduces false positives from rules like DCL31-C (unused identifiers)
 and DCL07-C (type mismatches) that would otherwise flag externally-defined symbols.
 
+With no ``-d``, the target is pre-scanned itself: every ``.c``/``.h`` file under
+a directory target, or the file plus the headers beside it for a single-file
+target. So ``aurora-lint foo.c`` already knows the definitions in ``foo.c``,
+and ``aurora-lint src/`` knows everything under ``src/``, without naming the
+target a second time.
+
+The ``-d`` / ``--directories`` flag adds context from *outside* the target.
+Once any ``-d`` is given, the pre-scan covers exactly the ``-d`` directories:
+name the target too if its own definitions should stay in scope.
+
 ::
 
-    # Pre-scan the project directory for cross-file context
-    aurora-lint /path/to/project -d /path/to/project
+    # The target is its own context; nothing more needed
+    aurora-lint /path/to/project
 
     # Include additional directories (e.g., shared headers, sibling modules)
     aurora-lint /path/to/project -d /path/to/project -d /path/to/shared/headers
