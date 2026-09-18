@@ -358,6 +358,15 @@ impl Int33C {
             return;
         }
 
+        // Nor is a `/` or `%` that the source shows is inside a string literal:
+        // an ERROR region can swallow the quote delimiters, after which
+        // `"Line %d: Invalid bss_load_test"` reparses as arithmetic over its
+        // own contents (hostap config_file.c:4252). The operator node is real;
+        // only the source shows it was text (ADR-0008).
+        if ast_utils::is_in_string_or_char_literal(source, node.start_byte()) {
+            return;
+        }
+
         // INT33-C concerns INTEGER divide-by-zero (UB). Floating-point division
         // by zero is well-defined (yields inf/nan), so skip when either operand
         // is float-typed — matching C's usual-arithmetic-conversion rules.

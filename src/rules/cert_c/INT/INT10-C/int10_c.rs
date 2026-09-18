@@ -44,7 +44,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::{get_node_text, misparsed_cast_type_name};
+use crate::utility::cert_c::ast_utils::{self, get_node_text, misparsed_cast_type_name};
 use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -171,6 +171,19 @@ impl Int10C {
                             }
                             None => type_map,
                         };
+
+                    // A `%` the source shows is inside a string literal is a
+                    // conversion specifier, not an operator: an ERROR region can
+                    // swallow the quote delimiters, after which
+                    // `"Line %d: Invalid bss_load_test"` reparses as arithmetic
+                    // over its own contents (hostap config_file.c:4252). The
+                    // node is real; only the source shows it was text. Directive
+                    // lines carry no runtime arithmetic either (ADR-0008).
+                    if ast_utils::is_in_string_or_char_literal(source, n.start_byte())
+                        || ast_utils::is_on_preproc_directive_line(source, n.start_byte())
+                    {
+                        continue;
+                    }
 
                     // Check if this is a signed modulo operation
                     if self.is_potentially_signed_modulo(&n, source, scoped_type_map, macros) {

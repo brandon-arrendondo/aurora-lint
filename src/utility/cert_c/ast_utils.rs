@@ -669,6 +669,80 @@ pub fn is_on_preproc_directive_line(source: &str, offset: usize) -> bool {
     source[line_start..line_end].trim_start().starts_with('#')
 }
 
+/// Whether the byte at `offset` lies inside a string or character literal in
+/// `source`.
+///
+/// For when the TREE says a byte is code and the SOURCE says it is text. That
+/// disagreement is not hypothetical: tree-sitter has no preprocessor, and a
+/// directive it cannot place is absorbed into an `ERROR` node that can swallow
+/// the quote delimiters with it. hostap's
+/// `wpa_printf(MSG_ERROR, "Line %d: Invalid bss_load_test", line)` then
+/// reparses the literal's own contents as C — the `%` of the `%d` conversion
+/// specifier becomes a modulo operator and the words around it become its
+/// operands, so INT33-C reported "division by 'bss_load_test'" and INT10-C a
+/// signed modulo, on a line holding neither (aurora_lint 1284, ADR-0008).
+///
+/// Checking that the operator node exists does not catch this — it does exist,
+/// it is simply made of a character that was inside a literal. The only thing
+/// that distinguishes the two is the source.
+///
+/// Comments are tracked so a quote or apostrophe inside one (`/* don't */`)
+/// cannot leave the scanner stuck in a literal and suppress every finding after
+/// it. A byte inside a comment answers `false`: it is not in a literal, and a
+/// node parsed out of a comment is a different pathology.
+///
+/// Scans from the start of `source`, so it is O(offset). Call it at the point a
+/// finding is about to be reported, not while walking every candidate node.
+pub fn is_in_string_or_char_literal(source: &str, offset: usize) -> bool {
+    let bytes = source.as_bytes();
+    let end = offset.min(bytes.len());
+    let mut i = 0;
+    while i < end {
+        match bytes[i] {
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(bytes.len());
+            }
+            quote @ (b'"' | b'\'') => {
+                let open = i;
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == quote {
+                        break;
+                    }
+                    // An unterminated literal must not swallow the rest of the
+                    // file: a lone apostrophe is ordinary in prose that a
+                    // damaged parse may have dragged in.
+                    if bytes[i] == b'\n' {
+                        break;
+                    }
+                    i += 1;
+                }
+                if i >= end {
+                    // `offset` fell between the delimiters.
+                    return offset > open && i < bytes.len() && bytes[i] == quote;
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    false
+}
+
 // ============================================================================
 // Identifier Extraction from Declarators
 // ============================================================================
@@ -2438,5 +2512,78 @@ int g(int *p);
         assert_eq!(blocks.get("a").map(String::as_str), Some("The a."));
         assert!(states_nonnull(blocks.get("b").unwrap()));
         assert!(!states_nonnull(blocks.get("a").unwrap()));
+    }
+}
+
+#[cfg(test)]
+mod preproc_and_literal_position_tests {
+    use super::{is_in_string_or_char_literal, is_on_preproc_directive_line};
+
+    fn at(src: &str, needle: &str) -> usize {
+        src.find(needle).expect("needle present in fixture")
+    }
+
+    #[test]
+    fn directive_line_detected_and_body_is_not() {
+        let src = "#if defined(X)\nint a = b / c;\n#endif\n";
+        assert!(is_on_preproc_directive_line(src, at(src, "defined")));
+        // The guarded body is ordinary runtime code.
+        assert!(!is_on_preproc_directive_line(src, at(src, "b / c")));
+    }
+
+    #[test]
+    fn directive_continuation_lines_follow_upward() {
+        // Only the first physical line carries the `#`, but a rule can land on
+        // any of them.
+        let src = "#if defined(A) && \\\n    defined(B)\nint x;\n";
+        assert!(is_on_preproc_directive_line(src, at(src, "defined(B)")));
+        assert!(!is_on_preproc_directive_line(src, at(src, "int x")));
+    }
+
+    #[test]
+    fn blank_line_does_not_borrow_a_later_hash() {
+        // Trimming the rest of the file rather than this line would skip the
+        // blank line and find the `#` below it.
+        let src = "int a;\n\n#define B 1\n";
+        assert!(!is_on_preproc_directive_line(src, at(src, "\n\n") + 1));
+    }
+
+    #[test]
+    fn string_contents_are_not_code() {
+        // The hostap shape: the `%` of a conversion specifier is inside a
+        // literal, however the damaged tree parsed it.
+        let src = "f(\"Line %d: Invalid bss_load_test\", line);\n";
+        assert!(is_in_string_or_char_literal(src, at(src, "%d")));
+        assert!(is_in_string_or_char_literal(src, at(src, "bss_load_test")));
+    }
+
+    #[test]
+    fn real_operators_outside_literals_are_code() {
+        let src = "printf(\"%d\", a % b);\n";
+        assert!(is_in_string_or_char_literal(src, at(src, "%d")));
+        // The modulo after the literal closes is genuine.
+        assert!(!is_in_string_or_char_literal(src, at(src, "a % b") + 2));
+    }
+
+    #[test]
+    fn apostrophe_in_comment_does_not_swallow_the_file() {
+        // A naive scanner opens a char literal at "don't" and then reports
+        // every later byte as being inside it.
+        let src = "/* don't do this */\nint z = a % b;\n";
+        assert!(!is_in_string_or_char_literal(src, at(src, "a % b") + 2));
+    }
+
+    #[test]
+    fn escapes_and_nested_quotes_are_handled() {
+        let src = "const char *s = \"it's \\\" tricky\";\nint z = a % b;\n";
+        assert!(is_in_string_or_char_literal(src, at(src, "tricky")));
+        assert!(!is_in_string_or_char_literal(src, at(src, "a % b") + 2));
+    }
+
+    #[test]
+    fn char_literal_contents_are_not_code() {
+        let src = "if (c == '%') { }\nint z = a % b;\n";
+        assert!(is_in_string_or_char_literal(src, at(src, "'%'") + 1));
+        assert!(!is_in_string_or_char_literal(src, at(src, "a % b") + 2));
     }
 }
