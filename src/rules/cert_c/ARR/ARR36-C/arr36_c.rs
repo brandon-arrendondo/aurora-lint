@@ -984,7 +984,7 @@ impl PointerAnalyzer {
                     // here; hostap allocates through those almost everywhere,
                     // and a call that misses this list gets no base at all, so
                     // a field path rooted at it cannot collapse to it either
-                    // (task 1001, tools_sqc). Keep in step with
+                    // (task 1001, aurora_lint). Keep in step with
                     // `analyze::argument_objects::allocation_object`.
                     if matches!(
                         canonical,
