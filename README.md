@@ -73,8 +73,10 @@ false-positive work in this repo is as substantial as the rule work.
 
 **Imperfect on purpose, and measured about it.** aurora-lint reports every rule
 violation as written rather than guessing which ones you meant, so it produces
-false positives — the precision and recall above are measured against a
-hand-adjudicated oracle, not asserted. What makes that workable is that the
+false positives — the precision and recall above are measured against an
+adjudicated ground-truth oracle, not asserted (most of its labels were
+written by a language model reading the whole file, the rest by hand; the
+paper documents the protocol). What makes that workable is that the
 noise judgment is yours: per-project rule manifests
 ([configuration](docs/configuration.rst)), inline and file-scoped
 [suppression](docs/suppression.rst), and severity thresholds, so you tune it
@@ -122,7 +124,8 @@ and real detections.
 
 **The 9 real-world codebases are a reference point**, and a harder one: curl,
 hostap, libcrc, lua, mosquitto, pure-ftpd, raylib, seL4 and sqlite, scanned at
-pinned commits with findings hand-adjudicated into a ground-truth oracle. Real
+pinned commits with findings adjudicated into a ground-truth oracle — by an
+LLM for most labels, by hand for the rest. Real
 code is messier than a test suite and the precision figure reflects that.
 
 > **Recall is measured against *known* true positives**, not against all
