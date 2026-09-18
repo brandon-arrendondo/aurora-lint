@@ -47,3 +47,5 @@ outlive any one task.
   type](0006-resolve-identifiers-to-declarations.md)
 - [0007 — A disclosure becomes part of the published record only once it has
   landed upstream](0007-responsible-disclosure-gates-publication.md)
+- [0008 — ERROR ancestry is not a suppression signal; fix the preprocessor
+  misread instead](0008-error-ancestry-is-not-a-suppression-signal.md)
