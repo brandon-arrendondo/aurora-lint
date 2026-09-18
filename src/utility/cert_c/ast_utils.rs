@@ -526,6 +526,36 @@ pub fn is_inside_conditional(node: &Node) -> bool {
     .is_some()
 }
 
+/// Whether `node` sits inside the CONDITION of a preprocessor conditional —
+/// the `A && B` of `#if A && B` or `#elif A && B`.
+///
+/// Deliberately narrower than "inside a preprocessor conditional". A node in
+/// the guarded BODY of an `#if`/`#ifdef` is ordinary runtime code and answers
+/// `false`; only the directive's own condition answers `true`. That condition
+/// is evaluated by the preprocessor at translation time, so runtime notions —
+/// side effects, evaluation order, short-circuit skipping — do not apply to
+/// it, and a rule reasoning about them must not descend into it. Walking up
+/// to any `preproc_*` ancestor instead (as a rule wanting "is this
+/// conditionally compiled" would) answers `true` for the body too, which
+/// silently suppresses real findings in every `#ifdef` block in the corpus.
+///
+/// `#ifdef`/`#ifndef` (`preproc_ifdef`) carry a bare macro `name` rather than
+/// an expression, so they hold no node this can be asked about.
+pub fn is_in_preproc_condition(node: &Node) -> bool {
+    let mut current = *node;
+    while let Some(parent) = current.parent() {
+        if matches!(parent.kind(), "preproc_if" | "preproc_elif")
+            && parent
+                .child_by_field_name("condition")
+                .is_some_and(|c| c.id() == current.id())
+        {
+            return true;
+        }
+        current = parent;
+    }
+    false
+}
+
 // ============================================================================
 // Identifier Extraction from Declarators
 // ============================================================================
