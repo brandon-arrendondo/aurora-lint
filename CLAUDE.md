@@ -164,15 +164,16 @@ consults git, so a build run inside a checkout (e.g. sqlite's generated
      then re-measure.
    - Pull only that rule's new unlabeled findings:
      `bench realworld-unlabeled RUN --rule RULE_ID --project P --json`.
-   - **Derive each project's in-scope file predicate from its own
-     `data/precision_audit/<project>/README.md` BEFORE batching.** A sizeable
+   - **Derive each project's in-scope file predicate from its section of
+     `docs/design/realworld-corpus-scope.md` BEFORE batching.** A sizeable
      share of raw unlabeled findings can be out-of-scope noise (test
      harnesses, vendored deps, bindings) — this varies sharply by project, so
-     check the README rather than assuming. Scoping afterwards means redoing
-     completed batches. `data/precision_audit/` is
-     local working data, gitignored (see `docs/adr/0007`) — it's what your
-     own adjudication pass produces, not something a fresh clone already
-     has populated.
+     read the section rather than assuming. Scoping afterwards means redoing
+     completed batches. That doc is the tracked rationale; the
+     machine-readable form is `scope_include`/`scope_exclude` in
+     `data/benchmark_repos.json`. Your own pass's working data goes under
+     `data/precision_audit/`, gitignored (see `docs/adr/0007`) — nothing a
+     fresh clone has populated, and never the source of the predicate.
    - Batch ~110-150 findings, adjudicate, import with
      `bench realworld-import-labels`.
    - Only once `ground_truth` covers the new lines may a precision/recall
@@ -250,6 +251,7 @@ above).
 | `docs/design/*.md` | Scoping docs, not in the Sphinx toctree — read directly. **Their "Status" headers go stale once work ships**; trust `todo-sqlite-cli show <task>` instead, and check whether the feature needs a mention in `docs/cli-usage.rst`/`docs/architecture.rst`. |
 | `docs/design/internal-capability-catalog.md` | Catalog of every reusable primitive in `src/utility/cert_c/*.rs` and `src/analyze/*.rs`. **Read before writing any new AST/text heuristic.** |
 | `docs/design/gate-status-sop.md` | Weekly read on distance to the maintenance-mode gate and a publishable paper. Run it *here* — its table says which check lives in which repo. |
+| `docs/design/realworld-corpus-scope.md` | Per-codebase oracle scope: which trees count as the shipped product and why. **Read its project section before batching a delta-adjudication or changing a runner `--exclude`.** |
 | `../sqc_paper/` | The paper, in its own repo. Numbers in it must trace to Postgres via `benchmarking_db`. Its backlog and figure generator went with it. |
 
 ## Project Structure

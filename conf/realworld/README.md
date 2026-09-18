@@ -122,9 +122,11 @@ this config just switched on.
 ## Status
 
 `data/precision_audit/` is local working data, gitignored (see
-`docs/adr/0007`) — the `See data/precision_audit/<cb>/` pointers below
-describe where that evidence lands for whoever runs the audit, not files
-shipped with the repo.
+`docs/adr/0007`) — the `See data/precision_audit/<cb>/` pointers below (and
+in each manifest's `description`) describe where that evidence lands for
+whoever runs the audit, not files shipped with the repo. The per-codebase
+*scope* rationale those READMEs carried is tracked in
+`docs/design/realworld-corpus-scope.md`.
 
 Label counts are as of the 2026-09-03 scope audit; ask `benchmarking_db` for
 current ones. Every row predates the config changes described above, so each

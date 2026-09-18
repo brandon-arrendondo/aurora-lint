@@ -99,7 +99,7 @@ CODEBASES = {
                 "-I", "/usr/include/tcl8.6",    # Tcl (test infrastructure)
             ],
             # Scope = shipped engine (src/) + shipped extensions (ext/), matching
-            # the precision oracle (data/precision_audit/sqlite/README.md).
+            # the precision oracle (docs/design/realworld-corpus-scope.md, sqlite section).
             # `-d` doesn't restrict the scan (it only adds cross-file pre-scan
             # context; the primary scan root is still the whole repo when
             # scan_path is None), so out-of-scope trees are dropped via
@@ -136,7 +136,7 @@ CODEBASES = {
             ],
             # Scope = shipped product (lib/ libmosquitto client + src/ broker
             # daemon), matching the precision oracle
-            # (data/precision_audit/mosquitto/README.md). `-d` doesn't restrict
+            # (docs/design/realworld-corpus-scope.md, mosquitto section). `-d` doesn't restrict
             # the scan (it only adds cross-file pre-scan context; the primary
             # scan root is still the whole repo when scan_path is None), so
             # out-of-scope trees are dropped via --exclude instead: deps/
@@ -180,7 +180,7 @@ CODEBASES = {
                 "-I", "{path}/include",         # public API headers (curl/curl.h et al.)
             ],
             # Scope = shipped product (lib/ libcurl + src/ curl CLI), matching
-            # the precision oracle (data/precision_audit/curl/README.md). The
+            # the precision oracle (docs/design/realworld-corpus-scope.md, curl section). The
             # oracle explicitly excludes include/ (public API headers aren't
             # "shipped product" in the lib/+src/ sense) -- task 431 found 218
             # findings coming from include/ alone, none of which are or can be
@@ -238,7 +238,7 @@ CODEBASES = {
             ],
             # Scope = shipped hostapd (AP) + wpa_supplicant (station) daemons
             # and their shared library, matching the precision oracle
-            # (data/precision_audit/hostap/README.md, task 159): src/ +
+            # (docs/design/realworld-corpus-scope.md, hostap section, task 159): src/ +
             # wpa_supplicant/ + hostapd/. `-d` doesn't restrict the scan (it
             # only adds cross-file pre-scan context; the primary scan root is
             # still the whole repo when scan_path is None), so out-of-scope
@@ -383,7 +383,7 @@ CODEBASES = {
     # microkernel (https://sel4.systems/Contribute/style.html). A literal
     # `if/for/while (...) {}` grep found zero hits, which looked promising as
     # an MSC12-C (no-effect/empty-body) oracle -- but full sample adjudication
-    # (data/precision_audit/sel4/README.md) found the literal-braces grep
+    # (docs/design/realworld-corpus-scope.md, sel4 section) found the literal-braces grep
     # missed the dominant real idiom: `while (cond);` busy-wait polling loops
     # (empty body via bare `;`, not `{}`), plus commented no-op platform
     # stubs/cases and macro-hidden lock/barrier statements -- the SAME FP
@@ -451,7 +451,7 @@ CODEBASES = {
     # atomicvar.h), so the existing pthread-vocabulary CON* rules apply with
     # no prerequisite. Chosen over Redis for upstream responsiveness, since
     # this project files real findings upstream (rationale in
-    # data/precision_audit/valkey/README.md). zmalloc/zfree/zcalloc/zrealloc
+    # docs/design/realworld-corpus-scope.md, valkey section). zmalloc/zfree/zcalloc/zrealloc
     # are plain functions, not macros -- no macro_expand.rs work needed.
     "valkey": {
         "path": BENCH_ROOT / "valkey",

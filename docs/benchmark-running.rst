@@ -227,13 +227,14 @@ scope the scan to the *shipped product*, not the whole checked-out repo —
 test harnesses, build tooling, vendored/bundled code, and companion tools
 (fuzzers, example plugins, separate CLI utilities) are excluded so they don't
 inflate the violation count or dilute the precision/recall denominator.
-These globs are derived from each codebase's ground-truth oracle scope
-(``data/precision_audit/<codebase>/README.md``), which documents exactly
+These globs are derived from each codebase's ground-truth oracle scope,
+documented per project in ``docs/design/realworld-corpus-scope.md`` — exactly
 which directories were ruled in/out during that codebase's adjudication
-sweep and why. ``data/precision_audit/`` is local working data, gitignored
-(see ``docs/adr/0007-responsible-disclosure-gates-publication.md``) — it's
-populated by running the adjudication workflow yourself, not shipped with
-the repo.
+sweep and why. (That rationale used to live in
+``data/precision_audit/<codebase>/README.md``; ``data/precision_audit/`` is
+now local working data, gitignored per
+``docs/adr/0007-responsible-disclosure-gates-publication.md``, and holds
+only what your own adjudication pass produces.)
 
 .. important::
 
@@ -258,8 +259,8 @@ denominator no longer matches what's being scanned).
     declared in *three* places per codebase and nothing keeps them in sync:
     the ``--exclude`` globs here (what aurora-lint reads), ``scope_include`` /
     ``scope_exclude`` in ``data/benchmark_repos.json`` (what the oracle may
-    adjudicate), and the ``## Scope`` section of
-    ``data/precision_audit/<codebase>/README.md`` (the rationale the other
+    adjudicate), and the codebase's *Scope* section in
+    ``docs/design/realworld-corpus-scope.md`` (the rationale the other
     two claim to derive from).
 
     Audited across all nine codebases, six agree and three do not — always
@@ -398,8 +399,8 @@ Procedure:
 
        python -m bench realworld-unlabeled RUN --rule RULE_ID --project P --json
 
-2. **Derive each project's in-scope file predicate from its own**
-   ``data/precision_audit/<project>/README.md`` **before batching, not
+2. **Derive each project's in-scope file predicate from its section of**
+   ``docs/design/realworld-corpus-scope.md`` **before batching, not
    after.** One delta-adjudication pass found 2,548 of 4,026 (63%) raw
    unlabeled findings were out-of-scope noise (test harnesses, vendored
    deps, language bindings) — mosquitto alone was 73% contamination.

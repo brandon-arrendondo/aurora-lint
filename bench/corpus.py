@@ -84,8 +84,9 @@ def in_scope(project, relpath):
     """Task 636: is `relpath` (project-relative, as returned by
     BenchDB.project_relpath) inside this project's oracle scope?
 
-    The machine-readable mirror of precision_audit/<project>/README.md's
-    '## Scope' section -- see data/benchmark_repos.json's own comment.
+    The machine-readable mirror of the project's '## Scope' section in
+    docs/design/realworld-corpus-scope.md -- see data/benchmark_repos.json's
+    own comment.
     A project with no scope_include declared is unrestricted.
 
     Path-aware globbing: `*`, `?` and `[...]` stop at `/`, and `**` is the only
