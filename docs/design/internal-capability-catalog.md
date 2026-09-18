@@ -911,8 +911,12 @@ packed?) depend on other files, especially headers. The prescan pre-pass
 `ProjectContext`; each rule that wants cross-file information overrides
 `CertRule::set_project_context(&self, context: &ProjectContext)` to take a
 handle on the fields it needs in its own `RefCell` state (see DCL40-C, and
-MSC12-C task 475, for the canonical wiring pattern). **Without `-d`, this
-context is empty** — running aurora-lint by hand on a single file loses all
+MSC12-C task 475, for the canonical wiring pattern). **With no `-d`, the
+scan target is prescanned itself** (task 980): a single file plus the
+headers beside it, or everything under a directory target, so a rule sees
+its own file's summaries and macros either way. `-d` adds context from
+*outside* the target — and once any `-d` is given, the prescan covers
+exactly those directories, so a target left off the `-d` list loses its own
 cross-file recall.
 
 **The tables are `Arc`-wrapped, and `set_project_context` runs once per rule
