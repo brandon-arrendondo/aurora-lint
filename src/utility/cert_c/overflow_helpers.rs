@@ -29,6 +29,61 @@ use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
+/// Build a `{function name -> declared return type}` map from every
+/// `function_definition` and prototype `declaration` in this translation
+/// unit, spelling a pointer-returning function as `"<base type> *"`.
+///
+/// The prescan keeps no return types, so a call operand's type is otherwise
+/// unknowable and the integer-hazard rules classify it "unknown" -- which
+/// made `random() % kvstoreSize(kvs) + 1` a signed addition even though
+/// `kvstoreSize` is defined forty lines up as `unsigned long long` (task
+/// 1276, valkey kvstore.c). Same-file only, by construction: a function this
+/// file neither defines nor declares is not resolvable here, and stays
+/// unknown rather than guessed.
+pub fn collect_function_return_types(root: &Node, source: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let mut record = |node: &Node| {
+        let Some(ty) = node.child_by_field_name("type") else {
+            return;
+        };
+        let Some(mut declarator) = node.child_by_field_name("declarator") else {
+            return;
+        };
+        let mut stars = 0;
+        while declarator.kind() == "pointer_declarator" {
+            stars += 1;
+            match declarator.child_by_field_name("declarator") {
+                Some(inner) => declarator = inner,
+                None => return,
+            }
+        }
+        if declarator.kind() != "function_declarator" {
+            return;
+        }
+        let Some(name) = declarator
+            .child_by_field_name("declarator")
+            .map(|d| get_node_text(&d, source).trim().to_string())
+            .filter(|n| !n.is_empty())
+        else {
+            return;
+        };
+        let base = get_node_text(&ty, source).trim().to_string();
+        let full = if stars > 0 {
+            format!("{} {}", base, "*".repeat(stars))
+        } else {
+            base
+        };
+        map.insert(name, full);
+    };
+    for func in query::find_descendants_of_kind(*root, "function_definition") {
+        record(&func);
+    }
+    for decl in query::find_descendants_of_kind(*root, "declaration") {
+        record(&decl);
+    }
+    map
+}
+
 /// Build a `{variable/parameter name -> type string}` map from a function's
 /// parameters and local declarations. Pointer-typed declarators are recorded
 /// as `"<base type> *"`. Correctly unwraps a top-level `init_declarator`

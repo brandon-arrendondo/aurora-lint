@@ -16,9 +16,16 @@
  *     unreachable.
  *
  * Both the loop and the two-arm assignment are needed: drop either and the
- * finding survives on the unfixed analysis. The memcpy is deliberately the
- * only flaggable line, so the generated test (which asserts "at least one
- * violation") cannot pass on the strength of a neighbour.
+ * finding survives on the unfixed analysis. The `iPrefix + nTerm` sum is
+ * deliberately the only flaggable line, so the generated test (which asserts
+ * "at least one violation") cannot pass on the strength of a neighbour.
+ *
+ * The flaggable line used to be the memcpy's `zTerm + iPrefix`. That is
+ * pointer arithmetic on a local array -- ARR30-C's concern, not a signed
+ * integer overflow -- and INT32-C only ever reported it because a local
+ * ARRAY was not recognized as a pointer (task 1276 closed that gap, as task
+ * 914 had for `char *`). The signed 64-bit sum of the two untrusted varints
+ * is the same VRA question asked of genuine integer arithmetic.
  */
 
 #include <string.h>
@@ -40,9 +47,10 @@ void decode(const unsigned char *aData, int nData) {
             iPrefix = 0;
         }
         i += getVarint(aData + i, &nTerm);
-        /* VIOLATION: iPrefix is an unbounded varint, the offset can overflow */
-        memcpy(zTerm + iPrefix, aData + i, (size_t)nTerm);
-        zTerm[iPrefix] = 0;
+        /* VIOLATION: iPrefix and nTerm are unbounded varints, the sum can overflow */
+        sqlite3_int64 iEnd = iPrefix + nTerm;
+        memcpy(zTerm, aData + i, (size_t)nTerm);
+        zTerm[iEnd] = 0;
         i += nTerm;
     }
 }

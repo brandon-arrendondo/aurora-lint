@@ -128,16 +128,29 @@ pub fn expr_is_pointer(
     match node.kind() {
         "identifier" => {
             let name = ast_utils::get_node_text(node, source);
+            // The type map spells a local ARRAY by its element type -- `char
+            // lastbytes[N]` is recorded as "char" -- yet `lastbytes + rem`
+            // is pointer arithmetic exactly as it is on `char *lastbytes`
+            // (task 1276; valkey replication.c, valkey-cli.c, zmalloc.c).
+            // Resolve the occurrence to its own declarator (ADR-0006): the
+            // declarator's kind says whether the name decays to a pointer
+            // here, for a local, a parameter or a file-scope variable alike.
+            let resolved = ast_utils::resolve_identifier_declarator(node, name, source)
+                .map(|(_, declarator)| declarator_decays_to_pointer(&declarator));
             match type_map.get(name) {
-                Some(t) => ast_utils::is_pointer_type(t),
-                // Not a local or parameter: a file-scope declaration is the
-                // remaining way this name can be in scope here.
-                None => facts.file_scope_pointers.contains(name),
+                Some(t) if ast_utils::is_pointer_type(t) => true,
+                // A local or parameter the map spells as a non-pointer: only
+                // its own declarator can say otherwise (the array case).
+                Some(_) => resolved.unwrap_or(false),
+                // Not a local or parameter: its declarator if this file has
+                // one, else a file-scope declaration the collector saw.
+                None => resolved.unwrap_or_else(|| facts.file_scope_pointers.contains(name)),
             }
         }
         "field_expression" => {
             ast_utils::resolve_field_expression_type(node, source, type_map, struct_field_types)
                 .is_some_and(|t| ast_utils::is_pointer_type(&t))
+                || inline_struct_field_is_pointer(node, source)
         }
         "cast_expression" => match node.child_by_field_name("type") {
             // An explicit cast states the expression's type outright, in
@@ -236,6 +249,61 @@ pub fn is_pointer_arithmetic(
         "parenthesized_expression" => node.named_child(0).is_some_and(|c| recurse(&c)),
         _ => false,
     }
+}
+
+/// True when a name bound by `declarator` has pointer value as an expression:
+/// a `pointer_declarator` or an `array_declarator` (an array decays to a
+/// pointer to its first element), in either nesting order. A
+/// `pointer_declarator` wrapping a `function_declarator` declares a function
+/// that RETURNS a pointer, not a pointer variable, and is not one.
+fn declarator_decays_to_pointer(declarator: &Node) -> bool {
+    let mut d = *declarator;
+    let mut pointer_like = false;
+    loop {
+        match d.kind() {
+            "pointer_declarator" | "array_declarator" => pointer_like = true,
+            "function_declarator" => return false,
+            "parenthesized_declarator" => {}
+            _ => return pointer_like,
+        }
+        match d.child_by_field_name("declarator") {
+            Some(inner) => d = inner,
+            None => return pointer_like,
+        }
+    }
+}
+
+/// `SPT.end` where `SPT` is `static struct { char *base, *end; ... } SPT;`:
+/// the struct is anonymous, so no `struct_field_types` entry can name it and
+/// the base variable is in no function-local type map. Resolve the base
+/// identifier to its declaration and read the field's own declarator from
+/// the inline `struct_specifier` body (task 1276; valkey setproctitle.c).
+fn inline_struct_field_is_pointer(node: &Node, source: &str) -> bool {
+    let (Some(argument), Some(field)) = (
+        node.child_by_field_name("argument"),
+        node.child_by_field_name("field"),
+    ) else {
+        return false;
+    };
+    if argument.kind() != "identifier" {
+        return false;
+    }
+    let base_name = ast_utils::get_node_text(&argument, source);
+    let field_name = ast_utils::get_node_text(&field, source);
+    let Some((decl, _)) = ast_utils::resolve_identifier_declarator(&argument, base_name, source)
+    else {
+        return false;
+    };
+    let Some(body) = query::find_descendants_of_kind(decl, "struct_specifier")
+        .into_iter()
+        .find_map(|spec| spec.child_by_field_name("body"))
+    else {
+        return false;
+    };
+    query::find_descendants_of_kind(body, "field_declaration")
+        .into_iter()
+        .filter_map(|fd| ast_utils::declaration_declarator_for(&fd, field_name, source))
+        .any(|d| declarator_decays_to_pointer(&d))
 }
 
 /// The text of `node`'s `operator` field, trimmed.

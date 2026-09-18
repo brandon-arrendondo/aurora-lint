@@ -71,6 +71,11 @@ pub struct Int32C {
     /// File-scope pointer names and pointer-returning functions, for the
     /// pointer-arithmetic gate. Rebuilt per file.
     pointer_facts: RefCell<PointerFacts>,
+    /// Declared return type of every function this file defines or
+    /// prototypes (`overflow_helpers::collect_function_return_types`), so a
+    /// call operand can be classified instead of falling to "unknown"
+    /// (task 1276). Rebuilt per file.
+    function_return_types: RefCell<HashMap<String, String>>,
 }
 
 impl Int32C {
@@ -90,6 +95,7 @@ impl Int32C {
             param_names_cache: RefCell::new(HashMap::new()),
             function_text_cache: RefCell::new(HashMap::new()),
             pointer_facts: RefCell::new(PointerFacts::default()),
+            function_return_types: RefCell::new(HashMap::new()),
         }
     }
 
@@ -202,6 +208,8 @@ impl CertRule for Int32C {
         self.function_text_cache.borrow_mut().clear();
 
         *self.pointer_facts.borrow_mut() = PointerFacts::collect(node, source);
+        *self.function_return_types.borrow_mut() =
+            overflow_helpers::collect_function_return_types(node, source);
 
         self.check_node(node, source, &mut violations, &type_map);
         violations
@@ -1354,7 +1362,13 @@ impl Int32C {
             // Check for functions that commonly receive arithmetic expressions that might overflow
             match function_name {
                 "malloc" | "calloc" | "realloc" => {
-                    self.check_allocation_overflow(node, source, function_name, violations);
+                    self.check_allocation_overflow(
+                        node,
+                        source,
+                        function_name,
+                        violations,
+                        type_map,
+                    );
                 }
                 "memcpy" | "memmove" | "memset" => {
                     self.check_memory_function_overflow(
@@ -1379,6 +1393,7 @@ impl Int32C {
         source: &str,
         function_name: &str,
         violations: &mut Vec<RuleViolation>,
+        type_map: &HashMap<String, String>,
     ) {
         // Which argument positions actually carry a size computation.
         // `realloc`'s first argument is the pointer being resized, never a
@@ -1424,6 +1439,19 @@ impl Int32C {
                         None
                     };
                     let check_node = resolved_rhs.as_ref().unwrap_or(&arg_node);
+
+                    // This path is deliberately not signedness-gated: an
+                    // allocation size is computed in size_t, and the CWE-680
+                    // wrap of `data * sizeof(T)` is exactly what the
+                    // `wraps_32_size_t` test below exists for (fixtures
+                    // alloc_size_arg_overflow, testcases_size_hop). A
+                    // pointer difference is the exception: `n1 - p + 1` is
+                    // bounded by the object both point into and cannot wrap
+                    // (task 914's class, task 1276).
+                    if self.is_pointer_arithmetic(check_node, source, type_map) {
+                        arg_idx += 1;
+                        continue;
+                    }
 
                     let arg_text = get_node_text(check_node, source);
                     if self.node_contains_arithmetic(check_node, source) {
@@ -1537,9 +1565,14 @@ impl Int32C {
                         // not an INT32-C concern. Reuses the same declared-type
                         // classification (now typedef-chain-aware) the other
                         // arithmetic checks already use (task 657).
-                        if arg_node.kind() == "binary_expression"
-                            && self.infer_type(&arg_node, source, type_map) == "unsigned"
-                        {
+                        // That gate looked only at a bare `binary_expression`,
+                        // so `(len - curlen + 1)` in parentheses, and pointer
+                        // differences like `n1 - p` or `SPT.end - SPT.base`
+                        // (ptrdiff_t, not "unsigned"), still reached the report
+                        // (task 1276). The predicate below unwraps parentheses,
+                        // treats pointer arithmetic as not-integer, and looks
+                        // INSIDE an unsigned product for a signed sub-term.
+                        if !self.has_signed_integer_arithmetic(&arg_node, source, type_map) {
                             return;
                         }
                         let arg_text = get_node_text(&arg_node, source);
@@ -1582,6 +1615,56 @@ impl Int32C {
                     arg_idx += 1;
                 }
             }
+        }
+    }
+
+    /// Does `node` contain arithmetic that C performs in a SIGNED integer
+    /// type -- the only kind INT32-C is about?
+    ///
+    /// Looks through parentheses to the arithmetic. Pointer arithmetic
+    /// (`p - q - 1`, `buf + n`) is not integer arithmetic: ptrdiff_t and
+    /// pointer formation are ARR30-C's. A result the usual arithmetic
+    /// conversions make unsigned (`sizeof(T) * n`, `len - curlen + 1` on
+    /// size_t) or non-integer is not signed either. Anything else -- signed,
+    /// narrow, or unresolved -- counts, so an operand this rule cannot type
+    /// keeps the report it always had.
+    fn has_signed_integer_arithmetic(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> bool {
+        match node.kind() {
+            "parenthesized_expression" => node
+                .named_child(0)
+                .is_some_and(|c| self.has_signed_integer_arithmetic(&c, source, type_map)),
+            "binary_expression" => {
+                let Some(op) = self.get_operator(node, source) else {
+                    return false;
+                };
+                let (Some(left), Some(right)) = (
+                    node.child_by_field_name("left"),
+                    node.child_by_field_name("right"),
+                ) else {
+                    return false;
+                };
+                let recurse = |n: &Node| self.has_signed_integer_arithmetic(n, source, type_map);
+                if !matches!(op.as_str(), "+" | "-" | "*" | "<<") {
+                    return recurse(&left) || recurse(&right);
+                }
+                if self.is_pointer_arithmetic(node, source, type_map) {
+                    return false;
+                }
+                // Suppression-only: an unsigned or non-integer result ends the
+                // question here. `(a * b) * sizeof(T)` does perform `a * b`
+                // in int first, but reporting that would be new recall this
+                // rule never had, not a misfire fix; left for its own task.
+                !matches!(
+                    self.infer_type(node, source, type_map).as_str(),
+                    "unsigned" | "not_applicable"
+                )
+            }
+            _ => false,
         }
     }
 
@@ -1725,13 +1808,50 @@ impl Int32C {
         // Must come before text heuristics because variable names like "index"
         // contain "int" as a substring, causing false signed classification.
         if node.kind() == "identifier" {
+            // The map is built over the whole file and keyed by name, so a
+            // `size_t wpa_ie_len` in one function reads as the `int
+            // wpa_ie_len` of another (task 1276, hostap wpa_auth.c). The
+            // occurrence's own declaration is authoritative (ADR-0006); the
+            // map answers only for a name this file does not declare.
+            if let Some(declared) = ast_utils::resolve_identifier_declared_type(node, text, source)
+            {
+                return self.classify_declared_type(&declared);
+            }
             if let Some(declared_type) = type_map.get(text) {
                 return self.classify_declared_type(declared_type);
             }
         }
 
+        // Parentheses do not change a type. Without this, `(random() %
+        // kvstoreSize(kvs)) + 1` typed its left operand from the TEXT of the
+        // parenthesized expression -- "unknown" -- and the `+ 1` read as a
+        // signed addition on an unsigned long long (task 1276).
+        if node.kind() == "parenthesized_expression" {
+            if let Some(inner) = node.named_child(0) {
+                return self.infer_type(&inner, source, type_map);
+            }
+        }
+
+        // `sizeof` yields size_t whatever its operand spells: `sizeof(int)`
+        // used to read as "signed" off the `int` in its text, so
+        // `sizeof(int) * numconns` was a signed multiplication (task 1276,
+        // valkey rio.c). Unsigned wrap of a size_t product is INT30-C's.
+        if node.kind() == "sizeof_expression" {
+            return "unsigned".to_string();
+        }
+
         if let Some(t) = Self::infer_type_from_unsigned_literal_text(text) {
             return t;
+        }
+
+        // A call to a function this file defines or declares has the return
+        // type it was declared with (task 1276): `kvstoreSize(kvs)` is
+        // `unsigned long long`, so `random() % kvstoreSize(kvs)` converts to
+        // it and the `+ 1` after is unsigned arithmetic.
+        if node.kind() == "call_expression" {
+            if let Some(t) = self.infer_type_from_call_return(node, source) {
+                return t;
+            }
         }
 
         // Call-like operand invoking a function-like macro (e.g. seL4's
@@ -1776,6 +1896,18 @@ impl Int32C {
         // For variables NOT in the type map, default to unknown instead of signed
         // This prevents false positives on variables whose type we can't determine
         "unknown".to_string()
+    }
+
+    /// The classified return type of the function `node` (a
+    /// `call_expression`) invokes, when this file declares or defines it.
+    fn infer_type_from_call_return(&self, node: &Node, source: &str) -> Option<String> {
+        let func = node.child_by_field_name("function")?;
+        if func.kind() != "identifier" {
+            return None;
+        }
+        let name = get_node_text(&func, source);
+        let declared = self.function_return_types.borrow().get(name).cloned()?;
+        Some(self.classify_declared_type(&declared))
     }
 
     /// If `node` (a `call_expression`) invokes a known function-like macro
@@ -1931,9 +2063,21 @@ impl Int32C {
         if text.contains("unsigned") || text.contains("size_t") || text.contains("uint") {
             return Some("unsigned".to_string());
         }
-        // Look for unsigned literals
+        // Look for unsigned literals. The suffix may carry a length too:
+        // `1ul`, `1UL`, `0x80ull` are all unsigned, and reading `1ul` as
+        // "unknown" let `(1ul << n) - 1ul` type itself from `n` alone
+        // (task 1276, valkey hashtable.c).
         if text.ends_with('u') || text.ends_with('U') {
             return Some("unsigned".to_string());
+        }
+        if text.starts_with(|c: char| c.is_ascii_digit()) {
+            // The integer-suffix alphabet is `uUlL`; none of it is a hex
+            // digit, so peeling it off `0xful` still leaves `0xf` intact.
+            let digits = text.trim_end_matches(['u', 'U', 'l', 'L']);
+            let suffix = &text[digits.len()..];
+            if suffix.contains(['u', 'U']) {
+                return Some("unsigned".to_string());
+            }
         }
         // Look for unsigned constants
         if text.contains("UINT_MAX") || text.contains("SIZE_MAX") {

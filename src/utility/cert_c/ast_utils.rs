@@ -370,6 +370,55 @@ pub fn resolve_identifier_declarator<'a>(
     Some((decl, declarator))
 }
 
+/// The declared type of the variable `ident_node` (an occurrence of `name`)
+/// refers to, spelled the way the integer-hazard rules' type maps spell it:
+/// the declaration's `type` field verbatim (`size_t`, `unsigned long`,
+/// `struct foo`, a typedef alias), with ` *` appended when the declarator is
+/// a pointer or an array -- an array name used as an operand decays to a
+/// pointer. Storage classes and qualifiers are not part of the `type` field
+/// and so never appear.
+///
+/// This is [`resolve_identifier_declarator`] asked the type question, and it
+/// exists because a file-wide `{name -> type}` map answers it wrong whenever
+/// two functions declare the same name differently: hostap's wpa_auth.c has
+/// `size_t wpa_ie_len` in one function and `int wpa_ie_len` in another, and
+/// the map handed the second to the first (task 1276; ADR-0006). `None` when
+/// the occurrence does not resolve to a declaration in this file.
+pub fn resolve_identifier_declared_type(
+    ident_node: &Node,
+    name: &str,
+    source: &str,
+) -> Option<String> {
+    let (decl, declarator) = resolve_identifier_declarator(ident_node, name, source)?;
+    let base = get_node_text(&decl.child_by_field_name("type")?, source)
+        .trim()
+        .to_string();
+    if base.is_empty() {
+        return None;
+    }
+    let mut d = declarator;
+    let mut pointer_like = false;
+    loop {
+        match d.kind() {
+            "pointer_declarator" | "array_declarator" => pointer_like = true,
+            // `T (*fp)(...)` / `T *f(...)`: a function pointer or a function,
+            // neither an integer operand this spelling can describe.
+            "function_declarator" => return None,
+            "parenthesized_declarator" => {}
+            _ => break,
+        }
+        match d.child_by_field_name("declarator") {
+            Some(inner) => d = inner,
+            None => break,
+        }
+    }
+    Some(if pointer_like {
+        format!("{} *", base)
+    } else {
+        base
+    })
+}
+
 /// Fallback for file-scope (global) declarations, which
 /// `find_enclosing_declaration_for_identifier` intentionally does not
 /// resolve to (it only walks enclosing `compound_statement` blocks).
