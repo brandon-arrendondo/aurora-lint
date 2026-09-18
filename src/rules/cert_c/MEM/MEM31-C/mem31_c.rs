@@ -1415,7 +1415,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             "declaration" | "expression_statement" => {
                 self.visit_declaration_or_expr(n, source, stack)
             }
-            "assignment_expression" => self.process_assignment(&n, source),
+            "assignment_expression" => {
+                self.process_assignment(&n, source);
+                if let Some(right) = n.child_by_field_name("right") {
+                    self.process_nested_calls(&right, source);
+                }
+            }
             "call_expression" => self.process_call(&n, source),
             "return_statement" => self.process_return(&n, source),
             "goto_statement" => self.analyze_goto(&n, source),
@@ -1423,7 +1428,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             "for_statement" => self.visit_for_statement(n, source, stack),
             "while_statement" | "do_statement" => self.visit_while_do_statement(stack, n),
             "if_statement" => self.visit_if_statement(n, source, stack),
-            "switch_statement" => self.visit_switch_statement(n, stack),
+            "switch_statement" => self.visit_switch_statement(n, source, stack),
             "preproc_if" | "preproc_ifdef" => self.visit_preproc_chain(n, stack),
             _ => push_children(stack, &n),
         }
@@ -1446,6 +1451,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             if let Some(child) = n.child(i) {
                 if child.kind() == "init_declarator" {
                     self.process_init_declarator_child(&child, source);
+                    if let Some(value) = child.child_by_field_name("value") {
+                        self.process_nested_calls(&value, source);
+                    }
                 } else {
                     pending.push(child);
                 }
@@ -1634,6 +1642,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     }
 
     fn visit_if_statement<'n>(&mut self, n: Node<'n>, source: &str, stack: &mut Vec<Frame<'n>>) {
+        // The condition runs to completion before either branch is taken, so
+        // its calls are processed here, into the pre-fork state.
+        if let Some(condition) = n.child_by_field_name("condition") {
+            self.process_nested_calls(&condition, source);
+        }
+
         let saved_state = LeakBranchState::fork(self);
         let saved_allocated = self.allocated_memory.clone();
         let saved_escaped = self.escaped_memory.clone();
@@ -1666,6 +1680,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
         if let Some(ref var_name) = null_check_var {
             self.null_variables.insert(var_name.clone());
+            // Mutations from here on land in the TRUE branch: the fork above
+            // is what the else arm is restored from.
+            self.restore_realloc_old_ptr_on_failure(var_name);
         }
         self.clear_realloc_invalidation_if_related(&truthiness_var, n);
         self.clear_realloc_invalidation_if_related(&non_null_check_var, n);
@@ -1685,6 +1702,60 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         if let Some(branch) = true_branch {
             stack.push(Frame::Visit(branch));
         }
+    }
+
+    /// The failure direction of `clear_realloc_invalidation_if_related`: a
+    /// NULL result means the realloc-shaped call did NOT take the old block,
+    /// so a freed mark recorded for it must be undone on this branch.
+    ///
+    /// hostap's `os_realloc` is the shape, and it is written the way a
+    /// careful wrapper has to be -- allocate first, bail out before touching
+    /// the caller's block:
+    ///
+    /// ```c
+    /// n = os_malloc(size);
+    /// if (n == NULL) return NULL;   /* old block deliberately NOT freed */
+    /// os_free(ptr);                 /* only once the new block exists */
+    /// return n;
+    /// ```
+    ///
+    /// The free sits at the body's top level, so `frees_params` records it --
+    /// correctly, as a MAY fact -- and every caller's
+    /// `nbuf = os_realloc(subelem, n); if (!nbuf) os_free(subelem);` then read
+    /// as a double free of a block that is still perfectly alive. The
+    /// callee's early return and the caller's null test are the SAME path,
+    /// and this is where the walk gets to say so (task 1279).
+    fn restore_realloc_old_ptr_on_failure(&mut self, result_var: &str) {
+        let Some(old_ptr) = self.realloc_relations.get(result_var).cloned() else {
+            return;
+        };
+        self.freed_memory.remove(&old_ptr);
+        self.freed_via_alias.remove(&old_ptr);
+        self.freed_by_guess.remove(&old_ptr);
+    }
+
+    /// The variable a call's result is bound to, reading through the casts
+    /// and parentheses a wrapper's result is routinely written with.
+    /// `None` when the result is discarded or used in place.
+    fn assigned_result_var(call: &Node, source: &str) -> Option<String> {
+        let mut node = *call;
+        while let Some(parent) = node.parent() {
+            match parent.kind() {
+                "parenthesized_expression" | "cast_expression" => node = parent,
+                "assignment_expression" => {
+                    let left = parent.child_by_field_name("left")?;
+                    return (left.kind() == "identifier")
+                        .then(|| ast_utils::get_node_text_owned(&left, source));
+                }
+                "init_declarator" => {
+                    let decl = parent.child_by_field_name("declarator")?;
+                    let name = ast_utils::get_node_text_owned(&decl, source);
+                    return name.rsplit(['*', ' ']).next().map(str::to_string);
+                }
+                _ => return None,
+            }
+        }
+        None
     }
 
     /// If `result_var` is a tracked realloc result, its old pointer's
@@ -1707,7 +1778,18 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         }
     }
 
-    fn visit_switch_statement<'n>(&mut self, n: Node<'n>, stack: &mut Vec<Frame<'n>>) {
+    fn visit_switch_statement<'n>(
+        &mut self,
+        n: Node<'n>,
+        source: &str,
+        stack: &mut Vec<Frame<'n>>,
+    ) {
+        // Only the cases are pushed below, so the selector's own calls are
+        // reached here or not at all -- the same gap the `if` condition had.
+        if let Some(condition) = n.child_by_field_name("condition") {
+            self.process_nested_calls(&condition, source);
+        }
+
         let mut cases: Vec<Node> = Vec::new();
         if let Some(body) = n.child_by_field_name("body") {
             for i in 0..body.child_count() {
@@ -2597,6 +2679,50 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         }
     }
 
+    /// Process every call inside `expr` that the enclosing construct does not
+    /// already account for itself.
+    ///
+    /// The walk only ever saw a call in STATEMENT position. `visit` hands a
+    /// `return_statement` and an `assignment_expression` to their own
+    /// handlers without pushing their children, an `init_declarator` is
+    /// consumed inline, and `if`/`switch` push frames rather than their
+    /// condition -- so anywhere else a call was never processed at all and
+    /// every ownership fact its callee carries was dark:
+    ///
+    /// ```c
+    /// release_it(m);            /* frees m -- seen        */
+    /// return release_it(m);     /* frees m -- NOT seen    */
+    /// rc = release_it(m);       /* frees m -- NOT seen    */
+    /// int rc = release_it(m);   /* frees m -- NOT seen    */
+    /// if (release_it(m) != 0)   /* frees m -- NOT seen    */
+    /// ```
+    ///
+    /// The tail-call form is not a corner case: it is how hostap writes ~40
+    /// of its `return eap_peer_method_register(eap);` registrations, and
+    /// `if (!Curl_hash_add2(...))` is curl's own spelling of an insertion
+    /// that takes ownership. `for`/`while`/`do` need nothing: they push
+    /// their children, so a call in their condition is already reached.
+    ///
+    /// Only `realloc` is skipped, because the enclosing construct runs its
+    /// own handler for the old block and entering `process_realloc_call` on
+    /// top of that frees the same pointer twice in the walk's own state.
+    /// Allocation calls in general are NOT skipped -- a function can
+    /// allocate AND take ownership of an argument in one call, as curl's
+    /// `hash_elem_create(key, len, p, dtor)` does.
+    fn process_nested_calls(&mut self, expr: &Node, source: &str) {
+        let calls: Vec<Node> = query::find_descendants(*expr, |n| n.kind() == "call_expression")
+            .into_iter()
+            .filter(|call| {
+                call.child_by_field_name("function")
+                    .map(|f| self.callee_name(&f, source))
+                    .is_none_or(|name| name != "realloc")
+            })
+            .collect();
+        for call in calls {
+            self.process_call(&call, source);
+        }
+    }
+
     /// Handle a call to a function whose prescan summary says it STORES one
     /// of its parameters somewhere outliving the call -- into a container, a
     /// context with a destructor, or a registry. The block is no longer this
@@ -3154,6 +3280,16 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             self.freed_by_guess
                                 .insert(var_name.clone(), func_name.to_string());
                         }
+                        // A callee that frees a pointer argument AND hands
+                        // back a fresh block is realloc-shaped, and it can
+                        // only have taken the old block if it succeeded.
+                        // Recording the pair lets the caller's `if (!result)`
+                        // branch undo the mark (task 1279).
+                        if summary.returns_allocation && !through_address_of {
+                            if let Some(result) = Self::assigned_result_var(node, source) {
+                                self.realloc_relations.insert(result, var_name.clone());
+                            }
+                        }
                     }
                 }
                 param_idx += 1;
@@ -3232,6 +3368,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 self.escape_returned_block(&child, source);
             }
         }
+
+        self.process_nested_calls(node, source);
 
         // Check for leaks at this return point
         for (var_name, alloc_info) in &self.allocated_memory {
