@@ -26,6 +26,19 @@ use tree_sitter::Node;
 /// 16-bit arithmetic to check against.
 const PROMOTED_ARITH_BITS: u32 = 32;
 
+/// `node` with any enclosing parentheses peeled, so a located subexpression
+/// can be compared against the argument it was found in.
+fn strip_outer_parens<'a>(node: &Node<'a>) -> Node<'a> {
+    let mut n = *node;
+    while n.kind() == "parenthesized_expression" {
+        match n.named_child(0) {
+            Some(inner) => n = inner,
+            None => break,
+        }
+    }
+    n
+}
+
 pub struct Int32C {
     project_macros: RefCell<Arc<MacroConstantMap>>,
     current_macros: RefCell<MacroConstantMap>,
@@ -212,8 +225,31 @@ impl CertRule for Int32C {
             overflow_helpers::collect_function_return_types(node, source);
 
         self.check_node(node, source, &mut violations, &type_map);
+
+        // `report_inner_signed_size_arithmetic` names an operation nested in
+        // a size argument; the operator walker may have reported that same
+        // operation on its own. One overflow, one finding: the sink report
+        // yields to the operator one on its line (task 1286).
+        let operator_reports: HashSet<(usize, String)> = violations
+            .iter()
+            .filter(|v| !v.message.contains(" before its conversion to size_t: '"))
+            .filter_map(|v| quoted_expression(&v.message).map(|e| (v.line, e)))
+            .collect();
+        violations.retain(|v| {
+            !v.message.contains(" before its conversion to size_t: '")
+                || quoted_expression(&v.message)
+                    .is_none_or(|e| !operator_reports.contains(&(v.line, e)))
+        });
         violations
     }
+}
+
+/// The last single-quoted span of a finding message: the expression every
+/// arithmetic report in this rule ends with.
+fn quoted_expression(message: &str) -> Option<String> {
+    let end = message.rfind('\'')?;
+    let start = message[..end].rfind('\'')?;
+    Some(message[start + 1..end].to_string())
 }
 
 impl Int32C {
@@ -1451,7 +1487,25 @@ impl Int32C {
                     // task 1276), and reads a two-stage `(a * b) * sizeof(T)`
                     // as unsigned throughout -- the inner signed product is
                     // task 1286's.
-                    if !self.has_signed_integer_arithmetic(check_node, source, type_map) {
+                    let Some(signed) = self.signed_arithmetic_in(check_node, source, type_map)
+                    else {
+                        arg_idx += 1;
+                        continue;
+                    };
+                    // An inner signed operation under an unsigned result
+                    // (`(a * b) * sizeof(T)`) is performed at promoted int
+                    // width before the conversion; that is the bound it must
+                    // fit, and the operation the report should name.
+                    let inner_signed = signed.id() != strip_outer_parens(check_node).id();
+                    if inner_signed {
+                        self.report_inner_signed_size_arithmetic(
+                            node,
+                            &signed,
+                            function_name,
+                            &format!("argument {}", arg_idx + 1),
+                            source,
+                            violations,
+                        );
                         arg_idx += 1;
                         continue;
                     }
@@ -1573,7 +1627,19 @@ impl Int32C {
                         // (task 1276). The predicate below unwraps parentheses,
                         // treats pointer arithmetic as not-integer, and looks
                         // INSIDE an unsigned product for a signed sub-term.
-                        if !self.has_signed_integer_arithmetic(&arg_node, source, type_map) {
+                        let Some(signed) = self.signed_arithmetic_in(&arg_node, source, type_map)
+                        else {
+                            return;
+                        };
+                        if signed.id() != strip_outer_parens(&arg_node).id() {
+                            self.report_inner_signed_size_arithmetic(
+                                node,
+                                &signed,
+                                function_name,
+                                "size argument",
+                                source,
+                                violations,
+                            );
                             return;
                         }
                         let arg_text = get_node_text(&arg_node, source);
@@ -1619,53 +1685,120 @@ impl Int32C {
         }
     }
 
-    /// Does `node` contain arithmetic that C performs in a SIGNED integer
-    /// type -- the only kind INT32-C is about?
-    ///
-    /// Looks through parentheses to the arithmetic. Pointer arithmetic
-    /// (`p - q - 1`, `buf + n`) is not integer arithmetic: ptrdiff_t and
-    /// pointer formation are ARR30-C's. A result the usual arithmetic
-    /// conversions make unsigned (`sizeof(T) * n`, `len - curlen + 1` on
-    /// size_t) or non-integer is not signed either. Anything else -- signed,
-    /// narrow, or unresolved -- counts, so an operand this rule cannot type
-    /// keeps the report it always had.
-    fn has_signed_integer_arithmetic(
+    /// Report `signed`, a signed operation nested under an unsigned size
+    /// computation handed to `call` (`(a * b) * sizeof(T)`), unless interval
+    /// arithmetic proves it fits promoted int width or the call is guarded.
+    /// The outer unsigned product is INT30-C's (task 1288); the inner
+    /// signed one is this rule's, and it overflows or not on its own
+    /// operands, so the fit is tested on it alone (task 1286).
+    fn report_inner_signed_size_arithmetic(
         &self,
-        node: &Node,
+        call: &Node,
+        signed: &Node,
+        function_name: &str,
+        which_arg: &str,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        // Only a multiplicative inner operation is the CWE-680 two-stage
+        // hazard. An additive one -- `(n + 1) * sizeof(T)`, `(nNew - i) *
+        // sizeof(T)` -- overflows int only for a count already within one
+        // of INT_MAX; measured on the corpora, every such report was an
+        // adjudicated judgment FP on a small count (task 1286).
+        if !self
+            .get_operator(signed, source)
+            .is_some_and(|op| matches!(op.as_str(), "*" | "<<"))
+        {
+            return;
+        }
+        let macros = self.current_macros.borrow();
+        let vra_ranges = self.vra_var_ranges_at(signed, source);
+        if const_eval::expression_fits_in_signed_vra(
+            signed,
+            source,
+            &macros,
+            PROMOTED_ARITH_BITS,
+            vra_ranges.as_ref(),
+        ) {
+            return;
+        }
+        drop(macros);
+        if self.has_allocation_overflow_check(call, source)
+            || self.has_memory_function_overflow_check(call, source)
+        {
+            return;
+        }
+        let start_point = call.start_position();
+        violations.push(RuleViolation {
+            rule_id: self.rule_id().to_string(),
+            severity: Severity::High,
+            message: format!(
+                "{}() {} performs signed arithmetic that may overflow before its conversion to size_t: '{}'",
+                function_name,
+                which_arg,
+                get_node_text(signed, source)
+            ),
+            file_path: String::new(),
+            line: start_point.row + 1,
+            column: start_point.column + 1,
+            suggestion: Some(
+                "Validate the signed factors, or perform the multiplication in size_t"
+                    .to_string(),
+            ),
+            ..Default::default()
+        });
+    }
+
+    /// The outermost operation in `node` that C performs in a SIGNED integer
+    /// type, if any: `node`'s own arithmetic when its result is signed, or
+    /// else the first such operation inside an operand.
+    ///
+    /// Looks through parentheses. Pointer arithmetic (`p - q - 1`, `buf +
+    /// n`) is not integer arithmetic: ptrdiff_t and pointer formation are
+    /// ARR30-C's, and nothing inside a pointer expression is descended
+    /// into. A result the usual arithmetic conversions make unsigned
+    /// (`sizeof(T) * n`, `len - curlen + 1` on size_t) or non-integer is
+    /// not signed either -- but its operands may be: `(a * b) * sizeof(T)`
+    /// performs `a * b` in int before anything is converted, and that
+    /// product can overflow with the outer one never involved (task 1286).
+    /// So an unsigned result is not the end of the question, only the end
+    /// of it for THIS operation. Anything else -- signed, narrow, or
+    /// unresolved -- counts, so an operand this rule cannot type keeps the
+    /// report it always had.
+    fn signed_arithmetic_in<'a>(
+        &self,
+        node: &Node<'a>,
         source: &str,
         type_map: &HashMap<String, String>,
-    ) -> bool {
+    ) -> Option<Node<'a>> {
         match node.kind() {
-            "parenthesized_expression" => node
-                .named_child(0)
-                .is_some_and(|c| self.has_signed_integer_arithmetic(&c, source, type_map)),
+            "parenthesized_expression" => {
+                let inner = node.named_child(0)?;
+                self.signed_arithmetic_in(&inner, source, type_map)
+            }
             "binary_expression" => {
-                let Some(op) = self.get_operator(node, source) else {
-                    return false;
+                let op = self.get_operator(node, source)?;
+                let left = node.child_by_field_name("left")?;
+                let right = node.child_by_field_name("right")?;
+                let inside = |this: &Self| {
+                    this.signed_arithmetic_in(&left, source, type_map)
+                        .or_else(|| this.signed_arithmetic_in(&right, source, type_map))
                 };
-                let (Some(left), Some(right)) = (
-                    node.child_by_field_name("left"),
-                    node.child_by_field_name("right"),
-                ) else {
-                    return false;
-                };
-                let recurse = |n: &Node| self.has_signed_integer_arithmetic(n, source, type_map);
                 if !matches!(op.as_str(), "+" | "-" | "*" | "<<") {
-                    return recurse(&left) || recurse(&right);
+                    return inside(self);
                 }
                 if self.is_pointer_arithmetic(node, source, type_map) {
-                    return false;
+                    return None;
                 }
-                // Suppression-only: an unsigned or non-integer result ends the
-                // question here. `(a * b) * sizeof(T)` does perform `a * b`
-                // in int first, but reporting that would be new recall this
-                // rule never had, not a misfire fix; left for its own task.
-                !matches!(
+                if matches!(
                     self.infer_type(node, source, type_map).as_str(),
                     "unsigned" | "not_applicable"
-                )
+                ) {
+                    return inside(self);
+                }
+                Some(*node)
             }
-            _ => false,
+            _ => None,
         }
     }
 
