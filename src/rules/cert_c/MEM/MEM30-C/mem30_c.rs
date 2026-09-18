@@ -3,6 +3,7 @@ use crate::analyze::const_eval;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::FunctionMacro;
+use crate::analyze::macro_gaps;
 use crate::analyze::points_to::{lvalue_of, resolve_canonical, AliasMap, LValue};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
@@ -30,6 +31,11 @@ pub struct Mem30C {
     /// expands to rather than through the name-contains-FREE guess
     /// (task 1128).
     project_aliases: RefCell<Arc<HashMap<String, String>>>,
+    /// Function-like macros the prescan found defined more than one way in a
+    /// single file under conditions the platform profile cannot settle
+    /// (`macro_gaps::MacroGapKind::AmbiguousDefinition`). Merged in `check`
+    /// with this file's own; see `MemoryAnalyzer::ambiguous_macros`.
+    project_ambiguous_macros: RefCell<Arc<HashSet<String>>>,
 }
 
 impl Mem30C {
@@ -63,6 +69,14 @@ impl CertRule for Mem30C {
         *self.function_macros.borrow_mut() = context.function_macros.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
+        *self.project_ambiguous_macros.borrow_mut() = Arc::new(
+            context
+                .macro_gaps
+                .iter()
+                .filter(|g| g.kind == macro_gaps::MacroGapKind::AmbiguousDefinition)
+                .map(|g| g.name.clone())
+                .collect(),
+        );
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -115,12 +129,31 @@ impl CertRule for Mem30C {
         let macro_aliases =
             const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
 
+        // Function-like macros this file defines more than one way under a
+        // condition the platform profile cannot settle -- curl's
+        // `FREE_ON_WINLDAP(x)` is `curlx_free(x)` under `#ifdef
+        // USE_WIN32_LDAP` and `do {} while(0)` in the `#else`. The collector
+        // keeps the first body; whether the macro frees anything is
+        // genuinely unknown to a scan with no configuration, so the
+        // name-contains-FREE guess must not turn such a call into a free
+        // (task 1233; the same audit `--report-macro-gaps` prints).
+        let mut ambiguous_macros: HashSet<String> =
+            HashSet::clone(&self.project_ambiguous_macros.borrow());
+        ambiguous_macros.extend(
+            macro_gaps::audit_definitions(source, "")
+                .gaps
+                .into_iter()
+                .filter(|g| g.kind == macro_gaps::MacroGapKind::AmbiguousDefinition)
+                .map(|g| g.name),
+        );
+
         // Second pass: per-function analysis
         let mut analyzer = MemoryAnalyzer::new(
             macro_null_params,
             union_typedef_names,
             self.function_summaries.borrow().clone(),
             macro_aliases,
+            ambiguous_macros,
         );
         analyzer.analyze_node(node, source, &mut violations);
 
@@ -240,6 +273,44 @@ fn call_result_is_assigned(call_node: &Node) -> bool {
 }
 
 /// Tracks global variables and cross-function memory patterns
+/// True if a field-access chain (`a[i].f`, `p->arr[i].f`, `a[i]->f`) passes
+/// through a subscript anywhere below its top.
+fn path_has_subscript(node: &Node) -> bool {
+    let mut cur = *node;
+    loop {
+        match cur.kind() {
+            "subscript_expression" => return true,
+            "field_expression"
+            | "pointer_expression"
+            | "parenthesized_expression"
+            | "cast_expression" => {
+                let next = cur
+                    .child_by_field_name("argument")
+                    .or_else(|| cur.child_by_field_name("value"))
+                    .or_else(|| {
+                        (0..cur.child_count())
+                            .filter_map(|i| cur.child(i))
+                            .find(|c| c.is_named())
+                    });
+                match next {
+                    Some(n) => cur = n,
+                    None => return false,
+                }
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// `&x` -- a `pointer_expression` whose operator is `&` rather than `*`.
+fn is_address_of(node: &Node, source: &str) -> bool {
+    node.kind() == "pointer_expression"
+        && node
+            .child_by_field_name("operator")
+            .map(|op| get_node_text(&op, source) == "&")
+            .unwrap_or(false)
+}
+
 struct GlobalTracker {
     /// Global variable declarations
     global_vars: HashSet<String>,
@@ -1352,6 +1423,11 @@ enum ReallocNullBranch {
 #[derive(Clone)]
 struct BranchState {
     freed_vars: HashSet<LValue>,
+    /// Where each freed object was freed. Forked with `freed_vars`: the
+    /// preprocessor-split test compares a report site against this, and a
+    /// then-branch free must not become the "prior free" the else-branch
+    /// is measured from (task 1233).
+    freed_at: HashMap<LValue, usize>,
     nullified_vars: HashSet<LValue>,
     aliases: AliasMap,
     realloc_updated: HashSet<LValue>,
@@ -1362,6 +1438,7 @@ impl BranchState {
     fn fork(analyzer: &MemoryAnalyzer) -> Self {
         Self {
             freed_vars: analyzer.freed_vars.clone(),
+            freed_at: analyzer.freed_at.clone(),
             nullified_vars: analyzer.nullified_vars.clone(),
             aliases: analyzer.aliases.clone(),
             realloc_updated: analyzer.realloc_updated.clone(),
@@ -1371,6 +1448,7 @@ impl BranchState {
 
     fn restore(&self, analyzer: &mut MemoryAnalyzer) {
         analyzer.freed_vars = self.freed_vars.clone();
+        analyzer.freed_at = self.freed_at.clone();
         analyzer.nullified_vars = self.nullified_vars.clone();
         analyzer.aliases = self.aliases.clone();
         analyzer.realloc_updated = self.realloc_updated.clone();
@@ -1447,6 +1525,10 @@ struct MemoryAnalyzer {
     // ownership convention, not path state, so it is not forked or merged
     // with the branch state.
     init_stems: HashMap<LValue, HashSet<String>>,
+    // Function-like macros with more than one live definition (project-wide
+    // plus this file). A callee named here whose only claim to being a free
+    // is its NAME is treated as an opaque call, not a free (task 1233).
+    ambiguous_macros: HashSet<String>,
 }
 
 impl MemoryAnalyzer {
@@ -1455,6 +1537,7 @@ impl MemoryAnalyzer {
         union_typedef_names: HashSet<String>,
         function_summaries: Arc<HashMap<String, FunctionSummary>>,
         macro_aliases: HashMap<String, String>,
+        ambiguous_macros: HashSet<String>,
     ) -> Self {
         Self {
             freed_vars: HashSet::new(),
@@ -1472,6 +1555,7 @@ impl MemoryAnalyzer {
             function_summaries,
             macro_aliases,
             init_stems: HashMap::new(),
+            ambiguous_macros,
         }
     }
 
@@ -1487,6 +1571,7 @@ impl MemoryAnalyzer {
                 self.union_typedef_names.clone(),
                 self.function_summaries.clone(),
                 self.macro_aliases.clone(),
+                self.ambiguous_macros.clone(),
             );
             func_analyzer.analyze_function(node, source, violations);
             return; // Don't recurse further - function handled completely
@@ -1568,13 +1653,15 @@ impl MemoryAnalyzer {
                 if_node: Node<'a>,
                 consequence: Option<Node<'a>>,
                 alternative: Option<Node<'a>>,
-                pre_state: BranchState,
+                /// Boxed: a `BranchState` is several maps, and the frame
+                /// stack holds one per open `if`.
+                pre_state: Box<BranchState>,
                 realloc_null_branch: Option<ReallocNullBranch>,
             },
             AfterElse {
                 alternative: Option<Node<'a>>,
-                pre_state: BranchState,
-                then_state: BranchState,
+                pre_state: Box<BranchState>,
+                then_state: Box<BranchState>,
                 then_returns: bool,
             },
             /// `switch` statement whose condition has just been visited —
@@ -1593,7 +1680,7 @@ impl MemoryAnalyzer {
             SwitchCaseDone {
                 cases: Vec<Node<'a>>,
                 idx: usize,
-                pre_state: BranchState,
+                pre_state: Box<BranchState>,
                 exit_states: Vec<(BranchState, bool)>,
             },
         }
@@ -1736,7 +1823,7 @@ impl MemoryAnalyzer {
             stack.push(Frame::SwitchCaseDone {
                 cases: cases.clone(),
                 idx,
-                pre_state,
+                pre_state: Box::new(pre_state),
                 exit_states,
             });
             let value_id = case_node.child_by_field_name("value").map(|v| v.id());
@@ -1794,6 +1881,10 @@ impl MemoryAnalyzer {
                     }
                     "init_declarator" => {
                         self.process_init_declarator(&n, source, violations);
+                        push_children(&mut stack, &n, source, &no_skip);
+                    }
+                    "declaration" => {
+                        self.process_plain_declarators(&n, source);
                         push_children(&mut stack, &n, source, &no_skip);
                     }
                     "pointer_expression" => {
@@ -1862,7 +1953,7 @@ impl MemoryAnalyzer {
                         if_node,
                         consequence,
                         alternative,
-                        pre_state,
+                        pre_state: Box::new(pre_state),
                         realloc_null_branch,
                     });
                     if let Some(consequence) = consequence {
@@ -1895,7 +1986,7 @@ impl MemoryAnalyzer {
                     stack.push(Frame::AfterElse {
                         alternative,
                         pre_state,
-                        then_state,
+                        then_state: Box::new(then_state),
                         then_returns,
                     });
                     if let Some(alternative) = alternative {
@@ -1936,7 +2027,7 @@ impl MemoryAnalyzer {
                         source,
                         cases,
                         idx,
-                        pre_state,
+                        *pre_state,
                         exit_states,
                     );
                 }
@@ -1950,6 +2041,9 @@ impl MemoryAnalyzer {
     /// statements do, not instead of it).
     fn union_state_from(&mut self, other: &BranchState) {
         self.freed_vars.extend(other.freed_vars.iter().cloned());
+        for (k, v) in &other.freed_at {
+            self.freed_at.entry(k.clone()).or_insert(*v);
+        }
         self.nullified_vars
             .extend(other.nullified_vars.iter().cloned());
         self.realloc_invalidated
@@ -2005,11 +2099,15 @@ impl MemoryAnalyzer {
         }
 
         let mut freed_vars = HashSet::new();
+        let mut freed_at = HashMap::new();
         let mut nullified_vars = HashSet::new();
         let mut realloc_invalidated = HashSet::new();
         let mut realloc_updated = HashSet::new();
         for s in &live {
             freed_vars.extend(s.freed_vars.iter().cloned());
+            for (k, v) in &s.freed_at {
+                freed_at.entry(k.clone()).or_insert(*v);
+            }
             nullified_vars.extend(s.nullified_vars.iter().cloned());
             realloc_invalidated.extend(s.realloc_invalidated.iter().cloned());
             realloc_updated.extend(s.realloc_updated.iter().cloned());
@@ -2028,6 +2126,7 @@ impl MemoryAnalyzer {
         // exclusive terminal states for the same var on the same path.
         nullified_vars.retain(|var| !freed_vars.contains(var));
         analyzer.freed_vars = freed_vars;
+        analyzer.freed_at = freed_at;
         analyzer.nullified_vars = nullified_vars;
         analyzer.realloc_invalidated = realloc_invalidated;
         analyzer.realloc_updated = realloc_updated;
@@ -2047,18 +2146,21 @@ impl MemoryAnalyzer {
         if then_returns && else_returns {
             // Both branches return - code after is unreachable, keep saved state
             analyzer.freed_vars = pre_state.freed_vars.clone();
+            analyzer.freed_at = pre_state.freed_at.clone();
             analyzer.nullified_vars = pre_state.nullified_vars.clone();
             analyzer.realloc_invalidated = pre_state.realloc_invalidated.clone();
             analyzer.realloc_updated = pre_state.realloc_updated.clone();
         } else if then_returns {
             // Only then returns - use else branch state
             analyzer.freed_vars = else_state.freed_vars.clone();
+            analyzer.freed_at = else_state.freed_at.clone();
             analyzer.nullified_vars = else_state.nullified_vars.clone();
             analyzer.realloc_invalidated = else_state.realloc_invalidated.clone();
             analyzer.realloc_updated = else_state.realloc_updated.clone();
         } else if else_returns {
             // Only else returns - use then branch state
             analyzer.freed_vars = then_state.freed_vars.clone();
+            analyzer.freed_at = then_state.freed_at.clone();
             analyzer.nullified_vars = then_state.nullified_vars.clone();
             analyzer.realloc_invalidated = then_state.realloc_invalidated.clone();
             analyzer.realloc_updated = then_state.realloc_updated.clone();
@@ -2079,6 +2181,12 @@ impl MemoryAnalyzer {
                 }
             }
             analyzer.freed_vars = freed_vars;
+            // Free sites follow the union: whichever branch freed it, that is
+            // where it was freed (then-branch wins a tie; the site only feeds
+            // the preprocessor-split test).
+            let mut freed_at = else_state.freed_at.clone();
+            freed_at.extend(then_state.freed_at.iter().map(|(k, v)| (k.clone(), *v)));
+            analyzer.freed_at = freed_at;
 
             // Union of nullified, minus anything that ends up freed above —
             // freed and nullified are mutually exclusive terminal states for
@@ -2574,12 +2682,28 @@ impl MemoryAnalyzer {
                         return HashSet::new();
                     }
 
-                    // Check for common free-related macros
-                    if upper_name.contains("FREE")
+                    // Check for common free-related macros. A name is the
+                    // weakest evidence of a free, and it is overruled when the
+                    // callee is a macro this file defines more than one way
+                    // under a condition no platform profile settles (curl's
+                    // `FREE_ON_WINLDAP`: a real free in one arm, a no-op in the
+                    // other, with the non-Windows arm's `attr = attribute`
+                    // alias visible in the same walk -- so the guess produced a
+                    // "double-free" of `attribute` on every error branch of
+                    // ldap.c, task 1233). Such a call is opaque: its argument
+                    // is still checked for prior frees like any other call.
+                    let ambiguous_free_macro = (upper_name.contains("FREE")
                         || upper_name == "XFREE"
                         || upper_name == "G_FREE"
                         || upper_name == "SAFE_DELETE"
-                        || upper_name == "DELETE"
+                        || upper_name == "DELETE")
+                        && self.ambiguous_macros.contains(spelled_name);
+                    if !ambiguous_free_macro
+                        && (upper_name.contains("FREE")
+                            || upper_name == "XFREE"
+                            || upper_name == "G_FREE"
+                            || upper_name == "SAFE_DELETE"
+                            || upper_name == "DELETE")
                     {
                         // `<stem>_free(obj)` after `<stem>_init(obj)` in this
                         // function does not release obj itself (contents-free
@@ -2786,6 +2910,15 @@ impl MemoryAnalyzer {
         if actual_arg.kind() != "identifier" && actual_arg.kind() != "field_expression" {
             return None;
         }
+        // `free(a[i].f)`: the freed object is a member of ONE element, and
+        // `lvalue_of` drops the index, so `a[1].f` and `a[0].f` would share a
+        // key -- curl's `socks_sspi.c` frees `sspi_w_token[1].pvBuffer` on
+        // the success path and `sspi_w_token[0].pvBuffer` right after, and
+        // was reported as a double-free (task 1233). Same policy as the
+        // `free(arr[i])` skip above: not tracked rather than tracked wrongly.
+        if path_has_subscript(&actual_arg) {
+            return None;
+        }
         let lv = lvalue_of(&actual_arg, source)?;
         // For union support: also track the base variable — when
         // free(u.member1) is called, u.member2 also becomes invalid.
@@ -2951,7 +3084,7 @@ impl MemoryAnalyzer {
                     if let Some(ptr_var) = lvalue_of(&arg, source) {
                         let ptr_var = LValue::Var(ptr_var.root_var().to_string());
                         if self.is_freed(&ptr_var) {
-                            violations.push(self.uaf(
+                            violations.extend(self.uaf(
                                 RuleViolation {
                                     rule_id: "MEM30-C".to_string(),
                                     severity: Severity::Critical,
@@ -2968,6 +3101,7 @@ impl MemoryAnalyzer {
                                     ..Default::default()
                                 },
                                 &ptr_var,
+                                source,
                             ));
                         }
                     }
@@ -3138,6 +3272,33 @@ impl MemoryAnalyzer {
         }
     }
 
+    /// A declaration WITHOUT an initializer (`char *unescaped;`) is as much a
+    /// fresh binding as one with (`process_init_declarator`, task 232), and
+    /// needs the same clearing: the analyzer is scope-flat, so curl's
+    /// `ldap.c::_ldap_url_parse2`, which declares `char *unescaped;` in
+    /// three sibling blocks and frees it in each, saw the second block's
+    /// `Curl_urldecode(..., &unescaped, ...)` as a use of the FIRST block's
+    /// freed pointer (task 1233). `init_declarator` children are left to
+    /// their own handler; only bare `identifier`/`pointer_declarator`
+    /// declarators are cleared here.
+    fn process_plain_declarators(&mut self, node: &Node, source: &str) {
+        for i in 0..node.child_count() {
+            let Some(child) = node.child(i) else { continue };
+            if !matches!(child.kind(), "identifier" | "pointer_declarator") {
+                continue;
+            }
+            let name = self.extract_declarator_name(&child, source);
+            if name.is_empty() {
+                continue;
+            }
+            let lv = LValue::Var(name);
+            self.freed_vars.remove(&lv);
+            self.nullified_vars.remove(&lv);
+            self.realloc_invalidated.remove(&lv);
+            self.aliases.remove(&lv);
+        }
+    }
+
     /// Process variable initialization (int *p = ptr)
     fn process_init_declarator(
         &mut self,
@@ -3247,11 +3408,17 @@ impl MemoryAnalyzer {
             }
         }
 
+        // `&p` is address-of, not a dereference: it names the variable's own
+        // storage, which is live whatever `p` points at (task 1233).
+        if is_address_of(node, source) {
+            return;
+        }
+
         if let Some(arg) = node.child_by_field_name("argument") {
             if let Some(lv) = lvalue_of(&arg, source) {
                 let var_name = LValue::Var(lv.root_var().to_string());
                 if self.is_freed(&var_name) {
-                    violations.push(self.uaf(
+                    violations.extend(self.uaf(
                         RuleViolation {
                             rule_id: "MEM30-C".to_string(),
                             severity: Severity::Critical,
@@ -3266,6 +3433,7 @@ impl MemoryAnalyzer {
                             ..Default::default()
                         },
                         &var_name,
+                        source,
                     ));
                 }
             }
@@ -3285,7 +3453,7 @@ impl MemoryAnalyzer {
             };
             // First check if the full path is freed (e.g., obj->data.values)
             if self.is_freed(&lv) {
-                violations.push(self.uaf(
+                violations.extend(self.uaf(
                     RuleViolation {
                         rule_id: "MEM30-C".to_string(),
                         severity: Severity::Critical,
@@ -3300,6 +3468,7 @@ impl MemoryAnalyzer {
                         ..Default::default()
                     },
                     &lv,
+                    source,
                 ));
                 return;
             }
@@ -3307,7 +3476,7 @@ impl MemoryAnalyzer {
             // Also check base variable
             let var_name = LValue::Var(lv.root_var().to_string());
             if self.is_freed(&var_name) {
-                violations.push(self.uaf(
+                violations.extend(self.uaf(
                     RuleViolation {
                         rule_id: "MEM30-C".to_string(),
                         severity: Severity::Critical,
@@ -3322,6 +3491,7 @@ impl MemoryAnalyzer {
                         ..Default::default()
                     },
                     &var_name,
+                    source,
                 ));
             }
         }
@@ -3344,7 +3514,7 @@ impl MemoryAnalyzer {
                 if let Some(left_var) = lvalue_of(&left, source) {
                     let left_var = LValue::Var(left_var.root_var().to_string());
                     if self.is_freed(&left_var) {
-                        violations.push(self.uaf(
+                        violations.extend(self.uaf(
                             RuleViolation {
                                 rule_id: "MEM30-C".to_string(),
                                 severity: Severity::Critical,
@@ -3361,6 +3531,7 @@ impl MemoryAnalyzer {
                                 ..Default::default()
                             },
                             &left_var,
+                            source,
                         ));
                     }
                 }
@@ -3370,7 +3541,7 @@ impl MemoryAnalyzer {
 
     /// Check function arguments for use of freed memory
     fn check_function_args_for_freed(
-        &self,
+        &mut self,
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
@@ -3382,10 +3553,27 @@ impl MemoryAnalyzer {
                         continue;
                     }
 
+                    // `f(&p)` hands the callee the ADDRESS of `p`, not the
+                    // freed pointer `p` holds -- an output slot the callee
+                    // will typically refill (`Curl_urldecode(..., &unescaped,
+                    // ...)`). Not a use of the freed object; and after the
+                    // call `p` can no longer be assumed to hold the freed
+                    // value, the same reasoning as free-then-reassign
+                    // (task 1233).
+                    if is_address_of(&arg, source) {
+                        if let Some(inner) = arg.child_by_field_name("argument") {
+                            if let Some(lv) = lvalue_of(&inner, source) {
+                                let root = LValue::Var(lv.root_var().to_string());
+                                self.clear_freed_state(&root, &lv);
+                            }
+                        }
+                        continue;
+                    }
+
                     if let Some(lv) = lvalue_of(&arg, source) {
                         let var_name = LValue::Var(lv.root_var().to_string());
                         if self.is_freed(&var_name) {
-                            violations.push(self.uaf(
+                            violations.extend(self.uaf(
                                 RuleViolation {
                                     rule_id: "MEM30-C".to_string(),
                                     severity: Severity::Critical,
@@ -3402,6 +3590,7 @@ impl MemoryAnalyzer {
                                     ..Default::default()
                                 },
                                 &var_name,
+                                source,
                             ));
                         }
                     }
@@ -3426,7 +3615,7 @@ impl MemoryAnalyzer {
                 if let Some(lv) = lvalue_of(&child, source) {
                     let var_name = LValue::Var(lv.root_var().to_string());
                     if self.is_freed(&var_name) {
-                        violations.push(self.uaf(
+                        violations.extend(self.uaf(
                             RuleViolation {
                                 rule_id: "MEM30-C".to_string(),
                                 severity: Severity::Critical,
@@ -3443,6 +3632,7 @@ impl MemoryAnalyzer {
                                 ..Default::default()
                             },
                             &var_name,
+                            source,
                         ));
                     }
                 }
@@ -3562,7 +3752,7 @@ impl MemoryAnalyzer {
             return;
         };
         if self.is_freed(&lv) {
-            violations.push(self.uaf(
+            violations.extend(self.uaf(
                 RuleViolation {
                     rule_id: "MEM30-C".to_string(),
                     severity: Severity::Critical,
@@ -3577,6 +3767,7 @@ impl MemoryAnalyzer {
                     ..Default::default()
                 },
                 &lv,
+                source,
             ));
             return;
         }
@@ -3584,7 +3775,7 @@ impl MemoryAnalyzer {
         // Check if the base of field expression is freed
         let var_name = LValue::Var(lv.root_var().to_string());
         if self.is_freed(&var_name) {
-            violations.push(self.uaf(
+            violations.extend(self.uaf(
                 RuleViolation {
                     rule_id: "MEM30-C".to_string(),
                     severity: Severity::Critical,
@@ -3599,6 +3790,7 @@ impl MemoryAnalyzer {
                     ..Default::default()
                 },
                 &var_name,
+                source,
             ));
         }
     }
@@ -3614,7 +3806,30 @@ impl MemoryAnalyzer {
     /// (`sqlite3_free`), so the finding is kept and marked for manual review
     /// rather than dropped: the reader sees that the "free" is an inference
     /// from a name, and the oracle keeps the key.
-    fn uaf(&self, mut violation: RuleViolation, lv: &LValue) -> RuleViolation {
+    fn uaf(
+        &self,
+        mut violation: RuleViolation,
+        lv: &LValue,
+        source: &str,
+    ) -> Option<RuleViolation> {
+        // A preprocessor conditional between the free and this use puts the
+        // two in what may be mutually exclusive build configurations --
+        // curl's `curl_dbg_freeaddrinfo` frees `freethis` in each arm of an
+        // `#ifdef USE_LWIPSOCK / #elif / #else` chain, and the linear walk
+        // sees arm two "use" what arm one freed. The double-free path has
+        // declined to report across such a split since task 251; a
+        // use-after-free across one is the same unsound sequence (task 1233).
+        let freed_byte = self
+            .freed_at
+            .get(lv)
+            .or_else(|| self.aliases.get(lv).and_then(|c| self.freed_at.get(c)))
+            .copied();
+        if let Some(prior) = freed_byte {
+            let here = byte_offset_of_line(source, violation.line);
+            if preproc_conditional_between(source, prior.min(here), prior.max(here)) {
+                return None;
+            }
+        }
         let guessed = self
             .guessed_freed
             .get(lv)
@@ -3625,7 +3840,7 @@ impl MemoryAnalyzer {
                 violation.message = format!("{} [guessed-free via {}]", violation.message, callee);
             }
         }
-        violation
+        Some(violation)
     }
 
     /// Check if a variable is in freed state (considering aliases and realloc invalidation)
@@ -3812,6 +4027,24 @@ fn is_preproc_if_zero(node: &tree_sitter::Node, source: &str) -> bool {
 /// raw parse order is not a sound execution sequence (task 251). `#define` /
 /// `#include` and other non-conditional directives are ignored — they do not
 /// gate code in or out.
+/// Byte offset at which 1-based `line` starts (the source length when the
+/// line is past the end), for comparing a reported site against `freed_at`.
+fn byte_offset_of_line(source: &str, line: usize) -> usize {
+    if line <= 1 {
+        return 0;
+    }
+    let mut remaining = line - 1;
+    for (i, b) in source.bytes().enumerate() {
+        if b == b'\n' {
+            remaining -= 1;
+            if remaining == 0 {
+                return i + 1;
+            }
+        }
+    }
+    source.len()
+}
+
 fn preproc_conditional_between(source: &str, start: usize, end: usize) -> bool {
     if start >= end || end > source.len() {
         return false;
