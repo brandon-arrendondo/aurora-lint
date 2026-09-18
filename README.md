@@ -102,12 +102,12 @@ Measured, not asserted. Two benchmarks, both with published methodology.
 <!-- BENCH:HIGHLIGHTS:START -->
 | Metric | Value |
 |--------|-------|
-| **Juliet Precision** | 87.1% (v0.4.321) |
-| **Juliet CWEs Scanned** | 75 (fast mode, CWE-matched rules) |
-| **100% Precision CWEs** | 43 (zero false positives, with real detections) |
-| **Per-File Detection** | 38.0% (19,073 / 50,256 files) |
-| **Real-World Precision / Recall** | 24.2% / 93.9% (v0.4.325, run #226, 89.8% label coverage) |
-| **Real-World Projects** | curl, hostap, libcrc, lua, mosquitto, pure-ftpd, raylib, seL4, sqlite |
+| **Juliet Precision** | 86.1% (v0.4.336) |
+| **Juliet CWEs Scanned** | 79 (fast mode, CWE-matched rules) |
+| **100% Precision CWEs** | 41 (zero false positives, with real detections) |
+| **Per-File Detection** | 39.5% (19,857 / 50,256 files) |
+| **Real-World Precision / Recall** | 52.5% / 96.9% (v0.4.336, run #265, 76.1% label coverage) |
+| **Real-World Projects** | curl, hostap, libcrc, lua, mbedtls, mosquitto, pure-ftpd, raylib, seL4, sqlite, valkey, Ventoy |
 | **Basis** | `distinct/scored-projects/in_scope` (definitions `1`) |
 <!-- BENCH:HIGHLIGHTS:END -->
 
