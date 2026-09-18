@@ -7,7 +7,7 @@
 #   2. target/debug/incremental is deleted outright once target/ exceeds
 #      $MAX_TARGET_GB. It is a pure cache -- deleting it costs one slower
 #      rebuild, nothing else -- and it is the dominant grower. Measured on
-#      dev-180 (tools_sqc, clean tree): `cargo build` alone leaves
+#      dev-180 (aurora-lint, clean tree): `cargo build` alone leaves
 #      target/debug at 868M, 372M of it incremental; one `cargo test
 #      --no-run` on top takes it to 2.4G, 1.6G of it incremental.
 #   3. If a repo is STILL over $MAX_TARGET_GB after (1) and (2), its whole
@@ -28,7 +28,7 @@ MAX_TARGET_GB="${MAX_TARGET_GB:-6}"
 REPOS=("$@")
 if [ ${#REPOS[@]} -eq 0 ]; then
   REPOS=(
-    "$HOME/data-enterprise/tools_sqc"
+    "$HOME/data-enterprise/aurora-lint"
     "$HOME/data-enterprise/todo-sqlite-cli"
     "$HOME/data-enterprise/knots"
     "$HOME/data-enterprise/lang_parsing_substrate"
