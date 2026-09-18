@@ -325,6 +325,10 @@ fn process_statement_for_ranges(
     state: &mut RangeMap,
     local_types: &HashMap<String, VarType>,
 ) {
+    // Before the statement's own effect: a callee may write through any
+    // `&var` it receives, wherever in the statement the call sits. Idempotent,
+    // so the bare-call and opaque-region paths below doing it again is fine.
+    widen_address_taken_call_args(node, source, state);
     match node.kind() {
         "declaration" => {
             process_declaration_range(node, source, macros, summaries, state);
@@ -763,6 +767,25 @@ fn process_update_range(node: &Node, source: &str, state: &mut RangeMap) {
     if let Some(range) = cur.range.add(&delta) {
         let var_type = cur.var_type.clone();
         state.insert(var_name, TypedRange { range, var_type });
+    }
+}
+
+/// Widen every `&var` handed to any call anywhere inside `node`.
+///
+/// [`process_call_arg_widening_range`] only ever ran for a call that was the
+/// whole statement. A call nested in an assignment (`n = sscanf(s, "%d",
+/// &x)`), a condition (`if (sscanf(s, "%d", &x) == 1)`) or a compound
+/// assignment (`i += getVarint(p, &v)`) left its output arguments untouched,
+/// so `x` kept whatever it was initialised to and a consumer proved
+/// arithmetic on a file-derived value safe from `x == 0` (task 1256).
+fn widen_address_taken_call_args(node: &Node, source: &str, state: &mut RangeMap) {
+    if node.kind() == "call_expression" {
+        process_call_arg_widening_range(node, source, state);
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            widen_address_taken_call_args(&child, source, state);
+        }
     }
 }
 
@@ -2853,6 +2876,34 @@ void f(int flag) {
 }
 ";
         assert_eq!(range_at_expr(code, "p", "buf[p] = 1"), None);
+    }
+
+    /// A callee writes through `&x` no matter where in the statement the
+    /// call sits: an assignment's RHS and an `if` condition are the two
+    /// shapes `sscanf`-style parsing takes in real code, and both left `x`
+    /// pinned at its initialiser (task 1256).
+    #[test]
+    fn address_taken_arg_of_nested_call_is_widened() {
+        let code = "
+int sscanf(const char *s, const char *fmt, ...);
+void f(const char *s) {
+    int x = 0;
+    int n = 0;
+    n = sscanf(s, \"%d\", &x);
+    int a = x + 1;
+    if (sscanf(s, \"%d\", &n) == 1) {
+        int b = n + 1;
+    }
+}
+";
+        assert_eq!(
+            range_at_expr(code, "x", "x + 1"),
+            Some(ValueRange::new(i32::MIN as i64, i32::MAX as i64))
+        );
+        assert_eq!(
+            range_at_expr(code, "n", "n + 1"),
+            Some(ValueRange::new(i32::MIN as i64, i32::MAX as i64))
+        );
     }
 
     /// A conjunction whose operands contradict EACH OTHER is unsatisfiable
