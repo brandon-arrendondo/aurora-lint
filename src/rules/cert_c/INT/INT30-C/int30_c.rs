@@ -887,6 +887,39 @@ impl Int30C {
         }
     }
 
+    /// Whether a compound assignment `x op= y` performs UNSIGNED arithmetic,
+    /// which is this rule's, and so cannot be declined merely because `x` is
+    /// signed.
+    ///
+    /// `+=`, `-=` and `*=` apply the usual arithmetic conversions, so an
+    /// unsigned right operand converts the operation: hostap's `int
+    /// ctx_offset += unsigned int key_len` and `ctx_offset +=
+    /// sizeof(peer->mi)` wrap as unsigned, not as signed overflow. These
+    /// checks asked about the LEFT operand alone and INT32-C's asked about
+    /// its own left operand alone, so once INT32-C learned to decline an
+    /// unsigned right operand (task 1287) these three labeled true positives
+    /// would have been reported by neither rule. Same exhaustive-dispatch
+    /// requirement as task 1288, one level down in the expression.
+    ///
+    /// Not applied to `<<=`: a shift's result type is its promoted LEFT
+    /// operand's type, and the right operand takes no part in the usual
+    /// arithmetic conversions.
+    fn compound_arithmetic_is_unsigned(
+        &self,
+        left_type: &str,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> bool {
+        if self.is_unsigned_type(left_type) {
+            return true;
+        }
+        match node.child_by_field_name("right") {
+            Some(right) => self.is_unsigned_type(&self.infer_type(&right, source, type_map)),
+            None => false,
+        }
+    }
+
     fn check_compound_addition(
         &self,
         node: &Node,
@@ -902,7 +935,8 @@ impl Int30C {
                 return;
             }
 
-            if self.is_unsigned_type(&left_type) && !self.has_overflow_check_compound(node, source)
+            if self.compound_arithmetic_is_unsigned(&left_type, node, source, type_map)
+                && !self.has_overflow_check_compound(node, source)
             {
                 // Narrow unsigned compound add: uint8_t += uint8_t promotes to int.
                 if self.is_narrow_unsigned_type(&left_type) {
@@ -969,7 +1003,8 @@ impl Int30C {
                 return;
             }
 
-            if self.is_unsigned_type(&left_type) && !self.has_overflow_check_compound(node, source)
+            if self.compound_arithmetic_is_unsigned(&left_type, node, source, type_map)
+                && !self.has_overflow_check_compound(node, source)
             {
                 if self.is_narrow_unsigned_type(&left_type) {
                     return;
@@ -1040,7 +1075,8 @@ impl Int30C {
         if let Some(left) = node.child_by_field_name("left") {
             let left_type = self.infer_type(&left, source, type_map);
 
-            if self.is_unsigned_type(&left_type) && !self.has_overflow_check_compound(node, source)
+            if self.compound_arithmetic_is_unsigned(&left_type, node, source, type_map)
+                && !self.has_overflow_check_compound(node, source)
             {
                 if self.is_narrow_unsigned_type(&left_type) {
                     return;

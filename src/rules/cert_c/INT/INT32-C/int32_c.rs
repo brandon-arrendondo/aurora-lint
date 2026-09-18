@@ -1011,6 +1011,36 @@ impl Int32C {
         }
     }
 
+    /// True when the right operand of a compound assignment makes the whole
+    /// operation unsigned, so it belongs to INT30-C rather than here.
+    ///
+    /// `+=`, `-=` and `*=` apply the usual arithmetic conversions, and this
+    /// rule models arithmetic at [`PROMOTED_ARITH_BITS`], where an unsigned
+    /// operand converts the operation. These checks typed their LEFT operand
+    /// only, so sqlite's `i64 iRowid += u64 iDelta` -- a varint delta read
+    /// off an index page, which wraps as unsigned -- was reported as signed
+    /// overflow. The binary path already makes that dispatch
+    /// (`check_addition` skips whenever EITHER operand is unsigned); the
+    /// compound path never asked, and nothing noticed while an `i64` operand
+    /// classified `not_applicable` and left the rule before this point (task
+    /// 1287).
+    ///
+    /// Deliberately not applied to `<<=`: a shift's result type is its
+    /// promoted LEFT operand's type and the right operand takes no part in
+    /// the usual arithmetic conversions, so an unsigned shift count leaves a
+    /// signed shift signed.
+    fn compound_rhs_is_unsigned(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> bool {
+        match node.child_by_field_name("right") {
+            Some(right) => self.infer_type(&right, source, type_map) == "unsigned",
+            None => false,
+        }
+    }
+
     fn check_compound_addition(
         &self,
         node: &Node,
@@ -1023,6 +1053,12 @@ impl Int32C {
 
             // Skip if operand is a non-integer type (char, float, pointer, etc.)
             if left_type == "not_applicable" {
+                return;
+            }
+
+            // Skip if the right operand makes the arithmetic unsigned --
+            // unsigned wrap is INT30-C's, not this rule's.
+            if self.compound_rhs_is_unsigned(node, source, type_map) {
                 return;
             }
 
@@ -1084,6 +1120,12 @@ impl Int32C {
                 return;
             }
 
+            // Skip if the right operand makes the arithmetic unsigned --
+            // unsigned wrap is INT30-C's, not this rule's.
+            if self.compound_rhs_is_unsigned(node, source, type_map) {
+                return;
+            }
+
             if self.is_signed_type(&left_type) {
                 // Skip if inside a block guarded by a type-limit bounds check
                 let op_names = self.extract_operand_names(node, source);
@@ -1137,6 +1179,12 @@ impl Int32C {
 
             // Skip if operand is a non-integer type (char, float, pointer, etc.)
             if left_type == "not_applicable" {
+                return;
+            }
+
+            // Skip if the right operand makes the arithmetic unsigned --
+            // unsigned wrap is INT30-C's, not this rule's.
+            if self.compound_rhs_is_unsigned(node, source, type_map) {
                 return;
             }
 
@@ -2167,28 +2215,57 @@ impl Int32C {
         {
             return "unsigned".to_string();
         }
-        if declared_type == "int8_t" {
-            return "char".to_string();
+        if let Some(bucket) = Self::classify_type_spelling(declared_type) {
+            return bucket;
         }
-        if declared_type == "int16_t" || declared_type.contains("short") {
-            return "short".to_string();
+        // The spelling says nothing, but it may still be an alias for a
+        // signed arithmetic type: `time_t`, `curl_off_t`, sqlite's `i64`,
+        // valkey's `mstime_t`. The unsigned side of this question already
+        // walks the chain above; the signed side used to stop at the
+        // spelling and call every such operand `not_applicable`, so
+        // arithmetic on it fell out of the rule entirely (task 1287).
+        // Classify the chain's terminal instead of the alias name.
+        //
+        // An alias whose chain reaches nothing we recognize -- an opaque
+        // leaf, a name defined only in a header the scan never reads --
+        // stays `not_applicable`. Silence is the honest answer for an
+        // occurrence that cannot be resolved (ADR-0006); a table of known
+        // typedef names would be the guess-from-spelling this is fixing.
+        let resolved =
+            overflow_helpers::resolve_typedef_chain(declared_type, &self.typedef_types.borrow());
+        if resolved != declared_type {
+            if let Some(bucket) = Self::classify_type_spelling(&resolved) {
+                return bucket;
+            }
+        }
+        // Non-integer types (float, double, pointers, structs) — not applicable to INT32-C
+        "not_applicable".to_string()
+    }
+
+    /// The signedness/width bucket a *builtin* type spelling names, or
+    /// `None` when the spelling is not one this rule recognizes (an alias,
+    /// a struct, a floating or pointer type). Split out of
+    /// [`Self::classify_declared_type`] so the same question can be asked
+    /// of an alias's resolved terminal, not only of the alias as written.
+    fn classify_type_spelling(type_str: &str) -> Option<String> {
+        if type_str == "int8_t" {
+            return Some("char".to_string());
+        }
+        if type_str == "int16_t" || type_str.contains("short") {
+            return Some("short".to_string());
         }
         // Only return signed if the type is clearly an integer type
-        if declared_type.contains("int")
-            || declared_type.contains("long")
-            || declared_type == "signed"
-        {
-            return "signed".to_string();
+        if type_str.contains("int") || type_str.contains("long") || type_str == "signed" {
+            return Some("signed".to_string());
         }
         // char is a signed integer type (on most platforms); tracked
         // distinctly so `stored_type_bits` can tell how wide a *destination*
         // it makes -- never how wide the arithmetic is (that is always
         // `PROMOTED_ARITH_BITS`; see `result_width_bits`).
-        if declared_type == "char" || declared_type == "signed char" {
-            return "char".to_string();
+        if type_str == "char" || type_str == "signed char" {
+            return Some("char".to_string());
         }
-        // Non-integer types (float, double, pointers, structs) — not applicable to INT32-C
-        "not_applicable".to_string()
+        None
     }
 
     /// Explicit unsigned-type/literal text markers, applicable regardless of node kind.
