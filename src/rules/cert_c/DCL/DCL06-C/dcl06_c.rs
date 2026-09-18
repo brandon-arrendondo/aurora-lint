@@ -210,12 +210,14 @@ impl Dcl06C {
         // so we don't flag them to avoid false positives
     }
 
-    /// Extract array name from array declarator
+    /// Extract array name from array declarator. A struct member's
+    /// declarator is a `field_identifier`, not an `identifier`, so
+    /// `char name[64];` inside a struct had no name at all and could never
+    /// be matched against a `sizeof(x.name)` (task 1153, mechanism 7).
     fn extract_array_name(&self, array_decl: &Node, source: &str) -> Option<String> {
-        // Look for identifier in the declarator
         for i in 0..array_decl.child_count() {
             if let Some(child) = array_decl.child(i) {
-                if child.kind() == "identifier" {
+                if child.kind() == "identifier" || child.kind() == "field_identifier" {
                     return Some(get_node_text(&child, source).to_string());
                 }
             }
@@ -484,22 +486,36 @@ impl Dcl06C {
         matches!(Self::normalize_int_literal(value).parse::<i64>(), Ok(n) if (0..=10).contains(&n))
     }
 
-    /// Find all sizeof() usages and return the variable names
+    /// The names `sizeof` is applied to in this file, used to exempt an
+    /// array whose declared size is a literal but whose extent the code
+    /// takes with `sizeof` rather than repeating the number (the CERT wiki's
+    /// own compliant `sizeof` example).
+    ///
+    /// Read from the tree, not from the text between the parentheses: the
+    /// text scan required a `(` and a space-free operand, so `sizeof buf`
+    /// (the K&R spelling, valid C) yielded nothing at all, and `sizeof(x.a)`
+    /// yielded "x.a", which never matches the declarator name `a` -- both
+    /// left an array that IS measured with `sizeof` reported as if it were
+    /// not (task 1153, mechanisms 7 and 8). The operand is unwrapped through
+    /// any parentheses; a plain identifier names itself, and a field access
+    /// (`x.a`, `p->a`) names the field, which is what the array declarator
+    /// inside the struct is spelled as. A subscript or deref (`sizeof
+    /// buf[0]`, `sizeof *p`) measures an element, not the array, and is
+    /// deliberately not credited.
     fn find_sizeof_usages(&self, node: &Node, source: &str) -> HashSet<String> {
         query::find_descendants_of_kind(*node, "sizeof_expression")
             .into_iter()
             .filter_map(|n| {
-                // Look for the argument to sizeof
-                let text = get_node_text(&n, source);
-                // Extract identifier from sizeof(identifier)
-                let start = text.find('(')?;
-                let end = text.rfind(')')?;
-                let inner = text[start + 1..end].trim();
-                // Could be an identifier
-                if !inner.is_empty() && !inner.contains(' ') {
-                    Some(inner.to_string())
-                } else {
-                    None
+                let mut operand = n.child_by_field_name("value")?;
+                while operand.kind() == "parenthesized_expression" {
+                    operand = operand.named_child(0)?;
+                }
+                match operand.kind() {
+                    "identifier" => Some(get_node_text(&operand, source).to_string()),
+                    "field_expression" => operand
+                        .child_by_field_name("field")
+                        .map(|f| get_node_text(&f, source).to_string()),
+                    _ => None,
                 }
             })
             .collect()
