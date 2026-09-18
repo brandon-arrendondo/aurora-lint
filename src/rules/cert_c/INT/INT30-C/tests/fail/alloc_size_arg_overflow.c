@@ -1,7 +1,7 @@
 /*
- * Rule: INT32-C
+ * Rule: INT30-C
  * Source: testcases
- * Status: FAIL - Should trigger INT32-C violation
+ * Status: FAIL - Should trigger INT30-C violation
  * Description: Companion to pass/alloc_arg_no_arithmetic.c (task 915).
  * Narrowing the allocation-argument overflow check to the positions that
  * actually carry a size must leave those positions checked: malloc()

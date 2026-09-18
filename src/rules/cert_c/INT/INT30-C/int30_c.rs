@@ -48,6 +48,12 @@ pub struct Int30C {
     /// File-scope pointer names and pointer-returning functions, for the
     /// pointer-arithmetic gate. Rebuilt per file.
     pointer_facts: RefCell<PointerFacts>,
+    /// Declared return types of functions this file defines or prototypes
+    /// (`overflow_helpers::collect_function_return_types`), so a call
+    /// operand can be typed the same way INT32-C types it -- one half of the
+    /// signed/unsigned dispatch cannot see `size_t` returns while the other
+    /// does (task 1288).
+    function_return_types: RefCell<HashMap<String, String>>,
 }
 
 impl Int30C {
@@ -64,6 +70,7 @@ impl Int30C {
             callers: RefCell::default(),
             param_names_cache: RefCell::new(HashMap::new()),
             pointer_facts: RefCell::new(PointerFacts::default()),
+            function_return_types: RefCell::new(HashMap::new()),
         }
     }
 
@@ -241,8 +248,26 @@ impl CertRule for Int30C {
         self.param_names_cache.borrow_mut().clear();
 
         *self.pointer_facts.borrow_mut() = PointerFacts::collect(node, source);
+        *self.function_return_types.borrow_mut() =
+            overflow_helpers::collect_function_return_types(node, source);
 
         self.check_node(node, source, &mut violations, &type_map);
+
+        // `check_allocation_size_wrap` reports the size ARGUMENT of a call;
+        // the operator walkers may independently report the arithmetic
+        // inside it (`malloc(n * sizeof(T))` is both). One wrap, one
+        // finding: the argument report yields to the operator one on its
+        // line, since that names the operation itself.
+        let operator_lines: HashSet<(usize, String)> = violations
+            .iter()
+            .filter(|v| !Self::is_allocation_argument_report(&v.message))
+            .filter_map(|v| Self::quoted_expression(&v.message).map(|e| (v.line, e)))
+            .collect();
+        violations.retain(|v| {
+            !Self::is_allocation_argument_report(&v.message)
+                || Self::quoted_expression(&v.message)
+                    .is_none_or(|e| !operator_lines.contains(&(v.line, e)))
+        });
 
         violations
     }
@@ -330,7 +355,7 @@ impl Int30C {
                     self.check_assignment_operation(&matched, source, violations, scoped_type_map);
                 }
                 "call_expression" => {
-                    self.check_function_call(&matched, source, violations);
+                    self.check_function_call(&matched, source, violations, scoped_type_map);
                 }
                 "update_expression" => {
                     self.check_increment_decrement(&matched, source, violations, scoped_type_map);
@@ -1205,21 +1230,248 @@ impl Int30C {
         }
     }
 
-    fn check_function_call(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn check_function_call(
+        &self,
+        node: &Node,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+        type_map: &HashMap<String, String>,
+    ) {
         if let Some(function_node) = node.child_by_field_name("function") {
             let function_name = &source[function_node.start_byte()..function_node.end_byte()];
 
-            // malloc/realloc multiplication overflow is already covered by
-            // the generic `check_multiplication` walker on the inner `*`
-            // binary expression — flagging the allocation call again would
-            // produce a duplicate diagnostic on the same line. Only calloc
-            // needs a dedicated check because its multiplication is implicit
-            // (`calloc(nmemb, size)`) and thus invisible to the binary-
-            // expression walk.
+            // calloc's multiplication is implicit (`calloc(nmemb, size)`) and
+            // so invisible to the binary-expression walk; it gets its own
+            // check. The explicit size arithmetic in any allocation argument
+            // is checked by `check_allocation_size_wrap`, which the generic
+            // operator walkers do not subsume: they opt in on operand
+            // provenance, while an allocation size is a sink where a
+            // provable wrap is reported on the value alone.
             if function_name == "calloc" {
                 self.check_allocation_overflow(node, source, function_name, violations);
             }
+            if matches!(function_name, "malloc" | "calloc" | "realloc") {
+                self.check_allocation_size_wrap(node, source, function_name, violations, type_map);
+            }
         }
+    }
+
+    /// The CWE-680 allocation-size wrap: a size argument computed by
+    /// arithmetic that C's usual arithmetic conversions perform UNSIGNED --
+    /// `data * sizeof(T)`, `from_len * 2U + 1U`, a sum of `strlen()`s -- that
+    /// can wrap `size_t` before `malloc` ever sees it.
+    ///
+    /// Moved here from INT32-C (task 1288). The dispatch rule is the
+    /// operands' types under the usual arithmetic conversions: every operand
+    /// signed is signed overflow and INT32-C's; either operand unsigned (of
+    /// sufficient rank) makes the operation unsigned arithmetic and its
+    /// overflow a wrap, which is this rule's definition. `sizeof(T)` is
+    /// `size_t`, so the classic `data * sizeof(T)` was never INT32-C's. The
+    /// two-stage `(a * b) * sizeof(T)` is deliberately not collapsed: the
+    /// outer product is reported here, and the inner signed `a * b` stays
+    /// INT32-C's concern (task 1286).
+    ///
+    /// Same mechanics the carve-out had there: only the argument positions
+    /// that carry a size are read (task 915), a bare identifier is resolved
+    /// one assignment hop back to the expression that computed it (task 604),
+    /// pointer arithmetic is bounded by its object and skipped (task 1276),
+    /// and a product that provably fits 64 bits without wrapping a 32-bit
+    /// `size_t` is clean.
+    fn check_allocation_size_wrap(
+        &self,
+        node: &Node,
+        source: &str,
+        function_name: &str,
+        violations: &mut Vec<RuleViolation>,
+        type_map: &HashMap<String, String>,
+    ) {
+        let is_size_arg = |idx: usize| match function_name {
+            "realloc" => idx == 1,
+            "calloc" => idx <= 1,
+            _ => idx == 0,
+        };
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+
+        let mut arg_idx = 0;
+        for i in 0..arguments.child_count() {
+            let Some(arg_node) = arguments.child(i) else {
+                continue;
+            };
+            if matches!(arg_node.kind(), "(" | ")" | ",") {
+                continue;
+            }
+            let this_idx = arg_idx;
+            arg_idx += 1;
+            if !is_size_arg(this_idx) {
+                continue;
+            }
+
+            let resolved_rhs = if arg_node.kind() == "identifier" {
+                let var_name = get_node_text(&arg_node, source);
+                ast_utils::find_containing_function(&arg_node)
+                    .and_then(|f| f.child_by_field_name("body"))
+                    .and_then(|body| {
+                        overflow_helpers::resolve_identifier_assignment_expr(
+                            &body, var_name, source, &arg_node,
+                        )
+                    })
+            } else {
+                None
+            };
+            let check_node = resolved_rhs.as_ref().unwrap_or(&arg_node);
+
+            if !self.is_unsigned_integer_arithmetic(check_node, source, type_map) {
+                continue;
+            }
+
+            let macros = self.current_macros.borrow();
+            let vra_ranges = self.vra_var_ranges_at(check_node, source);
+            let fits_64 = const_eval::expression_fits_in_signed_vra(
+                check_node,
+                source,
+                &macros,
+                64,
+                vra_ranges.as_ref(),
+            );
+            // A product that fits in 64 bits can still *definitely* wrap a
+            // 32-bit size_t (the CWE-680 flaw on ILP32): `data = INT_MAX/2 +
+            // 2` gives `data * sizeof(int)` = 4294967300 > UINT32_MAX.
+            // `expression_overflows_unsigned_vra` fires only when the whole
+            // range exceeds the bound, so a small allocation stays clean.
+            let wraps_32_size_t = const_eval::expression_overflows_unsigned_vra(
+                check_node,
+                source,
+                &macros,
+                32,
+                vra_ranges.as_ref(),
+            );
+            drop(macros);
+            if fits_64 && !wraps_32_size_t {
+                continue;
+            }
+            if self.has_allocation_size_guard(node, source) {
+                continue;
+            }
+
+            let arg_text = get_node_text(check_node, source);
+            let start_point = node.start_position();
+            let message = if resolved_rhs.is_some() {
+                format!(
+                    "{}() argument {} ('{}') was computed by unsigned arithmetic that may wrap: '{}'",
+                    function_name,
+                    this_idx + 1,
+                    get_node_text(&arg_node, source),
+                    arg_text
+                )
+            } else {
+                format!(
+                    "{}() argument {} contains unsigned arithmetic that may wrap: '{}'",
+                    function_name,
+                    this_idx + 1,
+                    arg_text
+                )
+            };
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                severity: Severity::High,
+                message,
+                file_path: String::new(),
+                line: start_point.row + 1,
+                column: start_point.column + 1,
+                suggestion: Some(
+                    "Check the size against SIZE_MAX / element size before allocating".to_string(),
+                ),
+                ..Default::default()
+            });
+        }
+    }
+
+    /// A call typed by its declared return: a standard function whose
+    /// prototype returns `size_t` (`strlen`, `fread`), or a function this
+    /// file defines or declares (task 1288, mirroring INT32-C's method of
+    /// the same name). `None` for anything else, so it stays untyped.
+    fn infer_type_from_call_return(&self, node: &Node, source: &str) -> Option<String> {
+        let func = node.child_by_field_name("function")?;
+        if func.kind() != "identifier" {
+            return None;
+        }
+        let name = get_node_text(&func, source);
+        if std_functions::returns_size_t(name) {
+            return Some("unsigned".to_string());
+        }
+        let declared = self.function_return_types.borrow().get(name).cloned()?;
+        self.is_unsigned_type(&declared).then_some(declared)
+    }
+
+    fn is_allocation_argument_report(message: &str) -> bool {
+        message.contains("() argument ") && message.contains(" that may wrap: '")
+    }
+
+    /// The last single-quoted span of a finding message: the expression
+    /// every arithmetic report in this rule ends with.
+    fn quoted_expression(message: &str) -> Option<String> {
+        let end = message.rfind('\'')?;
+        let start = message[..end].rfind('\'')?;
+        Some(message[start + 1..end].to_string())
+    }
+
+    /// Does `node` contain arithmetic that C performs in an UNSIGNED integer
+    /// type -- the dual of INT32-C's `has_signed_integer_arithmetic`, and
+    /// the other half of the same dispatch rule (task 1288)?
+    ///
+    /// Looks through parentheses. Pointer arithmetic is neither. An
+    /// operation is unsigned when the usual arithmetic conversions make it
+    /// so: either operand unsigned, or either operand itself an unsigned
+    /// operation (`(n * sizeof(T)) + 1` is unsigned throughout).
+    fn is_unsigned_integer_arithmetic(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> bool {
+        match node.kind() {
+            "parenthesized_expression" => node
+                .named_child(0)
+                .is_some_and(|c| self.is_unsigned_integer_arithmetic(&c, source, type_map)),
+            "binary_expression" => {
+                let op = node
+                    .child_by_field_name("operator")
+                    .map(|o| o.kind())
+                    .unwrap_or("");
+                let (Some(left), Some(right)) = (
+                    node.child_by_field_name("left"),
+                    node.child_by_field_name("right"),
+                ) else {
+                    return false;
+                };
+                let recurse = |n: &Node| self.is_unsigned_integer_arithmetic(n, source, type_map);
+                if !matches!(op, "+" | "-" | "*" | "<<") {
+                    return recurse(&left) || recurse(&right);
+                }
+                if self.is_pointer_arithmetic(node, source, type_map) {
+                    return false;
+                }
+                self.is_unsigned_type(&self.infer_type(node, source, type_map))
+                    || self.is_unsigned_type(&self.infer_type(&left, source, type_map))
+                    || self.is_unsigned_type(&self.infer_type(&right, source, type_map))
+                    || recurse(&left)
+                    || recurse(&right)
+            }
+            _ => false,
+        }
+    }
+
+    /// The `count > SIZE_MAX / sizeof(T)` idiom around an allocation: a
+    /// dominating limit guard (spacing- and order-insensitive, also seen as
+    /// an `&&` conjunct or an earlier exiting `if`; task 916), or the same
+    /// function-context text reading the calloc check beside this one uses
+    /// -- which is what recognises the wiki's own compliant example, whose
+    /// guard body only comments "Handle error" and so dominates nothing.
+    fn has_allocation_size_guard(&self, node: &Node, source: &str) -> bool {
+        guard_dominance::has_dominating_limit_guard(node, node, source)
+            || self.has_function_context_check(node, source, &["SIZE_MAX", " / "])
     }
 
     fn check_allocation_overflow(
@@ -1300,6 +1552,12 @@ impl Int30C {
         // sizeof() always returns size_t (unsigned)
         if node.kind() == "sizeof_expression" {
             return "unsigned".to_string();
+        }
+
+        if node.kind() == "call_expression" {
+            if let Some(t) = self.infer_type_from_call_return(node, source) {
+                return t;
+            }
         }
 
         // Plain number literals — assume signed for conservatism

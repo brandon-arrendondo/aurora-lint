@@ -1,7 +1,7 @@
 /*
- * Rule: INT32-C
+ * Rule: INT30-C
  * Source: testcases
- * Status: FAIL - Should trigger INT32-C violation
+ * Status: FAIL - Should trigger INT30-C violation
  * Description: Overflow-prone size arithmetic computed one statement
  * before an allocation call, assigned to a variable, and then passed to
  * malloc() by that variable name. INT32-C already caught this when the

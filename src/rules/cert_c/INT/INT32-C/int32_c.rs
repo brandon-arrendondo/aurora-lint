@@ -1440,15 +1440,18 @@ impl Int32C {
                     };
                     let check_node = resolved_rhs.as_ref().unwrap_or(&arg_node);
 
-                    // This path is deliberately not signedness-gated: an
-                    // allocation size is computed in size_t, and the CWE-680
-                    // wrap of `data * sizeof(T)` is exactly what the
-                    // `wraps_32_size_t` test below exists for (fixtures
-                    // alloc_size_arg_overflow, testcases_size_hop). A
-                    // pointer difference is the exception: `n1 - p + 1` is
-                    // bounded by the object both point into and cannot wrap
-                    // (task 914's class, task 1276).
-                    if self.is_pointer_arithmetic(check_node, source, type_map) {
+                    // Signedness-gated like every other path in this rule
+                    // (task 1288). An allocation size computed by UNSIGNED
+                    // arithmetic -- `data * sizeof(T)`, `from_len * 2U + 1U`
+                    // -- wraps rather than overflows, and that CWE-680 shape
+                    // is INT30-C's (`check_allocation_size_wrap`). What stays
+                    // here is a size computed in a signed type, `n * 4` on
+                    // an `int`. The predicate also excludes pointer
+                    // arithmetic (`n1 - p + 1` is bounded by its object,
+                    // task 1276), and reads a two-stage `(a * b) * sizeof(T)`
+                    // as unsigned throughout -- the inner signed product is
+                    // task 1286's.
+                    if !self.has_signed_integer_arithmetic(check_node, source, type_map) {
                         arg_idx += 1;
                         continue;
                     }
@@ -1465,13 +1468,11 @@ impl Int32C {
                             64,
                             vra_ranges.as_ref(),
                         );
-                        // A size argument is computed in size_t. A product that fits
-                        // in 64 bits can still *definitely* wrap a 32-bit size_t (the
-                        // CWE-680 "data * sizeof(T) > SIZE_MAX" flaw on ILP32): e.g.
-                        // a constant `data = INT_MAX/2 + 2` gives `data * sizeof(int)`
-                        // = 4294967300 > UINT32_MAX. `expression_overflows_unsigned_vra`
-                        // fires only when the whole range exceeds the bound, so legit
-                        // small allocations (good `data = 20` -> 80) stay clean.
+                        // The signed product is converted to size_t at the
+                        // call; a value that fits 64 bits but exceeds a
+                        // 32-bit size_t is still a wrong allocation on ILP32,
+                        // so both bounds are kept (the second is the same
+                        // test INT30-C's unsigned path applies).
                         let wraps_32_size_t = const_eval::expression_overflows_unsigned_vra(
                             check_node,
                             source,
