@@ -675,6 +675,7 @@ fn prescan_file_list(
 
     function_summary::propagate_transitive_modifies(&mut function_summaries);
     function_summary::propagate_transitive_frees(&mut function_summaries, &macro_aliases);
+    function_summary::propagate_transitive_stores(&mut function_summaries, &macro_aliases);
     function_summary::propagate_transitive_frees_param_fields(&mut function_summaries);
     function_summary::propagate_transitive_frees_param_pointees(&mut function_summaries);
     function_summary::propagate_transitive_closes(&mut function_summaries);
@@ -5560,6 +5561,10 @@ pub fn resolve_includes(
     // over the now-complete alias map. Monotone, so a rerun is harmless
     // when nothing new resolved (task 1128).
     function_summary::propagate_transitive_frees(
+        Arc::make_mut(&mut context.function_summaries),
+        &context.macro_aliases,
+    );
+    function_summary::propagate_transitive_stores(
         Arc::make_mut(&mut context.function_summaries),
         &context.macro_aliases,
     );

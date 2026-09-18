@@ -2593,6 +2593,63 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             self.process_realloc_call(node, source);
         } else {
             self.process_freeing_callee(node, source, &func_name);
+            self.process_storing_callee(node, source, &func_name);
+        }
+    }
+
+    /// Handle a call to a function whose prescan summary says it STORES one
+    /// of its parameters somewhere outliving the call -- into a container, a
+    /// context with a destructor, or a registry. The block is no longer this
+    /// function's alone to free, so the walk must not report it leaked at a
+    /// later return.
+    ///
+    /// The third way a block escapes, beside being stored here
+    /// (`escape_stored_block`) and being returned (`escape_returned_block`):
+    /// until this, handing a pointer to a callee was never an escape at all,
+    /// so `he = hash_elem_create(...); hash_elem_link(h, slot, he);` reported
+    /// `he` leaked on the very statement that gives it away (task 1198).
+    ///
+    /// Reads `stores_params` and nothing else -- no name shape. The summary
+    /// is a MAY fact, which is the polarity a suppression needs: hostap's
+    /// `eap_peer_method_register` frees its argument on two error paths and
+    /// links it into a list on the rest, and neither half alone covers every
+    /// path.
+    fn process_storing_callee(&mut self, node: &Node, source: &str, func_name: &str) {
+        let Some(summary) = self.function_summaries.get(func_name) else {
+            return;
+        };
+        if summary.stores_params.is_empty() {
+            return;
+        }
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+
+        let mut escaped = Vec::new();
+        let mut param_idx = 0usize;
+        for i in 0..arguments.child_count() {
+            let Some(arg) = arguments.child(i) else {
+                continue;
+            };
+            if matches!(arg.kind(), "," | "(" | ")") {
+                continue;
+            }
+            // `&p` hands over the caller's VARIABLE, not the block's value;
+            // that is `frees_param_pointees`' shape and not a store of the
+            // pointer this walk is tracking.
+            if summary.stores_params.contains(&param_idx) {
+                if let Some((target, false)) = strip_call_argument(arg) {
+                    let name = ast_utils::get_node_text_owned(&target, source);
+                    if self.allocated_memory.contains_key(&name) {
+                        escaped.push(name);
+                    }
+                }
+            }
+            param_idx += 1;
+        }
+
+        for name in escaped {
+            self.mark_escaped_with_aliases(&name);
         }
     }
 

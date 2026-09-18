@@ -110,6 +110,35 @@ pub struct FunctionSummary {
     /// A MAY-free fact, like `frees_params`.
     #[serde(default)]
     pub frees_param_pointees: HashSet<usize>,
+    /// Parameter indices whose VALUE this function stores somewhere that
+    /// outlives the call — the ownership half `frees_params` does not cover.
+    ///
+    /// Passing a pointer to a callee was never an escape, so a function that
+    /// hands its allocation to a container, a context or a registry looked
+    /// like the block's only owner and every later `return` read as a leak:
+    /// curl's `hash_elem_link(h, slot, he)`, `Curl_conn_meta_set(conn, key,
+    /// ps, dtor)`, hostap's `eap_peer_method_register(eap)` (task 1198).
+    ///
+    /// A MAY fact, like `frees_params`, and deliberately so. hostap's
+    /// register idiom frees the argument on two error paths and links it into
+    /// a list on the others, so MUST-free is empty AND MUST-store is empty
+    /// while the UNION covers every path. Only MAY can express "this callee
+    /// took ownership one way or the other", which is the whole question a
+    /// leak check is asking, and it is the polarity the consumer wants: the
+    /// fact SUPPRESSES a leak report, and a suppression needs may-escape.
+    ///
+    /// Credited on positive evidence read off the callee's own body, never
+    /// on a name shape — the destination's root (`deref_write_root`) is
+    /// another parameter (`*he_anchor = he`), a file-scope variable
+    /// (`eap_methods = method`), or a local this function returns
+    /// (`he->ptr = p` in a body ending `return he`). `propagate_transitive_
+    /// stores` then carries it through forwarding wrappers, which is the only
+    /// way the `Curl_conn_meta_set` -> `Curl_hash_add2` -> `hash_elem_create`
+    /// chain is reachable at all: that function's own failure arm releases
+    /// the block through a FUNCTION-POINTER PARAMETER (`meta_dtor(...)`),
+    /// which no summary and no name can read.
+    #[serde(default)]
+    pub stores_params: HashSet<usize>,
     /// Whether this function can return NULL.
     pub can_return_null: bool,
     /// Whether this function returns dynamically allocated memory.
@@ -2438,6 +2467,10 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
         .returns_from_callees
         .extend(summary.returns_from_callees);
     existing.frees_params.extend(summary.frees_params);
+    // Unioned with the free facts it sits beside: if ANY definition linked
+    // under this name takes ownership of the argument, a caller that reports
+    // the block leaked afterwards is wrong on that build.
+    existing.stores_params.extend(summary.stores_params);
     existing
         .unconditional_frees_params
         .extend(summary.unconditional_frees_params);
@@ -2836,6 +2869,153 @@ fn credit_frees_params(
     }
 }
 
+/// The names this function hands back to its caller, read through
+/// parentheses, casts and both arms of a conditional.
+///
+/// A local the function returns outlives the call, so a store into what it
+/// points at is an escape. That single hop is what makes curl's
+/// `hash_elem_create` -- `he = malloc(...); he->ptr = p; return he;` -- a
+/// storer of its own parameter, and through it `Curl_hash_add2` and
+/// `Curl_conn_meta_set`.
+fn returned_names(body: &Node, source: &str) -> HashSet<String> {
+    use lang_parsing_substrate::query;
+
+    fn collect(expr: &Node, source: &str, names: &mut HashSet<String>) {
+        if expr.kind() == "conditional_expression" {
+            for field in ["consequence", "alternative"] {
+                if let Some(arm) = expr.child_by_field_name(field) {
+                    collect(&arm, source, names);
+                }
+            }
+            return;
+        }
+        if let Some((node, false)) = strip_free_argument(*expr) {
+            names.insert(node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+        }
+    }
+
+    let mut names = HashSet::new();
+    for ret in query::find_descendants(*body, |n| n.kind() == "return_statement") {
+        let mut cursor = ret.walk();
+        for expr in ret.named_children(&mut cursor) {
+            collect(&expr, source, &mut names);
+        }
+    }
+    names
+}
+
+/// Whether an assignment's destination reaches storage that outlives this
+/// call, which is what separates handing a block away from merely rebinding
+/// a local copy of the pointer.
+///
+/// Three roots qualify, and each is one of task 1198's worked examples:
+/// another PARAMETER (`*he_anchor = he` in curl's `hash_elem_link`), a
+/// FILE-SCOPE variable (`eap_methods = method` in hostap's
+/// `eap_peer_method_register`), and a local this function RETURNS
+/// (`he->ptr = p` in curl's `hash_elem_create`).
+///
+/// A local root that is none of those does NOT qualify, which is deliberate
+/// even though it means missing the `last->next = method` arm of the hostap
+/// idiom: `last` walks an existing list and only reaches file scope by a
+/// chain this pass does not follow. That arm needs no credit of its own --
+/// the same function's `eap_methods = method` arm already establishes the
+/// MAY fact, which is the polarity `stores_params` is built on.
+fn destination_outlives_call(
+    left: &Node,
+    source: &str,
+    params: &[String],
+    returned: &HashSet<String>,
+) -> bool {
+    use crate::utility::cert_c::ast_utils::{self, IdentifierBinding};
+
+    fn is_file_scope(node: &Node, name: &str, source: &str) -> bool {
+        matches!(
+            ast_utils::resolve_identifier_binding(node, name, source),
+            Some(IdentifierBinding::Global(_))
+        )
+    }
+
+    let Some(root) = deref_write_root(left, false) else {
+        // No dereference was crossed, so nothing the caller owns was written
+        // -- unless the destination IS the long-lived object: a bare
+        // `global = p` stores the block for the rest of the program.
+        if left.kind() != "identifier" {
+            return false;
+        }
+        let name = left.utf8_text(source.as_bytes()).unwrap_or("");
+        return is_file_scope(left, name, source);
+    };
+
+    let name = root.utf8_text(source.as_bytes()).unwrap_or("");
+    if name.is_empty() {
+        return false;
+    }
+    params.iter().any(|p| !p.is_empty() && p == name)
+        || returned.contains(name)
+        || is_file_scope(&root, name, source)
+}
+
+/// Credit `summary.stores_params` for every assignment in the body that puts
+/// a parameter's value into storage outliving the call.
+///
+/// A MAY fact, like `frees_params` -- see the field's own documentation for
+/// why MUST cannot express the register-or-free contract this exists for.
+/// The evidence is the callee's own body and nothing else: no name shape
+/// participates, because the wrong default here trades a large false-positive
+/// win for silently dropped leaks (task 1198).
+fn credit_stores_params(
+    sweep: &BodySweep,
+    body: &Node,
+    source: &str,
+    params: &[String],
+    summary: &mut FunctionSummary,
+) {
+    use crate::utility::cert_c::ast_utils;
+
+    if params.iter().all(|p| p.is_empty()) {
+        return;
+    }
+
+    let mut returned: Option<HashSet<String>> = None;
+
+    for assign in &sweep.assignments {
+        // `p += n` adjusts a value rather than storing one.
+        if assign
+            .child_by_field_name("operator")
+            .map(|o| ast_utils::get_node_text(&o, source))
+            != Some("=")
+        {
+            continue;
+        }
+        let (Some(left), Some(right)) = (
+            assign.child_by_field_name("left"),
+            assign.child_by_field_name("right"),
+        ) else {
+            continue;
+        };
+        // The value stored must BE a parameter, read through the casts and
+        // parens these assignments are routinely written with. `*param` is
+        // not the parameter's own value and is rejected with it.
+        let Some((stored, false)) = strip_free_argument(right) else {
+            continue;
+        };
+        let stored_name = stored.utf8_text(source.as_bytes()).unwrap_or("");
+        let Some(idx) = params
+            .iter()
+            .position(|p| !p.is_empty() && p == stored_name)
+        else {
+            continue;
+        };
+        if summary.stores_params.contains(&idx) {
+            continue;
+        }
+        let returned = returned.get_or_insert_with(|| returned_names(body, source));
+        if destination_outlives_call(&left, source, params, returned) {
+            summary.stores_params.insert(idx);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn analyze_param_usage(
     body: &Node,
@@ -2854,6 +3034,11 @@ fn analyze_param_usage(
     // summary as if they always held (task 654).
     if credit_frees {
         credit_frees_params(&sweep.calls, body, source, params, function_macros, summary);
+        // Gated with the free facts and for the same reason (task 654): a
+        // definition inside a preprocessor conditional may be a
+        // mutually-exclusive alternate body, and an ownership fact taken
+        // from one arm must not be unioned in as if it always held.
+        credit_stores_params(sweep, body, source, params, summary);
     }
 
     // One walk for the whole body, not one per parameter.
@@ -3714,6 +3899,54 @@ pub fn propagate_transitive_param_taint(
                 }
                 if is_tainted && callee_summary.callsite_param_tainted.insert(callee_idx) {
                     changed = true;
+                }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Propagate transitive stores through param pass-through chains.
+///
+/// If function B hands param 0 to callee C, and C stores it somewhere
+/// outliving the call, then B does too. Without this the idiom task 1198
+/// exists for is out of reach entirely: curl's `Curl_conn_meta_set` stores
+/// its `meta_data` only by forwarding it to `Curl_hash_add2`, and releases it
+/// on the failure arm through a FUNCTION-POINTER PARAMETER (`meta_dtor(...)`)
+/// that no summary and no name shape can read, so the forwarding edge is the
+/// only evidence there is.
+///
+/// Macro aliases are resolved on the edge for the same reason
+/// `propagate_transitive_frees` resolves them: a body that stores through a
+/// renamed spelling records an edge to a callee with no summary of its own.
+pub fn propagate_transitive_stores(
+    summaries: &mut HashMap<String, FunctionSummary>,
+    macro_aliases: &HashMap<String, String>,
+) {
+    use crate::analyze::const_eval::resolve_macro_alias;
+
+    for _pass in 0..10 {
+        let mut changed = false;
+        let stores_snapshot: HashMap<String, HashSet<usize>> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.stores_params.clone()))
+            .collect();
+
+        for summary in summaries.values_mut() {
+            for (caller_idx, callees) in &summary.param_passthroughs {
+                for (callee_name, callee_idx) in callees {
+                    let callee = resolve_macro_alias(macro_aliases, callee_name);
+                    if stores_snapshot
+                        .get(callee)
+                        .is_some_and(|s| s.contains(callee_idx))
+                        && !summary.stores_params.contains(caller_idx)
+                    {
+                        summary.stores_params.insert(*caller_idx);
+                        changed = true;
+                    }
                 }
             }
         }
