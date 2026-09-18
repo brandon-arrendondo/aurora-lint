@@ -2589,6 +2589,11 @@ impl MemoryAnalyzer {
             // The spelling in the source keys the safe-free macro table
             // (`macro_null_params`); everything else classifies the callee
             // by the name its `#define` alias chain ends at (task 1128).
+            // A callee handed `&p` can store a fresh pointer through it, which
+            // is exactly how the out-parameter repair idiom works. Runs before
+            // the callee dispatch so it covers every kind of call.
+            self.clear_freed_for_address_of_args(node, source);
+
             let spelled_name = get_node_text(&function_node, source);
             let function_name = const_eval::resolve_macro_alias(&self.macro_aliases, spelled_name);
 
@@ -3024,6 +3029,70 @@ impl MemoryAnalyzer {
     /// freed state of each nulled positional argument — mirroring the macro's
     /// own `arg = NULL` (which `process_free_call` cannot see). Replicates the
     /// NULL-assignment clearing in [`process_assignment`]. Phase 2c-iii.
+    /// Clear the freed state of every argument passed as `&p` to a call that
+    /// can write through it.
+    ///
+    /// `curlx_free(newhost); result = ftp_control_addr_dup(data, &newhost);`
+    /// is the out-parameter repair idiom: the callee assigns `*newhostp` on
+    /// every path, so `newhost` holds a fresh pointer afterwards. Nothing
+    /// cleared the freed state at an out-parameter call, so every later use
+    /// of the variable in the function was reported against the original
+    /// free -- six of curl's thirty-five MEM30-C findings, all one variable
+    /// (task 1234).
+    ///
+    /// The clear is withheld only when a `FunctionSummary` for the callee
+    /// says the parameter is never written: then the pointer really does
+    /// stay dangling and a later use really is a use-after-free. Everything
+    /// else clears, including a callee with no summary at all and one whose
+    /// coverage of that parameter is an undischarged
+    /// `modifies_params_pending` obligation -- that is the ABSENCE of an
+    /// answer, and reporting on it would be claiming knowledge the summary
+    /// does not have (ADR-0006). A MAY-write is enough here, unlike
+    /// init-state analysis, which needs a MUST-write before it can call a
+    /// variable initialized: crediting a conditional write overstates
+    /// initialization, while ignoring one overstates a use-after-free.
+    ///
+    /// Accepted cost: `&p` passed as a pure READ -- `memcpy(dst, &h,
+    /// sizeof(h))`, which copies the pointer value out -- clears too, since
+    /// a callee with no summary is indistinguishable from one that writes
+    /// through the parameter. Narrowing it would need a read-only-parameter
+    /// vocabulary for the stdlib copy family; the measured cost of not
+    /// having one is a single finding across the twelve pinned corpora
+    /// (valkey rax.c:1197), and that finding is itself a false positive --
+    /// `h` is not the pointer freed there.
+    fn clear_freed_for_address_of_args(&mut self, call: &Node, source: &str) {
+        let summary = {
+            let Some(function_node) = call.child_by_field_name("function") else {
+                return;
+            };
+            let spelled = get_node_text(&function_node, source);
+            let callee = const_eval::resolve_macro_alias(&self.macro_aliases, spelled);
+            self.function_summaries.get(callee).cloned()
+        };
+        for (idx, arg) in crate::analyze::macro_semantics::positional_args(call)
+            .iter()
+            .enumerate()
+        {
+            if !is_address_of(arg, source) {
+                continue;
+            }
+            if let Some(summary) = &summary {
+                let may_write = summary.modifies_params.contains(&idx)
+                    || summary.unconditional_modifies_params.contains(&idx)
+                    || summary.conditional_modifies_params.contains(&idx)
+                    || summary.modifies_params_pending.contains_key(&idx);
+                if !may_write {
+                    continue;
+                }
+            }
+            let Some(lv) = lvalue_of(arg, source) else {
+                continue;
+            };
+            let base = LValue::Var(lv.root_var().to_string());
+            self.clear_freed_state(&base, &lv);
+        }
+    }
+
     fn clear_freed_for_nulled_args(&mut self, call: &Node, source: &str, indices: &[usize]) {
         let args = crate::analyze::macro_semantics::positional_args(call);
         for &idx in indices {
@@ -3553,20 +3622,22 @@ impl MemoryAnalyzer {
                         continue;
                     }
 
-                    // `f(&p)` hands the callee the ADDRESS of `p`, not the
-                    // freed pointer `p` holds -- an output slot the callee
-                    // will typically refill (`Curl_urldecode(..., &unescaped,
-                    // ...)`). Not a use of the freed object; and after the
-                    // call `p` can no longer be assumed to hold the freed
-                    // value, the same reasoning as free-then-reassign
-                    // (task 1233).
+                    // `&p` hands over the ADDRESS OF THE VARIABLE, not the
+                    // dangling value it currently holds. Taking a variable's
+                    // address is not an access to the object it used to point
+                    // at, and `lvalue_of` unwraps `&p` and `*p` identically,
+                    // so this check could not tell the two apart (tasks 1233,
+                    // 1234).
+                    //
+                    // The freed-state clear that went with this skip has moved
+                    // to `clear_freed_for_address_of_args`, which runs for
+                    // EVERY call rather than only those reaching this check --
+                    // a callee with an `unconditional_frees_params` summary
+                    // takes the `process_summary_free_call` path and never got
+                    // here, so `free_and_refill(x, &p)` kept its stale state --
+                    // and which withholds the clear when a summary says the
+                    // parameter is never written.
                     if is_address_of(&arg, source) {
-                        if let Some(inner) = arg.child_by_field_name("argument") {
-                            if let Some(lv) = lvalue_of(&inner, source) {
-                                let root = LValue::Var(lv.root_var().to_string());
-                                self.clear_freed_state(&root, &lv);
-                            }
-                        }
                         continue;
                     }
 
