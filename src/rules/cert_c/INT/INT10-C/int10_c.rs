@@ -370,20 +370,23 @@ impl Int10C {
     }
 
     /// True when value-range analysis proves the modulo's *dividend* is
-    /// non-negative at this expression. Returns false whenever VRA is
-    /// unavailable (no CFG for the enclosing function, no converged range for
-    /// an operand identifier) or the range is only partially known, so the
-    /// rule's behavior is unchanged wherever the ranges aren't there.
+    /// non-negative at this expression. Returns false whenever the range is
+    /// unknown or only partially known -- a variable with no converged VRA
+    /// range, an opaque call -- so the rule's behavior is unchanged wherever
+    /// the ranges aren't there.
     fn dividend_is_nonnegative_by_vra(
         &self,
         left_node: &Node,
         source: &str,
         macros: &MacroConstantMap,
     ) -> bool {
-        let var_ranges = match self.vra_var_ranges_at(left_node, source) {
-            Some(r) => r,
-            None => return false,
-        };
+        // Without VRA for this function the environment is empty, which
+        // still evaluates a dividend that needs no variable at all: a
+        // standard PRNG call (`rand() % n`, task 1275) is bounded by its own
+        // contract through `const_eval::contract_return_range`.
+        let var_ranges = self
+            .vra_var_ranges_at(left_node, source)
+            .unwrap_or_default();
         match const_eval::try_evaluate_range(left_node, source, macros, &var_ranges) {
             Some(range) => range.min >= 0,
             None => false,

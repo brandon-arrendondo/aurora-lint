@@ -491,6 +491,16 @@ impl Int08C {
             return false;
         }
 
+        // A call result is a WIDE operand whatever its range: `b * rand()`
+        // leaves `int` because `rand()` reaches `INT_MAX`, not because `b` is
+        // a `char`. The range engine now bounds a standard PRNG by contract
+        // (task 1275), which would otherwise turn the policy above on its
+        // head for exactly the calls it can resolve; the policy is about
+        // whose overflow it is, not about what resolves.
+        if query::find_first_descendant(*expr, |n| n.kind() == "call_expression").is_some() {
+            return false;
+        }
+
         let mut var_ranges: VarRangeMap = HashMap::new();
         for (name, (var_type, _)) in variables {
             if let Some(range) = self.promoted_range_for_type(var_type) {

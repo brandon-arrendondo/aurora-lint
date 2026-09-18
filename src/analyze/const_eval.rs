@@ -1478,10 +1478,17 @@ fn try_evaluate_range_inner(
         "sizeof_expression" => resolve_sizeof_node(node, source).map(ValueRange::exact),
         // A function-like macro invocation parses as a call. When the caller
         // supplied the macro table, expand it and bound the replacement list
-        // instead of treating it as an opaque call.
-        "call_expression" => {
-            range_from_macro_invocation(node, source, macros, var_ranges, fmacros?)
-        }
+        // instead of treating it as an opaque call. Failing that, a standard
+        // function's return value is bounded by its own contract.
+        "call_expression" => fmacros
+            .and_then(|fm| range_from_macro_invocation(node, source, macros, var_ranges, fm))
+            .or_else(|| {
+                let callee = node.child_by_field_name("function")?;
+                if callee.kind() != "identifier" {
+                    return None;
+                }
+                contract_return_range(callee.utf8_text(source.as_bytes()).ok()?)
+            }),
         // Struct member access: obj.field or obj->field.
         // Try to bound by the declared type of the field by searching the source for
         // `uint8_t fieldName` / `uint16_t fieldName` etc. in struct definitions.
@@ -1517,6 +1524,39 @@ fn try_evaluate_range_inner(
                 _ => None,
             }
         }
+        _ => None,
+    }
+}
+
+/// The range a standard library function's return value is confined to by
+/// its own specification -- what the language guarantees about a call before
+/// any code around it is read.
+///
+/// `rand()` returns an `int` in `[0, RAND_MAX]` (C11 7.22.2.1) and `random()`
+/// a `long` in `[0, 2^31 - 1]` (POSIX), so `rand() % 60` is `[0, 59]` and
+/// `1 + rand() % 60` cannot overflow, yet both were opaque here: INT10-C
+/// reported the modulo's dividend as possibly negative and INT32-C the sum as
+/// unbounded -- 128 of one valkey batch's 158 INT10-C findings were this one
+/// shape (task 1275). `RAND_MAX` itself is implementation-defined, so the
+/// bound used is `INT_MAX`, the largest it can be; a range must never be
+/// narrower than the truth.
+///
+/// Only functions whose range the standard fixes belong here. A project's
+/// own PRNG wrapper is not one of them: `randomULong()` reaches this through
+/// the macro table when it is a macro, and a wrapper FUNCTION stays opaque
+/// rather than guessed at from its name. The provenance list in
+/// `std_functions::is_full_range_return_function` deliberately still names these
+/// functions: a range says how large the value can be, provenance says the
+/// program does not control it, and `1 + rand()` with no `%` really can
+/// overflow.
+pub fn contract_return_range(name: &str) -> Option<ValueRange> {
+    match name {
+        // C11 7.22.2.1: `0 <= rand() <= RAND_MAX`, RAND_MAX an int.
+        "rand" | "rand_r" => Some(ValueRange::new(0, i32::MAX as i64)),
+        // POSIX random()/lrand48()/nrand48(): "in the range [0, 2^31)".
+        "random" | "lrand48" | "nrand48" => Some(ValueRange::new(0, (1i64 << 31) - 1)),
+        // arc4random() (BSD, glibc >= 2.36): a uint32_t.
+        "arc4random" => Some(ValueRange::new(0, u32::MAX as i64)),
         _ => None,
     }
 }
