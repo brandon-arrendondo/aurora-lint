@@ -3,11 +3,30 @@
 //! Detects two patterns:
 //! 1. CreateProcess with unquoted paths containing spaces (path interception)
 //! 2. Registry operations using HKEY_LOCAL_MACHINE (excessive privilege)
+//!
+//! The registry check follows the root-key handle through project wrappers:
+//! `GetRegDwordValue(HKEY_LOCAL_MACHINE, ...)` whose body forwards its first
+//! parameter to `RegOpenKeyExA` is the same HKLM access as the direct call,
+//! and requiring the literal `HKEY_LOCAL_MACHINE` at the `RegOpenKeyEx*` site
+//! missed every such wrapper (task 1167). The walk is bounded and follows
+//! `FunctionSummary::param_passthroughs` for function hops and
+//! `macro_forwarding_target` for a function-like macro hop, so a chain like
+//! ventoy's `ReadRegistryKey32(root, key)` -> `GetRegistryKey32(root, ...)`
+//! (macro) -> `_GetRegistryKey(key_root, ...)` -> `RegOpenKeyExA(key_root, ...)`
+//! resolves. The argument itself is resolved through object-like aliases
+//! (`#define REGKEY_HKLM HKEY_LOCAL_MACHINE`) the same way.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::const_eval::{merged_macro_aliases, resolve_macro_alias};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::macro_expand::{macro_forwarding_target, FunctionMacro};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// Functions that take a command line string that should have quoted paths.
@@ -35,20 +54,102 @@ const SHREG_CREATE_FUNCTIONS: &[&str] = &["SHRegCreateUSKeyA", "SHRegCreateUSKey
 /// SHRegOpen functions where fIgnoreHKCU=TRUE (arg index 4) means HKLM.
 const SHREG_OPEN_FUNCTIONS: &[&str] = &["SHRegOpenUSKeyA", "SHRegOpenUSKeyW"];
 
-pub struct Win05C;
+/// Root-key handles that require administrator privileges to write.
+const PRIVILEGED_ROOT_KEYS: &[&str] = &["HKEY_LOCAL_MACHINE", "HKEY_CLASSES_ROOT"];
+
+/// How many wrapper hops to follow from the call site before giving up. A
+/// function hop and a macro hop each count as one; ventoy's deepest chain
+/// (function -> macro -> function -> `RegOpenKeyExA`) needs three.
+const MAX_WRAPPER_DEPTH: usize = 4;
+
+pub struct Win05C {
+    /// Prescan function summaries: `param_passthroughs` is the edge a wrapper
+    /// hop follows (handle from `set_project_context`, see the catalog's
+    /// "Cross-file project context" section).
+    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    /// Project function-like macros, for a forwarding-macro hop.
+    function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
+    /// Project object-like aliases (`#define REGKEY_HKLM HKEY_LOCAL_MACHINE`);
+    /// merged with the scanned file's own in `check_node`.
+    macro_aliases: RefCell<Arc<HashMap<String, String>>>,
+}
+
+impl Default for Win05C {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Win05C {
     pub fn new() -> Self {
-        Self
-    }
-
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        for call in query::find_descendants_of_kind(*node, "call_expression") {
-            self.check_call(&call, source, violations);
+        Self {
+            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            function_macros: RefCell::new(Arc::new(HashMap::new())),
+            macro_aliases: RefCell::new(Arc::new(HashMap::new())),
         }
     }
 
-    fn check_call(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let aliases = merged_macro_aliases(&self.macro_aliases.borrow(), node, source);
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            self.check_call(&call, source, &aliases, violations);
+        }
+    }
+
+    /// Does argument `arg_idx` of a call to `callee` end up as the root-key
+    /// argument of one of `REGISTRY_FUNCTIONS`, within `MAX_WRAPPER_DEPTH`
+    /// hops? Returns the registry function it lands on. A function hop
+    /// follows the callee's `param_passthroughs` (MAY-forward: a wrapper that
+    /// opens the key only on some path still opens it); a macro hop follows
+    /// `macro_forwarding_target`'s positional map. `active` breaks cycles.
+    fn root_key_sink(
+        &self,
+        callee: &str,
+        arg_idx: usize,
+        depth: usize,
+        active: &mut HashSet<String>,
+    ) -> Option<String> {
+        if REGISTRY_FUNCTIONS.contains(&callee) {
+            return (arg_idx == 0).then(|| callee.to_string());
+        }
+        if depth >= MAX_WRAPPER_DEPTH || !active.insert(callee.to_string()) {
+            return None;
+        }
+        let mut found = None;
+        if let Some(summary) = self.function_summaries.borrow().get(callee) {
+            if let Some(edges) = summary.param_passthroughs.get(&arg_idx) {
+                for (next, next_idx) in edges {
+                    found = self.root_key_sink(next, *next_idx, depth + 1, active);
+                    if found.is_some() {
+                        break;
+                    }
+                }
+            }
+        }
+        if found.is_none() {
+            let target = macro_forwarding_target(&self.function_macros.borrow(), callee);
+            if let Some((next, param_map)) = target {
+                for (next_idx, mapped) in param_map.iter().enumerate() {
+                    if *mapped == Some(arg_idx) {
+                        found = self.root_key_sink(&next, next_idx, depth + 1, active);
+                        if found.is_some() {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        active.remove(callee);
+        found
+    }
+
+    fn check_call(
+        &self,
+        node: &Node,
+        source: &str,
+        aliases: &HashMap<String, String>,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         let func_name = match node.child_by_field_name("function") {
             Some(f) => get_node_text(&f, source).to_string(),
             None => return,
@@ -69,29 +170,42 @@ impl Win05C {
             }
         }
 
-        // Check registry functions for HKEY_LOCAL_MACHINE
-        if REGISTRY_FUNCTIONS.contains(&func_name.as_str()) {
-            if let Some(first_arg) = self.get_nth_argument(&args, 0) {
-                let arg_text = get_node_text(&first_arg, source).trim().to_string();
-                if arg_text == "HKEY_LOCAL_MACHINE" || arg_text == "HKEY_CLASSES_ROOT" {
+        // Check registry functions -- and project wrappers around them -- for
+        // a privileged root key. Every argument position is a candidate: a
+        // wrapper is free to take the root key anywhere in its own signature.
+        let mut arg_idx = 0usize;
+        while let Some(arg) = self.get_nth_argument(&args, arg_idx) {
+            let spelled = get_node_text(&arg, source).trim();
+            let resolved = resolve_macro_alias(aliases, spelled);
+            if PRIVILEGED_ROOT_KEYS.contains(&resolved) {
+                let mut active = HashSet::new();
+                if let Some(sink) = self.root_key_sink(&func_name, arg_idx, 0, &mut active) {
+                    let via = if sink == func_name {
+                        String::new()
+                    } else {
+                        format!(" (passed through to '{}')", sink)
+                    };
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
                         severity: self.severity(),
                         message: format!(
-                            "Registry operation '{}' uses '{}' which requires administrator \
+                            "Registry operation '{}' uses '{}'{} which requires administrator \
                              privileges. Use HKEY_CURRENT_USER to follow least privilege.",
-                            func_name, arg_text
+                            func_name, resolved, via
                         ),
                         file_path: String::new(),
-                        line: first_arg.start_position().row + 1,
-                        column: first_arg.start_position().column + 1,
+                        line: arg.start_position().row + 1,
+                        column: arg.start_position().column + 1,
                         suggestion: Some(
                             "Use HKEY_CURRENT_USER instead of HKEY_LOCAL_MACHINE".to_string(),
                         ),
                         ..Default::default()
                     });
+                    // One finding per call, however many hops it took.
+                    break;
                 }
             }
+            arg_idx += 1;
         }
 
         // Check SHRegCreate functions for SHREGSET_HKLM flag (5th argument, index 4)
@@ -235,5 +349,11 @@ impl CertRule for Win05C {
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.check_node(node, source, violations);
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.function_macros.borrow_mut() = context.function_macros.clone();
+        *self.macro_aliases.borrow_mut() = context.macro_aliases.clone();
     }
 }
