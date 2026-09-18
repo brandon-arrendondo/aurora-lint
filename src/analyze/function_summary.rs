@@ -18,6 +18,40 @@ pub struct FunctionSummary {
     /// This is a MAY-free fact: the free can be nested inside a conditional
     /// (if/switch/loop/ternary), so it does not mean every call reaches it.
     pub frees_params: HashSet<usize>,
+    /// Parameters this function hands, as the one parameter-naming argument,
+    /// to a callee whose NAME is shaped like a deallocator (`free_*`,
+    /// `*_cleanup`, ...): `(callee, position of the argument in that call,
+    /// whether the call site is unconditionally reached)`.
+    ///
+    /// Held apart from `frees_params` while a file is summarised, and folded
+    /// in by `resolve_name_shaped_frees` once every summary exists, so the
+    /// fold can also record in `frees_params_guessed` that a name was the
+    /// only evidence.
+    #[serde(default)]
+    pub frees_params_by_name: HashMap<usize, Vec<(String, usize, bool)>>,
+    /// The subset of `frees_params` whose only evidence is a callee's NAME --
+    /// no body of this function, or of anything it forwards the parameter
+    /// to, was seen to release it.
+    ///
+    /// A name is a MAY-free at best. It is enough to stop a leak report,
+    /// which is what the guess is for, and it is what makes `sqlite3_free`
+    /// -- whose body frees through the `xFree` function pointer the prescan
+    /// cannot follow -- still count as a free. It is not enough to ACCUSE: a
+    /// later `free(p)` after `x_cleanup(p)` is a teardown pair unless
+    /// `x_cleanup` was seen to free `p`. curl's `Curl_req_free(&data->req,
+    /// data)` was summarised as freeing `data` because it calls
+    /// `Curl_client_cleanup(data)`, and hostap's `wpa_supplicant_cleanup`
+    /// because it calls `free_hw_features(wpa_s)` (which frees fields of it),
+    /// so the owner's one real free at the end of `Curl_close` /
+    /// `wpa_supplicant_deinit_iface` was a double free (task 1269). MEM31-C
+    /// reads this to keep such a credit in `freed_by_guess`, where
+    /// `guess_forbids_double_free` already knows what to do with it.
+    ///
+    /// Cleared for an index the moment real evidence arrives -- a literal
+    /// free in this body, or a forwarding to a callee whose own free of it
+    /// is not itself a guess.
+    #[serde(default)]
+    pub frees_params_guessed: HashSet<usize>,
     /// Parameter indices that this function UNCONDITIONALLY frees — the free
     /// is not nested inside any conditional construct other than a null test
     /// on the very pointer being freed (`if (p != NULL) free(p);`, whose
@@ -2467,6 +2501,18 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
         .returns_from_callees
         .extend(summary.returns_from_callees);
     existing.frees_params.extend(summary.frees_params);
+    for (idx, guesses) in summary.frees_params_by_name {
+        existing
+            .frees_params_by_name
+            .entry(idx)
+            .or_default()
+            .extend(guesses);
+    }
+    // A guess in one variant that another variant backs with evidence is
+    // not a guess for the merged name.
+    let backed = &existing.frees_params - &existing.frees_params_guessed;
+    existing.frees_params_guessed =
+        &(&existing.frees_params_guessed | &summary.frees_params_guessed) - &backed;
     // Unioned with the free facts it sits beside: if ANY definition linked
     // under this name takes ownership of the argument, a caller that reports
     // the block leaked afterwards is wrong on that build.
@@ -2864,7 +2910,71 @@ fn credit_frees_params(
             let (Some(&arg), None) = (resolving.next(), resolving.next()) else {
                 continue;
             };
-            credit_frees_one_arg(&call, arg, body, source, params, summary);
+            // Recorded as a guess against the callee's name, not credited:
+            // `resolve_name_shaped_frees` folds it in once it can tell
+            // whether anything backs it.
+            let Some((target, false)) = strip_free_argument(arg) else {
+                continue;
+            };
+            let arg_name = target.utf8_text(source.as_bytes()).unwrap_or("");
+            let Some(idx) = params.iter().position(|p| !p.is_empty() && p == arg_name) else {
+                continue;
+            };
+            let Some(arg_pos) = real.iter().position(|a| a.id() == arg.id()) else {
+                continue;
+            };
+            let unconditional =
+                is_unconditionally_reached_modulo_null_guard(&call, body, source, arg_name);
+            summary.frees_params_by_name.entry(idx).or_default().push((
+                func_name.to_string(),
+                arg_pos,
+                unconditional,
+            ));
+        }
+    }
+}
+
+/// Fold every `frees_params_by_name` guess into `frees_params` now that all
+/// summaries exist, recording in `frees_params_guessed` the indices for which
+/// the name was the only evidence.
+///
+/// The guess is always promoted: it was credited before the guesses were held
+/// apart, it is what stops a leak report at every caller of a name-shaped
+/// wrapper, and a callee with a body the prescan could not see through
+/// (`sqlite3_free` releasing via the `xFree` function pointer) has an empty
+/// summary that means "unseen", not "frees nothing". What the fold adds is
+/// the guess-ness, and the fixpoint that follows clears it wherever a
+/// forwarded callee's own free of the parameter is real. `macro_aliases` are
+/// resolved the way the fixpoint resolves them.
+fn resolve_name_shaped_frees(
+    summaries: &mut HashMap<String, FunctionSummary>,
+    macro_aliases: &HashMap<String, String>,
+) {
+    use crate::analyze::const_eval::resolve_macro_alias;
+
+    let corroborated: HashMap<String, HashSet<usize>> = summaries
+        .iter()
+        .map(|(n, s)| (n.clone(), &s.frees_params - &s.frees_params_guessed))
+        .collect();
+    for summary in summaries.values_mut() {
+        let guesses = std::mem::take(&mut summary.frees_params_by_name);
+        for (idx, callees) in guesses {
+            for (callee_name, arg_pos, unconditional) in callees {
+                let callee = resolve_macro_alias(macro_aliases, &callee_name);
+                let backed = (callee == "free" && arg_pos == 0)
+                    || corroborated
+                        .get(callee)
+                        .is_some_and(|f| f.contains(&arg_pos));
+                let newly = summary.frees_params.insert(idx);
+                if unconditional {
+                    summary.unconditional_frees_params.insert(idx);
+                }
+                if backed {
+                    summary.frees_params_guessed.remove(&idx);
+                } else if newly {
+                    summary.frees_params_guessed.insert(idx);
+                }
+            }
         }
     }
 }
@@ -3688,23 +3798,45 @@ pub fn propagate_transitive_frees(
 ) {
     use crate::analyze::const_eval::resolve_macro_alias;
 
+    resolve_name_shaped_frees(summaries, macro_aliases);
+
     for _pass in 0..10 {
         let mut changed = false;
-        let frees_snapshot: HashMap<String, HashSet<usize>> = summaries
+        let frees_snapshot: HashMap<String, (HashSet<usize>, HashSet<usize>)> = summaries
             .iter()
-            .map(|(n, s)| (n.clone(), s.frees_params.clone()))
+            .map(|(n, s)| {
+                (
+                    n.clone(),
+                    (s.frees_params.clone(), s.frees_params_guessed.clone()),
+                )
+            })
             .collect();
 
         for summary in summaries.values_mut() {
             for (caller_idx, callees) in &summary.param_passthroughs {
                 for (callee_name, callee_idx) in callees {
                     let callee = resolve_macro_alias(macro_aliases, callee_name);
-                    let callee_frees = (callee == "free" && *callee_idx == 0)
-                        || frees_snapshot
-                            .get(callee)
-                            .is_some_and(|f| f.contains(callee_idx));
-                    if callee_frees && !summary.frees_params.contains(caller_idx) {
+                    let (callee_frees, callee_guessed) = if callee == "free" && *callee_idx == 0 {
+                        (true, false)
+                    } else {
+                        match frees_snapshot.get(callee) {
+                            Some((frees, guessed)) => {
+                                (frees.contains(callee_idx), guessed.contains(callee_idx))
+                            }
+                            None => (false, false),
+                        }
+                    };
+                    if !callee_frees {
+                        continue;
+                    }
+                    if !summary.frees_params.contains(caller_idx) {
                         summary.frees_params.insert(*caller_idx);
+                        if callee_guessed {
+                            summary.frees_params_guessed.insert(*caller_idx);
+                        }
+                        changed = true;
+                    } else if !callee_guessed && summary.frees_params_guessed.remove(caller_idx) {
+                        // Real evidence for an index a name had only guessed.
                         changed = true;
                     }
                 }

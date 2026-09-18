@@ -2865,8 +2865,16 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // it the mark rests on the callee's name alone, so remember who
             // guessed it -- `guess_forbids_double_free` needs to know whether
             // a later deallocator is the same one repeated or a second step
-            // in a teardown pair.
-            if self.function_summaries.get(func_name).is_none() {
+            // in a teardown pair. A summary can carry the same guess one hop
+            // removed (`frees_params_guessed`): curl's `Curl_req_free` is
+            // credited with `data` only because it calls
+            // `Curl_client_cleanup(data)`, and that is no more evidence here
+            // than it was there (task 1269).
+            if self.free_is_name_guess(
+                func_name,
+                this_param_idx,
+                arg.kind() == "pointer_expression",
+            ) {
                 self.freed_by_guess
                     .insert(var_name.clone(), func_name.to_string());
             } else {
@@ -3142,6 +3150,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             &var_name,
                             (free_pos.row + 1, free_pos.column + 1),
                         );
+                        if self.free_is_name_guess(func_name, param_idx, through_address_of) {
+                            self.freed_by_guess
+                                .insert(var_name.clone(), func_name.to_string());
+                        }
                     }
                 }
                 param_idx += 1;
@@ -3498,6 +3510,25 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 } else {
                     summary.frees_params.contains(&param_idx)
                 }
+            }
+        }
+    }
+
+    /// Whether crediting `func_name` with freeing its argument at
+    /// `param_idx` rests on a NAME alone: no summary, or a summary whose
+    /// free of that index is itself only name-guessed
+    /// (`FunctionSummary::frees_params_guessed`). A pointee free (`&var`)
+    /// is never guessed -- that set is built from bodies only.
+    fn free_is_name_guess(
+        &self,
+        func_name: &str,
+        param_idx: usize,
+        through_address_of: bool,
+    ) -> bool {
+        match self.function_summaries.get(func_name) {
+            None => true,
+            Some(summary) => {
+                !through_address_of && summary.frees_params_guessed.contains(&param_idx)
             }
         }
     }
