@@ -23,7 +23,7 @@ int main() {
     // Write to temporary file
     if (fprintf(temp_file, "Temporary data\n") < 0) {
         fprintf(stderr, "Failed to write to temporary file\n");
-        fclose(temp_file);
+        (void)fclose(temp_file);
         return 1;
     }
 
