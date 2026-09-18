@@ -1377,6 +1377,13 @@ struct MemoryAnalyzer {
     // name freed. Consulted only on a candidate double-free, to detect whether a
     // preprocessor conditional directive separates the two free sites (task 251).
     freed_at: HashMap<LValue, usize>,
+    // The callee whose summary marked each name freed on a NAME GUESS alone
+    // (`FunctionSummary::frees_params_guessed`): the free was credited because
+    // some callee down the chain is spelled like a deallocator, not because
+    // any body was seen to release the parameter (task 1289). Like
+    // `freed_at`, consulted only while the name is in `freed_vars`; a later
+    // free backed by real evidence removes the entry.
+    guessed_freed: HashMap<LValue, String>,
     // Track aliases: if alias = ptr, then aliases[alias] = ptr
     aliases: AliasMap,
     // Track which variables have been set to NULL after free
@@ -1430,6 +1437,7 @@ impl MemoryAnalyzer {
         Self {
             freed_vars: HashSet::new(),
             freed_at: HashMap::new(),
+            guessed_freed: HashMap::new(),
             aliases: HashMap::new(),
             nullified_vars: HashSet::new(),
             realloc_updated: HashSet::new(),
@@ -2515,10 +2523,13 @@ impl MemoryAnalyzer {
                     // reports at callers who took a different path (task 401).
                     if let Some(summary) = self.function_summaries.get(function_name).cloned() {
                         if !summary.unconditional_frees_params.is_empty() {
+                            let callee = function_name.to_string();
                             return self.process_summary_free_call(
                                 node,
                                 source,
                                 &summary.unconditional_frees_params,
+                                &summary.frees_params_guessed,
+                                &callee,
                                 violations,
                             );
                         } else {
@@ -2587,7 +2598,7 @@ impl MemoryAnalyzer {
         let Some(arg) = arg_nodes.last().copied() else {
             return HashSet::new();
         };
-        self.mark_arg_freed(node, arg, source, violations)
+        self.mark_arg_freed(node, arg, source, None, violations)
             .into_iter()
             .collect()
     }
@@ -2604,6 +2615,8 @@ impl MemoryAnalyzer {
         node: &Node,
         source: &str,
         param_indices: &HashSet<usize>,
+        guessed_indices: &HashSet<usize>,
+        callee: &str,
         violations: &mut Vec<RuleViolation>,
     ) -> HashSet<usize> {
         let Some(arguments) = node.child_by_field_name("arguments") else {
@@ -2620,7 +2633,8 @@ impl MemoryAnalyzer {
         let mut freed_arg_ids = HashSet::new();
         for &idx in param_indices {
             if let Some(&arg) = arg_nodes.get(idx) {
-                if let Some(id) = self.mark_arg_freed(node, arg, source, violations) {
+                let guessed_by = guessed_indices.contains(&idx).then_some(callee);
+                if let Some(id) = self.mark_arg_freed(node, arg, source, guessed_by, violations) {
                     freed_arg_ids.insert(id);
                 }
             }
@@ -2637,6 +2651,7 @@ impl MemoryAnalyzer {
         node: &Node,
         arg: Node,
         source: &str,
+        guessed_by: Option<&str>,
         violations: &mut Vec<RuleViolation>,
     ) -> Option<usize> {
         // For pointer dereference expressions like free(*ptr),
@@ -2727,6 +2742,19 @@ impl MemoryAnalyzer {
         let free_byte = node.start_byte();
         self.freed_at.insert(canonical.clone(), free_byte);
         self.freed_at.insert(lv.clone(), free_byte);
+        // Record -- or, on real evidence, retract -- that this free is a name
+        // guess (task 1289).
+        match guessed_by {
+            Some(callee) => {
+                self.guessed_freed
+                    .insert(canonical.clone(), callee.to_string());
+                self.guessed_freed.insert(lv.clone(), callee.to_string());
+            }
+            None => {
+                self.guessed_freed.remove(&canonical);
+                self.guessed_freed.remove(&lv);
+            }
+        }
 
         // For union support: track union member relationships
         // When free(u.member) is called, all u.* accesses become invalid.
@@ -2827,21 +2855,24 @@ impl MemoryAnalyzer {
                     if let Some(ptr_var) = lvalue_of(&arg, source) {
                         let ptr_var = LValue::Var(ptr_var.root_var().to_string());
                         if self.is_freed(&ptr_var) {
-                            violations.push(RuleViolation {
-                                rule_id: "MEM30-C".to_string(),
-                                severity: Severity::Critical,
-                                message: format!(
-                                    "Use-after-free: writing to freed memory via '{}'",
-                                    ptr_var.root_var()
-                                ),
-                                file_path: String::new(),
-                                line: node.start_position().row + 1,
-                                column: node.start_position().column + 1,
-                                suggestion: Some(
-                                    "Do not access memory after freeing it.".to_string(),
-                                ),
-                                ..Default::default()
-                            });
+                            violations.push(self.uaf(
+                                RuleViolation {
+                                    rule_id: "MEM30-C".to_string(),
+                                    severity: Severity::Critical,
+                                    message: format!(
+                                        "Use-after-free: writing to freed memory via '{}'",
+                                        ptr_var.root_var()
+                                    ),
+                                    file_path: String::new(),
+                                    line: node.start_position().row + 1,
+                                    column: node.start_position().column + 1,
+                                    suggestion: Some(
+                                        "Do not access memory after freeing it.".to_string(),
+                                    ),
+                                    ..Default::default()
+                                },
+                                &ptr_var,
+                            ));
                         }
                     }
                 }
@@ -3124,19 +3155,22 @@ impl MemoryAnalyzer {
             if let Some(lv) = lvalue_of(&arg, source) {
                 let var_name = LValue::Var(lv.root_var().to_string());
                 if self.is_freed(&var_name) {
-                    violations.push(RuleViolation {
-                        rule_id: "MEM30-C".to_string(),
-                        severity: Severity::Critical,
-                        message: format!(
-                            "Use-after-free: dereferencing freed pointer '{}'",
-                            var_name.root_var()
-                        ),
-                        file_path: String::new(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
-                        suggestion: Some("Do not access memory after freeing it.".to_string()),
-                        ..Default::default()
-                    });
+                    violations.push(self.uaf(
+                        RuleViolation {
+                            rule_id: "MEM30-C".to_string(),
+                            severity: Severity::Critical,
+                            message: format!(
+                                "Use-after-free: dereferencing freed pointer '{}'",
+                                var_name.root_var()
+                            ),
+                            file_path: String::new(),
+                            line: node.start_position().row + 1,
+                            column: node.start_position().column + 1,
+                            suggestion: Some("Do not access memory after freeing it.".to_string()),
+                            ..Default::default()
+                        },
+                        &var_name,
+                    ));
                 }
             }
         }
@@ -3155,38 +3189,44 @@ impl MemoryAnalyzer {
             };
             // First check if the full path is freed (e.g., obj->data.values)
             if self.is_freed(&lv) {
-                violations.push(RuleViolation {
-                    rule_id: "MEM30-C".to_string(),
-                    severity: Severity::Critical,
-                    message: format!(
-                        "Use-after-free: accessing freed array '{}'",
-                        get_node_text(&arg, source)
-                    ),
-                    file_path: String::new(),
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
-                    suggestion: Some("Do not access memory after freeing it.".to_string()),
-                    ..Default::default()
-                });
+                violations.push(self.uaf(
+                    RuleViolation {
+                        rule_id: "MEM30-C".to_string(),
+                        severity: Severity::Critical,
+                        message: format!(
+                            "Use-after-free: accessing freed array '{}'",
+                            get_node_text(&arg, source)
+                        ),
+                        file_path: String::new(),
+                        line: node.start_position().row + 1,
+                        column: node.start_position().column + 1,
+                        suggestion: Some("Do not access memory after freeing it.".to_string()),
+                        ..Default::default()
+                    },
+                    &lv,
+                ));
                 return;
             }
 
             // Also check base variable
             let var_name = LValue::Var(lv.root_var().to_string());
             if self.is_freed(&var_name) {
-                violations.push(RuleViolation {
-                    rule_id: "MEM30-C".to_string(),
-                    severity: Severity::Critical,
-                    message: format!(
-                        "Use-after-free: accessing freed array '{}'",
-                        var_name.root_var()
-                    ),
-                    file_path: String::new(),
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
-                    suggestion: Some("Do not access memory after freeing it.".to_string()),
-                    ..Default::default()
-                });
+                violations.push(self.uaf(
+                    RuleViolation {
+                        rule_id: "MEM30-C".to_string(),
+                        severity: Severity::Critical,
+                        message: format!(
+                            "Use-after-free: accessing freed array '{}'",
+                            var_name.root_var()
+                        ),
+                        file_path: String::new(),
+                        line: node.start_position().row + 1,
+                        column: node.start_position().column + 1,
+                        suggestion: Some("Do not access memory after freeing it.".to_string()),
+                        ..Default::default()
+                    },
+                    &var_name,
+                ));
             }
         }
     }
@@ -3208,21 +3248,24 @@ impl MemoryAnalyzer {
                 if let Some(left_var) = lvalue_of(&left, source) {
                     let left_var = LValue::Var(left_var.root_var().to_string());
                     if self.is_freed(&left_var) {
-                        violations.push(RuleViolation {
-                            rule_id: "MEM30-C".to_string(),
-                            severity: Severity::Critical,
-                            message: format!(
-                                "Use-after-free: pointer arithmetic on freed pointer '{}'",
-                                left_var.root_var()
-                            ),
-                            file_path: String::new(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
-                            suggestion: Some(
-                                "Do not use freed pointers in arithmetic.".to_string(),
-                            ),
-                            ..Default::default()
-                        });
+                        violations.push(self.uaf(
+                            RuleViolation {
+                                rule_id: "MEM30-C".to_string(),
+                                severity: Severity::Critical,
+                                message: format!(
+                                    "Use-after-free: pointer arithmetic on freed pointer '{}'",
+                                    left_var.root_var()
+                                ),
+                                file_path: String::new(),
+                                line: node.start_position().row + 1,
+                                column: node.start_position().column + 1,
+                                suggestion: Some(
+                                    "Do not use freed pointers in arithmetic.".to_string(),
+                                ),
+                                ..Default::default()
+                            },
+                            &left_var,
+                        ));
                     }
                 }
             }
@@ -3246,21 +3289,24 @@ impl MemoryAnalyzer {
                     if let Some(lv) = lvalue_of(&arg, source) {
                         let var_name = LValue::Var(lv.root_var().to_string());
                         if self.is_freed(&var_name) {
-                            violations.push(RuleViolation {
-                                rule_id: "MEM30-C".to_string(),
-                                severity: Severity::Critical,
-                                message: format!(
-                                    "Use-after-free: passing freed pointer '{}' to function",
-                                    var_name.root_var()
-                                ),
-                                file_path: String::new(),
-                                line: node.start_position().row + 1,
-                                column: node.start_position().column + 1,
-                                suggestion: Some(
-                                    "Do not pass freed memory to functions.".to_string(),
-                                ),
-                                ..Default::default()
-                            });
+                            violations.push(self.uaf(
+                                RuleViolation {
+                                    rule_id: "MEM30-C".to_string(),
+                                    severity: Severity::Critical,
+                                    message: format!(
+                                        "Use-after-free: passing freed pointer '{}' to function",
+                                        var_name.root_var()
+                                    ),
+                                    file_path: String::new(),
+                                    line: node.start_position().row + 1,
+                                    column: node.start_position().column + 1,
+                                    suggestion: Some(
+                                        "Do not pass freed memory to functions.".to_string(),
+                                    ),
+                                    ..Default::default()
+                                },
+                                &var_name,
+                            ));
                         }
                     }
                 }
@@ -3284,21 +3330,24 @@ impl MemoryAnalyzer {
                 if let Some(lv) = lvalue_of(&child, source) {
                     let var_name = LValue::Var(lv.root_var().to_string());
                     if self.is_freed(&var_name) {
-                        violations.push(RuleViolation {
-                            rule_id: "MEM30-C".to_string(),
-                            severity: Severity::Critical,
-                            message: format!(
-                                "Use-after-free: returning freed pointer '{}'",
-                                var_name.root_var()
-                            ),
-                            file_path: String::new(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
-                            suggestion: Some(
-                                "Do not return freed memory from functions.".to_string(),
-                            ),
-                            ..Default::default()
-                        });
+                        violations.push(self.uaf(
+                            RuleViolation {
+                                rule_id: "MEM30-C".to_string(),
+                                severity: Severity::Critical,
+                                message: format!(
+                                    "Use-after-free: returning freed pointer '{}'",
+                                    var_name.root_var()
+                                ),
+                                file_path: String::new(),
+                                line: node.start_position().row + 1,
+                                column: node.start_position().column + 1,
+                                suggestion: Some(
+                                    "Do not return freed memory from functions.".to_string(),
+                                ),
+                                ..Default::default()
+                            },
+                            &var_name,
+                        ));
                     }
                 }
             }
@@ -3417,39 +3466,70 @@ impl MemoryAnalyzer {
             return;
         };
         if self.is_freed(&lv) {
-            violations.push(RuleViolation {
-                rule_id: "MEM30-C".to_string(),
-                severity: Severity::Critical,
-                message: format!(
-                    "Use-after-free: accessing freed pointer '{}'",
-                    get_node_text(node, source)
-                ),
-                file_path: String::new(),
-                line: node.start_position().row + 1,
-                column: node.start_position().column + 1,
-                suggestion: Some("Do not access freed memory.".to_string()),
-                ..Default::default()
-            });
+            violations.push(self.uaf(
+                RuleViolation {
+                    rule_id: "MEM30-C".to_string(),
+                    severity: Severity::Critical,
+                    message: format!(
+                        "Use-after-free: accessing freed pointer '{}'",
+                        get_node_text(node, source)
+                    ),
+                    file_path: String::new(),
+                    line: node.start_position().row + 1,
+                    column: node.start_position().column + 1,
+                    suggestion: Some("Do not access freed memory.".to_string()),
+                    ..Default::default()
+                },
+                &lv,
+            ));
             return;
         }
 
         // Check if the base of field expression is freed
         let var_name = LValue::Var(lv.root_var().to_string());
         if self.is_freed(&var_name) {
-            violations.push(RuleViolation {
-                rule_id: "MEM30-C".to_string(),
-                severity: Severity::Critical,
-                message: format!(
-                    "Use-after-free: accessing member of freed pointer '{}'",
-                    var_name.root_var()
-                ),
-                file_path: String::new(),
-                line: node.start_position().row + 1,
-                column: node.start_position().column + 1,
-                suggestion: Some("Do not access members of freed memory.".to_string()),
-                ..Default::default()
-            });
+            violations.push(self.uaf(
+                RuleViolation {
+                    rule_id: "MEM30-C".to_string(),
+                    severity: Severity::Critical,
+                    message: format!(
+                        "Use-after-free: accessing member of freed pointer '{}'",
+                        var_name.root_var()
+                    ),
+                    file_path: String::new(),
+                    line: node.start_position().row + 1,
+                    column: node.start_position().column + 1,
+                    suggestion: Some("Do not access members of freed memory.".to_string()),
+                    ..Default::default()
+                },
+                &var_name,
+            ));
         }
+    }
+
+    /// Finish a use-after-free finding on `lv` with what is known about how
+    /// `lv` came to be freed (task 1289).
+    ///
+    /// A free that reached this rule on a callee's NAME alone -- `frees_params_
+    /// guessed` in the summary that credited it -- is a MAY-free, the same
+    /// evidence 1269 judged insufficient for MEM31-C to accuse a double free.
+    /// For a use-after-free it is still the only evidence the analyzer will
+    /// ever have for a wrapper whose body frees through a function pointer
+    /// (`sqlite3_free`), so the finding is kept and marked for manual review
+    /// rather than dropped: the reader sees that the "free" is an inference
+    /// from a name, and the oracle keeps the key.
+    fn uaf(&self, mut violation: RuleViolation, lv: &LValue) -> RuleViolation {
+        let guessed = self
+            .guessed_freed
+            .get(lv)
+            .or_else(|| self.aliases.get(lv).and_then(|c| self.guessed_freed.get(c)));
+        if let Some(callee) = guessed {
+            violation.requires_manual_review = Some(true);
+            if std::env::var_os("AURORA_MEM30_GUESS_DEBUG").is_some() {
+                violation.message = format!("{} [guessed-free via {}]", violation.message, callee);
+            }
+        }
+        violation
     }
 
     /// Check if a variable is in freed state (considering aliases and realloc invalidation)

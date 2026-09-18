@@ -45,7 +45,13 @@ pub struct FunctionSummary {
     /// so the owner's one real free at the end of `Curl_close` /
     /// `wpa_supplicant_deinit_iface` was a double free (task 1269). MEM31-C
     /// reads this to keep such a credit in `freed_by_guess`, where
-    /// `guess_forbids_double_free` already knows what to do with it.
+    /// `guess_forbids_double_free` already knows what to do with it. MEM30-C
+    /// reads it to mark a use-after-free that rests on such a credit
+    /// `requires_manual_review`: the finding stands -- for a wrapper whose
+    /// body frees through a function pointer the name is the only evidence
+    /// there will be -- but the reader is told the free is an inference
+    /// (task 1289). A guess the callee's own body CONTRADICTS never gets
+    /// here at all; see `resolve_name_shaped_frees`.
     ///
     /// Cleared for an index the moment real evidence arrives -- a literal
     /// free in this body, or a forwarding to a callee whose own free of it
@@ -2938,14 +2944,31 @@ fn credit_frees_params(
 /// summaries exist, recording in `frees_params_guessed` the indices for which
 /// the name was the only evidence.
 ///
-/// The guess is always promoted: it was credited before the guesses were held
-/// apart, it is what stops a leak report at every caller of a name-shaped
-/// wrapper, and a callee with a body the prescan could not see through
-/// (`sqlite3_free` releasing via the `xFree` function pointer) has an empty
-/// summary that means "unseen", not "frees nothing". What the fold adds is
-/// the guess-ness, and the fixpoint that follows clears it wherever a
-/// forwarded callee's own free of the parameter is real. `macro_aliases` are
-/// resolved the way the fixpoint resolves them.
+/// The guess is promoted unless the callee's own body contradicts it. It was
+/// credited before the guesses were held apart, it is what stops a leak
+/// report at every caller of a name-shaped wrapper, and a callee with a body
+/// the prescan could not see through (`sqlite3_free` releasing via the
+/// `xFree` function pointer) has an empty summary that means "unseen", not
+/// "frees nothing". What the fold adds is the guess-ness, and the fixpoint
+/// that follows clears it wherever a forwarded callee's own free of the
+/// parameter is real. `macro_aliases` are resolved the way the fixpoint
+/// resolves them.
+///
+/// The contradiction (task 1289): a callee whose body was seen to work
+/// THROUGH that argument -- freeing its fields (`frees_param_fields`) or
+/// writing them (`modifies_params`) -- and not to free the argument itself.
+/// curl's `up_free(data)` releases `data->state.up.scheme` and seven
+/// siblings; hostap's `free_hw_features(wpa_s)` releases `wpa_s->hw.modes`;
+/// hostap's `p2p_free_sd_queries(p2p)` walks a list off `p2p->sd_queries`
+/// and then writes `p2p->sd_queries = NULL`. Those bodies are not opaque --
+/// the analyzer watched them manage the object's parts -- and they hand the
+/// object back intact, so the name is wrong about the parameter and
+/// crediting it made every later `data->x` at the caller a use-after-free
+/// (310 MEM30-C findings sat on such guesses, 0 labeled TP). A body that
+/// neither frees nor writes anything of the argument stays a MAY-free:
+/// `sqlite3_free`'s says nothing either way. A callee with a still-unfolded
+/// guess of its own on that index is not "fields only" -- the fold is one
+/// pass, and order must not decide.
 fn resolve_name_shaped_frees(
     summaries: &mut HashMap<String, FunctionSummary>,
     macro_aliases: &HashMap<String, String>,
@@ -2956,6 +2979,24 @@ fn resolve_name_shaped_frees(
         .iter()
         .map(|(n, s)| (n.clone(), &s.frees_params - &s.frees_params_guessed))
         .collect();
+    let works_through_only: HashMap<String, HashSet<usize>> = summaries
+        .iter()
+        .map(|(n, s)| {
+            let through: HashSet<usize> = s
+                .frees_param_fields
+                .keys()
+                .chain(s.modifies_params.iter())
+                .copied()
+                .collect();
+            let may_free: HashSet<usize> = s
+                .frees_params
+                .iter()
+                .chain(s.frees_params_by_name.keys())
+                .copied()
+                .collect();
+            (n.clone(), &through - &may_free)
+        })
+        .collect();
     for summary in summaries.values_mut() {
         let guesses = std::mem::take(&mut summary.frees_params_by_name);
         for (idx, callees) in guesses {
@@ -2965,6 +3006,13 @@ fn resolve_name_shaped_frees(
                     || corroborated
                         .get(callee)
                         .is_some_and(|f| f.contains(&arg_pos));
+                if !backed
+                    && works_through_only
+                        .get(callee)
+                        .is_some_and(|f| f.contains(&arg_pos))
+                {
+                    continue;
+                }
                 let newly = summary.frees_params.insert(idx);
                 if unconditional {
                     summary.unconditional_frees_params.insert(idx);
