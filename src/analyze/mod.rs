@@ -235,14 +235,7 @@ pub fn analyze_project(
             suppressed.extend(s);
         }
 
-        // Sort for deterministic output
-        violations.sort_by(|a, b| {
-            a.file_path
-                .cmp(&b.file_path)
-                .then(a.line.cmp(&b.line))
-                .then(a.column.cmp(&b.column))
-                .then(a.rule_id.cmp(&b.rule_id))
-        });
+        sort_for_deterministic_output(&mut violations, &mut suppressed);
 
         if let Some(reporter) = progress {
             reporter.report_complete(violations.len());
@@ -292,6 +285,8 @@ pub fn analyze_project(
         violations.extend(file_violations);
         suppressed.extend(file_suppressed);
     }
+
+    sort_for_deterministic_output(&mut violations, &mut suppressed);
 
     // Report completion
     if let Some(reporter) = progress {
@@ -570,6 +565,39 @@ fn build_suppression_manager(
     }
 
     suppression_manager
+}
+
+/// Total order on violations, so two runs of one binary over one tree
+/// export byte-identical files. `(file, line, column, rule_id)` alone is
+/// not total: a rule that reports two messages at one site, or emits the
+/// same finding twice, leaves those records in whatever order the worker
+/// threads finished, and a `cmp` of two exports fails on every pair of
+/// runs even when nothing changed (task 932). Records equal on every field
+/// here are indistinguishable in any export, so their relative order does
+/// not matter.
+fn violation_order(a: &RuleViolation, b: &RuleViolation) -> std::cmp::Ordering {
+    a.file_path
+        .cmp(&b.file_path)
+        .then(a.line.cmp(&b.line))
+        .then(a.column.cmp(&b.column))
+        .then(a.rule_id.cmp(&b.rule_id))
+        .then(a.message.cmp(&b.message))
+        .then(a.suggestion.cmp(&b.suggestion))
+        .then(a.requires_manual_review.cmp(&b.requires_manual_review))
+}
+
+/// Order both result vectors by [`violation_order`]. Called on the
+/// sequential path as well as the parallel one, so `-j 1` and `-j N`
+/// produce the same bytes, and on `suppressed` too, since SARIF exports
+/// it alongside the active findings.
+fn sort_for_deterministic_output(
+    violations: &mut [RuleViolation],
+    suppressed: &mut [SuppressedViolation],
+) {
+    violations.sort_by(violation_order);
+    suppressed.sort_by(|a, b| {
+        violation_order(&a.violation, &b.violation).then(a.justification.cmp(&b.justification))
+    });
 }
 
 /// Parse and run all enabled rules over a single file, partitioning findings
