@@ -281,15 +281,35 @@ fn enclosing_conditions<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
     conditions
 }
 
-/// Conditions that are known **true** where `site` executes — the `if`/`while`/
-/// `for`/`switch` bodies and `?:` branches it sits in, and the left operand of
-/// any `&&`/`||` whose right operand holds it.
+/// Conditions that are known **true** where `site` executes — an `if` or `?:`
+/// branch it sits in the *consequence* of, a `while`/`for` body, and the left
+/// operand of an `&&` whose right operand holds it.
 ///
 /// Strictly narrower than [`dominating_conditions`], which also returns the
 /// conditions of *preceding* `if` statements: those were evaluated, but nothing
 /// says which way they went. Only the enclosing ones are facts here.
+///
+/// Being *evaluated* at `site` and being *true* at `site` are different
+/// questions, and [`enclosing_conditions`] answers the first. Three of its
+/// results are evaluated but NOT true here, so each is filtered out by
+/// resolving [`dominating_condition_branch`] rather than by re-deriving the
+/// position:
+///
+/// - the left operand of a `||`. Reaching the right operand means the left was
+///   FALSE. Returning it as a fact let EXP34-C's
+///   [`is_nonnull_by_correlated_exit_guard`] discharge a conjunct that had not
+///   been established and drop a real possibly-null dereference — a
+///   suppression that was not provable (task 1327).
+/// - an `else` branch's condition, which is false exactly where the branch runs.
+/// - a `switch` condition, where the case label governs and not truthiness.
+///
+/// The `&&` case is legitimate and deliberately kept: there the left operand
+/// really did evaluate true. The fix is the polarity, not the source.
 pub fn conditions_known_true_at<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
     enclosing_conditions(site)
+        .into_iter()
+        .filter(|cond| dominating_condition_branch(cond, site) == Some(true))
+        .collect()
 }
 
 /// True when an earlier exit-guard proves `var` non-null at `site`, given the
