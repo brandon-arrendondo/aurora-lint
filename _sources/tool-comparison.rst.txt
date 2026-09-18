@@ -97,7 +97,7 @@ Coverage Is The Difference
 .. note::
 
    **PARTLY RESOLVED** — ``python -m bench realworld-run --tool infer`` and
-   ``--tool frama-c`` now work against all nine corpora (tools_sqc task 767).
+   ``--tool frama-c`` now work against all nine corpora (aurora_lint task 767).
    Both are driven from each checkout's ``compile_commands.json``, which
    ``playbooks/setup-compile-commands.yml`` generates for all nine —
    including seL4, hostap and pure-ftpd, whose supposed unbuildability was
@@ -394,7 +394,7 @@ Juliet, all four on one host (2026-09-04), CWE list sizes differing:
    resolves to zero ``.c`` files instead of recording a 0/0 row that reads
    the same as "the tool found nothing". The runs above predate that fix and
    still carry the row; the exported CSV distinguishes them as ``cwe_count``
-   (rows present) and ``cwes_measured``. Tracked as tools_sqc task 909; the
+   (rows present) and ``cwes_measured``. Tracked as aurora_lint task 909; the
    same defect on aurora-lint's own count is task 910.
 
 Real-World Precision, Per Rule
@@ -415,7 +415,7 @@ Real-World Precision, Per Rule
    cppcheck additionally needs a native-id-to-CERT-C mapping (or
    ``--addon=cert`` enabled) before a per-rule table is even expressible.
 
-   Tracked as tools_sqc task 766 (capture) and benchmarking_db task 740
+   Tracked as aurora_lint task 766 (capture) and benchmarking_db task 740
    (ingest, plus the ``ground_truth`` key collision that adjudicating a
    second tool at the same coordinate would create).
 
@@ -458,7 +458,7 @@ Real-World Precision, Per Rule
    39.7% → 34.5% — so it was refreshed rather than re-dated.
 
    The aurora-lint column is still from 2026-09-02, so the table is now within days
-   of single-date rather than five months from it.  Tracked as tools_sqc
+   of single-date rather than five months from it.  Tracked as aurora_lint
    task 768.
 
 .. note::

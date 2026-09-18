@@ -70,7 +70,7 @@ Build Requirements
 Development Node Setup
 ----------------------
 
-To provision a fresh Ubuntu 24.04 node for working on tools_sqc (as opposed
+To provision a fresh Ubuntu 24.04 node for working on aurora-lint (as opposed
 to just running benchmarks -- see `Benchmark Setup <benchmark-setup.html>`_
 for that), install Ansible first (``sudo apt install -y ansible`` or
 ``pipx install ansible-core`` -- a playbook can't provision the tool it
