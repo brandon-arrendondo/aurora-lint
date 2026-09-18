@@ -177,6 +177,11 @@ struct MemoryLeakAnalyzer<'a> {
     // call a later free of that name a double free -- see
     // `mark_freed_with_aliases`.
     freed_via_alias: HashSet<String>,
+    // Names whose freed mark rests on nothing but the callee's NAME: a
+    // deallocator shape with no body in the scan, so no summary to consult.
+    // Maps the name to the callee that guessed it -- see
+    // `guess_forbids_double_free`.
+    freed_by_guess: HashMap<String, String>,
     // Track variables that are returned or stored globally
     escaped_memory: HashSet<String>,
     // Track variables known to be NULL in current scope (from NULL checks)
@@ -324,6 +329,7 @@ struct AllocInfo {
 struct LeakBranchState {
     freed_memory: HashMap<String, (usize, usize)>,
     freed_via_alias: HashSet<String>,
+    freed_by_guess: HashMap<String, String>,
     maybe_freed: HashMap<String, (usize, usize)>,
     null_variables: HashSet<String>,
 }
@@ -333,6 +339,7 @@ impl LeakBranchState {
         Self {
             freed_memory: analyzer.freed_memory.clone(),
             freed_via_alias: analyzer.freed_via_alias.clone(),
+            freed_by_guess: analyzer.freed_by_guess.clone(),
             maybe_freed: analyzer.maybe_freed.clone(),
             null_variables: analyzer.null_variables.clone(),
         }
@@ -341,6 +348,7 @@ impl LeakBranchState {
     fn restore(&self, analyzer: &mut MemoryLeakAnalyzer) {
         analyzer.freed_memory = self.freed_memory.clone();
         analyzer.freed_via_alias = self.freed_via_alias.clone();
+        analyzer.freed_by_guess = self.freed_by_guess.clone();
         analyzer.maybe_freed = self.maybe_freed.clone();
         analyzer.null_variables = self.null_variables.clone();
     }
@@ -452,6 +460,9 @@ impl PreprocArmState {
         }
         for (var, pos) in other.branch.maybe_freed {
             self.branch.maybe_freed.entry(var).or_insert(pos);
+        }
+        for (var, callee) in other.branch.freed_by_guess {
+            self.branch.freed_by_guess.entry(var).or_insert(callee);
         }
         self.branch
             .null_variables
@@ -581,6 +592,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             allocated_memory: HashMap::new(),
             freed_memory: HashMap::new(),
             freed_via_alias: HashSet::new(),
+            freed_by_guess: HashMap::new(),
             escaped_memory: HashSet::new(),
             null_variables: HashSet::new(),
             double_free_violations: Vec::new(),
@@ -1543,7 +1555,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         free_pos: tree_sitter::Point,
         call_name: &str,
     ) {
-        if let Some(&(freed_line, _)) = self.maybe_freed.get(var_name) {
+        if let Some(&(freed_line, _)) = self
+            .maybe_freed
+            .get(var_name)
+            .filter(|_| !self.guess_forbids_double_free(var_name, call_name))
+        {
             self.double_free_violations.push(RuleViolation {
                 rule_id: "MEM31-C".to_string(),
                 severity: Severity::High,
@@ -1685,6 +1701,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         };
         if let Some(old_ptr) = self.realloc_relations.get(result_var).cloned() {
             let pos = if_node.start_position();
+            self.freed_by_guess.remove(&old_ptr);
             self.freed_memory
                 .insert(old_ptr, (pos.row + 1, pos.column + 1));
         }
@@ -1936,6 +1953,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 .union(&else_state.freed_via_alias)
                 .cloned()
                 .collect();
+            let mut guessed = true_state.freed_by_guess.clone();
+            for (k, v) in else_state.freed_by_guess.clone() {
+                guessed.entry(k).or_insert(v);
+            }
+            analyzer.freed_by_guess = guessed;
             let mut maybe = true_state.maybe_freed.clone();
             for (k, v) in else_state.maybe_freed.clone() {
                 maybe.entry(k).or_insert(v);
@@ -2330,6 +2352,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     let key = ast_utils::get_node_text_owned(&left, source);
                     let was_freed = self.freed_memory.remove(&key).is_some();
                     self.maybe_freed.remove(&key);
+                    self.freed_by_guess.remove(&key);
                     let is_null = right.kind() == "null"
                         || ast_utils::get_node_text_owned(&right, source) == "NULL";
                     if was_freed && is_null {
@@ -2410,6 +2433,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // New allocation clears freed status (variable now points to valid memory)
                 self.freed_memory.remove(&var_name);
                 self.maybe_freed.remove(&var_name);
+                self.freed_by_guess.remove(&var_name);
                 // ... and escaped status: whatever the name handed away, this
                 // block is a fresh one the function owns again.
                 self.escaped_memory.remove(&var_name);
@@ -2440,6 +2464,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // (e.g., buffer = temp after realloc)
                 self.freed_memory.remove(&var_name);
                 self.maybe_freed.remove(&var_name);
+                self.freed_by_guess.remove(&var_name);
 
                 if self.allocated_memory.contains_key(&right_var) {
                     // Transfer ownership
@@ -2482,6 +2507,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // leaks belongs to the ownership-escape work, not here.
                 self.freed_memory.remove(&var_name);
                 self.maybe_freed.remove(&var_name);
+                self.freed_by_guess.remove(&var_name);
                 // task 1200: this name now holds whatever the unreadable
                 // right-hand side handed back -- a lookup/registry accessor
                 // (`dev = p2p_create_device(...)`) or a field/subscript read
@@ -2522,6 +2548,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         self.allocated_memory.remove(var_name);
         self.freed_memory.remove(var_name);
         self.maybe_freed.remove(var_name);
+        self.freed_by_guess.remove(var_name);
         self.escaped_memory.remove(var_name);
     }
 
@@ -2613,7 +2640,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             let nulled = nulls.contains(&idx);
             if nulled {
                 self.maybe_freed.remove(&var_name);
-            } else if self.freed_memory.contains_key(&var_name) {
+            } else if self.freed_memory.contains_key(&var_name)
+                && !self.guess_forbids_double_free(&var_name, func_name)
+            {
                 self.double_free_violations.push(RuleViolation {
                     rule_id: "MEM31-C".to_string(),
                     severity: Severity::High,
@@ -2756,6 +2785,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 self.maybe_freed.remove(&var_name);
             } else if self.freed_memory.contains_key(&var_name)
                 && !self.freed_via_alias.contains(&var_name)
+                && !self.guess_forbids_double_free(&var_name, func_name)
             {
                 self.double_free_violations.push(RuleViolation {
                     rule_id: "MEM31-C".to_string(),
@@ -2774,7 +2804,17 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 self.report_possible_double_free(&var_name, free_pos, func_name);
             }
 
-            // Mark as freed (for leak detection)
+            // Mark as freed (for leak detection). With no summary behind
+            // it the mark rests on the callee's name alone, so remember who
+            // guessed it -- `guess_forbids_double_free` needs to know whether
+            // a later deallocator is the same one repeated or a second step
+            // in a teardown pair.
+            if self.function_summaries.get(func_name).is_none() {
+                self.freed_by_guess
+                    .insert(var_name.clone(), func_name.to_string());
+            } else {
+                self.freed_by_guess.remove(&var_name);
+            }
             self.freed_memory
                 .insert(var_name.clone(), (free_pos.row + 1, free_pos.column + 1));
 
@@ -2836,6 +2876,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // see `mark_freed_with_aliases`.
             if self.freed_memory.contains_key(&var_name)
                 && !self.freed_via_alias.contains(&var_name)
+                && !self.guess_forbids_double_free(&var_name, "free")
             {
                 self.double_free_violations.push(RuleViolation {
                     rule_id: "MEM31-C".to_string(),
@@ -2879,6 +2920,33 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             .collect()
     }
 
+    /// True if the freed mark on `var_name` is a NAME-SHAPE GUESS made by a
+    /// different callee than `call_name` -- in which case a double free is
+    /// not what the evidence shows.
+    ///
+    /// A callee with no body in the scan leaves the name shape as the only
+    /// evidence, and `is_deallocation_call_name` reads six verbs, of which
+    /// only `free`/`destroy`/`delete` actually mean deallocation.
+    /// `close`/`release`/`cleanup` mean "stop using", which may or may not
+    /// release the block: librtmp's `RTMP_Close(r)` shuts the stream down and
+    /// `RTMP_Free(r)` is what frees `r`, and a COM `_Release` decrements a
+    /// refcount. Two DIFFERENT deallocator names applied to one pointer is
+    /// the paired-teardown idiom, not a defect -- `mbedtls_gcm_free(ctx)`
+    /// then `free(ctx)` releases contents and then the struct.
+    ///
+    /// Only the double-free direction is relaxed, and only against a guess.
+    /// The mark itself stands, so a leak stays suppressed: the block probably
+    /// did die, and the same asymmetry `mark_freed_with_aliases` documents
+    /// for alias-derived marks applies for the same reason. Repeating ONE
+    /// name (`sqlite3_free(p); sqlite3_free(p);`) still reports, which is
+    /// what the load-bearing 1-argument fallback rests on, and a mark written
+    /// by a literal `free()` or backed by a summary is not a guess at all.
+    fn guess_forbids_double_free(&self, var_name: &str, call_name: &str) -> bool {
+        self.freed_by_guess
+            .get(var_name)
+            .is_some_and(|guessed_by| guessed_by != call_name)
+    }
+
     /// Mark `var_name` freed, and with it every other name holding the block.
     ///
     /// An alias-derived mark is remembered in `freed_via_alias`, because the
@@ -2891,9 +2959,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     fn mark_freed_with_aliases(&mut self, var_name: &str, free_pos: (usize, usize)) {
         self.freed_memory.insert(var_name.to_string(), free_pos);
         self.freed_via_alias.remove(var_name);
+        self.freed_by_guess.remove(var_name);
 
         for alias in self.block_aliases_of(var_name) {
             self.freed_memory.insert(alias.clone(), free_pos);
+            self.freed_by_guess.remove(&alias);
             self.freed_via_alias.insert(alias);
         }
     }
@@ -2944,6 +3014,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
         if !first_arg.is_empty() {
             // realloc frees the old memory and allocates new
+            self.freed_by_guess.remove(&first_arg);
             self.freed_memory
                 .insert(first_arg.clone(), (free_pos.row + 1, free_pos.column + 1));
         }
