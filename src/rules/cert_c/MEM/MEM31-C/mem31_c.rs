@@ -22,21 +22,25 @@ use tree_sitter::Node;
 /// `p` yields `(p, false)`; `&p` and `(void **)&p` yield `(p, true)`.
 /// Parentheses and casts are transparent. Anything else — a field, a
 /// subscript, a nested call — yields `None`.
-fn strip_call_argument(arg: Node) -> Option<(Node, bool)> {
-    fn peel(mut n: Node) -> Node {
-        loop {
-            let inner = match n.kind() {
-                "parenthesized_expression" => n.named_child(0),
-                "cast_expression" => n.child_by_field_name("value"),
-                _ => None,
-            };
-            match inner {
-                Some(i) => n = i,
-                None => return n,
-            }
+/// `arg` with every enclosing parenthesis and cast removed: the expression
+/// a call actually hands over, since `(struct crypto_ec_key *) pkey` names
+/// `pkey` and nothing else.
+fn peel_casts_and_parens(mut n: Node) -> Node {
+    loop {
+        let inner = match n.kind() {
+            "parenthesized_expression" => n.named_child(0),
+            "cast_expression" => n.child_by_field_name("value"),
+            _ => None,
+        };
+        match inner {
+            Some(i) => n = i,
+            None => return n,
         }
     }
+}
 
+fn strip_call_argument(arg: Node) -> Option<(Node, bool)> {
+    let peel = peel_casts_and_parens;
     let node = peel(arg);
     if node.kind() == "identifier" {
         return Some((node, false));
@@ -1316,7 +1320,19 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     }
                     continue;
                 }
-                if func_name == "free" || self.is_named_deallocator(&func_name) {
+                // A callee the prescan SAW free a parameter counts whatever
+                // it is called: hostap's `fail:` blocks release through
+                // `crypto_ec_key_deinit`/`tls_deinit`, and `_deinit` is no
+                // shape the name heuristic knows. The main walk already
+                // reaches such a callee through `process_freeing_callee`
+                // on its summary alone; gating this scan on the name first
+                // left every `goto` into those labels reading as a leak
+                // (task 1241). `named_deallocator_releases_arg` below then
+                // asks the same summary WHICH argument.
+                if func_name == "free"
+                    || self.is_named_deallocator(&func_name)
+                    || self.summary_frees_some_param(&func_name)
+                {
                     if let Some(arguments) = call.child_by_field_name("arguments") {
                         let mut param_idx = 0usize;
                         for i in 0..arguments.child_count() {
@@ -1326,6 +1342,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                                 }
                                 let this_param_idx = param_idx;
                                 param_idx += 1;
+                                // Casts and parentheses are as transparent
+                                // here as in the walk's `strip_call_argument`:
+                                // hostap's `fail:` hands `pkey` to
+                                // `crypto_ec_key_deinit` as `(struct
+                                // crypto_ec_key *) pkey` (task 1241).
+                                let arg = peel_casts_and_parens(arg);
                                 let through_address_of = arg.kind() == "pointer_expression";
                                 if func_name != "free"
                                     && !self.named_deallocator_releases_arg(
@@ -1341,6 +1363,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                                 // accepts.
                                 let inner = if through_address_of {
                                     arg.child_by_field_name("argument")
+                                        .map(peel_casts_and_parens)
                                 } else {
                                     Some(arg)
                                 };
@@ -3675,6 +3698,16 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// argument freed, or the `mbedtls_free(ctx)` that follows in every
     /// `*_ctx_free` destructor reads as a double free. The name shape is
     /// the fallback for a callee with no body in the scan (task 1128).
+    /// The prescan saw `func_name`'s body release a parameter -- by value
+    /// or through a `&var` pointee. Evidence, not a name guess.
+    fn summary_frees_some_param(&self, func_name: &str) -> bool {
+        self.function_summaries
+            .get(func_name)
+            .is_some_and(|summary| {
+                !summary.frees_params.is_empty() || !summary.frees_param_pointees.is_empty()
+            })
+    }
+
     fn is_named_deallocator(&self, func_name: &str) -> bool {
         if !ast_utils::is_deallocation_call_name(func_name) {
             return false;
