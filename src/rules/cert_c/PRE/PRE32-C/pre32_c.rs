@@ -1,5 +1,6 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -190,6 +191,24 @@ impl Pre32C {
 
     fn check_function_call(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         if let Some(function_node) = node.child_by_field_name("function") {
+            // A callee sitting on a preprocessor directive line is not a callee.
+            // `#ifdef SQLITE_DEBUG` reparses, inside an ERROR region, as a call
+            // to `SQLITE_DEBUG` whose "arguments" are the source text that
+            // follows -- so the rule reported a directive in the arguments of a
+            // call that is itself a directive (sqlite vdbeapi.c:1315).
+            //
+            // Deliberately keyed on the CALLEE, not on the finding's position:
+            // this rule's whole subject matter is a real call whose ARGUMENTS
+            // contain a directive, which is exactly sel4 capdl.c:335's
+            // `printf("...", #if defined(...) ... #endif ...)`. There the callee
+            // is ordinary code and only the arguments span directive lines, so
+            // that genuine finding is untouched. A position-based bail would
+            // delete it and leave the rule unable to fire on its own purpose.
+            // See ADR-0008.
+            if ast_utils::is_on_preproc_directive_line(source, function_node.start_byte()) {
+                return;
+            }
+
             let function_name = &source[function_node.start_byte()..function_node.end_byte()];
 
             // Check if this is a potentially macro-implemented function
