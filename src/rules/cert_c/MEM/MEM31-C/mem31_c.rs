@@ -2689,6 +2689,33 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         let Some(arguments) = node.child_by_field_name("arguments") else {
             return;
         };
+
+        // With no summary for the callee, the name shape is the only
+        // evidence -- and it says a release happened, never WHICH argument
+        // was released. One nameable argument is unambiguous, so the
+        // `sqlite3_free(p)` / `RTMP_Free(r)` fallback keeps working. Several
+        // are a guess with no basis: `Curl_req_free(&data->req, data)` does
+        // not free `data`, `robust_close(pNew, h, __LINE__)` frees neither
+        // the int fd nor the macro token, and `sk_X509_pop_free(certs,
+        // X509_free)` frees no variable called `X509_free` -- that one is a
+        // misfire under ADR-0005, naming a construct that is not there.
+        // Credit nothing rather than credit everything (task 1197).
+        if self.function_summaries.get(func_name).is_none() {
+            let nameable = (0..arguments.child_count())
+                .filter_map(|i| arguments.child(i))
+                .filter(|arg| match arg.kind() {
+                    "identifier" => true,
+                    "pointer_expression" => arg
+                        .child_by_field_name("argument")
+                        .is_some_and(|op| op.kind() == "identifier"),
+                    _ => false,
+                })
+                .count();
+            if nameable > 1 {
+                return;
+            }
+        }
+
         let mut param_idx = 0usize;
         for i in 0..arguments.child_count() {
             let Some(arg) = arguments.child(i) else {
@@ -2941,6 +2968,33 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         let Some(arguments) = node.child_by_field_name("arguments") else {
             return;
         };
+
+        // With no summary for the callee, the name shape is the only
+        // evidence -- and it says a release happened, never WHICH argument
+        // was released. One nameable argument is unambiguous, so the
+        // `sqlite3_free(p)` / `RTMP_Free(r)` fallback keeps working. Several
+        // are a guess with no basis: `Curl_req_free(&data->req, data)` does
+        // not free `data`, `robust_close(pNew, h, __LINE__)` frees neither
+        // the int fd nor the macro token, and `sk_X509_pop_free(certs,
+        // X509_free)` frees no variable called `X509_free` -- that one is a
+        // misfire under ADR-0005, naming a construct that is not there.
+        // Credit nothing rather than credit everything (task 1197).
+        if self.function_summaries.get(func_name).is_none() {
+            let nameable = (0..arguments.child_count())
+                .filter_map(|i| arguments.child(i))
+                .filter(|arg| match arg.kind() {
+                    "identifier" => true,
+                    "pointer_expression" => arg
+                        .child_by_field_name("argument")
+                        .is_some_and(|op| op.kind() == "identifier"),
+                    _ => false,
+                })
+                .count();
+            if nameable > 1 {
+                return;
+            }
+        }
+
         let mut param_idx = 0usize;
         for i in 0..arguments.child_count() {
             if let Some(arg) = arguments.child(i) {

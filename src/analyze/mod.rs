@@ -334,15 +334,24 @@ fn load_project_context(
             anyhow::bail!("Prescan cache file not found: {}", cache_path);
         }
     } else if directories.is_empty() {
-        // No explicit directories supplied. For a single-file target, scan only
-        // the sibling header files so that rules like DCL15-C can recognise
-        // public API declared in those headers. Full cross-file analysis
-        // (known_functions, function_summaries, etc.) still requires -d.
+        // No -d: the target is its own context. Prescan the scan set itself
+        // (every C file in the target, not the --diff subset -- unmodified
+        // files are exactly the context a diff needs) as if `-d <target>`
+        // had been given, so a first-touch `aurora-lint foo.c` has seen the
+        // definitions in the file it is about to analyse. Before this, a
+        // single-file target got only its sibling headers' declarations and
+        // a directory target nothing at all, producing findings that
+        // vanished the moment the same directory was named with -d (task
+        // 980). -d remains the way to add context from OUTSIDE the target.
+        let mut files: Vec<std::path::PathBuf> = project_source
+            .get_c_files()?
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .collect();
         if let Some(dir) = project_source.prescan_dir() {
-            prescan::prescan_sibling_headers(&dir)?
-        } else {
-            context::ProjectContext::new()
+            files.extend(prescan::sibling_headers(&dir));
         }
+        prescan::prescan_files(files, progress, needs_vra)?
     } else {
         prescan::prescan_directories(directories, progress, needs_vra)?
     };
