@@ -231,7 +231,11 @@ Third-Party Library Headers
 
 aurora-lint uses ``-I`` include paths to resolve ``#include`` directives from third-party
 libraries. Without these, functions declared in external headers produce
-DCL31-C/DCL07-C false positives.
+DCL31-C/DCL07-C false positives. The installed headers are therefore part
+of what a run measures -- the same binary on two machines with different
+``-dev`` packages or glibc releases differs by a small number of keys (see
+:doc:`reproducing-published-numbers`), so install this list before comparing
+a run against a published one.
 
 .. code-block:: bash
 
@@ -242,8 +246,9 @@ DCL31-C/DCL07-C false positives.
     # mosquitto
     sudo apt-get install -y libcunit1-dev libsqlite3-dev
 
-    # curl TLS backends
-    sudo apt-get install -y libmbedtls-dev libgnutls28-dev
+    # curl TLS and SASL backends (without libgsasl-dev, lib/vauth/gsasl.c
+    # reports every gsasl_* call as DCL31-C "called without prior declaration")
+    sudo apt-get install -y libmbedtls-dev libgnutls28-dev libgsasl-dev
 
     # sqlite test infrastructure
     sudo apt-get install -y tcl-dev
@@ -258,8 +263,9 @@ One-liner for all hosts:
 .. code-block:: bash
 
     sudo apt-get install -y libssl-dev libcjson-dev zlib1g-dev libcunit1-dev \
-      libsqlite3-dev libmbedtls-dev libgnutls28-dev tcl-dev libnl-3-dev \
-      libnl-genl-3-dev libdbus-1-dev libgcrypt20-dev libpcap-dev libwolfssl-dev
+      libsqlite3-dev libmbedtls-dev libgnutls28-dev libgsasl-dev tcl-dev \
+      libnl-3-dev libnl-genl-3-dev libdbus-1-dev libgcrypt20-dev libpcap-dev \
+      libwolfssl-dev
 
 Per-Project Include Paths
 ~~~~~~~~~~~~~~~~~~~~~~~~~

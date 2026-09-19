@@ -1257,6 +1257,19 @@ class BenchDB:
                   hostname, cpu_model, cpu_cores, notes))
             return cur.fetchone()["id"]
 
+    def find_realworld_run(self, sqc_version: str, commit_sha: str | None,
+                           variant: str | None = None) -> int | None:
+        """The numeric id of the run with this identity, or None -- the same
+        (version, sha, variant) triple idx_rw_runs_identity makes unique."""
+        with self._cursor() as cur:
+            cur.execute("""
+                SELECT id FROM realworld_runs
+                WHERE sqc_version = ? AND commit_sha IS ?
+                  AND COALESCE(variant, '') = ? AND run_id IS NOT NULL
+            """, (sqc_version, commit_sha, variant or ""))
+            row = cur.fetchone()
+        return row["id"] if row else None
+
     def insert_realworld_result(self, run_id: int, project: str, tool: str,
                                 c_files: int = 0, loc: int = 0,
                                 violation_count: int = 0,
@@ -1362,6 +1375,15 @@ class BenchDB:
         machine = machine or {}
         durations = durations or {}
         metrics = metrics or {}
+        if run_id is None:
+            # A second invocation at the same commit -- `--codebase hostap`
+            # after a full sweep, or a repeat after a failed ingest -- must
+            # land in the run that already exists for this identity. The
+            # per-project rows below are idempotent, but realworld_runs has
+            # a UNIQUE index on (version, sha, variant), so creating a new
+            # row here raised IntegrityError and the runner reported INGEST
+            # FAILED after every scan had succeeded.
+            run_id = self.find_realworld_run(version, commit, variant)
         if run_id is None:
             run_id = self.create_realworld_run(
                 sqc_version=version,

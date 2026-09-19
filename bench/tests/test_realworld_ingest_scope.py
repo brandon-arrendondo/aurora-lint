@@ -71,6 +71,27 @@ class TestIngestProjectScoping(unittest.TestCase):
                 "WHERE run_id=? AND tool='sqc' ORDER BY project", (run_id,))
             return {r["project"]: dict(r) for r in cur.fetchall()}
 
+    def test_a_second_invocation_at_the_same_commit_joins_the_existing_run(self):
+        """`--codebase hostap` after a full sweep (or a repeat after a failed
+        ingest) is the same run identity. It must merge into that run, not
+        raise on realworld_runs' uniqueness index -- which is what happened,
+        as INGEST FAILED after every scan had succeeded."""
+        db = BenchDB(self._root / "twice.db")
+        first = db.ingest_realworld_run(
+            VERSION_DIR, str(self.version_dir), machine={"hostname": "test"},
+            durations={"curl": 1.0}, metrics={}, only_projects={"curl"})
+        second = db.ingest_realworld_run(
+            VERSION_DIR, str(self.version_dir), machine={"hostname": "test"},
+            durations={"hostap": 12.0}, metrics={}, only_projects={"hostap"})
+        self.assertEqual(first, second)
+        with db._cursor() as cur:
+            cur.execute("SELECT project FROM realworld_results WHERE run_id=? "
+                        "AND tool='sqc' ORDER BY project", (first,))
+            self.assertEqual([r["project"] for r in cur.fetchall()],
+                             ["curl", "hostap"])
+            cur.execute("SELECT COUNT(*) AS n FROM realworld_runs")
+            self.assertEqual(cur.fetchone()["n"], 1)
+
     def test_only_projects_excludes_a_leftover_export(self):
         rows = self._ingest(only_projects={"hostap"})
         self.assertEqual(sorted(rows), ["hostap"])

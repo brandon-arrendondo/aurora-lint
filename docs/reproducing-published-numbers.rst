@@ -1,0 +1,366 @@
+Reproducing the Published Numbers
+=================================
+
+Every real-world precision / recall / coverage figure this project publishes
+(README's *Benchmark Highlights*, the paper) is a function of three inputs,
+each named by a git SHA. With those three SHAs, a checkout of this repo and
+no other access, you can regenerate the figure yourself and compare it at
+the level of individual findings. This page is the procedure. It assumes
+:doc:`benchmark-setup` has been followed once on the machine (corpus
+checkouts, Juliet, headers); it repeats nothing from there.
+
+.. contents::
+   :local:
+   :depth: 2
+
+What "reproduces" means
+-----------------------
+
+A published number is reproduced when a fresh run of the named aurora-lint
+build, on the named corpus commits, scored against the named label set,
+yields **the same set of findings at the key level** -- the same
+``(project, file, line, rule_id)`` tuples -- and therefore the same scored
+figures. Keys are the unit of comparison because that is what a label is
+attached to; the *message text* of a finding is not part of the comparison
+and can legitimately differ between builds (MEM31-C, for one, spells the
+allocator name from whatever it resolved first). Compare keys, never
+messages.
+
+The three inputs are:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 38 40
+
+   * - Input
+     - Named by
+     - Where the name is recorded
+   * - the analyzer
+     - an aurora-lint release tag, and the commit it was cut from
+     - the paper; the README highlights table (as the recorded build
+       version and run id); ``git tag`` in this repo
+   * - the labels
+     - a commit of the public `benchmark_adjudication
+       <https://github.com/brandon-arrendondo/benchmark_adjudication>`_
+       repository
+     - the paper's pinned measurement facts (its ``data/`` carries the
+       exact SHA the oracle was level with); release notes
+   * - the corpus
+     - one pinned commit per real-world codebase, plus the Juliet suite
+       version
+     - ``data/benchmark_repos.json`` in this repo, at the analyzer's commit
+
+Official published numbers are computed by the maintainers' private
+pipeline from exactly these public inputs; a local run describes *that run*
+and is never itself a project figure (ADR-0004,
+``docs/adr/0004-postgres-is-the-single-source-of-truth.md``). What a reproducer gains is the ability to check the
+published figure, key for key, and to say precisely where a disagreement
+lies if there is one.
+
+Input 1: the analyzer -- tag, SHA and version string
+----------------------------------------------------
+
+A release is a git tag (``vX.Y.Z``) on a commit whose only change over its
+parent is the ``Cargo.toml`` version bump. The benchmark runs behind a
+release are made from the commit the tag was **cut from**, not from the
+tagged commit itself, so a run's recorded build version reads the
+*previous* version string. Nothing about the analyzer differs between the
+two commits; the SHA is what identifies the build, and the version string
+adds readability only.
+
+Concretely, for v0.5.0:
+
+.. list-table::
+   :widths: 30 70
+
+   * - tag ``v0.5.0``
+     - ``717783a9`` (``chore: bump version to 0.5.0``)
+   * - cut from
+     - ``f48effe3`` -- the commit that produced the runs
+   * - version string those runs record
+     - ``0.4.336`` (the ``Cargo.toml`` value at ``f48effe3``)
+   * - real-world run id
+     - ``sqc-0.4.336-f48effe3``; the maintainers' run number for it is
+       ``#265``, which is what the README highlights cite
+
+Run ids are ``sqc-{version}-{sha}`` and the tool id inside the benchmark
+tooling is ``sqc`` (``--tool sqc``, ``results/realworld/sqc-…``). The crate
+and binary were renamed to ``aurora-lint``; the identifier in run ids, tool
+ids and label provenance deliberately was not, because every historical
+label and run is keyed on it. Do not translate it.
+
+To build the analyzer that produced a published run, check out the
+**cut-from commit** (or the tag: same code) and build release:
+
+.. code-block:: bash
+
+   cd $AURORA_LINT_SRC_ROOT/aurora-lint
+   git fetch --tags
+   git checkout --detach f48effe3          # or: git checkout --detach v0.5.0
+   cargo build --release
+   ./target/release/aurora-lint --version   # prints the Cargo.toml version at that commit
+
+Determinism boundary
+~~~~~~~~~~~~~~~~~~~~
+
+From commit ``fc9164fd`` (*analyze: order findings on a total key so two
+runs export identical bytes*) onward, one binary on one checkout writes a
+**byte-identical** ``--export`` file every time. Before it, the *set* of
+findings is the same but their order in the file can vary between runs, so
+two exports must be compared as sets of keys, not with ``diff``.
+
+``v0.5.0`` (``717783a9``) predates ``fc9164fd``: reproduce it at the key
+level. ``v0.5.1`` is the first tag that contains the ordering commit, and the
+first for which a reproducer should expect ``diff`` on two exports of the
+same codebase to be empty.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 14 20 20 22 24
+
+   * - Tag
+     - Tagged commit
+     - Cut from
+     - Runs record version
+     - Byte-identical export
+   * - ``v0.5.0``
+     - ``717783a9``
+     - ``f48effe3``
+     - ``0.4.336``
+     - no (key-level only)
+   * - ``v0.5.1``
+     - *<filled at tagging>*
+     - *<filled at tagging>*
+     - ``0.5.0``
+     - yes
+
+Input 2: the labels -- ``benchmark_adjudication`` at a SHA
+----------------------------------------------------------
+
+The adjudicated labels are a standalone public dataset: one row per
+labeled finding, ``data/<project>/adjudication.csv``, keyed on
+``(project, codebase_commit, file_path, line, rule_id)`` with a ``verdict``
+of ``TP``, ``FP``, ``uncertain`` or ``FN``, plus who labeled it, when, and
+why. Its README documents the columns and the review process; nothing in it
+needs a database or a credential to read.
+
+The dataset grows continuously, so a published figure is scored against the
+labels **as of one commit** of that repo. The paper pins that commit in its
+measurement facts (``benchmark_adjudication_commit``); for v0.5.0 the
+maintainers' oracle was level with ``3ab3f41d``. Clone the repo beside this
+one and keep the SHA -- the scorer reads the labels at that commit through
+``git show``, so the checkout itself can sit on any branch:
+
+.. code-block:: bash
+
+   cd $AURORA_LINT_SRC_ROOT
+   git clone https://github.com/brandon-arrendondo/benchmark_adjudication
+   git -C benchmark_adjudication cat-file -e 3ab3f41d^{commit} && echo "label SHA present"
+
+The same repo carries the reference scorer, ``scripts/score.py``, and a
+golden test (``tests/test_score_golden.py``) that pins the scorer to run
+``#265``: run 265's finding keys are stored under ``tests/golden/run-265/``,
+and the test asserts that scoring them against the labels at ``3ab3f41d``
+with the scope from this repo at ``f48effe3`` reproduces the paper's
+per-project and overall figures exactly. ``python3 -m unittest discover -s
+tests`` in that repo runs it; it is the demonstration that the published
+figure *is* a function of the three SHAs and nothing else.
+
+Input 3: the corpus -- pinned checkouts and Juliet
+--------------------------------------------------
+
+Real-world codebases
+~~~~~~~~~~~~~~~~~~~~
+
+``data/benchmark_repos.json`` pins every real-world codebase to one commit
+and declares, per codebase, which files count toward the oracle
+(``scope_include`` / ``scope_exclude``). Read it **at the analyzer's
+commit** -- the pins and scope are part of what the run means, and the
+scorer takes this file as its scope input:
+
+.. code-block:: bash
+
+   git show f48effe3:data/benchmark_repos.json > /tmp/benchmark_repos.f48effe3.json
+
+The checkouts live under ``$SQC_BENCH_ROOT`` (default ``~/toolchain``), one
+directory per codebase named exactly as in the JSON; the runner attributes
+findings to a project by that directory name, and the scorer normalizes
+scan paths by it. Provision them with the playbook in :doc:`benchmark-setup`
+and then, **before every run**, verify they are still at their pins:
+
+.. code-block:: bash
+
+   python -m bench corpus-check      # exit 0 and every row OK, or stop here
+
+Provisioning pins a checkout once and nothing holds it there: a ``git pull``
+on a tracking branch moves it, and the runner records whatever commit it
+finds rather than asserting the pin. Findings from a drifted tree land at
+``(file, line)`` pairs the labels never saw and fall silently out of both
+precision and recall. ``corpus-check`` also flags **untracked and gitignored
+``*.c``/``*.h`` files**: aurora-lint dispatches on file extension and never
+consults git, so a build run inside a checkout contaminates every later
+scan while ``git status`` stays clean -- sqlite's generated ``sqlite3.c``
+amalgamation is the standing example, worth a quarter of a million lines.
+Keep the checkouts pristine and build nothing inside ``$SQC_BENCH_ROOT``.
+
+Juliet
+~~~~~~
+
+The synthetic corpus is the NIST SARD `Juliet Test Suite for C/C++ v1.3
+<https://samate.nist.gov/SARD/test-suites/112>`_ (SARD suite 112),
+obtained manually because SARD has no stable download URL, and placed at
+``$SQC_BENCH_ROOT/benchmarks/juliet-test-suite-c`` (:doc:`benchmark-setup`).
+It is versioned by NIST, not pinned by this repo; v1.3 is the only version
+these numbers have ever been run on.
+
+Procedure
+---------
+
+Real-world half
+~~~~~~~~~~~~~~~
+
+1. Build the analyzer at the cut-from commit (above) and confirm
+   ``python -m bench corpus-check`` is clean.
+
+2. Scan every codebase with the benchmark runner. It invokes the release
+   binary per codebase with that codebase's manifest from
+   ``conf/realworld/`` and its include paths, and writes one ``--export``
+   JSON per codebase; the local SQLite ingest and score that follow are for
+   your own use and are not part of the reproduction.
+
+   .. code-block:: bash
+
+      python -m bench realworld-run --tool sqc              # all 12 codebases
+      python -m bench realworld-run --tool sqc --codebase libcrc,lua   # a subset
+
+   Exports land under ``results/realworld/sqc-<version>-<sha>/`` as
+   ``sqc-<project>-<version>-<sha>.json``, a JSON list of
+   ``{"rule_id", "file", "line", "message", …}`` objects. ``file`` is the
+   path as scanned (absolute, under ``$SQC_BENCH_ROOT/<project>/``); the
+   scorer strips it to the project-relative form the labels use. The run
+   ends with ``No oracle labels cover this run's commit(s) yet -- nothing
+   scored``: that is the *local* SQLite scorer finding no labels in a fresh
+   clone, and it is expected -- the labels live in ``benchmark_adjudication``
+   and the next step scores against them.
+
+3. Score the exports with the reference scorer, naming the label SHA and the
+   scope file from step 0:
+
+   .. code-block:: bash
+
+      cd $AURORA_LINT_SRC_ROOT/benchmark_adjudication
+      R=$AURORA_LINT_SRC_ROOT/aurora-lint/results/realworld/sqc-0.4.336-f48effe3
+      python3 scripts/score.py \
+          --scope /tmp/benchmark_repos.f48effe3.json --scope-ref aurora-lint@f48effe3 \
+          --labels-ref 3ab3f41d \
+          $(for p in curl hostap libcrc lua mbedtls mosquitto pureftpd raylib sel4 sqlite valkey ventoy; do
+              echo --export $p=$R/sqc-$p-0.4.336-f48effe3.json; done)
+
+   It prints a per-project table and an overall row -- precision, recall
+   against known true positives, label coverage -- with a basis line naming
+   the definition version and every input. ``--json`` gives the same as a
+   document whose keys match the maintainers' pipeline output, so it can be
+   diffed against the paper's pinned facts directly.
+
+4. Compare. The expected figures are not restated here on purpose (a number
+   copied into prose goes stale silently): they are the README highlights
+   table for the current release, and for the paper its pinned measurement
+   facts, both of which name the run and the SHAs they came from. The
+   scorer's own golden test holds the run-265 expectation as data.
+
+Juliet half
+~~~~~~~~~~~
+
+Juliet is scored by this repo's own runner, against the suite's built-in
+ground truth (``OMITBAD``/``OMITGOOD``), so there is no external label set
+to pin -- the analyzer commit and the suite version are the whole triple:
+
+.. code-block:: bash
+
+   python -m bench juliet                # fast mode: per-CWE manifests, CWE-matched rules
+   python -m bench status latest         # precision, per-CWE detail, run id
+
+Published Juliet figures are fast-mode figures. The run id is
+``sqc-<version>-<sha>``; ``status`` and ``compare`` accept a SHA.
+
+Hardware, time and memory
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Measured on one 12-core / 32 GB node running the procedure above at
+``v0.5.0`` (2026-09-19); scale wall time by core count.
+
+- ``cargo build --release`` from clean: 1 min 10 s (7.7 CPU-minutes).
+- Real-world, ``--tool sqc``, all 12 codebases: **11 min 40 s** wall
+  (62 CPU-minutes). The long ones are hostap (3.5 min), sqlite (2.8 min),
+  raylib (2.2 min) and valkey (1.5 min); everything else finishes in under
+  40 s. Peak resident memory was about 6 GB, on hostap.
+  **sqlite with every rule enabled needs real memory** -- a 3.8 GB node
+  runs out and is killed; keep 8 GB or more free, or scan it last on its
+  own with ``--codebase sqlite``.
+- Juliet, fast mode: about 32--40 minutes, largely CPU-bound and parallel
+  (``--jobs N``).
+- Neither run needs the network, a database, or anything in
+  ``benchmark_adjudication`` beyond the scorer and the CSVs.
+
+Do not rebuild the binary while a run is in progress: the runner invokes
+``target/release/aurora-lint`` per codebase and a mid-run rebuild mixes two
+builds into one run id.
+
+What another machine reproduces, measured
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The procedure above was run in full on a machine that is not the one that
+produced run ``#265`` (same tag, same pins, same label SHA, same scope;
+Ubuntu 24.04, glibc 2.39). The result, scored by ``score.py``:
+
+- five of twelve projects reproduced **key for key** (libcrc, lua,
+  pure-ftpd, raylib, Ventoy);
+- overall precision and recall against known TPs reproduced to the
+  published decimal; label coverage came out 0.1 point lower;
+- 154,095 in-scope findings against 154,103, with about 150 keys (0.1 %)
+  differing across the other seven projects -- and every one of them
+  traceable to the **host's installed headers**, which the scan reads
+  through ``-I /usr/include`` and the per-project include paths. Missing
+  third-party headers produce DCL31-C *called without prior declaration*
+  findings (curl's ``lib/vauth/gsasl.c`` when ``libgsasl`` is absent;
+  mosquitto's MySQL example plugin without ``libmysqlclient``); a different
+  glibc or OpenSSL release moves a handful of cross-file EXP34-C / EXP36-C /
+  API00-C decisions that depend on how a system typedef or prototype
+  resolved. Labeled keys were essentially untouched (five TP and 26 FP
+  labels of 117,200 fell outside the new run), which is why the rates held.
+
+The same binary on the same machine, run twice, gave identical key sets on
+every codebase checked -- the variation is between machines, not between
+runs. So the fourth input, not named by any SHA, is the header environment:
+:doc:`benchmark-setup` lists the packages the benchmark node carries, and a
+reproducer who wants zero key-level drift needs that list rather than
+"whatever ``/usr/include`` has". A published figure's precision and recall
+do not hinge on it; a claim about an exact finding count does.
+
+Reading a mismatch
+------------------
+
+If every per-project row of the scorer's output equals the published one,
+the figure is reproduced. If not, the scorer's inputs localize the cause:
+
+- **A project's finding count differs but its labeled counts do not.** The
+  extra or missing keys are unlabeled, so precision and recall hold and only
+  coverage moves. Usual causes: the host's headers (above -- look for
+  DCL31-C keys naming a library function), a different build (check
+  ``--version`` and the SHA), a drifted or contaminated checkout
+  (``corpus-check``), or a different manifest under ``conf/realworld/`` than
+  the one at the analyzer commit.
+- **A project is reported unscored.** Its ``codebase_commit`` has no labels
+  at the label SHA, which means the checkout is not at its pin -- the
+  scorer takes the commit from ``benchmark_repos.json``, so this points at
+  a scope file from the wrong analyzer commit.
+- **Labeled counts differ.** Findings moved to or from labeled keys: the
+  binary is not the named one. Compare the two export files as key sets to
+  see which rules moved.
+- **Only the order of an export differs** from a maintainer-provided one.
+  Expected before ``fc9164fd``; not expected from ``v0.5.1`` on.
+
+Whatever the cause, the reproduction is a statement about your run against
+the published inputs. A disagreement worth reporting is one you can name at
+the key level -- which project, which rule, which ``(file, line)`` pairs --
+because that is the form in which the label set itself can be corrected.

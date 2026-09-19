@@ -57,9 +57,11 @@ Benchmark Workflow Protocol
 
 .. important::
 
-    1. **Version bump + commit BEFORE benchmark**: Always bump the version in
-       ``Cargo.toml``, rebuild (``cargo build --release``), and commit before
-       starting. The run_id is ``sqc-{version}-{sha}``.
+    1. **Commit BEFORE benchmark, do not bump the version**: rebuild
+       (``cargo build --release``) and commit before starting. The run_id is
+       ``sqc-{version}-{sha}``, and the **SHA** is what discriminates runs;
+       the version string is a release artifact, bumped only when a release
+       is cut (see ``CLAUDE.md``).
 
     2. **NEVER modify code while a benchmark is running**: The benchmark uses
        ``target/release/aurora-lint``. Rebuilding while running corrupts results.
@@ -69,15 +71,15 @@ Benchmark Workflow Protocol
 
     4. **Compare runs after completion**.
 
-    5. **Sequence**: ``implement -> bump version -> commit -> build release ->
-       run benchmark -> wait -> analyze``
+    5. **Sequence**: ``implement -> commit -> build release -> run benchmark
+       -> wait -> analyze``
 
 Pre-Benchmark Checklist
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 - All code changes committed
-- Version bumped in ``Cargo.toml`` (for Juliet)
 - ``cargo build --release`` successful
+- ``python -m bench corpus-check`` clean (real-world)
 - No other benchmark currently running (it's your terminal -- you'll know)
 - Previous results compared if needed (``python -m bench compare``)
 
@@ -166,17 +168,19 @@ own terminal, against their own SQLite DB. See ``bench/realworld_runner.py``.
 
 .. code-block:: bash
 
-    python -m bench realworld-run [--tool aurora-lint,cppcheck,clang-tidy] [--codebase C,C] [--compile-commands]
+    python -m bench realworld-run [--tool sqc,cppcheck,clang-tidy] [--codebase C,C] [--compile-commands]
     python -m bench realworld [RUN] [--compare BASE]   # FP dashboard
     python -m bench realworld-runs                     # list runs
     python -m bench realworld-score [RUN]               # measured precision/recall
 
-``realworld-run`` defaults to ``aurora-lint`` against every codebase; narrow either
-flag as needed. It blocks until every requested combo finishes, then ingests
+``realworld-run`` defaults to ``sqc`` -- the aurora-lint binary; the tool id
+is ``sqc`` on purpose, see :doc:`reproducing-published-numbers` -- against
+every codebase; narrow either flag as needed. It blocks until every requested combo finishes, then ingests
 the aurora-lint results and scores them against the oracle -- no separate ingest
 step, no polling.
 
-Supported tools: ``aurora-lint``, ``cppcheck``, ``clang-tidy``
+Supported tools: ``sqc`` (aurora-lint), ``cppcheck``, ``clang-tidy``, ``infer``,
+``frama-c``
 
 Supported codebases: ``libcrc``, ``sqlite``, ``mosquitto``, ``curl``, ``hostap``,
 ``lua``, ``raylib``, ``pureftpd``, ``sel4``, ``mbedtls``, ``valkey``, ``ventoy``
@@ -314,7 +318,7 @@ Typical real-world workflow:
 
 .. code-block:: bash
 
-    python -m bench realworld-run --tool aurora-lint          # blocks until every codebase is done
+    python -m bench realworld-run --tool sqc                  # blocks until every codebase is done
     python -m bench realworld latest                   # view results
     python -m bench realworld latest --compare 0.2.6   # compare against a prior run
 
@@ -522,7 +526,7 @@ Issue                                    Solution
 "Benchmark already running"              It's synchronous and runs in your terminal --
                                           Ctrl-C the process if you meant to stop it
 Old results consuming disk               ``rm -rf results/realworld/<version_dir>``
-Results show wrong version               Ensure version bump + commit before build
+Results show wrong version               Ensure commit before build; the SHA is the id
 SQLite locked                            WAL handles concurrent reads; check for a
                                           leftover process still holding the file open
 Historical run not found                 Data predates SQLite migration; not available

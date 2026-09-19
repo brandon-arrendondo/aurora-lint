@@ -141,6 +141,9 @@ How both numbers are produced, what they exclude, and why the Juliet
 true-positive rate is not the whole story:
 [`docs/testing-methodology.rst`](docs/testing-methodology.rst) and
 [`docs/juliet-history.rst`](docs/juliet-history.rst).
+To regenerate a published figure yourself from the analyzer tag, the public
+label set and the corpus pins — no database, no credential — see
+[`docs/reproducing-published-numbers.rst`](docs/reproducing-published-numbers.rst).
 
 ## Installation
 
@@ -284,6 +287,7 @@ For advanced usage, CI/CD integration details, interactive UI reference, testing
 | [`docs/future-rulesets.rst`](docs/future-rulesets.rst) | Why CERT C is the base standard, and which open standards could be added |
 | [`docs/tool-comparison.rst`](docs/tool-comparison.rst) | aurora-lint vs cppcheck, clang-tidy, Frama-C, Infer — per-CWE precision, speed, build requirements |
 | [`docs/testing-methodology.rst`](docs/testing-methodology.rst) | How the benchmark numbers are produced, and what they exclude |
+| [`docs/reproducing-published-numbers.rst`](docs/reproducing-published-numbers.rst) | Reproduce a published figure from three SHAs: the aurora-lint tag, the `benchmark_adjudication` label commit, and the corpus pins |
 | [CONTRIBUTORS.md](CONTRIBUTORS.md) | Who built this |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to submit a PR, DCO sign-off, licensing |
 
