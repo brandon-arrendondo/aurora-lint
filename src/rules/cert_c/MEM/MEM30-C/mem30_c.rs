@@ -6,7 +6,7 @@ use crate::analyze::macro_expand::FunctionMacro;
 use crate::analyze::macro_gaps;
 use crate::analyze::points_to::{lvalue_of, resolve_canonical, AliasMap, LValue};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -270,6 +270,64 @@ fn call_result_is_assigned(call_node: &Node) -> bool {
             _ => return false,
         }
     }
+}
+
+/// `expr` with any enclosing parentheses removed.
+fn unwrap_parens<'a>(expr: &Node<'a>) -> Node<'a> {
+    let mut current = *expr;
+    while current.kind() == "parenthesized_expression" {
+        match current.named_child(0) {
+            Some(inner) => current = inner,
+            None => break,
+        }
+    }
+    current
+}
+
+/// `expr` with any enclosing parentheses and casts removed: a cast changes
+/// the type of an address, never which object it addresses.
+fn unwrap_parens_and_casts<'a>(expr: &Node<'a>) -> Node<'a> {
+    let mut current = *expr;
+    loop {
+        match current.kind() {
+            "parenthesized_expression" => match current.named_child(0) {
+                Some(inner) => current = inner,
+                None => return current,
+            },
+            "cast_expression" => match current.child_by_field_name("value") {
+                Some(inner) => current = inner,
+                None => return current,
+            },
+            _ => return current,
+        }
+    }
+}
+
+/// Does this declarator declare an ARRAY -- the wrapper nearest the name is
+/// an `array_declarator`? `char *arr[10]` (pointer_declarator around
+/// array_declarator around the name) is an array of pointers, so yes;
+/// `char (*p)[10]` (array_declarator around a parenthesized
+/// pointer_declarator) is a pointer to an array, so no.
+fn declarator_is_array(declarator: &Node) -> bool {
+    let mut current = *declarator;
+    let mut nearest = None;
+    loop {
+        match current.kind() {
+            "array_declarator" | "pointer_declarator" | "function_declarator" => {
+                nearest = Some(current.kind());
+                match current.child_by_field_name("declarator") {
+                    Some(inner) => current = inner,
+                    None => break,
+                }
+            }
+            "parenthesized_declarator" => match current.named_child(0) {
+                Some(inner) => current = inner,
+                None => break,
+            },
+            _ => break,
+        }
+    }
+    nearest == Some("array_declarator")
 }
 
 /// The left-hand side of the plain `=` assignment whose right-hand side is
@@ -708,7 +766,7 @@ impl GlobalTracker {
                     );
                 }
                 "assignment_expression" => {
-                    self.scan_assignment_escape(&n, source, params, func_name);
+                    self.scan_assignment_escape(&n, source);
                 }
                 _ => {}
             }
@@ -842,39 +900,145 @@ impl GlobalTracker {
         }
     }
 
-    /// Handle an `assignment_expression` node: flag a stack pointer escape when a
-    /// local array/VLA is assigned to a global pointer variable.
-    fn scan_assignment_escape(
-        &mut self,
-        node: &Node,
-        source: &str,
-        params: &HashSet<String>,
-        func_name: &str,
-    ) {
-        // Check for VLA/stack pointer escape to global
-        if let Some(left) = node.child_by_field_name("left") {
-            // Writing to an array element (arr[i] = x) is never a stack pointer
-            // escape; only a direct assignment to the pointer/array variable itself
-            // (global_ptr = local_arr) can escape a stack address.
-            if left.kind() != "subscript_expression" {
-                let left_var = self.extract_base_variable(&left, source);
-                // Only pointer/array globals can actually hold a stack address;
-                // scalar integer globals (u8/u16/u32 counters, state vars, etc.) cannot.
-                if self.global_pointer_vars.contains(&left_var) {
-                    // Check if right side is a local array/VLA
-                    if let Some(right) = node.child_by_field_name("right") {
-                        if self.is_local_array_or_vla(&right, source, params, func_name) {
-                            self.stack_escape_violations.push((
-                                node.start_position().row + 1,
-                                node.start_position().column + 1,
-                                format!(
-                                    "Stack pointer escape: local array/VLA assigned to global '{}'",
-                                    left_var
-                                ),
-                            ));
-                        }
-                    }
+    /// Handle an `assignment_expression` node: flag a stack pointer escape when
+    /// the address of automatic storage is assigned to a global pointer
+    /// variable.
+    ///
+    /// Two things have to be true, and each is read from the declarators
+    /// rather than from a name being global or not (task 1349, ADR-0006):
+    ///
+    /// - The assignment's target IS the global pointer variable. A field,
+    ///   dereference or element on the left (`mct->global.tcon = GTCON_EN`
+    ///   through sel4's file-scope MMIO pointer, valkey's `myself->flags |=
+    ///   ...`) writes into the object the global points at and never changes
+    ///   what the global holds; the global was only the BASE of the lvalue,
+    ///   and 32 of the 35 misfires were that.
+    /// - The assigned value is the address of automatic storage: a local
+    ///   array or VLA (its name decays to a pointer to it), or `&` of a local
+    ///   or parameter object. A local POINTER (`EvictionPoolLRU = ep` after
+    ///   `ep = zmalloc(...)`, `Users = old_users`) holds whatever it points
+    ///   at -- heap, the previous value of the global -- and "not a global and
+    ///   not a parameter" said nothing about that.
+    fn scan_assignment_escape(&mut self, node: &Node, source: &str) {
+        let (Some(left), Some(right)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) else {
+            return;
+        };
+        let target = unwrap_parens(&left);
+        if target.kind() != "identifier" {
+            return;
+        }
+        let left_var = get_node_text(&target, source).to_string();
+        // Only pointer/array globals can actually hold a stack address;
+        // scalar integer globals (u8/u16/u32 counters, state vars, etc.) cannot.
+        if !self.global_pointer_vars.contains(&left_var) {
+            return;
+        }
+        if !matches!(
+            ast_utils::resolve_identifier_binding(&target, &left_var, source),
+            Some(ast_utils::IdentifierBinding::Global(_))
+        ) {
+            // The name is shadowed here by a local or parameter of its own.
+            return;
+        }
+        if Self::is_address_of_automatic_storage(&right, source) {
+            self.stack_escape_violations.push((
+                node.start_position().row + 1,
+                node.start_position().column + 1,
+                format!(
+                    "Stack pointer escape: local array/VLA assigned to global '{}'",
+                    left_var
+                ),
+            ));
+        }
+    }
+
+    /// Does `expr` evaluate to the address of an object with automatic
+    /// storage duration, as its declarators say? Through parentheses and
+    /// casts: a local array or VLA used as a value (it decays), or `&` of a
+    /// local or parameter object -- the object itself, a `.` member of it, or
+    /// an element of a local array. `&p->f` and `&p[i]` for a pointer `p`
+    /// address whatever `p` points at, which is not known to be automatic.
+    /// A `static` local is not automatic. Anything unresolvable is not
+    /// claimed.
+    fn is_address_of_automatic_storage(expr: &Node, source: &str) -> bool {
+        let expr = unwrap_parens_and_casts(expr);
+        match expr.kind() {
+            "identifier" => {
+                Self::automatic_declarator(&expr, source).is_some_and(|d| declarator_is_array(&d))
+            }
+            "pointer_expression" => {
+                let is_address_of = expr
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "&")
+                    || (0..expr.child_count())
+                        .filter_map(|i| expr.child(i))
+                        .any(|c| c.kind() == "&");
+                if !is_address_of {
+                    return false;
                 }
+                let Some(arg) = expr.child_by_field_name("argument") else {
+                    return false;
+                };
+                Self::is_automatic_object(&unwrap_parens(&arg), source)
+            }
+            _ => false,
+        }
+    }
+
+    /// Is `lv` an object with automatic storage duration: a local or
+    /// parameter name, a `.` member of one, or an element of a local array?
+    fn is_automatic_object(lv: &Node, source: &str) -> bool {
+        match lv.kind() {
+            "identifier" => Self::automatic_declarator(lv, source).is_some(),
+            "field_expression" => {
+                let through_pointer = (0..lv.child_count())
+                    .filter_map(|i| lv.child(i))
+                    .any(|c| c.kind() == "->");
+                !through_pointer
+                    && lv
+                        .child_by_field_name("argument")
+                        .is_some_and(|a| Self::is_automatic_object(&unwrap_parens(&a), source))
+            }
+            "subscript_expression" => lv.child_by_field_name("argument").is_some_and(|a| {
+                let a = unwrap_parens(&a);
+                a.kind() == "identifier"
+                    && Self::automatic_declarator(&a, source)
+                        .is_some_and(|d| declarator_is_array(&d))
+            }),
+            _ => false,
+        }
+    }
+
+    /// The declarator binding this occurrence, when the binding is a local
+    /// declaration without `static`/`extern` or a parameter -- automatic
+    /// storage either way. `None` for a global, a static local, a function,
+    /// or a name that resolves to nothing in this file.
+    fn automatic_declarator<'a>(ident: &Node<'a>, source: &str) -> Option<Node<'a>> {
+        let name = get_node_text(ident, source);
+        let (decl, declarator) = ast_utils::resolve_identifier_declarator(ident, name, source)?;
+        if declarator.kind() == "function_declarator" {
+            return None;
+        }
+        match decl.kind() {
+            "parameter_declaration" => Some(declarator),
+            _ => {
+                let static_or_extern =
+                    (0..decl.child_count())
+                        .filter_map(|i| decl.child(i))
+                        .any(|c| {
+                            c.kind() == "storage_class_specifier"
+                                && matches!(get_node_text(&c, source), "static" | "extern")
+                        });
+                // A file-scope declaration is never automatic; the binding
+                // fallback reaches one only when no local or parameter binds
+                // the name.
+                let file_scope = decl
+                    .parent()
+                    .is_some_and(|p| p.kind() == "translation_unit");
+                (!static_or_extern && !file_scope).then_some(declarator)
             }
         }
     }
@@ -962,27 +1126,6 @@ impl GlobalTracker {
                 }
             }
             current = parent.parent();
-        }
-        false
-    }
-
-    fn is_local_array_or_vla(
-        &self,
-        node: &Node,
-        source: &str,
-        params: &HashSet<String>,
-        _func_name: &str,
-    ) -> bool {
-        // Check if the expression refers to a local array
-        let var_name = self.extract_base_variable(node, source);
-
-        // If it's not a global and not a parameter, it's local
-        if !var_name.is_empty()
-            && !self.global_vars.contains(&var_name)
-            && !params.contains(&var_name)
-        {
-            // This is a local variable - could be VLA or stack array
-            return true;
         }
         false
     }
