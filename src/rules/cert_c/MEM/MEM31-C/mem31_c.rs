@@ -387,11 +387,10 @@ enum Frame<'a> {
         saved_state: LeakBranchState,
         saved_allocated: HashMap<String, AllocInfo>,
         saved_escaped: HashSet<String>,
-        true_has_return: bool,
-        /// The branch's LAST statement leaves (return/goto/noreturn call),
-        /// as opposed to `true_has_return`'s "a return somewhere inside".
-        true_ends_by_leaving: bool,
-        else_has_return: bool,
+        /// The branch cannot fall through into the statement after the
+        /// `if` (`branch_cannot_fall_through`).
+        true_leaves: bool,
+        else_leaves: bool,
         else_clause: Option<Node<'a>>,
         truthiness_var: Option<String>,
         non_null_check_var: Option<String>,
@@ -402,14 +401,21 @@ enum Frame<'a> {
         if_node: Node<'a>,
         saved_state: LeakBranchState,
         saved_allocated: HashMap<String, AllocInfo>,
-        true_has_return: bool,
-        else_has_return: bool,
-        true_state: LeakBranchState,
+        saved_escaped: HashSet<String>,
+        true_leaves: bool,
+        else_leaves: bool,
+        true_state: Box<LeakBranchState>,
+        /// What the true arm held when it ended; the else arm is walked
+        /// from the pre-`if` records instead.
+        true_allocated: HashMap<String, AllocInfo>,
+        true_escaped: HashSet<String>,
     },
     /// Reset to `pre_state`/`pre_allocated` and walk the next `switch` case,
     /// once the previous case's own subtree has fully drained.
     SwitchNextCase {
         remaining_reversed: Vec<Node<'a>>,
+        /// The case whose statements have just drained, if any.
+        walked: Option<Node<'a>>,
         pre_state: LeakBranchState,
         pre_allocated: HashMap<String, AllocInfo>,
     },
@@ -424,8 +430,11 @@ enum Frame<'a> {
     /// once the last arm has drained. See `visit_preproc_chain`.
     PreprocNextArm {
         remaining_reversed: Vec<Node<'a>>,
+        /// The arm whose statements have just drained.
+        walked: Node<'a>,
         pre_state: Box<PreprocArmState>,
-        merged: Box<PreprocArmState>,
+        /// `None` until an arm that falls through has been folded in.
+        merged: Option<Box<PreprocArmState>>,
     },
 }
 
@@ -1408,9 +1417,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     saved_state,
                     saved_allocated,
                     saved_escaped,
-                    true_has_return,
-                    true_ends_by_leaving,
-                    else_has_return,
+                    true_leaves,
+                    else_leaves,
                     else_clause,
                     truthiness_var,
                     non_null_check_var,
@@ -1419,9 +1427,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     saved_state,
                     saved_allocated,
                     saved_escaped,
-                    true_has_return,
-                    true_ends_by_leaving,
-                    else_has_return,
+                    true_leaves,
+                    else_leaves,
                     else_clause,
                     truthiness_var,
                     non_null_check_var,
@@ -1431,9 +1438,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     if_node,
                     saved_state,
                     saved_allocated,
-                    true_has_return,
-                    else_has_return,
+                    saved_escaped,
+                    true_leaves,
+                    else_leaves,
                     true_state,
+                    true_allocated,
+                    true_escaped,
                 } => {
                     let else_state = LeakBranchState::fork(self);
                     Self::finish_if(
@@ -1441,26 +1451,88 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         &if_node,
                         &saved_state,
                         &saved_allocated,
-                        true_has_return,
-                        else_has_return,
+                        true_leaves,
+                        else_leaves,
                         &true_state,
                         &else_state,
                         true,
                     );
+                    // The allocation and escape records follow the same
+                    // rule as the branch state: the code after the `if` holds
+                    // what the arms that reach it held. An arm that leaves
+                    // takes its allocations with it -- `if (cfg) { new_argv
+                    // = sdssplitargs(..); ... sdsfreesplitres(new_argv);
+                    // continue; } else { ... }` in valkey's config.c
+                    // otherwise carried `new_argv` past the `if` with its
+                    // free left behind in the discarded arm, and reported it
+                    // leaked at every later exit (task 1339). Same record
+                    // `after_true_branch` keeps for the else-less shape.
+                    match (true_leaves, else_leaves) {
+                        (true, false) => {}
+                        (false, true) => {
+                            self.allocated_memory = true_allocated;
+                            self.escaped_memory = true_escaped;
+                        }
+                        _ => {
+                            // Both arms reach the code below -- or neither
+                            // does, and nothing below is reachable, so the
+                            // record only has to keep the end-of-function
+                            // sweep quiet about what the arms disposed of.
+                            // Either way the record this walk has always
+                            // continued with here is the else arm's changes
+                            // applied on top of the true arm's: a block the
+                            // true arm freed or handed over stays gone, one
+                            // the else arm made is added, one it freed is
+                            // removed.
+                            let else_allocated =
+                                std::mem::replace(&mut self.allocated_memory, true_allocated);
+                            for (k, v) in else_allocated.iter() {
+                                if !saved_allocated.contains_key(k) {
+                                    self.allocated_memory.insert(k.clone(), v.clone());
+                                }
+                            }
+                            for k in saved_allocated.keys() {
+                                if !else_allocated.contains_key(k) {
+                                    self.allocated_memory.remove(k);
+                                }
+                            }
+                            let else_escaped =
+                                std::mem::replace(&mut self.escaped_memory, true_escaped);
+                            self.escaped_memory
+                                .extend(else_escaped.difference(&saved_escaped).cloned());
+                            for k in saved_escaped.difference(&else_escaped) {
+                                self.escaped_memory.remove(k);
+                            }
+                        }
+                    }
                 }
                 Frame::SwitchNextCase {
                     remaining_reversed,
+                    walked,
                     pre_state,
                     pre_allocated,
-                } => {
-                    self.switch_next_case(remaining_reversed, pre_state, pre_allocated, &mut stack)
-                }
+                } => self.switch_next_case(
+                    remaining_reversed,
+                    walked,
+                    pre_state,
+                    pre_allocated,
+                    source,
+                    &mut stack,
+                ),
                 Frame::ExitLoop { array_pattern } => self.exit_loop(array_pattern),
                 Frame::PreprocNextArm {
                     remaining_reversed,
+                    walked,
                     pre_state,
                     merged,
-                } => self.preproc_next_arm(remaining_reversed, pre_state, merged, &mut stack),
+                } => self.preproc_next_arm(
+                    remaining_reversed,
+                    walked,
+                    pre_state,
+                    merged,
+                    source,
+                    &mut stack,
+                ),
             }
         }
     }
@@ -1752,17 +1824,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             .filter_map(|i| n.child(i))
             .find(|child| child.kind() == "else_clause");
 
-        let true_has_return = true_branch
+        let true_leaves = true_branch
             .as_ref()
-            .map(|b| self.branch_leaves_flow(b, source))
-            .unwrap_or(false);
-        let true_ends_by_leaving = true_branch
+            .is_some_and(|b| self.branch_cannot_fall_through(b, source));
+        let else_leaves = else_clause
             .as_ref()
-            .is_some_and(|b| self.block_ends_by_leaving(b, source));
-        let else_has_return = else_clause
-            .as_ref()
-            .map(|e| self.branch_leaves_flow(e, source))
-            .unwrap_or(false);
+            .is_some_and(|e| self.branch_cannot_fall_through(e, source));
 
         if let Some(ref var_name) = null_check_var {
             self.null_variables.insert(var_name.clone());
@@ -1778,9 +1845,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             saved_state,
             saved_allocated,
             saved_escaped,
-            true_has_return,
-            true_ends_by_leaving,
-            else_has_return,
+            true_leaves,
+            else_leaves,
             else_clause,
             truthiness_var,
             non_null_check_var,
@@ -1889,6 +1955,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         cases.reverse();
         stack.push(Frame::SwitchNextCase {
             remaining_reversed: cases,
+            walked: None,
             pre_state: LeakBranchState::fork(self),
             pre_allocated: self.allocated_memory.clone(),
         });
@@ -1901,9 +1968,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         saved_state: LeakBranchState,
         saved_allocated: HashMap<String, AllocInfo>,
         saved_escaped: HashSet<String>,
-        true_has_return: bool,
-        true_ends_by_leaving: bool,
-        else_has_return: bool,
+        true_leaves: bool,
+        else_leaves: bool,
         else_clause: Option<Node<'n>>,
         truthiness_var: Option<String>,
         non_null_check_var: Option<String>,
@@ -1913,6 +1979,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
         if let Some(else_node) = else_clause {
             saved_state.restore(self);
+            // The else arm did not see what the true arm allocated or
+            // disowned; it starts from the pre-`if` records, and
+            // `AfterElseBranch` settles which arm's records continue.
+            let true_allocated =
+                std::mem::replace(&mut self.allocated_memory, saved_allocated.clone());
+            let true_escaped = std::mem::replace(&mut self.escaped_memory, saved_escaped.clone());
             if let Some(ref var_name) = truthiness_var {
                 self.null_variables.insert(var_name.clone());
             }
@@ -1923,9 +1995,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 if_node,
                 saved_state,
                 saved_allocated,
-                true_has_return,
-                else_has_return,
-                true_state,
+                saved_escaped,
+                true_leaves,
+                else_leaves,
+                true_state: Box::new(true_state),
+                true_allocated,
+                true_escaped,
             });
             stack.push(Frame::Visit(else_node));
         } else {
@@ -1935,8 +2010,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 &if_node,
                 &saved_state,
                 &saved_allocated,
-                true_has_return,
-                else_has_return,
+                true_leaves,
+                else_leaves,
                 &true_state,
                 &saved_state,
                 false,
@@ -1946,15 +2021,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // NULL; goto fail; }` dropped `ctx` from the allocation records
             // for the rest of the function, so a later `return ctx` no
             // longer escaped the fields hanging off it. Only when the
-            // branch's LAST statement leaves: `true_has_return` is also set
-            // by a return nested somewhere inside, and a branch that
-            // allocates and then only conditionally returns did allocate on
-            // the path that falls out of it. What had escaped is part of
-            // the same record: `u->mosq = mosq; ... if (err) {
-            // mosquitto_FREE(mosq); return -1; }` disowns the name inside
-            // the branch, and mosquitto's websockets.c then reported
-            // `mosq` leaked at every later return.
-            if true_ends_by_leaving {
+            // branch cannot fall through: a branch that allocates and then
+            // only conditionally returns did allocate on the path that
+            // falls out of it. What had escaped is part of the same record:
+            // `u->mosq = mosq; ... if (err) { mosquitto_FREE(mosq); return
+            // -1; }` disowns the name inside the branch, and mosquitto's
+            // websockets.c then reported `mosq` leaked at every later
+            // return.
+            if true_leaves {
                 self.allocated_memory = saved_allocated;
                 self.escaped_memory = saved_escaped;
             }
@@ -1964,8 +2038,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     fn switch_next_case<'n>(
         &mut self,
         mut remaining_reversed: Vec<Node<'n>>,
+        walked: Option<Node<'n>>,
         pre_state: LeakBranchState,
         pre_allocated: HashMap<String, AllocInfo>,
+        source: &str,
         stack: &mut Vec<Frame<'n>>,
     ) {
         if let Some(case) = remaining_reversed.pop() {
@@ -1973,15 +2049,22 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             self.allocated_memory = pre_allocated.clone();
             stack.push(Frame::SwitchNextCase {
                 remaining_reversed,
+                walked: Some(case),
                 pre_state: pre_state.clone(),
                 pre_allocated,
             });
             stack.push(Frame::Visit(case));
+        } else if walked.is_some_and(|case| self.case_cannot_fall_through(&case, source)) {
+            // The chain ends on whatever the last case left (pre-existing
+            // quirk: no merge across cases) -- unless that case left the
+            // function, in which case nothing it did reaches the code after
+            // the `switch`. hostap's driver_wext.c `default: os_free(ext);
+            // return -1;` followed by the shared `os_free(ext)` read as a
+            // double free once the enclosing branch's state was kept
+            // (task 1339).
+            pre_state.restore(self);
+            self.allocated_memory = pre_allocated;
         }
-        // else: no more cases - chain ends, self stays as whatever the last
-        // case left it (pre-existing quirk, preserved: no merge/restore
-        // after the loop) -- now true of allocated_memory too, consistent
-        // with LeakBranchState's own fields.
     }
 
     /// An `#if`/`#elif`/`#else` chain is not a sequence of statements: only
@@ -2014,31 +2097,52 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         // arms of mosquitto's `#ifdef WIN32` had freed and nulled it.
         stack.push(Frame::PreprocNextArm {
             remaining_reversed: arms,
-            merged: Box::default(),
+            walked: first,
+            merged: None,
             pre_state,
         });
         push_arm_children(stack, &first);
     }
 
+    /// Fold the arm that just drained and start the next one.
+    ///
+    /// An arm that cannot fall through -- hostap's eap_sim.c `#else
+    /// os_free(data); return NULL; #endif` -- contributes nothing to the
+    /// state below the `#endif`: in the translation unit that compiles it,
+    /// that code is never reached, and folding its free in reported the
+    /// real arm's later `os_free(data)` as a double free (task 1339). If no
+    /// arm falls through, the code below is dead in every unit and the
+    /// entry state is kept, as `finish_if` keeps it when both branches
+    /// leave.
     fn preproc_next_arm<'n>(
         &mut self,
         mut remaining_reversed: Vec<Node<'n>>,
+        walked: Node<'n>,
         pre_state: Box<PreprocArmState>,
-        mut merged: Box<PreprocArmState>,
+        mut merged: Option<Box<PreprocArmState>>,
+        source: &str,
         stack: &mut Vec<Frame<'n>>,
     ) {
-        merged.absorb(PreprocArmState::fork(self));
+        if !self.preproc_arm_cannot_fall_through(&walked, source) {
+            merged
+                .get_or_insert_with(Box::default)
+                .absorb(PreprocArmState::fork(self));
+        }
         match remaining_reversed.pop() {
             Some(arm) => {
                 pre_state.restore(self);
                 stack.push(Frame::PreprocNextArm {
                     remaining_reversed,
+                    walked: arm,
                     pre_state,
                     merged,
                 });
                 push_arm_children(stack, &arm);
             }
-            None => merged.restore(self),
+            None => match merged {
+                Some(merged) => merged.restore(self),
+                None => pre_state.restore(self),
+            },
         }
     }
 
@@ -2081,36 +2185,44 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     }
 
     /// Merge post-then/post-else state back onto `analyzer` after an `if`,
-    /// per which branch(es) unconditionally return, and report conditional
-    /// leaks when neither returns and both branches exist. Direct
-    /// transcription of the original `analyze_if`'s final merge block.
+    /// per which branch(es) cannot fall through, and report conditional
+    /// leaks when neither leaves and both branches exist.
     #[allow(clippy::too_many_arguments)]
     fn finish_if(
         analyzer: &mut Self,
         if_node: &Node,
         saved_state: &LeakBranchState,
         saved_allocated: &HashMap<String, AllocInfo>,
-        true_has_return: bool,
-        else_has_return: bool,
+        true_leaves: bool,
+        else_leaves: bool,
         true_state: &LeakBranchState,
         else_state: &LeakBranchState,
         else_clause_present: bool,
     ) {
-        if true_has_return && else_has_return {
-            saved_state.restore(analyzer);
-        } else if true_has_return {
+        if true_leaves && !else_leaves {
             else_state.restore(analyzer);
-        } else if else_has_return {
+        } else if else_leaves && !true_leaves {
             true_state.restore(analyzer);
         } else if else_clause_present {
-            analyzer.report_conditional_leaks(
-                if_node,
-                saved_allocated,
-                &saved_state.null_variables,
-                &true_state.freed_memory,
-                &else_state.freed_memory,
-                &else_state.null_variables,
-            );
+            if !true_leaves {
+                analyzer.report_conditional_leaks(
+                    if_node,
+                    saved_allocated,
+                    &saved_state.null_variables,
+                    &true_state.freed_memory,
+                    &else_state.freed_memory,
+                    &else_state.null_variables,
+                );
+            }
+            // Both arms reach the code below, or neither does. When neither
+            // does, nothing below is reachable and what continues only has
+            // to keep the end-of-function sweep honest: restoring the
+            // pre-`if` freed set there -- what this did until task 1339 --
+            // reported `p = malloc(n); if (c) { free(p); return 1; } else {
+            // free(p); return 0; }` as never freed, because the sweep saw
+            // the allocation and neither arm's free. The union of the two
+            // arms' freed sets is the record that is wrong on no path
+            // anyone can still be on.
             let mut merged = true_state.freed_memory.clone();
             for (k, v) in else_state.freed_memory.clone() {
                 merged.entry(k).or_insert(v);
@@ -2463,7 +2575,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// dropped on the floor. Most functions of that shape never showed the
     /// resulting leak because the `if (!p) goto err;` guarding every such
     /// pointer left `p` in `null_variables` for the rest of the function
-    /// (see `branch_leaves_flow`), which is the wrong reason to be right.
+    /// (see `branch_cannot_fall_through`), which is the wrong reason to be right.
     ///
     /// The right-hand side is read through parentheses and casts:
     /// `head->next = (struct node *) p` hands over the same block.
@@ -3934,63 +4046,129 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         }
     }
 
-    /// True if `node` contains a statement that ends the enclosing branch.
+    /// True if `branch` -- an `else_clause`, a `compound_statement`, or a
+    /// single statement -- can never continue into the statement after the
+    /// `if` it belongs to.
     ///
-    /// A `return` is the obvious one. A call to a function that never returns
-    /// -- `exit()`, `abort()`, a `_Noreturn`/`__attribute__((noreturn))`
-    /// error handler -- ends the branch just as firmly, so a `free()` before
-    /// it cannot reach code textually after the `if`. Missing that reported a
-    /// double free on four pure-ftpd sites whose early-error branch calls a
-    /// process-terminating helper before the shared cleanup runs (task 1076).
-    fn block_has_return(&self, node: &Node, source: &str) -> bool {
-        query::find_first_descendant(*node, |n| {
-            n.kind() == "return_statement"
-                || crate::analyze::noreturn::is_noreturn_call_statement(
-                    &n,
-                    source,
-                    self.noreturn_names,
-                )
-        })
-        .is_some()
-    }
-
-    /// True if an `if` branch never continues into the statement after the
-    /// `if`: it returns (`block_has_return`), or its last statement is a
-    /// `goto`.
+    /// Decided by the branch's LAST statement, the way the compiler decides
+    /// reachability: a `return`, a `goto`, a call to a function that never
+    /// returns (`exit()`, `abort()`, a `_Noreturn` error handler -- a
+    /// `free()` before one cannot reach the code after the `if`, task 1076),
+    /// or an `if`/`else` whose two arms both cannot fall through. A block
+    /// ends where its last statement ends, so nesting is looked through.
     ///
-    /// curl's wolfssl.c writes `if (result) { wolfSSL_SESSION_free(session);
-    /// goto out; }` with no else and frees `session` again below it, on the
-    /// path where `result` is zero. `finish_if` kept the branch's state as
-    /// the fall-through state because only a `return` counted as leaving,
-    /// so the second free read as a double free of a pointer the
-    /// fall-through path never freed. What the `goto` path itself freed is
-    /// not lost by restoring the pre-branch state: `analyze_goto` has already
+    /// NOT "a return somewhere inside". That reading -- the one this had
+    /// until task 1339 -- made `if (ie) { wps = malloc(n); if (!wps)
+    /// return; free(wps); }` restore the pre-`if` freed set after the outer
+    /// branch, because a return existed inside it, while the allocation the
+    /// same branch made on its fall-through path stayed recorded. The block
+    /// was then reported "not freed" at the end of every function with a
+    /// guarded local declared inside a block: hostap's
+    /// `ieee802_11_vendor_ie_concat` cluster, 41 sites over three files,
+    /// and the `if (!p) return; free(p);` shape is the commonest guard
+    /// there is. A branch that returns only on a nested path does fall
+    /// through on the others, and what it freed and allocated on the way
+    /// belongs to the code after the `if`.
+    ///
+    /// curl's wolfssl.c `if (result) { wolfSSL_SESSION_free(session); goto
+    /// out; }` with no else and a second free below is why `goto` counts:
+    /// keeping that branch's state read the second free as a double free on
+    /// the path the goto never takes. What the goto path itself freed is not
+    /// lost by restoring the pre-branch state: `analyze_goto` has already
     /// folded it into the label's entry state.
     ///
-    /// Only `goto` joins `return` here. A `break` or `continue` also ends the
-    /// branch, but the code after the loop is reached on that path too, so
-    /// its frees still belong to what follows.
-    fn branch_leaves_flow(&self, branch: &Node, source: &str) -> bool {
-        self.block_has_return(branch, source) || Self::block_ends_in_goto(branch)
+    /// `continue` joins them and `break` does not -- see
+    /// `statement_cannot_fall_through` for why the two differ.
+    fn branch_cannot_fall_through(&self, branch: &Node, source: &str) -> bool {
+        Self::last_statement_of(branch)
+            .is_some_and(|last| self.statement_cannot_fall_through(&last, source))
     }
 
-    /// Whether the last statement of `branch` -- an `else_clause`, a
-    /// `compound_statement`, or a single statement -- is a `goto`.
-    fn block_ends_in_goto(branch: &Node) -> bool {
-        Self::last_statement_of(branch).is_some_and(|last| last.kind() == "goto_statement")
+    /// Whether control never continues past `stmt` to its next sibling.
+    ///
+    /// `continue` counts: the statements after it in the loop body are not
+    /// reached on that path, and the next iteration starts over from the
+    /// loop head, which is where the block it did not free gets re-made or
+    /// re-checked. `break` does not: the code after the loop is reached on
+    /// that path with exactly the state it left. A preprocessor arm is
+    /// looked into (`preproc_arm_cannot_fall_through`), because a branch
+    /// that ends `#ifdef X ... return; #endif }` ends there.
+    fn statement_cannot_fall_through(&self, stmt: &Node, source: &str) -> bool {
+        match stmt.kind() {
+            "return_statement" | "goto_statement" | "continue_statement" => true,
+            "compound_statement" | "else_clause" => self.branch_cannot_fall_through(stmt, source),
+            "if_statement" => {
+                let else_clause = (0..stmt.child_count())
+                    .filter_map(|i| stmt.child(i))
+                    .find(|child| child.kind() == "else_clause");
+                match (stmt.child_by_field_name("consequence"), else_clause) {
+                    (Some(consequence), Some(else_clause)) => {
+                        self.branch_cannot_fall_through(&consequence, source)
+                            && self.branch_cannot_fall_through(&else_clause, source)
+                    }
+                    _ => false,
+                }
+            }
+            "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_else" => {
+                let own = self.preproc_arm_cannot_fall_through(stmt, source);
+                match stmt.child_by_field_name("alternative") {
+                    // Every arm of the chain must end the branch: only one
+                    // is compiled, and control falls through whichever one
+                    // does not leave.
+                    Some(alternative) => {
+                        own && self.statement_cannot_fall_through(&alternative, source)
+                    }
+                    // A chain-less `#ifdef X ... #endif` is walked as
+                    // coexisting with the code around it (see
+                    // `visit_preproc_chain`), and it ends the branch on the
+                    // same terms.
+                    None => own,
+                }
+            }
+            _ => crate::analyze::noreturn::is_noreturn_call_statement(
+                stmt,
+                source,
+                self.noreturn_names,
+            ),
+        }
     }
 
-    /// Whether the last statement of `branch` leaves the flow: a `return`,
-    /// a `goto`, or a call that never returns.
-    fn block_ends_by_leaving(&self, branch: &Node, source: &str) -> bool {
-        Self::last_statement_of(branch).is_some_and(|last| {
-            matches!(last.kind(), "return_statement" | "goto_statement")
-                || crate::analyze::noreturn::is_noreturn_call_statement(
-                    &last,
-                    source,
-                    self.noreturn_names,
-                )
-        })
+    /// Whether one arm's OWN statements -- not the next arm's -- end by
+    /// leaving.
+    fn preproc_arm_cannot_fall_through(&self, arm: &Node, source: &str) -> bool {
+        Self::preproc_arm_last_statement(arm)
+            .is_some_and(|last| self.statement_cannot_fall_through(&last, source))
+    }
+
+    /// The last of an arm's own statements: everything but the directive's
+    /// condition/name, the next arm, and comments.
+    fn preproc_arm_last_statement<'n>(arm: &Node<'n>) -> Option<Node<'n>> {
+        let skip = [
+            arm.child_by_field_name("condition"),
+            arm.child_by_field_name("name"),
+            arm.child_by_field_name("alternative"),
+        ];
+        (0..arm.named_child_count())
+            .rev()
+            .filter_map(|i| arm.named_child(i))
+            .find(|child| {
+                Self::is_statement(child) && !skip.iter().flatten().any(|s| s.id() == child.id())
+            })
+    }
+
+    /// Whether a `case` ends by leaving the function (or its enclosing
+    /// loop): its last statement, which a `break` is not -- `break` exits
+    /// the `switch` into the code after it.
+    fn case_cannot_fall_through(&self, case: &Node, source: &str) -> bool {
+        let value = case.child_by_field_name("value");
+        (0..case.named_child_count())
+            .rev()
+            .filter_map(|i| case.named_child(i))
+            .find(|child| Self::is_statement(child) && value.is_none_or(|v| v.id() != child.id()))
+            .is_some_and(|last| {
+                last.kind() != "break_statement"
+                    && self.statement_cannot_fall_through(&last, source)
+            })
     }
 
     /// The last statement of a branch, looking inside an `else_clause` and
@@ -4001,9 +4179,26 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             last = (0..last.named_child_count())
                 .rev()
                 .filter_map(|i| last.named_child(i))
-                .find(|child| child.kind() != "comment")?;
+                .find(Self::is_statement)?;
         }
         Some(last)
+    }
+
+    /// Whether a block's named child is a statement at all, as opposed to
+    /// a comment or a stray directive the parser kept as a sibling.
+    ///
+    /// hostap's wpa_supplicant.c splits an `if`/`else if`/`else` chain with
+    /// `#ifdef CONFIG_WPS ... #endif` around the middle arm, and tree-sitter
+    /// then parses the `#endif` as a `preproc_call` INSIDE that arm's block,
+    /// after its `return`. Reading the directive as the arm's last statement
+    /// made the arm fall through, and the `os_free(wpa_ie)` before its
+    /// `return` was reported again as a double free at the two frees below
+    /// the chain. A directive is not where control ends up.
+    fn is_statement(node: &Node) -> bool {
+        !matches!(
+            node.kind(),
+            "comment" | "preproc_call" | "preproc_def" | "preproc_function_def" | "preproc_include"
+        )
     }
 }
 
