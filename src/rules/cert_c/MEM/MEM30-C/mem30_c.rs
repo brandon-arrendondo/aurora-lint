@@ -36,6 +36,11 @@ pub struct Mem30C {
     /// (`macro_gaps::MacroGapKind::AmbiguousDefinition`). Merged in `check`
     /// with this file's own; see `MemoryAnalyzer::ambiguous_macros`.
     project_ambiguous_macros: RefCell<Arc<HashSet<String>>>,
+    /// Cross-file noreturn function names from the prescan, unioned in
+    /// `check` with this file's own declarations and the stdlib set, so a
+    /// branch ending in `exit(1)` or a project `fatal()` is known to have
+    /// no successor (task 1360).
+    noreturn_functions: RefCell<Arc<HashSet<String>>>,
 }
 
 impl Mem30C {
@@ -69,6 +74,7 @@ impl CertRule for Mem30C {
         *self.function_macros.borrow_mut() = context.function_macros.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
+        *self.noreturn_functions.borrow_mut() = context.noreturn_functions.clone();
         *self.project_ambiguous_macros.borrow_mut() = Arc::new(
             context
                 .macro_gaps
@@ -147,6 +153,14 @@ impl CertRule for Mem30C {
                 .map(|g| g.name),
         );
 
+        // Functions that never return to their caller: the stdlib set, the
+        // prescan's cross-file `_Noreturn`/`__attribute__((noreturn))`
+        // declarations, and this file's own (task 1360).
+        let mut noreturn_names = HashSet::clone(&self.noreturn_functions.borrow());
+        noreturn_names.extend(crate::analyze::noreturn::collect_noreturn_function_names(
+            node, source,
+        ));
+
         // Second pass: per-function analysis
         let mut analyzer = MemoryAnalyzer::new(
             macro_null_params,
@@ -154,6 +168,7 @@ impl CertRule for Mem30C {
             self.function_summaries.borrow().clone(),
             macro_aliases,
             ambiguous_macros,
+            noreturn_names,
         );
         analyzer.analyze_node(node, source, &mut violations);
 
@@ -1707,6 +1722,11 @@ struct MemoryAnalyzer {
     // plus this file). A callee named here whose only claim to being a free
     // is its NAME is treated as an opaque call, not a free (task 1233).
     ambiguous_macros: HashSet<String>,
+    /// Callees that never return to this function (`exit`, `abort`,
+    /// `longjmp`, anything declared noreturn). A branch ending in one has
+    /// no join edge: whatever it freed is not carried past the `if`,
+    /// `switch` or label it sits in (task 1360).
+    noreturn_names: HashSet<String>,
 }
 
 impl MemoryAnalyzer {
@@ -1716,6 +1736,7 @@ impl MemoryAnalyzer {
         function_summaries: Arc<HashMap<String, FunctionSummary>>,
         macro_aliases: HashMap<String, String>,
         ambiguous_macros: HashSet<String>,
+        noreturn_names: HashSet<String>,
     ) -> Self {
         Self {
             freed_vars: HashSet::new(),
@@ -1734,6 +1755,7 @@ impl MemoryAnalyzer {
             macro_aliases,
             init_stems: HashMap::new(),
             ambiguous_macros,
+            noreturn_names,
         }
     }
 
@@ -1750,6 +1772,7 @@ impl MemoryAnalyzer {
                 self.function_summaries.clone(),
                 self.macro_aliases.clone(),
                 self.ambiguous_macros.clone(),
+                self.noreturn_names.clone(),
             );
             func_analyzer.analyze_function(node, source, violations);
             return; // Don't recurse further - function handled completely
@@ -1956,7 +1979,7 @@ impl MemoryAnalyzer {
             mut exit_states: Vec<(BranchState, bool)>,
         ) {
             let exit_state = BranchState::fork(analyzer);
-            let diverges = analyzer.case_arm_diverges(&cases[idx]);
+            let diverges = analyzer.case_arm_diverges(&cases[idx], source);
             exit_states.push((exit_state, diverges));
             let next_idx = idx + 1;
             if next_idx < cases.len() {
@@ -1970,7 +1993,13 @@ impl MemoryAnalyzer {
                     exit_states,
                 );
             } else {
-                MemoryAnalyzer::merge_switch_arms(analyzer, &pre_state, &cases, &exit_states);
+                MemoryAnalyzer::merge_switch_arms(
+                    analyzer,
+                    source,
+                    &pre_state,
+                    &cases,
+                    &exit_states,
+                );
             }
         }
 
@@ -2094,7 +2123,7 @@ impl MemoryAnalyzer {
                         push_children(&mut stack, &n, source, &no_skip);
                     }
                     "labeled_statement" => {
-                        self.reset_state_if_label_unreachable_by_fallthrough(&n);
+                        self.reset_state_if_label_unreachable_by_fallthrough(&n, source);
                         push_children(&mut stack, &n, source, &no_skip);
                     }
                     "field_expression" => {
@@ -2149,7 +2178,7 @@ impl MemoryAnalyzer {
                     // Save state after then-branch
                     let then_state = BranchState::fork(self);
                     let then_returns = consequence
-                        .map(|c| self.unconditionally_diverges(&c))
+                        .map(|c| self.unconditionally_diverges(&c, source))
                         .unwrap_or(false);
 
                     // Reset state for else branch (starts from saved state)
@@ -2180,7 +2209,7 @@ impl MemoryAnalyzer {
                 } => {
                     let else_state = BranchState::fork(self);
                     let else_returns = alternative
-                        .map(|a| self.unconditionally_diverges(&a))
+                        .map(|a| self.unconditionally_diverges(&a, source))
                         .unwrap_or(false);
                     Self::merge_if_branches(
                         self,
@@ -2254,6 +2283,7 @@ impl MemoryAnalyzer {
     /// documented aliases quirk.
     fn merge_switch_arms(
         analyzer: &mut Self,
+        source: &str,
         pre_state: &BranchState,
         cases: &[Node],
         exit_states: &[(BranchState, bool)],
@@ -2265,7 +2295,7 @@ impl MemoryAnalyzer {
         let mut live: Vec<&BranchState> = cases
             .iter()
             .zip(exit_states.iter())
-            .filter(|(case_node, _)| Self::case_reaches_after_switch(case_node))
+            .filter(|(case_node, _)| analyzer.case_reaches_after_switch(case_node, source))
             .map(|(_, (s, _))| s)
             .collect();
         if !has_default {
@@ -2423,11 +2453,11 @@ impl MemoryAnalyzer {
     /// free right after the first with no reset in between. Reset the
     /// free/realloc tracking state before processing the label's target
     /// statement in that case.
-    fn reset_state_if_label_unreachable_by_fallthrough(&mut self, label_node: &Node) {
+    fn reset_state_if_label_unreachable_by_fallthrough(&mut self, label_node: &Node, source: &str) {
         let Some(prev) = label_node.prev_named_sibling() else {
             return;
         };
-        if !Self::control_flow_diverges(&prev, true) {
+        if !self.control_flow_diverges(&prev, source, true) {
             return;
         }
         self.freed_vars.clear();
@@ -2437,8 +2467,8 @@ impl MemoryAnalyzer {
         self.realloc_invalidated.clear();
     }
 
-    fn unconditionally_diverges(&self, node: &Node) -> bool {
-        Self::control_flow_diverges(node, true)
+    fn unconditionally_diverges(&self, node: &Node, source: &str) -> bool {
+        self.control_flow_diverges(node, source, true)
     }
 
     /// Core of `unconditionally_diverges`, parameterized on whether a bare
@@ -2452,7 +2482,16 @@ impl MemoryAnalyzer {
     /// after the *switch* — the opposite of diverging past it — while
     /// `return`/`goto`/`continue` still skip past it entirely (task 398; see
     /// `case_reaches_after_switch`).
-    fn control_flow_diverges(node: &Node, break_diverges: bool) -> bool {
+    ///
+    /// A statement that calls a noreturn function (`exit(1)`, `abort()`,
+    /// `longjmp`, a project `fatal()` declared `_Noreturn`) diverges the
+    /// same way a `return` does: control never comes back to this function,
+    /// so the arm has no join edge and nothing it freed is carried past the
+    /// merge (task 1360). sqlite's `if( rc!=SQLITE_OK ){ ...;
+    /// sqlite3_close(db); exit(1); }` was reporting every later use of `db`
+    /// as a use-after-free, and valkey's `freeReplyObject(reply);
+    /// valkeyFree(ctx); exit(1);` the single legitimate frees after it.
+    fn control_flow_diverges(&self, node: &Node, source: &str, break_diverges: bool) -> bool {
         // Explicit work/result stacks instead of native recursion (task 295):
         // a chain of else-less nested `if`s (each testing this function on
         // its own consequence) recurses once per nesting level here too,
@@ -2535,6 +2574,13 @@ impl MemoryAnalyzer {
                         "break_statement" => {
                             results.push(break_diverges);
                         }
+                        "expression_statement" => {
+                            results.push(crate::analyze::noreturn::is_noreturn_call_statement(
+                                &resolved,
+                                source,
+                                &self.noreturn_names,
+                            ));
+                        }
                         "if_statement" => {
                             // An if-statement unconditionally diverges only if
                             // BOTH branches unconditionally diverge.
@@ -2563,9 +2609,9 @@ impl MemoryAnalyzer {
     /// `unconditionally_diverges` itself. An arm with no statements at all
     /// (a bare grouped `case` label, e.g. `case B:` immediately followed by
     /// `case C:`) trivially falls through.
-    fn case_arm_diverges(&self, case_node: &Node) -> bool {
+    fn case_arm_diverges(&self, case_node: &Node, source: &str) -> bool {
         match Self::case_last_statement(case_node) {
-            Some(stmt) => Self::control_flow_diverges(&stmt, true),
+            Some(stmt) => self.control_flow_diverges(&stmt, source, true),
             None => false,
         }
     }
@@ -2580,9 +2626,9 @@ impl MemoryAnalyzer {
     /// this wrong made a free-then-break arm look "unreachable after the
     /// switch" and silently drop the free from the merged post-switch state
     /// (task 398).
-    fn case_reaches_after_switch(case_node: &Node) -> bool {
+    fn case_reaches_after_switch(&self, case_node: &Node, source: &str) -> bool {
         match Self::case_last_statement(case_node) {
-            Some(stmt) => !Self::control_flow_diverges(&stmt, false),
+            Some(stmt) => !self.control_flow_diverges(&stmt, source, false),
             // No statements at all (a bare grouped case label, e.g. `case
             // B:` immediately followed by `case C:`) always falls through
             // to the next arm rather than reaching the code after the
