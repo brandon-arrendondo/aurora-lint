@@ -171,6 +171,27 @@ impl CertRule for Mem31C {
     }
 }
 
+/// Everything a path carries in this walk: the branch state plus the
+/// allocation and escape records. Recorded at each `break`/`continue` that
+/// leaves a loop body, and merged into what continues after the loop
+/// (task 1365).
+#[derive(Clone)]
+struct LoopExitState {
+    state: LeakBranchState,
+    allocated: HashMap<String, AllocInfo>,
+    escaped: HashSet<String>,
+}
+
+impl LoopExitState {
+    fn fork(analyzer: &MemoryLeakAnalyzer) -> Self {
+        Self {
+            state: LeakBranchState::fork(analyzer),
+            allocated: analyzer.allocated_memory.clone(),
+            escaped: analyzer.escaped_memory.clone(),
+        }
+    }
+}
+
 struct MemoryLeakAnalyzer<'a> {
     // Track allocated memory by variable name
     allocated_memory: HashMap<String, AllocInfo>,
@@ -198,6 +219,12 @@ struct MemoryLeakAnalyzer<'a> {
     in_loop: bool,
     // Track loop nesting depth for proper double-free detection
     loop_depth: usize,
+    /// The open `break` targets around the statement being walked, innermost
+    /// last: `Some(exits)` for a loop, collecting the path state at each
+    /// `break` and `continue` that leaves its body, `None` for a `switch`,
+    /// whose `break` belongs to the switch. Read by `Frame::ExitLoop`
+    /// (task 1365).
+    breakables: Vec<Option<Vec<LoopExitState>>>,
     // What is freed at each label (for goto analysis): the label's byte
     // offset and the pointers its cleanup block frees, one entry per
     // occurrence of the name. One name can label two blocks when they sit in
@@ -421,9 +448,15 @@ enum Frame<'a> {
     },
     /// Decrement loop-nesting bookkeeping (and, for `for`, record the array
     /// alloc/free loop-condition pattern) once the loop body's own subtree
-    /// has fully drained.
+    /// has fully drained, then settle what continues after the loop: the
+    /// state before it, every `break`/`continue` recorded while the body was
+    /// walked (`breakables`), and the end of the body when the loop can end
+    /// by its condition and the body's last statement does not leave the
+    /// function (task 1365).
     ExitLoop {
+        loop_node: Node<'a>,
         array_pattern: Option<LoopArrayPattern>,
+        pre: Box<LoopExitState>,
     },
     /// Fold the arm just walked into `merged`, then reset to `pre_state` and
     /// walk the next arm of an `#if`/`#elif`/`#else` chain; restore `merged`
@@ -645,6 +678,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             leak_violations: Vec::new(),
             in_loop: false,
             loop_depth: 0,
+            breakables: Vec::new(),
             label_frees: HashMap::new(),
             arms: PreprocArms::default(),
             goto_freed_states: HashMap::new(),
@@ -1519,7 +1553,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     source,
                     &mut stack,
                 ),
-                Frame::ExitLoop { array_pattern } => self.exit_loop(array_pattern),
+                Frame::ExitLoop {
+                    loop_node,
+                    array_pattern,
+                    pre,
+                } => self.exit_loop(&loop_node, array_pattern, &pre, source),
                 Frame::PreprocNextArm {
                     remaining_reversed,
                     walked,
@@ -1563,6 +1601,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             "call_expression" => self.process_call(&n, source),
             "return_statement" => self.process_return(&n, source),
             "goto_statement" => self.analyze_goto(&n, source),
+            "break_statement" => self.record_loop_exit(false),
+            "continue_statement" => self.record_loop_exit(true),
             "labeled_statement" => self.visit_labeled_statement(n, source, stack),
             "for_statement" => self.visit_for_statement(n, source, stack),
             "while_statement" | "do_statement" => self.visit_while_do_statement(stack, n),
@@ -1784,8 +1824,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         self.loop_depth += 1;
         let alloc_info = self.find_loop_array_pattern(&n, source, true);
         let free_info = self.find_loop_array_pattern(&n, source, false);
+        self.breakables.push(Some(Vec::new()));
         stack.push(Frame::ExitLoop {
+            loop_node: n,
             array_pattern: Some((alloc_info, free_info, loop_condition)),
+            pre: Box::new(LoopExitState::fork(self)),
         });
         push_children(stack, &n);
     }
@@ -1793,10 +1836,38 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     fn visit_while_do_statement<'n>(&mut self, stack: &mut Vec<Frame<'n>>, n: Node<'n>) {
         self.in_loop = true;
         self.loop_depth += 1;
+        self.breakables.push(Some(Vec::new()));
         stack.push(Frame::ExitLoop {
+            loop_node: n,
             array_pattern: None,
+            pre: Box::new(LoopExitState::fork(self)),
         });
         push_children(stack, &n);
+    }
+
+    /// A `break` (`continuing` false) or `continue` has been reached: the
+    /// path state here reaches the code after the innermost loop. A `break`
+    /// binds to the innermost breakable and only a loop needs telling (a
+    /// switch's cases are settled by `switch_next_case`); a `continue` goes
+    /// back to the head of the innermost LOOP through any switch in between
+    /// (task 1365).
+    fn record_loop_exit(&mut self, continuing: bool) {
+        let mut state = LoopExitState::fork(self);
+        // `p = alloc(); if (!p) break;` -- on this path `p` holds nothing,
+        // and the arm's own state says so (`visit_if_statement` marks the
+        // null-checked name for the arm it is null in). Carrying the
+        // allocation record out would report it leaked at the sweep.
+        state
+            .allocated
+            .retain(|name, _| !state.state.null_variables.contains(name));
+        let target = if continuing {
+            self.breakables.iter_mut().rev().flatten().next()
+        } else {
+            self.breakables.last_mut().and_then(|b| b.as_mut())
+        };
+        if let Some(exits) = target {
+            exits.push(state);
+        }
     }
 
     fn visit_if_statement<'n>(&mut self, n: Node<'n>, source: &str, stack: &mut Vec<Frame<'n>>) {
@@ -1953,6 +2024,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
         }
         cases.reverse();
+        // A `break` in a case ends the switch, not any loop around it.
+        self.breakables.push(None);
         stack.push(Frame::SwitchNextCase {
             remaining_reversed: cases,
             walked: None,
@@ -2054,7 +2127,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 pre_allocated,
             });
             stack.push(Frame::Visit(case));
-        } else if walked.is_some_and(|case| self.case_cannot_fall_through(&case, source)) {
+            return;
+        }
+        self.breakables.pop();
+        if walked.is_some_and(|case| self.case_cannot_fall_through(&case, source)) {
             // The chain ends on whatever the last case left (pre-existing
             // quirk: no merge across cases) -- unless that case left the
             // function, in which case nothing it did reaches the code after
@@ -2157,7 +2233,124 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             .map(|(_, frees)| frees)
     }
 
-    fn exit_loop(&mut self, array_pattern: Option<LoopArrayPattern>) {
+    /// What continues after a loop. The body was walked as a straight line,
+    /// so the state here is the end of the body; the code after the loop is
+    /// also reached from the state before it (zero iterations) and from
+    /// every `break` and `continue` in the body -- and NOT from the end of
+    /// the body when the loop has no condition to fail (`for (;;)`, `while
+    /// (1)`) or the body's last statement leaves the function. hostap's
+    /// os_rel2abs_path retry idiom `for (;;) { buf = os_malloc(len); if
+    /// (getcwd(buf, len) == NULL) { os_free(buf); ..; len *= 2; } else
+    /// break; } ... os_free(buf);` read the end of the body -- the arm that
+    /// loops back and re-allocates -- as reaching the free below, so the
+    /// free was a double free and the `if` a conditional leak; only the
+    /// `break` arm gets there, with `buf` live (task 1365). Same optimism
+    /// the `if` merge has: freed on any path counts as freed, and a block
+    /// the loop entered with that some path released or handed over (`free(
+    /// a[i]); a[i] = NULL;` drops the record) stays released; a block some
+    /// path allocated stays recorded.
+    fn merge_loop_exits(&mut self, loop_node: &Node, pre: &LoopExitState, source: &str) {
+        let exits = self.breakables.pop().flatten().unwrap_or_default();
+        let end = LoopExitState::fork(self);
+        let end_reaches_after = !Self::loop_has_no_exit_condition(loop_node, source)
+            && !loop_node
+                .child_by_field_name("body")
+                .is_some_and(|b| self.loop_body_leaves_function(&b, source));
+        let mut live: Vec<&LoopExitState> = vec![pre];
+        live.extend(exits.iter());
+        if end_reaches_after {
+            live.push(&end);
+        }
+        // Start from the state before the loop and fold every other live
+        // path in; a `continue` in an infinite loop is not a path out.
+        let base = if end_reaches_after || !exits.is_empty() {
+            live[0]
+        } else {
+            pre
+        };
+        base.state.restore(self);
+        self.allocated_memory = base.allocated.clone();
+        self.escaped_memory = base.escaped.clone();
+        for other in &live[1..] {
+            for (k, v) in &other.state.freed_memory {
+                self.freed_memory.entry(k.clone()).or_insert(*v);
+            }
+            self.freed_via_alias
+                .extend(other.state.freed_via_alias.iter().cloned());
+            for (k, v) in &other.state.freed_by_guess {
+                self.freed_by_guess
+                    .entry(k.clone())
+                    .or_insert_with(|| v.clone());
+            }
+            for (k, v) in &other.state.maybe_freed {
+                self.maybe_freed.entry(k.clone()).or_insert(*v);
+            }
+            // `null_variables` is a suppression set (guarded or nulled
+            // somewhere on the way), not a fact about every path: union,
+            // as the end of the body alone used to contribute it.
+            self.null_variables
+                .extend(other.state.null_variables.iter().cloned());
+            // A name both paths hold takes the later path's record:
+            // `codes = tmp` inside the body rewrote `codes` to `tmp`'s
+            // allocation site, and that shared site is what makes the
+            // `free(codes)` after the loop credit `tmp` (`block_aliases_of`).
+            for (k, v) in &other.allocated {
+                self.allocated_memory.insert(k.clone(), v.clone());
+            }
+            self.allocated_memory
+                .retain(|k, _| !pre.allocated.contains_key(k) || other.allocated.contains_key(k));
+            self.escaped_memory.extend(other.escaped.iter().cloned());
+        }
+    }
+
+    /// `for (;;)`, `while (1)`, `while (true)`: a loop only a `break`,
+    /// `return` or `goto` leaves.
+    fn loop_has_no_exit_condition(loop_node: &Node, source: &str) -> bool {
+        match loop_node.kind() {
+            "for_statement" => loop_node.child_by_field_name("condition").is_none(),
+            "while_statement" | "do_statement" => loop_node
+                .child_by_field_name("condition")
+                .map(|c| {
+                    let mut inner = c;
+                    while inner.kind() == "parenthesized_expression" {
+                        match inner.named_child(0) {
+                            Some(n) => inner = n,
+                            None => break,
+                        }
+                    }
+                    let text = ast_utils::get_node_text_owned(&inner, source);
+                    text == "true" || text.parse::<i64>().is_ok_and(|v| v != 0)
+                })
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    /// Whether a loop body's last statement leaves the function -- a
+    /// `return`, a `goto`, a noreturn call, an `if`/`else` whose arms both
+    /// do. A `break` reaches the code after the loop and a `continue` the
+    /// condition, so neither counts; both recorded their state when walked.
+    fn loop_body_leaves_function(&self, body: &Node, source: &str) -> bool {
+        let last = if body.kind() == "compound_statement" {
+            Self::last_statement_of(body)
+        } else {
+            Some(*body)
+        };
+        match last {
+            Some(l) if matches!(l.kind(), "break_statement" | "continue_statement") => false,
+            Some(l) => self.statement_cannot_fall_through(&l, source),
+            None => false,
+        }
+    }
+
+    fn exit_loop(
+        &mut self,
+        loop_node: &Node,
+        array_pattern: Option<LoopArrayPattern>,
+        pre: &LoopExitState,
+        source: &str,
+    ) {
+        self.merge_loop_exits(loop_node, pre, source);
         if let Some((alloc_info, free_info, loop_condition)) = array_pattern {
             if let Some((array_base, _)) = alloc_info {
                 if let Some(cond) = &loop_condition {
@@ -4077,8 +4270,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// lost by restoring the pre-branch state: `analyze_goto` has already
     /// folded it into the label's entry state.
     ///
-    /// `continue` joins them and `break` does not -- see
-    /// `statement_cannot_fall_through` for why the two differ.
+    /// `break` and `continue` join them since task 1365: both leave the
+    /// branch, and the path state they carry is recorded for the loop's
+    /// exit merge rather than folded into the statement after the `if`.
     fn branch_cannot_fall_through(&self, branch: &Node, source: &str) -> bool {
         Self::last_statement_of(branch)
             .is_some_and(|last| self.statement_cannot_fall_through(&last, source))
@@ -4086,16 +4280,17 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
     /// Whether control never continues past `stmt` to its next sibling.
     ///
-    /// `continue` counts: the statements after it in the loop body are not
-    /// reached on that path, and the next iteration starts over from the
-    /// loop head, which is where the block it did not free gets re-made or
-    /// re-checked. `break` does not: the code after the loop is reached on
-    /// that path with exactly the state it left. A preprocessor arm is
-    /// looked into (`preproc_arm_cannot_fall_through`), because a branch
-    /// that ends `#ifdef X ... return; #endif }` ends there.
+    /// `continue` and `break` count: the statements after them in the loop
+    /// body are not reached on that path. What the path holds is not lost --
+    /// `record_loop_exit` captured it, and `merge_loop_exits` folds it into
+    /// the code after the loop (task 1365). A preprocessor arm is looked
+    /// into (`preproc_arm_cannot_fall_through`), because a branch that ends
+    /// `#ifdef X ... return; #endif }` ends there.
     fn statement_cannot_fall_through(&self, stmt: &Node, source: &str) -> bool {
         match stmt.kind() {
-            "return_statement" | "goto_statement" | "continue_statement" => true,
+            "return_statement" | "goto_statement" | "continue_statement" | "break_statement" => {
+                true
+            }
             "compound_statement" | "else_clause" => self.branch_cannot_fall_through(stmt, source),
             "if_statement" => {
                 let else_clause = (0..stmt.child_count())
