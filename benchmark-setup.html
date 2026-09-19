@@ -98,6 +98,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
 <li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
 <li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
 <li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
@@ -334,7 +335,11 @@ Juliet Test Suite v1.3</a>:</p>
 <h2>Third-Party Library Headers<a class="headerlink" href="#third-party-library-headers" title="Link to this heading"></a></h2>
 <p>aurora-lint uses <code class="docutils literal notranslate"><span class="pre">-I</span></code> include paths to resolve <code class="docutils literal notranslate"><span class="pre">#include</span></code> directives from third-party
 libraries. Without these, functions declared in external headers produce
-DCL31-C/DCL07-C false positives.</p>
+DCL31-C/DCL07-C false positives. The installed headers are therefore part
+of what a run measures – the same binary on two machines with different
+<code class="docutils literal notranslate"><span class="pre">-dev</span></code> packages or glibc releases differs by a small number of keys (see
+<a class="reference internal" href="reproducing-published-numbers.html"><span class="doc">Reproducing the Published Numbers</span></a>), so install this list before comparing
+a run against a published one.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Core dependencies (covers most projects)</span>
 sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>libssl-dev<span class="w"> </span>libcjson-dev<span class="w"> </span>zlib1g-dev
@@ -342,8 +347,9 @@ sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w
 <span class="c1"># mosquitto</span>
 sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>libcunit1-dev<span class="w"> </span>libsqlite3-dev
 
-<span class="c1"># curl TLS backends</span>
-sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>libmbedtls-dev<span class="w"> </span>libgnutls28-dev
+<span class="c1"># curl TLS and SASL backends (without libgsasl-dev, lib/vauth/gsasl.c</span>
+<span class="c1"># reports every gsasl_* call as DCL31-C &quot;called without prior declaration&quot;)</span>
+sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>libmbedtls-dev<span class="w"> </span>libgnutls28-dev<span class="w"> </span>libgsasl-dev
 
 <span class="c1"># sqlite test infrastructure</span>
 sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>tcl-dev
@@ -356,8 +362,9 @@ sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w
 </div>
 <p>One-liner for all hosts:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>libssl-dev<span class="w"> </span>libcjson-dev<span class="w"> </span>zlib1g-dev<span class="w"> </span>libcunit1-dev<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>libsqlite3-dev<span class="w"> </span>libmbedtls-dev<span class="w"> </span>libgnutls28-dev<span class="w"> </span>tcl-dev<span class="w"> </span>libnl-3-dev<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>libnl-genl-3-dev<span class="w"> </span>libdbus-1-dev<span class="w"> </span>libgcrypt20-dev<span class="w"> </span>libpcap-dev<span class="w"> </span>libwolfssl-dev
+<span class="w">  </span>libsqlite3-dev<span class="w"> </span>libmbedtls-dev<span class="w"> </span>libgnutls28-dev<span class="w"> </span>libgsasl-dev<span class="w"> </span>tcl-dev<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>libnl-3-dev<span class="w"> </span>libnl-genl-3-dev<span class="w"> </span>libdbus-1-dev<span class="w"> </span>libgcrypt20-dev<span class="w"> </span>libpcap-dev<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>libwolfssl-dev
 </pre></div>
 </div>
 <section id="per-project-include-paths">

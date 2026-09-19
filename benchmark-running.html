@@ -19,7 +19,7 @@
     <script src="_static/js/theme.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="Project Structure" href="project-structure.html" />
+    <link rel="next" title="Reproducing the Published Numbers" href="reproducing-published-numbers.html" />
     <link rel="prev" title="Benchmark Setup" href="benchmark-setup.html" /> 
 </head>
 
@@ -95,6 +95,7 @@
 </li>
 </ul>
 </li>
+<li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
 <li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
 <li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
 <li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
@@ -196,24 +197,26 @@ Postgres) has been backfilled into the database.</p>
 <div class="admonition important">
 <p class="admonition-title">Important</p>
 <ol class="arabic simple">
-<li><p><strong>Version bump + commit BEFORE benchmark</strong>: Always bump the version in
-<code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code>, rebuild (<code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">build</span> <span class="pre">--release</span></code>), and commit before
-starting. The run_id is <code class="docutils literal notranslate"><span class="pre">sqc-{version}-{sha}</span></code>.</p></li>
+<li><p><strong>Commit BEFORE benchmark, do not bump the version</strong>: rebuild
+(<code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">build</span> <span class="pre">--release</span></code>) and commit before starting. The run_id is
+<code class="docutils literal notranslate"><span class="pre">sqc-{version}-{sha}</span></code>, and the <strong>SHA</strong> is what discriminates runs;
+the version string is a release artifact, bumped only when a release
+is cut (see <code class="docutils literal notranslate"><span class="pre">CLAUDE.md</span></code>).</p></li>
 <li><p><strong>NEVER modify code while a benchmark is running</strong>: The benchmark uses
 <code class="docutils literal notranslate"><span class="pre">target/release/aurora-lint</span></code>. Rebuilding while running corrupts results.</p></li>
 <li><p><strong>Wait for completion</strong>: Fast-mode ~8-10 min (4-core), ~3-5 min (24-core).
 Full-suite ~40-50 min. Check status no more than once every 5 minutes.</p></li>
 <li><p><strong>Compare runs after completion</strong>.</p></li>
-<li><p><strong>Sequence</strong>: <code class="docutils literal notranslate"><span class="pre">implement</span> <span class="pre">-&gt;</span> <span class="pre">bump</span> <span class="pre">version</span> <span class="pre">-&gt;</span> <span class="pre">commit</span> <span class="pre">-&gt;</span> <span class="pre">build</span> <span class="pre">release</span> <span class="pre">-&gt;</span>
-<span class="pre">run</span> <span class="pre">benchmark</span> <span class="pre">-&gt;</span> <span class="pre">wait</span> <span class="pre">-&gt;</span> <span class="pre">analyze</span></code></p></li>
+<li><p><strong>Sequence</strong>: <code class="docutils literal notranslate"><span class="pre">implement</span> <span class="pre">-&gt;</span> <span class="pre">commit</span> <span class="pre">-&gt;</span> <span class="pre">build</span> <span class="pre">release</span> <span class="pre">-&gt;</span> <span class="pre">run</span> <span class="pre">benchmark</span>
+<span class="pre">-&gt;</span> <span class="pre">wait</span> <span class="pre">-&gt;</span> <span class="pre">analyze</span></code></p></li>
 </ol>
 </div>
 <section id="pre-benchmark-checklist">
 <h3>Pre-Benchmark Checklist<a class="headerlink" href="#pre-benchmark-checklist" title="Link to this heading"></a></h3>
 <ul class="simple">
 <li><p>All code changes committed</p></li>
-<li><p>Version bumped in <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code> (for Juliet)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">build</span> <span class="pre">--release</span></code> successful</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">corpus-check</span></code> clean (real-world)</p></li>
 <li><p>No other benchmark currently running (it’s your terminal – you’ll know)</p></li>
 <li><p>Previous results compared if needed (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">compare</span></code>)</p></li>
 </ul>
@@ -294,17 +297,19 @@ and <code class="docutils literal notranslate"><span class="pre">-D</span></code
 <h2>Real-World Benchmark<a class="headerlink" href="#real-world-benchmark" title="Link to this heading"></a></h2>
 <p>Local and sequential, by design: one person running one benchmark in their
 own terminal, against their own SQLite DB. See <code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code>.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-run<span class="w"> </span><span class="o">[</span>--tool<span class="w"> </span>aurora-lint,cppcheck,clang-tidy<span class="o">]</span><span class="w"> </span><span class="o">[</span>--codebase<span class="w"> </span>C,C<span class="o">]</span><span class="w"> </span><span class="o">[</span>--compile-commands<span class="o">]</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-run<span class="w"> </span><span class="o">[</span>--tool<span class="w"> </span>sqc,cppcheck,clang-tidy<span class="o">]</span><span class="w"> </span><span class="o">[</span>--codebase<span class="w"> </span>C,C<span class="o">]</span><span class="w"> </span><span class="o">[</span>--compile-commands<span class="o">]</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld<span class="w"> </span><span class="o">[</span>RUN<span class="o">]</span><span class="w"> </span><span class="o">[</span>--compare<span class="w"> </span>BASE<span class="o">]</span><span class="w">   </span><span class="c1"># FP dashboard</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-runs<span class="w">                     </span><span class="c1"># list runs</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-score<span class="w"> </span><span class="o">[</span>RUN<span class="o">]</span><span class="w">               </span><span class="c1"># measured precision/recall</span>
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">realworld-run</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">aurora-lint</span></code> against every codebase; narrow either
-flag as needed. It blocks until every requested combo finishes, then ingests
+<p><code class="docutils literal notranslate"><span class="pre">realworld-run</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">sqc</span></code> – the aurora-lint binary; the tool id
+is <code class="docutils literal notranslate"><span class="pre">sqc</span></code> on purpose, see <a class="reference internal" href="reproducing-published-numbers.html"><span class="doc">Reproducing the Published Numbers</span></a> – against
+every codebase; narrow either flag as needed. It blocks until every requested combo finishes, then ingests
 the aurora-lint results and scores them against the oracle – no separate ingest
 step, no polling.</p>
-<p>Supported tools: <code class="docutils literal notranslate"><span class="pre">aurora-lint</span></code>, <code class="docutils literal notranslate"><span class="pre">cppcheck</span></code>, <code class="docutils literal notranslate"><span class="pre">clang-tidy</span></code></p>
+<p>Supported tools: <code class="docutils literal notranslate"><span class="pre">sqc</span></code> (aurora-lint), <code class="docutils literal notranslate"><span class="pre">cppcheck</span></code>, <code class="docutils literal notranslate"><span class="pre">clang-tidy</span></code>, <code class="docutils literal notranslate"><span class="pre">infer</span></code>,
+<code class="docutils literal notranslate"><span class="pre">frama-c</span></code></p>
 <p>Supported codebases: <code class="docutils literal notranslate"><span class="pre">libcrc</span></code>, <code class="docutils literal notranslate"><span class="pre">sqlite</span></code>, <code class="docutils literal notranslate"><span class="pre">mosquitto</span></code>, <code class="docutils literal notranslate"><span class="pre">curl</span></code>, <code class="docutils literal notranslate"><span class="pre">hostap</span></code>,
 <code class="docutils literal notranslate"><span class="pre">lua</span></code>, <code class="docutils literal notranslate"><span class="pre">raylib</span></code>, <code class="docutils literal notranslate"><span class="pre">pureftpd</span></code>, <code class="docutils literal notranslate"><span class="pre">sel4</span></code>, <code class="docutils literal notranslate"><span class="pre">mbedtls</span></code>, <code class="docutils literal notranslate"><span class="pre">valkey</span></code>, <code class="docutils literal notranslate"><span class="pre">ventoy</span></code>
 (aurora-lint-only for <code class="docutils literal notranslate"><span class="pre">pureftpd</span></code>, <code class="docutils literal notranslate"><span class="pre">sel4</span></code>, <code class="docutils literal notranslate"><span class="pre">mbedtls</span></code> and <code class="docutils literal notranslate"><span class="pre">valkey</span></code> — no
@@ -427,7 +432,7 @@ nonzero, and the run is simply absent (or partial) in <code class="docutils lite
 compared straight from their JSON exports, finding for finding, without the
 database.</p>
 <p>Typical real-world workflow:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-run<span class="w"> </span>--tool<span class="w"> </span>aurora-lint<span class="w">          </span><span class="c1"># blocks until every codebase is done</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-run<span class="w"> </span>--tool<span class="w"> </span>sqc<span class="w">                  </span><span class="c1"># blocks until every codebase is done</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld<span class="w"> </span>latest<span class="w">                   </span><span class="c1"># view results</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld<span class="w"> </span>latest<span class="w"> </span>--compare<span class="w"> </span><span class="m">0</span>.2.6<span class="w">   </span><span class="c1"># compare against a prior run</span>
 </pre></div>
@@ -656,7 +661,7 @@ function are TP; alarms under a good entry point are FP.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">rm</span> <span class="pre">-rf</span> <span class="pre">results/realworld/&lt;version_dir&gt;</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p>Results show wrong version</p></td>
-<td><p>Ensure version bump + commit before build</p></td>
+<td><p>Ensure commit before build; the SHA is the id</p></td>
 </tr>
 <tr class="row-odd"><td><p>SQLite locked</p></td>
 <td><dl class="simple">
@@ -701,7 +706,7 @@ condition and body, improved <code class="docutils literal notranslate"><span cl
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
         <a href="benchmark-setup.html" class="btn btn-neutral float-left" title="Benchmark Setup" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="project-structure.html" class="btn btn-neutral float-right" title="Project Structure" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="reproducing-published-numbers.html" class="btn btn-neutral float-right" title="Reproducing the Published Numbers" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

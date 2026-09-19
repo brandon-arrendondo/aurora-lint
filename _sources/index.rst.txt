@@ -27,6 +27,7 @@ testing methodology, project internals, and contributing.
    architecture
    benchmark-setup
    benchmark-running
+   reproducing-published-numbers
    project-structure
    future-rulesets
    contributing

@@ -1,0 +1,528 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Reproducing the Published Numbers &mdash; aurora-lint  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Project Structure" href="project-structure.html" />
+    <link rel="prev" title="Running Benchmarks (MCP Server)" href="benchmark-running.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            aurora-lint
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tool-comparison.html">Comparison To Other Tools</a></li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Reproducing the Published Numbers</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#what-reproduces-means">What “reproduces” means</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#input-1-the-analyzer-tag-sha-and-version-string">Input 1: the analyzer – tag, SHA and version string</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#determinism-boundary">Determinism boundary</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#input-2-the-labels-benchmark-adjudication-at-a-sha">Input 2: the labels – <code class="docutils literal notranslate"><span class="pre">benchmark_adjudication</span></code> at a SHA</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#input-3-the-corpus-pinned-checkouts-and-juliet">Input 3: the corpus – pinned checkouts and Juliet</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#real-world-codebases">Real-world codebases</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#juliet">Juliet</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#procedure">Procedure</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#real-world-half">Real-world half</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#juliet-half">Juliet half</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#hardware-time-and-memory">Hardware, time and memory</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#what-another-machine-reproduces-measured">What another machine reproduces, measured</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#reading-a-mismatch">Reading a mismatch</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="licensing.html">Licensing and content provenance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">aurora-lint</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Reproducing the Published Numbers</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/reproducing-published-numbers.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="reproducing-the-published-numbers">
+<h1>Reproducing the Published Numbers<a class="headerlink" href="#reproducing-the-published-numbers" title="Link to this heading"></a></h1>
+<p>Every real-world precision / recall / coverage figure this project publishes
+(README’s <em>Benchmark Highlights</em>, the paper) is a function of three inputs,
+each named by a git SHA. With those three SHAs, a checkout of this repo and
+no other access, you can regenerate the figure yourself and compare it at
+the level of individual findings. This page is the procedure. It assumes
+<a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a> has been followed once on the machine (corpus
+checkouts, Juliet, headers); it repeats nothing from there.</p>
+<nav class="contents local" id="contents">
+<ul class="simple">
+<li><p><a class="reference internal" href="#what-reproduces-means" id="id1">What “reproduces” means</a></p></li>
+<li><p><a class="reference internal" href="#input-1-the-analyzer-tag-sha-and-version-string" id="id2">Input 1: the analyzer – tag, SHA and version string</a></p>
+<ul>
+<li><p><a class="reference internal" href="#determinism-boundary" id="id3">Determinism boundary</a></p></li>
+</ul>
+</li>
+<li><p><a class="reference internal" href="#input-2-the-labels-benchmark-adjudication-at-a-sha" id="id4">Input 2: the labels – <code class="docutils literal notranslate"><span class="pre">benchmark_adjudication</span></code> at a SHA</a></p></li>
+<li><p><a class="reference internal" href="#input-3-the-corpus-pinned-checkouts-and-juliet" id="id5">Input 3: the corpus – pinned checkouts and Juliet</a></p>
+<ul>
+<li><p><a class="reference internal" href="#real-world-codebases" id="id6">Real-world codebases</a></p></li>
+<li><p><a class="reference internal" href="#juliet" id="id7">Juliet</a></p></li>
+</ul>
+</li>
+<li><p><a class="reference internal" href="#procedure" id="id8">Procedure</a></p>
+<ul>
+<li><p><a class="reference internal" href="#real-world-half" id="id9">Real-world half</a></p></li>
+<li><p><a class="reference internal" href="#juliet-half" id="id10">Juliet half</a></p></li>
+<li><p><a class="reference internal" href="#hardware-time-and-memory" id="id11">Hardware, time and memory</a></p></li>
+<li><p><a class="reference internal" href="#what-another-machine-reproduces-measured" id="id12">What another machine reproduces, measured</a></p></li>
+</ul>
+</li>
+<li><p><a class="reference internal" href="#reading-a-mismatch" id="id13">Reading a mismatch</a></p></li>
+</ul>
+</nav>
+<section id="what-reproduces-means">
+<h2><a class="toc-backref" href="#id1" role="doc-backlink">What “reproduces” means</a><a class="headerlink" href="#what-reproduces-means" title="Link to this heading"></a></h2>
+<p>A published number is reproduced when a fresh run of the named aurora-lint
+build, on the named corpus commits, scored against the named label set,
+yields <strong>the same set of findings at the key level</strong> – the same
+<code class="docutils literal notranslate"><span class="pre">(project,</span> <span class="pre">file,</span> <span class="pre">line,</span> <span class="pre">rule_id)</span></code> tuples – and therefore the same scored
+figures. Keys are the unit of comparison because that is what a label is
+attached to; the <em>message text</em> of a finding is not part of the comparison
+and can legitimately differ between builds (MEM31-C, for one, spells the
+allocator name from whatever it resolved first). Compare keys, never
+messages.</p>
+<p>The three inputs are:</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 22.0%" />
+<col style="width: 38.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Input</p></th>
+<th class="head"><p>Named by</p></th>
+<th class="head"><p>Where the name is recorded</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>the analyzer</p></td>
+<td><p>an aurora-lint release tag, and the commit it was cut from</p></td>
+<td><p>the paper; the README highlights table (as the recorded build
+version and run id); <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">tag</span></code> in this repo</p></td>
+</tr>
+<tr class="row-odd"><td><p>the labels</p></td>
+<td><p>a commit of the public <a class="reference external" href="https://github.com/brandon-arrendondo/benchmark_adjudication">benchmark_adjudication</a>
+repository</p></td>
+<td><p>the paper’s pinned measurement facts (its <code class="docutils literal notranslate"><span class="pre">data/</span></code> carries the
+exact SHA the oracle was level with); release notes</p></td>
+</tr>
+<tr class="row-even"><td><p>the corpus</p></td>
+<td><p>one pinned commit per real-world codebase, plus the Juliet suite
+version</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code> in this repo, at the analyzer’s commit</p></td>
+</tr>
+</tbody>
+</table>
+<p>Official published numbers are computed by the maintainers’ private
+pipeline from exactly these public inputs; a local run describes <em>that run</em>
+and is never itself a project figure (ADR-0004,
+<code class="docutils literal notranslate"><span class="pre">docs/adr/0004-postgres-is-the-single-source-of-truth.md</span></code>). What a reproducer gains is the ability to check the
+published figure, key for key, and to say precisely where a disagreement
+lies if there is one.</p>
+</section>
+<section id="input-1-the-analyzer-tag-sha-and-version-string">
+<h2><a class="toc-backref" href="#id2" role="doc-backlink">Input 1: the analyzer – tag, SHA and version string</a><a class="headerlink" href="#input-1-the-analyzer-tag-sha-and-version-string" title="Link to this heading"></a></h2>
+<p>A release is a git tag (<code class="docutils literal notranslate"><span class="pre">vX.Y.Z</span></code>) on a commit whose only change over its
+parent is the <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code> version bump. The benchmark runs behind a
+release are made from the commit the tag was <strong>cut from</strong>, not from the
+tagged commit itself, so a run’s recorded build version reads the
+<em>previous</em> version string. Nothing about the analyzer differs between the
+two commits; the SHA is what identifies the build, and the version string
+adds readability only.</p>
+<p>Concretely, for v0.5.0:</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 70.0%" />
+</colgroup>
+<tbody>
+<tr class="row-odd"><td><p>tag <code class="docutils literal notranslate"><span class="pre">v0.5.0</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">717783a9</span></code> (<code class="docutils literal notranslate"><span class="pre">chore:</span> <span class="pre">bump</span> <span class="pre">version</span> <span class="pre">to</span> <span class="pre">0.5.0</span></code>)</p></td>
+</tr>
+<tr class="row-even"><td><p>cut from</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">f48effe3</span></code> – the commit that produced the runs</p></td>
+</tr>
+<tr class="row-odd"><td><p>version string those runs record</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.4.336</span></code> (the <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code> value at <code class="docutils literal notranslate"><span class="pre">f48effe3</span></code>)</p></td>
+</tr>
+<tr class="row-even"><td><p>real-world run id</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">sqc-0.4.336-f48effe3</span></code>; the maintainers’ run number for it is
+<code class="docutils literal notranslate"><span class="pre">#265</span></code>, which is what the README highlights cite</p></td>
+</tr>
+</tbody>
+</table>
+<p>Run ids are <code class="docutils literal notranslate"><span class="pre">sqc-{version}-{sha}</span></code> and the tool id inside the benchmark
+tooling is <code class="docutils literal notranslate"><span class="pre">sqc</span></code> (<code class="docutils literal notranslate"><span class="pre">--tool</span> <span class="pre">sqc</span></code>, <code class="docutils literal notranslate"><span class="pre">results/realworld/sqc-…</span></code>). The crate
+and binary were renamed to <code class="docutils literal notranslate"><span class="pre">aurora-lint</span></code>; the identifier in run ids, tool
+ids and label provenance deliberately was not, because every historical
+label and run is keyed on it. Do not translate it.</p>
+<p>To build the analyzer that produced a published run, check out the
+<strong>cut-from commit</strong> (or the tag: same code) and build release:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span><span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint
+git<span class="w"> </span>fetch<span class="w"> </span>--tags
+git<span class="w"> </span>checkout<span class="w"> </span>--detach<span class="w"> </span>f48effe3<span class="w">          </span><span class="c1"># or: git checkout --detach v0.5.0</span>
+cargo<span class="w"> </span>build<span class="w"> </span>--release
+./target/release/aurora-lint<span class="w"> </span>--version<span class="w">   </span><span class="c1"># prints the Cargo.toml version at that commit</span>
+</pre></div>
+</div>
+<section id="determinism-boundary">
+<h3><a class="toc-backref" href="#id3" role="doc-backlink">Determinism boundary</a><a class="headerlink" href="#determinism-boundary" title="Link to this heading"></a></h3>
+<p>From commit <code class="docutils literal notranslate"><span class="pre">fc9164fd</span></code> (<em>analyze: order findings on a total key so two
+runs export identical bytes</em>) onward, one binary on one checkout writes a
+<strong>byte-identical</strong> <code class="docutils literal notranslate"><span class="pre">--export</span></code> file every time. Before it, the <em>set</em> of
+findings is the same but their order in the file can vary between runs, so
+two exports must be compared as sets of keys, not with <code class="docutils literal notranslate"><span class="pre">diff</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">v0.5.0</span></code> (<code class="docutils literal notranslate"><span class="pre">717783a9</span></code>) predates <code class="docutils literal notranslate"><span class="pre">fc9164fd</span></code>: reproduce it at the key
+level. <code class="docutils literal notranslate"><span class="pre">v0.5.1</span></code> is the first tag that contains the ordering commit, and the
+first for which a reproducer should expect <code class="docutils literal notranslate"><span class="pre">diff</span></code> on two exports of the
+same codebase to be empty.</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 14.0%" />
+<col style="width: 20.0%" />
+<col style="width: 20.0%" />
+<col style="width: 22.0%" />
+<col style="width: 24.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Tag</p></th>
+<th class="head"><p>Tagged commit</p></th>
+<th class="head"><p>Cut from</p></th>
+<th class="head"><p>Runs record version</p></th>
+<th class="head"><p>Byte-identical export</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">v0.5.0</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">717783a9</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">f48effe3</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.4.336</span></code></p></td>
+<td><p>no (key-level only)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">v0.5.1</span></code></p></td>
+<td><p><em>&lt;filled at tagging&gt;</em></p></td>
+<td><p><em>&lt;filled at tagging&gt;</em></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.5.0</span></code></p></td>
+<td><p>yes</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+<section id="input-2-the-labels-benchmark-adjudication-at-a-sha">
+<h2><a class="toc-backref" href="#id4" role="doc-backlink">Input 2: the labels – <code class="docutils literal notranslate"><span class="pre">benchmark_adjudication</span></code> at a SHA</a><a class="headerlink" href="#input-2-the-labels-benchmark-adjudication-at-a-sha" title="Link to this heading"></a></h2>
+<p>The adjudicated labels are a standalone public dataset: one row per
+labeled finding, <code class="docutils literal notranslate"><span class="pre">data/&lt;project&gt;/adjudication.csv</span></code>, keyed on
+<code class="docutils literal notranslate"><span class="pre">(project,</span> <span class="pre">codebase_commit,</span> <span class="pre">file_path,</span> <span class="pre">line,</span> <span class="pre">rule_id)</span></code> with a <code class="docutils literal notranslate"><span class="pre">verdict</span></code>
+of <code class="docutils literal notranslate"><span class="pre">TP</span></code>, <code class="docutils literal notranslate"><span class="pre">FP</span></code>, <code class="docutils literal notranslate"><span class="pre">uncertain</span></code> or <code class="docutils literal notranslate"><span class="pre">FN</span></code>, plus who labeled it, when, and
+why. Its README documents the columns and the review process; nothing in it
+needs a database or a credential to read.</p>
+<p>The dataset grows continuously, so a published figure is scored against the
+labels <strong>as of one commit</strong> of that repo. The paper pins that commit in its
+measurement facts (<code class="docutils literal notranslate"><span class="pre">benchmark_adjudication_commit</span></code>); for v0.5.0 the
+maintainers’ oracle was level with <code class="docutils literal notranslate"><span class="pre">3ab3f41d</span></code>. Clone the repo beside this
+one and keep the SHA – the scorer reads the labels at that commit through
+<code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">show</span></code>, so the checkout itself can sit on any branch:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span><span class="nv">$AURORA_LINT_SRC_ROOT</span>
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/brandon-arrendondo/benchmark_adjudication
+git<span class="w"> </span>-C<span class="w"> </span>benchmark_adjudication<span class="w"> </span>cat-file<span class="w"> </span>-e<span class="w"> </span>3ab3f41d^<span class="o">{</span>commit<span class="o">}</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;label SHA present&quot;</span>
+</pre></div>
+</div>
+<p>The same repo carries the reference scorer, <code class="docutils literal notranslate"><span class="pre">scripts/score.py</span></code>, and a
+golden test (<code class="docutils literal notranslate"><span class="pre">tests/test_score_golden.py</span></code>) that pins the scorer to run
+<code class="docutils literal notranslate"><span class="pre">#265</span></code>: run 265’s finding keys are stored under <code class="docutils literal notranslate"><span class="pre">tests/golden/run-265/</span></code>,
+and the test asserts that scoring them against the labels at <code class="docutils literal notranslate"><span class="pre">3ab3f41d</span></code>
+with the scope from this repo at <code class="docutils literal notranslate"><span class="pre">f48effe3</span></code> reproduces the paper’s
+per-project and overall figures exactly. <code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">-m</span> <span class="pre">unittest</span> <span class="pre">discover</span> <span class="pre">-s</span>
+<span class="pre">tests</span></code> in that repo runs it; it is the demonstration that the published
+figure <em>is</em> a function of the three SHAs and nothing else.</p>
+</section>
+<section id="input-3-the-corpus-pinned-checkouts-and-juliet">
+<h2><a class="toc-backref" href="#id5" role="doc-backlink">Input 3: the corpus – pinned checkouts and Juliet</a><a class="headerlink" href="#input-3-the-corpus-pinned-checkouts-and-juliet" title="Link to this heading"></a></h2>
+<section id="real-world-codebases">
+<h3><a class="toc-backref" href="#id6" role="doc-backlink">Real-world codebases</a><a class="headerlink" href="#real-world-codebases" title="Link to this heading"></a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code> pins every real-world codebase to one commit
+and declares, per codebase, which files count toward the oracle
+(<code class="docutils literal notranslate"><span class="pre">scope_include</span></code> / <code class="docutils literal notranslate"><span class="pre">scope_exclude</span></code>). Read it <strong>at the analyzer’s
+commit</strong> – the pins and scope are part of what the run means, and the
+scorer takes this file as its scope input:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>show<span class="w"> </span>f48effe3:data/benchmark_repos.json<span class="w"> </span>&gt;<span class="w"> </span>/tmp/benchmark_repos.f48effe3.json
+</pre></div>
+</div>
+<p>The checkouts live under <code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT</span></code> (default <code class="docutils literal notranslate"><span class="pre">~/toolchain</span></code>), one
+directory per codebase named exactly as in the JSON; the runner attributes
+findings to a project by that directory name, and the scorer normalizes
+scan paths by it. Provision them with the playbook in <a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a>
+and then, <strong>before every run</strong>, verify they are still at their pins:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>corpus-check<span class="w">      </span><span class="c1"># exit 0 and every row OK, or stop here</span>
+</pre></div>
+</div>
+<p>Provisioning pins a checkout once and nothing holds it there: a <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">pull</span></code>
+on a tracking branch moves it, and the runner records whatever commit it
+finds rather than asserting the pin. Findings from a drifted tree land at
+<code class="docutils literal notranslate"><span class="pre">(file,</span> <span class="pre">line)</span></code> pairs the labels never saw and fall silently out of both
+precision and recall. <code class="docutils literal notranslate"><span class="pre">corpus-check</span></code> also flags <strong>untracked and gitignored
+``*.c``/``*.h`` files</strong>: aurora-lint dispatches on file extension and never
+consults git, so a build run inside a checkout contaminates every later
+scan while <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">status</span></code> stays clean – sqlite’s generated <code class="docutils literal notranslate"><span class="pre">sqlite3.c</span></code>
+amalgamation is the standing example, worth a quarter of a million lines.
+Keep the checkouts pristine and build nothing inside <code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT</span></code>.</p>
+</section>
+<section id="juliet">
+<h3><a class="toc-backref" href="#id7" role="doc-backlink">Juliet</a><a class="headerlink" href="#juliet" title="Link to this heading"></a></h3>
+<p>The synthetic corpus is the NIST SARD <a class="reference external" href="https://samate.nist.gov/SARD/test-suites/112">Juliet Test Suite for C/C++ v1.3</a> (SARD suite 112),
+obtained manually because SARD has no stable download URL, and placed at
+<code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT/benchmarks/juliet-test-suite-c</span></code> (<a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a>).
+It is versioned by NIST, not pinned by this repo; v1.3 is the only version
+these numbers have ever been run on.</p>
+</section>
+</section>
+<section id="procedure">
+<h2><a class="toc-backref" href="#id8" role="doc-backlink">Procedure</a><a class="headerlink" href="#procedure" title="Link to this heading"></a></h2>
+<section id="real-world-half">
+<h3><a class="toc-backref" href="#id9" role="doc-backlink">Real-world half</a><a class="headerlink" href="#real-world-half" title="Link to this heading"></a></h3>
+<ol class="arabic">
+<li><p>Build the analyzer at the cut-from commit (above) and confirm
+<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">corpus-check</span></code> is clean.</p></li>
+<li><p>Scan every codebase with the benchmark runner. It invokes the release
+binary per codebase with that codebase’s manifest from
+<code class="docutils literal notranslate"><span class="pre">conf/realworld/</span></code> and its include paths, and writes one <code class="docutils literal notranslate"><span class="pre">--export</span></code>
+JSON per codebase; the local SQLite ingest and score that follow are for
+your own use and are not part of the reproduction.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-run<span class="w"> </span>--tool<span class="w"> </span>sqc<span class="w">              </span><span class="c1"># all 12 codebases</span>
+python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-run<span class="w"> </span>--tool<span class="w"> </span>sqc<span class="w"> </span>--codebase<span class="w"> </span>libcrc,lua<span class="w">   </span><span class="c1"># a subset</span>
+</pre></div>
+</div>
+<p>Exports land under <code class="docutils literal notranslate"><span class="pre">results/realworld/sqc-&lt;version&gt;-&lt;sha&gt;/</span></code> as
+<code class="docutils literal notranslate"><span class="pre">sqc-&lt;project&gt;-&lt;version&gt;-&lt;sha&gt;.json</span></code>, a JSON list of
+<code class="docutils literal notranslate"><span class="pre">{&quot;rule_id&quot;,</span> <span class="pre">&quot;file&quot;,</span> <span class="pre">&quot;line&quot;,</span> <span class="pre">&quot;message&quot;,</span> <span class="pre">…}</span></code> objects. <code class="docutils literal notranslate"><span class="pre">file</span></code> is the
+path as scanned (absolute, under <code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT/&lt;project&gt;/</span></code>); the
+scorer strips it to the project-relative form the labels use. The run
+ends with <code class="docutils literal notranslate"><span class="pre">No</span> <span class="pre">oracle</span> <span class="pre">labels</span> <span class="pre">cover</span> <span class="pre">this</span> <span class="pre">run's</span> <span class="pre">commit(s)</span> <span class="pre">yet</span> <span class="pre">--</span> <span class="pre">nothing</span>
+<span class="pre">scored</span></code>: that is the <em>local</em> SQLite scorer finding no labels in a fresh
+clone, and it is expected – the labels live in <code class="docutils literal notranslate"><span class="pre">benchmark_adjudication</span></code>
+and the next step scores against them.</p>
+</li>
+<li><p>Score the exports with the reference scorer, naming the label SHA and the
+scope file from step 0:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span><span class="nv">$AURORA_LINT_SRC_ROOT</span>/benchmark_adjudication
+<span class="nv">R</span><span class="o">=</span><span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint/results/realworld/sqc-0.4.336-f48effe3
+python3<span class="w"> </span>scripts/score.py<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--scope<span class="w"> </span>/tmp/benchmark_repos.f48effe3.json<span class="w"> </span>--scope-ref<span class="w"> </span>aurora-lint@f48effe3<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--labels-ref<span class="w"> </span>3ab3f41d<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span><span class="k">$(for</span><span class="w"> </span>p<span class="w"> </span><span class="k">in</span><span class="w"> </span>curl<span class="w"> </span>hostap<span class="w"> </span>libcrc<span class="w"> </span>lua<span class="w"> </span>mbedtls<span class="w"> </span>mosquitto<span class="w"> </span>pureftpd<span class="w"> </span>raylib<span class="w"> </span>sel4<span class="w"> </span>sqlite<span class="w"> </span>valkey<span class="w"> </span>ventoy<span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">        </span><span class="nb">echo</span><span class="w"> </span>--export<span class="w"> </span><span class="nv">$p</span><span class="o">=</span><span class="nv">$R</span>/sqc-<span class="nv">$p</span>-0.4.336-f48effe3.json<span class="p">;</span><span class="w"> </span><span class="k">done)</span>
+</pre></div>
+</div>
+<p>It prints a per-project table and an overall row – precision, recall
+against known true positives, label coverage – with a basis line naming
+the definition version and every input. <code class="docutils literal notranslate"><span class="pre">--json</span></code> gives the same as a
+document whose keys match the maintainers’ pipeline output, so it can be
+diffed against the paper’s pinned facts directly.</p>
+</li>
+<li><p>Compare. The expected figures are not restated here on purpose (a number
+copied into prose goes stale silently): they are the README highlights
+table for the current release, and for the paper its pinned measurement
+facts, both of which name the run and the SHAs they came from. The
+scorer’s own golden test holds the run-265 expectation as data.</p></li>
+</ol>
+</section>
+<section id="juliet-half">
+<h3><a class="toc-backref" href="#id10" role="doc-backlink">Juliet half</a><a class="headerlink" href="#juliet-half" title="Link to this heading"></a></h3>
+<p>Juliet is scored by this repo’s own runner, against the suite’s built-in
+ground truth (<code class="docutils literal notranslate"><span class="pre">OMITBAD</span></code>/<code class="docutils literal notranslate"><span class="pre">OMITGOOD</span></code>), so there is no external label set
+to pin – the analyzer commit and the suite version are the whole triple:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>juliet<span class="w">                </span><span class="c1"># fast mode: per-CWE manifests, CWE-matched rules</span>
+python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>status<span class="w"> </span>latest<span class="w">         </span><span class="c1"># precision, per-CWE detail, run id</span>
+</pre></div>
+</div>
+<p>Published Juliet figures are fast-mode figures. The run id is
+<code class="docutils literal notranslate"><span class="pre">sqc-&lt;version&gt;-&lt;sha&gt;</span></code>; <code class="docutils literal notranslate"><span class="pre">status</span></code> and <code class="docutils literal notranslate"><span class="pre">compare</span></code> accept a SHA.</p>
+</section>
+<section id="hardware-time-and-memory">
+<h3><a class="toc-backref" href="#id11" role="doc-backlink">Hardware, time and memory</a><a class="headerlink" href="#hardware-time-and-memory" title="Link to this heading"></a></h3>
+<p>Measured on one 12-core / 32 GB node running the procedure above at
+<code class="docutils literal notranslate"><span class="pre">v0.5.0</span></code> (2026-09-19); scale wall time by core count.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">build</span> <span class="pre">--release</span></code> from clean: 1 min 10 s (7.7 CPU-minutes).</p></li>
+<li><p>Real-world, <code class="docutils literal notranslate"><span class="pre">--tool</span> <span class="pre">sqc</span></code>, all 12 codebases: <strong>11 min 40 s</strong> wall
+(62 CPU-minutes). The long ones are hostap (3.5 min), sqlite (2.8 min),
+raylib (2.2 min) and valkey (1.5 min); everything else finishes in under
+40 s. Peak resident memory was about 6 GB, on hostap.
+<strong>sqlite with every rule enabled needs real memory</strong> – a 3.8 GB node
+runs out and is killed; keep 8 GB or more free, or scan it last on its
+own with <code class="docutils literal notranslate"><span class="pre">--codebase</span> <span class="pre">sqlite</span></code>.</p></li>
+<li><p>Juliet, fast mode: about 32–40 minutes, largely CPU-bound and parallel
+(<code class="docutils literal notranslate"><span class="pre">--jobs</span> <span class="pre">N</span></code>).</p></li>
+<li><p>Neither run needs the network, a database, or anything in
+<code class="docutils literal notranslate"><span class="pre">benchmark_adjudication</span></code> beyond the scorer and the CSVs.</p></li>
+</ul>
+<p>Do not rebuild the binary while a run is in progress: the runner invokes
+<code class="docutils literal notranslate"><span class="pre">target/release/aurora-lint</span></code> per codebase and a mid-run rebuild mixes two
+builds into one run id.</p>
+</section>
+<section id="what-another-machine-reproduces-measured">
+<h3><a class="toc-backref" href="#id12" role="doc-backlink">What another machine reproduces, measured</a><a class="headerlink" href="#what-another-machine-reproduces-measured" title="Link to this heading"></a></h3>
+<p>The procedure above was run in full on a machine that is not the one that
+produced run <code class="docutils literal notranslate"><span class="pre">#265</span></code> (same tag, same pins, same label SHA, same scope;
+Ubuntu 24.04, glibc 2.39). The result, scored by <code class="docutils literal notranslate"><span class="pre">score.py</span></code>:</p>
+<ul class="simple">
+<li><p>five of twelve projects reproduced <strong>key for key</strong> (libcrc, lua,
+pure-ftpd, raylib, Ventoy);</p></li>
+<li><p>overall precision and recall against known TPs reproduced to the
+published decimal; label coverage came out 0.1 point lower;</p></li>
+<li><p>154,095 in-scope findings against 154,103, with about 150 keys (0.1 %)
+differing across the other seven projects – and every one of them
+traceable to the <strong>host’s installed headers</strong>, which the scan reads
+through <code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include</span></code> and the per-project include paths. Missing
+third-party headers produce DCL31-C <em>called without prior declaration</em>
+findings (curl’s <code class="docutils literal notranslate"><span class="pre">lib/vauth/gsasl.c</span></code> when <code class="docutils literal notranslate"><span class="pre">libgsasl</span></code> is absent;
+mosquitto’s MySQL example plugin without <code class="docutils literal notranslate"><span class="pre">libmysqlclient</span></code>); a different
+glibc or OpenSSL release moves a handful of cross-file EXP34-C / EXP36-C /
+API00-C decisions that depend on how a system typedef or prototype
+resolved. Labeled keys were essentially untouched (five TP and 26 FP
+labels of 117,200 fell outside the new run), which is why the rates held.</p></li>
+</ul>
+<p>The same binary on the same machine, run twice, gave identical key sets on
+every codebase checked – the variation is between machines, not between
+runs. So the fourth input, not named by any SHA, is the header environment:
+<a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a> lists the packages the benchmark node carries, and a
+reproducer who wants zero key-level drift needs that list rather than
+“whatever <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> has”. A published figure’s precision and recall
+do not hinge on it; a claim about an exact finding count does.</p>
+</section>
+</section>
+<section id="reading-a-mismatch">
+<h2><a class="toc-backref" href="#id13" role="doc-backlink">Reading a mismatch</a><a class="headerlink" href="#reading-a-mismatch" title="Link to this heading"></a></h2>
+<p>If every per-project row of the scorer’s output equals the published one,
+the figure is reproduced. If not, the scorer’s inputs localize the cause:</p>
+<ul class="simple">
+<li><p><strong>A project’s finding count differs but its labeled counts do not.</strong> The
+extra or missing keys are unlabeled, so precision and recall hold and only
+coverage moves. Usual causes: the host’s headers (above – look for
+DCL31-C keys naming a library function), a different build (check
+<code class="docutils literal notranslate"><span class="pre">--version</span></code> and the SHA), a drifted or contaminated checkout
+(<code class="docutils literal notranslate"><span class="pre">corpus-check</span></code>), or a different manifest under <code class="docutils literal notranslate"><span class="pre">conf/realworld/</span></code> than
+the one at the analyzer commit.</p></li>
+<li><p><strong>A project is reported unscored.</strong> Its <code class="docutils literal notranslate"><span class="pre">codebase_commit</span></code> has no labels
+at the label SHA, which means the checkout is not at its pin – the
+scorer takes the commit from <code class="docutils literal notranslate"><span class="pre">benchmark_repos.json</span></code>, so this points at
+a scope file from the wrong analyzer commit.</p></li>
+<li><p><strong>Labeled counts differ.</strong> Findings moved to or from labeled keys: the
+binary is not the named one. Compare the two export files as key sets to
+see which rules moved.</p></li>
+<li><p><strong>Only the order of an export differs</strong> from a maintainer-provided one.
+Expected before <code class="docutils literal notranslate"><span class="pre">fc9164fd</span></code>; not expected from <code class="docutils literal notranslate"><span class="pre">v0.5.1</span></code> on.</p></li>
+</ul>
+<p>Whatever the cause, the reproduction is a statement about your run against
+the published inputs. A disagreement worth reporting is one you can name at
+the key level – which project, which rule, which <code class="docutils literal notranslate"><span class="pre">(file,</span> <span class="pre">line)</span></code> pairs –
+because that is the form in which the label set itself can be corrected.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="benchmark-running.html" class="btn btn-neutral float-left" title="Running Benchmarks (MCP Server)" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="project-structure.html" class="btn btn-neutral float-right" title="Project Structure" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025-2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
