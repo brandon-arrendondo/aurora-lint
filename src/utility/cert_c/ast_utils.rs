@@ -605,6 +605,47 @@ pub fn is_in_preproc_condition(node: &Node) -> bool {
     false
 }
 
+/// Whether `node` is a file-scope include guard: `#ifndef NAME` whose first
+/// directive is `#define NAME`, with no `#else`/`#elif` arm.
+///
+/// The idiom guards a header against double inclusion, so the definitions
+/// under it are the header's ONLY definitions — never one arm of an
+/// alternate-body choice. A predicate that treats every `preproc_ifdef`
+/// ancestor as "conditionally compiled" (the shape task 654's gate wanted,
+/// for a `#if X ... #else` stub body) makes every function in every guarded
+/// header conditional: hostap's `dl_list_add` in `list.h` then earns no
+/// `stores_params`, and the intrusive-list linkers built on it lose their
+/// borrowed-result reading (task 1227). Ask this before walking up to a
+/// preprocessor ancestor and stop at a guard.
+///
+/// Deliberately tight: top level of the file (`translation_unit` parent), the
+/// `#ifndef` form, and the name re-`#define`d as the first directive under
+/// it. A guard-shaped block nested in a function, or one with an `#else`,
+/// answers `false` and keeps whatever caution the caller had.
+pub fn is_include_guard(node: &Node, source: &str) -> bool {
+    if node.kind() != "preproc_ifdef"
+        || node.child(0).is_none_or(|d| d.kind() != "#ifndef")
+        || node.parent().is_none_or(|p| p.kind() != "translation_unit")
+        || node.child_by_field_name("alternative").is_some()
+    {
+        return false;
+    }
+    let Some(name) = node.child_by_field_name("name") else {
+        return false;
+    };
+    let name = get_node_text(&name, source);
+    let mut cursor = node.walk();
+    let first = node
+        .named_children(&mut cursor)
+        .find(|c| c.kind() != "comment" && c.kind() != "identifier");
+    first.is_some_and(|first| {
+        first.kind() == "preproc_def"
+            && first
+                .child_by_field_name("name")
+                .is_some_and(|n| get_node_text(&n, source) == name)
+    })
+}
+
 /// Whether the byte at `offset` sits on a preprocessor directive's *logical*
 /// line: the physical line it is on, or the first line of a backslash-continued
 /// run ending in it, begins (ignoring leading whitespace) with `#`.
@@ -2585,5 +2626,92 @@ mod preproc_and_literal_position_tests {
         let src = "if (c == '%') { }\nint z = a % b;\n";
         assert!(is_in_string_or_char_literal(src, at(src, "'%'") + 1));
         assert!(!is_in_string_or_char_literal(src, at(src, "a % b") + 2));
+    }
+}
+
+#[cfg(test)]
+mod include_guard_tests {
+    use super::is_include_guard;
+    use tree_sitter::Parser;
+
+    fn parse(code: &str) -> tree_sitter::Tree {
+        let mut parser = Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        parser.parse(code, None).unwrap()
+    }
+
+    /// The first `preproc_ifdef` at file scope.
+    fn top_ifdef<'a>(tree: &'a tree_sitter::Tree) -> tree_sitter::Node<'a> {
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        let found = root
+            .named_children(&mut cursor)
+            .find(|n| n.kind() == "preproc_ifdef");
+        found.expect("fixture has a file-scope #ifdef/#ifndef")
+    }
+
+    #[test]
+    fn guard_with_matching_define_first() {
+        let src = "#ifndef LIST_H\n#define LIST_H\nstatic inline void f(int *p) { *p = 1; }\n#endif /* LIST_H */\n";
+        let tree = parse(src);
+        assert!(is_include_guard(&top_ifdef(&tree), src));
+    }
+
+    #[test]
+    fn comment_before_the_define_is_allowed() {
+        let src = "#ifndef LIST_H\n/* guard */\n#define LIST_H\nint x;\n#endif\n";
+        let tree = parse(src);
+        assert!(is_include_guard(&top_ifdef(&tree), src));
+    }
+
+    #[test]
+    fn ifdef_is_not_a_guard() {
+        let src = "#ifdef LIST_H\n#define LIST_H\nint x;\n#endif\n";
+        let tree = parse(src);
+        assert!(!is_include_guard(&top_ifdef(&tree), src));
+    }
+
+    #[test]
+    fn different_name_is_not_a_guard() {
+        // `#ifndef HAVE_FOO` / `#define foo(x) ...`: a fallback definition,
+        // which is exactly the alternate-body shape the caller is cautious of.
+        let src = "#ifndef HAVE_FOO\n#define foo(x) (x)\nint x;\n#endif\n";
+        let tree = parse(src);
+        assert!(!is_include_guard(&top_ifdef(&tree), src));
+    }
+
+    #[test]
+    fn else_arm_is_not_a_guard() {
+        let src = "#ifndef X\n#define X\nint a;\n#else\nint b;\n#endif\n";
+        let tree = parse(src);
+        assert!(!is_include_guard(&top_ifdef(&tree), src));
+    }
+
+    #[test]
+    fn code_before_the_define_is_not_a_guard() {
+        let src = "#ifndef X\nint a;\n#define X\n#endif\n";
+        let tree = parse(src);
+        assert!(!is_include_guard(&top_ifdef(&tree), src));
+    }
+
+    #[test]
+    fn nested_guard_shape_is_not_a_guard() {
+        // Same text one level down: not at file scope, so the tight
+        // predicate declines and the caller keeps its caution.
+        let src = "void f(void) {\n#ifndef X\n#define X\nint a;\n#endif\n}\n";
+        let tree = parse(src);
+        let root = tree.root_node();
+        let nested = {
+            fn find<'a>(n: tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
+                if n.kind() == "preproc_ifdef" {
+                    return Some(n);
+                }
+                let mut c = n.walk();
+                let kids: Vec<_> = n.children(&mut c).collect();
+                kids.into_iter().find_map(find)
+            }
+            find(root).expect("nested #ifndef parsed")
+        };
+        assert!(!is_include_guard(&nested, src));
     }
 }

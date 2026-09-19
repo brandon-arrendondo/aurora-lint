@@ -863,13 +863,22 @@ fn find_nested_function_boundary(node: &Node, source: &str) -> Option<usize> {
 /// summary is conservative in the same direction as the rest of MEM30-C:
 /// worst case it silently loses a real MUST-free fact (a false negative),
 /// never gains a phantom one (a false positive).
-fn function_definition_is_preproc_conditional(func_node: &Node) -> bool {
+///
+/// A file-scope include guard (`#ifndef LIST_H` / `#define LIST_H` / ... /
+/// `#endif`) is NOT such a branch: it wraps a header's only definitions,
+/// never an alternate body. Before it was excepted, every function in every
+/// guarded header was gated -- hostap's `dl_list_add` earned no
+/// `stores_params`, so no intrusive-list linker's returned object ever
+/// escaped and `returned_value_escapes` was a no-op on that corpus
+/// (task 1227).
+fn function_definition_is_preproc_conditional(func_node: &Node, source: &str) -> bool {
     let mut current = *func_node;
     while let Some(parent) = current.parent() {
         if matches!(
             parent.kind(),
             "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_else"
-        ) {
+        ) && !crate::utility::cert_c::ast_utils::is_include_guard(&parent, source)
+        {
             return true;
         }
         current = parent;
@@ -1056,7 +1065,7 @@ fn analyze_function(
             body_text,
             &params,
             function_macros,
-            !function_definition_is_preproc_conditional(func_node),
+            !function_definition_is_preproc_conditional(func_node, source),
             &mut summary,
         );
         credit_clears_params(&sweep.calls, source, &params, clearing_names, &mut summary);
@@ -3212,6 +3221,16 @@ fn credit_stores_params(
             continue;
         };
         if summary.stores_params.contains(&idx) {
+            continue;
+        }
+        // A store INTO the parameter's own object is not the parameter
+        // escaping: hostap's `dl_list_init(list)` writes `list->next = list`,
+        // and that pointer dies with the block it points into. Crediting it
+        // made every `dl_list_init(&obj->sessions)` in a constructor read as
+        // the object reaching a container (task 1227).
+        if deref_write_root(&left, false)
+            .is_some_and(|root| root.utf8_text(source.as_bytes()) == Ok(stored_name))
+        {
             continue;
         }
         let returned = returned.get_or_insert_with(|| returned_names(body, source));
