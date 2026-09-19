@@ -681,6 +681,8 @@ fn prescan_file_list(
     function_summary::propagate_transitive_modifies(&mut function_summaries);
     function_summary::propagate_transitive_frees(&mut function_summaries, &macro_aliases);
     function_summary::propagate_transitive_stores(&mut function_summaries, &macro_aliases);
+    function_summary::propagate_returns_allocation(&mut function_summaries);
+    function_summary::propagate_returned_value_escapes(&mut function_summaries, &macro_aliases);
     function_summary::propagate_transitive_frees_param_fields(&mut function_summaries);
     function_summary::propagate_transitive_frees_param_pointees(&mut function_summaries);
     function_summary::propagate_transitive_closes(&mut function_summaries);
@@ -5602,6 +5604,10 @@ pub fn resolve_includes(
         &context.macro_aliases,
     );
     function_summary::propagate_transitive_stores(
+        Arc::make_mut(&mut context.function_summaries),
+        &context.macro_aliases,
+    );
+    function_summary::propagate_returned_value_escapes(
         Arc::make_mut(&mut context.function_summaries),
         &context.macro_aliases,
     );

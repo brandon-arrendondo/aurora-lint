@@ -3779,6 +3779,24 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             if let Some(function) = node.child_by_field_name("function") {
                 let func_name = self.callee_name(&function, source);
 
+                // A constructor whose summary shows it linked the object it
+                // returns into a container, a context or a global -- hostap's
+                // get-or-create `bss_get`/`ap_sta_add`, curl's
+                // `curl_slist_append` -- hands its caller a BORROWED pointer:
+                // dropping it leaks nothing the container does not still
+                // hold, and a later release through the container is not a
+                // double free of a block the caller owned. Evidence read off
+                // the callee's body outranks any name shape below (task
+                // 1227; the fact is MAY, the polarity that licenses a
+                // suppression, exactly as `stores_params` is).
+                if self
+                    .function_summaries
+                    .get(&func_name)
+                    .is_some_and(|summary| summary.returned_value_escapes)
+                {
+                    return false;
+                }
+
                 // Standard allocation functions
                 if call_roles::is_allocator_call(&func_name) {
                     return true;

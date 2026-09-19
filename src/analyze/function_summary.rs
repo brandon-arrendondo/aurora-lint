@@ -183,6 +183,39 @@ pub struct FunctionSummary {
     pub can_return_null: bool,
     /// Whether this function returns dynamically allocated memory.
     pub returns_allocation: bool,
+    /// Whether the declared return type is a pointer. Gates
+    /// `propagate_returns_allocation`: only a pointer-returning wrapper can
+    /// hand a callee's block back to its own caller.
+    #[serde(default)]
+    pub returns_pointer: bool,
+    /// Callees whose results may reach a `return` of this function, by the
+    /// routes `body_returned_callees` follows: the call itself, a name
+    /// assigned from it through plain copies, either arm of a `?:`, an
+    /// offset off the block. Wider than `returns_from_callees` (a direct
+    /// `return f(...)` only), which the taint fixpoint keeps as is; this
+    /// set closes `returns_allocation` and `returned_value_escapes` through
+    /// `scard = os_zalloc(n); ... return scard;`, which names no allocator
+    /// itself (task 1227).
+    #[serde(default)]
+    pub returned_callees: HashSet<String>,
+    /// MAY: the object this function returns was, before the return, put
+    /// somewhere that outlives the call -- stored into a destination rooted
+    /// in a parameter or a file-scope variable (`list->head = obj`), or
+    /// handed to a callee whose `stores_params` covers that argument
+    /// (`dl_list_add(&ctx->list, &obj->list)`; an interior pointer counts,
+    /// since the block is reachable through it). A get-or-create-and-link
+    /// constructor's result is therefore BORROWED by its caller: dropping it
+    /// leaks nothing the container does not still hold. Read off the body
+    /// and the callees' own summaries, never a name (task 1227; same
+    /// polarity as `stores_params`).
+    #[serde(default)]
+    pub returned_value_escapes: bool,
+    /// `(callee, argument index)` pairs through which the returned object, or
+    /// an interior pointer into it, was passed. Resolved against the callee's
+    /// `stores_params` in `propagate_returned_value_escapes`, after every
+    /// summary exists.
+    #[serde(default)]
+    pub returned_value_passthroughs: HashSet<(String, usize)>,
     /// Parameter indices that this function checks for NULL.
     pub checks_null_params: HashSet<usize>,
     /// Parameter indices that this function writes through (modifies via pointer).
@@ -953,9 +986,13 @@ fn analyze_function(
         // was then reported as leaked by MEM31-C. The text scan survives
         // only as the fallback for a body whose parse recovered no `return`
         // at all.
+        summary.returns_pointer = is_pointer_return;
         if is_pointer_return {
-            match body_returns_allocation(&body, source, text_end) {
-                Some(flows) => summary.returns_allocation = flows,
+            match body_returned_callees(&body, source, text_end) {
+                Some(callees) => {
+                    summary.returns_allocation = callees.iter().any(|c| is_allocator_name(c));
+                    summary.returned_callees = callees;
+                }
                 None => {
                     let body_text_no_comments = strip_comments_multiline(body_text);
                     summary.returns_allocation = body_text_no_comments.contains("malloc(")
@@ -1190,13 +1227,14 @@ fn collect_params_recursive(node: &Node, source: &str, params: &mut Vec<String>)
 /// a sibling definition tree-sitter swallowed into this body stays
 /// outside, and a genuine nested `function_definition` node is never
 /// entered.
-fn body_returns_allocation(body: &Node, source: &str, text_end: usize) -> Option<bool> {
-    fn is_allocator_name(name: &str) -> bool {
-        name.contains("malloc")
-            || name.contains("calloc")
-            || name.contains("realloc")
-            || name.contains("aligned_alloc")
-    }
+fn is_allocator_name(name: &str) -> bool {
+    name.contains("malloc")
+        || name.contains("calloc")
+        || name.contains("realloc")
+        || name.contains("aligned_alloc")
+}
+
+fn body_returned_callees(body: &Node, source: &str, text_end: usize) -> Option<HashSet<String>> {
     fn lvalue_name(node: &Node, source: &str) -> Option<String> {
         // A declarator's `*` prefixes name nothing; peel to the identifier.
         let mut n = *node;
@@ -1331,7 +1369,7 @@ fn body_returns_allocation(body: &Node, source: &str, text_end: usize) -> Option
                 .collect::<Vec<_>>()
         })
         .collect();
-    Some(returned.iter().any(|c| is_allocator_name(c)))
+    Some(returned)
 }
 
 /// Strip `/* ... */` and `// ...` comments from a (possibly multi-line)
@@ -2503,6 +2541,15 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
     // os_internal.c's `return malloc(size)` and os_unix.c's traced variant
     // the parallel walk reached first.
     existing.returns_allocation |= summary.returns_allocation;
+    existing.returns_pointer |= summary.returns_pointer;
+    existing.returned_callees.extend(summary.returned_callees);
+    // MAY, like `stores_params` and for the same reason: if any definition
+    // under this name links its result somewhere, a caller reporting the
+    // dropped result as leaked is wrong on that build.
+    existing.returned_value_escapes |= summary.returned_value_escapes;
+    existing
+        .returned_value_passthroughs
+        .extend(summary.returned_value_passthroughs);
     existing
         .returns_from_callees
         .extend(summary.returns_from_callees);
@@ -2973,8 +3020,6 @@ fn resolve_name_shaped_frees(
     summaries: &mut HashMap<String, FunctionSummary>,
     macro_aliases: &HashMap<String, String>,
 ) {
-    use crate::analyze::const_eval::resolve_macro_alias;
-
     let corroborated: HashMap<String, HashSet<usize>> = summaries
         .iter()
         .map(|(n, s)| (n.clone(), &s.frees_params - &s.frees_params_guessed))
@@ -3001,7 +3046,9 @@ fn resolve_name_shaped_frees(
         let guesses = std::mem::take(&mut summary.frees_params_by_name);
         for (idx, callees) in guesses {
             for (callee_name, arg_pos, unconditional) in callees {
-                let callee = resolve_macro_alias(macro_aliases, &callee_name);
+                let callee = edge_target(macro_aliases, &callee_name, |n| {
+                    corroborated.contains_key(n)
+                });
                 let backed = (callee == "free" && arg_pos == 0)
                     || corroborated
                         .get(callee)
@@ -3174,6 +3221,100 @@ fn credit_stores_params(
     }
 }
 
+/// The local a call argument or stored value reaches into, if it names one:
+/// `obj`, `(void *) obj`, `&obj->list`, `&obj.hdr`, `&obj[0]`. An interior
+/// pointer counts because a container holding `&obj->list` holds `obj`.
+fn object_root_name<'a>(expr: &Node<'a>, source: &'a str) -> Option<&'a str> {
+    let e = init_state::strip_arg_casts(expr);
+    let inner = if e.kind() == "pointer_expression"
+        && e.child_by_field_name("operator")
+            .is_some_and(|o| o.kind() == "&")
+    {
+        init_state::strip_arg_casts(&e.child_by_field_name("argument")?)
+    } else {
+        e
+    };
+    let mut n = inner;
+    loop {
+        match n.kind() {
+            "identifier" => return n.utf8_text(source.as_bytes()).ok(),
+            "field_expression" | "subscript_expression" => {
+                n = init_state::strip_arg_casts(&n.child_by_field_name("argument")?);
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Credit `summary.returned_value_escapes` when the object this function
+/// returns is, somewhere in the body, stored into storage that outlives the
+/// call, and record every call the object (or an interior pointer into it)
+/// is handed to, for `propagate_returned_value_escapes` to resolve against
+/// the callee's `stores_params` once that summary exists.
+///
+/// `destination_outlives_call` is asked with an EMPTY returned set on
+/// purpose: a store INTO the returned object (`obj->self = obj`) is not the
+/// object escaping. Only a parameter-rooted or file-scope destination is.
+fn credit_returned_value_escapes(
+    sweep: &BodySweep,
+    body: &Node,
+    source: &str,
+    params: &[String],
+    summary: &mut FunctionSummary,
+) {
+    use crate::utility::cert_c::ast_utils;
+
+    let returned = returned_names(body, source);
+    if returned.is_empty() {
+        return;
+    }
+    let no_returned = HashSet::new();
+
+    for assign in &sweep.assignments {
+        if assign
+            .child_by_field_name("operator")
+            .map(|o| ast_utils::get_node_text(&o, source))
+            != Some("=")
+        {
+            continue;
+        }
+        let (Some(left), Some(right)) = (
+            assign.child_by_field_name("left"),
+            assign.child_by_field_name("right"),
+        ) else {
+            continue;
+        };
+        if !object_root_name(&right, source).is_some_and(|n| returned.contains(n)) {
+            continue;
+        }
+        if destination_outlives_call(&left, source, params, &no_returned) {
+            summary.returned_value_escapes = true;
+            break;
+        }
+    }
+
+    for call in &sweep.calls {
+        let Some(callee) = call
+            .child_by_field_name("function")
+            .filter(|f| f.kind() == "identifier")
+        else {
+            continue;
+        };
+        let Some(args) = call.child_by_field_name("arguments") else {
+            continue;
+        };
+        let callee = ast_utils::get_node_text(&callee, source);
+        let mut cursor = args.walk();
+        for (idx, arg) in args.named_children(&mut cursor).enumerate() {
+            if object_root_name(&arg, source).is_some_and(|n| returned.contains(n)) {
+                summary
+                    .returned_value_passthroughs
+                    .insert((callee.to_string(), idx));
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn analyze_param_usage(
     body: &Node,
@@ -3197,6 +3338,7 @@ fn analyze_param_usage(
         // mutually-exclusive alternate body, and an ownership fact taken
         // from one arm must not be unioned in as if it always held.
         credit_stores_params(sweep, body, source, params, summary);
+        credit_returned_value_escapes(sweep, body, source, params, summary);
     }
 
     // One walk for the whole body, not one per parameter.
@@ -3825,6 +3967,29 @@ fn collect_param_passthroughs(
     }
 }
 
+/// The name an edge to `callee_name` is looked up under. Through the alias
+/// map when that lands on something the scan knows -- `#define mbedtls_free
+/// free`, or an alias onto a function with a body -- and otherwise the
+/// spelling itself. `#define zfree valkey_free` renames a symbol at link
+/// time, but the only body the scan ever saw is `void zfree(void *ptr)`, so
+/// resolving the edge to `valkey_free` reached nothing, and valkey's
+/// `decrRefCount` -> `zfree(o)` freed nothing in any summary (task 1227).
+/// `free` itself always wins: an alias onto the literal is the mbedtls case
+/// and needs no body.
+fn edge_target<'a>(
+    macro_aliases: &'a HashMap<String, String>,
+    callee_name: &'a str,
+    known: impl Fn(&str) -> bool,
+) -> &'a str {
+    use crate::analyze::const_eval::resolve_macro_alias;
+    let resolved = resolve_macro_alias(macro_aliases, callee_name);
+    if resolved != callee_name && resolved != "free" && !known(resolved) && known(callee_name) {
+        callee_name
+    } else {
+        resolved
+    }
+}
+
 /// Propagate transitive frees through param pass-through chains.
 ///
 /// If function B passes param 0 to callee C at param 0, and C frees param 0,
@@ -3844,8 +4009,6 @@ pub fn propagate_transitive_frees(
     summaries: &mut HashMap<String, FunctionSummary>,
     macro_aliases: &HashMap<String, String>,
 ) {
-    use crate::analyze::const_eval::resolve_macro_alias;
-
     resolve_name_shaped_frees(summaries, macro_aliases);
 
     for _pass in 0..10 {
@@ -3863,7 +4026,9 @@ pub fn propagate_transitive_frees(
         for summary in summaries.values_mut() {
             for (caller_idx, callees) in &summary.param_passthroughs {
                 for (callee_name, callee_idx) in callees {
-                    let callee = resolve_macro_alias(macro_aliases, callee_name);
+                    let callee = edge_target(macro_aliases, callee_name, |n| {
+                        frees_snapshot.contains_key(n)
+                    });
                     let (callee_frees, callee_guessed) = if callee == "free" && *callee_idx == 0 {
                         (true, false)
                     } else {
@@ -3912,7 +4077,9 @@ pub fn propagate_transitive_frees(
         for summary in summaries.values_mut() {
             for (caller_idx, callees) in &summary.unconditional_param_passthroughs {
                 for (callee_name, callee_idx) in callees {
-                    let callee = resolve_macro_alias(macro_aliases, callee_name);
+                    let callee = edge_target(macro_aliases, callee_name, |n| {
+                        unconditional_snapshot.contains_key(n)
+                    });
                     let callee_frees = (callee == "free" && *callee_idx == 0)
                         || unconditional_snapshot
                             .get(callee)
@@ -4106,8 +4273,6 @@ pub fn propagate_transitive_stores(
     summaries: &mut HashMap<String, FunctionSummary>,
     macro_aliases: &HashMap<String, String>,
 ) {
-    use crate::analyze::const_eval::resolve_macro_alias;
-
     for _pass in 0..10 {
         let mut changed = false;
         let stores_snapshot: HashMap<String, HashSet<usize>> = summaries
@@ -4118,7 +4283,9 @@ pub fn propagate_transitive_stores(
         for summary in summaries.values_mut() {
             for (caller_idx, callees) in &summary.param_passthroughs {
                 for (callee_name, callee_idx) in callees {
-                    let callee = resolve_macro_alias(macro_aliases, callee_name);
+                    let callee = edge_target(macro_aliases, callee_name, |n| {
+                        stores_snapshot.contains_key(n)
+                    });
                     if stores_snapshot
                         .get(callee)
                         .is_some_and(|s| s.contains(callee_idx))
@@ -4183,7 +4350,6 @@ pub fn propagate_transitive_clears(
     summaries: &mut HashMap<String, FunctionSummary>,
     macro_aliases: &HashMap<String, String>,
 ) {
-    use crate::analyze::const_eval::resolve_macro_alias;
     use crate::utility::cert_c::call_roles;
 
     for _pass in 0..10 {
@@ -4196,7 +4362,9 @@ pub fn propagate_transitive_clears(
         for summary in summaries.values_mut() {
             for (caller_idx, callees) in &summary.param_passthroughs {
                 for (callee_name, callee_idx) in callees {
-                    let callee = resolve_macro_alias(macro_aliases, callee_name);
+                    let callee = edge_target(macro_aliases, callee_name, |n| {
+                        snapshot.contains_key(n) || call_roles::is_memory_clearing_call(n)
+                    });
                     let clears = (*callee_idx == 0 && call_roles::is_memory_clearing_call(callee))
                         || snapshot.get(callee).is_some_and(|c| c.contains(callee_idx));
                     if clears && !summary.clears_params.contains(caller_idx) {
@@ -4335,6 +4503,85 @@ fn unwrap_to_call_node<'a>(mut node: Node<'a>) -> Node<'a> {
         }
     }
     node
+}
+
+/// Close `returns_allocation` through `returned_callees`: a pointer-returning
+/// wrapper that hands back what an allocating callee produced is an
+/// allocator to ITS caller. `scard = os_zalloc(sizeof(*scard)); ... return
+/// scard;` names no allocator, and before this every os_zalloc-backed
+/// constructor was dark to MEM31-C (task 1227). Bounded like the sibling
+/// fixpoints.
+pub fn propagate_returns_allocation(summaries: &mut HashMap<String, FunctionSummary>) {
+    for _pass in 0..10 {
+        let mut changed = false;
+        let snapshot: HashMap<String, bool> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.returns_allocation))
+            .collect();
+        for summary in summaries.values_mut() {
+            if summary.returns_allocation || !summary.returns_pointer {
+                continue;
+            }
+            if summary
+                .returned_callees
+                .iter()
+                .any(|c| snapshot.get(c).copied().unwrap_or(false))
+            {
+                summary.returns_allocation = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Close `returned_value_escapes` against the summaries that could not be
+/// read while the body was: a call the returned object was handed to whose
+/// callee `stores_params` covers that argument (`dl_list_add(&ctx->list,
+/// &obj->list)`, macro aliases resolved on the edge as `propagate_
+/// transitive_stores` does), and a returned callee whose own result escapes
+/// (a wrapper returning a linking constructor's object). Run AFTER
+/// `propagate_transitive_stores`, which is what makes a forwarding wrapper
+/// like hostap's `dl_list_add_tail` a store at all. Monotone; a rerun after
+/// `resolve_includes` widens the alias map is harmless (task 1227).
+pub fn propagate_returned_value_escapes(
+    summaries: &mut HashMap<String, FunctionSummary>,
+    macro_aliases: &HashMap<String, String>,
+) {
+    for _pass in 0..10 {
+        let mut changed = false;
+        let stores: HashMap<String, HashSet<usize>> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.stores_params.clone()))
+            .collect();
+        let escapes: HashMap<String, bool> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.returned_value_escapes))
+            .collect();
+        for summary in summaries.values_mut() {
+            if summary.returned_value_escapes {
+                continue;
+            }
+            let through_callee = summary.returned_value_passthroughs.iter().any(|(c, idx)| {
+                stores
+                    .get(edge_target(macro_aliases, c, |n| stores.contains_key(n)))
+                    .is_some_and(|s| s.contains(idx))
+            });
+            let through_return = summary
+                .returned_callees
+                .iter()
+                .any(|c| escapes.get(c).copied().unwrap_or(false));
+            if through_callee || through_return {
+                summary.returned_value_escapes = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
 }
 
 /// Propagate `returns_tainted` through the call chain formed by
