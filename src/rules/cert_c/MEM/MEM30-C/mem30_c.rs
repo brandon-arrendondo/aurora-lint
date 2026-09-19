@@ -7,6 +7,7 @@ use crate::analyze::macro_gaps;
 use crate::analyze::points_to::{lvalue_of, resolve_canonical, AliasMap, LValue};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
+use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -41,6 +42,12 @@ pub struct Mem30C {
     /// branch ending in `exit(1)` or a project `fatal()` is known to have
     /// no successor (task 1360).
     noreturn_functions: RefCell<Arc<HashSet<String>>>,
+    /// Typedefs that hide a pointer, and the project-wide one-level typedef
+    /// alias map. Both feed `arg_can_be_freed`, which must not read a
+    /// pointer-hiding alias (`client`, `LPPOINT`) as a non-pointer and drop a
+    /// real free on the name-heuristic path (task 1348).
+    pointer_typedef_names: RefCell<Arc<HashSet<String>>>,
+    project_typedef_types: RefCell<Arc<HashMap<String, String>>>,
 }
 
 impl Mem30C {
@@ -75,6 +82,8 @@ impl CertRule for Mem30C {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
         *self.noreturn_functions.borrow_mut() = context.noreturn_functions.clone();
+        *self.pointer_typedef_names.borrow_mut() = context.pointer_typedef_names.clone();
+        *self.project_typedef_types.borrow_mut() = context.typedef_types.clone();
         *self.project_ambiguous_macros.borrow_mut() = Arc::new(
             context
                 .macro_gaps
@@ -169,6 +178,8 @@ impl CertRule for Mem30C {
             macro_aliases,
             ambiguous_macros,
             noreturn_names,
+            self.pointer_typedef_names.borrow().clone(),
+            self.project_typedef_types.borrow().clone(),
         );
         analyzer.analyze_node(node, source, &mut violations);
 
@@ -1727,6 +1738,11 @@ struct MemoryAnalyzer {
     /// no join edge: whatever it freed is not carried past the `if`,
     /// `switch` or label it sits in (task 1360).
     noreturn_names: HashSet<String>,
+    // Typedefs that hide a pointer, and the project-wide one-level typedef
+    // alias map. `arg_can_be_freed` needs both to tell a genuine non-pointer
+    // argument from a pointer wearing an alias (task 1348).
+    pointer_typedef_names: Arc<HashSet<String>>,
+    typedef_types: Arc<HashMap<String, String>>,
 }
 
 impl MemoryAnalyzer {
@@ -1737,6 +1753,8 @@ impl MemoryAnalyzer {
         macro_aliases: HashMap<String, String>,
         ambiguous_macros: HashSet<String>,
         noreturn_names: HashSet<String>,
+        pointer_typedef_names: Arc<HashSet<String>>,
+        typedef_types: Arc<HashMap<String, String>>,
     ) -> Self {
         Self {
             freed_vars: HashSet::new(),
@@ -1750,6 +1768,8 @@ impl MemoryAnalyzer {
             union_members: HashMap::new(),
             macro_null_params,
             union_typedef_names,
+            pointer_typedef_names,
+            typedef_types,
             union_typed_vars: HashSet::new(),
             function_summaries,
             macro_aliases,
@@ -1773,6 +1793,8 @@ impl MemoryAnalyzer {
                 self.macro_aliases.clone(),
                 self.ambiguous_macros.clone(),
                 self.noreturn_names.clone(),
+                self.pointer_typedef_names.clone(),
+                self.typedef_types.clone(),
             );
             func_analyzer.analyze_function(node, source, violations);
             return; // Don't recurse further - function handled completely
@@ -3047,9 +3069,62 @@ impl MemoryAnalyzer {
         let Some(arg) = arg_nodes.last().copied() else {
             return HashSet::new();
         };
+        if !self.arg_can_be_freed(arg, source) {
+            return HashSet::new();
+        }
         self.mark_arg_freed(node, arg, source, None, violations)
             .into_iter()
             .collect()
+    }
+
+    /// Can this argument name an object a free-shaped call releases?
+    ///
+    /// Only consulted on the NAME-heuristic path, where all we know is that
+    /// the callee is spelled like a deallocator: a resolved `FunctionSummary`
+    /// already says which parameter is freed and is trusted over this.
+    ///
+    /// Nothing is released through a non-pointer. sel4 spells ordinary
+    /// accessors with FREE in the name -- `cap_untyped_cap_get_capFreeIndex(cap)`
+    /// takes a `cap_t` BY VALUE, `OFFSET_TO_FREE_INDEX(offset)` an integer
+    /// counter -- and the last-argument rule marked each one freed, so every
+    /// later read of the cap or the counter became a use-after-free
+    /// (task 1350).
+    ///
+    /// The bar is POSITIVE evidence of a non-pointer, never the absence of a
+    /// `*` in the type's spelling. `resolve_identifier_declared_type` hands
+    /// back the declaration's type field verbatim, so a typedef that hides the
+    /// pointer answers with no `*` in it: valkey's `typedef struct _client
+    /// {...} *client;` makes `freeClient(client c)` look non-pointer, and
+    /// rejecting there deleted a real use-after-free (`zfree(c)` then
+    /// `listSearchKey(config.clients, c)`, valkey-benchmark.c:556) -- resolving
+    /// the declarator and then asking a spelling question about the answer is
+    /// the same mistake ADR-0006 is about. So a type is only non-pointer once
+    /// the shared pointer-typedef set and the shared typedef chain both say it
+    /// is not one, and anything unresolved is left alone.
+    fn arg_can_be_freed(&self, arg: Node, source: &str) -> bool {
+        let inner = if arg.kind() == "cast_expression" {
+            arg.child_by_field_name("value").unwrap_or(arg)
+        } else {
+            arg
+        };
+        if inner.kind() != "identifier" {
+            return true;
+        }
+        let name = get_node_text(&inner, source);
+        let Some(ty) = ast_utils::resolve_identifier_declared_type(&inner, &name, source) else {
+            return true;
+        };
+        if ast_utils::is_pointer_type(&ty) {
+            return true;
+        }
+        let bare = ty.trim();
+        if self.pointer_typedef_names.contains(bare) {
+            return true;
+        }
+        ast_utils::is_pointer_type(&overflow_helpers::resolve_typedef_chain(
+            bare,
+            &self.typedef_types,
+        ))
     }
 
     /// Mark the SPECIFIC parameter positions a cross-file `FunctionSummary`

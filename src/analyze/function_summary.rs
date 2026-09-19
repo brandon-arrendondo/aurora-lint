@@ -3033,6 +3033,23 @@ fn resolve_name_shaped_frees(
         .iter()
         .map(|(n, s)| (n.clone(), &s.frees_params - &s.frees_params_guessed))
         .collect();
+    // Every parameter index the callee is known OR still guessed to release.
+    // Pending `frees_params_by_name` keys count: this fold is one pass, and a
+    // callee whose own free is itself an unresolved guess must not read as
+    // "frees nothing" merely because it has not been folded yet.
+    let may_free: HashMap<String, HashSet<usize>> = summaries
+        .iter()
+        .map(|(n, s)| {
+            (
+                n.clone(),
+                s.frees_params
+                    .iter()
+                    .chain(s.frees_params_by_name.keys())
+                    .copied()
+                    .collect(),
+            )
+        })
+        .collect();
     let works_through_only: HashMap<String, HashSet<usize>> = summaries
         .iter()
         .map(|(n, s)| {
@@ -3042,13 +3059,8 @@ fn resolve_name_shaped_frees(
                 .chain(s.modifies_params.iter())
                 .copied()
                 .collect();
-            let may_free: HashSet<usize> = s
-                .frees_params
-                .iter()
-                .chain(s.frees_params_by_name.keys())
-                .copied()
-                .collect();
-            (n.clone(), &through - &may_free)
+            let empty = HashSet::new();
+            (n.clone(), &through - may_free.get(n).unwrap_or(&empty))
         })
         .collect();
     for summary in summaries.values_mut() {
@@ -3062,6 +3074,40 @@ fn resolve_name_shaped_frees(
                     || corroborated
                         .get(callee)
                         .is_some_and(|f| f.contains(&arg_pos));
+                // The callee's body was read well enough to establish which
+                // parameter it releases, and this is not that one. That is not
+                // an unsupported guess, it is a CONTRADICTED one: the same
+                // analysis that saw the free also saw this argument and did not
+                // conclude anything was released through it. hostap's
+                // `bin_clear_free(void *bin, size_t len)` releases param 0, so
+                // the `bin_clear_free(bin, prime_len)` inside
+                // `debug_print_bignum` -- where `bin` is a local and
+                // `prime_len` the only argument naming a parameter, so the
+                // one-resolving-argument rule picks it -- must not make
+                // `prime_len` a freed parameter of `debug_print_bignum`, and
+                // every one of its callers' `prime_len` a double free (34
+                // findings, hostap sae.c, 0 labeled TP; task 1348).
+                //
+                // Asked against `may_free`, which counts the callee's own
+                // STILL-PENDING name guesses as well as its settled frees.
+                // `corroborated` alone is empty for exactly the callees this is
+                // about: `bin_clear_free`'s own `os_free(bin)` is itself a
+                // guess waiting in this same fold, and the fold is one pass, so
+                // order must not decide (the same reason `works_through_only`
+                // below is asked that way).
+                //
+                // An EMPTY `may_free` still licenses the guess: it means the
+                // body was never read, or releases through a function pointer
+                // the prescan cannot follow (`sqlite3_free`'s `xFree`, lua's
+                // `(*g->frealloc)`), which is the "unseen, not nothing" case
+                // this tier exists for.
+                if !backed
+                    && may_free
+                        .get(callee)
+                        .is_some_and(|f| !f.is_empty() && !f.contains(&arg_pos))
+                {
+                    continue;
+                }
                 if !backed
                     && works_through_only
                         .get(callee)
