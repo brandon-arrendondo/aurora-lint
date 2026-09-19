@@ -272,6 +272,29 @@ fn call_result_is_assigned(call_node: &Node) -> bool {
     }
 }
 
+/// The left-hand side of the plain `=` assignment whose right-hand side is
+/// this call (through parentheses and casts), or `None` when the call's
+/// result goes anywhere else. `x = (T *) f(x)` gives `x`; a compound
+/// assignment reads its destination and is not a plain overwrite.
+fn assignment_target_of_call<'a>(call_node: &Node<'a>) -> Option<Node<'a>> {
+    let mut current = *call_node;
+    loop {
+        let parent = current.parent()?;
+        match parent.kind() {
+            "parenthesized_expression" | "cast_expression" => current = parent,
+            "assignment_expression" => {
+                let is_rhs =
+                    parent.child_by_field_name("right").map(|r| r.id()) == Some(current.id());
+                let plain = parent
+                    .child_by_field_name("operator")
+                    .is_none_or(|op| op.kind() == "=");
+                return (is_rhs && plain).then(|| parent.child_by_field_name("left"))?;
+            }
+            _ => return None,
+        }
+    }
+}
+
 /// Tracks global variables and cross-function memory patterns
 /// True if a field-access chain (`a[i].f`, `p->arr[i].f`, `a[i]->f`) passes
 /// through a subscript anywhere below its top.
@@ -1885,6 +1908,7 @@ impl MemoryAnalyzer {
                     }
                     "call_expression" => {
                         let freed_arg_ids = self.process_call_expression(&n, source, violations);
+                        self.clear_freed_args_overwritten_by_result(&n, source, &freed_arg_ids);
                         push_children(&mut stack, &n, source, &freed_arg_ids);
                     }
                     "assignment_expression" => {
@@ -3342,6 +3366,55 @@ impl MemoryAnalyzer {
                 }
             }
         }
+    }
+
+    /// `x = f(x)` where `f` freed `x` (task 1355): the store of `f`'s result
+    /// into `x` follows the call, so `x` no longer holds the value that was
+    /// freed and does not keep its state -- the same overwrite-clears rule
+    /// `process_assignment` applies to `free(p); p = make_buffer();`. That
+    /// visit is pre-order and had nothing to clear when it ran: the free
+    /// happens inside the right-hand side it walks into afterwards, and
+    /// its mark was landing on the variable AFTER the clear. hostap's
+    /// consume-and-rebuild helpers (`wpabuf_zeropad`, `wpabuf_concat`,
+    /// `asn1_encaps`, ...) are used this way at every call site, and every
+    /// later use, free or re-pass of `x` -- `pfs->secret = wpabuf_zeropad(
+    /// pfs->secret, ...)` included -- was reported against the stale state.
+    ///
+    /// Only the arguments this call actually freed are considered (the ids
+    /// `process_call_expression` returned), and only the one the result is
+    /// stored into: `y = f(x)` leaves `x` freed, which it is.
+    fn clear_freed_args_overwritten_by_result(
+        &mut self,
+        call: &Node,
+        source: &str,
+        freed_arg_ids: &HashSet<usize>,
+    ) {
+        if freed_arg_ids.is_empty() {
+            return;
+        }
+        let Some(left) = assignment_target_of_call(call) else {
+            return;
+        };
+        let Some(left_lv) = lvalue_of(&left, source) else {
+            return;
+        };
+        let Some(arguments) = call.child_by_field_name("arguments") else {
+            return;
+        };
+        let overwritten = (0..arguments.named_child_count())
+            .filter_map(|i| arguments.named_child(i))
+            .filter(|arg| freed_arg_ids.contains(&arg.id()))
+            .map(|arg| match arg.kind() {
+                "cast_expression" => arg.child_by_field_name("value").unwrap_or(arg),
+                _ => arg,
+            })
+            .any(|arg| lvalue_of(&arg, source).as_ref() == Some(&left_lv));
+        if !overwritten {
+            return;
+        }
+        let left_var = LValue::Var(left_lv.root_var().to_string());
+        self.clear_freed_state(&left_var, &left_lv);
+        self.aliases.remove(&left_var);
     }
 
     /// Clear all freed/nullified/realloc-invalidation tracking for a variable
