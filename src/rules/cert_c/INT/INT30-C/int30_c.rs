@@ -1,6 +1,6 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self, FunctionCfg};
-use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
+use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::value_range::RangeAnalysisResult;
@@ -58,6 +58,14 @@ pub struct Int30C {
     /// through `overflow_helpers::typedef_chain_is_unsigned` in
     /// `is_unsigned_type` (task 1288).
     typedef_types: RefCell<Arc<HashMap<String, String>>>,
+    /// The project-wide name sets `const_eval::is_compile_time_constant_expr`
+    /// wants, mirroring INT34-C: every object-like and function-like
+    /// `#define` the scan saw, and the functions whose every `return` is a
+    /// compile-time constant. What lets a `calloc` count spelled with a
+    /// macro from another header still read as fixed (task 1325).
+    project_macro_names: RefCell<Arc<HashSet<String>>>,
+    project_function_macro_names: RefCell<HashSet<String>>,
+    constant_returning_functions: RefCell<HashSet<String>>,
 }
 
 impl Int30C {
@@ -76,6 +84,9 @@ impl Int30C {
             pointer_facts: RefCell::new(PointerFacts::default()),
             function_return_types: RefCell::new(HashMap::new()),
             typedef_types: RefCell::new(Arc::new(HashMap::new())),
+            project_macro_names: RefCell::new(Arc::new(HashSet::new())),
+            project_function_macro_names: RefCell::new(HashSet::new()),
+            constant_returning_functions: RefCell::new(HashSet::new()),
         }
     }
 
@@ -223,6 +234,15 @@ impl CertRule for Int30C {
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.project_macro_names.borrow_mut() = context.defined_macro_names.clone();
+        *self.project_function_macro_names.borrow_mut() =
+            context.function_macros.keys().cloned().collect();
+        *self.constant_returning_functions.borrow_mut() = context
+            .function_summaries
+            .iter()
+            .filter(|(_, summary)| summary.returns_only_compile_time_constants)
+            .map(|(name, _)| name.clone())
+            .collect();
         *self.global_writers.borrow_mut() = context.global_writers.clone();
 
         *self.callers.borrow_mut() = context.callers.clone();
@@ -1527,6 +1547,7 @@ impl Int30C {
 
         if function_name == "calloc"
             && args.len() >= 2
+            && !self.calloc_product_cannot_wrap(node, source)
             && !self.has_calloc_overflow_check(node, source)
         {
             let start_point = node.start_position();
@@ -1547,6 +1568,111 @@ impl Int30C {
                 ..Default::default()
             });
         }
+    }
+
+    /// Is `nmemb * size`, the product `calloc` forms from its two arguments,
+    /// provably free of a wrap (task 1325)? A finding here names a runtime
+    /// size calculation that unexpected input can push past `SIZE_MAX`; the
+    /// call is clean when no such calculation exists:
+    ///
+    /// - Either operand is provably in `[0, 1]`: multiplying by 0 or 1 never
+    ///   wraps, whatever the other operand is. `calloc(1, sizeof(struct
+    ///   cfg))` is exactly this, and needs no struct layout to settle.
+    /// - Both operand ranges are known and their product is in range -- the
+    ///   same test `check_allocation_size_wrap` applies to an explicit
+    ///   `data * sizeof(T)`, so `calloc(4, sizeof(int))` is clean and
+    ///   `calloc(1073741825, sizeof(int))` still wraps a 32-bit `size_t`
+    ///   (the ILP32 stance both share until task 1298 gives it a setting).
+    ///   The ranges come from VRA first and the syntactic constant
+    ///   propagation second, in that order, for the reason
+    ///   `expression_fits_in_unsigned_vra` gives: VRA's loop widening can
+    ///   only ever make a fit fail to prove, never prove one falsely.
+    /// - Both operands are compile-time constants in
+    ///   `const_eval::is_compile_time_constant_expr`'s sense. The product is
+    ///   then an integer constant expression the compiler folds: there is no
+    ///   runtime calculation for input to reach, and the remediation this
+    ///   rule suggests (`if (count > SIZE_MAX / size)`) is a constant
+    ///   condition that could never do anything. This is what settles
+    ///   `calloc(4, sizeof(struct big))`: sqc lays out no struct, so "did
+    ///   the product fold?" is a fact about sqc, not about the code.
+    ///
+    /// Nothing here reads the operands' spelling: an unresolved count keeps
+    /// the report, whatever it is multiplied by.
+    fn calloc_product_cannot_wrap(&self, call: &Node, source: &str) -> bool {
+        let Some(arguments) = call.child_by_field_name("arguments") else {
+            return false;
+        };
+        let (Some(nmemb), Some(size)) = (arguments.named_child(0), arguments.named_child(1)) else {
+            return false;
+        };
+
+        match (
+            self.calloc_product_fits(&nmemb, &size, source, true),
+            self.calloc_product_fits(&nmemb, &size, source, false),
+        ) {
+            (Some(true), _) | (_, Some(true)) => return true,
+            // A product that was computed and does not fit is a wrap the
+            // constant clause below must not talk the rule out of:
+            // `calloc(1073741825, sizeof(int))` is constant AND wraps.
+            (Some(false), _) | (_, Some(false)) => return false,
+            (None, None) => {}
+        }
+
+        let macros = self.current_macros.borrow();
+        let names = const_eval::ConstantNameSets {
+            object_macros: &self.project_macro_names.borrow(),
+            function_macros: &self.project_function_macro_names.borrow(),
+            constant_returning_functions: &self.constant_returning_functions.borrow(),
+        };
+        const_eval::is_compile_time_constant_expr(&nmemb, source, &macros, names)
+            && const_eval::is_compile_time_constant_expr(&size, source, &macros, names)
+    }
+
+    /// The range half of `calloc_product_cannot_wrap`, over VRA ranges when
+    /// `use_vra` is set and the syntactic ones otherwise: `Some(true)` when
+    /// the product provably fits, `Some(false)` when it was computed and
+    /// does not, `None` when an operand's range is unknown -- which proves
+    /// nothing unless the other is in `[0, 1]`.
+    fn calloc_product_fits(
+        &self,
+        nmemb: &Node,
+        size: &Node,
+        source: &str,
+        use_vra: bool,
+    ) -> Option<bool> {
+        let count = self.calloc_operand_range(nmemb, source, use_vra);
+        let elem = self.calloc_operand_range(size, source, use_vra);
+        let is_zero_or_one = |r: &Option<ValueRange>| r.is_some_and(|r| r.min >= 0 && r.max <= 1);
+        if is_zero_or_one(&count) || is_zero_or_one(&elem) {
+            return Some(true);
+        }
+        let product = count?.mul(&elem?)?;
+        // Mirrors `check_allocation_size_wrap`: fits 64 bits, and does not
+        // *definitely* exceed a 32-bit `size_t`. A product that merely
+        // straddles the 32-bit bound is a possible wrap, not a proven one,
+        // and is left to the range being narrowed, not reported here.
+        Some(product.fits_in_unsigned(64) && product.min <= i64::from(u32::MAX))
+    }
+
+    /// The value range of one `calloc` operand: the VRA ranges replayed at
+    /// the operand, or the loop-and-assignment propagation
+    /// `expression_fits_in_unsigned` falls back to.
+    fn calloc_operand_range(&self, node: &Node, source: &str, use_vra: bool) -> Option<ValueRange> {
+        let macros = self.current_macros.borrow();
+        if use_vra {
+            let ranges = self.vra_var_ranges_at(node, source)?;
+            return const_eval::try_evaluate_range(node, source, &macros, &ranges);
+        }
+        let loop_ranges = const_eval::extract_loop_var_ranges(node, source, &macros);
+        let mut var_ranges = loop_ranges.clone();
+        const_eval::resolve_identifiers_in_expr(
+            node,
+            source,
+            &macros,
+            &loop_ranges,
+            &mut var_ranges,
+        );
+        const_eval::try_evaluate_range(node, source, &macros, &var_ranges)
     }
 
     fn infer_type(&self, node: &Node, source: &str, type_map: &HashMap<String, String>) -> String {
