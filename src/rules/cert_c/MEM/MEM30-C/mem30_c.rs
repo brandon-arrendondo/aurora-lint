@@ -3111,6 +3111,17 @@ impl MemoryAnalyzer {
             return true;
         }
         let name = get_node_text(&inner, source);
+        // A function designator is not an object, so it is not what any call
+        // releases. `listSetFreeMethod(list, aofListFree)` REGISTERS a free
+        // callback on a list; the last-argument rule read the callback itself
+        // as the freed thing, and registering the same one on two lists in a
+        // function came back as "aofListFree freed multiple times" (valkey
+        // aof.c, sentinel.c, valkey-cli.c; task 1350). A name carrying a
+        // FunctionSummary is one the prescan saw defined, which is what makes
+        // this a resolution rather than a guess about the spelling.
+        if self.function_summaries.contains_key(name) {
+            return false;
+        }
         let Some(ty) = ast_utils::resolve_identifier_declared_type(&inner, &name, source) else {
             return true;
         };
