@@ -13,6 +13,17 @@
 # clone needs one manual pass: `pre-commit install --hook-type commit-msg`.
 default_install_hook_types: [pre-commit, commit-msg]
 
+# Every hook below runs at the pre-commit stage unless it says otherwise, and
+# `no-claude-coauthor` says otherwise (`stages: [commit-msg]`). Without this
+# line a hook with no `stages:` runs at BOTH installed stages, so one commit
+# prints the file-based hooks twice: once in the pre-commit block where they
+# actually execute, and again in the commit-msg block as
+# "(no files to check) Skipped", because that stage passes no filenames. The
+# second block is harmless but reads exactly like the gate skipping, and it
+# was reported up the chain as a gate failure on that basis. Stating the
+# default removes the misleading half; nothing about what runs changes.
+default_stages: [pre-commit]
+
 repos:
   - repo: local
     hooks:
