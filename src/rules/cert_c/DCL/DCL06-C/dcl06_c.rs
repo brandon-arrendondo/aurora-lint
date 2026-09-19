@@ -191,6 +191,7 @@ impl Dcl06C {
                         && !self.is_well_known_idiom(&value, &operator)
                         && !self.value_echoed_in_sibling_identifier(&n, source)
                         && !self.is_version_macro_comparison(&n, source)
+                        && !self.is_consistency_assert_operand(&n, source)
                     {
                         let info = LiteralInfo {
                             value: value.clone(),
@@ -398,6 +399,82 @@ impl Dcl06C {
             return false;
         }
         Self::is_version_macro_identifier(&get_node_text(&other, source).to_lowercase())
+    }
+
+    /// Structural exemption (task 1153, mechanism 3): a literal that an
+    /// assertion pins a NAMED quantity to. `assert( sizeof(aSpecial)==32 )`,
+    /// `assert( PAGER_JOURNALMODE_WAL==5 )`, `assert( 200==sqlite3LogEst(
+    /// 1048576) )`: the literal is not program logic, it is the checked
+    /// statement about the program's constants, and the "compliant" rewrite
+    /// -- replace it with the constant -- makes the assertion `X == X`. The
+    /// version-macro exemption above is the special case of this for one
+    /// family of names; this is the general shape, kept narrow:
+    ///
+    /// - the literal is a DIRECT operand of `==` or `!=` (a literal folded
+    ///   into arithmetic or a mask on one side is still a magic number);
+    /// - the other operand is a named quantity: an ALL_CAPS identifier (a
+    ///   macro or enumerator by convention), a `sizeof`, or a call;
+    /// - the comparison reaches an assert-family callee (`assert`,
+    ///   `static_assert`, `DEBUGASSERT`, ...: any name containing "assert",
+    ///   case-insensitive) through parentheses only.
+    ///
+    /// The literal's OTHER occurrences are unaffected; only the operand of
+    /// the assertion itself is exempt, so `assert(200==f(1048576))` still
+    /// reports the 1048576 argument.
+    fn is_consistency_assert_operand(&self, node: &Node, source: &str) -> bool {
+        let Some(parent) = node.parent() else {
+            return false;
+        };
+        if parent.kind() != "binary_expression" {
+            return false;
+        }
+        let op = parent
+            .child_by_field_name("operator")
+            .map(|o| get_node_text(&o, source))
+            .unwrap_or_default();
+        if op != "==" && op != "!=" {
+            return false;
+        }
+        let other = match (
+            parent.child_by_field_name("left"),
+            parent.child_by_field_name("right"),
+        ) {
+            (Some(left), Some(right)) if left.id() == node.id() => right,
+            (Some(left), Some(right)) if right.id() == node.id() => left,
+            _ => return false,
+        };
+        let named = match other.kind() {
+            "sizeof_expression" | "call_expression" => true,
+            "identifier" => {
+                let name = get_node_text(&other, source);
+                name.chars().any(|c| c.is_ascii_alphabetic())
+                    && !name.chars().any(|c| c.is_ascii_lowercase())
+            }
+            _ => false,
+        };
+        if !named {
+            return false;
+        }
+        // Walk up through parentheses to the argument list of the assert.
+        let mut cur = parent;
+        loop {
+            let Some(up) = cur.parent() else {
+                return false;
+            };
+            match up.kind() {
+                "parenthesized_expression" => cur = up,
+                "argument_list" => {
+                    return up
+                        .parent()
+                        .filter(|call| call.kind() == "call_expression")
+                        .and_then(|call| call.child_by_field_name("function"))
+                        .is_some_and(|f| {
+                            get_node_text(&f, source).to_lowercase().contains("assert")
+                        });
+                }
+                _ => return false,
+            }
+        }
     }
 
     /// A handful of macros (OPENSSL_API_LEVEL) don't contain "version" or
