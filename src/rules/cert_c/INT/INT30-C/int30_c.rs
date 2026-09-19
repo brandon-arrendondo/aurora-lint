@@ -100,16 +100,20 @@ impl Int30C {
     /// still resolve by name, project-local summaries do not), so a run without
     /// `-d` reports a subset of what one with `-d` reports rather than a
     /// different, louder rule.
-    fn has_risky_operand_provenance(&self, node: &Node, source: &str, bits: u32) -> bool {
+    fn has_risky_operand_provenance(&self, node: &Node, source: &str, bits: Option<u32>) -> bool {
         // VRA definite-wrap channel (UINT_MAX + 1 / 0u - 1), asked at the same
         // width the caller's fits-check used. Asking at 32 while the operation
         // runs in 64 calls a 64-bit product that merely exceeds UINT_MAX a
-        // definite wrap, which it is not.
+        // definite wrap, which it is not. A width nobody knows
+        // (`arith_width_known` is `None`) cannot be definitely exceeded at
+        // all, so that half of the channel is not asked at the floor; the
+        // other half -- a result below zero wraps in unsigned arithmetic of
+        // ANY width -- still is, which asking at 64 leaves as the only one.
         if const_eval::expression_overflows_unsigned_vra(
             node,
             source,
             &self.current_macros.borrow(),
-            bits,
+            bits.unwrap_or(64),
             self.vra_var_ranges_at(node, source).as_ref(),
         ) {
             return true;
@@ -607,7 +611,7 @@ impl Int30C {
                 if !self.has_risky_operand_provenance(
                     node,
                     source,
-                    self.arith_width_bits(node, source, type_map),
+                    self.arith_width_known(node, source, type_map),
                 ) {
                     return;
                 }
@@ -720,7 +724,7 @@ impl Int30C {
                 if !self.has_risky_operand_provenance(
                     node,
                     source,
-                    self.arith_width_bits(node, source, type_map),
+                    self.arith_width_known(node, source, type_map),
                 ) {
                     return;
                 }
@@ -819,7 +823,7 @@ impl Int30C {
                 if !self.has_risky_operand_provenance(
                     node,
                     source,
-                    self.arith_width_bits(node, source, type_map),
+                    self.arith_width_known(node, source, type_map),
                 ) {
                     return;
                 }
@@ -882,7 +886,7 @@ impl Int30C {
                 if !self.has_risky_operand_provenance(
                     node,
                     source,
-                    self.arith_width_bits(node, source, type_map),
+                    self.arith_width_known(node, source, type_map),
                 ) {
                     return;
                 }
@@ -983,7 +987,7 @@ impl Int30C {
                 if !self.has_risky_operand_provenance(
                     node,
                     source,
-                    self.arith_width_bits(node, source, type_map),
+                    self.arith_width_known(node, source, type_map),
                 ) {
                     return;
                 }
@@ -1060,7 +1064,7 @@ impl Int30C {
                 if !self.has_risky_operand_provenance(
                     node,
                     source,
-                    self.arith_width_bits(node, source, type_map),
+                    self.arith_width_known(node, source, type_map),
                 ) {
                     return;
                 }
@@ -1111,7 +1115,7 @@ impl Int30C {
                 if !self.has_risky_operand_provenance(
                     node,
                     source,
-                    self.arith_width_bits(node, source, type_map),
+                    self.arith_width_known(node, source, type_map),
                 ) {
                     return;
                 }
@@ -1157,7 +1161,7 @@ impl Int30C {
                 if !self.has_risky_operand_provenance(
                     node,
                     source,
-                    self.arith_width_bits(node, source, type_map),
+                    self.arith_width_known(node, source, type_map),
                 ) {
                     return;
                 }
@@ -1253,7 +1257,7 @@ impl Int30C {
                     if !self.has_risky_operand_provenance(
                         node,
                         source,
-                        self.arith_width_bits(node, source, type_map),
+                        self.arith_width_known(node, source, type_map),
                     ) {
                         return;
                     }
@@ -2270,16 +2274,42 @@ impl Int30C {
     /// was the whole of this rule's word-width blindness: `count *
     /// sizeof(struct s)` is computed in `size_t`, cannot wrap on a 64-bit
     /// build, and was reported anyway because it does not fit in 32 bits.
+    ///
+    /// This is the floor a fits-check may use: a value that fits 32 bits
+    /// fits any width promotion can produce. Whether the width is actually
+    /// KNOWN is `arith_width_known`'s question, and the one the
+    /// definite-wrap channel has to ask.
     fn arith_width_bits(
         &self,
         node: &Node,
         source: &str,
         type_map: &HashMap<String, String>,
     ) -> u32 {
-        let wide = |n: Option<Node>| {
-            n.is_some_and(|n| self.operand_is_wide_unsigned(&n, source, type_map, 0))
-        };
-        let operand_wide = match node.kind() {
+        self.arith_width_known(node, source, type_map)
+            .unwrap_or(PROMOTED_ARITH_BITS)
+    }
+
+    /// `arith_width_bits`, or `None` when an operand's declared type resolves
+    /// to a spelling this rule cannot place (task 1358, ADR-0006).
+    ///
+    /// sqlite's `(u64)1486995408 * (u64)100000` (date.c) was reported as a
+    /// definite wrap: the width fell to the 32-bit floor because `u64`
+    /// resolves to `sqlite_uint64`, defined only in the generated
+    /// `sqlite3.h` the scan never reads, and 148,699,540,800,000 does not
+    /// fit 32 bits. The floor is right for proving a fit and wrong for
+    /// proving a wrap: an operand whose type could not be resolved has no
+    /// width to definitely exceed, so the honest answer is the same one
+    /// INT32-C gives an unresolvable alias -- not applicable -- rather than
+    /// the narrowest guess.
+    fn arith_width_known(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> Option<u32> {
+        let width =
+            |n: Option<Node>| -> Option<u32> { self.operand_width(&n?, source, type_map, 0) };
+        match node.kind() {
             // A shift is performed in the promoted type of its LEFT operand
             // alone; the count on the right says nothing about the width.
             "binary_expression"
@@ -2287,82 +2317,105 @@ impl Int30C {
                     .child_by_field_name("operator")
                     .is_some_and(|op| matches!(get_node_text(&op, source), "<<" | ">>")) =>
             {
-                wide(node.child_by_field_name("left"))
+                width(node.child_by_field_name("left"))
             }
-            "binary_expression" => {
-                wide(node.child_by_field_name("left")) || wide(node.child_by_field_name("right"))
-            }
+            "binary_expression" => Self::common_width(
+                width(node.child_by_field_name("left")),
+                width(node.child_by_field_name("right")),
+            ),
             // A compound assignment converts back into its destination, so the
             // destination is what the stored value has to fit.
-            "assignment_expression" => wide(node.child_by_field_name("left")),
+            "assignment_expression" => width(node.child_by_field_name("left")),
             // `++`/`--` likewise write back into their own operand.
-            _ => wide(node.child_by_field_name("argument")),
-        };
-        if operand_wide {
-            64
-        } else {
-            PROMOTED_ARITH_BITS
+            _ => width(node.child_by_field_name("argument")),
         }
     }
 
-    /// Whether this operand's type is 64-bit unsigned on every data model the
-    /// pinned corpora build for.
+    /// The width two operands' usual arithmetic conversions land on: 64 if
+    /// either is, else unknown if either is, else the promoted floor.
+    fn common_width(left: Option<u32>, right: Option<u32>) -> Option<u32> {
+        match (left, right) {
+            (Some(64), _) | (_, Some(64)) => Some(64),
+            (None, _) | (_, None) => None,
+            _ => Some(PROMOTED_ARITH_BITS),
+        }
+    }
+
+    /// The width this operand's type gives an operation: `Some(64)` for a
+    /// type that is 64-bit unsigned on every data model the pinned corpora
+    /// build for, `Some(PROMOTED_ARITH_BITS)` for any other type the rule
+    /// can place (promotion makes everything narrower than `int` 32-bit
+    /// arithmetic, and a shape with no declared type at all -- a literal, a
+    /// call -- keeps the floor it always had), `None` for a declared type
+    /// that resolves to a spelling the rule does not recognize.
     ///
     /// Recurses through the shapes that carry a type without changing it
     /// (parentheses, a nested arithmetic subexpression), depth-capped because
     /// the operand of a real expression can nest arbitrarily.
-    fn operand_is_wide_unsigned(
+    fn operand_width(
         &self,
         node: &Node,
         source: &str,
         type_map: &HashMap<String, String>,
         depth: u32,
-    ) -> bool {
+    ) -> Option<u32> {
         if depth > OPERAND_TYPE_MAX_DEPTH {
-            return false;
+            return Some(PROMOTED_ARITH_BITS);
         }
-        let recurse = |n: Option<Node>| {
-            n.is_some_and(|n| self.operand_is_wide_unsigned(&n, source, type_map, depth + 1))
+        let recurse = |n: Option<Node>| -> Option<u32> {
+            self.operand_width(&n?, source, type_map, depth + 1)
         };
         match node.kind() {
             "parenthesized_expression" => recurse(node.named_child(0)),
             // `sizeof` yields `size_t` by definition -- the operand that makes
             // an allocation size computation 64-bit in the first place.
-            "sizeof_expression" => true,
-            "cast_expression" => node
-                .child_by_field_name("type")
-                .is_some_and(|t| Self::is_portable_64bit_unsigned(get_node_text(&t, source))),
+            "sizeof_expression" => Some(64),
+            "cast_expression" => match node.child_by_field_name("type") {
+                Some(t) => self.type_width_bits(get_node_text(&t, source)),
+                None => Some(PROMOTED_ARITH_BITS),
+            },
             // A subexpression is at least as wide as its own widest operand.
-            "binary_expression" => {
-                recurse(node.child_by_field_name("left"))
-                    || recurse(node.child_by_field_name("right"))
-            }
-            "identifier" => type_map
-                .get(get_node_text(node, source))
-                .is_some_and(|t| Self::is_portable_64bit_unsigned(t)),
+            "binary_expression" => Self::common_width(
+                recurse(node.child_by_field_name("left")),
+                recurse(node.child_by_field_name("right")),
+            ),
+            "identifier" => match type_map.get(get_node_text(node, source)) {
+                Some(t) => self.type_width_bits(t),
+                None => Some(PROMOTED_ARITH_BITS),
+            },
             "field_expression" => {
                 let sft = self.struct_field_types.borrow();
-                crate::utility::cert_c::ast_utils::resolve_field_expression_type(
+                match crate::utility::cert_c::ast_utils::resolve_field_expression_type(
                     node, source, type_map, &sft,
-                )
-                .is_some_and(|t| Self::is_portable_64bit_unsigned(&t))
+                ) {
+                    Some(t) => self.type_width_bits(&t),
+                    None => Some(PROMOTED_ARITH_BITS),
+                }
             }
-            _ => false,
+            _ => Some(PROMOTED_ARITH_BITS),
         }
     }
 
-    /// Unsigned types that are 64-bit under *both* LP64 and LLP64.
+    /// The width a declared type spelling gives an operation, resolved
+    /// through the project's typedef chain first (task 1358, ADR-0006):
+    /// hostap's `u64` is `uint64_t` and was judged 32-bit by name.
     ///
-    /// `unsigned long` is deliberately absent: 64-bit on LP64, 32-bit on LLP64,
-    /// and curl builds for both. Widening on it would suppress a wrap that is
-    /// real on Windows, which is not a trade this rule gets to make silently.
-    fn is_portable_64bit_unsigned(type_str: &str) -> bool {
+    /// `Some(64)` for the unsigned types that are 64-bit under *both* LP64
+    /// and LLP64. `unsigned long` is deliberately absent: 64-bit on LP64,
+    /// 32-bit on LLP64, and curl builds for both. Widening on it would
+    /// suppress a wrap that is real on Windows, which is not a trade this
+    /// rule gets to make silently -- so it and every other spelling the
+    /// rule recognizes is `Some(PROMOTED_ARITH_BITS)`. `None` is a chain
+    /// that bottoms out in a name nothing the scan read defines.
+    fn type_width_bits(&self, type_str: &str) -> Option<u32> {
         let base = Self::strip_type_qualifiers(type_str);
+        let resolved = overflow_helpers::resolve_typedef_chain(&base, &self.typedef_types.borrow());
+        let base = Self::strip_type_qualifiers(&resolved);
         let base = base.trim();
         if base.contains('*') {
-            return false;
+            return Some(PROMOTED_ARITH_BITS);
         }
-        matches!(
+        if matches!(
             base,
             "size_t"
                 | "uint64_t"
@@ -2372,7 +2425,57 @@ impl Int30C {
                 | "uintptr_t"
                 | "unsigned long long"
                 | "unsigned long long int"
-        )
+        ) {
+            return Some(64);
+        }
+        Self::is_recognized_integer_spelling(base).then_some(PROMOTED_ARITH_BITS)
+    }
+
+    /// A type spelling this rule can place at some width: the C integer
+    /// and character types in their signed/unsigned forms, the `<stdint.h>`
+    /// and `<stddef.h>` names, and the Win32 SDK's unsigned typedefs.
+    fn is_recognized_integer_spelling(base: &str) -> bool {
+        let words: Vec<&str> = base.split_whitespace().collect();
+        let builtin = !words.is_empty()
+            && words.iter().all(|w| {
+                matches!(
+                    *w,
+                    "signed" | "unsigned" | "char" | "short" | "int" | "long" | "_Bool" | "bool"
+                )
+            });
+        builtin
+            || matches!(
+                base,
+                "int8_t"
+                    | "int16_t"
+                    | "int32_t"
+                    | "int64_t"
+                    | "uint8_t"
+                    | "uint16_t"
+                    | "uint32_t"
+                    | "int_least8_t"
+                    | "int_least16_t"
+                    | "int_least32_t"
+                    | "int_least64_t"
+                    | "uint_least8_t"
+                    | "uint_least16_t"
+                    | "uint_least32_t"
+                    | "int_fast8_t"
+                    | "int_fast16_t"
+                    | "int_fast32_t"
+                    | "int_fast64_t"
+                    | "uint_fast8_t"
+                    | "uint_fast16_t"
+                    | "uint_fast32_t"
+                    | "intmax_t"
+                    | "intptr_t"
+                    | "ptrdiff_t"
+                    | "ssize_t"
+                    | "wchar_t"
+                    | "char16_t"
+                    | "char32_t"
+            )
+            || ast_utils::is_win32_unsigned_typedef(base)
     }
 
     fn is_64bit_unsigned_declared(&self, type_str: &str) -> bool {
