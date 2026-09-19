@@ -380,6 +380,12 @@ impl Dcl06C {
     /// LWS_LIBRARY_VERSION_NUMBER, CJSON_VERSION_FULL,
     /// __IPHONE_OS_VERSION_MAX_ALLOWED, __MAC_OS_X_VERSION_MAX_ALLOWED and
     /// _MSC_VER, across curl/hostap/mosquitto/raylib. Zero exceptions found.
+    ///
+    /// The same idiom spelled as a version ACCESSOR CALL rather than a macro
+    /// -- `sqlite3_libversion_number() >= 3008002`, curl's
+    /// `Curl_conn_http_version(data, conn) != 20` -- is the same check
+    /// against a runtime library version, and is recognized by the same
+    /// name predicate applied to the callee (task 1153, mechanism 4).
     fn is_version_macro_comparison(&self, node: &Node, source: &str) -> bool {
         let Some(parent) = node.parent() else {
             return false;
@@ -395,10 +401,15 @@ impl Dcl06C {
             (Some(left), Some(right)) if right.id() == node.id() => left,
             _ => return false,
         };
-        if other.kind() != "identifier" {
-            return false;
-        }
-        Self::is_version_macro_identifier(&get_node_text(&other, source).to_lowercase())
+        let named = match other.kind() {
+            "identifier" => other,
+            "call_expression" => match other.child_by_field_name("function") {
+                Some(f) if f.kind() == "identifier" => f,
+                _ => return false,
+            },
+            _ => return false,
+        };
+        Self::is_version_macro_identifier(&get_node_text(&named, source).to_lowercase())
     }
 
     /// Structural exemption (task 1153, mechanism 3): a literal that an
