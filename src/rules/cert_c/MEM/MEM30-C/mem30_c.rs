@@ -48,6 +48,11 @@ pub struct Mem30C {
     /// real free on the name-heuristic path (task 1348).
     pointer_typedef_names: RefCell<Arc<HashSet<String>>>,
     project_typedef_types: RefCell<Arc<HashMap<String, String>>>,
+    /// Project-wide `#define NAME value` / enumerator values, merged in
+    /// `check` with this file's own, so two constant names an `if` compares
+    /// a value against are told apart by VALUE where the value is known:
+    /// `x == A` and `x == B` partition nothing if both are 1 (task 1360).
+    project_macros: RefCell<Arc<const_eval::MacroConstantMap>>,
 }
 
 impl Mem30C {
@@ -84,6 +89,7 @@ impl CertRule for Mem30C {
         *self.noreturn_functions.borrow_mut() = context.noreturn_functions.clone();
         *self.pointer_typedef_names.borrow_mut() = context.pointer_typedef_names.clone();
         *self.project_typedef_types.borrow_mut() = context.typedef_types.clone();
+        *self.project_macros.borrow_mut() = context.macro_constants.clone();
         *self.project_ambiguous_macros.borrow_mut() = Arc::new(
             context
                 .macro_gaps
@@ -170,6 +176,9 @@ impl CertRule for Mem30C {
             node, source,
         ));
 
+        let macro_constants =
+            const_eval::merged_macro_constants(&self.project_macros.borrow(), node, source);
+
         // Second pass: per-function analysis
         let mut analyzer = MemoryAnalyzer::new(
             macro_null_params,
@@ -180,6 +189,7 @@ impl CertRule for Mem30C {
             noreturn_names,
             self.pointer_typedef_names.borrow().clone(),
             self.project_typedef_types.borrow().clone(),
+            macro_constants,
         );
         analyzer.analyze_node(node, source, &mut violations);
 
@@ -1621,12 +1631,57 @@ enum ReallocNullBranch {
     Else, // if (result) or if (result != NULL) — else-branch is the NULL case
 }
 
+/// `lv` is (or, `negated`, is not) one of `constants`: what an `if`
+/// condition of the form `x == A`, `x == A || x == B` or `x != A` asserts on
+/// the arm it guards, with `A`/`B` literals or ALL_CAPS names. Two such
+/// predicates on the same `lv` can be provably disjoint, which is what makes
+/// a free under one of them not a free under the other (task 1360).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EqPred {
+    lv: LValue,
+    constants: HashSet<String>,
+    negated: bool,
+}
+
+impl EqPred {
+    /// Whether no value of `lv` satisfies both `self` and `other`.
+    fn disjoint_from(&self, other: &EqPred) -> bool {
+        if self.lv != other.lv {
+            return false;
+        }
+        match (self.negated, other.negated) {
+            (false, false) => self.constants.is_disjoint(&other.constants),
+            (false, true) => self.constants.is_subset(&other.constants),
+            (true, false) => other.constants.is_subset(&self.constants),
+            // Two complements always overlap on an unknown domain.
+            (true, true) => false,
+        }
+    }
+
+    fn negation(&self) -> EqPred {
+        EqPred {
+            lv: self.lv.clone(),
+            constants: self.constants.clone(),
+            negated: !self.negated,
+        }
+    }
+}
+
 /// The subset of `MemoryAnalyzer`'s fields that are forked across an
 /// `if`/`else` branch and either merged back (via `MemoryAnalyzer::
 /// merge_if_branches`) or restored verbatim before the else-branch walk.
 #[derive(Clone)]
 struct BranchState {
     freed_vars: HashSet<LValue>,
+    /// Objects whose free happened only on paths where predicates on other
+    /// lvalues held: `if (rep->type == ARRAY) zfree(rep->val.array);`
+    /// records `rep->val.array -> [rep->type == ARRAY]`, and a free nested
+    /// under two such tests records both. A later arm guarded by a
+    /// predicate disjoint from ANY of them -- `if (rep->type == MAP)` --
+    /// does not have the object freed (task 1360). A predicate is dropped
+    /// when its lvalue is assigned; the record is ignored once the object
+    /// is no longer in `freed_vars`.
+    freed_under: HashMap<LValue, Vec<EqPred>>,
     /// Where each freed object was freed. Forked with `freed_vars`: the
     /// preprocessor-split test compares a report site against this, and a
     /// then-branch free must not become the "prior free" the else-branch
@@ -1642,6 +1697,7 @@ impl BranchState {
     fn fork(analyzer: &MemoryAnalyzer) -> Self {
         Self {
             freed_vars: analyzer.freed_vars.clone(),
+            freed_under: analyzer.freed_under.clone(),
             freed_at: analyzer.freed_at.clone(),
             nullified_vars: analyzer.nullified_vars.clone(),
             aliases: analyzer.aliases.clone(),
@@ -1652,6 +1708,7 @@ impl BranchState {
 
     fn restore(&self, analyzer: &mut MemoryAnalyzer) {
         analyzer.freed_vars = self.freed_vars.clone();
+        analyzer.freed_under = self.freed_under.clone();
         analyzer.freed_at = self.freed_at.clone();
         analyzer.nullified_vars = self.nullified_vars.clone();
         analyzer.aliases = self.aliases.clone();
@@ -1663,6 +1720,8 @@ impl BranchState {
 struct MemoryAnalyzer {
     // Track which variables are currently freed
     freed_vars: HashSet<LValue>,
+    // See `BranchState::freed_under`.
+    freed_under: HashMap<LValue, Vec<EqPred>>,
     // Byte offset (start_byte) of the free site that most recently marked each
     // name freed. Consulted only on a candidate double-free, to detect whether a
     // preprocessor conditional directive separates the two free sites (task 251).
@@ -1743,6 +1802,15 @@ struct MemoryAnalyzer {
     // argument from a pointer wearing an alias (task 1348).
     pointer_typedef_names: Arc<HashSet<String>>,
     typedef_types: Arc<HashMap<String, String>>,
+    /// The open `break` targets around the statement being walked, innermost
+    /// last: `Some(exits)` for a loop, collecting the state at each `break`
+    /// and `continue` that leaves its body, `None` for a `switch`, whose
+    /// `break` belongs to the switch and is merged by `merge_switch_arms`.
+    /// Read by `Frame::AfterLoop` (task 1360).
+    breakables: Vec<Option<Vec<BranchState>>>,
+    /// Known compile-time constant values (project `#define`s and
+    /// enumerators plus this file's), for `equality_predicate`.
+    macro_constants: const_eval::MacroConstantMap,
 }
 
 impl MemoryAnalyzer {
@@ -1755,9 +1823,11 @@ impl MemoryAnalyzer {
         noreturn_names: HashSet<String>,
         pointer_typedef_names: Arc<HashSet<String>>,
         typedef_types: Arc<HashMap<String, String>>,
+        macro_constants: const_eval::MacroConstantMap,
     ) -> Self {
         Self {
             freed_vars: HashSet::new(),
+            freed_under: HashMap::new(),
             freed_at: HashMap::new(),
             guessed_freed: HashMap::new(),
             aliases: HashMap::new(),
@@ -1776,6 +1846,8 @@ impl MemoryAnalyzer {
             init_stems: HashMap::new(),
             ambiguous_macros,
             noreturn_names,
+            breakables: Vec::new(),
+            macro_constants,
         }
     }
 
@@ -1795,6 +1867,7 @@ impl MemoryAnalyzer {
                 self.noreturn_names.clone(),
                 self.pointer_typedef_names.clone(),
                 self.typedef_types.clone(),
+                self.macro_constants.clone(),
             );
             func_analyzer.analyze_function(node, source, violations);
             return; // Don't recurse further - function handled completely
@@ -1880,12 +1953,16 @@ impl MemoryAnalyzer {
                 /// stack holds one per open `if`.
                 pre_state: Box<BranchState>,
                 realloc_null_branch: Option<ReallocNullBranch>,
+                /// What the condition asserts on the then arm, when it is
+                /// an equality test against constants (`EqPred`).
+                then_pred: Option<EqPred>,
             },
             AfterElse {
                 alternative: Option<Node<'a>>,
                 pre_state: Box<BranchState>,
                 then_state: Box<BranchState>,
                 then_returns: bool,
+                then_pred: Option<EqPred>,
             },
             /// `switch` statement whose condition has just been visited —
             /// forks the pre-switch state and starts the first case arm
@@ -1905,6 +1982,17 @@ impl MemoryAnalyzer {
                 idx: usize,
                 pre_state: Box<BranchState>,
                 exit_states: Vec<(BranchState, bool)>,
+            },
+            /// A loop's body has just been walked. The code after the loop
+            /// is reached from the state before it (zero iterations), from
+            /// every `break` and `continue` in the body (collected in
+            /// `breakables` while the body was walked), and from the end of
+            /// the body -- unless the body's last statement leaves the
+            /// function, in which case the end of the body reaches nothing
+            /// (task 1360).
+            AfterLoop {
+                body: Option<Node<'a>>,
+                pre_state: Box<BranchState>,
             },
         }
 
@@ -1985,6 +2073,8 @@ impl MemoryAnalyzer {
                 return;
             }
             let pre_state = BranchState::fork(analyzer);
+            // A `break` in an arm ends the switch, not any loop around it.
+            analyzer.breakables.push(None);
             push_switch_case(analyzer, stack, source, cases, 0, pre_state, Vec::new());
         }
 
@@ -2015,6 +2105,7 @@ impl MemoryAnalyzer {
                     exit_states,
                 );
             } else {
+                analyzer.breakables.pop();
                 MemoryAnalyzer::merge_switch_arms(
                     analyzer,
                     source,
@@ -2139,11 +2230,20 @@ impl MemoryAnalyzer {
                         self.check_return_statement(&n, source, violations);
                         push_children(&mut stack, &n, source, &no_skip);
                     }
-                    "for_statement" => {
-                        // Check for dangerous loop free patterns
-                        self.check_for_loop_pattern(&n, source, violations);
+                    "for_statement" | "while_statement" | "do_statement" => {
+                        if n.kind() == "for_statement" {
+                            // Check for dangerous loop free patterns
+                            self.check_for_loop_pattern(&n, source, violations);
+                        }
+                        self.breakables.push(Some(Vec::new()));
+                        stack.push(Frame::AfterLoop {
+                            body: n.child_by_field_name("body"),
+                            pre_state: Box::new(BranchState::fork(self)),
+                        });
                         push_children(&mut stack, &n, source, &no_skip);
                     }
+                    "break_statement" => self.record_loop_exit(false),
+                    "continue_statement" => self.record_loop_exit(true),
                     "labeled_statement" => {
                         self.reset_state_if_label_unreachable_by_fallthrough(&n, source);
                         push_children(&mut stack, &n, source, &no_skip);
@@ -2162,29 +2262,15 @@ impl MemoryAnalyzer {
                     consequence,
                     alternative,
                 } => {
-                    // Check if the condition tests a realloc result variable.
-                    // Pattern: if (temp) or if (temp != NULL) means then=realloc succeeded, else=failed.
-                    // Pattern: if (!temp) or if (temp == NULL) means then=realloc failed, else=succeeded.
-                    // When realloc fails (returns NULL), the original pointer is still valid.
-                    let realloc_null_branch =
-                        self.detect_realloc_condition_branch(&if_node, source);
-
-                    // Save state before branches
-                    let pre_state = BranchState::fork(self);
-
-                    // If the then-branch is the realloc-failed path, clear invalidation there
-                    if realloc_null_branch == Some(ReallocNullBranch::Then) {
-                        if let Some(cond) = if_node.child_by_field_name("condition") {
-                            self.clear_realloc_invalidation_for_condition(&cond, source);
-                        }
-                    }
-
+                    let (pre_state, realloc_null_branch, then_pred) =
+                        self.enter_then_arm(&if_node, source);
                     stack.push(Frame::AfterThen {
                         if_node,
                         consequence,
                         alternative,
                         pre_state: Box::new(pre_state),
                         realloc_null_branch,
+                        then_pred,
                     });
                     if let Some(consequence) = consequence {
                         stack.push(Frame::Visit(consequence));
@@ -2196,28 +2282,25 @@ impl MemoryAnalyzer {
                     alternative,
                     pre_state,
                     realloc_null_branch,
+                    then_pred,
                 } => {
-                    // Save state after then-branch
                     let then_state = BranchState::fork(self);
                     let then_returns = consequence
                         .map(|c| self.unconditionally_diverges(&c, source))
                         .unwrap_or(false);
-
-                    // Reset state for else branch (starts from saved state)
-                    pre_state.restore(self);
-
-                    // If the else-branch is the realloc-failed path, clear invalidation there
-                    if realloc_null_branch == Some(ReallocNullBranch::Else) {
-                        if let Some(cond) = if_node.child_by_field_name("condition") {
-                            self.clear_realloc_invalidation_for_condition(&cond, source);
-                        }
-                    }
-
+                    self.enter_else_arm(
+                        &if_node,
+                        &pre_state,
+                        realloc_null_branch,
+                        &then_pred,
+                        source,
+                    );
                     stack.push(Frame::AfterElse {
                         alternative,
                         pre_state,
                         then_state: Box::new(then_state),
                         then_returns,
+                        then_pred,
                     });
                     if let Some(alternative) = alternative {
                         stack.push(Frame::Visit(alternative));
@@ -2228,6 +2311,7 @@ impl MemoryAnalyzer {
                     pre_state,
                     then_state,
                     then_returns,
+                    then_pred,
                 } => {
                     let else_state = BranchState::fork(self);
                     let else_returns = alternative
@@ -2241,6 +2325,9 @@ impl MemoryAnalyzer {
                         &else_state,
                         else_returns,
                     );
+                    if let Some(pred) = then_pred {
+                        self.record_frees_under(&pre_state, &then_state, &else_state, pred);
+                    }
                 }
                 Frame::StartSwitchCases { cases } => {
                     handle_start_switch_cases(self, &mut stack, source, cases);
@@ -2261,7 +2348,73 @@ impl MemoryAnalyzer {
                         exit_states,
                     );
                 }
+                Frame::AfterLoop { body, pre_state } => self.finish_loop(body, &pre_state, source),
             }
+        }
+    }
+
+    /// The condition of an `if` has been visited; set up the then arm.
+    /// Returns the state to restore for the else arm, which arm (if any) is
+    /// a realloc's NULL-result path, and what the condition asserts on the
+    /// then arm when it is an equality test against constants.
+    fn enter_then_arm(
+        &mut self,
+        if_node: &Node,
+        source: &str,
+    ) -> (BranchState, Option<ReallocNullBranch>, Option<EqPred>) {
+        // Check if the condition tests a realloc result variable.
+        // Pattern: if (temp) or if (temp != NULL) means then=realloc succeeded, else=failed.
+        // Pattern: if (!temp) or if (temp == NULL) means then=realloc failed, else=succeeded.
+        // When realloc fails (returns NULL), the original pointer is still valid.
+        let realloc_null_branch = self.detect_realloc_condition_branch(if_node, source);
+        let pre_state = BranchState::fork(self);
+        let condition = if_node.child_by_field_name("condition");
+
+        // If the then-branch is the realloc-failed path, clear invalidation there
+        if realloc_null_branch == Some(ReallocNullBranch::Then) {
+            if let Some(cond) = condition {
+                self.clear_realloc_invalidation_for_condition(&cond, source);
+            }
+        }
+
+        let then_pred = condition.and_then(|c| self.equality_predicate(&c, source));
+        if let Some(pred) = &then_pred {
+            self.drop_frees_disjoint_from(pred);
+        }
+        // `if (buf != staticbuf)`: on this arm the two are not the same
+        // object, whatever `char *buf = staticbuf;` recorded earlier --
+        // valkey's sds.c frees `buf` under exactly that test, and the alias
+        // made it a free of `staticbuf` too (task 1360). The else arm of
+        // `==` is the same fact; `enter_else_arm` handles it.
+        if let Some((a, b)) = condition.and_then(|c| Self::pointer_comparison(&c, source, true)) {
+            self.unalias_pair(&a, &b);
+        }
+        (pre_state, realloc_null_branch, then_pred)
+    }
+
+    /// The then arm has been walked (and forked by the caller); reset to the
+    /// pre-`if` state and assert on it what the else arm knows.
+    fn enter_else_arm(
+        &mut self,
+        if_node: &Node,
+        pre_state: &BranchState,
+        realloc_null_branch: Option<ReallocNullBranch>,
+        then_pred: &Option<EqPred>,
+        source: &str,
+    ) {
+        pre_state.restore(self);
+        let condition = if_node.child_by_field_name("condition");
+        // If the else-branch is the realloc-failed path, clear invalidation there
+        if realloc_null_branch == Some(ReallocNullBranch::Else) {
+            if let Some(cond) = condition {
+                self.clear_realloc_invalidation_for_condition(&cond, source);
+            }
+        }
+        if let Some(pred) = then_pred {
+            self.drop_frees_disjoint_from(&pred.negation());
+        }
+        if let Some((a, b)) = condition.and_then(|c| Self::pointer_comparison(&c, source, false)) {
+            self.unalias_pair(&a, &b);
         }
     }
 
@@ -2303,6 +2456,204 @@ impl MemoryAnalyzer {
     /// branches return" case. `aliases` is left as whatever the
     /// last-processed arm set it to, mirroring `merge_if_branches`'
     /// documented aliases quirk.
+    /// The `freed_under` records that survive a join: an object keeps its
+    /// record only if every live path on which it is freed carries that same
+    /// record. A path that frees it unconditionally, or under another
+    /// predicate, makes the record a lie about the merged state.
+    fn merge_freed_under(
+        live: &[&BranchState],
+        freed_vars: &HashSet<LValue>,
+    ) -> HashMap<LValue, Vec<EqPred>> {
+        let mut out = HashMap::new();
+        for var in freed_vars {
+            let mut agreed: Option<Vec<EqPred>> = None;
+            for state in live.iter().filter(|s| s.freed_vars.contains(var)) {
+                let here = state.freed_under.get(var).cloned().unwrap_or_default();
+                agreed = Some(match agreed {
+                    None => here,
+                    Some(acc) => acc.into_iter().filter(|p| here.contains(p)).collect(),
+                });
+            }
+            if let Some(preds) = agreed {
+                if !preds.is_empty() {
+                    out.insert(var.clone(), preds);
+                }
+            }
+        }
+        out
+    }
+
+    /// After an `if` guarded by `pred`: an object freed in exactly one arm,
+    /// and not before the `if`, was freed only where that arm's predicate
+    /// held. Records nothing for an object already freed on entry (that
+    /// free was unconditional) or freed in both arms.
+    fn record_frees_under(
+        &mut self,
+        pre_state: &BranchState,
+        then_state: &BranchState,
+        else_state: &BranchState,
+        pred: EqPred,
+    ) {
+        for var in &then_state.freed_vars {
+            if !pre_state.freed_vars.contains(var)
+                && !else_state.freed_vars.contains(var)
+                && self.freed_vars.contains(var)
+            {
+                let preds = self.freed_under.entry(var.clone()).or_default();
+                if !preds.contains(&pred) {
+                    preds.push(pred.clone());
+                }
+            }
+        }
+        let neg = pred.negation();
+        for var in &else_state.freed_vars {
+            if !pre_state.freed_vars.contains(var)
+                && !then_state.freed_vars.contains(var)
+                && self.freed_vars.contains(var)
+            {
+                let preds = self.freed_under.entry(var.clone()).or_default();
+                if !preds.contains(&neg) {
+                    preds.push(neg.clone());
+                }
+            }
+        }
+    }
+
+    /// Entering an arm on which `pred` holds: an object freed only under a
+    /// predicate disjoint from it is not freed here. valkey's call_reply.c
+    /// frees `rep->val.array` under `rep->type == ARRAY || rep->type ==
+    /// SET` and walks it again under `rep->type == MAP || rep->type ==
+    /// ATTRIBUTE`; sqlite's update.c ends the WHERE loop under `eOnePass ==
+    /// ONEPASS_OFF` and uses it in the else of the same test (task 1360).
+    fn drop_frees_disjoint_from(&mut self, pred: &EqPred) {
+        let dropped: Vec<LValue> = self
+            .freed_under
+            .iter()
+            .filter(|(var, under)| {
+                self.freed_vars.contains(*var) && under.iter().any(|u| u.disjoint_from(pred))
+            })
+            .map(|(var, _)| var.clone())
+            .collect();
+        for var in dropped {
+            self.freed_vars.remove(&var);
+            self.freed_at.remove(&var);
+            self.freed_under.remove(&var);
+        }
+    }
+
+    /// `a != b` (`want_unequal`) or `a == b` (not) between two plain
+    /// lvalues, through parentheses: the pair whose arm of the `if` is the
+    /// one on which they are known to be different objects.
+    fn pointer_comparison(
+        condition: &Node,
+        source: &str,
+        want_unequal: bool,
+    ) -> Option<(LValue, LValue)> {
+        let cond = unwrap_parens(condition);
+        if cond.kind() != "binary_expression" {
+            return None;
+        }
+        let op = get_node_text(&cond.child_by_field_name("operator")?, source);
+        if op != if want_unequal { "!=" } else { "==" } {
+            return None;
+        }
+        let l = unwrap_parens(&cond.child_by_field_name("left")?);
+        let r = unwrap_parens(&cond.child_by_field_name("right")?);
+        Some((lvalue_of(&l, source)?, lvalue_of(&r, source)?))
+    }
+
+    /// Forget that `a` and `b` name the same object, in either direction.
+    /// Branch-local: `aliases` is forked and restored around each arm.
+    fn unalias_pair(&mut self, a: &LValue, b: &LValue) {
+        if self.aliases.get(a) == Some(b) {
+            self.aliases.remove(a);
+        }
+        if self.aliases.get(b) == Some(a) {
+            self.aliases.remove(b);
+        }
+    }
+
+    /// `x == A`, `x == A || x == B`, `x != A`, through parentheses, where
+    /// `x` is a plain lvalue and each constant a literal or an ALL_CAPS
+    /// name -- the shapes that can be read as a partition of `x`'s value
+    /// without knowing anything else. A lower-case identifier may be a
+    /// variable equal to another, so it does not count. A constant whose
+    /// value is known (`macro_constants`) is recorded by value, so two names
+    /// for the same number are the same constant; one whose value is not
+    /// (an enumerator without an initializer) is recorded by name.
+    fn equality_predicate(&self, condition: &Node, source: &str) -> Option<EqPred> {
+        fn is_constant(node: &Node, source: &str) -> bool {
+            match node.kind() {
+                "number_literal" | "char_literal" => true,
+                "identifier" => {
+                    let t = get_node_text(node, source);
+                    t.chars().any(|c| c.is_ascii_uppercase())
+                        && !t.chars().any(|c| c.is_ascii_lowercase())
+                }
+                _ => false,
+            }
+        }
+        fn one(node: &Node, source: &str) -> Option<(LValue, String, bool)> {
+            let node = unwrap_parens(node);
+            if node.kind() != "binary_expression" {
+                return None;
+            }
+            let op = node.child_by_field_name("operator")?;
+            let negated = match get_node_text(&op, source) {
+                "==" => false,
+                "!=" => true,
+                _ => return None,
+            };
+            let l = unwrap_parens(&node.child_by_field_name("left")?);
+            let r = unwrap_parens(&node.child_by_field_name("right")?);
+            let (lv, c) = if is_constant(&r, source) {
+                (lvalue_of(&l, source)?, r)
+            } else if is_constant(&l, source) {
+                (lvalue_of(&r, source)?, l)
+            } else {
+                return None;
+            };
+            Some((lv, get_node_text(&c, source).to_string(), negated))
+        }
+        let cond = unwrap_parens(condition);
+        // A disjunction of equalities on one lvalue, or a single test.
+        let mut leaves = vec![cond];
+        let mut terms = Vec::new();
+        while let Some(n) = leaves.pop() {
+            let n = unwrap_parens(&n);
+            if n.kind() == "binary_expression"
+                && n.child_by_field_name("operator")
+                    .is_some_and(|o| get_node_text(&o, source) == "||")
+            {
+                leaves.push(n.child_by_field_name("right")?);
+                leaves.push(n.child_by_field_name("left")?);
+            } else {
+                terms.push(one(&n, source)?);
+            }
+        }
+        let (lv, _, negated) = terms.first()?.clone();
+        if negated && terms.len() > 1 {
+            // `x != A || x != B` is always true for A != B; not a partition.
+            return None;
+        }
+        let mut constants = HashSet::new();
+        for (tlv, c, tneg) in terms {
+            if tlv != lv || tneg != negated {
+                return None;
+            }
+            let key = match const_eval::try_evaluate_text_public(&c, &self.macro_constants) {
+                Some(v) => format!("#{v}"),
+                None => c,
+            };
+            constants.insert(key);
+        }
+        Some(EqPred {
+            lv,
+            constants,
+            negated,
+        })
+    }
+
     fn merge_switch_arms(
         analyzer: &mut Self,
         source: &str,
@@ -2328,13 +2679,19 @@ impl MemoryAnalyzer {
             pre_state.restore(analyzer);
             return;
         }
+        Self::merge_live_states(analyzer, pre_state, &live);
+    }
 
+    /// The state after a construct that several paths reach: the union of
+    /// what each live path freed and invalidated. Shared by `switch` arms
+    /// and loop exits (task 1360).
+    fn merge_live_states(analyzer: &mut Self, pre_state: &BranchState, live: &[&BranchState]) {
         let mut freed_vars = HashSet::new();
         let mut freed_at = HashMap::new();
         let mut nullified_vars = HashSet::new();
         let mut realloc_invalidated = HashSet::new();
         let mut realloc_updated = HashSet::new();
-        for s in &live {
+        for s in live {
             freed_vars.extend(s.freed_vars.iter().cloned());
             for (k, v) in &s.freed_at {
                 freed_at.entry(k.clone()).or_insert(*v);
@@ -2356,6 +2713,7 @@ impl MemoryAnalyzer {
         // real free hit from another arm — freed and nullified are mutually
         // exclusive terminal states for the same var on the same path.
         nullified_vars.retain(|var| !freed_vars.contains(var));
+        analyzer.freed_under = Self::merge_freed_under(live, &freed_vars);
         analyzer.freed_vars = freed_vars;
         analyzer.freed_at = freed_at;
         analyzer.nullified_vars = nullified_vars;
@@ -2377,6 +2735,7 @@ impl MemoryAnalyzer {
         if then_returns && else_returns {
             // Both branches return - code after is unreachable, keep saved state
             analyzer.freed_vars = pre_state.freed_vars.clone();
+            analyzer.freed_under = pre_state.freed_under.clone();
             analyzer.freed_at = pre_state.freed_at.clone();
             analyzer.nullified_vars = pre_state.nullified_vars.clone();
             analyzer.realloc_invalidated = pre_state.realloc_invalidated.clone();
@@ -2384,6 +2743,7 @@ impl MemoryAnalyzer {
         } else if then_returns {
             // Only then returns - use else branch state
             analyzer.freed_vars = else_state.freed_vars.clone();
+            analyzer.freed_under = else_state.freed_under.clone();
             analyzer.freed_at = else_state.freed_at.clone();
             analyzer.nullified_vars = else_state.nullified_vars.clone();
             analyzer.realloc_invalidated = else_state.realloc_invalidated.clone();
@@ -2391,6 +2751,7 @@ impl MemoryAnalyzer {
         } else if else_returns {
             // Only else returns - use then branch state
             analyzer.freed_vars = then_state.freed_vars.clone();
+            analyzer.freed_under = then_state.freed_under.clone();
             analyzer.freed_at = then_state.freed_at.clone();
             analyzer.nullified_vars = then_state.nullified_vars.clone();
             analyzer.realloc_invalidated = then_state.realloc_invalidated.clone();
@@ -2411,6 +2772,7 @@ impl MemoryAnalyzer {
                     freed_vars.remove(var);
                 }
             }
+            analyzer.freed_under = Self::merge_freed_under(&[then_state, else_state], &freed_vars);
             analyzer.freed_vars = freed_vars;
             // Free sites follow the union: whichever branch freed it, that is
             // where it was freed (then-branch wins a tie; the site only feeds
@@ -2476,7 +2838,17 @@ impl MemoryAnalyzer {
     /// free/realloc tracking state before processing the label's target
     /// statement in that case.
     fn reset_state_if_label_unreachable_by_fallthrough(&mut self, label_node: &Node, source: &str) {
-        let Some(prev) = label_node.prev_named_sibling() else {
+        // A comment is a named sibling too, and valkey's cluster.c puts a
+        // three-line one between `return;` and `socket_err:`; the label's
+        // predecessor in the FLOW is the last statement before it (task 1360).
+        let mut prev = label_node.prev_named_sibling();
+        while let Some(p) = prev {
+            if p.kind() != "comment" {
+                break;
+            }
+            prev = p.prev_named_sibling();
+        }
+        let Some(prev) = prev else {
             return;
         };
         if !self.control_flow_diverges(&prev, source, true) {
@@ -2658,6 +3030,69 @@ impl MemoryAnalyzer {
             // eventually falls into) contributes is already counted there.
             None => false,
         }
+    }
+
+    /// A `break` (`continuing` false) or `continue` has been reached: the
+    /// state here reaches the code after the innermost loop. A `break` binds
+    /// to the innermost breakable, and only a loop needs telling -- a switch
+    /// arm's exit state is recorded by `SwitchCaseDone`; a `continue` goes
+    /// back to the head of the innermost LOOP, through any switch in
+    /// between, and the condition there can fail (task 1360).
+    fn record_loop_exit(&mut self, continuing: bool) {
+        let state = BranchState::fork(self);
+        let target = if continuing {
+            self.breakables.iter_mut().rev().flatten().next()
+        } else {
+            self.breakables.last_mut().and_then(|b| b.as_mut())
+        };
+        if let Some(exits) = target {
+            exits.push(state);
+        }
+    }
+
+    /// The loop's body has been walked: the code after the loop is reached
+    /// from the state before it, from every recorded `break`/`continue`,
+    /// and from the end of the body unless its last statement leaves the
+    /// function. `break` is how a body reaches the code after the loop and
+    /// `continue` re-tests the condition, so neither leaves; a body whose
+    /// last statement returns, jumps away or never returns does. valkey's
+    /// acl.c ends a `for` body with `sdsfreesplitres(argv, argc); ...;
+    /// return 1;` and frees `argv` again right after the loop, on the path
+    /// that only the body's `continue`s reach (task 1360).
+    fn finish_loop(&mut self, body: Option<Node>, pre_state: &BranchState, source: &str) {
+        let exits = self.breakables.pop().flatten().unwrap_or_default();
+        let end_state = BranchState::fork(self);
+        let body_reaches_after = body.is_none_or(|b| !self.loop_body_leaves_function(&b, source));
+        let mut live: Vec<&BranchState> = vec![pre_state];
+        live.extend(exits.iter());
+        if body_reaches_after {
+            live.push(&end_state);
+        }
+        Self::merge_live_states(self, pre_state, &live);
+    }
+
+    /// Whether a loop body's last statement leaves the function -- returns,
+    /// jumps to a label, or calls something that never returns -- so the end
+    /// of the body reaches nothing. A `break` reaches the code after the
+    /// loop and a `continue` re-tests the condition, so neither counts here;
+    /// both record their state in `breakables` when walked (task 1360).
+    fn loop_body_leaves_function(&self, body: &Node, source: &str) -> bool {
+        let resolved = match body.kind() {
+            "compound_statement" => Self::compound_last_statement(body),
+            _ => Some(*body),
+        };
+        match resolved {
+            Some(last) if last.kind() == "continue_statement" => false,
+            Some(last) => self.control_flow_diverges(&last, source, false),
+            None => false,
+        }
+    }
+
+    /// The last statement of a compound statement, skipping comments.
+    fn compound_last_statement<'a>(block: &Node<'a>) -> Option<Node<'a>> {
+        (0..block.child_count())
+            .filter_map(|i| block.child(i))
+            .rfind(|c| !matches!(c.kind(), "{" | "}" | "comment"))
     }
 
     /// The last real statement child of a `case`/`default` arm, excluding
@@ -3397,7 +3832,7 @@ impl MemoryAnalyzer {
             self.freed_at.remove(&lv);
             self.guessed_freed.remove(&lv);
             if inner.kind() == "identifier" {
-                self.aliases.remove(&lv);
+                self.sever_aliases_of(&lv);
             }
         }
     }
@@ -3429,6 +3864,35 @@ impl MemoryAnalyzer {
 
     /// Process assignment expression - track aliases and NULL assignments
     fn process_assignment(
+        &mut self,
+        node: &Node,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        self.process_assignment_inner(node, source, violations);
+        // Only now, with the right-hand side accounted for: `ptr =
+        // realloc(ptr, n)` needs `old_ptr -> ptr` still in place while the
+        // realloc tracking above marks the aliases of the OLD block
+        // invalidated. After that, nothing that aliased the assigned
+        // lvalue refers to what it now holds.
+        if let Some(left) = node.child_by_field_name("left") {
+            if matches!(left.kind(), "identifier" | "field_expression") {
+                if let Some(left_lv) = lvalue_of(&left, source) {
+                    self.aliases.retain(|_, target| *target != left_lv);
+                    // A predicate on a value that has just changed says
+                    // nothing about later tests of it: the frees it guarded
+                    // become unconditional.
+                    let root = left_lv.root_var().to_string();
+                    for under in self.freed_under.values_mut() {
+                        under.retain(|p| p.lv.root_var() != root);
+                    }
+                    self.freed_under.retain(|_, under| !under.is_empty());
+                }
+            }
+        }
+    }
+
+    fn process_assignment_inner(
         &mut self,
         node: &Node,
         source: &str,
@@ -3521,46 +3985,7 @@ impl MemoryAnalyzer {
             let right_var =
                 lvalue_of(&right, source).map(|rv| LValue::Var(rv.root_var().to_string()));
             if let Some(right_var) = right_var {
-                // Check if right_var was the result of a realloc on left_var
-                // This handles: new_ptr = realloc(ptr, ...); ptr = new_ptr;
-                // Also handles: im->clip->list = more; after more = gdRealloc(im->clip->list, ...)
-                if self.realloc_updated.contains(&right_var) {
-                    // Clear both base variable and full path
-                    self.freed_vars.remove(&left_var);
-                    self.nullified_vars.remove(&left_var);
-                    self.realloc_invalidated.remove(&left_var);
-                    // For field expressions, also clear the full path
-                    self.freed_vars.remove(&left_lv);
-                    self.nullified_vars.remove(&left_lv);
-                    self.realloc_invalidated.remove(&left_lv);
-                    // Also clear any aliases pointing to the old value
-                    self.aliases.remove(&left_var);
-                }
-
-                if right.kind() == "identifier" && self.is_freed(&right_var) {
-                    // Aliasing a dangling pointer (`p = q;` after free(q)) — the
-                    // new variable also dangles. Gated on an identifier RHS:
-                    // a subscript/field RHS copies a value out of a container,
-                    // not the dangling pointer itself (task 232).
-                    self.freed_vars.insert(left_var.clone());
-                    self.aliases.insert(left_var.clone(), right_var.clone());
-                } else {
-                    // Reassigning the pointer to a live value overwrites any
-                    // prior dangling state: `free(p); p = newbuf;` and the
-                    // reassign-before-return shape (`free(text); text = temp;
-                    // return text;`) must clear `p`/`text` (task 232 patterns
-                    // 1 & 2). Clear the assigned lvalue path; for a plain
-                    // identifier that IS the base name, so `free(s); s->f = x;`
-                    // does not un-track the still-freed base `s`.
-                    self.freed_vars.remove(&left_lv);
-                    self.nullified_vars.remove(&left_lv);
-                    self.realloc_invalidated.remove(&left_lv);
-                    self.aliases.remove(&left_var);
-                    if right.kind() == "identifier" && left.kind() == "identifier" {
-                        // Track a fresh pointer-to-pointer alias.
-                        self.aliases.insert(left_var.clone(), right_var.clone());
-                    }
-                }
+                self.rebind_from_variable(&left, &right, &left_lv, &left_var, &right_var);
             } else if left.kind() == "identifier" {
                 // RHS is a non-variable expression (call result, etc.). A plain
                 // pointer reassignment still overwrites any prior dangling
@@ -3689,7 +4114,72 @@ impl MemoryAnalyzer {
         }
         let left_var = LValue::Var(left_lv.root_var().to_string());
         self.clear_freed_state(&left_var, &left_lv);
-        self.aliases.remove(&left_var);
+        self.sever_aliases_of(&left_var);
+    }
+
+    /// `left = right` where the right-hand side names a variable: the alias
+    /// and realloc bookkeeping of a pointer copy (extracted from
+    /// `process_assignment_inner`, task 1360).
+    fn rebind_from_variable(
+        &mut self,
+        left: &Node,
+        right: &Node,
+        left_lv: &LValue,
+        left_var: &LValue,
+        right_var: &LValue,
+    ) {
+        // Check if right_var was the result of a realloc on left_var
+        // This handles: new_ptr = realloc(ptr, ...); ptr = new_ptr;
+        // Also handles: im->clip->list = more; after more = gdRealloc(im->clip->list, ...)
+        if self.realloc_updated.contains(right_var) {
+            // Clear both base variable and full path
+            self.freed_vars.remove(left_var);
+            self.nullified_vars.remove(left_var);
+            self.realloc_invalidated.remove(left_var);
+            // For field expressions, also clear the full path
+            self.freed_vars.remove(left_lv);
+            self.nullified_vars.remove(left_lv);
+            self.realloc_invalidated.remove(left_lv);
+            // Also clear any aliases pointing to the old value
+            self.aliases.remove(left_var);
+        }
+
+        if right.kind() == "identifier" && self.is_freed(right_var) {
+            // Aliasing a dangling pointer (`p = q;` after free(q)) — the
+            // new variable also dangles. Gated on an identifier RHS:
+            // a subscript/field RHS copies a value out of a container,
+            // not the dangling pointer itself (task 232).
+            self.freed_vars.insert(left_var.clone());
+            self.aliases.insert(left_var.clone(), right_var.clone());
+        } else {
+            // Reassigning the pointer to a live value overwrites any
+            // prior dangling state: `free(p); p = newbuf;` and the
+            // reassign-before-return shape (`free(text); text = temp;
+            // return text;`) must clear `p`/`text` (task 232 patterns
+            // 1 & 2). Clear the assigned lvalue path; for a plain
+            // identifier that IS the base name, so `free(s); s->f = x;`
+            // does not un-track the still-freed base `s`.
+            self.freed_vars.remove(left_lv);
+            self.nullified_vars.remove(left_lv);
+            self.realloc_invalidated.remove(left_lv);
+            self.aliases.remove(left_var);
+            if right.kind() == "identifier" && left.kind() == "identifier" {
+                // Track a fresh pointer-to-pointer alias.
+                self.aliases.insert(left_var.clone(), right_var.clone());
+            }
+        }
+    }
+
+    /// A variable that has just been given a new value aliases nothing it
+    /// aliased before, and nothing that aliased IT still refers to the object
+    /// it now holds. `aliases` is keyed alias -> target, so removing the key
+    /// alone left `old_s -> s` in place across `old_s = s; s = create(); free(
+    /// old_s);`, and the free of the previous object reached the fresh one
+    /// through the stale entry: valkey's debug_lua.c reported `return s` as
+    /// returning freed memory (task 1360).
+    fn sever_aliases_of(&mut self, var: &LValue) {
+        self.aliases.remove(var);
+        self.aliases.retain(|_, target| target != var);
     }
 
     /// Clear all freed/nullified/realloc-invalidation tracking for a variable
@@ -3726,7 +4216,7 @@ impl MemoryAnalyzer {
             self.freed_vars.remove(&lv);
             self.nullified_vars.remove(&lv);
             self.realloc_invalidated.remove(&lv);
-            self.aliases.remove(&lv);
+            self.sever_aliases_of(&lv);
         }
     }
 
@@ -3759,7 +4249,7 @@ impl MemoryAnalyzer {
             self.freed_vars.remove(&left_var);
             self.nullified_vars.remove(&left_var);
             self.realloc_invalidated.remove(&left_var);
-            self.aliases.remove(&left_var);
+            self.sever_aliases_of(&left_var);
 
             // Check if this is a realloc initialization
             if value.kind() == "call_expression" {
