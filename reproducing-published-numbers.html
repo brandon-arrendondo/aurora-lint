@@ -247,16 +247,43 @@ runs export identical bytes</em>) onward, one binary on one checkout writes a
 <strong>byte-identical</strong> <code class="docutils literal notranslate"><span class="pre">--export</span></code> file every time. Before it, the <em>set</em> of
 findings is the same but their order in the file can vary between runs, so
 two exports must be compared as sets of keys, not with <code class="docutils literal notranslate"><span class="pre">diff</span></code>.</p>
-<p>“One checkout” is literal. The set of findings depends on the order in
-which the cross-file prescan walks the tree, and that order is the
-filesystem’s directory order, which differs between filesystems and is
-not preserved by <code class="docutils literal notranslate"><span class="pre">cp</span></code>, <code class="docutils literal notranslate"><span class="pre">rsync</span></code> or a fresh clone (see <em>What another
-machine reproduces</em>). The same directory scanned twice is byte-identical;
-a copy of it need not be.</p>
+<p>Up to and including <code class="docutils literal notranslate"><span class="pre">v0.5.1</span></code>, “one checkout” is literal. The set of
+findings depends on the order in which the cross-file prescan walks the
+tree, and that order is the filesystem’s directory order, which differs
+between filesystems and is not preserved by <code class="docutils literal notranslate"><span class="pre">cp</span></code>, <code class="docutils literal notranslate"><span class="pre">rsync</span></code> or a fresh
+clone (see <em>What another machine reproduces</em>). The same directory scanned
+twice is byte-identical; a copy of it need not be.</p>
+<p>From commit <code class="docutils literal notranslate"><span class="pre">4ac5710f</span></code> (<em>analyze: sort the file walk so the finding set
+depends on the tree’s content, not its directory order</em>) onward, every walk
+that feeds the prescan and the scan list is sorted by file name, so the set
+is a function of the tree’s <strong>content</strong>: a copy, an <code class="docutils literal notranslate"><span class="pre">rsync</span></code> or a fresh
+clone of the same commit gives the same bytes. Measured on the same machine
+with the same binary: seL4 and hostap each copied to tmpfs twice, once with
+files created in sorted order and once in reverse, <code class="docutils literal notranslate"><span class="pre">cmp</span></code> identical from
+<code class="docutils literal notranslate"><span class="pre">4ac5710f</span></code> on; on the <code class="docutils literal notranslate"><span class="pre">v0.5.1</span></code> binary the same two copies differ by 5
+keys (seL4, all PRE31-C) and 116 keys (hostap, 23 removed / 93 added). To
+repeat that check on any codebase, make two copies whose directories list
+in different orders and scan both with the same command line, from the same
+path (the export carries absolute paths):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># tmpfs lists a directory in creation order, so the order files are</span>
+<span class="c1"># copied in is the order the walk would have seen them before 4ac5710f.</span>
+<span class="k">for</span><span class="w"> </span>order<span class="w"> </span><span class="k">in</span><span class="w"> </span>sorted<span class="w"> </span>reverse<span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">    </span>rm<span class="w"> </span>-rf<span class="w"> </span>/dev/shm/x
+<span class="w">    </span><span class="o">(</span><span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SRC</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>ls-files<span class="o">)</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>sort<span class="w"> </span>&gt;<span class="w"> </span>/tmp/files
+<span class="w">    </span><span class="o">[</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$order</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span>reverse<span class="w"> </span><span class="o">]</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>tac<span class="w"> </span>/tmp/files<span class="w"> </span>&gt;<span class="w"> </span>/tmp/files.r<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>mv<span class="w"> </span>/tmp/files.r<span class="w"> </span>/tmp/files
+<span class="w">    </span><span class="k">while</span><span class="w"> </span><span class="nv">IFS</span><span class="o">=</span><span class="w"> </span><span class="nb">read</span><span class="w"> </span>-r<span class="w"> </span>f<span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">        </span>mkdir<span class="w"> </span>-p<span class="w"> </span><span class="s2">&quot;/dev/shm/x/</span><span class="k">$(</span>dirname<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$f</span><span class="s2">&quot;</span><span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>cp<span class="w"> </span>-p<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SRC</span><span class="s2">/</span><span class="nv">$f</span><span class="s2">&quot;</span><span class="w"> </span><span class="s2">&quot;/dev/shm/x/</span><span class="nv">$f</span><span class="s2">&quot;</span>
+<span class="w">    </span><span class="k">done</span><span class="w"> </span>&lt;<span class="w"> </span>/tmp/files
+<span class="w">    </span>aurora-lint<span class="w"> </span>/dev/shm/x<span class="w"> </span>-d<span class="w"> </span>/dev/shm/x<span class="w"> </span>--manifest<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$MANIFEST</span><span class="s2">&quot;</span><span class="w"> </span>--export<span class="w"> </span><span class="s2">&quot;/tmp/</span><span class="nv">$order</span><span class="s2">.json&quot;</span>
+<span class="k">done</span>
+cmp<span class="w"> </span>/tmp/sorted.json<span class="w"> </span>/tmp/reverse.json<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;order-independent&quot;</span>
+</pre></div>
+</div>
 <p><code class="docutils literal notranslate"><span class="pre">v0.5.0</span></code> (<code class="docutils literal notranslate"><span class="pre">717783a9</span></code>) predates <code class="docutils literal notranslate"><span class="pre">fc9164fd</span></code>: reproduce it at the key
 level. <code class="docutils literal notranslate"><span class="pre">v0.5.1</span></code> is the first tag that contains the ordering commit, and the
 first for which a reproducer should expect <code class="docutils literal notranslate"><span class="pre">diff</span></code> on two exports of the
-same codebase to be empty.</p>
+same codebase to be empty. <code class="docutils literal notranslate"><span class="pre">v0.5.2</span></code> is the first tag for which that holds
+across copies of the checkout as well.</p>
 <table class="docutils align-default">
 <colgroup>
 <col style="width: 14.0%" />
@@ -285,6 +312,12 @@ same codebase to be empty.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">e405089a</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0.5.0</span></code></p></td>
 <td><p>per checkout, on one machine (see below)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">v0.5.2</span></code></p></td>
+<td><p><em>&lt;filled at tagging&gt;</em></p></td>
+<td><p><em>&lt;filled at tagging&gt;</em></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.5.1</span></code></p></td>
+<td><p>per checkout content, on one machine (from <code class="docutils literal notranslate"><span class="pre">4ac5710f</span></code>)</p></td>
 </tr>
 </tbody>
 </table>
@@ -464,7 +497,7 @@ of some 151,000 in scope, spread over the other seven projects. Of the
 </ul>
 <p>The differing keys have two causes, and the second is the one a
 reproducer will not guess:</p>
-<ol class="arabic simple">
+<ol class="arabic">
 <li><p><strong>The host’s installed headers</strong>, which the scan reads through
 <code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include</span></code> and the per-project include paths. A missing
 third-party header produces DCL31-C <em>called without prior declaration</em>
@@ -492,17 +525,40 @@ cross-machine differences. Directory order is a property of the
 filesystem (ext4 orders a large directory by a per-filesystem hash
 seed; tmpfs by creation order), so it differs between machines and
 between two copies of a checkout on one machine, and no <code class="docutils literal notranslate"><span class="pre">git</span></code> state
-records it.</p></li>
+records it.</p>
+<p><strong>Removed at</strong> <code class="docutils literal notranslate"><span class="pre">4ac5710f</span></code>: the walk is sorted by file name from that
+commit on, so which definition wins is decided by the tree’s content
+(the alphabetically last file for a function summary or a struct’s
+field types, the first for a function-like macro), the same on every
+machine. Deterministic is not the same as right – the winner is still
+an arbitrary one of the definitions, and a name defined once per
+backend or per architecture still resolves to a single body – but it
+is now the <em>same</em> arbitrary choice everywhere. Measured against
+<code class="docutils literal notranslate"><span class="pre">e405089a</span></code> on the twelve pinned checkouts on one machine, the sort
+moved 140 keys (30 removed, 110 added): 121 on hostap, 10 on sqlite,
+5 on seL4, 3 on mbedtls and 1 on raylib, each read and attributed to a
+multiply-defined name in the commit message; the other seven codebases
+were key-identical. The cross-machine diff has not yet been re-measured
+at <code class="docutils literal notranslate"><span class="pre">4ac5710f</span></code> on the benchmark node; when it is, only cause 1 should
+remain.</p>
+</li>
 </ol>
 <p>The same binary on the same checkout, run twice, gives byte-identical
-exports on every codebase checked (from <code class="docutils literal notranslate"><span class="pre">fc9164fd</span></code> on); the variation is
-between checkouts, not between runs. So the inputs a SHA does not name are
+exports on every codebase checked (from <code class="docutils literal notranslate"><span class="pre">fc9164fd</span></code> on), with one known
+exception found while measuring <code class="docutils literal notranslate"><span class="pre">4ac5710f</span></code>: MSC13-C on mbedtls’s
+<code class="docutils literal notranslate"><span class="pre">library/bignum.c:1301</span></code> (<code class="docutils literal notranslate"><span class="pre">quotient</span></code>, a variable declared in both
+branches of an <code class="docutils literal notranslate"><span class="pre">#if</span></code>) appears in roughly a third of runs of one binary on
+one checkout, even single-file at <code class="docutils literal notranslate"><span class="pre">--jobs</span> <span class="pre">1</span></code>, so it is a per-process
+nondeterminism in that rule, not a walk-order effect; it is filed and
+counts for one key. Otherwise the variation is between checkouts, not
+between runs. So the inputs a SHA does not name are
 the header environment – <a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a> lists the packages the
-benchmark node carries – and, for codebases with multiply-defined names,
-the checkout’s directory order. A published figure’s precision and recall
-do not hinge on either; a claim about an exact finding count does, and a
-key-level diff against a maintainer run on hostap or seL4 should be read
-with cause 2 in mind before any label is questioned.</p>
+benchmark node carries – and, before <code class="docutils literal notranslate"><span class="pre">4ac5710f</span></code>, for codebases with
+multiply-defined names, the checkout’s directory order. A published
+figure’s precision and recall do not hinge on either; a claim about an
+exact finding count does, and a key-level diff against a maintainer run at
+<code class="docutils literal notranslate"><span class="pre">v0.5.1</span></code> or earlier on hostap or seL4 should be read with cause 2 in mind
+before any label is questioned.</p>
 </section>
 </section>
 <section id="reading-a-mismatch">
@@ -526,10 +582,12 @@ moved to or from labeled keys: the binary is not the named one. Compare
 the two export files as key sets to see which rules moved.</p></li>
 <li><p><strong>A project’s EXP34-C, PRE31-C or API00-C keys differ at call sites of
 a function or macro the codebase defines more than once</strong> (hostap’s
-per-backend <code class="docutils literal notranslate"><span class="pre">crypto_*</span></code>, seL4’s per-architecture macros). Directory
-order chose a different definition on the two machines (cause 2 above).
-The keys are real output of the named build on the named corpus either
-way; they say nothing about the labels.</p></li>
+per-backend <code class="docutils literal notranslate"><span class="pre">crypto_*</span></code>, seL4’s per-architecture macros). On a build
+before <code class="docutils literal notranslate"><span class="pre">4ac5710f</span></code>, directory order chose a different definition on the
+two machines (cause 2 above); the keys are real output of the named
+build on the named corpus either way and say nothing about the labels.
+From <code class="docutils literal notranslate"><span class="pre">4ac5710f</span></code> on this cannot happen: the same definition wins on
+every machine, and such a diff points at the headers or the binary.</p></li>
 <li><p><strong>Only the order of an export differs</strong> from a maintainer-provided one.
 Expected before <code class="docutils literal notranslate"><span class="pre">fc9164fd</span></code>; not expected from <code class="docutils literal notranslate"><span class="pre">v0.5.1</span></code> on.</p></li>
 </ul>
