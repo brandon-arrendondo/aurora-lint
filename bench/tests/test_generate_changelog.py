@@ -265,6 +265,42 @@ class TestSplice(unittest.TestCase):
         self.assertIsNone(gen.release_notes("9.9.9", tasks, RELEASES, CURATED))
 
 
+class TestReleasedVersionsUseUtc(unittest.TestCase):
+    """Regression for 92eae76c: `released_versions` used git's %cI, which carries
+    the committer's local offset, and the generator compares dates as text
+    against the task DB's UTC `...Z` timestamps. A release cut at
+    09:04:52-04:00 (13:04:52Z) sorted *before* a task completed at 12:17:38Z
+    and so lost that task to [Unreleased]. Tag times must come back in UTC."""
+
+    LOCAL = "2026-09-20T09:04:52-04:00"          # what %cI printed on the cutting machine
+    EPOCH = 1789909492                            # the same instant: 2026-09-20T13:04:52Z
+    TASK_DONE = "2026-09-20T12:17:38Z"            # completed before the cut, in UTC
+
+    def fake_git(self, *args):
+        if args[:2] == ("tag", "--list"):
+            return "v0.5.2\nnot-a-release\n"
+        if args[:2] == ("log", "-1") and "--format=%ct" in args:
+            return str(self.EPOCH)
+        if args[:2] == ("log", "-1") and "--format=%cI" in args:
+            return self.LOCAL
+        raise AssertionError(f"unexpected git call {args}")
+
+    def test_tag_date_is_utc_and_contains_the_task(self):
+        real = gen.run_git
+        gen.run_git = self.fake_git
+        try:
+            releases = gen.released_versions()
+        finally:
+            gen.run_git = real
+        self.assertEqual(releases, [("0.5.2", "v0.5.2", "2026-09-20T13:04:52Z")])
+        task = gen.Task(self.TASK_DONE, "t", {"release-note"}, "release-note: x\ncategory: fixed", 1)
+        # the bug: text order of the local-offset form put the tag before the task
+        self.assertLess(self.LOCAL, self.TASK_DONE)
+        # the fix: in UTC the task is inside the release window, not [Unreleased]
+        self.assertEqual(gen.tasks_in_window([task], None, releases[-1][2]), [task])
+        self.assertEqual(gen.tasks_in_window([task], releases[-1][2], None), [])
+
+
 class TestNoDatabase(unittest.TestCase):
     """The release workflow has no task DB (CLAUDE.md: task tracking is not part
     of the repo) and must still produce valid, empty-of-bullets notes."""
