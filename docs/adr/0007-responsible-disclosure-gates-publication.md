@@ -79,3 +79,45 @@ something to undersell out of excess caution.
 - Doesn't relitigate whether aurora-lint should do upstream disclosure at
   all — it should, and continuing to do so is expected. This governs only
   when the record of it becomes public.
+
+## Clarification (2026-09-20): what a label is, and what it is not
+
+This does not soften the decision above. It says what the public labelled
+data is, because an outside review read a TP/FN row as a vulnerability claim.
+
+**A TP, FP or FN row is a statement about the analysis, not about exploitability.**
+It is keyed `(project, codebase_commit, file_path, line, rule)`, and it says
+only this: at that place, aurora-lint's finding is correct as a statement that
+the code departs from the rule as written (TP), is wrong (FP), or the code
+departs from the rule and the tool did not flag it (FN). It does not say the
+code is a security vulnerability, that input an attacker controls can reach it,
+or that anyone has exercised it. Anyone can regenerate the finding data by
+running aurora-lint at the pinned tag on the pinned commit; the dataset adds a
+verdict, not new information about where to look.
+
+**Calling something a vulnerability takes more evidence, and that evidence is
+what this ADR guards.** Before we claim a defect or file an issue upstream we
+confirm it with dynamic testing (AddressSanitizer / UBSan / valgrind on a
+reproducer) and by reading the path that reaches it. That evidence and its
+write-up (reproducers and trigger inputs, sanitizer or valgrind output,
+reachability and impact analysis, severity, patches, drafts, timelines) is the
+disclosure material governed by the Decision above, and stays out of the
+public record until the fix has landed upstream.
+
+**Consequence for the `reason` text of a public row.** A reason records why
+the verdict is what it is, in terms of the rule and the shape of the code. It
+must not assert that a defect is exploitable or reachable from untrusted input,
+quantify an overflow or over-read, name a triggering input (including a sample
+query or command), or point at an unpublished reproducer, patch or draft. Once
+the fix has landed upstream the reason may say that and cite the upstream
+change. A key and verdict alone, for an item that is still unfixed, disclose
+nothing a run of the tool would not; a reason that goes further is disclosure
+material and belongs in local notes. A reason written earlier that goes further
+is rewritten to the label basis; whether the text already in public git history
+needs more than that is a separate decision (the 2026-09-16 purge is the
+precedent).
+
+**Unchanged:** nothing that locates or describes an unfixed defect beyond its
+key and a label-basis reason is published; aggregate statistics about
+disclosures are published once the fixes have landed; doing the disclosure work
+is expected and is not what this ADR restricts.
