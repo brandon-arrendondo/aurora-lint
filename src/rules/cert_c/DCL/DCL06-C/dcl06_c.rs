@@ -423,8 +423,9 @@ impl Dcl06C {
     ///
     /// - the literal is a DIRECT operand of `==` or `!=` (a literal folded
     ///   into arithmetic or a mask on one side is still a magic number);
-    /// - the other operand is a named quantity: an ALL_CAPS identifier (a
-    ///   macro or enumerator by convention), a `sizeof`, or a call;
+    /// - the other operand is a named quantity (`is_named_quantity`): an
+    ///   ALL_CAPS identifier, a `sizeof`, a call, or an arithmetic
+    ///   combination of those;
     /// - the comparison reaches an assert-family callee (`assert`,
     ///   `static_assert`, `DEBUGASSERT`, ...: any name containing "assert",
     ///   case-insensitive) through parentheses only.
@@ -454,16 +455,7 @@ impl Dcl06C {
             (Some(left), Some(right)) if right.id() == node.id() => left,
             _ => return false,
         };
-        let named = match other.kind() {
-            "sizeof_expression" | "call_expression" => true,
-            "identifier" => {
-                let name = get_node_text(&other, source);
-                name.chars().any(|c| c.is_ascii_alphabetic())
-                    && !name.chars().any(|c| c.is_ascii_lowercase())
-            }
-            _ => false,
-        };
-        if !named {
+        if !Self::is_named_quantity(&other, source) {
             return false;
         }
         // Walk up through parentheses to the argument list of the assert.
@@ -485,6 +477,48 @@ impl Dcl06C {
                 }
                 _ => return false,
             }
+        }
+    }
+
+    /// Is this operand a quantity the program already names, rather than a
+    /// value spelled out on the spot? An ALL_CAPS identifier (a macro or
+    /// enumerator by convention), a `sizeof`, or a call -- and, since the
+    /// assert's other side is just as self-documenting when it is those
+    /// combined, an arithmetic expression EVERY leaf of which is one of
+    /// them: sqlite's `assert( 121 == WALINDEX_LOCK_OFFSET + WAL_CKPT_LOCK )`
+    /// and the `WALINDEX_LOCK_OFFSET + WAL_READ_LOCK(n)` rows beside it
+    /// (task 1153; the bare-identifier block above them was already exempt).
+    ///
+    /// The guarantee stays mechanical rather than inferred: a single bare
+    /// literal leaf (`WALINDEX_LOCK_OFFSET + 3`) makes the whole operand not
+    /// a named quantity, and only `+ - * / %` compose -- a mask or shift
+    /// assembles a value rather than naming one.
+    fn is_named_quantity(node: &Node, source: &str) -> bool {
+        match node.kind() {
+            "sizeof_expression" | "call_expression" => true,
+            "identifier" => {
+                let name = get_node_text(node, source);
+                name.chars().any(|c| c.is_ascii_alphabetic())
+                    && !name.chars().any(|c| c.is_ascii_lowercase())
+            }
+            "parenthesized_expression" => node
+                .named_child(0)
+                .is_some_and(|inner| Self::is_named_quantity(&inner, source)),
+            "binary_expression" => {
+                let arithmetic = node
+                    .child_by_field_name("operator")
+                    .map(|op| get_node_text(&op, source))
+                    .is_some_and(|op| matches!(op, "+" | "-" | "*" | "/" | "%"));
+                arithmetic
+                    && node
+                        .child_by_field_name("left")
+                        .zip(node.child_by_field_name("right"))
+                        .is_some_and(|(l, r)| {
+                            Self::is_named_quantity(&l, source)
+                                && Self::is_named_quantity(&r, source)
+                        })
+            }
+            _ => false,
         }
     }
 
