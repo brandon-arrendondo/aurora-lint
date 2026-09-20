@@ -49,3 +49,5 @@ outlive any one task.
   landed upstream](0007-responsible-disclosure-gates-publication.md)
 - [0008 — ERROR ancestry is not a suppression signal; fix the preprocessor
   misread instead](0008-error-ancestry-is-not-a-suppression-signal.md)
+- [0009 — The changelog tells users what changed in aurora-lint; it is not a
+  git log or a task list](0009-changelog-is-for-users-not-a-git-log.md)
