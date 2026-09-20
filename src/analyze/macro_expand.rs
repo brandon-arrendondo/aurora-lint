@@ -175,6 +175,104 @@ struct FreeIdentOccurrence {
     /// not `==`/`+=`/`<=`), so it writes the caller's variable without
     /// reading it.
     is_write: bool,
+    /// The occurrence sits in the statement an `if`/`else`/`for`/`while`
+    /// governs -- `if (x) { status = ERR; goto exit; }` -- so whether it
+    /// executes depends on the condition. An occurrence in the condition
+    /// itself (`if ((ret = (f)) != 0)`) is not conditional: it runs on every
+    /// path through the macro.
+    is_conditional: bool,
+    /// Byte index of the occurrence's first character in the body.
+    pos: usize,
+}
+
+/// For every byte of `chars`, whether it lies in the statement governed by an
+/// `if`/`else`/`for`/`while` -- the braced block or single statement that
+/// follows the keyword and its `(...)`. The condition inside the parentheses
+/// is NOT governed (it always executes), and neither is the `do { }` body
+/// or the `while (0)` of the `do { ... } while (0)` wrapper.
+fn conditional_regions(chars: &[char]) -> Vec<bool> {
+    let n = chars.len();
+    let mut cond = vec![false; n];
+    let mut i = 0;
+    while i < n {
+        if !is_ident_start(chars[i]) || (i > 0 && is_ident_char(chars[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < n && is_ident_char(chars[i]) {
+            i += 1;
+        }
+        let word: String = chars[start..i].iter().collect();
+        let mut j = i;
+        let governs = match word.as_str() {
+            "if" | "for" | "while" => {
+                // skip the parenthesised condition
+                let Some(open) = next_non_space(chars, j) else {
+                    continue;
+                };
+                if chars[open] != '(' {
+                    continue;
+                }
+                let mut depth = 0i32;
+                let mut k = open;
+                while k < n {
+                    match chars[k] {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    k += 1;
+                }
+                j = k + 1;
+                true
+            }
+            "else" => true,
+            _ => false,
+        };
+        if !governs {
+            continue;
+        }
+        // the governed statement: a balanced `{ ... }` block, or up to `;`
+        let Some(first) = next_non_space(chars, j) else {
+            continue;
+        };
+        let end = if chars[first] == '{' {
+            let mut depth = 0i32;
+            let mut k = first;
+            while k < n {
+                match chars[k] {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                k += 1;
+            }
+            k
+        } else if chars[first] == ';' {
+            // `while (0);` -- nothing governed
+            first
+        } else {
+            chars[first..]
+                .iter()
+                .position(|&c| c == ';')
+                .map_or(n - 1, |off| first + off)
+        };
+        for flag in cond.iter_mut().take((end + 1).min(n)).skip(first) {
+            *flag = true;
+        }
+    }
+    cond
 }
 
 /// Every occurrence of a *free* identifier in `m`'s replacement list — one
@@ -201,6 +299,7 @@ struct FreeIdentOccurrence {
 /// MSC13-C means silently suppressing a real finding.
 fn free_identifier_occurrences(m: &FunctionMacro) -> Vec<FreeIdentOccurrence> {
     let chars: Vec<char> = m.body.chars().collect();
+    let conditional = conditional_regions(&chars);
     let mut out = Vec::new();
     let mut i = 0;
     while i < chars.len() {
@@ -222,6 +321,8 @@ fn free_identifier_occurrences(m: &FunctionMacro) -> Vec<FreeIdentOccurrence> {
         out.push(FreeIdentOccurrence {
             name: tok,
             is_write: is_simple_assignment_target(&chars, i),
+            is_conditional: conditional[start],
+            pos: start,
         });
     }
     out
@@ -348,6 +449,105 @@ pub fn macro_references_free_identifier(m: &FunctionMacro, var: &str) -> bool {
 ///
 /// The unused-variable question is different and keeps taking the union:
 /// a variable a macro only writes is still *used*.
+/// The free identifiers `m` assigns (simple `=`) textually BEFORE its first
+/// `goto`/`return`: what the macro has written by the time it jumps
+/// (`{ rc = MOSQ_ERR_UNKNOWN; goto error; }`, mosquitto's `read_e`). On the
+/// jump path those stores have happened whatever governed them; on the
+/// fallthrough path only the must-writes have.
+pub fn macro_writes_before_jump(m: &FunctionMacro) -> HashSet<String> {
+    let chars: Vec<char> = m.body.chars().collect();
+    let jump_at = ["goto", "return"]
+        .iter()
+        .filter_map(|kw| keyword_position(&chars, kw))
+        .min()
+        .unwrap_or(chars.len());
+    free_identifier_occurrences(m)
+        .into_iter()
+        .filter(|occ| occ.is_write && occ.pos < jump_at)
+        .map(|occ| occ.name)
+        .collect()
+}
+
+/// Index of the first whole-token occurrence of `kw` in `chars`.
+fn keyword_position(chars: &[char], kw: &str) -> Option<usize> {
+    let kw: Vec<char> = kw.chars().collect();
+    (0..chars.len()).find(|&i| {
+        chars[i..].starts_with(&kw)
+            && (i == 0 || !is_ident_char(chars[i - 1]))
+            && chars.get(i + kw.len()).is_none_or(|c| !is_ident_char(*c))
+    })
+}
+
+/// The free identifiers `m` writes on EVERY path through its body: a simple
+/// assignment that is not inside the statement an `if`/`else`/`for`/`while`
+/// governs. `MBEDTLS_MPI_CHK(f)`'s `if ((ret = (f)) != 0) goto cleanup;`
+/// writes `ret` in the condition, so always; `PSA_THREADING_CHK_GOTO_EXIT`'s
+/// `if ((expr) != 0) { status = ERR; goto exit; }` writes `status` only when
+/// the condition holds and is NOT in this set. A must-write kills the
+/// definitions that reach the invocation; a may-write does not.
+pub fn macro_free_identifier_must_writes(m: &FunctionMacro) -> HashSet<String> {
+    free_identifier_occurrences(m)
+        .into_iter()
+        .filter(|occ| occ.is_write && !occ.is_conditional)
+        .map(|occ| occ.name)
+        .collect()
+}
+
+/// The free identifiers whose FIRST occurrence in `m`'s replacement list is
+/// a simple-assignment target: the macro writes them before it reads them
+/// (`MBEDTLS_ASN1_CHK_ADD(g, f)` is `if ((ret = (f)) < 0) return ret; else
+/// (g) += ret;`), so its later reads are of its own store, not of whatever
+/// definition reached the invocation.
+pub fn macro_free_identifiers_written_first(m: &FunctionMacro) -> HashSet<String> {
+    let chars: Vec<char> = m.body.chars().collect();
+    let occurrences = free_identifier_occurrences(m);
+    let mut seen = HashSet::new();
+    let mut out = HashSet::new();
+    for (k, occ) in occurrences.iter().enumerate() {
+        if !seen.insert(occ.name.clone()) || !occ.is_write {
+            continue;
+        }
+        // `ret = ret + (v)`: the right-hand side is evaluated before the
+        // store, so a read of the same name inside this assignment's own
+        // expression comes first in time even though the target is first
+        // in the text. The expression ends at the next `;`, or at the `)`
+        // that closes a condition the assignment sits in.
+        let end = assignment_expression_end(&chars, occ.pos);
+        let read_inside = occurrences[k + 1..]
+            .iter()
+            .any(|o| o.name == occ.name && !o.is_write && o.pos < end);
+        if !read_inside {
+            out.insert(occ.name.clone());
+        }
+    }
+    out
+}
+
+/// Index just past the assignment expression that starts at `from`: the
+/// first `;` at the same parenthesis depth, or the `)` that closes an
+/// enclosing parenthesis, or the end of the body.
+fn assignment_expression_end(chars: &[char], from: usize) -> usize {
+    let mut depth = 0i32;
+    let mut i = from;
+    while i < chars.len() {
+        match chars[i] {
+            '(' => depth += 1,
+            ')' => {
+                if depth == 0 {
+                    return i;
+                }
+                depth -= 1;
+            }
+            ';' if depth == 0 => return i,
+            _ => {}
+        }
+        i += 1;
+    }
+    chars.len()
+}
+
+/// The free identifiers `m`'s replacement list reads -- every occurrence
+/// that is not a simple-assignment target.
 pub fn macro_free_identifier_reads(m: &FunctionMacro) -> HashSet<String> {
     free_identifier_occurrences(m)
         .into_iter()
@@ -2420,5 +2620,75 @@ mod tests {
             "SWAP_IN",
         );
         assert!(macro_free_identifier_reads(&m).contains("tmp"));
+    }
+}
+
+#[cfg(test)]
+mod macro_write_tests {
+    use super::*;
+
+    fn m(params: &[&str], body: &str) -> FunctionMacro {
+        FunctionMacro {
+            params: params.iter().map(|p| p.to_string()).collect(),
+            body: body.to_string(),
+        }
+    }
+
+    #[test]
+    fn write_in_if_condition_is_a_must_write() {
+        let chk = m(
+            &["f"],
+            "do { if ((ret = (f)) != 0) goto cleanup; } while (0)",
+        );
+        assert!(macro_free_identifier_must_writes(&chk).contains("ret"));
+        assert!(macro_free_identifiers_written_first(&chk).contains("ret"));
+    }
+
+    #[test]
+    fn write_in_if_body_is_conditional() {
+        let chk = m(
+            &["expr"],
+            "do { if ((expr) != 0) { status = PSA_ERROR_GENERIC_ERROR; goto exit; } } while (0)",
+        );
+        assert!(!macro_free_identifier_must_writes(&chk).contains("status"));
+        // still a write-before-read for the self-read rule
+        assert!(macro_free_identifiers_written_first(&chk).contains("status"));
+    }
+
+    #[test]
+    fn write_then_read_is_written_first_and_read() {
+        let add = m(
+            &["g", "f"],
+            "do { if ((ret = (f)) < 0) return ret; else (g) += ret; } while (0)",
+        );
+        assert!(macro_free_identifier_must_writes(&add).contains("ret"));
+        assert!(macro_free_identifiers_written_first(&add).contains("ret"));
+        assert!(macro_free_identifier_reads(&add).contains("ret"));
+    }
+
+    #[test]
+    fn read_then_write_is_not_written_first() {
+        let acc = m(&["v"], "ret = ret + (v)");
+        assert!(!macro_free_identifiers_written_first(&acc).contains("ret"));
+        assert!(macro_free_identifier_must_writes(&acc).contains("ret"));
+    }
+
+    #[test]
+    fn writes_before_the_jump_are_on_the_jump_path() {
+        let read_e = m(
+            &["f", "b", "c"],
+            "if(fread(b,1,c,f) != c){ rc = MOSQ_ERR_UNKNOWN; goto error; }",
+        );
+        assert!(macro_writes_before_jump(&read_e).contains("rc"));
+        assert!(!macro_free_identifier_must_writes(&read_e).contains("rc"));
+        let after = m(&["c"], "do { if (c) goto out; rc = 1; } while (0)");
+        assert!(!macro_writes_before_jump(&after).contains("rc"));
+    }
+
+    #[test]
+    fn else_body_and_single_statement_bodies_are_conditional() {
+        let e = m(&["c"], "if (c) x = 1; else y = 2;");
+        let must = macro_free_identifier_must_writes(&e);
+        assert!(!must.contains("x") && !must.contains("y"));
     }
 }

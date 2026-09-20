@@ -179,9 +179,25 @@ fn starts_with_bare_else(line: &str) -> bool {
 }
 
 /// True if `line`, once trimmed and stripped of a trailing `//` comment, is
-/// exactly the bare keyword `else` with nothing else on the line.
+/// exactly the bare keyword `else` with nothing else on the line, or a
+/// closing brace followed by it -- `} else` -- which is the same dangling
+/// else once the guarded arm is braced (mbedtls's `psa_key_derivation_abort`
+/// and `mbedtls_pk_write_pubkey`: `if (...) { ... } else` as the last line
+/// before `#endif`, with the next arm or the final `{ ... }` on the far side;
+/// task 1387).
 pub(crate) fn is_bare_else_line(line: &str) -> bool {
     strip_trailing_line_comment(line.trim()) == "else"
+}
+
+/// True if `line` is a closing brace followed by the bare keyword `else` --
+/// `} else` -- the trailing dangling else of a BRACED guarded arm (mbedtls's
+/// `psa_key_derivation_abort`: `if (...) { ... } else` as the last line
+/// before `#endif`, with the next arm or the final `{ ... }` on the far side;
+/// task 1387).
+fn is_brace_else_line(line: &str) -> bool {
+    strip_trailing_line_comment(line.trim())
+        .strip_suffix("else")
+        .is_some_and(|before| before.trim_end() == "}")
 }
 
 /// True if `line` closes a preceding brace, opens an `else` clause, and
@@ -249,6 +265,171 @@ fn blank_line(out: &mut [u8], line_start: usize, line_len: usize) {
     }
 }
 
+/// Blank the directive at line `idx` and every backslash-continued line it
+/// spans (`#if defined(A) || \` + `    defined(B)`): the continuation is
+/// part of the directive, and left in place it is a stray C expression that
+/// breaks the parse the blanking was meant to repair.
+fn blank_directive(out: &mut [u8], lines: &[&str], line_starts: &[usize], idx: usize) {
+    let mut k = idx;
+    loop {
+        blank_line(out, line_starts[k], lines[k].len());
+        if !lines[k].trim_end().ends_with('\\') || k + 1 >= lines.len() {
+            break;
+        }
+        k += 1;
+    }
+    // `#endif /* A ||` continued by `B */`: the comment's tail lines go with
+    // the directive that opened it, or a bare `*/` is left behind.
+    let comment_end = after_endif_comment(lines, k);
+    for c in (k + 1)..comment_end.min(lines.len()) {
+        blank_line(out, line_starts[c], lines[c].len());
+    }
+}
+
+/// A guarded block, as the run-based pass below sees it: the line indices of
+/// its `#if` and `#endif`, whether it has an `#elif`/`#else` of its own or
+/// any directive nested inside, and whether its last content line is
+/// `} else`.
+struct GuardedBlock {
+    start: usize,
+    end: usize,
+    nested_directive: bool,
+    ends_with_brace_else: bool,
+}
+
+/// The `#if` block starting at line `i`, if `lines[i]` opens one that closes.
+fn guarded_block(lines: &[&str], i: usize) -> Option<GuardedBlock> {
+    if !is_directive_start(lines[i].trim_start()) {
+        return None;
+    }
+    let mut depth = 1i32;
+    let mut nested_directive = false;
+    let mut j = i + 1;
+    while j < lines.len() {
+        let t = lines[j].trim_start();
+        if is_directive_start(t) {
+            depth += 1;
+            nested_directive = true;
+        } else if is_endif(t) {
+            depth -= 1;
+            if depth == 0 {
+                break;
+            }
+            nested_directive = true;
+        } else if is_branch_directive(t) {
+            nested_directive = true;
+        }
+        j += 1;
+    }
+    if j >= lines.len() {
+        return None;
+    }
+    let mut first_content = i + 1;
+    while first_content < j && lines[first_content - 1].trim_end().ends_with('\\') {
+        first_content += 1;
+    }
+    let last = (first_content..j)
+        .rev()
+        .find(|&k| !lines[k].trim().is_empty());
+    Some(GuardedBlock {
+        start: i,
+        end: j,
+        nested_directive,
+        ends_with_brace_else: last.is_some_and(|k| is_brace_else_line(lines[k])),
+    })
+}
+
+/// The first line after `endif` that is not inside a block comment the
+/// `#endif` line itself opened: `#endif /* A ||` continued by `B */` on the
+/// next line (mbedtls's key-exchange chains) must not read as content.
+fn after_endif_comment(lines: &[&str], endif: usize) -> usize {
+    let line = lines[endif];
+    let opens = line.rfind("/*").is_some_and(|o| !line[o..].contains("*/"));
+    if !opens {
+        return endif + 1;
+    }
+    let mut k = endif + 1;
+    while k < lines.len() {
+        if let Some(pos) = lines[k].find("*/") {
+            let rest = lines[k][pos + 2..].trim();
+            return if rest.is_empty() || rest.starts_with("//") {
+                k + 1
+            } else {
+                k
+            };
+        }
+        k += 1;
+    }
+    k
+}
+
+/// The `} else` chain shape (task 1387; mbedtls's `psa_key_derivation_abort`,
+/// `mbedtls_pk_write_pubkey`): a run of guarded blocks each holding one
+/// braced arm that ends in `} else`, closed by an unconditional line (the
+/// final `{ ... }` or a plain statement):
+///
+/// ```c
+/// if (alg == 0) {
+/// } else
+/// #if defined(A)
+/// if (alg == 1) { ... } else
+/// #endif
+/// #if defined(B)
+/// if (alg == 2) { ... } else
+/// #endif
+/// {
+///     status = -1;
+/// }
+/// ```
+///
+/// The guards of the WHOLE run are blanked, or none of them: with every
+/// guard gone the chain is one well-formed if/else-if statement; with only
+/// some gone, an `else` is left dangling into a `preproc_if` node and
+/// tree-sitter-c's recovery reads the arm after it as a function
+/// definition, which is worse than the un-joined original, where each arm
+/// parses on its own and only its `else` is dropped. A run containing an arm
+/// with directives of its own inside (`if (...) { #if X ... #else ... #endif
+/// } else`) is left alone for the same reason.
+fn blank_brace_else_chains(lines: &[&str], line_starts: &[usize], out: &mut [u8]) {
+    let mut i = 0usize;
+    while i < lines.len() {
+        let Some(first) = guarded_block(lines, i) else {
+            i += 1;
+            continue;
+        };
+        if !first.ends_with_brace_else {
+            i += 1;
+            continue;
+        }
+        // collect the run
+        let mut run = vec![first];
+        let closed_by_code = loop {
+            let last = run.last().unwrap();
+            let k = skip_blank_and_comment_lines(
+                lines,
+                after_endif_comment(lines, last.end),
+                lines.len(),
+            );
+            if k >= lines.len() {
+                break false;
+            }
+            match guarded_block(lines, k) {
+                Some(next) if next.ends_with_brace_else => run.push(next),
+                Some(_) => break false,
+                None => break !is_directive_start(lines[k].trim_start()),
+            }
+        };
+        let last_end = run.last().unwrap().end;
+        if closed_by_code && run.iter().all(|b| !b.nested_directive) {
+            for b in &run {
+                blank_directive(out, lines, line_starts, b.start);
+                blank_directive(out, lines, line_starts, b.end);
+            }
+        }
+        i = last_end + 1;
+    }
+}
+
 /// Blank the preprocessor directive lines wrapping a dangling `else`
 /// fragment, per the module docs above. Length-preserving.
 pub fn blank_dangling_else_preproc(source: &str) -> String {
@@ -261,6 +442,8 @@ pub fn blank_dangling_else_preproc(source: &str) -> String {
     }
 
     let mut out = source.as_bytes().to_vec();
+
+    blank_brace_else_chains(&lines, &line_starts, &mut out);
 
     let mut i = 0usize;
     while i < lines.len() {
@@ -300,6 +483,7 @@ pub fn blank_dangling_else_preproc(source: &str) -> String {
 
         if !has_branch {
             let body = (i + 1)..end_idx;
+
             let first_content = {
                 let k = skip_blank_and_comment_lines(&lines, body.start, body.end);
                 (k < body.end).then_some(k)
@@ -336,8 +520,8 @@ pub fn blank_dangling_else_preproc(source: &str) -> String {
                 || lone_closing_brace
                 || else_follows_endif
             {
-                blank_line(&mut out, line_starts[i], lines[i].len());
-                blank_line(&mut out, line_starts[end_idx], lines[end_idx].len());
+                blank_directive(&mut out, &lines, &line_starts, i);
+                blank_directive(&mut out, &lines, &line_starts, end_idx);
             }
         }
 
@@ -407,6 +591,119 @@ int f(int fmt) {
 }
 ";
         assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn fixes_trailing_brace_else_before_endif() {
+        // task 1387: the guarded arm is braced, so the line before `#endif`
+        // is `} else`, not a lone `else`; the chain's tail is on the far side.
+        let src = "\
+int f(int alg) {
+    int status = 0;
+    if (alg == 0) {
+    } else
+#if defined(HAVE_ONE)
+    if (alg == 1) {
+        status = 1;
+    } else
+#endif
+    {
+        status = -1;
+    }
+    return status;
+}
+";
+        assert!(parses_clean(src));
+        let out = blank_dangling_else_preproc(src);
+        assert!(!out.contains("#if defined(HAVE_ONE)"));
+        assert!(!out.contains("#endif"));
+
+        // ... but not when the braced arm has directives of its own inside.
+        let nested = "\
+int g(int alg) {
+    int status = 0;
+    if (alg == 0) {
+    } else
+#if defined(HAVE_ONE)
+    if (alg == 1) {
+#if defined(USE_PSA)
+        status = 1;
+#else
+        status = 2;
+#endif
+    } else
+#endif
+    {
+        status = -1;
+    }
+    return status;
+}
+";
+        let out = blank_dangling_else_preproc(nested);
+        assert!(out.contains("#if defined(HAVE_ONE)"));
+
+        // A run is all-or-nothing: an `#endif /* ...` comment continued on
+        // the next line must not split it, and one nested arm keeps every
+        // guard of the run in place.
+        let split_by_comment = "\
+int h(int alg) {
+    int status = 0;
+    if (alg == 0) {
+    } else
+#if defined(HAVE_ONE) || \\
+    defined(HAVE_TWO)
+    if (alg == 1) {
+        status = 1;
+    } else
+#endif /* HAVE_ONE ||
+          HAVE_TWO */
+#if defined(HAVE_THREE)
+    if (alg == 3) {
+#if defined(USE_PSA)
+        status = 3;
+#else
+        status = 4;
+#endif
+    } else
+#endif
+    {
+        status = -1;
+    }
+    return status;
+}
+";
+        let out = blank_dangling_else_preproc(split_by_comment);
+        assert!(
+            out.contains("#if defined(HAVE_ONE)"),
+            "first arm blanked although the run has a nested arm"
+        );
+        assert!(out.contains("#if defined(HAVE_THREE)"));
+
+        // With no nested arm the run is blanked, continuation lines included.
+        let continued = "\
+int k(int alg) {
+    int status = 0;
+    if (alg == 0) {
+    } else
+#if defined(HAVE_ONE) || \\
+    defined(HAVE_TWO)
+    if (alg == 1) {
+        status = 1;
+    } else
+#endif /* HAVE_ONE ||
+          HAVE_TWO */
+    {
+        status = -1;
+    }
+    return status;
+}
+";
+        let out = blank_dangling_else_preproc(continued);
+        assert!(
+            !out.contains("defined(HAVE_TWO)\n"),
+            "continuation line left behind"
+        );
+        assert!(parses_clean(&out));
     }
 
     #[test]

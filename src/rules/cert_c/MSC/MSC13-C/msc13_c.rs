@@ -21,14 +21,15 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
-use crate::analyze::cfg::{self as cfg_mod, FunctionCfg};
+use crate::analyze::cfg::{self as cfg_mod, FunctionCfg, MacroJump};
 use crate::analyze::dataflow::{
     compute_reaching_definitions, extract_definitions, find_node_at_range, Definition,
     DefinitionKind,
 };
 use crate::analyze::macro_expand::{
-    collect_function_macro_alternatives, macro_free_identifier_reads,
-    macro_references_free_identifier, FunctionMacro,
+    collect_function_macro_alternatives, macro_free_identifier_must_writes,
+    macro_free_identifier_reads, macro_free_identifiers_written_first,
+    macro_references_free_identifier, macro_writes_before_jump, FunctionMacro,
 };
 use crate::analyze::unknown_identifier_recovery::UNUSED_ATTRIBUTE_MARKER;
 use crate::manifest::{RuleCategory, Severity};
@@ -41,14 +42,6 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
-
-/// What a declaration's constant initializer is made of.
-enum ConstantInit {
-    /// A literal: `0`, `-1`, `'C'`, `NULL`, `true`.
-    Literal,
-    /// A named constant: an ALL_CAPS macro or enum constant.
-    Named,
-}
 
 pub struct Msc13C {
     /// Object-like macros that expand to an unused-attribute annotation,
@@ -803,7 +796,18 @@ impl Msc13C {
         macros: &HashMap<String, Vec<FunctionMacro>>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        match cfg_mod::build_function_cfg(func_node, source) {
+        // A macro whose body jumps (`goto exit;` / `return ret;`) gives its
+        // invocation that edge, so a value read only at the label -- the
+        // `int ret = 1;` a self-test returns when an assertion macro bails
+        // out -- is live on that path (task 1387).
+        let macro_jumps = Self::macro_jumps(macros);
+        match cfg_mod::build_function_cfg_full(
+            func_node,
+            source,
+            &Default::default(),
+            &HashSet::new(),
+            &macro_jumps,
+        ) {
             Some(cfg) => self.check_dead_stores_cfg(
                 func_node,
                 &cfg,
@@ -838,10 +842,18 @@ impl Msc13C {
         macros: &HashMap<String, Vec<FunctionMacro>>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        let definitions = extract_definitions(cfg, func_node, source);
+        let mut definitions = extract_definitions(cfg, func_node, source);
+        // A statement that invokes a macro whose body assigns one of the
+        // caller's variables (`MBEDTLS_MPI_CHK(f)`: `ret = (f)`) defines
+        // that variable there: the write kills the earlier store on every
+        // path through the invocation, exactly as the expanded text would.
+        // Without it the macro-hidden `goto` edge (see `macro_jumps`) would
+        // carry the earlier store to the label's read and call it live
+        // (task 1387).
+        let first_synthetic = definitions.len();
+        self.add_macro_hidden_definitions(cfg, body, source, macros, &mut definitions);
         let reaching = compute_reaching_definitions(cfg, definitions);
         let single_invocation_locals = self.collect_single_invocation_locals(body, source);
-        let returned_names = self.collect_returned_names(body, source, macros);
 
         // (block_id, statement_index) -> definition indices written there.
         let mut writes_at: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
@@ -853,6 +865,20 @@ impl Msc13C {
         }
 
         let mut live: HashSet<usize> = HashSet::new();
+        // Names the body's macro invocations read, for the double-report
+        // guard below: a variable touched ONLY through `MBEDTLS_ASN1_CHK_ADD`
+        // has no textual read in the body, yet it is read (by the macro)
+        // and so is not the unused-variable pass's finding either (task
+        // 1387). Only macro-hidden reads are added; the textual count stays
+        // declaration-scoped.
+        let mut macro_read = HashSet::new();
+        self.collect_macro_names_in_node(
+            body,
+            source,
+            macros,
+            macro_free_identifier_reads,
+            &mut macro_read,
+        );
 
         for block in &cfg.blocks {
             let mut active: HashMap<String, usize> = HashMap::new();
@@ -863,7 +889,21 @@ impl Msc13C {
 
                 let mut reads = HashSet::new();
                 self.collect_reads_in_node(&stmt_node, source, macros, &mut reads);
+                // A macro that writes a variable before it reads it
+                // (`MBEDTLS_ASN1_CHK_ADD`'s `ret`) reads its own store;
+                // those reads do not keep an earlier definition alive.
+                let mut self_read = HashSet::new();
+                self.collect_macro_names_in_node(
+                    &stmt_node,
+                    source,
+                    macros,
+                    macro_free_identifiers_written_first,
+                    &mut self_read,
+                );
                 for var in &reads {
+                    if self_read.contains(var) {
+                        continue;
+                    }
                     if let Some(&def_idx) = active.get(var) {
                         live.insert(def_idx);
                     } else if let Some(in_set) = reaching.reaching_in.get(&block.id) {
@@ -885,6 +925,13 @@ impl Msc13C {
 
         for (idx, def) in reaching.definitions.iter().enumerate() {
             if live.contains(&idx) {
+                continue;
+            }
+            // A macro-hidden write is a kill for the definitions before it,
+            // never a finding of its own: the invocation line is not a
+            // store the author wrote out, and the macro's reads of it are
+            // its own business.
+            if idx >= first_synthetic {
                 continue;
             }
             // `extract_definitions` also emits a synthetic `FreeCall`
@@ -925,24 +972,24 @@ impl Msc13C {
             let decl_start = self.declaration_scope_for_definition(cfg, def, body, source);
             let targets =
                 decl_start.map(|d| decl_groups.get(&d).cloned().unwrap_or_else(|| vec![d]));
-            if self.count_reads(body, source, &def.variable, targets.as_deref()) == 0 {
+            if self.count_reads(body, source, &def.variable, targets.as_deref()) == 0
+                && !macro_read.contains(&def.variable)
+            {
                 continue;
             }
-            // A defensive initial value is not a dead store. Two shapes:
-            // `int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;` names the
-            // state the variable is in until the code says otherwise --
-            // mbedtls writes it so a glitched control flow reports failure
-            // rather than success -- and `int rc = -1;` on a variable the
-            // function returns is the default result the caller gets if
-            // every later assignment is skipped (task 1171). Narrower than
-            // clang's "any constant initializer is defensive": a bare
-            // literal on a value that is merely printed, `int x = 1; x = 2;`,
-            // still reports.
-            match self.constant_declaration_initializer(cfg, def, body, source) {
-                Some(ConstantInit::Named) => continue,
-                Some(ConstantInit::Literal) if returned_names.contains(&def.variable) => continue,
-                _ => {}
-            }
+            // A defensive initial value -- `int ret = MBEDTLS_ERR_ERROR_
+            // CORRUPTION_DETECTED;`, `int rc = -1;` on the variable the
+            // function returns -- is exempt only when the initial value can
+            // actually reach a read, which is what the reaching-definitions
+            // pass above already decided: if it can, the definition is live
+            // and never gets here. A constant initializer that every path
+            // overwrites before any read is a dead store whatever it names
+            // (task 1387, which retired task 1171's by-shape exemption: on
+            // mbedtls it silenced 91 stores clang's DeadStores also proves
+            // dead). The reads the exemption used to stand in for are
+            // modelled instead: a macro-hidden `goto`/`return` is a CFG
+            // edge, and an `#if`-spliced `} else` chain is re-joined before
+            // parsing.
             let line = Self::line_for_byte(source, def.byte_offset);
             violations.push(RuleViolation {
                 rule_id: self.rule_id().to_string(),
@@ -963,101 +1010,132 @@ impl Msc13C {
         }
     }
 
-    /// Identifiers mentioned by any `return` expression of the function --
-    /// in the body itself, or in the replacement list of a function-like
-    /// macro the body invokes (`MBEDTLS_ASN1_CHK_ADD` returns the caller's
-    /// `ret` from inside the macro, so the body shows no `return ret;`).
-    fn collect_returned_names(
+    /// Append a [`Definition`] for every caller variable a macro invocation
+    /// statement writes through its replacement list (task 1387).
+    fn add_macro_hidden_definitions(
         &self,
+        cfg: &FunctionCfg,
         body: &Node,
         source: &str,
         macros: &HashMap<String, Vec<FunctionMacro>>,
-    ) -> HashSet<String> {
-        let mut names = HashSet::new();
-        for ret in query::find_descendants_of_kind(*body, "return_statement") {
-            for ident in query::find_descendants_of_kind(ret, "identifier") {
-                names.insert(get_node_text(&ident, source).to_string());
+        definitions: &mut Vec<Definition>,
+    ) {
+        if macros.is_empty() {
+            return;
+        }
+        for block in &cfg.blocks {
+            for (stmt_idx, &(start, end)) in block.statements.iter().enumerate() {
+                let Some(stmt) = find_node_at_range(body, start, end) else {
+                    continue;
+                };
+                let mut written = HashSet::new();
+                self.collect_macro_names_in_node(
+                    &stmt,
+                    source,
+                    macros,
+                    macro_free_identifier_must_writes,
+                    &mut written,
+                );
+                for variable in written {
+                    definitions.push(Definition {
+                        variable,
+                        block_id: block.id,
+                        statement_index: stmt_idx,
+                        kind: DefinitionKind::Assignment,
+                        byte_offset: start,
+                    });
+                }
             }
         }
-        if macros.is_empty() {
-            return names;
+        // What the macro wrote by the time it jumped holds on the jump path
+        // only (`{ rc = ERR; goto error; }`): the CFG gave that path its own
+        // block; the definitions go there.
+        for &(jump_block, (start, end)) in &cfg.macro_jump_blocks {
+            let Some(stmt) = find_node_at_range(body, start, end) else {
+                continue;
+            };
+            let mut written = HashSet::new();
+            self.collect_macro_names_in_node(
+                &stmt,
+                source,
+                macros,
+                macro_writes_before_jump,
+                &mut written,
+            );
+            for variable in written {
+                definitions.push(Definition {
+                    variable,
+                    block_id: jump_block,
+                    statement_index: 0,
+                    kind: DefinitionKind::Assignment,
+                    byte_offset: start,
+                });
+            }
         }
-        let mut invoked = HashSet::new();
-        self.collect_invoked_names(body, source, &mut invoked);
-        for m in invoked.iter().filter_map(|n| macros.get(n)).flatten() {
-            let mut rest = m.body.as_str();
-            while let Some(pos) = rest.find("return") {
-                let after = &rest[pos + "return".len()..];
-                let stmt = after.split(';').next().unwrap_or("");
-                let mut tok = String::new();
-                for c in stmt.chars().chain(std::iter::once(' ')) {
-                    if c.is_ascii_alphanumeric() || c == '_' {
-                        tok.push(c);
-                    } else if !tok.is_empty() {
-                        if !m.params.contains(&tok) && !is_c_keyword(&tok) {
-                            names.insert(std::mem::take(&mut tok));
+    }
+
+    /// Names `pick` yields for every function-like macro `node` invokes.
+    fn collect_macro_names_in_node(
+        &self,
+        node: &Node,
+        source: &str,
+        macros: &HashMap<String, Vec<FunctionMacro>>,
+        pick: fn(&FunctionMacro) -> HashSet<String>,
+        out: &mut HashSet<String>,
+    ) {
+        if node.kind() == "call_expression" {
+            if let Some(f) = node.child_by_field_name("function") {
+                if f.kind() == "identifier" {
+                    if let Some(alts) = macros.get(get_node_text(&f, source)) {
+                        for m in alts {
+                            out.extend(pick(m));
                         }
-                        tok.clear();
                     }
                 }
-                rest = after;
             }
         }
-        names
-    }
-
-    /// The constant `def` initialises `def.variable` with, when `def` is a
-    /// declaration and the initializer is one: a numeric or character
-    /// literal, `NULL`, `true`/`false` (`Literal`), an ALL_CAPS macro or
-    /// enum constant (`Named`), or one of those behind parentheses, a cast
-    /// or a unary minus. `None` for anything computed.
-    fn constant_declaration_initializer(
-        &self,
-        cfg: &FunctionCfg,
-        def: &Definition,
-        body: &Node,
-        source: &str,
-    ) -> Option<ConstantInit> {
-        let &(start, end) = cfg
-            .blocks
-            .get(def.block_id)?
-            .statements
-            .get(def.statement_index)?;
-        let stmt = find_node_at_range(body, start, end)?;
-        if stmt.kind() != "declaration" {
-            return None;
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.collect_macro_names_in_node(&child, source, macros, pick, out);
         }
-        let init = query::find_first_descendant(stmt, |n| {
-            n.kind() == "init_declarator"
-                && n.child_by_field_name("declarator")
-                    .is_some_and(|d| get_identifier_from_declarator(&d, source) == def.variable)
-        })?;
-        Self::constant_expression(&init.child_by_field_name("value")?, source)
     }
 
-    fn constant_expression(node: &Node, source: &str) -> Option<ConstantInit> {
-        match node.kind() {
-            "number_literal" | "char_literal" | "null" | "true" | "false" => {
-                Some(ConstantInit::Literal)
-            }
-            "identifier" => {
-                let text = get_node_text(node, source);
-                if text == "NULL" {
-                    Some(ConstantInit::Literal)
-                } else if ast_utils::is_likely_macro_constant(text) {
-                    Some(ConstantInit::Named)
-                } else {
-                    None
+    /// Every function-like macro whose replacement list contains a `goto
+    /// <label>` (the label) or a `return`, for the CFG builder: an
+    /// invocation as a statement then carries that edge as well as its
+    /// fallthrough (task 1387). Where alternatives disagree, a goto wins
+    /// over a return and the first label seen wins.
+    fn macro_jumps(macros: &HashMap<String, Vec<FunctionMacro>>) -> HashMap<String, MacroJump> {
+        let mut out = HashMap::new();
+        for (name, alternatives) in macros {
+            let mut jump: Option<MacroJump> = None;
+            for m in alternatives {
+                let tokens: Vec<&str> = m
+                    .body
+                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .filter(|t| !t.is_empty())
+                    .collect();
+                for (i, tok) in tokens.iter().enumerate() {
+                    if *tok == "goto" {
+                        if let Some(label) = tokens.get(i + 1) {
+                            if !m.params.contains(&label.to_string()) {
+                                jump = Some(MacroJump::Goto(label.to_string()));
+                                break;
+                            }
+                        }
+                    } else if *tok == "return" && jump.is_none() {
+                        jump = Some(MacroJump::Return);
+                    }
+                }
+                if matches!(jump, Some(MacroJump::Goto(_))) {
+                    break;
                 }
             }
-            "parenthesized_expression" | "unary_expression" => {
-                Self::constant_expression(&node.named_child(0)?, source)
+            if let Some(j) = jump {
+                out.insert(name.clone(), j);
             }
-            "cast_expression" => {
-                Self::constant_expression(&node.child_by_field_name("value")?, source)
-            }
-            _ => None,
         }
+        out
     }
 
     /// Resolve the specific local declaration governing `def`'s write, for
