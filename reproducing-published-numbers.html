@@ -544,14 +544,15 @@ remain.</p>
 </li>
 </ol>
 <p>The same binary on the same checkout, run twice, gives byte-identical
-exports on every codebase checked (from <code class="docutils literal notranslate"><span class="pre">fc9164fd</span></code> on), with one known
-exception found while measuring <code class="docutils literal notranslate"><span class="pre">4ac5710f</span></code>: MSC13-C on mbedtls’s
-<code class="docutils literal notranslate"><span class="pre">library/bignum.c:1301</span></code> (<code class="docutils literal notranslate"><span class="pre">quotient</span></code>, a variable declared in both
-branches of an <code class="docutils literal notranslate"><span class="pre">#if</span></code>) appears in roughly a third of runs of one binary on
-one checkout, even single-file at <code class="docutils literal notranslate"><span class="pre">--jobs</span> <span class="pre">1</span></code>, so it is a per-process
-nondeterminism in that rule, not a walk-order effect; it is filed and
-counts for one key. Otherwise the variation is between checkouts, not
-between runs. So the inputs a SHA does not name are
+exports on every codebase checked (from <code class="docutils literal notranslate"><span class="pre">fc9164fd</span></code> on), with one
+exception that <code class="docutils literal notranslate"><span class="pre">v0.5.2</span></code> still carries: MSC13-C on mbedtls’s
+<code class="docutils literal notranslate"><span class="pre">library/bignum.c:1301</span></code> (<code class="docutils literal notranslate"><span class="pre">quotient</span></code>, declared in both branches of an
+<code class="docutils literal notranslate"><span class="pre">#if</span></code>, sharing its first declaration with <code class="docutils literal notranslate"><span class="pre">dividend</span></code>) appears in
+roughly a third of runs of one binary on one checkout, even single-file at
+<code class="docutils literal notranslate"><span class="pre">--jobs</span> <span class="pre">1</span></code> – a per-process <code class="docutils literal notranslate"><span class="pre">HashMap</span></code> order inside the rule, not a
+walk-order effect, fixed in the first commit after the <code class="docutils literal notranslate"><span class="pre">v0.5.2</span></code>
+baseline (task 1386) and worth one key. Otherwise the variation is
+between checkouts, not between runs. So the inputs a SHA does not name are
 the header environment – <a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a> lists the packages the
 benchmark node carries – and, before <code class="docutils literal notranslate"><span class="pre">4ac5710f</span></code>, for codebases with
 multiply-defined names, the checkout’s directory order. A published
