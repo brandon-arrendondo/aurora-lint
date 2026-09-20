@@ -239,6 +239,16 @@ lies often enough to be useless alone. Adjudication itself isn't a
 task-tracking concern at all — it's a PR to `benchmark_adjudication` (see
 above).
 
+**Task titles are internal and never published.** `CHANGELOG.md` and the
+release notes are generated from the task DB, but only from tasks tagged
+`release-note`, publishing the task's `release-note: <bullet>` body line if
+it has one and its title otherwise; a title that locates a defect in a
+real-world corpus (`file.c:123`, disclosure/maintainer/CVE wording) is
+refused even when tagged, and `scripts/check_changelog_safety.py` screens the
+committed file in pre-commit, CI and the release workflow (`docs/adr/0007`).
+So when a done task shipped something a user should hear about, tag it and
+write the note for publication — the title is not the note.
+
 ---
 
 ## Documentation

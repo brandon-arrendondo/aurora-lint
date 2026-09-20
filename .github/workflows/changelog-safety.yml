@@ -1,0 +1,35 @@
+# ADR-0007 gate on the public changelog. CHANGELOG.md is generated from task
+# titles (internal working notes) and ships in every release tarball, so a
+# regeneration must not be able to publish a line that locates an unlanded
+# defect in a real-world corpus. scripts/generate_changelog.py screens its
+# own output; this workflow is the independent check over the committed text.
+#
+# Path-filtered on purpose: it runs when the changelog or the check itself
+# changes, and stays out of the way of every other push. The release workflow
+# runs the same script unconditionally over the notes and CHANGELOG.md before
+# anything is published, so a release can never skip it.
+name: Changelog safety
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - CHANGELOG.md
+      - scripts/check_changelog_safety.py
+      - .github/workflows/changelog-safety.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - CHANGELOG.md
+      - scripts/check_changelog_safety.py
+      - .github/workflows/changelog-safety.yml
+
+jobs:
+  screen:
+    name: CHANGELOG.md locates no unlanded defect
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: python3 scripts/check_changelog_safety.py CHANGELOG.md
+        run: python3 scripts/check_changelog_safety.py CHANGELOG.md

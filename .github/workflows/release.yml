@@ -411,6 +411,14 @@ jobs:
             > RELEASE_NOTES.md
           cat RELEASE_NOTES.md
 
+      # ADR-0007: neither the notes posted to the GitHub release nor the
+      # CHANGELOG.md already packed into every artifact above may locate an
+      # unlanded defect in a real-world corpus. The generator screens its
+      # own output; this is the independent check over the text as it will
+      # ship, and a failure here is the release refusing to publish it.
+      - name: Screen release notes and CHANGELOG.md (ADR-0007)
+        run: python3 scripts/check_changelog_safety.py RELEASE_NOTES.md CHANGELOG.md
+
       - uses: softprops/action-gh-release@v2
         with:
           body_path: RELEASE_NOTES.md

@@ -101,6 +101,22 @@ repos:
         files: '(rules_templates/rules-all\.toml|conf/realworld/.*\.toml|src/rules/cert_c/.*\.toml)$'
         verbose: true
 
+      - id: check-changelog-safety
+        name: CHANGELOG.md locates no unlanded defect
+        description: >-
+          Scan a changed CHANGELOG.md for the ADR-0007 content deny patterns
+          (a `file.c:123` location in a real-world corpus, disclosure /
+          maintainer / CVE vocabulary). The file is generated from task
+          titles, which are internal notes, and it ships in every release
+          tarball; the generator publishes only tasks tagged `release-note`,
+          and this is the independent second layer so a regeneration or a
+          hand edit cannot silently publish a match. Same script runs in CI
+          and in the release workflow over the release notes.
+        entry: python3 scripts/check_changelog_safety.py
+        language: system
+        files: ^CHANGELOG\.md$
+        verbose: true
+
       - id: cargo-fmt
         name: cargo fmt (auto-fix)
         description: Format Rust code with rustfmt
