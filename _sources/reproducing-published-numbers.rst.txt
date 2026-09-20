@@ -111,17 +111,46 @@ runs export identical bytes*) onward, one binary on one checkout writes a
 findings is the same but their order in the file can vary between runs, so
 two exports must be compared as sets of keys, not with ``diff``.
 
-"One checkout" is literal. The set of findings depends on the order in
-which the cross-file prescan walks the tree, and that order is the
-filesystem's directory order, which differs between filesystems and is
-not preserved by ``cp``, ``rsync`` or a fresh clone (see *What another
-machine reproduces*). The same directory scanned twice is byte-identical;
-a copy of it need not be.
+Up to and including ``v0.5.1``, "one checkout" is literal. The set of
+findings depends on the order in which the cross-file prescan walks the
+tree, and that order is the filesystem's directory order, which differs
+between filesystems and is not preserved by ``cp``, ``rsync`` or a fresh
+clone (see *What another machine reproduces*). The same directory scanned
+twice is byte-identical; a copy of it need not be.
+
+From commit ``4ac5710f`` (*analyze: sort the file walk so the finding set
+depends on the tree's content, not its directory order*) onward, every walk
+that feeds the prescan and the scan list is sorted by file name, so the set
+is a function of the tree's **content**: a copy, an ``rsync`` or a fresh
+clone of the same commit gives the same bytes. Measured on the same machine
+with the same binary: seL4 and hostap each copied to tmpfs twice, once with
+files created in sorted order and once in reverse, ``cmp`` identical from
+``4ac5710f`` on; on the ``v0.5.1`` binary the same two copies differ by 5
+keys (seL4, all PRE31-C) and 116 keys (hostap, 23 removed / 93 added). To
+repeat that check on any codebase, make two copies whose directories list
+in different orders and scan both with the same command line, from the same
+path (the export carries absolute paths):
+
+.. code-block:: bash
+
+   # tmpfs lists a directory in creation order, so the order files are
+   # copied in is the order the walk would have seen them before 4ac5710f.
+   for order in sorted reverse; do
+       rm -rf /dev/shm/x
+       (cd "$SRC" && git ls-files) | sort > /tmp/files
+       [ "$order" = reverse ] && tac /tmp/files > /tmp/files.r && mv /tmp/files.r /tmp/files
+       while IFS= read -r f; do
+           mkdir -p "/dev/shm/x/$(dirname "$f")" && cp -p "$SRC/$f" "/dev/shm/x/$f"
+       done < /tmp/files
+       aurora-lint /dev/shm/x -d /dev/shm/x --manifest "$MANIFEST" --export "/tmp/$order.json"
+   done
+   cmp /tmp/sorted.json /tmp/reverse.json && echo "order-independent"
 
 ``v0.5.0`` (``717783a9``) predates ``fc9164fd``: reproduce it at the key
 level. ``v0.5.1`` is the first tag that contains the ordering commit, and the
 first for which a reproducer should expect ``diff`` on two exports of the
-same codebase to be empty.
+same codebase to be empty. ``v0.5.2`` is the first tag for which that holds
+across copies of the checkout as well.
 
 .. list-table::
    :header-rows: 1
@@ -142,6 +171,11 @@ same codebase to be empty.
      - ``e405089a``
      - ``0.5.0``
      - per checkout, on one machine (see below)
+   * - ``v0.5.2``
+     - *<filled at tagging>*
+     - *<filled at tagging>*
+     - ``0.5.1``
+     - per checkout content, on one machine (from ``4ac5710f``)
 
 Input 2: the labels -- ``benchmark_adjudication`` at a SHA
 ----------------------------------------------------------
@@ -369,15 +403,38 @@ reproducer will not guess:
    between two copies of a checkout on one machine, and no ``git`` state
    records it.
 
+   **Removed at** ``4ac5710f``: the walk is sorted by file name from that
+   commit on, so which definition wins is decided by the tree's content
+   (the alphabetically last file for a function summary or a struct's
+   field types, the first for a function-like macro), the same on every
+   machine. Deterministic is not the same as right -- the winner is still
+   an arbitrary one of the definitions, and a name defined once per
+   backend or per architecture still resolves to a single body -- but it
+   is now the *same* arbitrary choice everywhere. Measured against
+   ``e405089a`` on the twelve pinned checkouts on one machine, the sort
+   moved 140 keys (30 removed, 110 added): 121 on hostap, 10 on sqlite,
+   5 on seL4, 3 on mbedtls and 1 on raylib, each read and attributed to a
+   multiply-defined name in the commit message; the other seven codebases
+   were key-identical. The cross-machine diff has not yet been re-measured
+   at ``4ac5710f`` on the benchmark node; when it is, only cause 1 should
+   remain.
+
 The same binary on the same checkout, run twice, gives byte-identical
-exports on every codebase checked (from ``fc9164fd`` on); the variation is
-between checkouts, not between runs. So the inputs a SHA does not name are
+exports on every codebase checked (from ``fc9164fd`` on), with one known
+exception found while measuring ``4ac5710f``: MSC13-C on mbedtls's
+``library/bignum.c:1301`` (``quotient``, a variable declared in both
+branches of an ``#if``) appears in roughly a third of runs of one binary on
+one checkout, even single-file at ``--jobs 1``, so it is a per-process
+nondeterminism in that rule, not a walk-order effect; it is filed and
+counts for one key. Otherwise the variation is between checkouts, not
+between runs. So the inputs a SHA does not name are
 the header environment -- :doc:`benchmark-setup` lists the packages the
-benchmark node carries -- and, for codebases with multiply-defined names,
-the checkout's directory order. A published figure's precision and recall
-do not hinge on either; a claim about an exact finding count does, and a
-key-level diff against a maintainer run on hostap or seL4 should be read
-with cause 2 in mind before any label is questioned.
+benchmark node carries -- and, before ``4ac5710f``, for codebases with
+multiply-defined names, the checkout's directory order. A published
+figure's precision and recall do not hinge on either; a claim about an
+exact finding count does, and a key-level diff against a maintainer run at
+``v0.5.1`` or earlier on hostap or seL4 should be read with cause 2 in mind
+before any label is questioned.
 
 Reading a mismatch
 ------------------
@@ -401,10 +458,12 @@ the figure is reproduced. If not, the scorer's inputs localize the cause:
   the two export files as key sets to see which rules moved.
 - **A project's EXP34-C, PRE31-C or API00-C keys differ at call sites of
   a function or macro the codebase defines more than once** (hostap's
-  per-backend ``crypto_*``, seL4's per-architecture macros). Directory
-  order chose a different definition on the two machines (cause 2 above).
-  The keys are real output of the named build on the named corpus either
-  way; they say nothing about the labels.
+  per-backend ``crypto_*``, seL4's per-architecture macros). On a build
+  before ``4ac5710f``, directory order chose a different definition on the
+  two machines (cause 2 above); the keys are real output of the named
+  build on the named corpus either way and say nothing about the labels.
+  From ``4ac5710f`` on this cannot happen: the same definition wins on
+  every machine, and such a diff points at the headers or the binary.
 - **Only the order of an export differs** from a maintainer-provided one.
   Expected before ``fc9164fd``; not expected from ``v0.5.1`` on.
 
