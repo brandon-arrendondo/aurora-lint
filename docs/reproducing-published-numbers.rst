@@ -172,10 +172,11 @@ across copies of the checkout as well.
      - ``0.5.0``
      - per checkout, on one machine (see below)
    * - ``v0.5.2``
-     - *<filled at tagging>*
-     - *<filled at tagging>*
-     - ``0.5.1``
-     - per checkout content, on one machine (from ``4ac5710f``)
+     - ``92eae76c``
+     - ``92eae76c``
+     - ``0.5.2``
+     - per checkout content, on one machine; cross-machine, 16 labeled
+       keys of 118,837 differ (see below)
 
 Input 2: the labels -- ``benchmark_adjudication`` at a SHA
 ----------------------------------------------------------
@@ -415,9 +416,23 @@ reproducer will not guess:
    moved 140 keys (30 removed, 110 added): 121 on hostap, 10 on sqlite,
    5 on seL4, 3 on mbedtls and 1 on raylib, each read and attributed to a
    multiply-defined name in the commit message; the other seven codebases
-   were key-identical. The cross-machine diff has not yet been re-measured
-   at ``4ac5710f`` on the benchmark node; when it is, only cause 1 should
-   remain.
+   were key-identical. **Re-measured at** ``v0.5.2`` (``92eae76c``): the
+   benchmark node's run 269 against a run of the same commit on the
+   reproducing machine, compared over the labeled keys (118,837 on the
+   benchmark node, labels at ``benchmark_adjudication`` ``e7d70148``).
+   16 keys differ -- 11 only on the reproducing machine, 5 only on the
+   benchmark node -- against 83 labeled keys at ``e405089a``, and every
+   one of them is cause 1: curl DCL31-C for ``gsasl_init`` (no
+   ``libgsasl-dev``), ``mbedtls_ssl_conf_{min,max}_tls_version`` (an older
+   ``libmbedtls-dev``), ``WSAWaitForMultipleEvents`` and a callback under a
+   Windows-only branch; sqlite DCL15-C on ``sqlite3_is_interrupted`` /
+   ``get_clientdata`` / ``set_clientdata`` (the benchmark node's system
+   ``sqlite3.h`` predates them); one API00-C decision each in hostap and
+   sqlite and two EXP34-C in hostap's nl80211 driver, all hinging on how a
+   libc or libnl prototype resolved. Nine of twelve projects are now
+   key-identical over the labeled set (libcrc, lua, mbedtls, mosquitto,
+   pure-ftpd, raylib, seL4, valkey, Ventoy); not one differing key names a
+   multiply-defined function, macro, typedef or struct. Cause 2 is gone.
 
 The same binary on the same checkout, run twice, gives byte-identical
 exports on every codebase checked (from ``fc9164fd`` on), with one
