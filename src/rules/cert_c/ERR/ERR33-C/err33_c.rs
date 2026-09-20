@@ -353,6 +353,35 @@ impl Err33C {
                             return; // Don't perform the regular error check
                         }
 
+                        // An assignment whose value is the operand tested by the
+                        // controlling expression it sits in -- `if ((p = strdup(s)) == NULL)`,
+                        // `if (!(p = malloc(n)))`, `while ((c = fgetc(f)) != EOF)` -- is
+                        // checked right there. The forward search below cannot see it:
+                        // it starts at the statement AFTER the assignment, and the
+                        // enclosing `if` starts before it (task 1373). The strtol family
+                        // is held to the same bar as the forward search applies to it:
+                        // its error signal is errno/endptr, which a comparison of the
+                        // value alone (`(n = strtoul(s, NULL, 8)) > 0777`) does not read.
+                        if let Some(condition) = self.enclosing_condition_testing(node, source) {
+                            let needs_errno = matches!(
+                                function_name,
+                                "strtol"
+                                    | "strtoul"
+                                    | "strtoll"
+                                    | "strtoull"
+                                    | "strtod"
+                                    | "strtof"
+                                    | "strtold"
+                            );
+                            let cond_text = get_node_text(&condition, source);
+                            if !needs_errno
+                                || cond_text.contains("errno")
+                                || cond_text.contains("endptr")
+                            {
+                                return;
+                            }
+                        }
+
                         // Check if the assigned variable is later checked for errors
                         if !self.is_variable_error_checked(node, var_name, function_name, source) {
                             let start_point = node.start_position();
@@ -841,6 +870,72 @@ impl Err33C {
             depth += 1;
         }
         false
+    }
+
+    /// The controlling expression that tests the VALUE of `assignment`, if any.
+    ///
+    /// Walks up from the `assignment_expression` through the operators that
+    /// test a value rather than use it -- parentheses, `!`, a comparison, `&&`
+    /// / `||`, a cast -- and answers only on reaching the `condition` of an
+    /// `if`/`while`/`do`/`for`/`switch` or of a `?:`. That covers the whole
+    /// condition (`if ((p = f()))`), a compared operand (`... == NULL`, `> 0`,
+    /// `!= EOF`), a negated one (`!(p = f())`) and a non-first conjunct
+    /// (`flag == 0 || (p = f()) == NULL`).
+    ///
+    /// Any other parent ends the walk with `None`: `(p = f())->x` dereferences
+    /// the value, `g(p = f())` passes it on, `(n = f()) + 1` computes with it,
+    /// a `for` initializer stores it -- none of those tests it, and the
+    /// forward search remains the judge of what happens next. A `do`-`while`
+    /// condition counts here, unlike in `guard_dominance`: the question is
+    /// whether the value is tested at all, not whether a guard dominates a
+    /// later site.
+    fn enclosing_condition_testing<'a>(
+        &self,
+        assignment: &Node<'a>,
+        source: &str,
+    ) -> Option<Node<'a>> {
+        let mut current = *assignment;
+        while let Some(parent) = current.parent() {
+            match parent.kind() {
+                "parenthesized_expression" | "cast_expression" => {}
+                "unary_expression" => {
+                    let is_not = parent
+                        .child_by_field_name("operator")
+                        .map(|o| get_node_text(&o, source).trim() == "!")
+                        .unwrap_or(false);
+                    if !is_not {
+                        return None;
+                    }
+                }
+                "binary_expression" => {
+                    let tests = parent
+                        .child_by_field_name("operator")
+                        .map(|o| {
+                            matches!(
+                                get_node_text(&o, source).trim(),
+                                "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||"
+                            )
+                        })
+                        .unwrap_or(false);
+                    if !tests {
+                        return None;
+                    }
+                }
+                "if_statement"
+                | "while_statement"
+                | "do_statement"
+                | "for_statement"
+                | "switch_statement"
+                | "conditional_expression" => {
+                    return parent
+                        .child_by_field_name("condition")
+                        .filter(|c| c.id() == current.id());
+                }
+                _ => return None,
+            }
+            current = parent;
+        }
+        None
     }
 
     /// Checks if a variable assigned from an error-returning function is properly checked for errors.
