@@ -66,7 +66,9 @@ release are made from the commit the tag was **cut from**, not from the
 tagged commit itself, so a run's recorded build version reads the
 *previous* version string. Nothing about the analyzer differs between the
 two commits; the SHA is what identifies the build, and the version string
-adds readability only.
+adds readability only. (For v0.5.1 a single docs-only commit, ``d7a4f22f``,
+sits between the benchmarked commit ``e405089a`` and the version bump
+``3c245249``; it changes nothing the analyzer reads.)
 
 Concretely, for v0.5.0:
 
@@ -136,10 +138,10 @@ same codebase to be empty.
      - ``0.4.336``
      - no (key-level only)
    * - ``v0.5.1``
-     - *<filled at tagging>*
-     - *<filled at tagging>*
+     - ``3c245249``
+     - ``e405089a``
      - ``0.5.0``
-     - yes
+     - per checkout, on one machine (see below)
 
 Input 2: the labels -- ``benchmark_adjudication`` at a SHA
 ----------------------------------------------------------
