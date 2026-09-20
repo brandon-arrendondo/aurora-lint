@@ -54,7 +54,11 @@ impl DirectorySource {
         }
 
         // Otherwise, walk the directory
-        for entry in WalkDir::new(&self.path).into_iter().filter_map(|e| e.ok()) {
+        for entry in WalkDir::new(&self.path)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             let path = entry.path();
             if let Some(extension) = path.extension() {
                 if super::is_c_source_extension(extension) {

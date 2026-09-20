@@ -226,6 +226,7 @@ pub fn detect(dirs: &[String]) -> Result<ProjectProfile> {
     let mut files: Vec<PathBuf> = Vec::new();
     for dir in dirs {
         for entry in WalkDir::new(dir)
+            .sort_by_file_name()
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| {

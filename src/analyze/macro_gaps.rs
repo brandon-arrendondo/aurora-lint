@@ -284,6 +284,7 @@ impl PrescannedHeaders {
         let mut paths = Vec::new();
         for dir in directories {
             for entry in walkdir::WalkDir::new(dir)
+                .sort_by_file_name()
                 .into_iter()
                 .filter_map(|e| e.ok())
                 .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("h"))

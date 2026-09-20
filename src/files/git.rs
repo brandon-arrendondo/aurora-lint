@@ -23,6 +23,7 @@ impl GitRepo {
         let mut c_files = Vec::new();
 
         for entry in WalkDir::new(&self.repo_path)
+            .sort_by_file_name()
             .into_iter()
             .filter_map(|e| e.ok())
         {

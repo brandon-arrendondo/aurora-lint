@@ -298,10 +298,21 @@ pub fn prescan_directories(
     progress: Option<&dyn ProgressReporter>,
     needs_vra: bool,
 ) -> Result<ProjectContext> {
-    // Phase 1: collect all file paths (sequential — WalkDir is not parallel-safe)
+    // Phase 1: collect all file paths (sequential — WalkDir is not parallel-safe).
+    //
+    // The walk is sorted because the merge below is order-sensitive: a name
+    // defined in more than one scanned file (hostap's crypto_* backends,
+    // sel4's per-architecture IDX_TO_IRQT) keeps whichever definition the
+    // walk reaches last for every field that is not unioned. An unsorted
+    // walk visits siblings in directory-entry order, which is whatever the
+    // filesystem happened to allocate — so a `cp`, `rsync` or re-clone of
+    // the same tree changed the finding set (task 1374). Sorting makes the
+    // pick a function of the tree's content; which definition *should* win
+    // is a separate question (a conflict marker, as function_macros has).
     let mut all_files: Vec<(PathBuf, bool)> = Vec::new();
     for dir in dirs {
         for entry in WalkDir::new(dir)
+            .sort_by_file_name()
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| {
@@ -837,6 +848,7 @@ fn compute_concurrency_reachable(
 /// (task 571).
 pub fn sibling_headers(parent_dir: &str) -> Vec<PathBuf> {
     WalkDir::new(parent_dir)
+        .sort_by_file_name()
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("h"))
