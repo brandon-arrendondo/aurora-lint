@@ -314,10 +314,11 @@ across copies of the checkout as well.</p>
 <td><p>per checkout, on one machine (see below)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">v0.5.2</span></code></p></td>
-<td><p><em>&lt;filled at tagging&gt;</em></p></td>
-<td><p><em>&lt;filled at tagging&gt;</em></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">0.5.1</span></code></p></td>
-<td><p>per checkout content, on one machine (from <code class="docutils literal notranslate"><span class="pre">4ac5710f</span></code>)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">92eae76c</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">92eae76c</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.5.2</span></code></p></td>
+<td><p>per checkout content, on one machine; cross-machine, 16 labeled
+keys of 118,837 differ (see below)</p></td>
 </tr>
 </tbody>
 </table>
@@ -538,9 +539,23 @@ is now the <em>same</em> arbitrary choice everywhere. Measured against
 moved 140 keys (30 removed, 110 added): 121 on hostap, 10 on sqlite,
 5 on seL4, 3 on mbedtls and 1 on raylib, each read and attributed to a
 multiply-defined name in the commit message; the other seven codebases
-were key-identical. The cross-machine diff has not yet been re-measured
-at <code class="docutils literal notranslate"><span class="pre">4ac5710f</span></code> on the benchmark node; when it is, only cause 1 should
-remain.</p>
+were key-identical. <strong>Re-measured at</strong> <code class="docutils literal notranslate"><span class="pre">v0.5.2</span></code> (<code class="docutils literal notranslate"><span class="pre">92eae76c</span></code>): the
+benchmark node’s run 269 against a run of the same commit on the
+reproducing machine, compared over the labeled keys (118,837 on the
+benchmark node, labels at <code class="docutils literal notranslate"><span class="pre">benchmark_adjudication</span></code> <code class="docutils literal notranslate"><span class="pre">e7d70148</span></code>).
+16 keys differ – 11 only on the reproducing machine, 5 only on the
+benchmark node – against 83 labeled keys at <code class="docutils literal notranslate"><span class="pre">e405089a</span></code>, and every
+one of them is cause 1: curl DCL31-C for <code class="docutils literal notranslate"><span class="pre">gsasl_init</span></code> (no
+<code class="docutils literal notranslate"><span class="pre">libgsasl-dev</span></code>), <code class="docutils literal notranslate"><span class="pre">mbedtls_ssl_conf_{min,max}_tls_version</span></code> (an older
+<code class="docutils literal notranslate"><span class="pre">libmbedtls-dev</span></code>), <code class="docutils literal notranslate"><span class="pre">WSAWaitForMultipleEvents</span></code> and a callback under a
+Windows-only branch; sqlite DCL15-C on <code class="docutils literal notranslate"><span class="pre">sqlite3_is_interrupted</span></code> /
+<code class="docutils literal notranslate"><span class="pre">get_clientdata</span></code> / <code class="docutils literal notranslate"><span class="pre">set_clientdata</span></code> (the benchmark node’s system
+<code class="docutils literal notranslate"><span class="pre">sqlite3.h</span></code> predates them); one API00-C decision each in hostap and
+sqlite and two EXP34-C in hostap’s nl80211 driver, all hinging on how a
+libc or libnl prototype resolved. Nine of twelve projects are now
+key-identical over the labeled set (libcrc, lua, mbedtls, mosquitto,
+pure-ftpd, raylib, seL4, valkey, Ventoy); not one differing key names a
+multiply-defined function, macro, typedef or struct. Cause 2 is gone.</p>
 </li>
 </ol>
 <p>The same binary on the same checkout, run twice, gives byte-identical
