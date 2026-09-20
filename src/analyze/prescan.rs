@@ -5607,6 +5607,12 @@ pub fn resolve_includes(
         Arc::make_mut(&mut context.function_summaries),
         &context.macro_aliases,
     );
+    // A pointer-returning wrapper's allocating callee may only resolve once a
+    // header defines that callee's own constructor (e.g. a static inline
+    // constructor in a header), so this closure needs the same rerun as its
+    // siblings above (task 1343; propagate_returns_allocation is otherwise
+    // dark for header-defined constructors here).
+    function_summary::propagate_returns_allocation(Arc::make_mut(&mut context.function_summaries));
     function_summary::propagate_returned_value_escapes(
         Arc::make_mut(&mut context.function_summaries),
         &context.macro_aliases,

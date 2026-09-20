@@ -1173,6 +1173,41 @@ fn crossfile_actual_leak_detected() {
     );
 }
 
+#[test]
+fn crossfile_header_constructor_returns_allocation_flags_leak() {
+    // make_thing() is a header-defined (static inline) constructor: it calls
+    // os_zalloc(), itself header-defined, and returns the result. Both
+    // functions are resolved only via #include + -I (not -d), so crediting
+    // make_thing() with returns_allocation depends on propagate_returns_
+    // allocation rerunning in resolve_includes's re-propagation block
+    // (task 1343). Before that fix this leak was dark.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let fixture_dir = fixtures().join("crossfile_returns_allocation");
+    let include_dir = fixtures().join("crossfile_returns_allocation_include");
+    let (code, _, _) = run_aurora_lint(&[
+        fixture_dir.join("caller.c").to_str().unwrap(),
+        "-m",
+        manifest_mem31().to_str().unwrap(),
+        "-I",
+        include_dir.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    let mem31: Vec<_> = violations
+        .iter()
+        .filter(|v| v["rule_id"] == "MEM31-C")
+        .collect();
+    assert!(
+        !mem31.is_empty(),
+        "make_thing()'s header-defined constructor result is dropped — MEM31-C should flag the leak"
+    );
+}
+
 // ─── Cross-file header-declared functions (DCL15-C) ─────────────────────────
 
 fn manifest_dcl15() -> PathBuf {
