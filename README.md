@@ -20,8 +20,15 @@ is tracked privately until every referenced item has landed upstream, rather
 than kept as an in-repo record.
 
 All 30 came out of the same file-at-a-time adjudication audit behind the
-real-world precision figure below. Methodology:
-[`docs/testing-methodology.rst`](docs/testing-methodology.rst).
+real-world precision figure below, but they are not all evidence for the
+same thing. Fourteen are **tool-found**: aurora-lint emitted the finding and
+adjudication confirmed it. Twelve are **audit-found**: the adjudicator,
+reading the whole of a file the tool's findings had led it to, spotted a
+defect no rule flagged. The remaining four (raylib's three and one SQLite
+item) are not attributed by origin in the working record. The fourteen
+are evidence for the rule set; the rest are evidence for the audit process
+built around it — read "30 of 30" as the second claim, not the first.
+Methodology: [`docs/testing-methodology.rst`](docs/testing-methodology.rst).
 
 ## Why CERT C
 
@@ -116,17 +123,30 @@ Measured, not asserted. Two benchmarks, both with published methodology.
 Regenerate this table with `python -m bench render-docs --realworld-run RUN`
 after a version bump or a fresh delta-adjudication.
 
-**[NIST Juliet](https://samate.nist.gov/SARD/test-suites/112) is the headline
-number**, because its defects are planted and labeled by the suite itself —
-so a true/false positive is a fact, not a judgment. 75 CWEs, 87.1% of aurora-lint's
-findings are true positives, and 43 CWEs come back with zero false positives
-and real detections.
+**[NIST Juliet](https://samate.nist.gov/SARD/test-suites/112) is the
+easier number**: its defects are planted and labeled by the suite itself, so
+no adjudication stands between a finding and its verdict. That makes it a
+clean regression check and a poor predictor of real-world behavior — a rule
+can score perfectly on its Juliet CWE and still be mostly noise on shipping
+code, and the paper documents rules that do exactly that. The table gives
+the current per-CWE figures; treat them as a floor on how a rule reads the
+standard, not as a forecast of what it will do on your tree.
 
-**The 9 real-world codebases are a reference point**, and a harder one: curl,
-hostap, libcrc, lua, mosquitto, pure-ftpd, raylib, seL4 and sqlite, scanned at
-pinned commits with findings adjudicated into a ground-truth oracle — by an
-LLM for most labels, by hand for the rest. Real
-code is messier than a test suite and the precision figure reflects that.
+**The real-world codebases are the reference point**, and the harder one:
+the projects listed in the table, scanned at pinned commits with findings
+adjudicated into a ground-truth oracle — by an LLM for most labels, by hand
+for the rest. Real code is messier than a test suite and the precision
+figure reflects that.
+
+> **The real-world figures are on a new basis from v0.5.0** and are not
+> comparable to anything published before it. Commit `10745a46` re-enabled
+> a block of rules that earlier manifests had held out of the benchmark as
+> noise, which grew the oracle several-fold and moved the headline
+> precision by a large step in one release. That step is a denominator
+> effect, not a detection improvement: on a like-for-like basis (that block
+> excluded) precision was flat across the change. Do not read the series
+> across that break as a trend; the paper treats v0.5.0 as a fresh baseline
+> and reports the like-for-like series beside it.
 
 > **Recall is measured against *known* true positives**, not against all
 > defects present — the known-TP set is built mostly from the tool's own
@@ -144,6 +164,28 @@ true-positive rate is not the whole story:
 To regenerate a published figure yourself from the analyzer tag, the public
 label set and the corpus pins — no database, no credential — see
 [`docs/reproducing-published-numbers.rst`](docs/reproducing-published-numbers.rst).
+
+**The third check is the fixture corpus**, and it reproduces from a clone
+with one command each. Every implemented rule ships C fixtures under its own
+`tests/{fail,pass,expected_fail}/` — must-detect, must-not-detect, and
+known-limitation — auto-generated into Rust tests at build time:
+
+```bash
+cargo test --package aurora-lint                                # every fixture, zero failures
+python3 scripts/fixture_provenance.py --containment             # how many, from where, how faithful
+```
+
+The second command prints the corpus split by provenance — fixtures derived
+from the CERT wiki's own compliant/noncompliant examples (third-party
+evidence: SEI wrote them without knowledge of this tool) versus ones written
+here to pin a regression — and the containment audit
+([`scripts/audit_wiki_fixture_staleness.py`](scripts/audit_wiki_fixture_staleness.py)):
+what fraction of each wiki example's lines still appear in the fixture that
+claims to derive from it, so a fixture quietly rewritten to match the
+checker would show up as low containment. Its rule count sits between the
+implemented and tracked totals above because it counts rules *by fixture*:
+two of the four tracked-but-unimplemented rules keep fixtures, which the
+build generates and `#[ignore]`s.
 
 ## Installation
 
