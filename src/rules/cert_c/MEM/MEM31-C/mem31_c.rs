@@ -3067,6 +3067,84 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         } else {
             self.process_freeing_callee(node, source, &func_name);
             self.process_storing_callee(node, source, &func_name);
+            self.process_reobtaining_callee(node, source, &func_name);
+        }
+    }
+
+    /// A pointer handed to a callee BY ADDRESS may come back naming a
+    /// different block, so whatever this function knew about the old one
+    /// stops applying to the name.
+    ///
+    /// `p = alloc()` already clears the freed mark; `f(&p)` did not, because
+    /// it is not a rebind in the tree at all -- the name only appears as the
+    /// operand of an `&`. So a pointer re-obtained through an output
+    /// parameter kept the mark from its previous release and the next free
+    /// of it read as a double free: hostap's `ndis_events.c`, where `pObj`
+    /// comes back from `IEnumWbemClassObject_Next(..., &pObj, ...)` after an
+    /// earlier `_Release`, and curl's `Curl_cwriter_create(&writer, ...)`
+    /// after `Curl_cwriter_free` on the previous arm (task 1270).
+    ///
+    /// EVIDENCE POLARITY, stated because it is the whole decision. The
+    /// consumer is a double-free ACCUSATION, so the safe direction is to
+    /// withhold: a callee with NO summary clears the mark. That is the same
+    /// "unseen, not nothing" reading `resolve_name_shaped_frees` already
+    /// applies to an empty `may_free`, and it is what the external COM calls
+    /// at the hostap sites need. The two cases that do NOT clear are both
+    /// positive evidence from the callee's own body:
+    ///
+    ///  - `frees_param_pointees` holds the index: `safe_free(&p)` RELEASES
+    ///    the pointee rather than rebinding it, and `process_freeing_callee`
+    ///    has just marked it freed. Clearing here would undo that.
+    ///  - a summary exists and `modifies_params` does not hold the index:
+    ///    the callee was read and found only to read through the pointer.
+    ///
+    /// The allocation record goes with the mark, and that is deliberate
+    /// rather than incidental. Clearing the freed mark alone would leave a
+    /// block that was genuinely released sitting in `allocated_memory` with
+    /// nothing recording its death, turning a withdrawn double-free
+    /// accusation into a fresh LEAK accusation about the same block -- the
+    /// direction this change exists to avoid. Forgetting the name settles
+    /// both: the old block was freed, so it is not leaked, and the new one
+    /// is not this function's allocation unless something else records it.
+    fn process_reobtaining_callee(&mut self, node: &Node, source: &str, func_name: &str) {
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+        let summary = self.function_summaries.get(func_name);
+
+        let mut param_idx = 0usize;
+        for i in 0..arguments.child_count() {
+            let Some(arg) = arguments.child(i) else {
+                continue;
+            };
+            if matches!(arg.kind(), "," | "(" | ")") {
+                continue;
+            }
+            let idx = param_idx;
+            param_idx += 1;
+
+            let Some((target, true)) = strip_call_argument(arg) else {
+                continue;
+            };
+            if let Some(summary) = summary {
+                if summary.frees_param_pointees.contains(&idx)
+                    || !summary.modifies_params.contains(&idx)
+                {
+                    continue;
+                }
+            }
+            let var_name = ast_utils::get_node_text_owned(&target, source);
+            if !self.freed_memory.contains_key(&var_name)
+                && !self.maybe_freed.contains_key(&var_name)
+                && !self.freed_by_guess.contains_key(&var_name)
+            {
+                continue;
+            }
+            self.freed_memory.remove(&var_name);
+            self.maybe_freed.remove(&var_name);
+            self.freed_by_guess.remove(&var_name);
+            self.freed_via_alias.remove(&var_name);
+            self.allocated_memory.remove(&var_name);
         }
     }
 
