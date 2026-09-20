@@ -122,10 +122,18 @@ impl Msc13C {
     /// read of all of them. Returns a map from each declaration's own
     /// `decl_start_byte` to the full list of `decl_start_byte`s in its
     /// group (a singleton list when the declaration has no alternatives).
+    ///
+    /// Keyed by `(decl_start_byte, name)`, not by the byte alone: every
+    /// declarator of `t_udbl dividend, quotient;` shares one `declaration`
+    /// node, so a byte-only key made `dividend`'s singleton group and
+    /// `quotient`'s two-member group collide, and which one survived was
+    /// whichever `by_key` happened to iterate last -- a per-process
+    /// `HashMap` order, so the same file was clean in one run and had an
+    /// unused `quotient` in the next (task 1386).
     fn build_decl_start_to_group(
         &self,
         local_vars: &[(String, usize, bool, usize, Option<usize>)],
-    ) -> HashMap<usize, Vec<usize>> {
+    ) -> HashMap<(usize, String), Vec<usize>> {
         let mut by_key: HashMap<(Option<usize>, &str), Vec<usize>> = HashMap::new();
         for (name, _, _, decl_start, scope_start) in local_vars {
             by_key
@@ -134,9 +142,9 @@ impl Msc13C {
                 .push(*decl_start);
         }
         let mut out = HashMap::new();
-        for group in by_key.into_values() {
+        for ((_, name), group) in by_key {
             for &d in &group {
-                out.insert(d, group.clone());
+                out.insert((d, name.to_string()), group.clone());
             }
         }
         out
@@ -738,7 +746,7 @@ impl Msc13C {
         // Check each declared variable for reads
         for (name, line, has_init, decl_start, _scope_start) in &local_vars {
             let targets = decl_groups
-                .get(decl_start)
+                .get(&(*decl_start, name.clone()))
                 .cloned()
                 .unwrap_or_else(|| vec![*decl_start]);
             if unused_annotated.contains(decl_start) {
@@ -797,7 +805,7 @@ impl Msc13C {
     fn check_dead_stores(
         &self,
         func_node: &Node,
-        decl_groups: &HashMap<usize, Vec<usize>>,
+        decl_groups: &HashMap<(usize, String), Vec<usize>>,
         body: &Node,
         source: &str,
         macros: &HashMap<String, Vec<FunctionMacro>>,
@@ -832,7 +840,7 @@ impl Msc13C {
         &self,
         func_node: &Node,
         cfg: &FunctionCfg,
-        decl_groups: &HashMap<usize, Vec<usize>>,
+        decl_groups: &HashMap<(usize, String), Vec<usize>>,
         body: &Node,
         source: &str,
         macros: &HashMap<String, Vec<FunctionMacro>>,
@@ -923,8 +931,12 @@ impl Msc13C {
             // read of an unrelated same-named shadowing variable elsewhere
             // in the function doesn't suppress this report.
             let decl_start = self.declaration_scope_for_definition(cfg, def, body, source);
-            let targets =
-                decl_start.map(|d| decl_groups.get(&d).cloned().unwrap_or_else(|| vec![d]));
+            let targets = decl_start.map(|d| {
+                decl_groups
+                    .get(&(d, def.variable.clone()))
+                    .cloned()
+                    .unwrap_or_else(|| vec![d])
+            });
             if self.count_reads(body, source, &def.variable, targets.as_deref()) == 0 {
                 continue;
             }

@@ -420,14 +420,15 @@ reproducer will not guess:
    remain.
 
 The same binary on the same checkout, run twice, gives byte-identical
-exports on every codebase checked (from ``fc9164fd`` on), with one known
-exception found while measuring ``4ac5710f``: MSC13-C on mbedtls's
-``library/bignum.c:1301`` (``quotient``, a variable declared in both
-branches of an ``#if``) appears in roughly a third of runs of one binary on
-one checkout, even single-file at ``--jobs 1``, so it is a per-process
-nondeterminism in that rule, not a walk-order effect; it is filed and
-counts for one key. Otherwise the variation is between checkouts, not
-between runs. So the inputs a SHA does not name are
+exports on every codebase checked (from ``fc9164fd`` on), with one
+exception that ``v0.5.2`` still carries: MSC13-C on mbedtls's
+``library/bignum.c:1301`` (``quotient``, declared in both branches of an
+``#if``, sharing its first declaration with ``dividend``) appears in
+roughly a third of runs of one binary on one checkout, even single-file at
+``--jobs 1`` -- a per-process ``HashMap`` order inside the rule, not a
+walk-order effect, fixed in the first commit after the ``v0.5.2``
+baseline (task 1386) and worth one key. Otherwise the variation is
+between checkouts, not between runs. So the inputs a SHA does not name are
 the header environment -- :doc:`benchmark-setup` lists the packages the
 benchmark node carries -- and, before ``4ac5710f``, for codebases with
 multiply-defined names, the checkout's directory order. A published
