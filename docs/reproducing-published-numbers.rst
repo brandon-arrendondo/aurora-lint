@@ -109,6 +109,13 @@ runs export identical bytes*) onward, one binary on one checkout writes a
 findings is the same but their order in the file can vary between runs, so
 two exports must be compared as sets of keys, not with ``diff``.
 
+"One checkout" is literal. The set of findings depends on the order in
+which the cross-file prescan walks the tree, and that order is the
+filesystem's directory order, which differs between filesystems and is
+not preserved by ``cp``, ``rsync`` or a fresh clone (see *What another
+machine reproduces*). The same directory scanned twice is byte-identical;
+a copy of it need not be.
+
 ``v0.5.0`` (``717783a9``) predates ``fc9164fd``: reproduce it at the key
 level. ``v0.5.1`` is the first tag that contains the ordering commit, and the
 first for which a reproducer should expect ``diff`` on two exports of the
@@ -291,7 +298,7 @@ Measured on one 12-core / 32 GB node running the procedure above at
 
 - ``cargo build --release`` from clean: 1 min 10 s (7.7 CPU-minutes).
 - Real-world, ``--tool sqc``, all 12 codebases: **11 min 40 s** wall
-  (62 CPU-minutes). The long ones are hostap (3.5 min), sqlite (2.8 min),
+  (62 CPU-minutes; 11 min 31 s at ``e405089a``). The long ones are hostap (3.5 min), sqlite (2.8 min),
   raylib (2.2 min) and valkey (1.5 min); everything else finishes in under
   40 s. Peak resident memory was about 6 GB, on hostap.
   **sqlite with every rule enabled needs real memory** -- a 3.8 GB node
@@ -309,33 +316,66 @@ builds into one run id.
 What another machine reproduces, measured
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The procedure above was run in full on a machine that is not the one that
-produced run ``#265`` (same tag, same pins, same label SHA, same scope;
-Ubuntu 24.04, glibc 2.39). The result, scored by ``score.py``:
+The procedure above has been run in full on a machine that is not the one
+that produced the maintainers' run, twice: at ``v0.5.0`` (``f48effe3``)
+and, as a dry run for ``v0.5.1``, at ``e405089a`` (Ubuntu 24.04, glibc
+2.39, against the benchmark node's Debian 12, glibc 2.36; same pins, same
+label SHA, same scope). Both times, scored by ``score.py``:
 
 - five of twelve projects reproduced **key for key** (libcrc, lua,
-  pure-ftpd, raylib, Ventoy);
-- overall precision and recall against known TPs reproduced to the
-  published decimal; label coverage came out 0.1 point lower;
-- 154,095 in-scope findings against 154,103, with about 150 keys (0.1 %)
-  differing across the other seven projects -- and every one of them
-  traceable to the **host's installed headers**, which the scan reads
-  through ``-I /usr/include`` and the per-project include paths. Missing
-  third-party headers produce DCL31-C *called without prior declaration*
-  findings (curl's ``lib/vauth/gsasl.c`` when ``libgsasl`` is absent;
-  mosquitto's MySQL example plugin without ``libmysqlclient``); a different
-  glibc or OpenSSL release moves a handful of cross-file EXP34-C / EXP36-C /
-  API00-C decisions that depend on how a system typedef or prototype
-  resolved. Labeled keys were essentially untouched (five TP and 26 FP
-  labels of 117,200 fell outside the new run), which is why the rates held.
+  pure-ftpd, raylib, Ventoy) -- the same five both times;
+- overall precision reproduced to the published decimal both times; at
+  ``v0.5.0`` recall against known TPs matched and label coverage came out
+  0.1 point lower, at ``e405089a`` coverage matched and recall came out
+  0.1 point lower (five known TPs of 64,392 detected on one machine and
+  not the other);
+- about 150 keys (0.1 %) differed at ``v0.5.0`` and 183 (105 only on the
+  reproducing machine, 78 only on the benchmark node) at ``e405089a``, out
+  of some 151,000 in scope, spread over the other seven projects. Of the
+  183, 83 were labeled keys (9 TP, 74 FP), which is why the rates held.
 
-The same binary on the same machine, run twice, gave identical key sets on
-every codebase checked -- the variation is between machines, not between
-runs. So the fourth input, not named by any SHA, is the header environment:
-:doc:`benchmark-setup` lists the packages the benchmark node carries, and a
-reproducer who wants zero key-level drift needs that list rather than
-"whatever ``/usr/include`` has". A published figure's precision and recall
-do not hinge on it; a claim about an exact finding count does.
+The differing keys have two causes, and the second is the one a
+reproducer will not guess:
+
+1. **The host's installed headers**, which the scan reads through
+   ``-I /usr/include`` and the per-project include paths. A missing
+   third-party header produces DCL31-C *called without prior declaration*
+   findings (curl's ``lib/vauth/gsasl.c`` without ``libgsasl``; mosquitto's
+   MySQL example plugin without ``libmysqlclient``; curl's mbedTLS backend
+   against an older ``libmbedtls``), and a different glibc declares
+   ``gettimeofday``, ``waitpid``, ``asprintf`` and ``fileno`` behind
+   different feature macros, which moved 52 valkey DCL31-C keys in
+   opposite directions. A different glibc, OpenSSL or ``sqlite3.h`` also
+   moves a handful of cross-file EXP34-C / EXP36-C / API00-C / DCL15-C
+   decisions that depend on how a system typedef or prototype resolved.
+
+2. **Directory iteration order.** The cross-file prescan walks the tree in
+   the order the filesystem returns entries, and when a name is defined in
+   more than one file -- hostap defines ``crypto_bignum_deinit`` once per
+   crypto backend, seL4 defines the ``IDX_TO_IRQT`` macro once per
+   architecture -- the definition the walk reaches last is the one every
+   caller is analyzed against. Whether that definition checks its
+   argument for NULL, or evaluates its macro argument twice, decides
+   whether EXP34-C or PRE31-C fires at each call site. Measured at
+   ``e405089a``: copying the seL4 checkout so that its directories list in
+   a different order, on the same machine with the same binary, added
+   exactly the five PRE31-C keys the benchmark node had and the reproducing
+   machine lacked; the same for hostap moved 121 keys, 36 of them the
+   cross-machine differences. Directory order is a property of the
+   filesystem (ext4 orders a large directory by a per-filesystem hash
+   seed; tmpfs by creation order), so it differs between machines and
+   between two copies of a checkout on one machine, and no ``git`` state
+   records it.
+
+The same binary on the same checkout, run twice, gives byte-identical
+exports on every codebase checked (from ``fc9164fd`` on); the variation is
+between checkouts, not between runs. So the inputs a SHA does not name are
+the header environment -- :doc:`benchmark-setup` lists the packages the
+benchmark node carries -- and, for codebases with multiply-defined names,
+the checkout's directory order. A published figure's precision and recall
+do not hinge on either; a claim about an exact finding count does, and a
+key-level diff against a maintainer run on hostap or seL4 should be read
+with cause 2 in mind before any label is questioned.
 
 Reading a mismatch
 ------------------
@@ -354,9 +394,15 @@ the figure is reproduced. If not, the scorer's inputs localize the cause:
   at the label SHA, which means the checkout is not at its pin -- the
   scorer takes the commit from ``benchmark_repos.json``, so this points at
   a scope file from the wrong analyzer commit.
-- **Labeled counts differ.** Findings moved to or from labeled keys: the
-  binary is not the named one. Compare the two export files as key sets to
-  see which rules moved.
+- **Labeled counts differ by more than the handful above.** Findings
+  moved to or from labeled keys: the binary is not the named one. Compare
+  the two export files as key sets to see which rules moved.
+- **A project's EXP34-C, PRE31-C or API00-C keys differ at call sites of
+  a function or macro the codebase defines more than once** (hostap's
+  per-backend ``crypto_*``, seL4's per-architecture macros). Directory
+  order chose a different definition on the two machines (cause 2 above).
+  The keys are real output of the named build on the named corpus either
+  way; they say nothing about the labels.
 - **Only the order of an export differs** from a maintainer-provided one.
   Expected before ``fc9164fd``; not expected from ``v0.5.1`` on.
 
