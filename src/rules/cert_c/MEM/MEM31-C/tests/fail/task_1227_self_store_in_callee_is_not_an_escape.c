@@ -9,8 +9,14 @@
  * include-guarded header's definitions were read at all, that self-store
  * credited dl_list_init with stores_params, and a constructor calling
  * `dl_list_init(&context->sessions)` before `return context` read as if
- * the object had reached a container. It had not: the caller that drops
- * tls_context_new()'s result leaks it.
+ * the object had reached a container. It had not, in this minimized
+ * reproduction: the caller that drops tls_context_new()'s result here
+ * leaks it, and that is what this test exists to catch (the rule must
+ * not let dl_list_init's self-store suppress a real MEM31-C finding on
+ * this shape).
+ *
+ * This file is a minimized reproduction of the shape described above; it
+ * makes no claim about the actual behavior of hostap's own source.
  */
 #include <stdlib.h>
 
