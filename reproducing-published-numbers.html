@@ -201,7 +201,9 @@ release are made from the commit the tag was <strong>cut from</strong>, not from
 tagged commit itself, so a run’s recorded build version reads the
 <em>previous</em> version string. Nothing about the analyzer differs between the
 two commits; the SHA is what identifies the build, and the version string
-adds readability only.</p>
+adds readability only. (For v0.5.1 a single docs-only commit, <code class="docutils literal notranslate"><span class="pre">d7a4f22f</span></code>,
+sits between the benchmarked commit <code class="docutils literal notranslate"><span class="pre">e405089a</span></code> and the version bump
+<code class="docutils literal notranslate"><span class="pre">3c245249</span></code>; it changes nothing the analyzer reads.)</p>
 <p>Concretely, for v0.5.0:</p>
 <table class="docutils align-default">
 <colgroup>
@@ -279,10 +281,10 @@ same codebase to be empty.</p>
 <td><p>no (key-level only)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">v0.5.1</span></code></p></td>
-<td><p><em>&lt;filled at tagging&gt;</em></p></td>
-<td><p><em>&lt;filled at tagging&gt;</em></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">3c245249</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">e405089a</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0.5.0</span></code></p></td>
-<td><p>yes</p></td>
+<td><p>per checkout, on one machine (see below)</p></td>
 </tr>
 </tbody>
 </table>
