@@ -55,6 +55,7 @@ import sqlite3
 import subprocess
 import sys
 from collections import OrderedDict, namedtuple
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -119,7 +120,11 @@ def released_versions():
         tag = tag.strip()
         if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
             continue
-        date = run_git("log", "-1", "--format=%cI", tag)
+        # UTC, in the task DB's own `...Z` form: `%cI` carries the committer's
+        # local offset, and comparing that as text against a `Z` timestamp put a
+        # release cut on a UTC-4 machine hours before the tasks it already contains.
+        epoch = int(run_git("log", "-1", "--format=%ct", tag))
+        date = datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         out.append((tag[1:], tag, date))
     out.sort(key=lambda r: version_key(r[0]))
     return out

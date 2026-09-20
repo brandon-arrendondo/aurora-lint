@@ -21,11 +21,16 @@ are curated by hand. See `docs/adr/0009` for what belongs here and
 
 ## [Unreleased]
 
+_No release notes recorded for this release; see the commit log._
+
+## [0.5.2] - 2026-09-20
+
 ### Fixed
 
 - ERR33-C no longer reports a result that is tested in the very condition it is assigned in (`if ((p = malloc(n)) == NULL)`, `if (!(p = f()))`, `while ((c = fgetc(f)) != EOF)`, and as a later operand of `&&`/`||`).
 - MEM31-C now sees an allocation returned by a constructor that is defined in a header (`static inline`), and by the callees it returns through, so a leak of that block is reported the same whether the constructor lives in a `.c` or a `.h` file.
 - DCL06-C no longer reports a literal that an assertion pins to a named constant expression.
+- A scan no longer depends on the order the operating system lists directories in: the same tree gives the same findings however it was copied, archived or checked out, and a name defined in more than one file resolves the same way on every machine.
 
 ## [0.5.1] - 2026-09-19
 
@@ -191,7 +196,8 @@ shipped with:
 - Suppression by inline comment (`// SQC-SUPPRESS: RULE ... JUSTIFICATION: "..."`, generated for a `file:line:rule` by `--generate-suppression`) or by a `.sqc-suppress.toml` file, and an interactive terminal UI (`--interactive`).
 - Prebuilt Linux and Windows binaries, `.deb`, `.rpm` and AppImage packages.
 
-[Unreleased]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.4.336...v0.5.0
 [0.4.336]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.4.315...v0.4.336
