@@ -239,15 +239,18 @@ lies often enough to be useless alone. Adjudication itself isn't a
 task-tracking concern at all — it's a PR to `benchmark_adjudication` (see
 above).
 
-**Task titles are internal and never published.** `CHANGELOG.md` and the
-release notes are generated from the task DB, but only from tasks tagged
-`release-note`, publishing the task's `release-note: <bullet>` body line if
-it has one and its title otherwise; a title that locates a defect in a
-real-world corpus (`file.c:123`, disclosure/maintainer/CVE wording) is
-refused even when tagged, and `scripts/check_changelog_safety.py` screens the
-committed file in pre-commit, CI and the release workflow (`docs/adr/0007`).
-So when a done task shipped something a user should hear about, tag it and
-write the note for publication — the title is not the note.
+**Task titles are internal and never published.** `CHANGELOG.md`'s
+`[Unreleased]` block and the release notes are generated from the task DB,
+but only from tasks tagged `release-note` whose body carries both a
+`release-note: <bullet>` line and a `category: added|fixed|removed` line
+(`docs/adr/0009`: the changelog is for users of the tool, three headings, no
+"Changed"). A note that locates a defect in a real-world corpus
+(`file.c:123`, disclosure/maintainer/CVE wording) is refused even when
+tagged, and `scripts/check_changelog_safety.py` screens the committed file in
+pre-commit, CI and the release workflow (`docs/adr/0007`). So when a done
+task shipped something a user should hear about, tag it and write the note
+and its category for publication — the title is not the note. The dated
+release sections are curated by hand and the generator never touches them.
 
 ---
 
