@@ -89,7 +89,7 @@ int main() {
     printf("PID: %d\n", getpid());
 
     /* Initialize file system state */
-    strcpy(global_fs_state.current_directory, "/home/buehler/working/certc_cases");
+    strcpy(global_fs_state.current_directory, "/home/user/working/certc_cases");
     strcpy(global_fs_state.temp_directory, "/tmp/claude");
     strcpy(global_fs_state.log_directory, "/tmp/claude/logs");
     global_fs_state.open_files_count = 5;
@@ -114,7 +114,7 @@ int main() {
 
     for (int i = 0; i < 25; i++) {
         /* Simulate file system operations */
-        sprintf(global_fs_state.current_directory, "/home/buehler/working/certc_cases/iter_%d", i);
+        sprintf(global_fs_state.current_directory, "/home/user/working/certc_cases/iter_%d", i);
         global_fs_state.open_files_count = 5 + (i % 10);
 
         /* Update monitored files */

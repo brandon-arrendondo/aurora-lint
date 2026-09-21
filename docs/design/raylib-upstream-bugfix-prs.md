@@ -124,13 +124,14 @@ counter incrementing past the cap.
 
 ---
 
-## Bug 2 — `TextReplaceBetween()` static-buffer overflow  ✅ ready (branch `fix-textreplacebetween-overflow`, commit `99936bc`)
+## Bug 2 — `TextReplaceBetween()` static-buffer overflow  ✅ merged upstream (PR #5936; local branch `fix-textreplacebetween-overflow`, commit `99936bc`)
 
 **Status:** verified bug exists on master (`962bbfc` == HEAD); ASan repro confirms overflow;
 fix applied + **full lib build clean** (`make PLATFORM=PLATFORM_DESKTOP` → `libraylib.a`, rtext.c
 compiles under raylib's `-Wall -Werror=implicit-function-declaration -std=c99`) + ASan-clean +
 correctness control passes. Diff +7/−3, one TU. **All three CONTRIBUTING rules met; no CLA.**
-PR-ready — awaiting submission (disclose AI assistance per BISSELL AI-Attribution policy).
+**Merged upstream** — raylib PR #5936, `92155400155ae5917c03ba2311e0c8f8df2dc92c`, 2026-06-24
+("[rtext] Fix buffer overflow in TextReplaceBetween()"), on `origin/master`.
 
 **ASan evidence (before fix):**
 ```
