@@ -517,6 +517,15 @@ impl ENV30C {
                 | "strtok"
                 | "gets"
                 | "fgets"
+                // mktime NORMALISES the struct tm it is handed -- it writes
+                // through its argument rather than reading it, so a tm from
+                // gmtime()/localtime() passed here is modified in place. It
+                // belongs with the writers even though it is not a copy-like
+                // function: without it the call falls through to the
+                // may-modify branch below, which reports the same line for a
+                // weaker reason and marks it requires_manual_review
+                // (aurora_lint 1421).
+                | "mktime"
         )
     }
 
