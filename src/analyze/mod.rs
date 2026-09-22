@@ -222,8 +222,13 @@ pub fn analyze_project(
                     };
                     parser.set_repair_macros(std::sync::Arc::clone(&repair_macros));
                     let file_registry = RuleRegistry::new();
+                    // The context this file may use, which is the shared one
+                    // unless the file defines a name some other file also
+                    // defines `static` (task 1385).
+                    let local = context.as_seen_from(std::path::Path::new(file_path));
+                    let file_context = local.as_ref().unwrap_or(&context);
                     if has_cross_file_data {
-                        set_project_context_for_enabled(&file_registry, manifest, &context);
+                        set_project_context_for_enabled(&file_registry, manifest, file_context);
                     }
                     let mut file_supp = suppression_manager.clone();
 
@@ -232,7 +237,7 @@ pub fn analyze_project(
                         &mut parser,
                         &file_registry,
                         manifest,
-                        &context,
+                        file_context,
                         needs_vra,
                         &mut file_supp,
                         None,
@@ -286,8 +291,10 @@ pub fn analyze_project(
 
         // Create fresh rule instances per file (matches parallel mode behavior)
         let file_registry = RuleRegistry::new();
+        let local = context.as_seen_from(std::path::Path::new(file_path));
+        let file_context = local.as_ref().unwrap_or(&context);
         if has_cross_file_data {
-            set_project_context_for_enabled(&file_registry, manifest, &context);
+            set_project_context_for_enabled(&file_registry, manifest, file_context);
         }
 
         let (file_violations, file_suppressed) = analyze_one_file(
@@ -295,7 +302,7 @@ pub fn analyze_project(
             &mut parser,
             &file_registry,
             manifest,
-            &context,
+            file_context,
             needs_vra,
             &mut suppression_manager,
             progress,

@@ -390,6 +390,42 @@ fn prescan_file_list(
         .map(|(path, is_header)| process_file(path, *is_header, needs_vra))
         .collect();
 
+    // Which names are defined `static` in more than one file, known before
+    // the fold because the fold needs it: two internal-linkage definitions of
+    // one bare name are two unrelated functions, and neither one answers for
+    // a caller outside the file that defines it (task 1385). Cheap -- it
+    // reads two small sets per file, no summaries.
+    let mut static_definers: HashMap<&str, HashSet<&Path>> = HashMap::new();
+    for r in &file_results {
+        if let Some(path) = &r.source_path {
+            for name in &r.local_static_functions {
+                static_definers
+                    .entry(name.as_str())
+                    .or_default()
+                    .insert(path.as_path());
+            }
+        }
+    }
+    let ambiguous_statics: HashSet<String> = static_definers
+        .iter()
+        .filter(|(_, files)| files.len() > 1)
+        .map(|(name, _)| (*name).to_string())
+        .collect();
+    drop(static_definers);
+    // `file -> name -> that file's own definition`, for those names only,
+    // drained out of `function_summaries` once phase 4 has run.
+    let mut file_local_summaries: HashMap<String, HashMap<String, FunctionSummary>> =
+        HashMap::new();
+    // Ambiguous-static names that some file also defines with external
+    // linkage. One that no file does has no legal caller outside the files
+    // that define it, so its bare-name entry is dropped after phase 4 rather
+    // than left as a shell the aggregation passes filled in.
+    let mut defined_bare: HashSet<String> = HashSet::new();
+    // `file -> the names that file scopes`, the (file, name) key in the form
+    // the phase 4 passes need it: they re-parse source and re-derive call
+    // sites, so they have to resolve names the same way the fold did.
+    let mut scoped_by_file: HashMap<String, HashSet<String>> = HashMap::new();
+
     // Phase 3: merge results sequentially
     let mut known_functions: HashSet<String> = HashSet::new();
     let mut header_declared_functions: HashSet<String> = HashSet::new();
@@ -450,6 +486,28 @@ fn prescan_file_list(
                 .extend(r.function_summaries.keys().cloned());
         }
 
+        // The names this file defines `static` that some other file also
+        // defines `static`: two unrelated functions sharing a spelling, so
+        // neither this file's definition nor its call sites belong in a
+        // table keyed by the bare name (task 1385).
+        let file_key: Option<String> = r
+            .source_path
+            .as_ref()
+            .map(|p| crate::analyze::compile_commands::real_path(p));
+        let scoped_names: HashSet<String> = match file_key {
+            Some(_) => r
+                .local_static_functions
+                .iter()
+                .filter(|n| ambiguous_statics.contains(*n))
+                .cloned()
+                .collect(),
+            None => HashSet::new(),
+        };
+
+        if let (Some(key), false) = (file_key.as_ref(), scoped_names.is_empty()) {
+            scoped_by_file.insert(key.clone(), scoped_names.clone());
+        }
+
         // OR-merge taint/summary bits and free/close detection facts; first
         // definition wins for all other fields.
         //
@@ -480,8 +538,28 @@ fn prescan_file_list(
         //
         // It does NOT decide a pick between two external definitions, which
         // is the build-configuration question (hostap's os_* layer, the TLS
-        // and crypto backends), nor between two statics in different files.
+        // and crypto backends).
+        //
+        // Two `static` definitions in different files are handled before
+        // that, and differently: they are two unrelated functions, so neither
+        // belongs in a table keyed by the bare name. Each goes to its own
+        // file's table instead, where only that file's callers can reach it
+        // (mbedtls' two `psa_aead_setup`, sqlite's three `SHA3Update`). A
+        // name left with no project-wide entry is the sound answer for a
+        // caller in neither file: it cannot legally call either definition,
+        // and the rules' no-context behaviour is what "unknown callee" means
+        // everywhere else.
         for (name, summary) in r.function_summaries {
+            if scoped_names.contains(&name) {
+                // Keyed by file for the length of the fold, so phase 4 below
+                // aggregates this definition from its OWN file's call sites
+                // rather than from every same-named static's. Drained back
+                // out into `file_local_summaries` once phase 4 has run, so
+                // no consumer ever sees a qualified key.
+                function_summaries.insert(qualified_key(file_key.as_deref(), &name), summary);
+                continue;
+            }
+            defined_bare.insert(name.clone());
             match function_summaries.get_mut(&name) {
                 Some(existing) => {
                     if existing.has_internal_linkage && !summary.has_internal_linkage {
@@ -563,41 +641,56 @@ fn prescan_file_list(
             global_writers.entry(var).or_default().extend(writers);
         }
         for (callee, args) in r.callsite_args {
-            callsite_args.entry(callee).or_default().extend(args);
+            callsite_args
+                .entry(scoped_callee(&scoped_names, file_key.as_deref(), callee))
+                .or_default()
+                .extend(args);
         }
         for (callee, args) in r.callsite_field_args {
-            callsite_field_args.entry(callee).or_default().extend(args);
+            callsite_field_args
+                .entry(scoped_callee(&scoped_names, file_key.as_deref(), callee))
+                .or_default()
+                .extend(args);
         }
         for (callee, pairs) in r.callsite_distinct_objects {
             callsite_distinct_objects
-                .entry(callee)
+                .entry(scoped_callee(&scoped_names, file_key.as_deref(), callee))
                 .or_default()
                 .extend(pairs);
         }
         for (callee, args) in r.callsite_pointee_args {
             callsite_pointee_args
-                .entry(callee)
+                .entry(scoped_callee(&scoped_names, file_key.as_deref(), callee))
                 .or_default()
                 .extend(args);
         }
         for (callee, args) in r.callsite_int_args {
-            callsite_int_args.entry(callee).or_default().extend(args);
+            callsite_int_args
+                .entry(scoped_callee(&scoped_names, file_key.as_deref(), callee))
+                .or_default()
+                .extend(args);
         }
         for (callee, args) in r.callsite_buf_args {
-            callsite_buf_args.entry(callee).or_default().extend(args);
+            callsite_buf_args
+                .entry(scoped_callee(&scoped_names, file_key.as_deref(), callee))
+                .or_default()
+                .extend(args);
         }
         for (callee, args) in r.callsite_field_buf_args {
             callsite_field_buf_args
-                .entry(callee)
+                .entry(scoped_callee(&scoped_names, file_key.as_deref(), callee))
                 .or_default()
                 .extend(args);
         }
         for (callee, args) in r.callsite_taint_args {
-            callsite_taint_args.entry(callee).or_default().extend(args);
+            callsite_taint_args
+                .entry(scoped_callee(&scoped_names, file_key.as_deref(), callee))
+                .or_default()
+                .extend(args);
         }
         for (callee, args) in r.callsite_validated_args {
             callsite_validated_args
-                .entry(callee)
+                .entry(scoped_callee(&scoped_names, file_key.as_deref(), callee))
                 .or_default()
                 .extend(args);
         }
@@ -705,6 +798,7 @@ fn prescan_file_list(
         &mut function_summaries,
         &mut callsite_args,
         &header_declared_functions,
+        &scoped_by_file,
     );
     propagate_param_buffer_sizes(
         &source_files,
@@ -712,6 +806,7 @@ fn prescan_file_list(
         &mut parser,
         &mut function_summaries,
         &header_declared_functions,
+        &scoped_by_file,
     );
 
     function_summary::propagate_transitive_modifies(&mut function_summaries);
@@ -769,6 +864,18 @@ fn prescan_file_list(
         .filter(|name| known_functions.contains(name) && !directly_called.contains(name.as_str()))
         .collect();
 
+    // Phase 5: take the file-scoped definitions back out, now that phase 4
+    // has aggregated each from its own file's call sites, and drop the
+    // bare-name shell of any ambiguous static no file defines externally --
+    // nothing outside the defining files can legally call one, so an entry
+    // under the bare name would answer a question no caller may ask.
+    drain_file_scoped(&mut function_summaries, &mut file_local_summaries);
+    for name in &ambiguous_statics {
+        if !defined_bare.contains(name) {
+            function_summaries.remove(name);
+        }
+    }
+
     if let Some(reporter) = progress {
         reporter.report_prescan_complete(known_functions.len());
     }
@@ -779,6 +886,7 @@ fn prescan_file_list(
         known_functions: Arc::new(known_functions),
         header_declared_functions: Arc::new(header_declared_functions),
         function_summaries: Arc::new(function_summaries),
+        file_local_summaries: Arc::new(file_local_summaries),
         call_graph: Arc::new(call_graph),
         callers: Arc::new(callers),
         ambiguous_call_targets: Arc::new(ambiguous_call_targets),
@@ -923,6 +1031,70 @@ fn collect_header_declarations(node: &Node, source: &str, names: &mut HashSet<St
 
 /// Union `more` into `into`: a parameter documented as non-NULL on either the
 /// prototype or the definition is documented.
+/// The key a definition or call site scoped to one file is folded under, so
+/// phase 4 aggregates it from that file alone. The separator cannot occur in
+/// a path or a C identifier, and no key in this shape survives the fold:
+/// [`drain_file_scoped`] takes them all back out again.
+fn qualified_key(file: Option<&str>, name: &str) -> String {
+    format!("{}\0{}", file.unwrap_or(""), name)
+}
+
+/// How one file's scoped names are addressed during the fold and the phase 4
+/// passes: the file's canonical path, plus the names it defines `static` that
+/// another file also does. `None` for the great majority of files, which
+/// scope nothing and pay nothing.
+type FileScope<'a> = Option<(&'a str, &'a HashSet<String>)>;
+
+/// The key a name resolves to when read from inside `scope`'s file: that
+/// file's own definition when the name is one it scopes, the bare name
+/// otherwise. This is the whole of the (file, name) key -- every stage of the
+/// prescan that resolves a callee or an enclosing function by name has to go
+/// through it, or it silently re-pools the definitions the fold separated
+/// (task 1385: the propagation passes re-parse every file and re-derive call
+/// sites, which is how a half-threaded key loses a caller and callee that sit
+/// in the same file).
+fn scoped_name(scope: FileScope<'_>, name: &str) -> String {
+    match scope {
+        Some((file, names)) if names.contains(name) => qualified_key(Some(file), name),
+        _ => name.to_string(),
+    }
+}
+
+/// The key a call site's callee is folded under: this file's own, when this
+/// file defines that name `static` and some other file does too.
+fn scoped_callee(scoped: &HashSet<String>, file: Option<&str>, callee: String) -> String {
+    if scoped.contains(&callee) {
+        qualified_key(file, &callee)
+    } else {
+        callee
+    }
+}
+
+/// Move every file-scoped entry out of the merged summaries and into
+/// `file -> name -> summary`, after the phase 4 passes have aggregated each
+/// one from its own file's call sites.
+fn drain_file_scoped(
+    summaries: &mut HashMap<String, FunctionSummary>,
+    out: &mut HashMap<String, HashMap<String, FunctionSummary>>,
+) {
+    let scoped: Vec<String> = summaries
+        .keys()
+        .filter(|k| k.contains('\0'))
+        .cloned()
+        .collect();
+    for key in scoped {
+        let Some(summary) = summaries.remove(&key) else {
+            continue;
+        };
+        let Some((file, name)) = key.split_once('\0') else {
+            continue;
+        };
+        out.entry(file.to_string())
+            .or_default()
+            .insert(name.to_string(), summary);
+    }
+}
+
 fn merge_documented_params(
     into: &mut HashMap<String, Vec<usize>>,
     more: HashMap<String, Vec<usize>>,
@@ -2557,6 +2729,7 @@ fn propagate_param_buffer_sizes(
     parser: &mut CParser,
     summaries: &mut HashMap<String, FunctionSummary>,
     header_declared: &HashSet<String>,
+    scoped_by_file: &HashMap<String, HashSet<String>>,
 ) {
     // This pass only ever creates a new bound by forwarding an already-bounded
     // parameter onward, so the first propagating edge must already exist: a
@@ -2607,9 +2780,17 @@ fn propagate_param_buffer_sizes(
             source_files
                 .iter()
                 .filter(|f| {
-                    file_functions
-                        .get(f.as_path())
-                        .is_some_and(|fns| fns.iter().any(|n| seeds.contains_key(n)))
+                    // A file-scoped function is seeded under its own file's
+                    // key, so ask for both spellings or the file that forwards
+                    // it never gets re-parsed (task 1385).
+                    let file_key = crate::analyze::compile_commands::real_path(f);
+                    let scope: FileScope<'_> = scoped_by_file
+                        .get(&file_key)
+                        .map(|names| (file_key.as_str(), names));
+                    file_functions.get(f.as_path()).is_some_and(|fns| {
+                        fns.iter()
+                            .any(|n| seeds.contains_key(&scoped_name(scope, n)))
+                    })
                 })
                 .collect()
         };
@@ -2617,8 +2798,26 @@ fn propagate_param_buffer_sizes(
         for file_path in relevant_files {
             if let Ok((tree, source)) = parser.parse_file(&file_path.to_string_lossy()) {
                 let root = tree.root_node();
+                let file_key = crate::analyze::compile_commands::real_path(file_path);
+                let scope: FileScope<'_> = scoped_by_file
+                    .get(&file_key)
+                    .map(|names| (file_key.as_str(), names));
                 let mut file_fresh = HashMap::new();
-                collect_callsite_buf_args_with_param_sizes(&root, &source, &seeds, &mut file_fresh);
+                collect_callsite_buf_args_with_param_sizes(
+                    &root,
+                    &source,
+                    &seeds,
+                    scope,
+                    &mut file_fresh,
+                );
+                if let Some((_, names)) = scope {
+                    file_fresh = file_fresh
+                        .into_iter()
+                        .map(|(callee, sites)| {
+                            (scoped_callee(names, Some(file_key.as_str()), callee), sites)
+                        })
+                        .collect();
+                }
                 per_file_cache.insert(file_path.clone(), file_fresh);
             }
         }
@@ -2657,6 +2856,7 @@ fn collect_callsite_buf_args_with_param_sizes(
     node: &Node,
     source: &str,
     param_sizes: &HashMap<String, HashMap<usize, usize>>,
+    scope: FileScope<'_>,
     callsite_buf_args: &mut HashMap<String, Vec<Vec<Option<usize>>>>,
 ) {
     for i in 0..node.child_count() {
@@ -2666,7 +2866,9 @@ fn collect_callsite_buf_args_with_param_sizes(
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut local_bufs = collect_local_buffer_sizes(&body, source);
                         if let Some(func_name) = extract_function_name(&child, source) {
-                            if let Some(param_map) = param_sizes.get(&func_name) {
+                            if let Some(param_map) =
+                                param_sizes.get(&scoped_name(scope, &func_name))
+                            {
                                 let param_names =
                                     function_summary::collect_param_names(&child, source);
                                 for (idx, name) in param_names.iter().enumerate() {
@@ -2699,6 +2901,7 @@ fn collect_callsite_buf_args_with_param_sizes(
                         &child,
                         source,
                         param_sizes,
+                        scope,
                         callsite_buf_args,
                     );
                 }
@@ -3178,6 +3381,7 @@ fn propagate_param_null_states(
     summaries: &mut HashMap<String, FunctionSummary>,
     callsite_args: &mut HashMap<String, Vec<Vec<NullState>>>,
     header_declared: &HashSet<String>,
+    scoped_by_file: &HashMap<String, HashSet<String>>,
 ) {
     for _pass in 0..MAX_PROPAGATION_PASSES {
         // Snapshot the current param null states before re-collection
@@ -3201,14 +3405,46 @@ fn propagate_param_null_states(
         for file_path in source_files {
             if let Ok((tree, source)) = parser.parse_file(&file_path.to_string_lossy()) {
                 let root = tree.root_node();
+                // A file that scopes nothing collects straight into the shared
+                // maps, as before. One that does collects into its own and has
+                // its callee keys scoped on the way out, so a call to its own
+                // `static` is not pooled with a same-named static elsewhere --
+                // and so the seeding above, which reads the ENCLOSING
+                // function's states, finds that file's definition rather than
+                // another file's (task 1385).
+                let file_key = crate::analyze::compile_commands::real_path(file_path);
+                let scope: FileScope<'_> = scoped_by_file
+                    .get(&file_key)
+                    .map(|names| (file_key.as_str(), names));
+                if scope.is_none() {
+                    collect_callsite_args_with_param_states(
+                        &root,
+                        &source,
+                        &param_states_snapshot,
+                        None,
+                        &mut new_callsite_args,
+                        &mut new_callsite_field_args,
+                        &mut new_callsite_pointee_args,
+                    );
+                    continue;
+                }
+                let mut file_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
                 collect_callsite_args_with_param_states(
                     &root,
                     &source,
                     &param_states_snapshot,
-                    &mut new_callsite_args,
+                    scope,
+                    &mut file_args,
                     &mut new_callsite_field_args,
                     &mut new_callsite_pointee_args,
                 );
+                let (_, names) = scope.expect("checked above");
+                for (callee, arg_vecs) in file_args {
+                    new_callsite_args
+                        .entry(scoped_callee(names, Some(file_key.as_str()), callee))
+                        .or_default()
+                        .extend(arg_vecs);
+                }
             }
         }
 
@@ -3259,6 +3495,7 @@ fn collect_callsite_args_with_param_states(
     node: &Node,
     source: &str,
     param_states: &HashMap<String, HashMap<usize, NullState>>,
+    scope: FileScope<'_>,
     callsite_args: &mut HashMap<String, Vec<Vec<NullState>>>,
     callsite_field_args: &mut HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
     callsite_pointee_args: &mut HashMap<String, Vec<Vec<NullState>>>,
@@ -3274,7 +3511,9 @@ fn collect_callsite_args_with_param_states(
                         // Extract function name and seed parameter states
                         let func_name = extract_function_name(&child, source);
                         if let Some(func_name) = func_name {
-                            if let Some(func_param_states) = param_states.get(&func_name) {
+                            if let Some(func_param_states) =
+                                param_states.get(&scoped_name(scope, &func_name))
+                            {
                                 // Get parameter names for this function
                                 let param_names =
                                     function_summary::collect_param_names(&child, source);
@@ -3306,6 +3545,7 @@ fn collect_callsite_args_with_param_states(
                         &child,
                         source,
                         param_states,
+                        scope,
                         callsite_args,
                         callsite_field_args,
                         callsite_pointee_args,
@@ -3316,6 +3556,7 @@ fn collect_callsite_args_with_param_states(
                         &child,
                         source,
                         param_states,
+                        scope,
                         callsite_args,
                         callsite_field_args,
                         callsite_pointee_args,
@@ -3326,6 +3567,7 @@ fn collect_callsite_args_with_param_states(
                         &child,
                         source,
                         param_states,
+                        scope,
                         callsite_args,
                         callsite_field_args,
                         callsite_pointee_args,
@@ -7579,6 +7821,178 @@ void caller(char *other) {
         let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
         let summary = ctx.function_summaries.get("os_write").unwrap();
         assert!(summary.checks_null_params.contains(&0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// mbedtls' two `psa_aead_setup`, reduced: one `static` definition per
+    /// file, no external one anywhere. They are unrelated functions, so
+    /// neither may answer for a caller in the other's file, and the bare
+    /// name resolves to nothing for a caller in neither (task 1385).
+    #[test]
+    fn two_statics_in_different_files_resolve_per_file_and_nowhere_else() {
+        let dir = std::env::temp_dir().join("aurora-lint-prescan-two-statics-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("a_first.c"),
+            "static int aead_setup(char *buf) { if (buf == NULL) return 0; return use(buf); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("b_second.c"),
+            "static int aead_setup(char *buf) { return use(buf); }\n",
+        )
+        .unwrap();
+        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+
+        assert!(
+            !ctx.function_summaries.contains_key("aead_setup"),
+            "a name only two unrelated statics define answers for no caller project-wide"
+        );
+
+        let first = ctx.as_seen_from(&dir.join("a_first.c")).expect("a view");
+        assert!(
+            first
+                .function_summaries
+                .get("aead_setup")
+                .unwrap()
+                .checks_null_params
+                .contains(&0),
+            "the defining file sees its own definition"
+        );
+        let second = ctx.as_seen_from(&dir.join("b_second.c")).expect("a view");
+        assert!(
+            !second
+                .function_summaries
+                .get("aead_setup")
+                .unwrap()
+                .checks_null_params
+                .contains(&0),
+            "and the other file sees its own, not the first file's"
+        );
+        assert!(
+            ctx.as_seen_from(&dir.join("c_neither.c")).is_none(),
+            "a file defining none of them keeps the shared context, at no cost"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One `static` definition is not ambiguous: it stays in the
+    /// project-wide table exactly as before, and no per-file view is built.
+    #[test]
+    fn a_single_static_definition_is_not_scoped_per_file() {
+        let dir = std::env::temp_dir().join("aurora-lint-prescan-one-static-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("only.c"),
+            "static int helper(char *buf) { if (buf == NULL) return 0; return use(buf); }\n",
+        )
+        .unwrap();
+        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        assert!(ctx.function_summaries.contains_key("helper"));
+        assert!(ctx.file_local_summaries.is_empty());
+        assert!(ctx.as_seen_from(&dir.join("only.c")).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The point of scoping a `static` per file is not only which body
+    /// answers, but which CALL SITES it is aggregated from: phase 4 pools
+    /// the null states of every argument passed to a name, and pooling two
+    /// unrelated functions' call sites is how a caller that always passes a
+    /// valid pointer inherits another tool's possibly-NULL one. Each file's
+    /// definition must carry its own file's call sites and no others.
+    #[test]
+    fn a_file_scoped_static_is_aggregated_from_its_own_call_sites() {
+        let dir = std::env::temp_dir().join("aurora-lint-prescan-scoped-callsites-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("a_one.c"),
+            "static void report(char *a) { emit(a); }
+             void a_caller(void) { char *p = maybe(); report(p); }
+",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("b_two.c"),
+            "static void report(char *a) { emit(a); }
+             void b_caller(void) { char buf[8]; report(buf); }
+",
+        )
+        .unwrap();
+        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let one = ctx.as_seen_from(&dir.join("a_one.c")).expect("a view");
+        let two = ctx.as_seen_from(&dir.join("b_two.c")).expect("a view");
+        let states = |c: &ProjectContext| {
+            c.function_summaries
+                .get("report")
+                .unwrap()
+                .callsite_param_null_states
+                .get(&0)
+                .copied()
+        };
+        assert_eq!(
+            states(&two),
+            Some(NullState::NotNull),
+            "b_two's `report` is only ever handed an array, so its own call \
+             sites prove the parameter non-NULL"
+        );
+        assert_ne!(
+            states(&one),
+            states(&two),
+            "and a_one's `report` does not inherit that proof from b_two's \
+             unrelated function of the same name"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// pure-ftpd's `sqlsubst`, reduced: `static` in two files, and in each
+    /// one a same-file caller forwards its OWN parameter into it. That
+    /// forwarding is what `propagate_param_null_states` resolves, and it
+    /// re-parses every file and re-derives call sites by name -- so a key
+    /// scoped only in the fold loses it, and the callee's parameter goes from
+    /// PossiblyNull to no state at all even though caller and callee sit in
+    /// the same file (task 1385, stage 3).
+    #[test]
+    fn propagation_reaches_a_file_scoped_static_from_its_own_file() {
+        let dir = std::env::temp_dir().join("aurora-lint-prescan-scoped-propagation-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Each file: a scoped `subst` that dereferences its parameter, and a
+        // same-file relay that forwards its own (unproven) parameter in.
+        for (file, relay, entry) in [
+            ("a_mysql.c", "mysql_relay", "mysql_entry"),
+            ("b_pgsql.c", "pgsql_relay", "pgsql_entry"),
+        ] {
+            std::fs::write(
+                dir.join(file),
+                format!(
+                    "static int subst(char *out, const char *user) {{
+                         return copy(out, user);
+                     }}
+                     static int {relay}(const char *user) {{
+                         char out[64];
+                         return subst(out, user);
+                     }}
+                     int {entry}(void) {{
+                         return {relay}(NULL);
+                     }}
+"
+                ),
+            )
+            .unwrap();
+        }
+        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        for file in ["a_mysql.c", "b_pgsql.c"] {
+            let view = ctx.as_seen_from(&dir.join(file)).expect("a scoped view");
+            let summary = view.function_summaries.get("subst").expect("its own subst");
+            assert!(
+                summary.callsite_param_null_states.contains_key(&1),
+                "{file}: the same-file relay's forwarded parameter must still \
+                 reach this file's own definition"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

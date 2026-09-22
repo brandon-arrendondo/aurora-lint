@@ -476,7 +476,12 @@ fn define_flag(attached: &str, argv: &[String], i: &mut usize) -> Option<Flag> {
 /// A path in the one spelling both sides of a comparison can agree on:
 /// canonicalized when the file is really there, and the path as written when
 /// it is not (a database from another host, or a unit test's fake tree).
-fn real_path(p: &Path) -> String {
+/// The path as the filesystem resolves it, or as written when it does not
+/// resolve. Two tables keyed on a path -- the database's compiled sources
+/// here, the per-file summaries in `prescan` -- are both looked up with a
+/// path the scan walk produced, which need not be spelled the way the walk
+/// that filled them spelled it.
+pub(crate) fn real_path(p: &Path) -> String {
     std::fs::canonicalize(p)
         .unwrap_or_else(|_| p.to_path_buf())
         .to_string_lossy()

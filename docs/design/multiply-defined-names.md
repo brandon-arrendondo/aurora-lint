@@ -1,9 +1,9 @@
 # Multiply-defined names: which file's definition answers for a caller
 
-**Status:** In progress (aurora_lint task 1385). Increment 1 (linkage) has
-landed with tests; increment 2 has been built twice and landed neither time
-(§5 says what each attempt measured and why); increment 3 is scoped, not
-built.
+**Status:** In progress (aurora_lint task 1385). Increments 1 (linkage) and 2
+(two statics, at the third attempt) have landed with tests; §5 records what
+the first two attempts measured and why they were not landable, because the
+reason is the design. Increment 3 is scoped, not built.
 Companion to `multi-configuration-scanning.md`, which asks the same
 resolution question one level down: that note is about which **arm** of one
 file's `#if` wins, this one is about which **file** wins. Neither changes
@@ -158,8 +158,8 @@ finding-count change.
 
 ## 5. Increment 2: a static definition answers only in its own file
 
-Built twice, landed neither time, and the reason is the finding this section
-exists for: **scoping a `static` to its file is not a change to the summary
+Landed at the third attempt. The first two are recorded below because the
+reason they failed is the finding this section exists for: **scoping a `static` to its file is not a change to the summary
 table, it is a change to the key of the whole interprocedural layer.** Every
 stage of the prescan resolves a callee by its bare name, and threading a
 `(file, name)` key through one stage only moves the problem to the next.
@@ -262,22 +262,93 @@ numbers and not project figures: 33 keys removed, 46 added. Mixed cause, so
 not landable — a half-threaded key trades one arbitrary answer for a
 differently wrong one.
 
-### What finishing it needs
+### Attempt 3: the key, through every stage that resolves a name
 
-Three stages, in the order they undo each other:
+Landed. Three stages have to agree on it, in the order they were found
+undoing each other:
 
-1. the per-file fold — done in attempt 2;
-2. the phase-4 aggregation passes — done in attempt 2, via the qualified key;
+1. the per-file fold;
+2. the phase-4 aggregation passes, via the file-qualified key;
 3. the propagation passes (`propagate_param_null_states`,
-   `propagate_param_buffer_sizes`) and the collectors they call, which
-   re-derive call sites from source by bare name and look the enclosing
-   function up the same way. They iterate files, so the file is in hand;
-   what they lack is the mapping, and a per-file view of the name→state
-   snapshot for the ~164 files that need one.
+   `propagate_param_buffer_sizes`) **and the two collectors they call**,
+   which re-derive call sites from source by bare name *and* seed each
+   enclosing function's parameter states by bare name. Both directions
+   needed scoping, not just the callee keys.
 
-Step 3 is where task 1385's option (c) — "key summaries per definition" —
-stops being a table change and becomes the layer's key. Worth doing with that
-stated, rather than discovered a stage at a time.
+`scoped_name` is the one place any stage turns a name into a key, and the
+fold records `file -> names it scopes` so phase 4 resolves the way the fold
+did. A file that scopes nothing takes the old path and pays nothing.
+
+The pure-ftpd regression is a unit test rather than a corpus observation now:
+two files each with a scoped `subst`, a same-file relay forwarding its own
+parameter in, an entry point calling the relay with NULL. Each file's `subst`
+gets `{0: NotNull, 1: PossiblyNull}`; with stage 3 disabled param 1 vanishes.
+
+**Two layers are deliberately NOT scoped**, because nothing measured points
+at them:
+
+- `call_graph` edges. `ambiguous_call_targets` already marks these names
+  opaque to the reachability consumers, and a second representation of the
+  same fact looked worse than none.
+- the callee names stored *inside* a summary — `returned_callees`,
+  `returns_from_callees`, `param_passthroughs`,
+  `unconditional_param_passthroughs`, `returned_value_passthroughs`,
+  `modifies_params_pending`, `frees_params_by_name`. These matter only where
+  a scoped function calls another scoped function in the same file.
+
+### What attempt 3 measured, and what the measurement is worth
+
+All twelve corpora, one arm at a time, local numbers and not project figures.
+
+The raw delta was 33 removed / 46 added at attempt 2 and 154 removed / 48
+added at attempt 3 — and most of that growth is **not this change**.
+`prescan.rs` caps the null-state propagation at `MAX_PROPAGATION_PASSES = 3`,
+and that loop does not run to convergence. Building HEAD with the cap at 8
+and changing nothing else removes 108 MEM31-C and 3 EXP33-C keys on sqlite —
+the *same* keys attempt 3 removed — and adds 12 EXP34-C. Same binary twice is
+byte-identical, so this is not run-to-run nondeterminism; it is a
+deterministic but arbitrary stopping point, and any change that perturbs the
+seeding moves those findings. Subtracting the keys that move under both
+perturbations:
+
+| | keys |
+|---|---|
+| move under the cap change too (not this change) | 124 removed, 1 added |
+| **this change alone** | **21 removed, 47 added** |
+
+Of the 68 that are this change's, every one was read and attributed:
+
+- **Directly inside a scoped static**, whose parameter states stopped being
+  pooled with an unrelated same-named function — the intended effect, and
+  confirmed per file rather than assumed: curl's `loop` (`curl_fnmatch.c`)
+  and `log_line_start` (`tool_cb_dbg.c`); sqlite's tool statics (`usage` and
+  neighbours across 79 files); hostap's `wpa_cli.c`/`hostapd_cli.c` pair,
+  which define the same nine statics, and `eap_ikev2_process` /
+  `eap_tnc_process`, each `static` in both the eap_peer and the eap_server
+  implementation of the same method — the same peer-vs-server collision the
+  task body names for `struct eap_sm`; mbedtls' `psa_aead_setup`, the
+  acceptance-set name, which is also where the two new API00-C findings at
+  `psa_crypto_aead.c:318` and `:339` come from.
+- **One hop downstream**: a scoped caller's own parameters now resolve from
+  its own file, so what it passes on is computed differently. This is the
+  hostap INT30-C/INT31-C block, valkey's four, and the singles in lua,
+  mosquitto and mbedtls' `cipher.c`.
+
+What that is worth: the mechanism is established for both groups, the
+**labels are not**. These 68 keys sit at `(project, commit, file, line,
+rule)` tuples the oracle has not adjudicated, so nothing here is a precision
+or recall claim in either direction, and a delta-adjudication is the
+follow-up rather than something this note can shortcut.
+
+### A behaviour change worth stating on its own
+
+Scoping the call-site aggregation is not only a fix to which *body* answers.
+For every name defined `static` in several files, the aggregate under the
+bare name stops being the average of every same-named static in the project —
+sqlite pooled 79 unrelated `usage` functions' arguments into one answer. That
+moves keys whether or not any rule was reading the wrong body, which is why
+it belongs in the commit message as its own line rather than as a side
+effect.
 
 ## 6. What increment 3 cannot decide, and should not pretend to
 

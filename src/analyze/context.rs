@@ -260,6 +260,26 @@ pub struct ProjectContext {
     /// is about is in a .c file that only names the alias (task 1188).
     #[serde(default)]
     pub pointer_typedef_names: Arc<HashSet<String>>,
+    /// Definitions only the file that holds them may use: `file -> name ->
+    /// summary`, filled for names defined `static` in more than one scanned
+    /// file and for nothing else.
+    ///
+    /// Two `static` definitions of one bare name are two unrelated
+    /// functions (mbedtls' two `psa_aead_setup`, sqlite's three
+    /// `SHA3Update`), so neither belongs in `function_summaries`, which is
+    /// keyed by the name alone: whichever the fold reached first used to
+    /// answer for every caller in the project, including the files that
+    /// define the other one. They are kept here instead, and
+    /// [`Self::as_seen_from`] puts a file's own back in front of the rules
+    /// that check it. A name with no external definition anywhere therefore
+    /// has no project-wide entry at all, which is the sound answer for a
+    /// caller in neither file -- it cannot legally call either definition
+    /// (task 1385, `docs/design/multiply-defined-names.md`).
+    ///
+    /// Keys are canonicalized, because the walk that fills this and the walk
+    /// that looks it up need not spell a path the same way.
+    #[serde(default)]
+    pub file_local_summaries: Arc<HashMap<String, HashMap<String, FunctionSummary>>>,
 }
 
 impl ProjectContext {
@@ -305,6 +325,31 @@ impl ProjectContext {
             || !self.struct_field_types.is_empty()
             || !self.header_declared_functions.is_empty()
             || !self.typedef_types.is_empty()
+    }
+
+    /// This context as the file at `path` may use it, or `None` when that is
+    /// this context unchanged -- which is every file but the handful that
+    /// define a name some other file also defines `static`.
+    ///
+    /// The returned view differs in one table: `function_summaries` gains
+    /// this file's own definitions of those names. Copying that map is the
+    /// cost, and it is bounded by how many files hold such a definition
+    /// (~164 in the largest benchmark corpus, ~11 ms each), not by how many
+    /// files are scanned. Every other table is an `Arc` handle, as ever.
+    pub fn as_seen_from(&self, path: &Path) -> Option<Self> {
+        if self.file_local_summaries.is_empty() {
+            return None;
+        }
+        let key = crate::analyze::compile_commands::real_path(path);
+        let locals = self.file_local_summaries.get(&key)?;
+        let mut summaries = (*self.function_summaries).clone();
+        for (name, summary) in locals {
+            summaries.insert(name.clone(), summary.clone());
+        }
+        Some(Self {
+            function_summaries: Arc::new(summaries),
+            ..self.clone()
+        })
     }
 
     /// Save prescan context to a binary cache file.
