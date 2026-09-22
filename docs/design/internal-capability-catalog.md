@@ -844,6 +844,11 @@ none of them folds — the fact `return_range` cannot carry),
 `frees_param_fields`, `frees_param_pointees` (the `void **` "safe free"
 wrapper — `free(*param)`, called as `safe_free(&p)`, so the caller's own
 variable dies and an argument match by identifier never sees it),
+`sole_param_escapes_unnamed_call` (the function's ONLY parameter went into
+a call through a function POINTER — `sqlite3GlobalConfig.m.xFree(p)`, lua's
+`(*g->frealloc)(...)` — so the body stops being readable there; not a free
+fact, it exists only to separate "releases nothing" from "the release, if
+any, is unreadable"; task 1367),
 `has_env03_taint_source`, `returns_tainted`,
 `closes_params`, `clears_params` (the body overwrites the parameter's pointee:
 a `MEMORY_CLEARING_FUNCS` call, a file-scope function pointer initialized
@@ -866,6 +871,28 @@ and frees no pointer, and every `*_ctx_free` destructor follows it with
 `mbedtls_free(ctx)` — 47 false double frees from the name guess alone
 (task 1128). MEM30-C (task 396) and MEM31-C both fall back to the name only
 for a callee with no summary.
+
+**But silence is only a refutation where the body could be read.** A summary
+whose free sets are empty because the release went through a function pointer
+says nothing, and reading it as "frees nothing" is worse than having no
+summary at all — `sqlite3_free(void *p)` frees exactly through
+`sqlite3GlobalConfig.m.xFree(p)`, so sqlite's one deallocator refuted its own
+`*_free` name and every `sqlite3_free(a)` in the corpus counted for nothing,
+reporting the block leaked at the `return` and at every `goto` into a label
+that frees it (task 1367). `sole_param_escapes_unnamed_call` is the
+distinction: MEM31-C falls back to the name when the summary records it, and
+keeps the resulting credit in `free_is_name_guess`, so it withholds a leak
+report without licensing a double-free accusation.
+
+**Arity one is the whole guard there**, and it is
+`process_custom_deallocator`'s one-nameable-argument rule (task 1197) a level
+down. An escape into an unreadable call does not say a release happened — a
+comparator, a callback and a trace hook read their argument and are spelled
+identically — so with a second parameter the name cannot say which one it is
+about. Measured, on the version of the fix that lacked the guard:
+`Curl_conn_close(data, sockindex)` and `Curl_cwriter_free(data, writer)`
+reported curl's `data` as double-freed and `Curl_hash_delete(h, key,
+key_len)` reported the lookup KEY freed.
 
 **Wiring pattern:** `compute_summaries` runs once (typically during
 prescan) over the whole translation unit, then the `propagate_transitive_*`

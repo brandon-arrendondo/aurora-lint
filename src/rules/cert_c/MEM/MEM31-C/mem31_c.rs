@@ -4100,6 +4100,22 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 !summary.frees_params.is_empty()
                     || !summary.frees_param_pointees.is_empty()
                     || !summary.frees_param_fields.is_empty()
+                    // Silence only refutes the name when the body was
+                    // READABLE throughout. `sqlite3_free(void *p)` releases
+                    // through `sqlite3GlobalConfig.m.xFree(p)`, so all three
+                    // sets above are empty and the summary -- present, and
+                    // therefore trusted over the name -- said the corpus's
+                    // one deallocator frees nothing. Every `sqlite3_free(a)`
+                    // then counted for nothing, in the walk and in the label
+                    // prescan alike, so both a plain `sqlite3_free(a); return`
+                    // and a `goto decode_out` into a label that frees that way
+                    // reported a leak (task 1367). Falling back to the name
+                    // here restores the no-summary reading for exactly the
+                    // case where the body had nothing to say; a body that was
+                    // read through and releases nothing -- mbedtls's
+                    // `mbedtls_gcm_free(ctx)`, which only zeroizes members --
+                    // still refutes its name (task 1128).
+                    || summary.sole_param_escapes_unnamed_call
             }
             None => true,
         }
@@ -4126,6 +4142,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     summary.frees_param_pointees.contains(&param_idx)
                 } else {
                     summary.frees_params.contains(&param_idx)
+                        // The sole parameter, handed to a call the body
+                        // cannot be read past, is the only thing the name
+                        // could be about -- nothing else in
+                        // `sqlite3_free(void *p)` touches `p`. Asked only
+                        // for a by-value argument: the fact is about the
+                        // parameter, and an `&var` argument is a claim about
+                        // its pointee, which it says nothing about.
+                        || (summary.sole_param_escapes_unnamed_call && param_idx == 0)
                 }
             }
         }
@@ -4136,6 +4160,13 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// free of that index is itself only name-guessed
     /// (`FunctionSummary::frees_params_guessed`). A pointee free (`&var`)
     /// is never guessed -- that set is built from bodies only.
+    ///
+    /// A credit that rests on `sole_param_escapes_unnamed_call` is a guess too,
+    /// and for the same reason: the name said a release happened and the
+    /// body only declined to contradict it. That is enough to withhold a
+    /// leak report -- what task 1367 is about -- and not enough to accuse a
+    /// later `free(p)` of being a double free, which is the polarity
+    /// `guess_forbids_double_free` already enforces.
     fn free_is_name_guess(
         &self,
         func_name: &str,
@@ -4145,7 +4176,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         match self.function_summaries.get(func_name) {
             None => true,
             Some(summary) => {
-                !through_address_of && summary.frees_params_guessed.contains(&param_idx)
+                !through_address_of
+                    && (summary.frees_params_guessed.contains(&param_idx)
+                        || (!summary.frees_params.contains(&param_idx)
+                            && summary.sole_param_escapes_unnamed_call
+                            && param_idx == 0))
             }
         }
     }

@@ -150,6 +150,41 @@ pub struct FunctionSummary {
     /// A MAY-free fact, like `frees_params`.
     #[serde(default)]
     pub frees_param_pointees: HashSet<usize>,
+    /// This function takes exactly ONE parameter and hands it to a call whose
+    /// callee is not a plain name: a function pointer reached through a
+    /// field, a deref or a parameter (`sqlite3GlobalConfig.m.xFree(p)`,
+    /// lua's `(*g->frealloc)(ud, block, ...)`). Nothing is known about what
+    /// runs, so this says only that the body's treatment of that parameter
+    /// is UNREADABLE from there on.
+    ///
+    /// It is not a free fact and never credits one on its own. It exists so
+    /// a consumer can tell "the body was read and releases nothing" from
+    /// "the body was read and the release, if any, went somewhere
+    /// unreadable" -- two states an empty `frees_params` conflates.
+    /// `sqlite3_free(void *p)` frees exactly through `xFree`, so its summary
+    /// is empty in every free set, which read as a REFUTATION of its
+    /// `*_free` name and made every `sqlite3_free(a)` in the corpus count
+    /// for nothing (task 1367). The same "unseen, not nothing" reading
+    /// `resolve_name_shaped_frees` already applies to an empty `may_free`.
+    ///
+    /// ARITY ONE IS THE WHOLE GUARD, and it is the one-nameable-argument
+    /// rule of task 1197 a level down. A name shape says a release happened
+    /// and never says through WHICH parameter, and an escape into an
+    /// unreadable call is no better: a comparator, a callback or a trace
+    /// hook reads its argument and is spelled identically. With a second
+    /// parameter the two questions come apart and the guess has no basis --
+    /// measured, on the fix that lacked this guard: `Curl_conn_close(data,
+    /// sockindex)` and `Curl_cwriter_free(data, writer)` reported curl's
+    /// `data` as double-freed, and `Curl_hash_delete(h, key, key_len)`
+    /// reported the lookup KEY freed. With one parameter there is nothing
+    /// else the name could be about.
+    ///
+    /// A consumer that combines this with a deallocator NAME is still making
+    /// a guess, not reading evidence, and must treat the credit as one --
+    /// enough to withhold a leak report, never enough to accuse a later
+    /// `free(p)` of being a double free.
+    #[serde(default)]
+    pub sole_param_escapes_unnamed_call: bool,
     /// Parameter indices whose VALUE this function stores somewhere that
     /// outlives the call — the ownership half `frees_params` does not cover.
     ///
@@ -2689,6 +2724,11 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
             .or_default()
             .extend(guesses);
     }
+    // OR, for the same reason the free facts are unioned: if ANY definition
+    // under this name hands its parameter to a call nothing can be read
+    // past, the merged summary's silence is not evidence of a release that
+    // did not happen.
+    existing.sole_param_escapes_unnamed_call |= summary.sole_param_escapes_unnamed_call;
     existing.frees_params_guessed =
         &(&existing.frees_params_guessed | &summary.frees_params_guessed) - &backed;
     // Unioned with the free facts it sits beside: if ANY definition linked
@@ -3039,6 +3079,23 @@ fn credit_frees_params(
         };
         let mut cursor = arguments.walk();
         let real: Vec<Node> = arguments.named_children(&mut cursor).collect();
+
+        // A callee that is not a plain name is a function pointer: the body
+        // is readable right up to the call and says nothing past it. Record
+        // that the sole parameter went in, so a consumer can tell an empty
+        // free set that MEANS "releases nothing" from one that means "the
+        // release went somewhere unreadable" (task 1367). Recorded for every
+        // such call, not only deallocator-shaped ones -- the callee has no
+        // name to be shaped like. One parameter only; see the field's doc
+        // for why a second one makes it worthless.
+        if function.kind() != "identifier" && params.len() == 1 && !params[0].is_empty() {
+            let escapes = real.iter().any(|arg| {
+                strip_free_argument(*arg)
+                    .map(|(t, _)| t.utf8_text(source.as_bytes()).unwrap_or(""))
+                    .is_some_and(|n| n == params[0])
+            });
+            summary.sole_param_escapes_unnamed_call |= escapes;
+        }
 
         if func_name == "free" {
             let [arg] = real.as_slice() else {
