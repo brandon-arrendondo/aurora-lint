@@ -1445,16 +1445,23 @@ fn aggregate_callsite_null_states(
         }
     }
 
-    // Count-based voting per-callee per-param.
+    // Count-based aggregation per-callee per-param.
     //
-    // The prescan's local state tracking can't model null checks between
-    // assignment and use, so PossiblyNull from prescan has a high false
-    // positive rate.  Instead of a lattice join (where one PossiblyNull
-    // callsite poisons a parameter used by 50 NotNull callers), we count
-    // callsite states and apply:
-    //   a) Any DefinitelyNull → PossiblyNull (confirmed NULL flow)
-    //   b) Majority PossiblyNull (> NotNull count) → PossiblyNull
-    //   c) Otherwise → NotNull (PossiblyNull is noise)
+    // Brandon's ruling 2026-09-21 (aurora_lint 1418): a caller passing a
+    // possibly-null pointer into a callee never violates by itself -- C has
+    // no contract semantics, so an unguarded dereference in the CALLEE is
+    // the only violation site. That makes this map load-bearing for
+    // reporting (it seeds the callee's own parameter state), not just a
+    // noise filter, so any known caller that can hand this parameter a null
+    // wins outright: no majority vote lets a pile of NotNull callers outvote
+    // the one caller that actually proves the hazard exists.
+    //   a) Any DefinitelyNull or PossiblyNull caller → PossiblyNull
+    //   b) Otherwise (every known caller NotNull) → NotNull
+    // `Unknown` callers still abstain -- they are unanswered questions, not
+    // evidence either way. This does not by itself make an exported
+    // function's caller set complete; see `has_internal_linkage` and the
+    // header-declared implicit-Unknown entry below, held per bmdb/aurora_lint
+    // 1335 and not relitigated here.
     for (callee_name, arg_vectors) in &callsite_args {
         if let Some(summary) = summaries.get_mut(callee_name) {
             let max_params = arg_vectors.iter().map(|v| v.len()).max().unwrap_or(0);
@@ -1474,7 +1481,7 @@ fn aggregate_callsite_null_states(
                 }
                 let total_known = null_count + possibly_count + not_null_count;
                 if total_known > 0 {
-                    let aggregated = if null_count > 0 || possibly_count > not_null_count {
+                    let aggregated = if null_count > 0 || possibly_count > 0 {
                         NullState::PossiblyNull
                     } else {
                         NullState::NotNull

@@ -454,7 +454,14 @@ fn check_field_deref_cfg(
 }
 
 /// `call_expression` case: function-pointer-null calls, deref-function
-/// argument checks, and call-site null-argument propagation to callees.
+/// argument checks, and call-site null-argument propagation for true vararg
+/// positions. For an ordinary positional parameter, the callee's own
+/// unguarded dereference (seeded from `FunctionSummary::callsite_param_null_states`,
+/// see prescan's `aggregate_callsite_null_states`) is the only EXP34-C
+/// violation site (Brandon's ruling 2026-09-21, aurora_lint 1418): passing a
+/// possibly-null pointer is not itself a violation, since C has no contract
+/// semantics. A `...` slot has no such parameter index to seed, so it stays
+/// a call-site check (see `check_callsite_null_args`).
 fn check_call_expression_cfg(
     node: &Node,
     source: &str,
@@ -514,12 +521,19 @@ fn check_call_expression_cfg(
         }
     }
 
-    // Call-site null propagation: flag DefinitelyNull args to callees that
-    // don't null-check them. Only when callee has a summary (guards against
-    // flagging unknown library functions).
+    // Call-site null propagation, scoped to true vararg positions only
+    // (task 1418): an ordinary positional parameter's unguarded dereference
+    // is reported at the callee via its own seeded state
+    // (`FunctionSummary::callsite_param_null_states`), but a vararg slot has
+    // no parameter index for that seed to attach to -- the callee body only
+    // ever sees `va_list`/`vprintf(fmt, ap)`, never which named caller
+    // variable reached a given `%s`. The call site is the only place a
+    // possibly-null argument flowing into `...` is observable at all.
     if !is_deref_function(&func_name)
         && !is_null_safe_callee(&func_name, macros)
-        && summaries.contains_key(&func_name)
+        && summaries
+            .get(&func_name)
+            .is_some_and(|s| s.variadic_from.is_some())
     {
         if let Some(args_node) = node.child_by_field_name("arguments") {
             check_callsite_null_args(
@@ -571,9 +585,12 @@ fn check_function_arguments_cfg(
     }
 }
 
-/// Call-site null propagation: flag passing a DefinitelyNull pointer to a
-/// function that doesn't null-check that parameter. This catches the source
-/// side of cross-file null dereferences (Juliet variants 51-68).
+/// Call-site null propagation for a vararg callee: flag a possibly/definitely
+/// null pointer landing in the `...` tail, where no `FunctionSummary`
+/// parameter index exists for the callee's own analysis to seed (task 1418).
+/// Callers gate this to `param_idx >= callee_summary.variadic_from` already;
+/// this still re-checks per argument since a vararg call can pass several
+/// tail arguments and each needs its own position.
 fn check_callsite_null_args(
     callee_name: &str,
     args: &Node,
@@ -584,13 +601,26 @@ fn check_callsite_null_args(
     summaries: &HashMap<String, FunctionSummary>,
     violations: &mut Vec<RuleViolation>,
 ) {
-    let callee_summary = summaries.get(callee_name);
+    let Some(callee_summary) = summaries.get(callee_name) else {
+        return;
+    };
+    let Some(variadic_from) = callee_summary.variadic_from else {
+        return;
+    };
 
     let mut param_idx: usize = 0;
     for i in 0..args.child_count() {
         if let Some(arg) = args.child(i) {
             // Skip commas and other non-argument tokens
             if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
+                continue;
+            }
+
+            // Only the vararg tail has no callee-side seed to rely on; a
+            // fixed positional argument is the callee's own dereference to
+            // report, not this call site's.
+            if param_idx < variadic_from {
+                param_idx += 1;
                 continue;
             }
 
@@ -610,18 +640,6 @@ fn check_callsite_null_args(
                     summaries,
                 );
 
-                // PossiblyNull was excluded here as "too noisy for call sites",
-                // which left this path asymmetric with the libc-allowlist one
-                // (that reports a potentially-null argument happily) and blind
-                // to every genuine maybe-null flow into a project function.
-                //
-                // What made it noisy was upstream: a parameter reached a
-                // disjunctive edge as PossiblyNull even when every visible
-                // caller proved it non-null, because the seed could not tell a
-                // PROVEN non-null parameter from an ASSUMED one. Now that
-                // `callsite_param_proven_nonnull` keeps the proven ones out of
-                // this state entirely, a PossiblyNull that survives to a call
-                // site is evidence rather than noise.
                 // A merely-possibly-null argument that a guard already
                 // evaluated at THIS call site proves non-null is not a
                 // finding: `if (p == NULL || sink(p) < 0)` reaches `sink`
@@ -635,42 +653,35 @@ fn check_callsite_null_args(
                     continue;
                 }
 
-                if state.is_unsafe() {
-                    // If no summary, assume callee handles null (conservative for unknowns)
-                    let callee_checks_null = callee_summary
-                        .map(|s| s.checks_null_params.contains(&param_idx))
-                        .unwrap_or(true);
-
-                    // Same rc<->out-parameter success correlation as is_unsafe_at:
-                    // a pointer set through `&p` by a call whose status is stored
-                    // in `rc`, then passed under an `rc == SQLITE_OK` guard, is
-                    // non-null at the call. This interprocedural arg check does
-                    // not route through is_unsafe_at, so apply the guard here too.
-                    if !callee_checks_null && !is_guarded_by_rc_success(&var_name, &arg, source) {
-                        let start_point = arg.start_position();
-                        violations.push(RuleViolation {
-                            rule_id: "EXP34-C".to_string(),
-                            severity: Severity::High,
-                            message: format!(
-                                "Passing {} '{}' to '{}' which does not check for NULL",
-                                if state == null_state::NullState::DefinitelyNull {
-                                    "null pointer"
-                                } else {
-                                    "potentially null pointer"
-                                },
-                                var_name,
-                                callee_name
-                            ),
-                            file_path: String::new(),
-                            line: start_point.row + 1,
-                            column: start_point.column + 1,
-                            suggestion: Some(format!(
-                                "Check if '{}' is not NULL before passing to '{}'",
-                                var_name, callee_name
-                            )),
-                            ..Default::default()
-                        });
-                    }
+                // Same rc<->out-parameter success correlation as is_unsafe_at:
+                // a pointer set through `&p` by a call whose status is stored
+                // in `rc`, then passed under an `rc == SQLITE_OK` guard, is
+                // non-null at the call. This interprocedural arg check does
+                // not route through is_unsafe_at, so apply the guard here too.
+                if state.is_unsafe() && !is_guarded_by_rc_success(&var_name, &arg, source) {
+                    let start_point = arg.start_position();
+                    violations.push(RuleViolation {
+                        rule_id: "EXP34-C".to_string(),
+                        severity: Severity::High,
+                        message: format!(
+                            "Passing {} '{}' to '{}' which does not check for NULL",
+                            if state == null_state::NullState::DefinitelyNull {
+                                "null pointer"
+                            } else {
+                                "potentially null pointer"
+                            },
+                            var_name,
+                            callee_name
+                        ),
+                        file_path: String::new(),
+                        line: start_point.row + 1,
+                        column: start_point.column + 1,
+                        suggestion: Some(format!(
+                            "Check if '{}' is not NULL before passing to '{}'",
+                            var_name, callee_name
+                        )),
+                        ..Default::default()
+                    });
                 }
             }
 

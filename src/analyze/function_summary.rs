@@ -279,6 +279,17 @@ pub struct FunctionSummary {
     /// the prescanned call sites are provably all of them.
     #[serde(default)]
     pub has_internal_linkage: bool,
+    /// The number of fixed (named) parameters before a trailing `...`, for a
+    /// variadic function declaration. `None` for a non-variadic function.
+    ///
+    /// A vararg position has no parameter index in this summary to seed the
+    /// callee's own null-state analysis with (`vprintf(fmt, ap)` never
+    /// resolves which named caller variable reached a given `%s` from
+    /// inside the callee's body), so a caller passing a possibly-null
+    /// pointer into one is only ever observable at the call site. EXP34-C's
+    /// call-site check is scoped to exactly these positions — task 1418.
+    #[serde(default)]
+    pub variadic_from: Option<usize>,
     /// Argument-position pairs `(lower, higher)` at which SOME call site
     /// anywhere in the pre-scanned project hands this function two named,
     /// DIFFERENT storage objects.
@@ -918,6 +929,7 @@ fn analyze_function(
 
     // Collect parameter names
     let params = collect_param_names(func_node, source);
+    summary.variadic_from = detect_variadic_arity(func_node);
 
     // Check the return type
     let is_pointer_return;
@@ -1154,6 +1166,33 @@ fn produced_size_for_var(
                 var_name, &lines, start, end,
             )
         })
+}
+
+/// The number of fixed parameters before a trailing `...`, or `None` when
+/// `func_node`'s declarator has no `variadic_parameter`. See
+/// `FunctionSummary::variadic_from`.
+fn detect_variadic_arity(func_node: &Node) -> Option<usize> {
+    let declarator = func_node.child_by_field_name("declarator")?;
+    find_variadic_arity_in_declarator(&declarator)
+}
+
+fn find_variadic_arity_in_declarator(node: &Node) -> Option<usize> {
+    if node.kind() == "function_declarator" {
+        let param_list = node.child_by_field_name("parameters")?;
+        let mut fixed = 0usize;
+        for i in 0..param_list.child_count() {
+            let child = param_list.child(i)?;
+            match child.kind() {
+                "parameter_declaration" => fixed += 1,
+                "variadic_parameter" => return Some(fixed),
+                _ => {}
+            }
+        }
+        None
+    } else {
+        node.child_by_field_name("declarator")
+            .and_then(|d| find_variadic_arity_in_declarator(&d))
+    }
 }
 
 /// Collect parameter names from a function declaration.
