@@ -48,6 +48,22 @@ pub enum CfgEdge {
     Goto,
 }
 
+/// Where a function-like macro's replacement list can send control when it
+/// is invoked as a statement: `goto label;` or `return ...;` inside the macro
+/// body (mbedtls's `ARIA_SELF_TEST_ASSERT(cond)` is `do { if (cond) { ...;
+/// goto exit; } } while (0)`, `MBEDTLS_ASN1_CHK_ADD` returns the caller's
+/// `ret`). Without this the invocation is an ordinary statement and every
+/// path through it falls through, so a value that only reaches its read via
+/// the macro's jump looks dead (task 1387). The jump is taken to be
+/// conditional -- the invocation keeps its fallthrough edge as well.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MacroJump {
+    /// The macro body contains `goto <label>`.
+    Goto(String),
+    /// The macro body contains a `return`.
+    Return,
+}
+
 /// A control-flow graph for a single function.
 #[derive(Debug, Clone)]
 pub struct FunctionCfg {
@@ -59,6 +75,13 @@ pub struct FunctionCfg {
     pub entry: BlockId,
     /// Blocks with no outgoing edge.
     pub exits: Vec<BlockId>,
+    /// One entry per statement that invoked a [`MacroJump::Goto`] macro:
+    /// the empty block the jump edge leaves from, and the invoking
+    /// statement's byte range. A consumer that models what the macro body
+    /// writes before it jumps (`{ rc = ERR; goto error; }`) puts those
+    /// definitions in this block, so they hold on the jump path and not on
+    /// the fallthrough.
+    pub macro_jump_blocks: Vec<(BlockId, (usize, usize))>,
     /// Source code for the function (for extracting text).
     function_start_byte: usize,
 }
@@ -124,6 +147,11 @@ struct CfgBuilder {
     /// a call to one of these terminates the current block exactly like a
     /// `return` statement.
     noreturn_names: HashSet<String>,
+    /// Function-like macros whose body jumps (see [`MacroJump`]); an
+    /// invocation as a statement gets that edge in addition to fallthrough.
+    macro_jumps: HashMap<String, MacroJump>,
+    /// See [`FunctionCfg::macro_jump_blocks`].
+    macro_jump_blocks: Vec<(BlockId, (usize, usize))>,
 }
 
 impl CfgBuilder {
@@ -131,6 +159,7 @@ impl CfgBuilder {
         function_start_byte: usize,
         constants: MacroConstantMap,
         noreturn_names: HashSet<String>,
+        macro_jumps: HashMap<String, MacroJump>,
     ) -> Self {
         let entry_block = BasicBlock {
             id: 0,
@@ -150,7 +179,28 @@ impl CfgBuilder {
             function_start_byte,
             constants,
             noreturn_names,
+            macro_jumps,
+            macro_jump_blocks: Vec::new(),
         }
+    }
+
+    /// The jump a statement makes by invoking a macro in `macro_jumps`, if
+    /// the statement is `NAME(...);` for such a NAME.
+    fn macro_jump_of(&self, node: &Node, source: &str) -> Option<MacroJump> {
+        if self.macro_jumps.is_empty() || node.kind() != "expression_statement" {
+            return None;
+        }
+        let call = node.named_child(0)?;
+        if call.kind() != "call_expression" {
+            return None;
+        }
+        let callee = call.child_by_field_name("function")?;
+        if callee.kind() != "identifier" {
+            return None;
+        }
+        self.macro_jumps
+            .get(callee.utf8_text(source.as_bytes()).ok()?)
+            .cloned()
     }
 
     fn new_block(&mut self) -> BlockId {
@@ -275,6 +325,32 @@ impl CfgBuilder {
                         }
                     }
                 }
+            }
+            "expression_statement" if self.macro_jump_of(node, source).is_some() => {
+                // `ASSERT_OR_GOTO(cond);` -- the macro body holds the jump.
+                // Conditional by assumption, so the block both jumps and
+                // falls through (task 1387).
+                self.add_statement(node.start_byte(), node.end_byte());
+                match self.macro_jump_of(node, source) {
+                    Some(MacroJump::Goto(label)) => {
+                        // The jump leaves from its own empty block so the
+                        // macro's writes-before-jump can be placed on that
+                        // path alone (see `macro_jump_blocks`).
+                        let jump_block = self.new_block();
+                        self.add_edge(self.current_block, jump_block, CfgEdge::Fallthrough);
+                        self.pending_gotos.push((jump_block, label));
+                        self.macro_jump_blocks
+                            .push((jump_block, (node.start_byte(), node.end_byte())));
+                    }
+                    Some(MacroJump::Return) => {
+                        let exit_block = self.new_block();
+                        self.add_edge(self.current_block, exit_block, CfgEdge::Return);
+                    }
+                    None => {}
+                }
+                let next = self.new_block();
+                self.add_edge(self.current_block, next, CfgEdge::Fallthrough);
+                self.current_block = next;
             }
             "expression_statement"
                 if noreturn::is_noreturn_call_statement(node, source, &self.noreturn_names) =>
@@ -826,6 +902,7 @@ impl CfgBuilder {
             edges: self.edges,
             entry: 0,
             exits,
+            macro_jump_blocks: self.macro_jump_blocks,
             function_start_byte: self.function_start_byte,
         }
     }
@@ -948,6 +1025,26 @@ pub fn build_function_cfg_with_constants_and_noreturn(
     constants: &MacroConstantMap,
     noreturn_names: &HashSet<String>,
 ) -> Option<FunctionCfg> {
+    build_function_cfg_full(
+        func_node,
+        source,
+        constants,
+        noreturn_names,
+        &HashMap::new(),
+    )
+}
+
+/// Same as [`build_function_cfg_with_constants_and_noreturn`], additionally
+/// giving a statement that invokes a macro named in `macro_jumps` the edge
+/// that macro's body takes (a `goto` to its label, or a return), on top of
+/// its fallthrough (task 1387). See [`MacroJump`].
+pub fn build_function_cfg_full(
+    func_node: &Node,
+    source: &str,
+    constants: &MacroConstantMap,
+    noreturn_names: &HashSet<String>,
+    macro_jumps: &HashMap<String, MacroJump>,
+) -> Option<FunctionCfg> {
     if func_node.kind() != "function_definition" {
         return None;
     }
@@ -961,6 +1058,7 @@ pub fn build_function_cfg_with_constants_and_noreturn(
         func_node.start_byte(),
         constants.clone(),
         noreturn_names.clone(),
+        macro_jumps.clone(),
     );
     builder.build_from_compound_statement(&body, source);
     Some(builder.build())
