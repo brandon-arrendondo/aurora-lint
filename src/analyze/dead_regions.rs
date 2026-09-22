@@ -26,8 +26,7 @@
 //! oracles are single-platform per codebase, and a platform-visibility gap is
 //! answered by onboarding a codebase for that platform (ventoy is the Win32
 //! one), not by scanning one tree under several assumption tables. The
-//! profile is a single choke point ([`platform_assumptions`]) so a future
-//! `--platform`/`compile_commands.json`-derived table changes one function.
+//! profile is a single choke point ([`platform_assumptions`]).
 //! Struct-bodied collectors deliberately do NOT consult this: ventoy's
 //! `process.h` wraps whole struct typedefs in `#if defined(_MSC_VER)`, and
 //! dropping those under the POSIX default would trade a hostap fix for a
@@ -38,16 +37,93 @@
 //! `dead_code_ranges` on purpose: silencing every finding inside an
 //! `#ifdef _WIN32` block corpus-wide is a separate policy decision from
 //! which of several typedefs a name resolves to.
+//!
+//! # Declaring the profile instead of assuming it (task 1430)
+//!
+//! POSIX-by-default is a guess about the *platform*, and a guess is all it can
+//! be with no build system in sight. But the axis that actually decides which
+//! definition of a name wins is usually not the platform: measured over the
+//! twelve pinned corpora, of 660 names with several live conditional
+//! definitions, a compiler-predefined platform macro separates the arms for
+//! ~176 of them and the project's own build configuration (`NDEBUG`,
+//! `SQLITE_OMIT_*`, `CONFIG_*`, `HAVE_*`) for ~451
+//! (`docs/design/multi-configuration-scanning.md` §6). sqlite's `ALWAYS(X)` is
+//! the shape: three definitions over `SQLITE_OMIT_AUXILIARY_SAFETY_CHECKS` and
+//! `NDEBUG`, none of them a platform, and first-wins keeps the
+//! omit-safety-checks constant `(1)`.
+//!
+//! When the caller can say what the build actually defines, guessing is
+//! unnecessary. [`declare_scan_profile`] installs that declaration once per
+//! process, overlaid on the POSIX base so unlisted names keep their default;
+//! `--compile-commands` supplies it from the database's own `-D`/`-U` state
+//! ([`super::compile_commands::CompileDb::declared_macro_state`]). Absent that
+//! flag nothing is declared and the table is exactly the POSIX default it has
+//! always been, so the no-build-system path is unchanged.
+//!
+//! This is **name resolution only** (ADR-0010 Decision 3): a declared profile
+//! changes which conditional definition of a name a collector keeps, and never
+//! whether a finding is emitted. It is emphatically not a
+//! `--assume-defined`-style suppression switch, which ADR-0010's Consequences
+//! call a proposal to revisit the ADR rather than a feature.
 
 use lang_parsing_substrate::{
     dead_code_ranges_with_assumptions, posix_default_assumptions, PlatformAssumptions,
 };
+use std::sync::OnceLock;
 use tree_sitter::Node;
 
-/// The platform profile every scan currently assumes. See the module doc
-/// for why this is one table, not a per-codebase choice.
-pub fn platform_assumptions() -> PlatformAssumptions {
-    posix_default_assumptions()
+/// The profile in force for this process, once a caller has declared one.
+/// Unset means "nobody declared anything", which reads as the POSIX default.
+static SCAN_PROFILE: OnceLock<PlatformAssumptions> = OnceLock::new();
+
+/// The macro state every collector in this scan assumes: the POSIX default,
+/// or whatever [`declare_scan_profile`] installed over it. See the module doc
+/// for why this is one table per scan, not a per-file or per-rule choice.
+pub fn platform_assumptions() -> &'static PlatformAssumptions {
+    SCAN_PROFILE.get_or_init(posix_default_assumptions)
+}
+
+/// Declare the build configuration this scan is analysing, as `name ->
+/// defined`, overlaid on the POSIX default so a name the declaration does not
+/// mention keeps its default treatment.
+///
+/// Call once, **before any collector runs** — the profile decides which
+/// conditional definitions prescan keeps, so a declaration made afterwards
+/// would apply to some tables and not others. `load_project_context` is the
+/// one caller and does it ahead of prescan.
+///
+/// A declaration is *not* stronger than the file it is applied to: the
+/// substrate lets a local `#define`/`#undef` override a seeded assumption from
+/// the point it takes effect, which is the same direction as the compile
+/// database's own "gap-filling, never overriding" rule for macro tables — real
+/// source wins over a build flag either way.
+///
+/// # Errors
+///
+/// If a *different* profile is already in force. One process scans one
+/// configuration (see the module doc); two declarations that disagree mean the
+/// caller has mixed two scans, and silently honouring the first would leave
+/// half the tables built under the other. Re-declaring the identical table is
+/// fine.
+pub fn declare_scan_profile(declared: PlatformAssumptions) -> Result<(), String> {
+    let mut table = posix_default_assumptions();
+    // The declaration wins over the default: a build that says `-U__linux__`
+    // or `-D_WIN32` knows better than our guess.
+    table.extend(declared);
+    match SCAN_PROFILE.set(table) {
+        Ok(()) => Ok(()),
+        Err(rejected) => {
+            if SCAN_PROFILE.get() == Some(&rejected) {
+                Ok(())
+            } else {
+                Err(
+                    "a different scan profile is already in force for this process; \
+                     one process analyses one build configuration"
+                        .to_string(),
+                )
+            }
+        }
+    }
 }
 
 /// 1-based inclusive line ranges of `source` that the assumed platform's
@@ -61,7 +137,14 @@ pub struct DeadRegions {
 impl DeadRegions {
     /// Dead regions of `source` under [`platform_assumptions`].
     pub fn of(source: &str) -> Self {
-        let ranges = dead_code_ranges_with_assumptions(source, &platform_assumptions())
+        Self::under(source, platform_assumptions())
+    }
+
+    /// Dead regions of `source` under an explicitly supplied table, bypassing
+    /// the process-wide profile. Exists so a caller (and a test) can ask about
+    /// a configuration other than the one in force.
+    pub fn under(source: &str, assumptions: &PlatformAssumptions) -> Self {
+        let ranges = dead_code_ranges_with_assumptions(source, assumptions)
             .into_iter()
             .map(|r| (r.start_line, r.end_line))
             .collect();
@@ -125,6 +208,112 @@ typedef uint16_t u16;
             dead.ranges.is_empty(),
             "no opinion on WPA_TRACE: {:?}",
             dead
+        );
+    }
+
+    /// The declared-configuration cases go through `under`, not the global
+    /// profile: `OnceLock` is per-process and the test binary runs them all in
+    /// one, so a test that installed a profile would decide what every other
+    /// test sees. `declare_scan_profile` itself is only the overlay + set, and
+    /// the overlay is what these pin down.
+    fn declared(pairs: &[(&str, bool)]) -> PlatformAssumptions {
+        let mut table = posix_default_assumptions();
+        table.extend(pairs.iter().map(|(n, v)| (n.to_string(), *v)));
+        table
+    }
+
+    #[test]
+    fn a_declared_define_kills_an_arm_a_default_scan_cannot_judge() {
+        // A build-config axis: no platform macro appears, so the POSIX default
+        // has no opinion and both arms stay live for first-wins to arbitrate.
+        // The build saying -DWITH_TLS is what settles it.
+        const SRC: &str = "\
+#ifdef WITH_TLS
+#define net_read(s) tls_read(s)
+#else
+#define net_read(s) read(s)
+#endif
+";
+        let default = DeadRegions::of(SRC);
+        assert!(
+            !default.contains_line(2) && !default.contains_line(4),
+            "no declaration: both arms live, first wins (unchanged behaviour)"
+        );
+
+        let declared_on = DeadRegions::under(SRC, &declared(&[("WITH_TLS", true)]));
+        assert!(!declared_on.contains_line(2), "the declared arm is live");
+        assert!(declared_on.contains_line(4), "its #else is dead");
+    }
+
+    /// The mechanism's ceiling, pinned deliberately: the substrate's scanner
+    /// classifies `#if`/`#ifdef`/`#ifndef` and the matching `#else`, but an
+    /// `#elif` condition is never evaluated -- it only closes a region the
+    /// opening `#if` started. So sqlite's `ALWAYS(X)`, whose second definition
+    /// sits in an `#elif !defined(NDEBUG)` arm, is NOT resolved by declaring
+    /// `-DNDEBUG`, and no amount of declaration will do it until the substrate
+    /// learns `#elif`. If this test starts failing because the arm became dead,
+    /// that is the substrate gaining the capability -- widen the declaration's
+    /// reach here and in `docs/design/multi-configuration-scanning.md` §7.
+    #[test]
+    fn an_elif_arm_is_beyond_what_a_declaration_can_settle() {
+        const SRC: &str = "\
+#if defined(SQLITE_OMIT_AUXILIARY_SAFETY_CHECKS)
+# define ALWAYS(X) (1)
+#elif !defined(NDEBUG)
+# define ALWAYS(X) ((X)?1:(assert(0),0))
+#else
+# define ALWAYS(X) (X)
+#endif
+";
+        let table = declared(&[
+            ("NDEBUG", true),
+            ("SQLITE_OMIT_AUXILIARY_SAFETY_CHECKS", false),
+        ]);
+        let dead = DeadRegions::under(SRC, &table);
+        assert!(
+            dead.contains_line(2),
+            "the opening #if IS settled by the declaration"
+        );
+        assert!(
+            !dead.contains_line(4),
+            "but the #elif arm is not evaluated, so -DNDEBUG does not kill it"
+        );
+    }
+
+    #[test]
+    fn a_declared_undefine_kills_the_then_arm() {
+        // -UCONFIG_SAE is a positive fact: the #ifdef arm cannot compile.
+        let dead = DeadRegions::under(
+            "#ifdef CONFIG_SAE\nint sae;\n#else\nint stub;\n#endif\n",
+            &declared(&[("CONFIG_SAE", false)]),
+        );
+        assert!(dead.contains_line(2), "the -U'd arm is dead");
+        assert!(!dead.contains_line(4), "its #else is the live one");
+    }
+
+    #[test]
+    fn the_declaration_overrides_the_posix_default() {
+        // A Windows build's database is the better authority on _WIN32 than our
+        // POSIX guess, which would call this arm dead.
+        let dead = DeadRegions::under(
+            "#ifdef _WIN32\nint win;\n#else\nint posix;\n#endif\n",
+            &declared(&[("_WIN32", true)]),
+        );
+        assert!(!dead.contains_line(2), "declared _WIN32 arm is live");
+        assert!(dead.contains_line(4), "and the POSIX arm is the dead one");
+    }
+
+    #[test]
+    fn a_name_the_declaration_does_not_mention_keeps_its_default() {
+        let table = declared(&[("CONFIG_SAE", true)]);
+        let dead = DeadRegions::under(
+            "#ifdef _MSC_VER\nint msc;\n#endif\n#ifdef WPA_TRACE\nint trace;\n#endif\n",
+            &table,
+        );
+        assert!(dead.contains_line(2), "_MSC_VER still undefined by default");
+        assert!(
+            !dead.contains_line(5),
+            "WPA_TRACE is unmentioned either way, so it stays Neutral"
         );
     }
 

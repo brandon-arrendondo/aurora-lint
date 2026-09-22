@@ -127,8 +127,8 @@ is a purely optional upgrade for projects that *already* produce a
 
     aurora-lint src/ -d src/ --compile-commands build/compile_commands.json
 
-aurora-lint does **not** run a preprocessor. It reads two things out of the database and
-feeds them to the pre-scan that already exists:
+aurora-lint does **not** run a preprocessor. It reads three things out of the database
+and feeds them to the pre-scan that already exists:
 
 - **Include search paths** (``-I``, ``-isystem``, ``-iquote``, ``-idirafter``,
   resolved against each entry's ``directory``) are appended to any explicit
@@ -139,6 +139,19 @@ feeds them to the pre-scan that already exists:
 - **Command-line macros** (``-D``, minus anything ``-U``'d) are parsed as real
   ``#define`` directives, so command-line constants fold and function-like
   ``-D`` macros become expandable exactly like ones written in a header.
+- **The build's macro state** (the same ``-D``/``-U`` flags, read for
+  definedness rather than for value) tells aurora-lint which ``#if`` arms that
+  build compiles. Without a database, a file that defines one name under
+  several mutually exclusive conditions is arbitrated by a POSIX platform guess
+  plus first-wins; with one, the arms your build cannot compile are skipped, so
+  the definition kept is the one you actually build. A ``#define`` in real
+  source still overrides the flag, as it does for macro values.
+
+This last one only affects **which definition a name resolves to**. It never
+decides whether a finding is reported: a violation inside an ``#ifdef`` arm your
+build does not select is still reported, because some other build selects it
+(see ``docs/adr/0010``). There is deliberately no flag that suppresses findings
+by configuration.
 
 Because the parse tree is untouched, every finding keeps the source location it
 always had, and the ``PRE*`` rules still audit macros as written.

@@ -314,6 +314,21 @@ fn load_project_context(
     compile_db: Option<&compile_commands::CompileDb>,
     needs_vra: bool,
 ) -> Result<context::ProjectContext> {
+    // A declared build configuration decides which conditional definitions the
+    // collectors below may keep, so it has to be in force BEFORE prescan runs
+    // -- unlike the `-D` macro *values*, which are folded in at the end because
+    // real source must win over a build flag. Same database, two questions, two
+    // orderings: see `dead_regions::declare_scan_profile`. A context restored
+    // with --load-prescan was built under whatever profile the saving run
+    // declared; the declaration here still governs the per-file collection the
+    // rules do, which is the same split --load-prescan already lives with.
+    if let Some(db) = compile_db {
+        let declared = db.declared_macro_state();
+        if !declared.is_empty() {
+            dead_regions::declare_scan_profile(declared).map_err(|e| anyhow::anyhow!(e))?;
+        }
+    }
+
     let mut context = if let Some(cache_path) = load_prescan {
         let path = std::path::Path::new(cache_path);
         if path.exists() {

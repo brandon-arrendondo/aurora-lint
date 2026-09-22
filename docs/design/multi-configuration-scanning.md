@@ -266,7 +266,68 @@ See §8.1.
 | **A** | cppcheck-style enumeration: k assumption tables per file, k collector+rule passes, union the results | k× the whole pipeline; cap binds above 3 axes on 80–115 files per large corpus | High: cache keyed per context, k-way merge, per-config attribution in findings | Union semantics (forced by Decision 1) grows the finding set into unadjudicated `(file, line, rule)` keys → whole-corpus re-adjudication before the next precision claim | **No** |
 | **B** | `--platform` enum switch (`posix`/`win32`/…) selecting a canned table | ~0 runtime; `platform_assumptions()` is already the one choke point | Low | Default unchanged ⇒ zero delta; a non-default profile changes name resolution only | **Not on its own** — addresses ≤30% of the choices (§6), and its vocabulary can't express `NDEBUG` or `CONFIG_SAE` |
 | **C** | Keep alternatives: generalize `collect_function_macro_alternatives`, let the consumer pick from local context | ~0 runtime (same line scan); memory linear in alternatives, which §6 bounds at hundreds per corpus | Medium, but **per-consumer and opt-in** — MSC13-C is the shipped precedent | Per-rule gated, so measurable one rule at a time, the way every other engine capability was rolled out | **Yes, as the primary line** |
-| **D** | Assumption table as input: seed `PlatformAssumptions` from `--compile-commands`' `-D`/`-U`, or an explicit `-D`/`-U`/profile flag | ~0 runtime; the flags are already parsed and the type is already a `HashMap<String, bool>` | Low — one function plus plumbing that exists | Off by default ⇒ zero delta. With a database, resolution follows the configuration the project actually builds; hits the build-config majority B cannot reach | **Yes, cheapest real win** |
+| **D** | Assumption table as input: seed `PlatformAssumptions` from `--compile-commands`' `-D`/`-U`, or an explicit `-D`/`-U`/profile flag | ~0 runtime; the flags are already parsed and the type is already a `HashMap<String, bool>` | Low — one function plus plumbing that exists | Off by default ⇒ zero delta. With a database, resolution follows the configuration the project actually builds; hits the build-config majority B cannot reach | **Yes, cheapest real win** (shipped, task 1430; see the ceiling below) |
+
+### D's ceiling: `#elif` is not evaluated (measured while implementing, task 1430)
+
+`lang_parsing_substrate`'s dead-region scanner classifies `#if`, `#ifdef`,
+`#ifndef` and the matching `#else`; an `#elif` condition is never evaluated —
+it only closes a region the opening `#if` started. A declared macro state
+therefore cannot settle a choice whose arms are separated by an `#elif`, no
+matter how complete the declaration is. Of the 660 first-wins choices in §6,
+**524 (79%) are structurally reachable** by a declaration and **136 (21%) sit
+in `#elif` arms** (sqlite 28, ventoy 30, valkey 20, mbedtls 18, curl 13,
+pureftpd 11, lua 9, raylib 5, mosquitto 2, hostap 0, sel4 0).
+
+sqlite's `ALWAYS(X)` above is in the blocked 21%: its `NDEBUG` arm is an
+`#elif`, so `-DNDEBUG` does not currently resolve it. It remains the right
+illustration of *which axis decides* — that point is unaffected — but not of
+what D fixes today. `dead_regions.rs` pins this ceiling in a test
+(`an_elif_arm_is_beyond_what_a_declaration_can_settle`) so that if the
+substrate later learns `#elif`, the change shows up as a failing test rather
+than as a silent behaviour shift. Teaching it `#elif` is a substrate-side
+follow-up worth its own task; it would widen D's reach by about a quarter.
+
+### D's second limit: the declaration is per scan, the database is per file
+
+Measured on hostap with a declaration derived from its own `defconfig`
+(task 1430; the `-D`/`-U` set is the defconfig-enabled `CONFIG_*` names the
+Makefiles turn into flags, so it is a real hostap configuration, though not
+necessarily the one `make` builds from that file — `make`'s conditional
+side-effects are not followed):
+
+- **The payoff, where the file is in the build:** arity-mismatch gap rows fall
+  from 621 to 197. hostap defines `wpa_printf(args...)` as a no-op macro under
+  `#ifdef CONFIG_NO_STDOUT_DEBUG`; that is the only *macro* definition of the
+  name, so first-wins held a one-parameter definition against every real
+  four-argument call. `-UCONFIG_NO_STDOUT_DEBUG` drops it and 424 of those
+  mismatches with it.
+- **The cost, where the file is not:** three findings appear (INT32-C ×2,
+  PRE31-C ×1), and all three are in files the declared configuration does not
+  compile. `-UCONFIG_CTRL_IFACE_UDP` kills the arm defining
+  `WPA_CTRL_IFACE_PORT`, so `int port = WPA_CTRL_IFACE_PORT;` in
+  `ctrl_iface_udp.c` loses its range and INT32-C flags the `port--` retry.
+  `-UCONFIG_FST` kills all of `fst.h`, so PRE31-C loses the definition that
+  exonerated `FST_LLT_VAL_TO_MS` (its parameter occurs once) and falls back to
+  treating an ALL_CAPS call with a function-call argument as unsafe.
+
+The asymmetry is structural, not a tuning problem: a compile database is
+per-translation-unit and the profile is per scan, so a file outside the declared
+configuration gets resolved under a configuration that excludes it. The fix is
+to scope the declaration the way the database is scoped — a file with no entry
+is not part of that configuration and should resolve under the default profile —
+which needs `RawEntry::file` (deliberately not deserialized today) threaded to
+the per-file collectors. Filed as a follow-up; **not** worth trading for the
+tempting cheap version, "only apply the declaration where the name has another
+live definition in the file", which would have kept both dropped constants and
+also kept the no-op `wpa_printf`, losing the entire payoff above.
+
+On mosquitto, with a declaration derived from `config.mk`'s own defaults, the
+finding set is byte-identical and exactly one resolution changes:
+`SSL_DATA_PENDING` in `lib/tls_mosq.h`, real check under `#ifdef WITH_TLS`
+versus `0` in the `#else` stub, stops being a first-wins guess and becomes
+known. First-wins happened to be right there; nothing says it would be if the
+arms were written in the other order.
 
 **Recommendation: C + D, and B only as a fallback shape for corpora with no
 compile database** (a canned profile is then just a hand-written table for the
@@ -308,10 +369,17 @@ resolution and nothing else").
    (MSC13-C, MSC37-C) are what make the tie-break policy defensible; an
    object-like or typedef consumer should arrive the same way, with its own
    rule-level gate.
-4. **Align with the per-corpus primary-configuration declaration**
-   (`benchmarking_db`, extends bmdb 1378/739). That task writes down what each
-   oracle's configuration *is*; option D is what would let a scan consume it.
-   Neither blocks the other, and this research does not gate on it.
+4. **Align with the per-corpus primary-configuration declaration.** This
+   landed while 1430 was in flight: `primary_build_config` is now on all twelve
+   entries of `data/benchmark_repos.json` (`cf98ae7e`), with a per-project
+   rationale in `realworld-corpus-scope.md`. It declares platform, arch,
+   endianness, toolchain and the in-scope paths that configuration never
+   compiles — *not* a macro state, and hostap's summary points at "their
+   shipped defconfigs" rather than enumerating `-D` flags. So a scan cannot
+   consume it as a profile as it stands: option D needs either a compile
+   database per corpus (what `playbooks/setup-compile-commands.yml` generates)
+   or a macro-state field alongside it. Worth deciding which, before anything
+   tries to read the field.
 
 ## 9. Relation to the existing docs
 

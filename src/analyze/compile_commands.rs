@@ -59,6 +59,7 @@
 //! subprocess, and the project-header win is worth measuring on its own first.
 
 use anyhow::{Context, Result};
+use lang_parsing_substrate::PlatformAssumptions;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -121,6 +122,12 @@ pub struct CompileDb {
     /// Surviving `-D` definitions, in first-seen order. Names later `-U`'d
     /// anywhere in the database are already removed.
     pub defines: Vec<CommandLineDefine>,
+    /// Names `-U`'d anywhere in the database, first-seen order. Kept, rather
+    /// than only used as the filter above, because "this build undefines X" is
+    /// a *positive* fact about the configuration: it is what makes an
+    /// `#ifdef X` arm dead rather than merely unproven
+    /// ([`Self::declared_macro_state`]).
+    pub undefines: Vec<String>,
     /// Number of entries read from the database.
     pub entry_count: usize,
     /// Compiler executables named by the entries (`arguments[0]` / the first
@@ -192,7 +199,9 @@ impl CompileDb {
                         }
                     }
                     Flag::Undefine(name) => {
-                        undefined.insert(name);
+                        if undefined.insert(name.clone()) {
+                            db.undefines.push(name);
+                        }
                     }
                 }
             }
@@ -249,6 +258,33 @@ impl CompileDb {
             out.push('\n');
         }
         out
+    }
+
+    /// The build's macro state as a definedness table: every surviving `-D`
+    /// name defined, every `-U` name undefined.
+    ///
+    /// This is the same `-D`/`-U` state [`Self::define_directives`] renders,
+    /// read for a different question. `define_directives` answers "what does
+    /// this name expand to", which only matters for a name some rule evaluates;
+    /// this answers "is this name defined", which decides which `#if` arm a
+    /// collector may take a definition from at all
+    /// ([`super::dead_regions::declare_scan_profile`]). A bare `-DFOO` and
+    /// `-DFOO=0` are both *defined* here — `#ifdef FOO` tests definedness, not
+    /// value — while `-UFOO` is the only thing that asserts the negative.
+    ///
+    /// Values are deliberately dropped: the substrate's dead-region scanner
+    /// recognises `#ifdef`/`#ifndef`/`defined(X)`, not arithmetic `#if X > 2`,
+    /// so a value here would be recorded and never read.
+    pub fn declared_macro_state(&self) -> PlatformAssumptions {
+        let mut state = PlatformAssumptions::new();
+        for d in &self.defines {
+            state.insert(d.name().to_string(), true);
+        }
+        // -U already filtered `defines`, so these cannot collide.
+        for name in &self.undefines {
+            state.insert(name.clone(), false);
+        }
+        state
     }
 
     /// Merge the command-line macro state into `context`, filling only names
@@ -768,6 +804,55 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(db.missing_include_paths(), vec!["/definitely/not/here"]);
+    }
+
+    #[test]
+    fn declared_macro_state_reports_defines_defined_and_undefines_undefined() {
+        let entries = vec![
+            RawEntry {
+                directory: "/p".into(),
+                command: Some("cc -DNDEBUG -DCONFIG_SAE=1 -DZERO=0 -UCONFIG_GAS -c a.c".into()),
+                arguments: None,
+            },
+            // A second entry -U'ing a name the first -D'd: the filter already
+            // drops it from `defines`, and the state must say *undefined*
+            // rather than merely omitting it.
+            RawEntry {
+                directory: "/p".into(),
+                command: Some("cc -UCONFIG_SAE -c b.c".into()),
+                arguments: None,
+            },
+        ];
+        let state = CompileDb::from_entries(&entries).declared_macro_state();
+        assert_eq!(state.get("NDEBUG"), Some(&true), "bare -D is defined");
+        assert_eq!(
+            state.get("ZERO"),
+            Some(&true),
+            "-DZERO=0 is still *defined*: #ifdef tests definedness, not value"
+        );
+        assert_eq!(state.get("CONFIG_GAS"), Some(&false), "-U is undefined");
+        assert_eq!(
+            state.get("CONFIG_SAE"),
+            Some(&false),
+            "-U anywhere in the database wins over -D anywhere in it, in the \
+             state table exactly as in `defines`"
+        );
+        assert!(
+            !state.contains_key("WPA_TRACE"),
+            "a name the build never mentions gets no opinion"
+        );
+    }
+
+    #[test]
+    fn declared_macro_state_is_empty_for_a_database_with_no_macro_flags() {
+        let entries = vec![RawEntry {
+            directory: "/p".into(),
+            command: Some("cc -I/inc -c a.c".into()),
+            arguments: None,
+        }];
+        assert!(CompileDb::from_entries(&entries)
+            .declared_macro_state()
+            .is_empty());
     }
 
     #[test]

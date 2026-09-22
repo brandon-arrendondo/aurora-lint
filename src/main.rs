@@ -116,7 +116,7 @@ fn run() -> Result<i32> {
         .arg(
             Arg::new("compile_commands")
                 .long("compile-commands")
-                .help("Read include search paths and -D macros from a compile_commands.json (optional; improves cross-file macro/header coverage for projects that already have a compile database)")
+                .help("Read include search paths, -D macros and the build's declared macro state from a compile_commands.json (optional; improves cross-file macro/header coverage, and resolves a name defined in several #if arms to the one this build compiles). Never suppresses findings by configuration")
                 .value_name("FILE"),
         )
         .arg(

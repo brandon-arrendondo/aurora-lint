@@ -47,9 +47,15 @@ pub enum MacroGapKind {
     PasteDefinition,
     /// Skipped because its parameter list never closes.
     MalformedDefinition,
-    /// Dropped because it sits in a branch the assumed platform profile
-    /// (POSIX) never compiles — `#ifdef _WIN32`, `#ifdef _MSC_VER`, ...
-    /// Right for a POSIX build; the whole story for nothing else.
+    /// Dropped because it sits in a branch the scan's assumed configuration
+    /// never compiles — `#ifdef _WIN32` under the default POSIX profile, or an
+    /// arm a `--compile-commands` declaration rules out. Right for the
+    /// configuration assumed; the whole story for nothing else.
+    ///
+    /// The name is narrower than the kind: about half of these rows are arms
+    /// the file itself proves dead, with no assumption involved. Splitting them
+    /// needs the substrate's `DeadCodeReason`, which `DeadRegions` currently
+    /// discards — aurora_lint task 1429.
     PlatformDeadDefinition,
     /// The same name has more than one live definition in one file, under
     /// conditions the platform profile cannot settle (`#ifdef WPA_TRACE`).
@@ -83,7 +89,7 @@ impl MacroGapKind {
             MacroGapKind::PasteDefinition => "macro definitions using # / ## (never expanded)",
             MacroGapKind::MalformedDefinition => "macro definitions the scanner could not parse",
             MacroGapKind::PlatformDeadDefinition => {
-                "macro definitions dropped as platform-dead under the POSIX profile"
+                "macro definitions dropped as dead under the scan's assumed configuration"
             }
             MacroGapKind::AmbiguousDefinition => {
                 "macros defined more than once in one file (first definition used)"
@@ -166,8 +172,8 @@ pub fn audit_definitions(source: &str, file: &str) -> DefinitionAudit {
                 file: file.to_string(),
                 line: def.line,
                 name: def.name,
-                detail: "inside a conditional branch the assumed POSIX platform never compiles; \
-                         definition dropped"
+                detail: "inside a conditional branch the scan's assumed configuration never \
+                         compiles; definition dropped"
                     .to_string(),
                 count: 1,
             });
