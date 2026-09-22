@@ -1606,6 +1606,74 @@ fn body_has_deref_write(body_text: &str, param_name: &str) -> bool {
     false
 }
 
+/// True when `param_name` is dereferenced through a pointer cast --
+/// `*(int *)param` (a `*` right before the cast) or `((int *)param)->field` /
+/// `((int *)param)[i]` (the cast wrapped in an outer paren immediately
+/// followed by `->`/`[`) -- as opposed to a cast merely used as a value, e.g.
+/// `callee(x, (int *)param)` or `void *q = (int *)param;`.
+///
+/// A prior version matched the bare substring `"*){param}"`, which is
+/// present in EVERY pointer cast of `param` regardless of what happens to
+/// the cast result. That made a cast forwarding `param` as a plain call
+/// argument look identical to a real dereference: curl's
+/// `curlx_inet_pton(af, src, dst)` (built as a thin wrapper when the
+/// platform lacks a real `inet_pton`) does
+/// `return inet_pton4(src, (unsigned char *)dst);` -- a cast used only to
+/// forward `dst` to a helper that `memcpy`-writes it, the textbook
+/// output-parameter shape. The substring match alone put `dst` in
+/// `dereferences_params`, and since nothing in this function directly
+/// writes `dst` either (the write happens two calls deep, through
+/// `inet_pton4`), `build_read_only_deref_fns` (EXP33-C) subtracted an empty
+/// `modifies_params` and concluded `curlx_inet_pton` reads `dst` without
+/// writing it -- backwards. Confirmed by reproduction, not just reading:
+/// removing the cast, or removing the forward entirely, both removed the
+/// finding (task 1419, aurora_lint).
+fn cast_then_deref(body_text: &str, param_name: &str) -> bool {
+    let needle = format!("*){param_name}");
+    let bytes = body_text.as_bytes();
+    let mut search_from = 0usize;
+    while let Some(rel) = body_text[search_from..].find(&needle) {
+        let star_idx = search_from + rel;
+        let close_paren = star_idx + 1; // the ')' right after the cast's '*'
+
+        // Walk backward from the cast's ')' to its matching '(', balancing
+        // any nested parens in the type name (e.g. a function-pointer cast).
+        let mut depth = 1i32;
+        let mut i = close_paren;
+        let mut open_paren = None;
+        while i > 0 {
+            i -= 1;
+            match bytes[i] {
+                b')' => depth += 1,
+                b'(' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        open_paren = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(open) = open_paren else {
+            search_from = close_paren + 1;
+            continue;
+        };
+
+        let preceded_by_star = body_text[..open].trim_end().ends_with('*');
+        let after = &body_text[close_paren + 1 + param_name.len()..];
+        let wrapped_deref = after.trim_start().strip_prefix(')').is_some_and(|rest| {
+            let rest = rest.trim_start();
+            rest.starts_with("->") || rest.starts_with('[')
+        });
+        if preceded_by_star || wrapped_deref {
+            return true;
+        }
+        search_from = close_paren + 1;
+    }
+    false
+}
+
 /// Analyze how parameters are used in the function body. `body_text` may be
 /// a boundary-truncated slice of `body`'s source (see `analyze_function`);
 /// `collect_param_passthroughs` walks `body` itself and applies its own
@@ -3512,9 +3580,10 @@ fn analyze_param_usage(
         if body_text.contains(&format!("*{}", param_name))
             || body_text.contains(&format!("{}->", param_name))
             || body_text.contains(&format!("{}[", param_name))
-            // Cast-then-deref pattern: (type *)param — used for void* params
-            // where the cast result is subsequently dereferenced.
-            || body_text.contains(&format!("*){}", param_name))
+            // Cast-then-deref pattern: `*(type *)param` or
+            // `((type *)param)->field`/`[i]` -- a genuine dereference of a
+            // cast, not merely a cast used as a value (see `cast_then_deref`).
+            || cast_then_deref(body_text, param_name)
         {
             summary.dereferences_params.insert(idx);
         }
