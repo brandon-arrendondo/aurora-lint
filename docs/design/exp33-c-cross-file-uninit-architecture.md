@@ -1,8 +1,13 @@
 # EXP33-C `check_cross_file_uninit_calls`: What a Correct Check Needs (task 1419)
 
-**Status:** PROPOSAL, not yet implemented. First worked example for the
-broader rule-architecture sweep (task 1434). No code in this repo changed as
-part of this doc.
+**Status:** IMPLEMENTED. (a) landed as task 1437 (`50fb0681`), (b) as task
+1442 (`9ed4c319`), (d) as task 1444 (`1e180eb0`) — its mbedtls half; its lua
+half turned out to be a distinct InitState gap (checked-return-value
+correlation with a conditional write, not a naming convention) and was split
+into task 1450 (`c9da0945`). (c) was declined as recommended below. See §6
+for the outcome and what it implies for the rest of task 1434's sweep — this
+doc is that sweep's first worked example, referenced rather than repeated by
+`docs/design/rule-architecture-sweep.md`.
 
 ## 1. The question
 
@@ -190,3 +195,44 @@ isolated, immediately measurable), then (b), then re-measure before deciding
 whether (d) is still worth scoping given the FP shape that remains. Each
 becomes its own scoped task per Brandon's ruling, not implemented as part of
 this proposal.
+
+## 6. Outcome (task 1434 sweep note)
+
+Each piece landed as its own task, in the sequence recommended above, each
+verified by revert-confirmation (stash the fix, rebuild, confirm the fixture
+WOULD have been flagged; restore) and a local finding-count A/B against this
+checkout's own `data/benchmarks.db` (never cited as an official measurement
+— see CLAUDE.md's benchmark-workflow section; official A/B +
+delta-adjudication is still owed to a VLAN30-capable node):
+
+| Piece | Task | Commit | Local EXP33-C delta |
+|---|---|---|---|
+| (a) MUST-write propagation, not the MAY set | 1437 | `50fb0681` | 1489 → 1473 (-16) |
+| (b) honest three-state (indirect-call) classification | 1442 | `9ed4c319` | 1473 → 1468 (-5) |
+| (d) out-param/init-function convention gaps (mbedtls `_init` family) | 1444 | `1e180eb0` | 1468 → 1446 (-22) |
+| (d)'s lua half, split off as its own InitState gap | 1450 | `c9da0945` | -2 (lua only, direct real-world confirmation) |
+| **Total** | | | **1489 → 1444 (-45, -3.0%)** |
+
+(c) was declined as recommended, no rearchitecture attempted.
+
+Two things worth carrying into the rest of the sweep:
+
+- **§3's three-mechanism split held up.** What looked at first like one
+  "cross-file read-only classification is wrong" problem was actually three
+  independent bugs/gaps with three independent fixes and three independent
+  measured deltas. A rule family flagged for the sweep's bucket (C)
+  ("needs rearchitecture") is worth this same decomposition before
+  committing to a rearchitecture — (b) looked like it might need real
+  points-to analysis until the actual FP mechanism (indirection reaching an
+  *already-marked-ambiguous* call, not an *unresolved* one) turned out to be
+  answerable with a bounded new fact instead.
+- **A design doc's own hypothesis needs re-verification against the real
+  callee, every time**, even when the hypothesis is this doc's own. (b)'s
+  proposal assumed `writes_on_all_paths`/`modifies_params_pending` might
+  already catch indirect dispatch; tracing hostap's actual
+  `hostapd_drv_read_sta_data` showed the coverage-proof walk requires a
+  matched `if`/`else`, so a bare `if (cond) return err;` guard (hostap's
+  actual shape) never even raised the obligation — a different, independent
+  fact (`forwards_to_indirect_call`) was needed. Task 1450 repeated the
+  pattern: filed from tracing lua's *real* `lua_getstack`/`lua_getlocal`
+  pair, not from the naming-convention framing task 1444 was given.
