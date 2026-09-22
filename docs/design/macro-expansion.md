@@ -362,7 +362,11 @@ is fragile and prefix/structural rules generalize better (the Phase 2 lesson).
 - Do any current TPs depend on the *absence* of expansion (i.e. a real bug that
   only shows when the macro is opaque)? Must verify none before Phase 2.
 - Interaction with conditional compilation (§3.7): which `#if` branch is "live"
-  when a macro has multiple definitions? Out of scope for Phases 1–3.
+  when a macro has multiple definitions? Out of scope for Phases 1–3. Scoped
+  and measured in `docs/design/multi-configuration-scanning.md` (task 1422,
+  2026-09-22): still open as *code*, but no longer open as a *design* question
+  — that note recommends a declared macro-state table plus alternative
+  retention over configuration enumeration, and names the cheap follow-ups.
 
 ---
 
@@ -717,5 +721,10 @@ arm counts as evidence that it is defined (a `lang_parsing_substrate`
 question, not this repo's); and `UNUSED` was an unknown callee across the
 broker until `-I .` reached the root `config.h`. §9's open question about
 which `#if` branch is "live" is still open — this makes its cost visible per
-scan rather than answering it.
+scan rather than answering it. That cost has since been measured from these
+reports across all twelve corpora, with a recommendation, in
+`docs/design/multi-configuration-scanning.md` (task 1422); §6 there also notes
+that the `platform-dead-definition` kind over-attributes, since `DeadRegions`
+discards the substrate's `DeadCodeReason` and about half of those rows are arms
+the file itself proves dead.
 
