@@ -1,7 +1,9 @@
 # Multiply-defined names: which file's definition answers for a caller
 
 **Status:** In progress (aurora_lint task 1385). Increment 1 (linkage) has
-landed with tests; increments 2 and 3 are scoped here and not built.
+landed with tests; increment 2 has been built twice and landed neither time
+(§5 says what each attempt measured and why); increment 3 is scoped, not
+built.
 Companion to `multi-configuration-scanning.md`, which asks the same
 resolution question one level down: that note is about which **arm** of one
 file's `#if` wins, this one is about which **file** wins. Neither changes
@@ -156,8 +158,13 @@ finding-count change.
 
 ## 5. Increment 2: a static definition answers only in its own file
 
-Not built. This is the decidable half of what is left, and the "two statics"
-column above is its population.
+Built twice, landed neither time, and the reason is the finding this section
+exists for: **scoping a `static` to its file is not a change to the summary
+table, it is a change to the key of the whole interprocedural layer.** Every
+stage of the prescan resolves a callee by its bare name, and threading a
+`(file, name)` key through one stage only moves the problem to the next.
+This is the decidable half of what is left, and the "two statics" column
+above is its population.
 
 Two `static` definitions of one name in different files are two unrelated
 functions. Today one of them answers for every caller in the project; the
@@ -197,9 +204,80 @@ specialized context copies one table for a handful of files. Check
 `global_constants`, which is a bare `HashMap` rather than an `Arc`, before
 cloning the struct per file.
 
-What a caller in *neither* defining file should be told is the open question:
-nothing (it cannot legally call either) is the sound answer, and is where
-option (b) belongs.
+What a caller in *neither* defining file should be told is settled by the
+same reasoning: nothing. It cannot legally call either definition, so the
+name has no project-wide entry unless some file also defines it externally,
+and the rules' no-context behaviour is what "unknown callee" already means
+everywhere else. This is the one place option (b) belongs.
+
+### What two attempts measured
+
+**Attempt 1** put each file's definition in a side table filled during the
+per-file fold. sqlite lost 9 EXP34-C keys, 0 added, every one inside a
+`static void usage(const char *argv0)` body. Not the intended effect: a
+side-table summary never passes through **phase 4**, where the call-site
+aggregation runs, so a scoped definition reached the rules with its real
+`dereferences_params` and an empty `callsite_param_null_states`.
+
+That attempt did surface something worth keeping. sqlite defines `usage` as
+a `static` in **79** files, and today every one of their call sites is pooled
+into a single aggregate under the bare name. The pooling is wrong for exactly
+the reason the summary pick is, and nothing made it visible until the scoping
+separated them.
+
+**Attempt 2** folded a scoped definition under a `file\0name` key *inside*
+the ordinary summary table and qualified that file's call sites to match, so
+phase 4 aggregates each definition from its own file alone; a drain step
+after phase 4 moves them out, so no consumer sees a qualified key. The unit
+test pins the property: two files each defining `static report`, one only
+ever handed an array, and only that file's summary proves the parameter
+non-NULL.
+
+It still is not enough, and pure-ftpd says why. `sqlsubst` is `static` in
+both `log_mysql.c` and `log_pgsql.c`. Measured, one arm at a time:
+
+| | `callsite_param_null_states` for `sqlsubst` |
+|---|---|
+| before | `{0: NotNull, 1: NotNull, 3..7: PossiblyNull}` |
+| after (each file) | `{0: NotNull, 1: NotNull}` |
+
+Params 3–7 are `user`, `ip`, `port`, `peer_ip`, `decimal_ip`, and their
+`PossiblyNull` came from `propagate_param_null_states` — a phase-4 pass that
+**re-parses every source file** and re-derives call sites keyed by bare name,
+seeding each caller's own parameter states as it goes. Its snapshot is keyed
+by name, so a qualified entry is invisible to it and the propagation stops
+reaching the definition it belongs to. The caller (`pw_mysql_getquery`) is in
+the *same file* as the callee, so this propagation was never the cross-file
+pooling problem — losing it is an artifact of a half-threaded key, not a
+correction. Those 10 removals are the artifact.
+
+The intended effect does show where propagation is not involved: mbedtls
+gains API00-C at `psa_crypto_aead.c:318` and `:339` (`mbedtls_psa_aead_*_setup`
+does not validate `attributes`), because that file's own `psa_aead_setup`
+finally answers for it instead of `psa_crypto.c`'s. That is the acceptance-set
+name, behaving as 1385 asks.
+
+Totals across all twelve corpora for attempt 2, one arm at a time, local
+numbers and not project figures: 33 keys removed, 46 added. Mixed cause, so
+not landable — a half-threaded key trades one arbitrary answer for a
+differently wrong one.
+
+### What finishing it needs
+
+Three stages, in the order they undo each other:
+
+1. the per-file fold — done in attempt 2;
+2. the phase-4 aggregation passes — done in attempt 2, via the qualified key;
+3. the propagation passes (`propagate_param_null_states`,
+   `propagate_param_buffer_sizes`) and the collectors they call, which
+   re-derive call sites from source by bare name and look the enclosing
+   function up the same way. They iterate files, so the file is in hand;
+   what they lack is the mapping, and a per-file view of the name→state
+   snapshot for the ~164 files that need one.
+
+Step 3 is where task 1385's option (c) — "key summaries per definition" —
+stops being a table change and becomes the layer's key. Worth doing with that
+stated, rather than discovered a stage at a time.
 
 ## 6. What increment 3 cannot decide, and should not pretend to
 
