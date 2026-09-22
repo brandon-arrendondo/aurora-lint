@@ -1,3 +1,4 @@
+use crate::analyze::argument_objects::argument_nodes;
 use crate::manifest::{RuleCategory, Severity};
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
@@ -142,54 +143,9 @@ impl ENV30C {
         source: &str,
         protected_vars: &HashMap<String, String>,
     ) -> Option<(String, String)> {
-        let text = get_node_text(node, source);
-
-        // Check for pointer-returning string functions
-        let pointer_funcs = ["strchr", "strrchr", "strstr", "strpbrk", "memchr"];
-
-        for func in &pointer_funcs {
-            if text.contains(&format!("{}(", func)) {
-                // Extract the variable name from the declaration
-                if let Some(var_name) = self.extract_var_name_from_declaration(node, source) {
-                    // Check if any protected variable is used as the first argument
-                    for (prot_var, orig_func) in protected_vars.iter() {
-                        // Use word boundary matching to avoid substring false positives
-                        // e.g., "lang" should not match "lang_copy"
-                        if self.is_protected_var_in_call(&text, func, prot_var) {
-                            return Some((var_name, orig_func.clone()));
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Check if a protected variable is used as the first argument in a function call
-    /// Uses word boundary checking to avoid substring matches
-    fn is_protected_var_in_call(&self, text: &str, func: &str, var_name: &str) -> bool {
-        // Look for pattern: func(var_name followed by , or )
-        let pattern_comma = format!("{}({},", func, var_name);
-        let pattern_paren = format!("{}({})", func, var_name);
-        let pattern_space_comma = format!("{}({} ,", func, var_name);
-        let pattern_space_paren = format!("{}({} )", func, var_name);
-
-        if text.contains(&pattern_comma)
-            || text.contains(&pattern_paren)
-            || text.contains(&pattern_space_comma)
-            || text.contains(&pattern_space_paren)
-        {
-            return true;
-        }
-
-        // Also check with whitespace after opening paren
-        let pattern_ws_comma = format!("{}( {},", func, var_name);
-        let pattern_ws_paren = format!("{}( {})", func, var_name);
-        if text.contains(&pattern_ws_comma) || text.contains(&pattern_ws_paren) {
-            return true;
-        }
-
-        false
+        let orig_func = self.derived_pointer_provenance(node, source, protected_vars)?;
+        let var_name = self.extract_var_name_from_declaration(node, source)?;
+        Some((var_name, orig_func))
     }
 
     /// Check if this assignment creates a derived pointer from a protected variable
@@ -199,23 +155,59 @@ impl ENV30C {
         source: &str,
         protected_vars: &HashMap<String, String>,
     ) -> Option<(String, String)> {
-        let text = get_node_text(node, source);
+        let orig_func = self.derived_pointer_provenance(node, source, protected_vars)?;
+        let left = node.child_by_field_name("left")?;
+        let var_name = get_node_text(&left, source).trim().to_string();
+        Some((var_name, orig_func))
+    }
 
-        let pointer_funcs = ["strchr", "strrchr", "strstr", "strpbrk", "memchr"];
-
-        for func in &pointer_funcs {
-            if text.contains(&format!("{}(", func)) {
-                // Extract variable name from left side
-                if let Some(left) = node.child_by_field_name("left") {
-                    let var_name = get_node_text(&left, source).trim().to_string();
-                    // Check if any protected variable is used as the first argument
-                    for (prot_var, orig_func) in protected_vars.iter() {
-                        // Use word boundary matching to avoid substring false positives
-                        if self.is_protected_var_in_call(&text, func, prot_var) {
-                            return Some((var_name, orig_func.clone()));
-                        }
-                    }
-                }
+    /// The provenance a derived pointer inherits: `strchr` and its
+    /// neighbours return a pointer INTO the object they are handed, so
+    /// `strchr(env, '=')` where `env` came from `getenv()` points into the
+    /// environment string and writing through it is the same violation.
+    ///
+    /// Resolved on the AST, for the reason
+    /// [`Self::find_protected_function_call`] documents at length: the pair
+    /// of text scans this replaced asked whether the node's source range
+    /// contained `strchr(` and then whether it contained `strchr(env,`,
+    /// and a node's range includes its comments and its longer identifiers,
+    /// so a `/* like strchr(p, c) */` or a call to some `utf8_strchr` read
+    /// as the real thing. Nothing was observed firing from it on the
+    /// current corpora -- this is the same bug class in the same file,
+    /// closed before it costs a finding (aurora_lint 1433).
+    ///
+    /// Matching the argument as a node rather than as text also drops the
+    /// four spelling patterns the old check enumerated: a call split
+    /// across lines, or written `strchr( env , '=')`, is one AST either
+    /// way.
+    fn derived_pointer_provenance(
+        &self,
+        node: &Node,
+        source: &str,
+        protected_vars: &HashMap<String, String>,
+    ) -> Option<String> {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            let Some(func) = call.child_by_field_name("function") else {
+                continue;
+            };
+            if func.kind() != "identifier"
+                || !self.is_pointer_returning_function(get_node_text(&func, source))
+            {
+                continue;
+            }
+            let Some(args) = call.child_by_field_name("arguments") else {
+                continue;
+            };
+            // The first argument is the object searched; a protected
+            // variable in any later position (the needle) is only read.
+            let Some(first) = argument_nodes(&args).into_iter().next() else {
+                continue;
+            };
+            if first.kind() != "identifier" {
+                continue;
+            }
+            if let Some(orig_func) = protected_vars.get(get_node_text(&first, source)) {
+                return Some(orig_func.clone());
             }
         }
         None
