@@ -3424,9 +3424,22 @@ fn collect_early_return_null_guards(
                 if let Some(condition) = child.child_by_field_name("condition") {
                     // Check if consequence contains a return statement (early exit)
                     if has_early_return_consequence(&child) {
+                        let consequence = child.child_by_field_name("consequence");
                         // Extract variable names from null-check condition
                         for var_name in extract_null_checked_vars(&condition, source) {
-                            states.insert(var_name, NullState::NotNull);
+                            // `states` is a flat, whole-function map that
+                            // `collect_calls_with_locals` applies uniformly to every
+                            // call site in the body, including ones inside this very
+                            // branch. If the early-return branch itself uses the
+                            // guarded variable (`if (!p) return f(p);`), that use is
+                            // evaluated while p may still be null, so crediting
+                            // NotNull here would leak the wrong state into it.
+                            let used_in_branch = consequence
+                                .map(|c| node_references_identifier(&c, source, &var_name))
+                                .unwrap_or(false);
+                            if !used_in_branch {
+                                states.insert(var_name, NullState::NotNull);
+                            }
                         }
                     }
                 }
@@ -3450,6 +3463,25 @@ fn node_contains_return(node: &Node) -> bool {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if node_contains_return(&child) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True if `node`'s subtree contains an identifier equal to `var_name`.
+fn node_references_identifier(node: &Node, source: &str, var_name: &str) -> bool {
+    if node.kind() == "identifier" {
+        if let Ok(text) = node.utf8_text(source.as_bytes()) {
+            if text == var_name {
+                return true;
+            }
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if node_references_identifier(&child, source, var_name) {
                 return true;
             }
         }
@@ -3571,9 +3603,18 @@ fn guarded_nonnull_after(stmt: &Node, var: &str, source: &str) -> bool {
     {
         return false;
     }
-    guard
-        .child_by_field_name("consequence")
-        .is_some_and(|c| guard_dominance::always_diverges(&c))
+    let Some(consequence) = guard.child_by_field_name("consequence") else {
+        return false;
+    };
+    // The diverging branch's own expression can still use `var` while it is
+    // still null (`if (!p) return f(p);`) -- crediting NotNull here would
+    // leak into that same still-null use, since this flat, whole-function
+    // state is applied uniformly to every call site in the body, including
+    // ones inside the branch itself.
+    if node_references_identifier(&consequence, source, var) {
+        return false;
+    }
+    guard_dominance::always_diverges(&consequence)
 }
 
 /// True when `condition` evaluating TRUE implies `var` is non-null: a bare
@@ -7195,6 +7236,25 @@ void caller(void) {
     if (!data) {
         sink(data);
     }
+}
+"#;
+        assert_eq!(sink_arg0_state(code), NullState::DefinitelyNull);
+    }
+
+    #[test]
+    fn test_early_return_arg_itself_does_not_vote_not_null() {
+        // aurora_lint 1426: `if (!data) return sink(data);` -- the risky call
+        // is the RETURN STATEMENT'S OWN ARGUMENT, evaluated inside the branch
+        // where data is still null, not after the guard.
+        // has_early_return_consequence sees a return anywhere in the
+        // consequence and used to credit NotNull unconditionally; since
+        // `local_states` is a flat, whole-function map applied to every call
+        // site in the body, that leaked into this same still-null use.
+        let code = r#"
+void caller(void) {
+    char *data = 0;
+    if (!data)
+        return sink(data);
 }
 "#;
         assert_eq!(sink_arg0_state(code), NullState::DefinitelyNull);
