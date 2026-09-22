@@ -69,14 +69,20 @@ use super::context::ProjectContext;
 use crate::parser::CParser;
 
 /// One raw entry of a `compile_commands.json` array, per the LLVM JSON
-/// Compilation Database spec. `file` is intentionally not deserialized: this
-/// module unions every entry's flags into one search list rather than scoping
-/// them per translation unit (see the module docs).
+/// Compilation Database spec. `file` is read only to record which translation
+/// units the build compiles; flags are still unioned across entries rather
+/// than scoped per TU (see the module docs).
 #[derive(Debug, Deserialize)]
 struct RawEntry {
     /// Working directory the command was run from. Relative `-I` paths in this
     /// entry resolve against it.
     directory: String,
+    /// The translation unit this entry compiles. Not used to scope flags —
+    /// the module unions them (see the module docs) — but recorded so the
+    /// scan can tell which sources the declared configuration actually builds
+    /// ([`CompileDb::uncovered_sources`]).
+    #[serde(default)]
+    file: Option<String>,
     /// The command as a single shell string (`command` form).
     #[serde(default)]
     command: Option<String>,
@@ -134,6 +140,10 @@ pub struct CompileDb {
     /// word of `command`), deduplicated. Used to locate the built-in system
     /// header directories a compile DB never lists.
     pub compilers: Vec<String>,
+    /// Absolute paths of the translation units the database compiles — the
+    /// source files that *are* the declared configuration. A database lists
+    /// compiled TUs only, so this never contains a header.
+    pub configured_sources: HashSet<String>,
 }
 
 impl CompileDb {
@@ -184,6 +194,10 @@ impl CompileDb {
             }
 
             let base = Path::new(&entry.directory);
+            if let Some(file) = &entry.file {
+                db.configured_sources
+                    .insert(real_path(&absolutize(base, file)));
+            }
             for flag in parse_flags(&argv) {
                 match flag {
                     Flag::Include(dir) => {
@@ -285,6 +299,35 @@ impl CompileDb {
             state.insert(name.clone(), false);
         }
         state
+    }
+
+    /// Scanned `.c` files the database does not compile — sources outside the
+    /// declared configuration.
+    ///
+    /// Why this is worth reporting: the declaration
+    /// ([`Self::declared_macro_state`]) is installed once per scan, while a
+    /// database describes one translation unit per entry. A source the build
+    /// does not compile is still scanned (ADR-0010 Decision 1: a finding in any
+    /// arm some configuration compiles is reported), but its conditional
+    /// definitions are then resolved under a configuration that excludes it —
+    /// so a name defined only in an arm that configuration rules out resolves
+    /// to nothing at all. hostap scanned with a `defconfig`-derived database is
+    /// the worked example in `docs/design/multi-configuration-scanning.md` §7.
+    ///
+    /// Headers are deliberately not counted: a compile database lists compiled
+    /// TUs only, so *every* header is "uncovered" and reporting them would say
+    /// nothing. A header's conditional definitions should follow the
+    /// declaration — that is where the declaration earns its keep.
+    pub fn uncovered_sources<'a>(&self, scanned: &'a [String]) -> Vec<&'a str> {
+        if self.configured_sources.is_empty() {
+            return Vec::new();
+        }
+        scanned
+            .iter()
+            .filter(|p| p.ends_with(".c"))
+            .filter(|p| !self.configured_sources.contains(&real_path(Path::new(p))))
+            .map(|p| p.as_str())
+            .collect()
     }
 
     /// Merge the command-line macro state into `context`, filling only names
@@ -430,6 +473,16 @@ fn define_flag(attached: &str, argv: &[String], i: &mut usize) -> Option<Flag> {
 /// alone. The result is not canonicalized: a compile DB can name directories
 /// that no longer exist, and `resolve_includes` already tolerates a search path
 /// that does not resolve.
+/// A path in the one spelling both sides of a comparison can agree on:
+/// canonicalized when the file is really there, and the path as written when
+/// it is not (a database from another host, or a unit test's fake tree).
+fn real_path(p: &Path) -> String {
+    std::fs::canonicalize(p)
+        .unwrap_or_else(|_| p.to_path_buf())
+        .to_string_lossy()
+        .to_string()
+}
+
 fn absolutize(base: &Path, dir: &str) -> PathBuf {
     let p = Path::new(dir);
     if p.is_absolute() {
@@ -585,11 +638,13 @@ mod tests {
         let entries = vec![
             RawEntry {
                 directory: "/p".into(),
+                file: None,
                 command: Some("cc -DFOO=1 -DKEEP=2 -c a.c".into()),
                 arguments: None,
             },
             RawEntry {
                 directory: "/p".into(),
+                file: None,
                 command: Some("cc -UFOO -c b.c".into()),
                 arguments: None,
             },
@@ -603,6 +658,7 @@ mod tests {
     fn relative_include_paths_resolve_against_entry_directory() {
         let entries = vec![RawEntry {
             directory: "/proj/build".into(),
+            file: None,
             command: Some("cc -I../src -I/abs/inc -c a.c".into()),
             arguments: None,
         }];
@@ -615,11 +671,13 @@ mod tests {
         let entries = vec![
             RawEntry {
                 directory: "/p".into(),
+                file: None,
                 command: Some("cc -Ia -Ib -c a.c".into()),
                 arguments: None,
             },
             RawEntry {
                 directory: "/p".into(),
+                file: None,
                 command: Some("cc -Ib -Ic -c b.c".into()),
                 arguments: None,
             },
@@ -633,6 +691,7 @@ mod tests {
     fn arguments_form_wins_over_command_form() {
         let entries = vec![RawEntry {
             directory: "/p".into(),
+            file: None,
             command: Some("cc -Ifrom_command -c a.c".into()),
             arguments: Some(argv(&["cc", "-Ifrom_arguments", "-c", "a.c"])),
         }];
@@ -645,16 +704,19 @@ mod tests {
         let entries = vec![
             RawEntry {
                 directory: "/p".into(),
+                file: None,
                 command: Some("/usr/bin/cc -c a.c".into()),
                 arguments: None,
             },
             RawEntry {
                 directory: "/p".into(),
+                file: None,
                 command: Some("/usr/bin/cc -c b.c".into()),
                 arguments: None,
             },
             RawEntry {
                 directory: "/p".into(),
+                file: None,
                 command: Some("arm-none-eabi-gcc -c c.c".into()),
                 arguments: None,
             },
@@ -684,11 +746,13 @@ mod tests {
         let entries = vec![
             RawEntry {
                 directory: "/p".into(),
+                file: None,
                 command: None,
                 arguments: None,
             },
             RawEntry {
                 directory: "/p".into(),
+                file: None,
                 command: Some("cc -Iinc -c a.c".into()),
                 arguments: None,
             },
@@ -811,6 +875,7 @@ mod tests {
         let entries = vec![
             RawEntry {
                 directory: "/p".into(),
+                file: None,
                 command: Some("cc -DNDEBUG -DCONFIG_SAE=1 -DZERO=0 -UCONFIG_GAS -c a.c".into()),
                 arguments: None,
             },
@@ -819,6 +884,7 @@ mod tests {
             // rather than merely omitting it.
             RawEntry {
                 directory: "/p".into(),
+                file: None,
                 command: Some("cc -UCONFIG_SAE -c b.c".into()),
                 arguments: None,
             },
@@ -844,9 +910,45 @@ mod tests {
     }
 
     #[test]
+    fn uncovered_sources_names_scanned_c_files_the_build_does_not_compile() {
+        let entries = vec![RawEntry {
+            directory: "/p".into(),
+            file: Some("built.c".into()),
+            command: Some("cc -DFOO -c built.c".into()),
+            arguments: None,
+        }];
+        let db = CompileDb::from_entries(&entries);
+        let scanned = vec![
+            "/p/built.c".to_string(),
+            "/p/not_built.c".to_string(),
+            // A header is never a database entry, so counting it would report
+            // every header in the tree and mean nothing.
+            "/p/header.h".to_string(),
+        ];
+        assert_eq!(db.uncovered_sources(&scanned), vec!["/p/not_built.c"]);
+    }
+
+    #[test]
+    fn uncovered_sources_is_empty_when_the_database_names_no_files() {
+        // `file` is optional in our reader; a database without it says nothing
+        // about which sources the build compiles, so nothing is "uncovered".
+        let entries = vec![RawEntry {
+            directory: "/p".into(),
+            file: None,
+            command: Some("cc -DFOO -c a.c".into()),
+            arguments: None,
+        }];
+        let db = CompileDb::from_entries(&entries);
+        assert!(db
+            .uncovered_sources(&["/p/a.c".to_string(), "/p/b.c".to_string()])
+            .is_empty());
+    }
+
+    #[test]
     fn declared_macro_state_is_empty_for_a_database_with_no_macro_flags() {
         let entries = vec![RawEntry {
             directory: "/p".into(),
+            file: None,
             command: Some("cc -I/inc -c a.c".into()),
             arguments: None,
         }];

@@ -152,6 +152,27 @@ pub fn analyze_project(
 
     let c_files = collect_c_files(project_source, diff_only, excludes)?;
     let total_files = c_files.len();
+
+    // A declaration is per scan; a database is per translation unit. Sources
+    // the build does not compile are still scanned (ADR-0010 Decision 1) but
+    // get their names resolved under a configuration that excludes them, which
+    // can leave a name defined only in a ruled-out arm resolving to nothing.
+    // Say so rather than let it look like ordinary imprecision; scoping the
+    // declaration per TU is aurora_lint 1432.
+    if let Some(db) = compile_db {
+        let uncovered = db.uncovered_sources(&c_files);
+        if !uncovered.is_empty() && !db.declared_macro_state().is_empty() {
+            eprintln!(
+                "Warning: {} of {} scanned .c files are not compiled by the database's \
+                 configuration (e.g. {}). They are still analysed, but their conditional \
+                 definitions resolve under a configuration that excludes them, so a macro \
+                 defined only in an arm that configuration rules out will not resolve at all.",
+                uncovered.len(),
+                c_files.iter().filter(|p| p.ends_with(".c")).count(),
+                uncovered[0],
+            );
+        }
+    }
     let mut suppression_manager = build_suppression_manager(suppress_file, project_source);
 
     // Independent of the rules: it reads the same files and context, so it

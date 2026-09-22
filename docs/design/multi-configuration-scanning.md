@@ -313,14 +313,46 @@ side-effects are not followed):
 
 The asymmetry is structural, not a tuning problem: a compile database is
 per-translation-unit and the profile is per scan, so a file outside the declared
-configuration gets resolved under a configuration that excludes it. The fix is
-to scope the declaration the way the database is scoped — a file with no entry
-is not part of that configuration and should resolve under the default profile —
-which needs `RawEntry::file` (deliberately not deserialized today) threaded to
-the per-file collectors. Filed as a follow-up; **not** worth trading for the
-tempting cheap version, "only apply the declaration where the name has another
-live definition in the file", which would have kept both dropped constants and
-also kept the no-op `wpa_printf`, losing the entire payoff above.
+configuration gets resolved under a configuration that excludes it.
+
+**The obvious fix is wrong, and worth writing down as such** (task 1432). "Scope
+the declaration the way the database is scoped: a file with no entry resolves
+under the default profile" fails on the first file it meets, because **a compile
+database contains compiled translation units only — never a header**. Every
+definition this mechanism exists to arbitrate lives in a header
+(`wpa_debug.h`'s no-op `wpa_printf`, `wpa_ctrl.h`'s port constants,
+`common.h`'s `u16`), so sending uncovered files to the default profile would
+send *all* headers there and give back the entire payoff. Two cheap variants
+fail for the same underlying reason:
+
+- *Resolve a header under the declaration and an uncovered `.c` under the
+  default.* The definitions are in the headers either way; the consuming `.c`
+  file's own text rarely contains them, so this changes almost nothing.
+- *Never let the declaration remove the only definition of a name.* This keeps
+  `WPA_CTRL_IFACE_PORT`, but the no-op `wpa_printf` is also the only **macro**
+  definition of its name (the live alternative is a real prototype, not a
+  `#define`), so it comes back and the 424-row win goes.
+
+What the evidence actually says is that **membership is a property of the
+consumer, not of the definition**: `ctrl_iface_udp.c` needs
+`CONFIG_CTRL_IFACE_UDP` defined to make sense, and every in-configuration file
+needs it undefined. No single table serves both, so a correct fix needs *two*
+resolutions of the profile-sensitive tables — the declared one and the default
+one — with each analysed file reading the one that matches its membership. That
+is bounded (k=2, not 2^n) and the profile only affects four tables (typedef
+aliases, macro constants, macro aliases, function macros), so the second pass is
+a macro/typedef re-collection rather than a second full prescan with its CFGs
+and function summaries. It still costs a second set of those tables in memory
+and a second line-scan of every prescanned file, for a delta measured at 3
+findings in 60,401 on hostap — which is why it is written down here rather than
+built on the strength of that number alone.
+
+What shipped for 1432 instead is the part that is right regardless: the scan now
+**warns** when a declaration is in force and names how many scanned `.c` files
+the database does not compile, so the incoherence is visible at the point it
+starts mattering instead of looking like ordinary imprecision. Headers are
+excluded from that count deliberately — every header is uncovered, and saying so
+would mean nothing.
 
 On mosquitto, with a declaration derived from `config.mk`'s own defaults, the
 finding set is byte-identical and exactly one resolution changes:
