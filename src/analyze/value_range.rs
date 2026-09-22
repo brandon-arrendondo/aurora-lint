@@ -494,6 +494,30 @@ fn apply_unsigned_wrapping(range: ValueRange, vt: &VarType) -> ValueRange {
     }
 }
 
+/// Clip a range computed by raw arithmetic (`add`/`sub`/etc., which are only
+/// bounded by i64) back into what `var_type` can actually represent.
+///
+/// Without this, a range already widened to its type's full bounds (e.g. `i`
+/// at `[0, INT_MAX]` after a few loop iterations) drifts one past that bound
+/// the next time an unbounded `i++`/`i += n` transfer runs on it (`INT_MAX +
+/// 1`), producing a *different* exit state than the type-bounded one
+/// `maybe_widen` had just clamped it to. That difference makes the fixed-point
+/// convergence check (`old_exit != new_exit`) fail forever: each round trip
+/// widens back down and the raw arithmetic pushes back up by exactly the same
+/// amount, so the loop never reaches the `max_iterations` -bounded exit any
+/// other way, and only the hard cap ends it. Clamping here keeps a
+/// type-saturated range a fixed point of the transfer, not just of widening.
+fn clamp_to_type_range(range: ValueRange, var_type: &Option<VarType>) -> ValueRange {
+    let Some(vt) = var_type else {
+        return range;
+    };
+    let bounds = vt.full_range();
+    ValueRange::new(
+        range.min.clamp(bounds.min, bounds.max),
+        range.max.clamp(bounds.min, bounds.max),
+    )
+}
+
 /// Process a declaration, extracting type and initial value range.
 fn process_declaration_range(
     node: &Node,
@@ -690,7 +714,7 @@ fn process_simple_assignment_range(
     if let Some(raw_range) = const_eval::try_evaluate_range(right, source, macros, var_ranges) {
         let var_type = state.get(var_name).and_then(|t| t.var_type.clone());
         let range = match &var_type {
-            Some(vt) => apply_unsigned_wrapping(raw_range, vt),
+            Some(vt) => clamp_to_type_range(apply_unsigned_wrapping(raw_range, vt), &var_type),
             None => raw_range,
         };
         state.insert(var_name.to_string(), TypedRange { range, var_type });
@@ -747,6 +771,7 @@ fn process_compound_assignment_range(
     };
     if let Some(range) = new_range {
         let var_type = cur.var_type.clone();
+        let range = clamp_to_type_range(range, &var_type);
         state.insert(var_name.to_string(), TypedRange { range, var_type });
     }
 }
@@ -766,6 +791,7 @@ fn process_update_range(node: &Node, source: &str, state: &mut RangeMap) {
     };
     if let Some(range) = cur.range.add(&delta) {
         let var_type = cur.var_type.clone();
+        let range = clamp_to_type_range(range, &var_type);
         state.insert(var_name, TypedRange { range, var_type });
     }
 }
@@ -1629,10 +1655,25 @@ fn maybe_widen(
     let Some(old_entry) = entry_ranges.get(&block_id) else {
         return new_entry;
     };
-    let mut widened = new_entry.clone();
-    for (var, new_typed) in &new_entry {
+    // Widen against join(old, new), not `new` alone. A fresh join can be
+    // narrower than the entry this block already committed to last time --
+    // e.g. a sibling loop earlier in the same function reuses this block's
+    // loop variable and resets it to a small range, so this round's
+    // `new_entry` legitimately has a tighter bound than `old_entry` did.
+    // Comparing `new` straight to `old` and keeping whichever side "won" per
+    // dimension (the pre-existing behavior) can then make the widened result
+    // narrower than `old_entry`, which breaks the monotonicity widening is
+    // supposed to guarantee: the fixed-point check compares by structural
+    // equality, so a result that isn't a superset of every prior entry can
+    // cycle between the same few states forever instead of converging, and
+    // only the hard `max_iterations` cap ends it (task 1439). Joining first
+    // guarantees the value handed to `widen_typed` is always >= `old_entry`,
+    // so the result can only grow or stay put.
+    let joined = join_range_maps(old_entry, &new_entry);
+    let mut widened = joined.clone();
+    for (var, joined_typed) in &joined {
         if let Some(old_typed) = old_entry.get(var) {
-            widened.insert(var.clone(), widen_typed(old_typed, new_typed));
+            widened.insert(var.clone(), widen_typed(old_typed, joined_typed));
         }
     }
     widened
