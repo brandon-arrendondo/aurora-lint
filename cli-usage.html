@@ -331,35 +331,43 @@ the scan target) writes every row as JSON with a <code class="docutils literal n
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">variadic-definition</span></code>, <code class="docutils literal notranslate"><span class="pre">paste-definition</span></code>, <code class="docutils literal notranslate"><span class="pre">malformed-definition</span></code></p></td>
 <td><p>A function-like <code class="docutils literal notranslate"><span class="pre">#define</span></code> the collector will never expand, and why.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">platform-dead-definition</span></code></p></td>
-<td><p>Dropped because its branch never compiles under the assumed POSIX
-profile (<code class="docutils literal notranslate"><span class="pre">_MSC_VER</span></code>, <code class="docutils literal notranslate"><span class="pre">_WIN32</span></code>, <code class="docutils literal notranslate"><span class="pre">__vxworks</span></code>, …). Noise on a POSIX
-target; the whole story on any other.</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">assumed-dead-definition</span></code></p></td>
+<td><p>Dropped because its branch never compiles under the configuration the
+scan assumed — the POSIX profile (<code class="docutils literal notranslate"><span class="pre">_MSC_VER</span></code>, <code class="docutils literal notranslate"><span class="pre">_WIN32</span></code>,
+<code class="docutils literal notranslate"><span class="pre">__vxworks</span></code>, …) or a <code class="docutils literal notranslate"><span class="pre">--compile-commands</span></code> declaration. Noise on that
+configuration; the whole story on any other. This is the kind that
+measures how much the one profile decides.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ambiguous-definition</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">locally-dead-definition</span></code></p></td>
+<td><p>Dropped because the <em>file itself</em> proves the branch dead: <code class="docutils literal notranslate"><span class="pre">#if</span> <span class="pre">0</span></code>, a
+<code class="docutils literal notranslate"><span class="pre">__cplusplus</span></code> arm built as C, or a macro the file unconditionally
+<code class="docutils literal notranslate"><span class="pre">#define</span></code>s or <code class="docutils literal notranslate"><span class="pre">#undef</span></code>s above the test. No configuration would
+revive it, so this is correct behaviour rather than a blind spot.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ambiguous-definition</span></code></p></td>
 <td><p>The same name is defined more than once in one file under conditions
 the profile cannot settle (<code class="docutils literal notranslate"><span class="pre">#ifdef</span> <span class="pre">WITH_TLS</span></code>). The first is used; the
 row names the others.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">conflicting-definition</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">conflicting-definition</span></code></p></td>
 <td><p>Defined differently in two scanned files — a project <code class="docutils literal notranslate"><span class="pre">config.h</span></code>
 overriding a vendored library’s default, say. Scan order decides which
 one every invocation gets.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unresolved-include</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unresolved-include</span></code></p></td>
 <td><p>An <code class="docutils literal notranslate"><span class="pre">#include</span></code> that resolved to no file. One row per header
 project-wide; a header the <code class="docutils literal notranslate"><span class="pre">-d</span></code> pre-scan already walked is not
 reported even when no <code class="docutils literal notranslate"><span class="pre">-I</span></code> places it.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unexpandable-invocation</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unexpandable-invocation</span></code></p></td>
 <td><p>A call to one of the skipped definitions above: known to be a macro,
 known to be opaque.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">arity-mismatch</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">arity-mismatch</span></code></p></td>
 <td><p>The call’s argument count differs from the definition held — usually
 the sign that a different <code class="docutils literal notranslate"><span class="pre">#ifdef</span></code> branch is live at this site.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unknown-callee</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unknown-callee</span></code></p></td>
 <td><p>A call to a name no scanned file defines or declares and that is not a
 C standard-library function. <code class="docutils literal notranslate"><span class="pre">ALL_CAPS</span></code> names are almost certainly
 macros from an unscanned header; the rest are prototypes it never saw.</p></td>
