@@ -56,13 +56,27 @@ impl Exp33C {
 
     /// Build the read-only dereference map from cross-file summaries.
     /// Returns functions that dereference a pointer param without modifying it.
+    ///
+    /// `modifies_params` alone understates what's known: `credit_modifies_params`
+    /// deliberately withholds a parameter from that MAY set while its forwarding
+    /// obligation to another callee is still unresolved (`modifies_params_pending`)
+    /// -- entering it early would let `propagate_transitive_modifies` find a stale
+    /// answer already claimed. That means a merely-pending parameter looks
+    /// identical here to one proven never written, and this is exactly the
+    /// consumer `credit_modifies_params`'s own comment calls out: crediting it as
+    /// read-only turns an open question into an asserted violation (aurora_lint
+    /// 1437, piece (a) of docs/design/exp33-c-cross-file-uninit-architecture.md).
+    /// Excluding still-pending parameters here means "not proven to write" no
+    /// longer doubles as "proven not to write."
     fn build_read_only_deref_fns(&self) -> HashMap<String, HashSet<usize>> {
         let summaries = self.cross_file_summaries.borrow();
         let mut result = HashMap::new();
         for (name, summary) in summaries.iter() {
             let read_only: HashSet<usize> = summary
                 .dereferences_params
-                .difference(&summary.modifies_params)
+                .iter()
+                .filter(|idx| !summary.modifies_params.contains(idx))
+                .filter(|idx| !summary.modifies_params_pending.contains_key(idx))
                 .copied()
                 .collect();
             if !read_only.is_empty() {
