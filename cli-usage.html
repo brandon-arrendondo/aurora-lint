@@ -244,6 +244,14 @@ decides whether a finding is reported: a violation inside an <code class="docuti
 build does not select is still reported, because some other build selects it
 (see <code class="docutils literal notranslate"><span class="pre">docs/adr/0010</span></code>). There is deliberately no flag that suppresses findings
 by configuration.</p>
+<p>One consequence worth knowing, which aurora-lint warns about: the declaration
+applies to the whole scan, while a database describes the translation units the
+build compiles. If you scan sources that build does <em>not</em> compile — another
+platform’s backend, a feature the configuration disables — they are still
+analysed, but their macros resolve under a configuration that excludes them, so
+a name defined only in an arm that configuration rules out may not resolve at
+all. The warning names how many scanned <code class="docutils literal notranslate"><span class="pre">.c</span></code> files the database does not
+cover. Scanning the sources your database compiles avoids it.</p>
 <p>Because the parse tree is untouched, every finding keeps the source location it
 always had, and the <code class="docutils literal notranslate"><span class="pre">PRE*</span></code> rules still audit macros as written.</p>
 </section>
