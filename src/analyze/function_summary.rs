@@ -135,6 +135,31 @@ pub struct FunctionSummary {
     /// reading the length on the no-match path reads it uninitialised.
     #[serde(default)]
     pub conditional_modifies_params: HashSet<usize>,
+    /// For a subset of `conditional_modifies_params`'s indices, the PROVEN
+    /// correlation between the write and this function's own return value --
+    /// see `init_state::ReturnCorrelation`. Populated only when every one of
+    /// this function's returning paths resolves to a literal-constant (or a
+    /// local variable holding one) truthiness, and the write happened on
+    /// every path of one truthiness and none of the other: lua's
+    /// `lua_getstack` returns `1` on every path that wrote `*ar` and `0` on
+    /// every path that did not.
+    ///
+    /// Absent for an index means unproven, not "no correlation" -- a caller
+    /// checking the return value gets no extra credit, same as before this
+    /// field existed (task 1450, aurora_lint).
+    #[serde(default)]
+    pub conditional_write_return_correlation: HashMap<usize, init_state::ReturnCorrelation>,
+    /// Indices where two definitions linked under this name proved OPPOSITE
+    /// `conditional_write_return_correlation` values during `merge_summary_variant`.
+    /// Kept separate (unioned, so it is order-independent across however many
+    /// variants disagree) rather than just deleting the index from that map
+    /// on conflict: deleting alone lets a THIRD variant folded in afterward
+    /// silently resurrect it with its own (equally untrustworthy) value,
+    /// which is exactly the merge-order-dependent bug this file's own
+    /// history warns about for `can_return_null` and the output-parameter
+    /// sets.
+    #[serde(default)]
+    pub conditional_write_return_correlation_conflicted: HashSet<usize>,
     /// Parameter indices whose **pointee** this function frees — `free(*param)`,
     /// the `void **` "safe free" wrapper idiom:
     ///
@@ -2696,6 +2721,356 @@ fn clean_paths(stmt: &Node, source: &str, param: &str, depth: u32) -> (bool, boo
     }
 }
 
+// ---------------------------------------------------------------------------
+// Conditional-write / return-value correlation (task 1450, aurora_lint)
+// ---------------------------------------------------------------------------
+
+/// A returning path's classification of its return expression's truthiness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetClass {
+    Zero,
+    NonZero,
+    Unknown,
+}
+
+/// Cap on live path contexts `compute_conditional_write_return_correlation`
+/// carries at once -- each top-level `if`/`else` with no terminal return on
+/// either arm doubles the count. Bounded, not recursive, so this is a hard
+/// ceiling on a linear scan rather than a depth cap.
+const RETURN_CORRELATION_MAX_CONTEXTS: usize = 8;
+
+/// One provisional path through the function body: whether the target
+/// parameter has been written by this point, and the literal-constant value
+/// (if any) currently held by each local variable this walk is tracking for
+/// a later `return VAR;`.
+#[derive(Debug, Clone)]
+struct ReturnCorrelationCtx {
+    written: bool,
+    locals: HashMap<String, RetClass>,
+}
+
+/// Parse an integer literal's text (decimal or `0x` hex, with a trailing
+/// `u`/`l` suffix stripped) into truthiness. `None` for anything this
+/// doesn't recognize -- float literals, character constants, expressions.
+fn parse_int_literal_class(text: &str) -> Option<RetClass> {
+    let t = text.trim_end_matches(['u', 'U', 'l', 'L']);
+    let value = if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        i64::from_str_radix(hex, 16).ok()?
+    } else {
+        t.parse::<i64>().ok()?
+    };
+    Some(if value == 0 {
+        RetClass::Zero
+    } else {
+        RetClass::NonZero
+    })
+}
+
+/// Classify a `return`'s expression: a literal constant, a negated literal
+/// constant (`-1`), or a local variable this walk already resolved to a
+/// literal along this path. Anything else (a call, a field access, an
+/// unresolved variable) is `Unknown` -- the proof that consumes this
+/// abstains rather than guess.
+fn classify_return_expr(expr: &Node, source: &str, locals: &HashMap<String, RetClass>) -> RetClass {
+    match expr.kind() {
+        "number_literal" => {
+            let text = expr.utf8_text(source.as_bytes()).unwrap_or("");
+            parse_int_literal_class(text).unwrap_or(RetClass::Unknown)
+        }
+        "identifier" => {
+            let name = expr.utf8_text(source.as_bytes()).unwrap_or("");
+            locals.get(name).copied().unwrap_or(RetClass::Unknown)
+        }
+        "unary_expression" => {
+            let (Some(op), Some(arg)) = (
+                expr.child_by_field_name("operator"),
+                expr.child_by_field_name("argument"),
+            ) else {
+                return RetClass::Unknown;
+            };
+            if op.utf8_text(source.as_bytes()).unwrap_or("") != "-" {
+                return RetClass::Unknown;
+            }
+            match classify_return_expr(&arg, source, locals) {
+                RetClass::Zero => RetClass::Zero,
+                RetClass::NonZero => RetClass::NonZero,
+                RetClass::Unknown => RetClass::Unknown,
+            }
+        }
+        "parenthesized_expression" => expr
+            .named_child(0)
+            .map(|inner| classify_return_expr(&inner, source, locals))
+            .unwrap_or(RetClass::Unknown),
+        _ => RetClass::Unknown,
+    }
+}
+
+/// If `stmt` is exactly `identifier = <literal>;`, the identifier and its
+/// classified value. Anything else -- a compound assignment, a non-literal
+/// right-hand side, an lvalue that isn't a bare identifier -- is not this
+/// shape.
+fn try_literal_assignment<'a>(stmt: &Node<'a>, source: &str) -> Option<(String, RetClass)> {
+    let inner = if stmt.kind() == "expression_statement" {
+        stmt.named_child(0)?
+    } else {
+        *stmt
+    };
+    if inner.kind() != "assignment_expression" {
+        return None;
+    }
+    if inner
+        .child_by_field_name("operator")
+        .map(|o| o.utf8_text(source.as_bytes()).unwrap_or(""))
+        != Some("=")
+    {
+        return None;
+    }
+    let left = inner.child_by_field_name("left")?;
+    if left.kind() != "identifier" {
+        return None;
+    }
+    let name = left.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+    let right = inner.child_by_field_name("right")?;
+    let class = classify_return_expr(&right, source, &HashMap::new());
+    Some((name, class))
+}
+
+/// Does `stmt`'s byte range contain one of the already-identified writes to
+/// the target parameter? `write_starts` is the position of each write node
+/// `credit_modifies_params` found for this parameter across the whole body,
+/// so this reuses that detection rather than re-deriving it.
+fn statement_writes(stmt: &Node, write_starts: &[usize]) -> bool {
+    write_starts
+        .iter()
+        .any(|&s| s >= stmt.start_byte() && s < stmt.end_byte())
+}
+
+/// Invalidate any local this walk is tracking that `stmt` mentions but that
+/// wasn't recognized as a clean literal (re)assignment -- conservatively:
+/// carrying forward a stale classification past a statement that could have
+/// changed it (inside a loop body this walk does not model, say) is exactly
+/// the kind of silent overclaim this proof exists to avoid.
+fn invalidate_mentioned_locals(stmt: &Node, source: &str, locals: &mut HashMap<String, RetClass>) {
+    for (name, class) in locals.iter_mut() {
+        if *class != RetClass::Unknown && guard_dominance::mentions_var(stmt, name, source) {
+            *class = RetClass::Unknown;
+        }
+    }
+}
+
+/// Apply one statement's effect (write detection, literal-assignment
+/// tracking, or conservative invalidation) to a single path context.
+fn apply_statement_to_ctx(
+    stmt: &Node,
+    source: &str,
+    write_starts: &[usize],
+    ctx: &mut ReturnCorrelationCtx,
+) {
+    if statement_writes(stmt, write_starts) {
+        ctx.written = true;
+    }
+    if let Some((name, class)) = try_literal_assignment(stmt, source) {
+        ctx.locals.insert(name, class);
+    } else {
+        invalidate_mentioned_locals(stmt, source, &mut ctx.locals);
+    }
+}
+
+/// The result of walking one `if`/`else` branch's statement list against a
+/// single incoming path context.
+enum BranchOutcome {
+    /// The branch fell through without an unconditional top-level return;
+    /// the context carries on to whatever statement follows the `if`.
+    FallsThrough(ReturnCorrelationCtx),
+    /// The branch's last reachable top-level statement was an unconditional
+    /// `return`, whose (written, class) pair was already pushed to `leaves`.
+    Terminated,
+    /// The branch contains something this narrow walk does not model
+    /// (nested `if`, a loop, `switch`, `goto`) -- abandon the whole proof
+    /// for this parameter rather than reason past it.
+    Abandon,
+}
+
+/// A branch's statement list, unwrapped from either braces (`compound_statement`)
+/// or a single bare statement (`if (c) return 0;`, or an `else_clause` wrapping
+/// one statement).
+fn branch_statements<'a>(branch: &Node<'a>) -> Vec<Node<'a>> {
+    let inner = if branch.kind() == "else_clause" {
+        match branch.named_child(0) {
+            Some(c) => c,
+            None => return Vec::new(),
+        }
+    } else {
+        *branch
+    };
+    if inner.kind() == "compound_statement" {
+        let mut cursor = inner.walk();
+        inner
+            .named_children(&mut cursor)
+            .filter(|c| c.kind() != "comment")
+            .collect()
+    } else {
+        vec![inner]
+    }
+}
+
+fn process_branch(
+    stmts: &[Node],
+    source: &str,
+    write_starts: &[usize],
+    mut ctx: ReturnCorrelationCtx,
+    leaves: &mut Vec<(bool, RetClass)>,
+) -> BranchOutcome {
+    for stmt in stmts {
+        match stmt.kind() {
+            "if_statement" | "while_statement" | "for_statement" | "do_statement"
+            | "switch_statement" | "goto_statement" => return BranchOutcome::Abandon,
+            "return_statement" => {
+                let class = stmt
+                    .named_child(0)
+                    .map(|e| classify_return_expr(&e, source, &ctx.locals))
+                    .unwrap_or(RetClass::Unknown);
+                leaves.push((ctx.written, class));
+                return BranchOutcome::Terminated;
+            }
+            _ => apply_statement_to_ctx(stmt, source, write_starts, &mut ctx),
+        }
+    }
+    BranchOutcome::FallsThrough(ctx)
+}
+
+/// Prove, if possible, whether the write(s) to a conditionally-modified
+/// parameter -- located at each position in `write_starts` -- are correlated
+/// with this function's own return value on every one of its resolvable
+/// returning paths. See `init_state::ReturnCorrelation`.
+///
+/// Deliberately narrow: only a single level of top-level `if`/`else`
+/// branching is modeled (each fork doubles the live context count, capped at
+/// `RETURN_CORRELATION_MAX_CONTEXTS`), and a branch containing further
+/// control flow this walk doesn't understand abandons the whole proof for
+/// this parameter rather than risk crediting a path it didn't actually
+/// trace. This is exactly the shape of lua's `lua_getstack`: an early
+/// `if (level < 0) return 0;`, then one `if (...) { status = 1; ar->i_ci =
+/// ci; } else status = 0;`, then a trailing `return status;`.
+fn compute_conditional_write_return_correlation(
+    body: &Node,
+    source: &str,
+    write_starts: &[usize],
+) -> Option<init_state::ReturnCorrelation> {
+    if write_starts.is_empty() {
+        return None;
+    }
+    let mut cursor = body.walk();
+    let top_stmts: Vec<Node> = body
+        .named_children(&mut cursor)
+        .filter(|c| c.kind() != "comment")
+        .collect();
+
+    let mut contexts = vec![ReturnCorrelationCtx {
+        written: false,
+        locals: HashMap::new(),
+    }];
+    let mut leaves: Vec<(bool, RetClass)> = Vec::new();
+
+    for stmt in &top_stmts {
+        if contexts.is_empty() {
+            break;
+        }
+        match stmt.kind() {
+            "if_statement" => {
+                let consequence = stmt.child_by_field_name("consequence")?;
+                let alternative = stmt.child_by_field_name("alternative");
+                let mut next_contexts = Vec::new();
+                for ctx in contexts.drain(..) {
+                    let then_stmts = branch_statements(&consequence);
+                    match process_branch(
+                        &then_stmts,
+                        source,
+                        write_starts,
+                        ctx.clone(),
+                        &mut leaves,
+                    ) {
+                        BranchOutcome::FallsThrough(c) => next_contexts.push(c),
+                        BranchOutcome::Terminated => {}
+                        BranchOutcome::Abandon => return None,
+                    }
+                    match &alternative {
+                        Some(alt) => {
+                            let else_stmts = branch_statements(alt);
+                            match process_branch(
+                                &else_stmts,
+                                source,
+                                write_starts,
+                                ctx,
+                                &mut leaves,
+                            ) {
+                                BranchOutcome::FallsThrough(c) => next_contexts.push(c),
+                                BranchOutcome::Terminated => {}
+                                BranchOutcome::Abandon => return None,
+                            }
+                        }
+                        None => next_contexts.push(ctx),
+                    }
+                }
+                if next_contexts.len() > RETURN_CORRELATION_MAX_CONTEXTS {
+                    return None;
+                }
+                contexts = next_contexts;
+            }
+            "return_statement" => {
+                for ctx in contexts.drain(..) {
+                    let class = stmt
+                        .named_child(0)
+                        .map(|e| classify_return_expr(&e, source, &ctx.locals))
+                        .unwrap_or(RetClass::Unknown);
+                    leaves.push((ctx.written, class));
+                }
+                break;
+            }
+            "while_statement" | "for_statement" | "do_statement" | "switch_statement"
+            | "goto_statement" => {
+                for ctx in contexts.iter_mut() {
+                    if statement_writes(stmt, write_starts) {
+                        ctx.written = true;
+                    }
+                    invalidate_mentioned_locals(stmt, source, &mut ctx.locals);
+                }
+            }
+            _ => {
+                for ctx in contexts.iter_mut() {
+                    apply_statement_to_ctx(stmt, source, write_starts, ctx);
+                }
+            }
+        }
+    }
+
+    if leaves.is_empty() || leaves.iter().any(|(_, c)| *c == RetClass::Unknown) {
+        return None;
+    }
+    let has_zero = leaves.iter().any(|(_, c)| *c == RetClass::Zero);
+    let has_nonzero = leaves.iter().any(|(_, c)| *c == RetClass::NonZero);
+    if !has_zero || !has_nonzero {
+        return None;
+    }
+    let zero_written: Vec<bool> = leaves
+        .iter()
+        .filter(|(_, c)| *c == RetClass::Zero)
+        .map(|(w, _)| *w)
+        .collect();
+    let nonzero_written: Vec<bool> = leaves
+        .iter()
+        .filter(|(_, c)| *c == RetClass::NonZero)
+        .map(|(w, _)| *w)
+        .collect();
+    if zero_written.iter().all(|w| !*w) && nonzero_written.iter().all(|w| *w) {
+        return Some(init_state::ReturnCorrelation::WriteOnTruthy);
+    }
+    if zero_written.iter().all(|w| *w) && nonzero_written.iter().all(|w| !*w) {
+        return Some(init_state::ReturnCorrelation::WriteOnFalsy);
+    }
+    None
+}
+
 /// Parse `all_files` in parallel and fold the per-file results into one
 /// project-wide context. `unit_count` is only what the progress reporter is
 /// told it is starting on.
@@ -2794,6 +3169,44 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
     existing
         .conditional_modifies_params
         .extend(summary.conditional_modifies_params);
+    // A PROOF, not a MAY/MUST fact: keep an index's correlation only where
+    // every variant that has an opinion agrees. A variant with no entry for
+    // an index is silent, not a disagreement -- e.g. one `#ifdef` branch's
+    // definition never reaches a return statement the walk could classify --
+    // so it does not by itself invalidate another variant's proof. Two
+    // variants proving OPPOSITE correlations for the same index, though,
+    // means neither can be trusted for a caller who cannot tell which
+    // definition it linked against, so that index is permanently poisoned
+    // via `conditional_write_return_correlation_conflicted` rather than just
+    // deleted (order-independence: see that field's doc comment).
+    for (idx, corr) in summary.conditional_write_return_correlation {
+        if existing
+            .conditional_write_return_correlation_conflicted
+            .contains(&idx)
+        {
+            continue;
+        }
+        match existing.conditional_write_return_correlation.get(&idx) {
+            Some(existing_corr) if *existing_corr != corr => {
+                existing.conditional_write_return_correlation.remove(&idx);
+                existing
+                    .conditional_write_return_correlation_conflicted
+                    .insert(idx);
+            }
+            Some(_) => {}
+            None => {
+                existing
+                    .conditional_write_return_correlation
+                    .insert(idx, corr);
+            }
+        }
+    }
+    existing
+        .conditional_write_return_correlation_conflicted
+        .extend(summary.conditional_write_return_correlation_conflicted);
+    for idx in &existing.conditional_write_return_correlation_conflicted {
+        existing.conditional_write_return_correlation.remove(idx);
+    }
     // The three output-parameter sets, each merged in the
     // direction its own meaning demands (task 1079,
     // aurora_lint). Before this they were not merged at all:
@@ -3015,6 +3428,18 @@ fn credit_modifies_params(
     for idx in conditional {
         if may_return_without_writing(body, source, &params[idx]) {
             summary.conditional_modifies_params.insert(idx);
+            let write_starts: Vec<usize> = writes
+                .iter()
+                .filter(|(_, root)| root.utf8_text(source.as_bytes()).unwrap_or("") == params[idx])
+                .map(|(node, _)| node.start_byte())
+                .collect();
+            if let Some(corr) =
+                compute_conditional_write_return_correlation(body, source, &write_starts)
+            {
+                summary
+                    .conditional_write_return_correlation
+                    .insert(idx, corr);
+            }
         }
     }
 }

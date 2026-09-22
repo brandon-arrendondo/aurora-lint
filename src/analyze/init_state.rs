@@ -77,6 +77,37 @@ impl InitState {
     }
 }
 
+/// Whether a conditionally-written output parameter (an index in
+/// `FunctionSummary::conditional_modifies_params`) has a write that is
+/// PROVEN to line up with the function's own return value on every one of
+/// its simple, literal-constant returning paths -- e.g. lua's
+/// `lua_getstack`, which returns `1` on every path that wrote `*ar` and `0`
+/// on every path that did not (task 1450, aurora_lint).
+///
+/// This is a stronger claim than `conditional_modifies_params` alone: that
+/// field only proves a write is not exhaustive, not that a caller can tell
+/// which outcome it got. A caller that checks the return value in a
+/// diverging guard (`if (!lua_getstack(L, level, &ar)) return;`) has, on the
+/// surviving path, proof the write happened -- but only when this
+/// correlation itself is proven, never by assuming the common
+/// zero-is-failure convention holds.
+///
+/// Computed once per function body, from returns whose value is a literal
+/// integer constant or a local variable holding one (never a general
+/// expression) -- see `compute_conditional_write_return_correlation` in
+/// `function_summary.rs`. Absent (not `false`) means unproven, which callers
+/// must treat as "cannot say", the same discipline
+/// `forwards_to_indirect_call` uses for indirection it cannot resolve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ReturnCorrelation {
+    /// The write happened on every path returning non-zero ("truthy" /
+    /// success) and on none returning zero.
+    WriteOnTruthy,
+    /// The reverse: the write happened on every path returning zero and on
+    /// none returning non-zero.
+    WriteOnFalsy,
+}
+
 // ---------------------------------------------------------------------------
 // Variable metadata
 // ---------------------------------------------------------------------------
@@ -428,6 +459,22 @@ pub struct InitAnalysisConfig {
     /// known-conditional coverage, and demoting them would act on the absence
     /// of an answer.
     pub cross_file_conditional_output_params: HashMap<String, HashSet<usize>>,
+    /// For a subset of `cross_file_conditional_output_params`'s indices, the
+    /// PROVEN correlation between the write and the callee's own return
+    /// value (`FunctionSummary::conditional_write_return_correlation`,
+    /// task 1450, aurora_lint).
+    ///
+    /// Lets the dataflow promote a `&var` argument from `MaybeUninitialized`
+    /// straight to `Initialized` along the specific CFG edge where the
+    /// caller's own guard proves the callee took the writing path (e.g. the
+    /// fallthrough of `if (!lua_getstack(L, level, &ar)) return;`) --
+    /// without this, EVERY conditional writer's output stayed
+    /// `MaybeUninitialized` even after a guard that, read correctly, settles
+    /// it. Absent for a function name/index means unproven, so the edge
+    /// refinement leaves the state exactly where
+    /// `try_process_cross_file_conditional_output_params` put it.
+    pub cross_file_conditional_output_return_correlation:
+        HashMap<String, HashMap<usize, ReturnCorrelation>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1598,6 +1645,226 @@ fn process_unknown_function_call(
 }
 
 // ---------------------------------------------------------------------------
+// Edge refinement: correlate a caller's checked-return guard with a
+// cross-file conditional writer's proven return correlation (task 1450,
+// aurora_lint).
+// ---------------------------------------------------------------------------
+
+/// Names of branch-hint wrappers that evaluate to their first argument's
+/// truthiness unchanged -- the `likely(x)`/`unlikely(x)`-family macros and
+/// GCC's `__builtin_expect`, which aurora-lint has no preprocessor to expand
+/// (EXP10-C already treats `__builtin_expect` as evaluate-only for the same
+/// reason). Matched by NAME, the same convention every project spelling
+/// this idiom shares -- the Linux kernel's `likely`/`unlikely`, and lua's
+/// `l_likely`/`l_unlikely`/`luai_likely`/`luai_unlikely` chain, which is
+/// exactly what stands between `if (l_unlikely(!lua_getstack(...)))` and a
+/// bare `!CALL(...)` guard `parse_call_return_guard` would otherwise miss.
+fn is_transparent_branch_hint(name: &str) -> bool {
+    matches!(
+        name,
+        "__builtin_expect"
+            | "__builtin_expect_with_probability"
+            | "likely"
+            | "unlikely"
+            | "LIKELY"
+            | "UNLIKELY"
+            | "l_likely"
+            | "l_unlikely"
+            | "luai_likely"
+            | "luai_unlikely"
+    )
+}
+
+/// Unwrap `parenthesized_expression` nodes and transparent branch-hint macro
+/// calls to reach the expression whose truthiness they pass through
+/// unchanged.
+fn unwrap_condition_wrappers<'a>(node: &Node<'a>, source: &str) -> Node<'a> {
+    let mut n = *node;
+    loop {
+        if n.kind() == "parenthesized_expression" {
+            if let Some(inner) = n.named_child(0) {
+                n = inner;
+                continue;
+            }
+            break;
+        }
+        if n.kind() == "call_expression" {
+            let Some(func) = n.child_by_field_name("function") else {
+                break;
+            };
+            let name = func.utf8_text(source.as_bytes()).unwrap_or("");
+            if is_transparent_branch_hint(name) {
+                if let Some(first) = n
+                    .child_by_field_name("arguments")
+                    .and_then(|args| args.named_child(0))
+                {
+                    n = first;
+                    continue;
+                }
+            }
+        }
+        break;
+    }
+    n
+}
+
+/// If `cond` is a guard on a call's return value -- `!CALL(...)`,
+/// `CALL(...) == 0`, `CALL(...) != 0`, or a bare `CALL(...)` -- returns the
+/// call expression and whether the condition evaluating to TRUE means the
+/// call returned non-zero (truthy).
+fn parse_call_return_guard<'a>(cond: &Node<'a>, source: &str) -> Option<(Node<'a>, bool)> {
+    let cond = unwrap_condition_wrappers(cond, source);
+    match cond.kind() {
+        "call_expression" => Some((cond, true)),
+        "unary_expression" => {
+            let op = cond.child_by_field_name("operator")?;
+            if op.utf8_text(source.as_bytes()).unwrap_or("") != "!" {
+                return None;
+            }
+            let arg = unwrap_condition_wrappers(&cond.child_by_field_name("argument")?, source);
+            if arg.kind() != "call_expression" {
+                return None;
+            }
+            Some((arg, false))
+        }
+        "binary_expression" => {
+            let op = cond.child_by_field_name("operator")?;
+            let op_text = op.utf8_text(source.as_bytes()).unwrap_or("");
+            if op_text != "==" && op_text != "!=" {
+                return None;
+            }
+            let left = unwrap_condition_wrappers(&cond.child_by_field_name("left")?, source);
+            let right = unwrap_condition_wrappers(&cond.child_by_field_name("right")?, source);
+            let (call, other) = if left.kind() == "call_expression" {
+                (left, right)
+            } else if right.kind() == "call_expression" {
+                (right, left)
+            } else {
+                return None;
+            };
+            if other.kind() != "number_literal"
+                || other.utf8_text(source.as_bytes()).unwrap_or("") != "0"
+            {
+                return None;
+            }
+            // `== 0`: TRUE means the call returned falsy (zero).
+            // `!= 0`: TRUE means the call returned truthy (non-zero).
+            Some((call, op_text == "!="))
+        }
+        _ => None,
+    }
+}
+
+/// On a `TrueBranch`/`FalseBranch` edge whose predecessor's condition is a
+/// call-return guard (`parse_call_return_guard`) on a cross-file
+/// conditional writer with a PROVEN return correlation
+/// (`InitAnalysisConfig::cross_file_conditional_output_return_correlation`),
+/// promote the matching `&var` argument from `Uninitialized`/
+/// `MaybeUninitialized` to `Initialized` on the specific edge where the
+/// correlation proves the write happened -- e.g. the fallthrough of
+/// `if (!lua_getstack(L, level, &ar)) return;` proves `ar` was written,
+/// because `lua_getstack` only returns non-zero on the path that wrote it.
+///
+/// Every other edge, or a condition this narrow parser does not recognize,
+/// returns `pred_exit` unchanged -- this only ever ADDS certainty on top of
+/// what `try_process_cross_file_conditional_output_params` already put
+/// there, never removes it.
+#[allow(clippy::too_many_arguments)]
+fn apply_init_edge_refinement(
+    pred_exit: &InitStateMap,
+    pred_id: BlockId,
+    edge_kind: &CfgEdge,
+    cfg: &FunctionCfg,
+    body: &Node,
+    source: &str,
+    config: &InitAnalysisConfig,
+) -> InitStateMap {
+    let is_true = matches!(edge_kind, CfgEdge::TrueBranch);
+    let is_false = matches!(edge_kind, CfgEdge::FalseBranch);
+    if !is_true && !is_false {
+        return pred_exit.clone();
+    }
+    if config
+        .cross_file_conditional_output_return_correlation
+        .is_empty()
+    {
+        return pred_exit.clone();
+    }
+    let Some(pred_block) = cfg.get_block(pred_id) else {
+        return pred_exit.clone();
+    };
+    let Some((cond_start, cond_end)) = pred_block.condition_range else {
+        return pred_exit.clone();
+    };
+    let Some(cond_node) = find_node_at_range(body, cond_start, cond_end) else {
+        return pred_exit.clone();
+    };
+    let Some((call, true_means_truthy)) = parse_call_return_guard(&cond_node, source) else {
+        return pred_exit.clone();
+    };
+    let edge_is_truthy = if is_true {
+        true_means_truthy
+    } else {
+        !true_means_truthy
+    };
+    let Some(func_node) = call.child_by_field_name("function") else {
+        return pred_exit.clone();
+    };
+    if func_node.kind() != "identifier" {
+        return pred_exit.clone();
+    }
+    let func_name = func_node.utf8_text(source.as_bytes()).unwrap_or("");
+    let Some(correlations) = config
+        .cross_file_conditional_output_return_correlation
+        .get(func_name)
+    else {
+        return pred_exit.clone();
+    };
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return pred_exit.clone();
+    };
+
+    let mut state = pred_exit.clone();
+    let mut arg_idx: usize = 0;
+    for i in 0..args.child_count() {
+        let Some(arg) = args.child(i) else { continue };
+        if matches!(arg.kind(), "," | "(" | ")") {
+            continue;
+        }
+        let this_idx = arg_idx;
+        arg_idx += 1;
+        let Some(corr) = correlations.get(&this_idx) else {
+            continue;
+        };
+        let write_happened = match corr {
+            ReturnCorrelation::WriteOnTruthy => edge_is_truthy,
+            ReturnCorrelation::WriteOnFalsy => !edge_is_truthy,
+        };
+        if !write_happened {
+            continue;
+        }
+        let stripped = strip_arg_casts(&arg);
+        let arg_text = stripped.utf8_text(source.as_bytes()).unwrap_or("");
+        if stripped.kind() != "pointer_expression" || !arg_text.starts_with('&') {
+            continue;
+        }
+        let var_name = extract_var_from_arg(&stripped, source);
+        if var_name.is_empty() {
+            continue;
+        }
+        if let Some(info) = state.get_mut(&var_name) {
+            if matches!(
+                info.state,
+                InitState::Uninitialized | InitState::MaybeUninitialized
+            ) {
+                info.state = InitState::Initialized;
+            }
+        }
+    }
+    state
+}
+
+// ---------------------------------------------------------------------------
 // Worklist algorithm
 // ---------------------------------------------------------------------------
 
@@ -1718,6 +1985,9 @@ pub fn analyze_init_states_with_statics(
             }
 
             let pred_exit = exit_states.get(pred_id).cloned().unwrap_or_default();
+            let pred_exit = apply_init_edge_refinement(
+                &pred_exit, *pred_id, edge_kind, cfg, &body, source, config,
+            );
 
             if first {
                 new_entry = pred_exit;

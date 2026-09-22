@@ -158,6 +158,29 @@ impl Exp33C {
         }
         result
     }
+
+    /// The proven-correlation companion to `build_cross_file_conditional_output_params`
+    /// (task 1450, aurora_lint): for the subset of conditional writers where
+    /// `FunctionSummary::conditional_write_return_correlation` could prove the
+    /// write lines up with the function's own return value, lets the init-state
+    /// dataflow promote `&var` to `Initialized` (not just `MaybeUninitialized`)
+    /// on the CFG edge where a caller's guard on that return value proves which
+    /// outcome happened -- e.g. lua's `if (!lua_getstack(L, level, &ar)) return;`.
+    fn build_cross_file_conditional_output_return_correlation(
+        &self,
+    ) -> HashMap<String, HashMap<usize, init_state::ReturnCorrelation>> {
+        let summaries = self.cross_file_summaries.borrow();
+        let mut result = HashMap::new();
+        for (name, summary) in summaries.iter() {
+            if !summary.conditional_write_return_correlation.is_empty() {
+                result.insert(
+                    name.clone(),
+                    summary.conditional_write_return_correlation.clone(),
+                );
+            }
+        }
+        result
+    }
 }
 
 impl CertRule for Exp33C {
@@ -309,6 +332,8 @@ impl CertRule for Exp33C {
                     let cross_file_output_params = self.build_cross_file_output_params();
                     let cross_file_conditional_output_params =
                         self.build_cross_file_conditional_output_params();
+                    let cross_file_conditional_output_return_correlation =
+                        self.build_cross_file_conditional_output_return_correlation();
                     let file_constants = self.file_scope_constants.borrow();
                     let macro_out = self.macro_output_params.borrow();
                     let config = init_state::InitAnalysisConfig {
@@ -319,6 +344,7 @@ impl CertRule for Exp33C {
                         macro_output_params: macro_out.clone(),
                         cross_file_output_params,
                         cross_file_conditional_output_params,
+                        cross_file_conditional_output_return_correlation,
                     };
                     let analysis = init_state::analyze_init_states_with_statics(
                         cfg, node, source, &statics, &config,
