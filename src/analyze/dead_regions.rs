@@ -67,7 +67,8 @@
 //! call a proposal to revisit the ADR rather than a feature.
 
 use lang_parsing_substrate::{
-    dead_code_ranges_with_assumptions, posix_default_assumptions, PlatformAssumptions,
+    dead_code_ranges, dead_code_ranges_with_assumptions, posix_default_assumptions, DeadCodeReason,
+    PlatformAssumptions,
 };
 use std::sync::OnceLock;
 use tree_sitter::Node;
@@ -126,12 +127,47 @@ pub fn declare_scan_profile(declared: PlatformAssumptions) -> Result<(), String>
     }
 }
 
+/// What made a region dead: the file's own text, or the configuration the
+/// scan assumed.
+///
+/// The substrate's [`DeadCodeReason`] cannot answer this by itself.
+/// `AlwaysDefined`/`NeverDefined` are each produced by *two* causes — a local
+/// `#define`/`#undef`, or a caller assumption about a macro the file never
+/// mentions — and only the second is the profile's doing. Distinguishing them
+/// is the whole point of ADR-0010 Decision 2 ("dead means provable from the
+/// file itself"), so the distinction is measured rather than inferred from the
+/// reason: a region that is dead with the assumption table *removed* is dead
+/// on the file's own evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeadEvidence {
+    /// The file itself proves the arm dead — `#if 0`, a `__cplusplus` arm in a
+    /// C translation unit, or a macro this file unconditionally `#define`s or
+    /// `#undef`s. True under every configuration; no assumption involved.
+    FileProven,
+    /// The arm is dead only because the scan assumed a configuration:
+    /// `#ifdef _WIN32` under the POSIX default, or an arm a
+    /// `--compile-commands` declaration rules out. Right for the configuration
+    /// assumed; says nothing about any other.
+    AssumedConfiguration,
+}
+
+/// One dead range, with why it is dead and what decided it.
+#[derive(Debug, Clone, Copy)]
+struct DeadRegion {
+    start: usize,
+    end: usize,
+    reason: DeadCodeReason,
+    /// `None` until [`DeadRegions::attributed`] has measured it — the hot
+    /// path does not pay for the second pass.
+    evidence: Option<DeadEvidence>,
+}
+
 /// 1-based inclusive line ranges of `source` that the assumed platform's
 /// preprocessor would strip. Cheap to build (one line-oriented pass) and
 /// meant to be built once per file per collector, not per node.
 #[derive(Debug, Clone, Default)]
 pub struct DeadRegions {
-    ranges: Vec<(usize, usize)>,
+    regions: Vec<DeadRegion>,
 }
 
 impl DeadRegions {
@@ -144,18 +180,68 @@ impl DeadRegions {
     /// the process-wide profile. Exists so a caller (and a test) can ask about
     /// a configuration other than the one in force.
     pub fn under(source: &str, assumptions: &PlatformAssumptions) -> Self {
-        let ranges = dead_code_ranges_with_assumptions(source, assumptions)
+        let regions = dead_code_ranges_with_assumptions(source, assumptions)
+            .into_iter()
+            .map(|r| DeadRegion {
+                start: r.start_line,
+                end: r.end_line,
+                reason: r.reason,
+                evidence: None,
+            })
+            .collect();
+        Self { regions }
+    }
+
+    /// Like [`DeadRegions::of`], and additionally attributes each region to
+    /// the file or to the assumed configuration ([`DeadEvidence`]).
+    ///
+    /// Costs a second line-oriented pass, so it is opt-in: only reporting
+    /// wants the attribution, and the collectors that run over every prescanned
+    /// file do not. Nothing about which regions are dead changes.
+    pub fn attributed(source: &str) -> Self {
+        Self::attributed_under(source, platform_assumptions())
+    }
+
+    /// [`DeadRegions::attributed`] against an explicitly supplied table.
+    pub fn attributed_under(source: &str, assumptions: &PlatformAssumptions) -> Self {
+        let mut regions = Self::under(source, assumptions).regions;
+        // The same file with no assumptions seeded: whatever is still dead is
+        // dead on the file's own evidence. `#if 0` and `__cplusplus` need no
+        // check — no assumption table can produce either.
+        let file_proven: Vec<(usize, usize)> = dead_code_ranges(source)
             .into_iter()
             .map(|r| (r.start_line, r.end_line))
             .collect();
-        Self { ranges }
+        for region in &mut regions {
+            let proven = matches!(
+                region.reason,
+                DeadCodeReason::IfZero | DeadCodeReason::CppOnly
+            ) || file_proven
+                .iter()
+                .any(|&(start, end)| region.start >= start && region.start <= end);
+            region.evidence = Some(if proven {
+                DeadEvidence::FileProven
+            } else {
+                DeadEvidence::AssumedConfiguration
+            });
+        }
+        Self { regions }
+    }
+
+    /// Why 1-based `line` is dead, and what decided it — `None` if the line is
+    /// live, or if this table was not built by [`DeadRegions::attributed`].
+    pub fn evidence_for_line(&self, line: usize) -> Option<(DeadCodeReason, DeadEvidence)> {
+        self.regions
+            .iter()
+            .find(|r| line >= r.start && line <= r.end)
+            .and_then(|r| r.evidence.map(|e| (r.reason, e)))
     }
 
     /// Whether 1-based `line` falls inside a dead region.
     pub fn contains_line(&self, line: usize) -> bool {
-        self.ranges
+        self.regions
             .iter()
-            .any(|&(start, end)| line >= start && line <= end)
+            .any(|r| line >= r.start && line <= r.end)
     }
 
     /// Whether `node` starts inside a dead region. A definition is one
@@ -200,12 +286,61 @@ typedef uint16_t u16;
     }
 
     #[test]
+    fn attribution_separates_the_profile_from_the_file() {
+        // Three dead arms, one per cause: the profile's (_MSC_VER), the
+        // file's own unconditional #define, and #if 0.
+        let src = "\
+#ifdef _MSC_VER
+typedef UINT16 u16;
+#endif
+#define HAVE_IT
+#ifndef HAVE_IT
+int local_dead;
+#endif
+#if 0
+int never;
+#endif
+";
+        let dead = DeadRegions::attributed(src);
+        assert_eq!(
+            dead.evidence_for_line(2).map(|(_, e)| e),
+            Some(DeadEvidence::AssumedConfiguration),
+            "no file defines _MSC_VER; only the POSIX profile kills this arm"
+        );
+        assert_eq!(
+            dead.evidence_for_line(6).map(|(_, e)| e),
+            Some(DeadEvidence::FileProven),
+            "the unconditional #define above the test is local proof"
+        );
+        assert_eq!(
+            dead.evidence_for_line(9),
+            Some((DeadCodeReason::IfZero, DeadEvidence::FileProven))
+        );
+        assert_eq!(dead.evidence_for_line(4), None, "live line has no evidence");
+    }
+
+    #[test]
+    fn of_does_not_pay_for_attribution() {
+        // `of` is the collector path: same ranges, evidence deliberately unset
+        // rather than guessed, so a caller cannot read an attribution that was
+        // never measured.
+        let src = "#ifdef _MSC_VER
+typedef UINT16 u16;
+#endif
+";
+        let plain = DeadRegions::of(src);
+        assert!(plain.contains_line(2));
+        assert_eq!(plain.evidence_for_line(2), None);
+        assert!(DeadRegions::attributed(src).evidence_for_line(2).is_some());
+    }
+
+    #[test]
     fn build_config_macro_stays_neutral() {
         let dead = DeadRegions::of(
             "#ifdef WPA_TRACE\n#define os_strdup(s) trace_strdup(s)\n#else\n#define os_strdup(s) strdup(s)\n#endif\n",
         );
         assert!(
-            dead.ranges.is_empty(),
+            dead.regions.is_empty(),
             "no opinion on WPA_TRACE: {:?}",
             dead
         );

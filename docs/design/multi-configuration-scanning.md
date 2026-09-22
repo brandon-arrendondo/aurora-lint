@@ -251,13 +251,21 @@ they are arms the file itself proves dead, which is ADR-0010 Decision 2
 working exactly as intended. hostap's `src/crypto/aes_i.h` has an
 unconditional `#define AES_SMALL_TABLES` above its `#ifndef AES_SMALL_TABLES`
 block, so the large-table `RCON`/`TE0`… definitions in that arm are dropped on
-local evidence with no assumption involved. The substrate distinguishes these
-(`DeadCodeReason::{IfZero, CppOnly, AlwaysDefined, NeverDefined}`);
-`DeadRegions` discards the reason when it maps regions to line ranges, so the
-report attributes all of it to the profile. Nothing analyses wrongly because
-of this — the drop is correct either way — but it inflates the apparent reach
-of the platform table, which is the exact quantity this research is about.
-See §8.1.
+local evidence with no assumption involved. `DeadRegions` discarded the
+substrate's reason when it mapped regions to line ranges, so the report
+attributed all of it to the profile. Nothing analysed wrongly because of this —
+the drop is correct either way — but it inflated the apparent reach of the
+platform table, which is the exact quantity this research is about.
+
+**Fixed in task 1429**, with one correction to the premise above: the
+substrate's reason does *not* by itself distinguish these. `AlwaysDefined` and
+`NeverDefined` are each produced by two causes — a local `#define`/`#undef`, or
+a caller assumption about a macro the file never mentions — so splitting on
+`DeadCodeReason` alone would have relabelled the profile's own work as local
+proof. The attribution is measured instead: a region still dead with the
+assumption table removed is the file's doing. `DeadRegions::attributed` carries
+it, and the report now has `assumed-dead-definition` and
+`locally-dead-definition` as separate kinds.
 
 ## 7. Options
 
@@ -385,11 +393,13 @@ resolution and nothing else").
 
 ## 8. Follow-ups worth filing (each small, each independent)
 
-1. **Keep `DeadCodeReason` through `DeadRegions`** and split the gap kind
-   accordingly (`platform-dead` vs `locally-dead`). `DeadRegions::of` already
-   throws the reason away; the substrate already computes it. Without this, no
-   future measurement of "how much does the profile decide" can be taken at
-   face value — §6 had to reconstruct it by re-parsing the corpus.
+1. ~~**Keep `DeadCodeReason` through `DeadRegions`** and split the gap kind
+   accordingly (`platform-dead` vs `locally-dead`).~~ **Done, task 1429** —
+   as `assumed-dead-definition` / `locally-dead-definition`. Note for anyone
+   reading the original reasoning: keeping the reason was necessary but not
+   sufficient, because two of the four reasons have both a local and an assumed
+   cause (see §6). A future measurement of "how much does the profile decide"
+   can now be read off the report rather than reconstructed by re-parsing.
 2. **Seed the assumption table from `CompileDb`** (option D). Mind the
    asymmetry: compile-database `-D` merges gap-filling (`or_insert`) into the
    macro tables so real source always wins, and the substrate independently

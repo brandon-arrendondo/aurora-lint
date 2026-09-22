@@ -22,11 +22,12 @@
 //! with the analysis it describes.
 
 use super::context::ProjectContext;
-use super::dead_regions::DeadRegions;
+use super::dead_regions::{DeadEvidence, DeadRegions};
 use super::macro_expand::{self, DefineSkip, FunctionMacro};
 use super::macro_semantics;
 use crate::parser::CParser;
 use crate::utility::cert_c::{ast_utils, std_functions};
+use lang_parsing_substrate::DeadCodeReason;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -50,13 +51,15 @@ pub enum MacroGapKind {
     /// Dropped because it sits in a branch the scan's assumed configuration
     /// never compiles — `#ifdef _WIN32` under the default POSIX profile, or an
     /// arm a `--compile-commands` declaration rules out. Right for the
-    /// configuration assumed; the whole story for nothing else.
-    ///
-    /// The name is narrower than the kind: about half of these rows are arms
-    /// the file itself proves dead, with no assumption involved. Splitting them
-    /// needs the substrate's `DeadCodeReason`, which `DeadRegions` currently
-    /// discards — aurora_lint task 1429.
-    PlatformDeadDefinition,
+    /// configuration assumed; the whole story for nothing else, which is what
+    /// makes this the kind a multi-configuration scan would have to answer for.
+    AssumedDeadDefinition,
+    /// Dropped because the *file itself* proves the branch dead — `#if 0`, a
+    /// `__cplusplus` arm in a C translation unit, or a macro the file
+    /// unconditionally `#define`s or `#undef`s above the test. No assumption
+    /// involved and no configuration would revive it, so this is ADR-0010
+    /// Decision 2 working correctly rather than a gap in coverage.
+    LocallyDeadDefinition,
     /// The same name has more than one live definition in one file, under
     /// conditions the platform profile cannot settle (`#ifdef WPA_TRACE`).
     /// The first one wins; the report names the others.
@@ -88,8 +91,11 @@ impl MacroGapKind {
             MacroGapKind::VariadicDefinition => "variadic macro definitions (never expanded)",
             MacroGapKind::PasteDefinition => "macro definitions using # / ## (never expanded)",
             MacroGapKind::MalformedDefinition => "macro definitions the scanner could not parse",
-            MacroGapKind::PlatformDeadDefinition => {
+            MacroGapKind::AssumedDeadDefinition => {
                 "macro definitions dropped as dead under the scan's assumed configuration"
+            }
+            MacroGapKind::LocallyDeadDefinition => {
+                "macro definitions dropped as dead on the file's own evidence (no assumption)"
             }
             MacroGapKind::AmbiguousDefinition => {
                 "macros defined more than once in one file (first definition used)"
@@ -160,21 +166,49 @@ pub struct DefinitionAudit {
 /// arbitration exactly — dead-region filtering first, first-wins among what
 /// remains — so "the definition used" here is the one the engine holds.
 pub fn audit_definitions(source: &str, file: &str) -> DefinitionAudit {
-    let dead = DeadRegions::of(source);
+    // `attributed` rather than `of`: a report that cannot say whether the
+    // profile or the file decided cannot answer "how much does the one profile
+    // actually decide?", which is the question this report exists for.
+    let dead = DeadRegions::attributed(source);
     let mut audit = DefinitionAudit::default();
     // name -> every live, parseable definition in file order.
     let mut live: BTreeMap<String, Vec<(usize, FunctionMacro)>> = BTreeMap::new();
 
     for def in macro_expand::scan_function_macro_defines(source) {
         if dead.contains_line(def.line) {
+            let (kind, detail) = match dead.evidence_for_line(def.line) {
+                Some((reason, DeadEvidence::FileProven)) => (
+                    MacroGapKind::LocallyDeadDefinition,
+                    format!(
+                        "inside a branch this file proves dead ({}); definition dropped under \
+                         every configuration",
+                        describe_reason(reason)
+                    ),
+                ),
+                Some((reason, DeadEvidence::AssumedConfiguration)) => (
+                    MacroGapKind::AssumedDeadDefinition,
+                    format!(
+                        "inside a conditional branch the scan's assumed configuration never \
+                         compiles ({}); definition dropped",
+                        describe_reason(reason)
+                    ),
+                ),
+                // Unreachable while `attributed` is what built the table, and
+                // not worth a panic if that ever changes: the conservative
+                // answer is the kind that claims less.
+                None => (
+                    MacroGapKind::AssumedDeadDefinition,
+                    "inside a conditional branch the scan's assumed configuration never \
+                     compiles; definition dropped"
+                        .to_string(),
+                ),
+            };
             audit.gaps.push(MacroGap {
-                kind: MacroGapKind::PlatformDeadDefinition,
+                kind,
                 file: file.to_string(),
                 line: def.line,
                 name: def.name,
-                detail: "inside a conditional branch the scan's assumed configuration never \
-                         compiles; definition dropped"
-                    .to_string(),
+                detail,
                 count: 1,
             });
             continue;
@@ -218,6 +252,18 @@ pub fn audit_definitions(source: &str, file: &str) -> DefinitionAudit {
         }
     }
     audit
+}
+
+/// The substrate's own word for why a branch is dead, for the `detail` text.
+/// Kept verbatim rather than paraphrased: the four reasons are what a reader
+/// has to match against `lang_parsing_substrate`'s `DeadCodeReason`.
+fn describe_reason(reason: DeadCodeReason) -> &'static str {
+    match reason {
+        DeadCodeReason::IfZero => "#if 0",
+        DeadCodeReason::CppOnly => "__cplusplus arm, built as C",
+        DeadCodeReason::AlwaysDefined => "the macro is defined at this point, so the #else is dead",
+        DeadCodeReason::NeverDefined => "the macro is not defined at this point",
+    }
 }
 
 fn skip_kind(skip: DefineSkip) -> MacroGapKind {
@@ -780,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn platform_dead_and_ambiguous_definitions_are_distinguished() {
+    fn assumed_dead_and_ambiguous_definitions_are_distinguished() {
         // hostap os.h shape: the _MSC_VER arm is dead under POSIX (no gap
         // beyond "dropped"); the WPA_TRACE split is neutral, so both live.
         let src = "\
@@ -804,7 +850,7 @@ mod tests {
         assert_eq!(
             kinds(&audit.gaps),
             vec![
-                (MacroGapKind::PlatformDeadDefinition, "os_strdup", 2),
+                (MacroGapKind::AssumedDeadDefinition, "os_strdup", 2),
                 (MacroGapKind::AmbiguousDefinition, "os_free", 7),
             ]
         );
@@ -812,6 +858,53 @@ mod tests {
         // Identical redefinitions are not ambiguous.
         assert_eq!(audit.kept_lines.get("SAME"), Some(&12));
         assert_eq!(audit.kept_lines.get("os_strdup"), Some(&4));
+    }
+
+    #[test]
+    fn a_branch_the_file_proves_dead_is_not_attributed_to_the_profile() {
+        // hostap src/crypto/aes_i.h's shape, the case task 1429 was filed for:
+        // an unconditional #define above the #ifndef test, so the arm is dead
+        // on the file's own evidence with no platform assumption involved.
+        // Reported as platform-dead, this row claimed the POSIX profile had
+        // decided something it had no part in.
+        let src = "\
+#define AES_SMALL_TABLES
+#ifndef AES_SMALL_TABLES
+#define TE0(i) FT(i)
+#endif
+";
+        let audit = audit_definitions(src, "aes_i.h");
+        assert_eq!(
+            kinds(&audit.gaps),
+            vec![(MacroGapKind::LocallyDeadDefinition, "TE0", 3)]
+        );
+        assert!(
+            audit.gaps[0].detail.contains("every configuration"),
+            "detail must say no configuration revives it, got: {}",
+            audit.gaps[0].detail
+        );
+    }
+
+    #[test]
+    fn if_zero_and_cplusplus_arms_are_file_proven_not_assumed() {
+        let src = "\
+#if 0
+#define DEAD(x) (x)
+#endif
+#ifdef __cplusplus
+#define CPP(x) (x)
+#endif
+";
+        let audit = audit_definitions(src, "x.h");
+        assert_eq!(
+            kinds(&audit.gaps),
+            vec![
+                (MacroGapKind::LocallyDeadDefinition, "DEAD", 2),
+                (MacroGapKind::LocallyDeadDefinition, "CPP", 5),
+            ]
+        );
+        assert!(audit.gaps[0].detail.contains("#if 0"));
+        assert!(audit.gaps[1].detail.contains("__cplusplus"));
     }
 
     #[test]

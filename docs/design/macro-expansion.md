@@ -723,8 +723,32 @@ broker until `-I .` reached the root `config.h`. §9's open question about
 which `#if` branch is "live" is still open — this makes its cost visible per
 scan rather than answering it. That cost has since been measured from these
 reports across all twelve corpora, with a recommendation, in
-`docs/design/multi-configuration-scanning.md` (task 1422); §6 there also notes
-that the `platform-dead-definition` kind over-attributes, since `DeadRegions`
-discards the substrate's `DeadCodeReason` and about half of those rows are arms
-the file itself proves dead.
+`docs/design/multi-configuration-scanning.md` (task 1422); §6 there noted that
+the single `platform-dead-definition` kind over-attributed, since `DeadRegions`
+discarded the substrate's `DeadCodeReason` and a large share of those rows are
+arms the file itself proves dead.
+
+**Fixed (task 1429).** `DeadRegions` now keeps the reason alongside the range,
+and `DeadRegions::attributed` additionally says *what decided* — the file or
+the scan's assumed configuration. The one kind became two,
+`assumed-dead-definition` and `locally-dead-definition`, so "how much does the
+one profile actually decide?" is answerable from the report instead of by
+re-parsing the corpora.
+
+The reason alone could not have answered it. `AlwaysDefined` and `NeverDefined`
+are each produced by two causes — a local `#define`/`#undef`, or a caller
+assumption about a macro the file never mentions — so attribution is measured
+instead: a region still dead with the assumption table removed is the file's
+own doing. `#if 0` and `__cplusplus` arms need no second pass, since no
+assumption table can produce either. The extra pass is opt-in
+(`attributed` vs `of`), so the collectors that run over every prescanned file
+do not pay for it; analysis behaviour is unchanged either way, which is why no
+adjudication is owed.
+
+hostap's `src/crypto/aes_i.h` is the shape worth remembering: an unconditional
+`#define AES_SMALL_TABLES` at line 15 kills the whole `#ifndef` block below it
+(31 definitions, ADR-0010 Decision 2 working correctly, now
+`locally-dead-definition`), while the `#ifdef _MSC_VER` arm further down is
+genuinely the POSIX profile's doing (`assumed-dead-definition`). One file, both
+causes, previously reported as one kind.
 

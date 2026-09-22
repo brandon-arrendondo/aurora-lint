@@ -242,10 +242,17 @@ the scan target) writes every row as JSON with a ``kind`` from this list:
      - What it says
    * - ``variadic-definition``, ``paste-definition``, ``malformed-definition``
      - A function-like ``#define`` the collector will never expand, and why.
-   * - ``platform-dead-definition``
-     - Dropped because its branch never compiles under the assumed POSIX
-       profile (``_MSC_VER``, ``_WIN32``, ``__vxworks``, …). Noise on a POSIX
-       target; the whole story on any other.
+   * - ``assumed-dead-definition``
+     - Dropped because its branch never compiles under the configuration the
+       scan assumed — the POSIX profile (``_MSC_VER``, ``_WIN32``,
+       ``__vxworks``, …) or a ``--compile-commands`` declaration. Noise on that
+       configuration; the whole story on any other. This is the kind that
+       measures how much the one profile decides.
+   * - ``locally-dead-definition``
+     - Dropped because the *file itself* proves the branch dead: ``#if 0``, a
+       ``__cplusplus`` arm built as C, or a macro the file unconditionally
+       ``#define``\ s or ``#undef``\ s above the test. No configuration would
+       revive it, so this is correct behaviour rather than a blind spot.
    * - ``ambiguous-definition``
      - The same name is defined more than once in one file under conditions
        the profile cannot settle (``#ifdef WITH_TLS``). The first is used; the
