@@ -715,6 +715,7 @@ fn prescan_file_list(
     );
 
     function_summary::propagate_transitive_modifies(&mut function_summaries);
+    function_summary::propagate_forwards_to_indirect_call(&mut function_summaries);
     function_summary::propagate_transitive_frees(&mut function_summaries, &macro_aliases);
     function_summary::propagate_transitive_stores(&mut function_summaries, &macro_aliases);
     function_summary::propagate_returns_allocation(&mut function_summaries);

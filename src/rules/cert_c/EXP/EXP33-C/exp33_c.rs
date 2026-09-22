@@ -68,6 +68,20 @@ impl Exp33C {
     /// 1437, piece (a) of docs/design/exp33-c-cross-file-uninit-architecture.md).
     /// Excluding still-pending parameters here means "not proven to write" no
     /// longer doubles as "proven not to write."
+    ///
+    /// Three-state classification (aurora_lint 1442, piece (b)): a parameter
+    /// is ProvenReadOnly only once neither a MAY-write, a still-pending
+    /// obligation, NOR `forwards_to_indirect_call` accounts for it.
+    /// `forwards_to_indirect_call` is the "Unknown-due-to-indirection" state
+    /// the design doc calls for -- a callee that hands the parameter to a
+    /// call through a function pointer or driver-ops-style struct field
+    /// (`hapd->driver->read_sta_data(...)`) can never be proven to write OR
+    /// not write it, so the honest answer is neither ProvenReadOnly nor
+    /// ProvenWrites, and this check must suppress rather than assert either
+    /// way (ADR-0001). Resolving what the indirect target actually is would
+    /// be general points-to/alias analysis for function pointers, which the
+    /// design doc explicitly declines (piece (c), same precedent as
+    /// `docs/design/cfg-substrate-adoption-decision.md`).
     fn build_read_only_deref_fns(&self) -> HashMap<String, HashSet<usize>> {
         let summaries = self.cross_file_summaries.borrow();
         let mut result = HashMap::new();
@@ -77,6 +91,7 @@ impl Exp33C {
                 .iter()
                 .filter(|idx| !summary.modifies_params.contains(idx))
                 .filter(|idx| !summary.modifies_params_pending.contains_key(idx))
+                .filter(|idx| !summary.forwards_to_indirect_call.contains(idx))
                 .copied()
                 .collect();
             if !read_only.is_empty() {

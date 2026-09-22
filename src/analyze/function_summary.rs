@@ -373,6 +373,29 @@ pub struct FunctionSummary {
     /// Used for transitive free propagation (MEM31-C).
     #[serde(default)]
     pub param_passthroughs: HashMap<usize, Vec<(String, usize)>>,
+    /// Parameter indices this function's body forwards, as a bare
+    /// identifier, into a call this build can never resolve to a specific
+    /// function -- a call through a `field_expression` (`obj->cb(...)`,
+    /// `obj.cb(...)`), the same C-semantics test
+    /// `prescan::collect_ambiguous_call_targets` uses for the call graph
+    /// (task 562): the field name has no relationship to any global
+    /// function of the same name, so nothing this build has can say
+    /// whether the runtime-bound callee writes through the parameter.
+    ///
+    /// A MAY fact, deliberately: reaching the indirect call on ANY path is
+    /// enough, because this isn't a coverage proof like
+    /// `unconditional_modifies_params` -- it's the honest "cannot know" a
+    /// read-only classification needs before asserting a violation
+    /// (ADR-0001). `propagate_forwards_to_indirect_call` carries it through
+    /// `param_passthroughs` chains, since the indirection is routinely one
+    /// or more hops below the parameter the real caller passed: hostap's
+    /// `accounting_sta_update_stats` forwards its own `data` param to the
+    /// named (and otherwise ordinary) `hostapd_drv_read_sta_data`, which is
+    /// where the actual `hapd->driver->read_sta_data(...)` dispatch lives
+    /// (task 1442, aurora_lint, EXP33-C piece (b) of
+    /// docs/design/exp33-c-cross-file-uninit-architecture.md).
+    #[serde(default)]
+    pub forwards_to_indirect_call: HashSet<usize>,
     /// Subset of `param_passthroughs` whose forwarding CALL SITE is itself
     /// unconditional (not nested inside an if/switch/loop/ternary). Used to
     /// propagate `unconditional_frees_params` transitively — a passthrough
@@ -2808,6 +2831,12 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
             .or_default()
             .extend(callees);
     }
+    // MAY, same direction as `modifies_params`: if any definition linked
+    // under this name reaches an unresolvable indirect call with the
+    // parameter, callers cannot be told its write status is known.
+    existing
+        .forwards_to_indirect_call
+        .extend(summary.forwards_to_indirect_call);
 }
 
 /// Demote parameters whose every AST-visible write through them is
@@ -3662,6 +3691,10 @@ fn analyze_param_usage(
     // Detect param pass-through: when a parameter is forwarded to a callee
     collect_param_passthroughs(body, body, source, params, summary);
 
+    // Detect param forwards into an indirect (function-pointer/field) call
+    // this build can never resolve to a specific function.
+    collect_param_forwards_to_indirect_call(body, source, params, summary);
+
     // Detect direct field frees off a parameter: free(param->field) or
     // free((*param)->field) (the double-pointer-deref idiom used by
     // `void destroy(T **param)` style destructors). Gated on `credit_frees`
@@ -4206,6 +4239,58 @@ fn collect_param_passthroughs(
     }
 }
 
+/// Detect a parameter forwarded, as a bare identifier, into a call through a
+/// `field_expression` (`obj->cb(...)`, `obj.cb(...)`) -- the same
+/// C-semantics test `prescan::collect_ambiguous_call_targets` uses (task
+/// 562): the field name has no relationship to any global function of the
+/// same name, so this is always a runtime-bound indirect call this build
+/// cannot resolve, regardless of surrounding control flow. Deliberately not
+/// gated on `is_unconditionally_reached` like `param_passthroughs` is --
+/// reaching the indirect call on ANY path is enough to make the parameter's
+/// write status unknowable, which is a MAY fact, not a coverage proof (task
+/// 1442, aurora_lint).
+fn collect_param_forwards_to_indirect_call(
+    node: &Node,
+    source: &str,
+    params: &[String],
+    summary: &mut FunctionSummary,
+) {
+    if node.kind() == "call_expression" {
+        if let Some(func_node) = node.child_by_field_name("function") {
+            if func_node.kind() == "field_expression" {
+                if let Some(arguments) = node.child_by_field_name("arguments") {
+                    for i in 0..arguments.child_count() {
+                        if let Some(arg) = arguments.child(i) {
+                            if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
+                                continue;
+                            }
+                            let stripped = init_state::strip_arg_casts(&arg);
+                            if stripped.kind() == "identifier" {
+                                let arg_text = stripped.utf8_text(source.as_bytes()).unwrap_or("");
+                                for (param_idx, param_name) in params.iter().enumerate() {
+                                    if !param_name.is_empty() && arg_text == param_name {
+                                        summary.forwards_to_indirect_call.insert(param_idx);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return; // Don't recurse into call_expression children
+    }
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if is_real_nested_function_definition(&child, source) {
+                continue;
+            }
+            collect_param_forwards_to_indirect_call(&child, source, params, summary);
+        }
+    }
+}
+
 /// The name an edge to `callee_name` is looked up under. Through the alias
 /// map when that lands on something the scan knows -- `#define mbedtls_free
 /// free`, or an alias onto a function with a body -- and otherwise the
@@ -4416,6 +4501,50 @@ pub fn propagate_transitive_modifies(summaries: &mut HashMap<String, FunctionSum
                 // never had a direct write to put it there (task 1027,
                 // aurora_lint).
                 summary.modifies_params.insert(idx);
+                changed = true;
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Carry `forwards_to_indirect_call` through `param_passthroughs` chains to a
+/// fixpoint, since the indirection is routinely one or more forwarding hops
+/// below the parameter a real caller passed: hostap's
+/// `accounting_sta_update_stats` forwards its own `data` param to the named,
+/// otherwise-ordinary `hostapd_drv_read_sta_data`, and the actual
+/// `hapd->driver->read_sta_data(...)` dispatch lives one hop further in,
+/// inside THAT function's body. Uses the full `param_passthroughs` set, not
+/// the unconditional subset: unlike a write-coverage proof, "this parameter
+/// might reach an unresolvable call" only needs one reachable path, not
+/// every path (task 1442, aurora_lint, EXP33-C piece (b)).
+pub fn propagate_forwards_to_indirect_call(summaries: &mut HashMap<String, FunctionSummary>) {
+    for _pass in 0..10 {
+        let snapshot: HashMap<String, HashSet<usize>> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.forwards_to_indirect_call.clone()))
+            .collect();
+
+        let mut changed = false;
+        for summary in summaries.values_mut() {
+            let newly_unknown: Vec<usize> = summary
+                .param_passthroughs
+                .iter()
+                .filter(|(idx, _)| !summary.forwards_to_indirect_call.contains(idx))
+                .filter(|(_, targets)| {
+                    targets.iter().any(|(callee, callee_idx)| {
+                        snapshot
+                            .get(callee)
+                            .is_some_and(|unknown| unknown.contains(callee_idx))
+                    })
+                })
+                .map(|(idx, _)| *idx)
+                .collect();
+            for idx in newly_unknown {
+                summary.forwards_to_indirect_call.insert(idx);
                 changed = true;
             }
         }
