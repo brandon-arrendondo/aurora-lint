@@ -1732,6 +1732,31 @@ fn cast_then_deref(body_text: &str, param_name: &str) -> bool {
     false
 }
 
+/// True if `body_text` contains a genuine READ through `param_name->field`
+/// -- i.e. at least one occurrence of `param_name->` that is not itself the
+/// operand of an address-of expression. `&param->field` never reads the
+/// field's value; it hands the field's address to whatever it's passed to,
+/// typically a callee that writes through it: mbedtls's
+/// `mbedtls_ecp_point_init(mbedtls_ecp_point *pt) { mbedtls_mpi_init(&pt->X);
+/// mbedtls_mpi_init(&pt->Y); mbedtls_mpi_init(&pt->Z); }` never reads `pt`
+/// at all, and crediting every one of these as a dereference-read
+/// classified the whole `_init` family as read-only on their own output
+/// parameter (task 1444, aurora_lint, EXP33-C piece (d)). A function that
+/// has both an address-of use and a genuine read elsewhere still counts:
+/// this only withholds credit when EVERY occurrence is address-of'd.
+fn has_genuine_arrow_read(body_text: &str, param_name: &str) -> bool {
+    let needle = format!("{param_name}->");
+    let mut search_from = 0usize;
+    while let Some(rel) = body_text[search_from..].find(&needle) {
+        let pos = search_from + rel;
+        if !body_text[..pos].trim_end().ends_with('&') {
+            return true;
+        }
+        search_from = pos + needle.len();
+    }
+    false
+}
+
 /// Analyze how parameters are used in the function body. `body_text` may be
 /// a boundary-truncated slice of `body`'s source (see `analyze_function`);
 /// `collect_param_passthroughs` walks `body` itself and applies its own
@@ -3673,7 +3698,7 @@ fn analyze_param_usage(
 
         // Check if parameter is dereferenced in any way (read or write)
         if body_text.contains(&format!("*{}", param_name))
-            || body_text.contains(&format!("{}->", param_name))
+            || has_genuine_arrow_read(body_text, param_name)
             || body_text.contains(&format!("{}[", param_name))
             // Cast-then-deref pattern: `*(type *)param` or
             // `((type *)param)->field`/`[i]` -- a genuine dereference of a
