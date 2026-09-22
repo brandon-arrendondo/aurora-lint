@@ -2446,6 +2446,61 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         if let Some(declarator) = child.child_by_field_name("declarator") {
             let var_name = self.get_variable_name(&declarator, source);
 
+            // A declaration introduces a NEW object, so every fact this rule
+            // holds about the one the name used to denote stops applying --
+            // the same reasoning `rebind_name` states for an assignment, and
+            // stronger here, because a declaration cannot be the pointer it
+            // shadows. This state is keyed by name with no scope attached, so
+            // without the reset a sibling block's `char *zSql = ...` inherited
+            // the previous block's freed mark and its `sqlite3_free(zSql)`
+            // read as a double free (sqlite mptest.c:1192, task 1440). Only
+            // the three shapes handled below used to clear anything, and only
+            // by overwriting the allocation record, so an initializer that is
+            // not a recognised allocator -- `sqlite3_mprintf` is not one --
+            // left every stale fact in place.
+            //
+            // A declaration introduces a NEW object, so a freed mark left
+            // over from the one the name used to denote does not apply to it.
+            // This state is keyed by name with no scope attached, so without
+            // the reset a sibling block's `char *zSql = ...` inherited the
+            // previous block's mark and its `sqlite3_free(zSql)` read as a
+            // double free (sqlite mptest.c:1192, task 1440). Only three
+            // initializer shapes were handled below, and only by overwriting
+            // the allocation record, so an initializer that is not a
+            // recognised allocator -- `sqlite3_mprintf` is not one -- left
+            // the mark in place.
+            //
+            // GATED ON THERE BEING A MARK, and the allocation record goes
+            // with it, because the two are one fact: the record says which
+            // block, the mark says it died. Each half alone was measured
+            // wrong across the 12 corpora. Clearing the mark and keeping the
+            // record leaves a dead block looking merely allocated, so the
+            // end-of-function sweep reports it leaked -- curl's
+            // tool_findfile.c `home` and hostap's ieee802_11.c `pub` gained
+            // leak reports that way. Clearing the record unconditionally,
+            // for a name that carries no mark at all, reaches declarations
+            // this defect is not about and cost valkey's raxRemove two more
+            // sites of the pre-existing false `h` leak (rax.c:1055 and :1211
+            // beside the :1166 the base already reported).
+            //
+            // The old block is not re-filed under a `name@line:column` alias
+            // the way `rebind_name` would: the walk has no scopes, so an
+            // OUTER allocation still live past the inner block would be
+            // re-filed as leaked at the inner declaration although the outer
+            // `free` releases it. Dropping the record can only withhold a
+            // leak report, the safe direction for an accusation this rule
+            // cannot scope precisely.
+            if self.freed_memory.contains_key(&var_name)
+                || self.maybe_freed.contains_key(&var_name)
+                || self.freed_by_guess.contains_key(&var_name)
+            {
+                self.freed_memory.remove(&var_name);
+                self.maybe_freed.remove(&var_name);
+                self.freed_by_guess.remove(&var_name);
+                self.freed_via_alias.remove(&var_name);
+                self.allocated_memory.remove(&var_name);
+            }
+
             if let Some(value) = child.child_by_field_name("value") {
                 if self.is_allocation_call(&value, source) {
                     let pos = value.start_position();
