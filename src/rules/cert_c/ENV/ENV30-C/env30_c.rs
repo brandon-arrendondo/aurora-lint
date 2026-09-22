@@ -648,6 +648,14 @@ impl ENV30C {
                 // File operations (read path string)
                 | "open"
                 | "fopen"
+                // dlopen belongs with them: its first parameter is
+                // `const char *filename`, a path it reads and never writes.
+                // Without it the call falls through to the unknown-function
+                // branch, which reports "may modify it" about a pointer
+                // dlopen provably does not touch -- lua's
+                // `dlopen(rllib, RTLD_NOW | RTLD_LOCAL)` where rllib came
+                // from getenv (aurora_lint 1433).
+                | "dlopen"
                 | "stat"
                 | "lstat"
                 | "access"
