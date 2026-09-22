@@ -1932,6 +1932,34 @@ pub(crate) fn collect_callsite_distinct_objects_from_tree(
     }
 }
 
+/// True for a node a top-level walk must descend **through** to reach the
+/// `function_definition`s inside it: a preprocessor wrapper, or an `ERROR` the
+/// parser wrapped around otherwise well-formed definitions.
+///
+/// The `ERROR` half is load-bearing for recall, not defensive coding. A macro
+/// that expands to a `case` label is not parseable as a C statement -- hostap's
+/// `#define C2S(x) case x: return #x;`, used as bare `C2S(NL80211_CMD_UNSPEC)`
+/// statements inside a `switch` -- and tree-sitter's recovery wraps everything
+/// from that point to end of file in ONE `ERROR` node. The definitions after it
+/// are still there and still parsed correctly as its `function_definition`
+/// children; only the walk stopped at the wrapper. Measured over hostap: 34 of
+/// 504 files, hiding 245 function definitions, concentrated in `wpa_auth.c`
+/// (110) and `driver_nl80211_event.c` (57).
+///
+/// Skipping them costs more than those functions' own call sites. Every callee
+/// they call loses a caller, and `null_state::collect_param_pointer_state`
+/// reads a parameter with no call-site entry as `NotNull` ("callers are
+/// responsible"), so a missing caller is silently promoted to a *proof* of
+/// non-nullity rather than left unknown. That is why the gap suppressed
+/// findings in files that parse perfectly (aurora_lint 1451).
+///
+/// Consistent with ADR-0008: the test is not "does this node sit under an
+/// `ERROR`", which predicts nothing about correctness, but "is this node a
+/// `function_definition`" -- asked at every depth the walk can reach.
+fn wraps_definitions(kind: &str) -> bool {
+    kind.starts_with("preproc_") || kind == "ERROR"
+}
+
 /// Collect integer constant call-site argument values from a translation unit.
 ///
 /// For each function call, records the constant value (if determinable) for each
@@ -1950,7 +1978,7 @@ pub(crate) fn collect_callsite_int_args_from_tree(
                         collect_int_calls_in_node(&body, source, &local_ints, callsite_int_args);
                     }
                 }
-                kind if kind.starts_with("preproc_") => {
+                kind if wraps_definitions(kind) => {
                     collect_callsite_int_args_from_tree(&child, source, callsite_int_args);
                 }
                 _ => {}
@@ -2693,7 +2721,7 @@ pub(crate) fn collect_callsite_taint_args_from_tree(
                         );
                     }
                 }
-                kind if kind.starts_with("preproc_") => {
+                kind if wraps_definitions(kind) => {
                     collect_callsite_taint_args_from_tree(
                         &child,
                         source,
@@ -2896,7 +2924,7 @@ fn collect_callsite_buf_args_with_param_sizes(
                         );
                     }
                 }
-                kind if kind.starts_with("preproc_") => {
+                kind if wraps_definitions(kind) => {
                     collect_callsite_buf_args_with_param_sizes(
                         &child,
                         source,
@@ -2938,7 +2966,7 @@ pub(crate) fn collect_callsite_buf_args_from_tree(
                         );
                     }
                 }
-                kind if kind.starts_with("preproc_") => {
+                kind if wraps_definitions(kind) => {
                     collect_callsite_buf_args_from_tree(
                         &child,
                         source,
@@ -3540,7 +3568,7 @@ fn collect_callsite_args_with_param_states(
                         );
                     }
                 }
-                kind if kind.starts_with("preproc_") => {
+                kind if wraps_definitions(kind) => {
                     collect_callsite_args_with_param_states(
                         &child,
                         source,
@@ -3653,7 +3681,7 @@ fn collect_callsite_args_from_tree(
                         );
                     }
                 }
-                kind if kind.starts_with("preproc_") => {
+                kind if wraps_definitions(kind) => {
                     collect_callsite_args_from_tree(
                         &child,
                         source,
@@ -7943,6 +7971,71 @@ void caller(char *other) {
             states(&two),
             "and a_one's `report` does not inherit that proof from b_two's \
              unrelated function of the same name"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// hostap's `driver_nl80211_event.c`, reduced: a macro that expands to a
+    /// `case` label (`#define C2S(x) case x: return #x;`, invoked as a bare
+    /// `C2S(FOO)` with no semicolon) is not parseable as a C statement, and
+    /// past a handful of them tree-sitter stops recovering locally and wraps
+    /// everything from that point to end of file in ONE top-level `ERROR`
+    /// node. The real file leaves 57 function definitions inside that wrapper,
+    /// `src/ap/wpa_auth.c` 110; over hostap, 34 of 504 files and 245
+    /// definitions.
+    ///
+    /// Those definitions are still parsed correctly as `function_definition`
+    /// children of the wrapper -- here `entry`, the caller. What used to stop
+    /// at the wrapper was the walk: every call-site collector matched
+    /// `function_definition` and `preproc_*` and nothing else, so `entry`'s
+    /// call was never recorded. `handler` then had NO call-site entry for
+    /// parameter 0, which `null_state::collect_param_pointer_state` reads as
+    /// NotNull ("callers are responsible") -- an absent caller silently
+    /// promoted to a proof of non-nullity rather than left unknown -- so every
+    /// finding that depended on that seed went quiet, including in files that
+    /// parse perfectly (aurora_lint 1451).
+    ///
+    /// Two details are load-bearing, not incidental. The case count: recovery
+    /// is not monotonic in it (four cases still parse cleanly, five do not, six
+    /// through twelve do), so the fixture sits well inside the range where the
+    /// whole-file wrapper forms instead of on its edge. And `handler` is
+    /// defined BEFORE the macro block: recovery mis-parses the run of `C2S`
+    /// lines together with whatever definition follows it as one bogus
+    /// `function_definition`, so a callee placed after the block has no
+    /// summary to seed and the test would pass for the wrong reason.
+    #[test]
+    fn a_call_site_inside_an_error_wrapper_still_reaches_the_callee() {
+        let mut src = String::from(
+            "static void handler(char *data)\n{\n\temit(data[0]);\n}\n\n\
+             #define C2S(x) case x: return #x;\n\
+             static const char * to_string(int cmd)\n{\n\tswitch (cmd) {\n",
+        );
+        for i in 0..24 {
+            src.push_str(&format!("\tC2S(CMD_{})\n", i));
+        }
+        src.push_str(
+            "\t}\n\treturn \"unknown\";\n}\n\n\
+             void entry(int have)\n{\n\tchar *data = NULL;\n\
+             \tif (have)\n\t\tdata = pick();\n\thandler(data);\n}\n",
+        );
+
+        let dir = std::env::temp_dir().join("aurora-lint-prescan-error-wrapper-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("events.c"), &src).unwrap();
+        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        assert_eq!(
+            ctx.function_summaries
+                .get("handler")
+                .expect("`handler` is defined before the wrapper, so it has a summary")
+                .callsite_param_null_states
+                .get(&0)
+                .copied(),
+            Some(NullState::PossiblyNull),
+            "`entry` is the only caller, it hands `handler` a \
+             conditionally-assigned pointer, and it sits inside the ERROR node \
+             the case-label macro created -- so the walk has to descend through \
+             that node to see the call at all"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
