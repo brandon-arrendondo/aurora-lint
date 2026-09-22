@@ -3,6 +3,7 @@ use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::call_roles;
+use crate::utility::cert_c::fn_ptr_bindings;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -37,18 +38,30 @@ impl CertRule for ENV30C {
 
 impl ENV30C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        // A function pointer is bound where the file finds it convenient, not
+        // where it is called: lua declares `l_getenv` at file scope, binds it
+        // in `pmain` and calls it from `lua_initreadline`. So the bindings are
+        // collected once over the whole translation unit, before any function
+        // is walked (aurora_lint 1433).
+        let fn_ptr_bindings = fn_ptr_bindings::file_scope_function_pointer_bindings(node, source);
+
         // Check function definitions to track variable assignments from protected functions
         for n in query::find_descendants_of_kind(*node, "function_definition") {
-            violations.extend(self.check_function_for_violations(&n, source));
+            violations.extend(self.check_function_for_violations(&n, source, &fn_ptr_bindings));
         }
     }
 
-    fn check_function_for_violations(&self, func_node: &Node, source: &str) -> Vec<RuleViolation> {
+    fn check_function_for_violations(
+        &self,
+        func_node: &Node,
+        source: &str,
+        fn_ptr_bindings: &HashMap<String, Vec<String>>,
+    ) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
         let mut protected_vars: HashMap<String, String> = HashMap::new();
 
         // Collect all variable assignments from protected functions
-        self.collect_protected_assignments(func_node, source, &mut protected_vars);
+        self.collect_protected_assignments(func_node, source, fn_ptr_bindings, &mut protected_vars);
 
         // Check for modifications to those variables
         self.check_protected_var_modifications(func_node, source, &protected_vars, &mut violations);
@@ -60,13 +73,16 @@ impl ENV30C {
         &self,
         node: &Node,
         source: &str,
+        fn_ptr_bindings: &HashMap<String, Vec<String>>,
         protected_vars: &mut HashMap<String, String>,
     ) {
         for n in query::find_descendants(*node, |_| true) {
             // Look for declarations like: char *env = getenv("X");
             if n.kind() == "declaration" {
                 // Find if there's a protected function call
-                if let Some(func_name) = self.find_protected_function_call(&n, source) {
+                if let Some(func_name) =
+                    self.find_protected_function_call(&n, source, fn_ptr_bindings)
+                {
                     // Extract variable name
                     if let Some(var_name) = self.extract_var_name_from_declaration(&n, source) {
                         protected_vars.insert(var_name, func_name);
@@ -82,7 +98,9 @@ impl ENV30C {
 
             // Also handle assignment expressions (reassignment)
             if n.kind() == "assignment_expression" {
-                if let Some(func_name) = self.find_protected_function_call(&n, source) {
+                if let Some(func_name) =
+                    self.find_protected_function_call(&n, source, fn_ptr_bindings)
+                {
                     // Extract variable name from left side
                     if let Some(left) = n.child_by_field_name("left") {
                         let var_name = get_node_text(&left, source).trim().to_string();
@@ -266,7 +284,12 @@ impl ENV30C {
     /// call, and `osGetenv` is not `getenv`. Returns the first such call in
     /// source order rather than in protected-list order, which is what a
     /// reader of the line expects when a node holds more than one.
-    fn find_protected_function_call(&self, node: &Node, source: &str) -> Option<String> {
+    fn find_protected_function_call(
+        &self,
+        node: &Node,
+        source: &str,
+        fn_ptr_bindings: &HashMap<String, Vec<String>>,
+    ) -> Option<String> {
         for call in query::find_descendants_of_kind(*node, "call_expression") {
             let func = match call.child_by_field_name("function") {
                 Some(f) => f,
@@ -279,8 +302,48 @@ impl ENV30C {
             if self.is_protected_function(name) {
                 return Some(name.to_string());
             }
+            if let Some(bound) =
+                self.protected_through_pointer(&func, name, source, fn_ptr_bindings)
+            {
+                return Some(bound);
+            }
         }
         None
+    }
+
+    /// The protected function a call through a function POINTER may reach.
+    ///
+    /// lua's `lua.c` declares `static char *(*l_getenv)(const char *);` and
+    /// binds it to `&no_getenv` under `-E` and to `&getenv` otherwise, then
+    /// calls it as `l_getenv(...)`. On the `&getenv` path the returned
+    /// pointer is a protected object like any other, and the old text scan
+    /// credited it only by accident -- the spelling `l_getenv` happens to
+    /// contain `getenv` (aurora_lint 1428, 1433).
+    ///
+    /// MAY, not MUST: one binding being protected is enough, because that
+    /// path exists. The occurrence is resolved to its declaration first, so
+    /// a local of the same name cannot borrow the global's provenance
+    /// (ADR-0006).
+    fn protected_through_pointer(
+        &self,
+        func: &Node,
+        name: &str,
+        source: &str,
+        fn_ptr_bindings: &HashMap<String, Vec<String>>,
+    ) -> Option<String> {
+        if !fn_ptr_bindings::call_resolves_to_file_scope_pointer(
+            func,
+            name,
+            source,
+            fn_ptr_bindings,
+        ) {
+            return None;
+        }
+        fn_ptr_bindings
+            .get(name)?
+            .iter()
+            .find(|target| self.is_protected_function(target))
+            .cloned()
     }
 
     fn extract_var_name_from_declaration(&self, node: &Node, source: &str) -> Option<String> {

@@ -8,6 +8,11 @@ pub mod call_roles;
 /// Reusable functions for analyzing C declarators (arrays, pointers, function pointers).
 pub mod declarator_utils;
 pub mod float_typing;
+/// Which functions a file-scope function-pointer variable is bound to
+/// across one translation unit -- initializer AND later assignment, every
+/// binding rather than the last, so a rule can ask what a call through the
+/// pointer may reach.
+pub mod fn_ptr_bindings;
 /// Structural "is this variable guarded here?" queries -- the AST relation
 /// that per-rule text searches for a canonical guard spelling stand in for.
 pub mod guard_dominance;

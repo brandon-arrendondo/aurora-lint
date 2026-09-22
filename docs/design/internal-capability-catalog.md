@@ -312,6 +312,31 @@ their own recursive descent.
 | `TypedefShape::of` | `(declarator: &Node, source: &str) -> TypedefShape { is_pointer, is_function, name }` | What one typedef declarator chain spells, read from the outside in and **never entering a struct body** — a struct's pointer members say nothing about the type being named. `name` is the terminal `type_identifier`, i.e. the name defined, not the first type name in the subtree (which for `typedef BOOL (*PF)(...)` is `BOOL`). Task 1187 documents both mistakes at scale. |
 | `pointer_typedef_names_in` | `(type_definition: &Node, source: &str) -> Vec<String>` | The names a typedef binds to a pointer type in DCL05-C's sense: pointer in the chain, not a function pointer (CERT exempts those), not pointer-to-const (`typedef const POINT *LPCPOINT`). Shared by the rule and the prescan's `pointer_typedef_names` collector so the two can never disagree (task 1188). |
 
+### `src/utility/cert_c/fn_ptr_bindings.rs`
+**Problem solved:** what a call through a function-pointer *variable* may
+actually reach, when the pointer is declared at file scope and bound
+somewhere else entirely. lua's `lua.c` declares
+`static char *(*l_getenv)(const char *);`, binds it to `&no_getenv` under
+`-E` and to `&getenv` otherwise inside `pmain`, and calls it from
+`lua_initreadline` — so the callee's identity is in neither the declaration
+nor the call site.
+
+| Function | Signature | Description |
+|---|---|---|
+| `file_scope_function_pointer_bindings` | `(root: &Node, source: &str) -> HashMap<String, Vec<String>>` | Every file-scope function-pointer variable, mapped to every function bound to it in this translation unit — by its own initializer **and** by any later assignment, deduplicated, in source order. A declared-but-unbound pointer is present with an empty list, which is the answer to "is this callable a function pointer at all". **Every binding, not the last one**: two bindings in two `if` arms are two callees on two paths (ADR-0010), and a last-write-wins map answers for one and silently drops the other; MAY vs MUST is the caller's question to ask. An assignment whose LHS resolves to a local or parameter of the same name is skipped (ADR-0006). |
+| `call_resolves_to_file_scope_pointer` | `(ident_node: &Node, name: &str, source: &str, bindings: &HashMap<String, Vec<String>>) -> bool` | Whether a callee occurrence is that file-scope pointer rather than a same-named local — the guard a rule needs before crediting a call with the pointer's bindings. |
+
+**Two narrower collectors exist and neither answers this**, which is why
+this module does: `lang_parsing_substrate::calls`'s private
+`collect_fn_ptr_aliases` and `analyze::function_summary`'s
+`collect_clearing_names` (the `memset_func` idiom) both record a binding
+only when the **declaration carries an initializer**, so a pointer declared
+bare and assigned inside a function is invisible to both. Reach for this
+before hand-rolling a third. Adopted by ENV30-C (task 1433); the shape a
+pointer-returning *prototype* shares with a function-pointer variable
+(`char *decc$getenv(const char *)` vs `char *(*l_getenv)(const char *)`) is
+told apart on the declarator one level in, not on the name.
+
 ## Call-role classification (allocator / printf-family / scanf-family)
 
 ### `src/utility/cert_c/call_roles.rs`
