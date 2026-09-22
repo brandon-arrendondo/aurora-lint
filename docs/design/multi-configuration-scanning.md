@@ -433,5 +433,10 @@ resolution and nothing else").
   conclusion one layer up: no general pre-expansion pass, three narrow
   capabilities instead. Same shape of answer, same reason (the blast radius of
   the general mechanism is large; the unmet need is small and enumerable).
+- `docs/design/multiply-defined-names.md` (task 1385) is this note's
+  file-level counterpart: this one picks among the arms of one file, that one
+  picks among the files defining one name. Its "two externals" population is
+  the part only a declared configuration (§7's option D) can settle, and is
+  the largest of the three it classifies.
 - ADR-0010 is the policy this obeys; ADR-0003 decides where C and D live;
   ADR-0001/0005 are why no option here touches finding emission.

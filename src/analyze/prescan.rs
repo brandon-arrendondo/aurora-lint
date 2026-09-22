@@ -463,9 +463,34 @@ fn prescan_file_list(
         // itself) silently blind every rule that consults frees_params for
         // this function name across the entire codebase — a much larger
         // regression than the false positive the union avoids (task 401).
+        // The fields `merge_summary_variant` does NOT merge -- what the body
+        // checks, dereferences or returns -- are governed by whichever
+        // definition is folded into the other, and that used to be whichever
+        // file the sorted walk reached first (4ac5710f). Between a `static`
+        // definition and an externally-linked one of the same name, that pick
+        // is not arbitrary: a caller in any other translation unit links the
+        // external definition, and the static one is invisible to it. So an
+        // external definition displaces a held static one as the base and the
+        // static one is folded into it, which also stops
+        // `has_internal_linkage` being claimed for a name whose real
+        // definition is external -- a claim `collect_proven_nonnull_params`
+        // reads as "every call site is in the scanned set" (task 1385,
+        // aurora_lint; raylib's SaveFileText, `static` in raudio.c and
+        // external in rcore.c, is the labeled TP this lost).
+        //
+        // It does NOT decide a pick between two external definitions, which
+        // is the build-configuration question (hostap's os_* layer, the TLS
+        // and crypto backends), nor between two statics in different files.
         for (name, summary) in r.function_summaries {
             match function_summaries.get_mut(&name) {
-                Some(existing) => function_summary::merge_summary_variant(existing, summary),
+                Some(existing) => {
+                    if existing.has_internal_linkage && !summary.has_internal_linkage {
+                        let displaced = std::mem::replace(existing, summary);
+                        function_summary::merge_summary_variant(existing, displaced);
+                    } else {
+                        function_summary::merge_summary_variant(existing, summary);
+                    }
+                }
                 None => {
                     function_summaries.insert(name, summary);
                 }
@@ -7473,5 +7498,86 @@ void caller(char *other) {
             paths,
             "a search root inside the project tree is project-local"
         );
+    }
+
+    // -- a static definition in another translation unit (task 1385) --
+
+    /// raylib, reduced: `SaveFileText` is `static` in `raudio.c` (its body
+    /// null-checks the text argument) and externally linked in `rcore.c` (it
+    /// does not). Callers in every other file link the external one, but the
+    /// sorted walk reaches `raudio.c` first, so the static body's
+    /// `checks_null_params` used to govern them and exonerate a caller that
+    /// hands it a possibly-NULL pointer -- a labeled EXP34-C true positive
+    /// lost at 4ac5710f.
+    #[test]
+    fn an_external_definition_outranks_a_static_one_in_another_file() {
+        for reversed in [false, true] {
+            let dir = std::env::temp_dir().join(format!(
+                "aurora-lint-prescan-static-linkage-test-{reversed}"
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            // The names decide the walk order, so run it both ways: the
+            // answer must not depend on which file is reached first.
+            let (static_file, extern_file) = if reversed {
+                ("b_audio.c", "a_core.c")
+            } else {
+                ("a_audio.c", "b_core.c")
+            };
+            std::fs::write(
+                dir.join(static_file),
+                "static int save_file_text(const char *name, char *text) {
+                     if (text == NULL) return 0;
+                     return write_all(name, text);
+                 }
+",
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join(extern_file),
+                "int save_file_text(const char *name, char *text) {
+                     return write_all(name, text);
+                 }
+",
+            )
+            .unwrap();
+            let ctx =
+                prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+            let summary = ctx.function_summaries.get("save_file_text").unwrap();
+            assert!(
+                !summary.has_internal_linkage,
+                "a name with an external definition is not internal ({static_file} first)"
+            );
+            assert!(
+                !summary.checks_null_params.contains(&1),
+                "the static definition's null check must not answer for the \
+                 external one ({static_file} first)"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// Two external definitions -- the build configuration picks one, and
+    /// nothing in the source says which. The pick stays first-wins (sorted,
+    /// so at least deterministic); task 1385 does not claim to settle it.
+    #[test]
+    fn two_external_definitions_keep_the_deterministic_first_wins_pick() {
+        let dir = std::env::temp_dir().join("aurora-lint-prescan-two-external-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("a_unix.c"),
+            "int os_write(char *buf) { if (buf == NULL) return 0; return put(buf); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("b_none.c"),
+            "int os_write(char *buf) { return put(buf); }\n",
+        )
+        .unwrap();
+        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let summary = ctx.function_summaries.get("os_write").unwrap();
+        assert!(summary.checks_null_params.contains(&0));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

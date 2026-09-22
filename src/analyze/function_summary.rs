@@ -2669,6 +2669,18 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
     existing
         .returns_from_callees
         .extend(summary.returns_from_callees);
+    // A guess in one variant that another variant backs with evidence is
+    // not a guess for the merged name. Each variant's evidence is read from
+    // that variant alone, BEFORE the union, so the fold does not depend on
+    // which side is folded into which: reading `existing.frees_params` after
+    // the union credited every index `summary` contributed as
+    // evidence-backed, whichever variant it came from, and so silently
+    // dropped the guess flag on a name only `summary` guessed at. Order
+    // independence is the point — the caller may swap the two variants to
+    // pick which definition governs the fields this fold does not merge
+    // (task 1385, aurora_lint).
+    let backed = &(&existing.frees_params - &existing.frees_params_guessed)
+        | &(&summary.frees_params - &summary.frees_params_guessed);
     existing.frees_params.extend(summary.frees_params);
     for (idx, guesses) in summary.frees_params_by_name {
         existing
@@ -2677,9 +2689,6 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
             .or_default()
             .extend(guesses);
     }
-    // A guess in one variant that another variant backs with evidence is
-    // not a guess for the merged name.
-    let backed = &existing.frees_params - &existing.frees_params_guessed;
     existing.frees_params_guessed =
         &(&existing.frees_params_guessed | &summary.frees_params_guessed) - &backed;
     // Unioned with the free facts it sits beside: if ANY definition linked
@@ -5324,6 +5333,60 @@ mod tests {
         };
         merge_summary_variant(&mut stub, real);
         assert!(stub.returns_allocation);
+    }
+
+    /// The fold must give the same answer whichever variant is folded into
+    /// which, because the caller swaps them to choose which definition
+    /// governs the fields the fold does not merge (task 1385). The guess
+    /// bookkeeping was the one asymmetric field: evidence in one variant
+    /// clears the other's guess, and that must not depend on the side it
+    /// sits on.
+    #[test]
+    fn a_free_one_variant_backs_with_evidence_is_no_guess_either_way() {
+        let guessed = FunctionSummary {
+            frees_params: HashSet::from([1]),
+            frees_params_guessed: HashSet::from([1]),
+            ..Default::default()
+        };
+        let backed = FunctionSummary {
+            frees_params: HashSet::from([1]),
+            ..Default::default()
+        };
+
+        let mut folded = guessed.clone();
+        merge_summary_variant(&mut folded, backed.clone());
+        assert!(folded.frees_params.contains(&1));
+        assert!(
+            !folded.frees_params_guessed.contains(&1),
+            "evidence in the folded-in variant clears the guess"
+        );
+
+        let mut swapped = backed;
+        merge_summary_variant(&mut swapped, guessed);
+        assert!(swapped.frees_params.contains(&1));
+        assert!(
+            !swapped.frees_params_guessed.contains(&1),
+            "and clears it the other way round too"
+        );
+    }
+
+    /// The mirror case: an index only ONE variant frees, and only as a
+    /// name guess, keeps its guess flag. Reading the evidence off the union
+    /// counted that index as backed by the variant that never freed it.
+    #[test]
+    fn a_guess_no_variant_backs_stays_a_guess() {
+        let quiet = FunctionSummary::default();
+        let guessed = FunctionSummary {
+            frees_params: HashSet::from([2]),
+            frees_params_guessed: HashSet::from([2]),
+            ..Default::default()
+        };
+        let mut folded = quiet.clone();
+        merge_summary_variant(&mut folded, guessed.clone());
+        assert!(folded.frees_params_guessed.contains(&2));
+        let mut swapped = guessed;
+        merge_summary_variant(&mut swapped, quiet);
+        assert!(swapped.frees_params_guessed.contains(&2));
     }
 
     /// curl's curlx_memdup0: the allocation sits in one arm of the
