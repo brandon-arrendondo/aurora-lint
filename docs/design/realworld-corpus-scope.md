@@ -8,6 +8,12 @@ decisions were made with. The machine-readable form is `scope_include` /
 three disagree, this doc is the one that says *why* — fix the other two to
 match it, or revise it here first.
 
+Scope says which *files* an oracle measures; `primary_build_config` in the
+same JSON says which *build* of them, and every project section below ends
+with a `Primary build configuration` subsection giving its rationale. See
+[Primary build configuration](#primary-build-configuration-adr-0010-task-1424)
+for what that field does and does not claim.
+
 ## Why this doc exists
 
 Each real-world codebase's precision/recall is measured over the **shipped
@@ -41,6 +47,96 @@ the runner was `mcp_servers/realworld_server.py` (now
 `bench/realworld_runner.py`), and version/commit/count figures are what
 that run measured — they are provenance, not current numbers. Task ids
 cited inside sections refer to the maintainer's task DB.
+
+## Primary build configuration (ADR-0010, task 1424)
+
+Scope answers *which files* an oracle measures. It does not answer *which
+build* of those files, and until ADR-0010 nothing did. Each corpus's
+precision/recall figure is a statement about one configuration —
+`primary_build_config` in `data/benchmark_repos.json` is where that
+configuration is now written down, and the per-project subsections below are
+its rationale.
+
+**It is a declaration, not a filter.** Nothing reads it to drop a finding.
+Files listed in `out_of_config` are still scanned, still labeled as written
+(ADR-0010 Decision 1), and still counted in the denominator. Adding the field
+changed no score. What it buys is that "this only compiles under X" now has
+somewhere to be recorded and counted instead of being re-argued per batch.
+
+**The boundary is platform and architecture only.** A feature or debug flag
+*inside* the primary configuration's build — `CONFIG_SAE`, `NDEBUG`,
+`CONFIG_TESTING_OPTIONS` — is not a scope boundary; those findings are
+labeled on the construct alone, and hostap's ~195 DCL13-C TPs in `CONFIG_*`
+`#else` stubs are correct under that rule. Only "this host/architecture never
+compiles this file at all" is a denominator question (ADR-0010 Decisions 6–7).
+
+### Why it has to be declared rather than detected
+
+Three different mechanisms take a file out of a build, and only the first is
+visible in the file itself:
+
+1. **A whole-file guard with a standard platform macro** — mosquitto's
+   `src/service.c` under `#if defined(WIN32) || defined(__CYGWIN__)`, curl's
+   `src/tool_doswin.c`. Greppable.
+2. **A whole-file guard with a project-specific macro** — sqlite's
+   `src/os_win.c` under `#if SQLITE_OS_WIN`. Greppable only once you know the
+   project's spelling of "Windows".
+3. **Build-system selection, with no guard in the file at all** — seL4's
+   CMake picking one `src/arch/` subtree, raylib's `rcore.c` `#include`-ing
+   exactly one `platforms/*.c` as source, hostap's `drivers.mak` selecting
+   drivers from `defconfig`. **Nothing in the gated file says it is gated.**
+
+Mechanism 3 accounts for the large majority of out-of-configuration files in
+this suite (102 of the 108 below). A source-level heuristic finds none of
+them, which is the whole argument for a declaration.
+
+### What the field cannot express
+
+It is path-granular. A file the build never compiles is expressible; an
+`#ifdef` arm inside a file the build *does* compile is not. Task 1378's five
+INT02-C cases split exactly along that line — `driver_ndis.c`,
+`rcore_desktop_win32.c` and `service.c` are whole files and are now declared;
+`driver_bsd.c:403`'s `#ifdef WORDS_BIGENDIAN` arm and `build.c:126`'s
+`#if SQLITE_MAX_ATTACHED>30` arm are intra-file and stay in the denominator
+with no way to mark them. `endianness` and `arch` are declared so an
+adjudicator can at least name the axis a row sits on.
+
+### Where each corpus stands
+
+File counts are `.c`/`.h` in scope at the pinned commit (`corpus-check` green
+for all twelve when measured), via `bench.corpus.in_scope` — the oracle's own
+predicate, not a re-implementation.
+
+| Corpus | Primary configuration | In scope | Outside it | State |
+|---|---|---:|---:|---|
+| libcrc | `linux-x86_64` | 19 | 0 | clean |
+| sqlite | `linux-x86_64` | 214 | 4 | scored |
+| mosquitto | `linux-x86_64` | 179 | 1 | scored |
+| curl | `linux-x86_64` | 427 | 2 | scored |
+| hostap | `linux-x86_64` | 736 | 10 | scored |
+| lua | `linux-x86_64` | 60 | 0 | clean |
+| raylib | `linux-x86_64` (GLFW) | 23 | 9 | scored |
+| pureftpd | `linux-x86_64` | 131 | 0 | clean |
+| sel4 | `linux-x86_64-pc99` | 183 | 82 | scored |
+| mbedtls | `linux-x86_64` | 174 | 0 | clean |
+| valkey | `linux-x86_64` | 234 | 0 | clean |
+| ventoy | `windows-x86` | 22 | 0 | clean |
+
+`clean` means scope and configuration agree. `scored` means the
+`out_of_config` paths carry labeled ground-truth rows today — an open
+denominator gap, listed here so it can be measured, not closed here.
+**Closing one is not a mechanical follow-up:** narrowing `scope_exclude` to
+match a declaration would drop existing `ground_truth` rows out of the
+oracle, which is Brandon's call (and task 739's coordinator note already
+warns against piecemeal re-scoping, with a real TP at stake in valkey).
+
+**ventoy is the exception worth reading twice.** ADR-0010 says the
+configuration is "POSIX/Linux on the benchmark host for every corpus"; that
+is true of eleven. ventoy's `Ventoy2Disk` is a Win32 GUI installer, onboarded
+deliberately as the suite's Win32 oracle — it is *scanned* on the Linux host
+(with no `-I`, since `windows.h` is not there) but it *measures* Windows
+code. The primary configuration is a property of the code being measured, not
+of the host running the scanner.
 
 ## sqlite
 
@@ -104,6 +200,23 @@ headers rather than extending the globs:
 
 So the exclusion list is enumerated, not pattern-derived. A future sweep should
 re-read headers rather than trust either the filename or `TESTSRC`.
+
+### Primary build configuration
+
+`linux-x86_64` — default autoconf build, `SQLITE_OS_UNIX`, compile-time limits
+at their defaults.
+
+Four in-scope files are outside it. `src/os_win.c` is wholly inside
+`#if SQLITE_OS_WIN` (line 16 through the file's last line) and `src/os_win.h`
+is its private header; `ext/misc/windirent.h` is wholly inside
+`#if defined(_WIN32) && defined(_MSC_VER)`; `ext/misc/sqlite3_stdio.c` says in
+its own first comment that it is a no-op on every platform except Windows.
+None is in `scope_exclude`, so all four are scored today.
+
+Not expressible: `src/build.c:126`'s `#if SQLITE_MAX_ATTACHED>30` arm (task
+1378) is intra-file and stays in the denominator. It is also not a platform
+axis but a compile-time limit — a third kind of build knob the field does not
+model.
 
 ## curl
 
@@ -213,6 +326,23 @@ re-verification pass per the mosquitto model — re-challenges claimed TPs/FNs
 and samples FP buckets, because the adversarial agent consistently surfaces
 over-credited TPs, missed FPs, and overlooked FNs.
 
+### Primary build configuration
+
+`linux-x86_64` — Linux/OpenSSL build. **This corpus is the worked example the
+field is modeled on:** the 14 WIN_MAC files above were already pulled out of
+`scope_exclude` for exactly this reason, years before there was a name for it.
+
+Declaring it surfaced two in-scope files the curated WIN_MAC list missed, both
+Windows-only in their entirety:
+
+- `lib/curlx/fopen.c` — body at lines 41–508 of 508 inside `#ifdef _WIN32`.
+- `src/tool_doswin.c` — body at lines 26–910 of 910 inside
+  `#if defined(_WIN32) || defined(MSDOS)`.
+
+They are recorded in `out_of_config`, **not** added to `scope_exclude`:
+whether curl's Windows boundary should move is a scope decision with labeled
+rows behind it, not a typo to fix.
+
 ## hostap
 
 ### Scope (task 159)
@@ -250,6 +380,34 @@ the benchmark's own invocation (manifest `conf/realworld/hostap-rules.toml`,
 Whole-repo run: 38,659 violations (23 suppressed). Filtered to in-scope
 (`src/`, `wpa_supplicant/`, `hostapd/`): **36,072 findings across 636 files**,
 174 distinct rules firing.
+
+### Primary build configuration
+
+`linux-x86_64` — `wpa_supplicant` and `hostapd` at their shipped `defconfig`s:
+`CONFIG_DRIVER_NL80211`, `WEXT`, `WIRED` and `MACSEC_LINUX` enabled, with
+`#CONFIG_DRIVER_BSD=y` and `#CONFIG_DRIVER_NDIS=y` commented out in both.
+
+Ten in-scope files are outside it, and none of them carries a guard saying so —
+the selection is one-of-N in `src/drivers/drivers.mak` and the `os_*.c` /
+`l2_packet_*.c` sets, driven by `defconfig`:
+
+    src/utils/os_win32.c                 src/drivers/driver_ndis.c
+    src/utils/os_none.c                  src/drivers/driver_ndis_.c
+    src/l2_packet/l2_packet_winpcap.c    src/drivers/driver_bsd.c
+    src/l2_packet/l2_packet_ndis.c       src/drivers/driver_openbsd.c
+    src/l2_packet/l2_packet_freebsd.c
+    src/l2_packet/l2_packet_none.c
+
+Ten files out of 736 in scope is 1.4% of the file surface, and the finding
+density behind it is why it still matters: task 1378 found 7 of INT02-C's 46
+TP rows in `driver_ndis.c` alone.
+
+`CONFIG_*` feature stubs are **in** this configuration and are labeled on the
+construct (ADR-0010 Decision 1) — the ~195 DCL13-C TPs in `CONFIG_SAE` /
+`CONFIG_GAS` / `CONFIG_PR` `#else` stubs are correct and are not affected by
+anything here. `src/drivers/driver_bsd.c:403`'s `#ifdef WORDS_BIGENDIAN` arm is
+intra-file and not expressible; `endianness: little` is declared so the axis at
+least has a name.
 
 ## mosquitto
 
@@ -312,6 +470,16 @@ Binary: built from source at Cargo.toml v0.4.30 into an isolated target dir
 another concurrent session used for the sqlite FP-reduction benchmark gate
 (task 171).
 
+### Primary build configuration
+
+`linux-x86_64` — default Linux broker and `libmosquitto` build.
+
+One in-scope file is outside it: `src/service.c`, wholly inside
+`#if defined(WIN32) || defined(__CYGWIN__)` (the Windows service wrapper). It
+is in `src/**` and not excluded, so it is scored today; task 1378 found it via
+INT02-C. Everything else in `lib/`, `src/` and `include/` is portable code
+whose Windows handling is intra-file and therefore in-configuration.
+
 ## sel4
 
 ### Candidate: seL4 microkernel
@@ -327,6 +495,35 @@ cleaner signal than curl/mosquitto/hostap's pervasive deliberate no-op
 idioms. On that basis it was onboarded as the `sel4` codebase, scoped to
 `src/` (the kernel proper; `libsel4/` is the userspace binding library, not
 kernel code).
+
+### Primary build configuration
+
+`linux-x86_64-pc99` — `KernelPlatform=pc99 KernelArch=x86`, the configuration
+seL4's `compile_commands.json` is generated for (`macro-expansion.md` §11).
+
+**This is the suite's largest denominator gap: 82 of 183 in-scope files (45%)
+are never compiled by it.** CMake selects one `arch/` and one `plat/` subtree
+and the unselected ones carry no guard at all, so nothing in the source hints
+that they are out:
+
+| Out of configuration | Files |
+|---|---:|
+| `src/arch/arm/**` | 48 |
+| `src/arch/riscv/**` | 17 |
+| `src/arch/x86/32/**` | 10 |
+| `src/plat/{allwinnerA20,am335x,bcm2837,omap3,tk1}/**` | 7 |
+| **Total** | **82** |
+
+These are scored today — sel4 holds thousands of labeled rows and they include
+`src/arch/arm/**` paths. ADR-0010 Decision 7 names this corpus as the precedent
+for its own answer ("seL4 built for x86, arm and riscv is effectively three
+codebases in one repository"), so the measurement-side path is onboarding
+`sel4-arm` as its own benchmark rather than deleting rows from this one.
+
+**Unverified:** that `pc99` here means x86-64 rather than ia32. `src/arch/x86/32/**`
+is listed as out of configuration on that assumption; it was not confirmed
+against the generated `gen_config.h`, and it is the one line in this section
+that a reader should not take on trust.
 
 ## valkey
 
@@ -419,6 +616,11 @@ category 1. Same disposition as libcrc's WIN* block.
 follow-up (match identifiers, not comment text). Had the detector been right,
 `--write-manifest` would have produced this exact disable set itself.
 
+### Primary build configuration
+
+`linux-x86_64` — default Linux server build. Nothing is out of configuration;
+there are no platform-alternative sources in `src/*.c` scope.
+
 ## libcrc
 
 ### Oracle polarity (Juliet OMITBAD / OMITGOOD mapping)
@@ -471,6 +673,12 @@ suppress the noisy analyzer-misfire rules (FIO47, PRE32, INT36, API00, MEM30,
 …): those stay enabled so their false positives are *measured* in the oracle
 and motivate fixing the analyzer, rather than being hidden by config.
 
+### Primary build configuration
+
+`linux-x86_64`. Nothing is out of configuration — a portable CRC library with
+no platform-alternative sources, and the whole 19-file whole-repo audit scope
+compiles here.
+
 ## lua
 
 ### Scope: 60 in-scope files (33 .c + 27 .h), 31,470 LOC
@@ -499,6 +707,15 @@ full for FNs.
   errors, `luaM_*` raise-on-OOM, macro-heavy headers, internal cross-TU API,
   portability-not-structural C99.
 - An adversarial re-verification pass (FN-refute, TP-refute, FP-hunt).
+
+### Primary build configuration
+
+`linux-x86_64` — default `make linux` build (`LUA_USE_LINUX`).
+
+Nothing is out of configuration. Lua's platform variation is concentrated in
+`luaconf.h` as intra-file `#if` arms rather than per-platform source files, so
+there is nothing path-expressible to declare — which is a limit of the field
+here, not a statement that Lua has no platform-conditional code.
 
 ## mbedtls
 
@@ -557,6 +774,14 @@ shape as pureftpd and sel4. Threading is opt-in in mbedtls (off by default) but
 the code is there and the rules are cheap; per-finding truth is the oracle's
 job.
 
+### Primary build configuration
+
+`linux-x86_64` — default `mbedtls_config.h`.
+
+Nothing is out of configuration. Every `library/*.c` in scope is compiled; what
+varies is feature gating inside those files (`MBEDTLS_*_C`), which ADR-0010
+Decision 1 keeps in the denominator and labeled as written.
+
 ## pureftpd
 
 ### Scope: the whole daemon (`src/**` + `puredb/**`)
@@ -609,6 +834,15 @@ each reading the full source files (not just the flagged line) before
 judging. Results merged into one adjudication CSV and imported via `bench
 realworld-import-labels`.
 
+### Primary build configuration
+
+`linux-x86_64` — default `configure` build.
+
+Nothing is out of configuration. The `bsd-getopt_long.c`, `bsd-glob.c` and
+`bsd-realpath.c` portability fallbacks look like a platform boundary and are
+not: `src/Makefile.am` lists them unconditionally, so they are compiled on
+Linux and are in-configuration.
+
 ## raylib
 
 ### Scope: raylib's own code only (`src/*.c|*.h` + `src/platforms/*.c`)
@@ -654,6 +888,26 @@ is a no-op under the stricter reading and load-bearing under fnmatch.
 Sweeping either in would multiply the coverage denominator by ~16 against a
 labeled corpus that never touched them.
 
+### Primary build configuration
+
+`linux-x86_64`, `PLATFORM_DESKTOP_GLFW` — raylib's default desktop backend.
+
+Nine of the ten `src/platforms/*.c` are outside it, which is 39% of this
+corpus's 23 in-scope files — the highest proportion in the suite after sel4.
+The mechanism is unusual and worth stating: `src/rcore.c` `#include`s exactly
+one platform file **as source**, in an `#if defined(PLATFORM_*)` chain at lines
+515–530. The gate lives in the *including* file, so the nine unselected
+backends contain no preprocessor guard of their own and no amount of reading
+them reveals that they are not built.
+
+    rcore_android.c        rcore_desktop_rgfw.c   rcore_desktop_sdl.c
+    rcore_desktop_win32.c  rcore_drm.c            rcore_memory.c
+    rcore_template.c       rcore_web.c            rcore_web_emscripten.c
+
+They are scored today: the first `ground_truth` row this project returns is a
+TP in `src/platforms/rcore_android.c`. Task 1042 (onboarding raylib's platform
+backends as their own configurations) is the measurement-side path.
+
 ## ventoy
 
 ### Scope: the installer's own top-level sources only
@@ -697,3 +951,20 @@ build-system code, none of it relevant to a CERT-C scan of the installer.
 second, smaller genuine Win32 C tool in the same repo, deferred as a
 separate low-priority follow-up: low marginal value next to Ventoy2Disk's
 surface.
+
+### Primary build configuration
+
+`windows-x86` — **the one corpus in this suite that is not a Linux oracle.**
+
+`Ventoy2Disk` is a Win32 GUI installer driving COM (VDS, WMI) through the
+C-style `lpVtbl->` vtable idiom. It is *scanned* on the Linux benchmark host —
+with no `-I` at all, since `windows.h` and the COM headers are not there and
+aurora-lint parses without them — but what it *measures* is Windows code. It
+was onboarded deliberately as the suite's Win32 oracle rather than having
+Windows code scored under a Linux one (ADR-0010 Decision 7).
+
+Nothing is out of configuration: the entire 22-file scope is the Win32 build.
+
+Read ADR-0010's "today it is POSIX/Linux on the benchmark host for every
+corpus" as true of the other eleven. The primary configuration is a property of
+the code being measured, not of the host running the scanner.
