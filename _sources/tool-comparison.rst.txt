@@ -360,10 +360,11 @@ Juliet, all four on one host (2026-09-04), CWE list sizes differing:
 .. warning::
 
    **These durations are comparable to each other and to nothing else.** All
-   four ran on one host (dev-921, i5-12400) on one day. The April figures —
-   895 s / 5,944 s / 5,019 s / 9,914 s — were taken on an r720, roughly ten
-   years older and materially slower per core, so the two sets are separated
-   by a hardware generation and no ratio between them means anything. They
+   four ran on one host (i5-12400) on one day. The April figures —
+   895 s / 5,944 s / 5,019 s / 9,914 s — were taken on an older workstation,
+   roughly ten years older and materially slower per core, so the two sets
+   are separated by a hardware generation and no ratio between them means
+   anything. They
    are not quoted side by side here for that reason.
 
    That the *findings* are unaffected is what makes the two sets usable at
@@ -422,8 +423,8 @@ Real-World Precision, Per Rule
 .. note::
 
    **All four competitor columns were re-measured on 2026-09-04**, on one
-   host (dev-921), at the versions in the table above.  The April runs were
-   on a different and much older machine (r720), which affects wall clock
+   host, at the versions in the table above.  The April runs were
+   on a different and much older machine, which affects wall clock
    only — see the warning under Speed.  Three of the four reproduced their
    April figures *exactly*:
 
