@@ -65,9 +65,8 @@ impl ENV30C {
         for n in query::find_descendants(*node, |_| true) {
             // Look for declarations like: char *env = getenv("X");
             if n.kind() == "declaration" {
-                let text = get_node_text(&n, source);
                 // Find if there's a protected function call
-                if let Some(func_name) = self.find_protected_function_in_text(&text) {
+                if let Some(func_name) = self.find_protected_function_call(&n, source) {
                     // Extract variable name
                     if let Some(var_name) = self.extract_var_name_from_declaration(&n, source) {
                         protected_vars.insert(var_name, func_name);
@@ -83,8 +82,7 @@ impl ENV30C {
 
             // Also handle assignment expressions (reassignment)
             if n.kind() == "assignment_expression" {
-                let text = get_node_text(&n, source);
-                if let Some(func_name) = self.find_protected_function_in_text(&text) {
+                if let Some(func_name) = self.find_protected_function_call(&n, source) {
                     // Extract variable name from left side
                     if let Some(left) = n.child_by_field_name("left") {
                         let var_name = get_node_text(&left, source).trim().to_string();
@@ -251,24 +249,35 @@ impl ENV30C {
         None
     }
 
-    fn find_protected_function_in_text(&self, text: &str) -> Option<String> {
-        let protected_funcs = [
-            "getenv",
-            "localeconv",
-            "setlocale",
-            "strerror",
-            "asctime",
-            "ctime",
-            "gmtime",
-            "localtime",
-            "getdate",
-            "getlogin",
-        ];
-
-        for func in &protected_funcs {
-            // Look for func( pattern
-            if text.contains(&format!("{}(", func)) {
-                return Some(func.to_string());
+    /// Find a call to a protected function inside `node`, resolved on the AST.
+    ///
+    /// The text scan this replaced asked whether the node's source range
+    /// contained `getenv(` anywhere, and a node's range includes its
+    /// COMMENTS. sqlite's `azDirs` table documents each slot with
+    /// `0, /* getenv("SQLITE_TMPDIR") */`, which seeded the whole array as
+    /// getenv-provenance and made the very line that fills it
+    /// (`azDirs[0] = osGetenv(...)`, a pointer store into an array element)
+    /// report as a modification of the returned string -- five findings in
+    /// os_win.c, all of them naming a construct that is not there
+    /// (aurora_lint 1428, ADR-0005).
+    ///
+    /// Matching a `call_expression` whose `function` is exactly one of the
+    /// protected identifiers fixes both halves at once: a comment is not a
+    /// call, and `osGetenv` is not `getenv`. Returns the first such call in
+    /// source order rather than in protected-list order, which is what a
+    /// reader of the line expects when a node holds more than one.
+    fn find_protected_function_call(&self, node: &Node, source: &str) -> Option<String> {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            let func = match call.child_by_field_name("function") {
+                Some(f) => f,
+                None => continue,
+            };
+            if func.kind() != "identifier" {
+                continue;
+            }
+            let name = get_node_text(&func, source);
+            if self.is_protected_function(name) {
+                return Some(name.to_string());
             }
         }
         None
