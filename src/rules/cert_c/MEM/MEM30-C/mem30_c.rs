@@ -7,6 +7,8 @@ use crate::analyze::macro_gaps;
 use crate::analyze::points_to::{lvalue_of, resolve_canonical, AliasMap, LValue};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
+use crate::utility::cert_c::call_roles;
+use crate::utility::cert_c::clearing_extent::cleared_extent;
 use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -125,21 +127,31 @@ impl CertRule for Mem30C {
         // MEM31-C ownership task 1139). Collecting from the file is one AST
         // walk; the old "skip when the prescan table is empty" shortcut is
         // what hid the macro.
-        let macro_null_params = {
+        let (macro_null_params, macro_clear_params) = {
             let mut macros = HashMap::clone(&self.function_macros.borrow());
             macros.extend(crate::analyze::macro_expand::collect_function_macros(
                 node, source,
             ));
             let mut invoked = HashSet::new();
             collect_invoked_macro_names(node, source, &macros, &mut invoked);
-            let mut out: HashMap<String, Vec<usize>> = HashMap::new();
+            let mut nulls: HashMap<String, Vec<usize>> = HashMap::new();
+            let mut clears: HashMap<String, Vec<usize>> = HashMap::new();
             for name in invoked {
                 let idx = crate::analyze::macro_expand::macro_nulls_param_indices(&macros, &name);
                 if !idx.is_empty() {
-                    out.insert(name, idx);
+                    nulls.insert(name.clone(), idx);
+                }
+                // The macro half of clearing-call recognition, paired with
+                // `FunctionSummary::clears_params` (the function half)
+                // exactly as MEM03-C pairs them: hostap's `#define
+                // os_memset(s, c, n) memset(s, c, n)` is the same overwrite
+                // as a direct `memset`, and must clear the same freed paths.
+                let idx = crate::analyze::macro_expand::macro_clears_param_indices(&macros, &name);
+                if !idx.is_empty() {
+                    clears.insert(name, idx);
                 }
             }
-            out
+            (nulls, clears)
         };
 
         // Names of union typedefs in this file, so the analyzer can restrict
@@ -182,6 +194,7 @@ impl CertRule for Mem30C {
         // Second pass: per-function analysis
         let mut analyzer = MemoryAnalyzer::new(
             macro_null_params,
+            macro_clear_params,
             union_typedef_names,
             self.function_summaries.borrow().clone(),
             macro_aliases,
@@ -1755,6 +1768,10 @@ struct MemoryAnalyzer {
     // nulled parameter indices. A call to one of these clears the freed state of
     // its argument, matching the macro's own `= NULL` (Phase 2c-iii).
     macro_null_params: HashMap<String, Vec<usize>>,
+    // Function-like macros that overwrite a destination parameter (hostap's
+    // `os_memset`): macro name -> destination parameter indices. The macro
+    // half of `clear_freed_paths_overwritten_by_clearing_call`.
+    macro_clear_params: HashMap<String, Vec<usize>>,
     // Names of union *typedefs* in this translation unit (e.g.
     // `typedef union {...} ptr_union_t;` -> "ptr_union_t"). Used to recognize
     // union-typed variable declarations. File-global; cloned per function.
@@ -1816,6 +1833,7 @@ struct MemoryAnalyzer {
 impl MemoryAnalyzer {
     fn new(
         macro_null_params: HashMap<String, Vec<usize>>,
+        macro_clear_params: HashMap<String, Vec<usize>>,
         union_typedef_names: HashSet<String>,
         function_summaries: Arc<HashMap<String, FunctionSummary>>,
         macro_aliases: HashMap<String, String>,
@@ -1837,6 +1855,7 @@ impl MemoryAnalyzer {
             realloc_source: HashMap::new(),
             union_members: HashMap::new(),
             macro_null_params,
+            macro_clear_params,
             union_typedef_names,
             pointer_typedef_names,
             typedef_types,
@@ -1860,6 +1879,7 @@ impl MemoryAnalyzer {
             // Analyze each function with fresh state to avoid cross-function pollution
             let mut func_analyzer = MemoryAnalyzer::new(
                 self.macro_null_params.clone(),
+                self.macro_clear_params.clone(),
                 self.union_typedef_names.clone(),
                 self.function_summaries.clone(),
                 self.macro_aliases.clone(),
@@ -2194,6 +2214,7 @@ impl MemoryAnalyzer {
                     "call_expression" => {
                         let freed_arg_ids = self.process_call_expression(&n, source, violations);
                         self.clear_freed_args_overwritten_by_result(&n, source, &freed_arg_ids);
+                        self.clear_freed_paths_overwritten_by_clearing_call(&n, source);
                         push_children(&mut stack, &n, source, &freed_arg_ids);
                     }
                     "assignment_expression" => {
@@ -4115,6 +4136,85 @@ impl MemoryAnalyzer {
         let left_var = LValue::Var(left_lv.root_var().to_string());
         self.clear_freed_state(&left_var, &left_lv);
         self.sever_aliases_of(&left_var);
+    }
+
+    /// A clearing call overwrites the pointer members inside its
+    /// destination, so a path freed before it no longer holds the value a
+    /// later read returns -- the same overwrite-clears rule
+    /// `process_assignment` applies to `free(p); p = NULL;`, reached by a
+    /// route that assignment tracking cannot see (task 1446).
+    ///
+    /// sqlite uses both spellings of the idiom. `sqlite3session.c`'s
+    /// `sqlite3_free(sOut.aBuf); memset(&sOut, 0, sizeof(sOut));` nulls the
+    /// member and the function then frees `sOut.aBuf` again on its way out,
+    /// which was reported as a double free of a pointer the memset had
+    /// already set to NULL. `fts3_aux.c` frees three members of `*pCsr` and
+    /// then zeroes from one member to the end of the object -- `memset(
+    /// &pCsr->csr, 0, ((u8*)&pCsr[1]) - (u8*)&pCsr->csr)` -- after which
+    /// every one of those members reads NULL, not freed storage.
+    ///
+    /// Runs after `process_call_expression`, so a clearing call that is
+    /// *itself* a use of freed memory (`free(p); memset(p, 0, n);`) is
+    /// reported first and only then forgotten. Only field paths are
+    /// cleared: a bare variable is the pointer, which lives outside the
+    /// memory written, and rebinding one through `&p` is
+    /// `process_address_of_args`'s job.
+    fn clear_freed_paths_overwritten_by_clearing_call(&mut self, call: &Node, source: &str) {
+        if self.freed_vars.is_empty() {
+            return;
+        }
+        let Some(function_node) = call.child_by_field_name("function") else {
+            return;
+        };
+        // Same classification order as `process_call_expression`: the
+        // source spelling keys the macro table, everything else resolves
+        // through the `#define` alias chain first (task 1128).
+        let spelled_name = get_node_text(&function_node, source);
+        let function_name = const_eval::resolve_macro_alias(&self.macro_aliases, spelled_name);
+        let dest_indices: Vec<usize> = if call_roles::is_memory_clearing_call(function_name) {
+            vec![0]
+        } else if let Some(indices) = self.macro_clear_params.get(spelled_name) {
+            indices.clone()
+        } else if let Some(summary) = self.function_summaries.get(function_name) {
+            let mut indices: Vec<usize> = summary.clears_params.iter().copied().collect();
+            indices.sort_unstable();
+            indices
+        } else {
+            Vec::new()
+        };
+        if dest_indices.is_empty() {
+            return;
+        }
+        let args = crate::analyze::macro_semantics::positional_args(call);
+        for idx in dest_indices {
+            let Some(dest) = args.get(idx) else { continue };
+            let rest: Vec<Node> = args.iter().skip(idx + 1).copied().collect();
+            let Some(extent) = cleared_extent(dest, &rest, source) else {
+                continue;
+            };
+            let overwritten: Vec<LValue> = self
+                .freed_vars
+                .iter()
+                .filter(|lv| extent.covers(lv))
+                .cloned()
+                .collect();
+            for lv in overwritten {
+                self.forget_freed_path(&lv);
+            }
+        }
+    }
+
+    /// Drop every trace of one freed field path, leaving the object it sits
+    /// in alone. The companion to `clear_freed_state`, which also clears the
+    /// base variable -- wrong here, because overwriting `s`'s members says
+    /// nothing about `s` itself.
+    fn forget_freed_path(&mut self, lv: &LValue) {
+        self.freed_vars.remove(lv);
+        self.freed_at.remove(lv);
+        self.freed_under.remove(lv);
+        self.guessed_freed.remove(lv);
+        self.nullified_vars.remove(lv);
+        self.realloc_invalidated.remove(lv);
     }
 
     /// `left = right` where the right-hand side names a variable: the alias

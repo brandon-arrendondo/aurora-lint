@@ -5,6 +5,9 @@ pub mod ast_utils;
 /// on top of `std_functions` -- single source of truth so rules stop
 /// independently reinventing (and disagreeing on) these name lists.
 pub mod call_roles;
+/// How far a memory-clearing call's write reaches, so a rule can tell
+/// whether a pointer stored inside the destination survived it.
+pub mod clearing_extent;
 /// Reusable functions for analyzing C declarators (arrays, pointers, function pointers).
 pub mod declarator_utils;
 pub mod float_typing;

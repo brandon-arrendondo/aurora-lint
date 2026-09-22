@@ -384,6 +384,38 @@ family into `is_safe_function` would have newly (and wrongly) treated
 (`tests/fail/testcases_vsprintf_modification.c`) was confirmed to fail
 without that addition before the migration landed.
 
+### `src/utility/cert_c/clearing_extent.rs`
+**Problem solved:** how far a memory-clearing call's write reaches.
+`call_roles::is_memory_clearing_call`, `FunctionSummary::clears_params` and
+`macro_expand::macro_clears_param_indices` all answer *whether* a call
+clears a destination; none answers *what storage it covers*, which is what
+a rule needs before concluding that a pointer stored inside that
+destination survived the call. MEM30-C read `sqlite3_free(sOut.aBuf);
+memset(&sOut, 0, sizeof(sOut));` as leaving `sOut.aBuf` freed, and reported
+the function's ordinary exit-path free of it as a double free (task 1446).
+
+| Item | Signature | Description |
+|---|---|---|
+| `ClearedExtent` (enum) | `Object(LValue)` \| `ObjectTail(String)` | The storage a clearing call writes over: the destination object and everything inside it, or — for the "zero from this member to the end of the struct" idiom — the destination plus the rest of the object it sits in, named by the root variable. |
+| `ClearedExtent::covers` | `(&self, lv: &LValue) -> bool` | Whether `lv` names storage this call overwrites. Only a FIELD PATH ever qualifies: a bare variable is the pointer itself, which lives outside the memory written, and rebinding one through `&p` belongs to the caller's address-of handling. |
+| `cleared_extent` | `(dest: &Node, rest: &[Node], source: &str) -> Option<ClearedExtent>` | The extent, from the destination argument and the arguments after it. The remaining arguments are SEARCHED rather than indexed, because the length sits in a different position in every signature this feeds (`memset(s, c, n)`, `bzero(s, n)`, `memset_s(s, smax, c, n)`) and a project wrapper or macro has no fixed signature at all. |
+
+Two deliberate calls. The extent is **not** gated on the length proving the
+destination is covered in full: a partial clear still makes the pointers it
+spans unreadable, and a rule reporting a *use of freed memory* must be able
+to say the value read is the one that was freed. And `ObjectTail` requires
+both operands of the length subtraction to be addresses *taken* (`&x`), not
+values read out of the object — that is what separates sqlite's
+`((u8*)&pCsr[1]) - (u8*)&pCsr->csr` from an ordinary `p->end - p->start`,
+which says nothing about how far past the destination the write reaches.
+
+**Wiring pattern:** classify the callee first (the three predicates above
+give the destination parameter indices), then call `cleared_extent` per
+destination and filter the tracked paths with `covers`. MEM30-C runs it as
+a post-step AFTER its call handling, so a clearing call that is itself a
+use of freed memory (`free(p); memset(p, 0, n);`) is reported before its
+effect is applied.
+
 ## Arithmetic-overflow-detection helpers
 
 ### `src/utility/cert_c/overflow_helpers.rs`
@@ -522,6 +554,7 @@ are two different dictionary keys.
 | `LValue` (enum) | `Var(String)` \| `Field(Rc<LValue>, String)` | Canonical lvalue identity. Array subscripts are deliberately NOT index-sensitive (`arr[i]`/`arr[j]` collapse to the same identity); only struct/union field access is field-sensitive. |
 | `LValue::root_var` | `(&self) -> &str` | The innermost `Var` name, discarding field structure — for tracking that's deliberately base-variable-scoped (e.g. union-member aliasing on free). |
 | `LValue::is_field` | `(&self) -> bool` | True if this is a field access rather than a bare variable. |
+| `LValue::is_inside` | `(&self, other: &LValue) -> bool` | True when this path names storage strictly INSIDE `other` — `other` is a proper prefix of it. `p->a.b` is inside `p->a` and inside `p`; nothing is inside itself and a bare `Var` is inside nothing. The members a whole-object write overwrites are exactly the paths inside it (`clearing_extent`, task 1446). |
 | `lvalue_of` | `(node: &Node, source: &str) -> Option<LValue>` | Parses an expression node into its canonical `LValue`, unwrapping deref/field/subscript/parenthesized/cast spellings. `None` for anything that isn't a variable/field-access chain (call results, literals, binary expressions). |
 | `AliasMap` (type alias) | `HashMap<LValue, LValue>` | Single-hop alias table: alias → target. |
 | `resolve_canonical` | `(map: &AliasMap, lv: &LValue) -> LValue` | Follows an alias chain to its canonical target, with cycle protection. |

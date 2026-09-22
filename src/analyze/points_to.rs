@@ -44,6 +44,19 @@ impl LValue {
     pub fn is_field(&self) -> bool {
         matches!(self, LValue::Field(..))
     }
+
+    /// True when this path names storage strictly *inside* `other` -- that
+    /// is, `other` is a proper prefix of it. `p->a.b` is inside `p->a` and
+    /// inside `p`; nothing is inside itself, and a bare `Var` is inside
+    /// nothing. Needed by anything reasoning about a write that spans a
+    /// whole object (MEM30-C's `memset(&s, 0, sizeof(s))` handling): the
+    /// members it overwrites are exactly the paths inside it.
+    pub fn is_inside(&self, other: &LValue) -> bool {
+        match self {
+            LValue::Var(_) => false,
+            LValue::Field(base, _) => base.as_ref() == other || base.is_inside(other),
+        }
+    }
 }
 
 /// Parse an expression node into its canonical `LValue`, unwrapping
