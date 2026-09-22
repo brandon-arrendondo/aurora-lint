@@ -12,9 +12,9 @@
  * Reason: sqlite3_value_int() returns a 32-bit int even though the
  * underlying value may need the full 64-bit range that
  * sqlite3_value_int64() preserves. Real example: sqlite
- * ext/misc/sqlar.c's sqlarUncompressFunc() reads an attacker-controlled
- * archive-entry size via sqlite3_value_int() and passes the truncated
- * result straight to sqlite3_malloc() (task 174).
+ * ext/misc/sqlar.c's sqlarUncompressFunc() reads an archive-entry size
+ * via sqlite3_value_int() and passes the truncated result straight to
+ * sqlite3_malloc() with no range check (task 174).
  */
 
 typedef long long sqlite3_int64;
