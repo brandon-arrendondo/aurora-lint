@@ -121,3 +121,35 @@ precedent).
 key and a label-basis reason is published; aggregate statistics about
 disclosures are published once the fixes have landed; doing the disclosure work
 is expected and is not what this ADR restricts.
+
+## Clarification (2026-09-23): the gate is the content, not the disclosure status
+
+Restated because it recurred as a live question: whether an item has been
+reported upstream, is still pending, or is entirely undecided **is not a
+condition on whether its key and verdict may be published.** It never was —
+the Decision and the 2026-09-20 clarification above already say a key and
+label-basis reason "disclose nothing a run of the tool would not," for an
+item that is still unfixed. The only question that ever gates publication is
+whether the `reason` text itself stays at label basis (what the construct is,
+why it is TP/FP/FN at that line) or drifts into the extended layer this ADR
+actually restricts (exploitability, reachability, severity, a triggering
+input, a reproducer, a patch, or disclosure/filing status). That test is the
+same for a TP, an FP, and an FN alike, and it does not change once a report
+is filed, is pending, or hasn't been decided on at all.
+
+The operational test: **could an independent person, given the pinned SHA and
+the public tool, reach this same statement themselves?** Running aurora-lint
+and reading the flagged code reproduces a key, a verdict, and its construct-
+level basis — that's the tool's output plus an ordinary code read, not our
+research. It does not reproduce a reachability trace, a sanitizer reproducer,
+a severity judgment, or a disclosure timeline — reaching those takes the
+*further* investigation this ADR gates, regardless of the underlying defect's
+own fix/disclosure status.
+
+Consequence: a real defect found by audit (not by aurora-lint's live output)
+enters `benchmark_adjudication` as an ordinary FN row — key plus label-basis
+reason — the moment it's confirmed, on the same terms as any other row. It is
+never held back pending a decision on whether or when to report it upstream.
+What stays local until a fix lands is only the extended layer: the
+reachability/severity write-up, reproducer, draft report, and disclosure
+status tracking — never the base verdict.
