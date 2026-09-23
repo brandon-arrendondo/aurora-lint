@@ -611,12 +611,32 @@ fn propagate_cast_pointee_state(var_name: &str, value: &Node, source: &str, stat
 }
 
 /// Mark `&var`/bare-array output args of `call` as NotNull, using cross-file
-/// `FunctionSummary::modifies_params` (task 195/319 follow-on to the EXP33-C
-/// fix -- see `Exp33C::build_cross_file_output_params` / `init_state.rs`'s
-/// `try_process_cross_file_output_params` for the reference implementation
-/// and its "must be additive, not a short-circuit" lesson, which does not
-/// apply here since this helper only ever *adds* a NotNull marking and never
-/// replaces or skips any other transfer logic).
+/// `FunctionSummary::unconditional_modifies_params` (task 195/319 follow-on
+/// to the EXP33-C fix -- see `Exp33C::build_cross_file_output_params` /
+/// `init_state.rs`'s `try_process_cross_file_output_params` for the
+/// reference implementation and its "must be additive, not a short-circuit"
+/// lesson, which does not apply here since this helper only ever *adds* a
+/// NotNull marking and never replaces or skips any other transfer logic).
+///
+/// MUST-write set, not the MAY set `modifies_params` (task 1458, aurora_lint,
+/// found by task 1434's rule architecture sweep): `NotNull` is an assertion,
+/// not a suppression, so it needs the same MUST-strength guarantee EXP33-C's
+/// own `build_cross_file_output_params` requires for the same field, and for
+/// the same reason -- CERT's own canonical EXP33-C example, `set_flag(n,
+/// &sign)`, writes `*sign` only when `n != 0`, and `modifies_params` alone
+/// cannot tell a caller on the no-write path from one on the write path.
+/// Using it here marked `sign` `NotNull` unconditionally, a false negative
+/// (a real null-deref silently marked safe) rather than the false-positive
+/// direction EXP33-C's own MAY-set bug had, and unlike that bug this one
+/// sits in generic dataflow infrastructure every null-state-reading rule
+/// shares, not one rule's own check.
+///
+/// Subtracted from `conditional_modifies_params` rather than assumed
+/// disjoint, matching `build_cross_file_output_params`'s own comment on why:
+/// prescan unions both sets across every definition linked under one name,
+/// so a project shipping two `#ifdef`ed variants -- one writing on every
+/// path, one able to return without writing -- can put the same index in
+/// both, and only the intersection-free result is a real guarantee.
 fn apply_cross_file_output_params_null(
     call: &Node,
     source: &str,
@@ -633,7 +653,7 @@ fn apply_cross_file_output_params_null(
     let Some(summary) = summaries.get(&func_name) else {
         return;
     };
-    if summary.modifies_params.is_empty() {
+    if summary.unconditional_modifies_params.is_empty() {
         return;
     }
     let Some(args) = call.child_by_field_name("arguments") else {
@@ -645,7 +665,9 @@ fn apply_cross_file_output_params_null(
         if matches!(arg.kind(), "," | "(" | ")") {
             continue;
         }
-        if summary.modifies_params.contains(&arg_idx) {
+        if summary.unconditional_modifies_params.contains(&arg_idx)
+            && !summary.conditional_modifies_params.contains(&arg_idx)
+        {
             let var_name = extract_output_arg_var(&arg, source);
             if !var_name.is_empty() && state.contains_key(&var_name) {
                 state.insert(var_name, NullState::NotNull);
@@ -2057,10 +2079,15 @@ void foo() {
     #[test]
     fn test_cross_file_output_param_marks_not_null() {
         // task 195/319 follow-on: a cross-file function known from
-        // FunctionSummary::modifies_params to write through param index 0
-        // must clear NullState for the address-of'd variable, including when
-        // the call sits inside an if-condition and is not wrapped in an
-        // rc = call(); if (rc == ...) pattern.
+        // FunctionSummary::unconditional_modifies_params to write through
+        // param index 0 on every path must clear NullState for the
+        // address-of'd variable, including when the call sits inside an
+        // if-condition and is not wrapped in an rc = call(); if (rc == ...)
+        // pattern. Both modifies_params (MAY) and unconditional_modifies_params
+        // (MUST) are set here to model a genuinely unconditional writer --
+        // task 1458 made apply_cross_file_output_params_null require the MUST
+        // set, since the MAY set alone let a conditional writer (CERT's own
+        // set_flag(n, &sign) example) wrongly clear a real null-deref finding.
         let code = r#"
 void foo(void) {
     struct thing *out = NULL;
@@ -2082,6 +2109,7 @@ void foo(void) {
 
         let mut summary = FunctionSummary::default();
         summary.modifies_params.insert(0);
+        summary.unconditional_modifies_params.insert(0);
         let mut summaries = HashMap::new();
         summaries.insert("fetch_thing".to_string(), summary);
 
@@ -2091,6 +2119,49 @@ void foo(void) {
             !is_null_deref_at(&result, &cfg, &body, code, "out", use_pos, &summaries),
             "out should be NotNull via the cross-file output-param call, even though \
              it sits inside an if-condition rather than an rc = call(); if (rc==...) pattern"
+        );
+    }
+
+    #[test]
+    fn test_cross_file_conditional_output_param_does_not_mark_not_null() {
+        // task 1458: a cross-file function whose write is only CONDITIONAL
+        // (in modifies_params but not unconditional_modifies_params -- CERT's
+        // own EXP33-C noncompliant example, set_flag(n, &sign), writes *sign
+        // only when n != 0) must NOT clear NullState for the address-of'd
+        // variable. apply_cross_file_output_params_null used to read the raw
+        // MAY set and mark `out` NotNull regardless, a false negative that
+        // silently hid a real null-deref on the no-write path.
+        let code = r#"
+void foo(void) {
+    struct thing *out = 0;
+    maybe_fetch_thing(0, &out);
+    use(out->field);
+}
+"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+        let root = tree.root_node();
+        let func = (0..root.child_count())
+            .filter_map(|i| root.child(i))
+            .find(|c| c.kind() == "function_definition")
+            .unwrap();
+        let cfg = build_function_cfg(&func, code).unwrap();
+        let body = func.child_by_field_name("body").unwrap();
+
+        let mut summary = FunctionSummary::default();
+        summary.modifies_params.insert(1);
+        summary.conditional_modifies_params.insert(1);
+        let mut summaries = HashMap::new();
+        summaries.insert("maybe_fetch_thing".to_string(), summary);
+
+        let result = analyze_null_states(&cfg, &func, code, &summaries);
+        let use_pos = code.find("out->field").unwrap();
+        assert!(
+            is_null_deref_at(&result, &cfg, &body, code, "out", use_pos, &summaries),
+            "out started null and the callee's write is only conditional (not in \
+             unconditional_modifies_params), so it must still be reported as a \
+             possible null dereference -- the MAY set alone must not clear it"
         );
     }
 

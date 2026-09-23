@@ -183,10 +183,25 @@ impl CertRule for Exp34C {
                                 if summaries.contains_key(name) {
                                     continue;
                                 }
-                                merged
-                                    .entry(name.clone())
-                                    .or_default()
-                                    .modifies_params
+                                let entry = merged.entry(name.clone()).or_default();
+                                entry.modifies_params.extend(idx.iter().copied());
+                                // Also MUST-strength (task 1458, aurora_lint):
+                                // `apply_cross_file_output_params_null` reads
+                                // `unconditional_modifies_params`, not the MAY
+                                // set, to assert NotNull. `macro_writes_param_indices`
+                                // has no conditional-write concept at all --
+                                // it is a flat "is the sentinel written
+                                // anywhere in the expanded body" check with no
+                                // if/else coverage walk -- so every index it
+                                // finds is unconditional by construction (a
+                                // `do { *(pp) = (val); } while (0)`-shaped
+                                // macro writes every time it's invoked, never
+                                // some of the time). Leaving this MUST set
+                                // empty for macros would have silently undone
+                                // this task's own real-function fix for every
+                                // macro-based output param.
+                                entry
+                                    .unconditional_modifies_params
                                     .extend(idx.iter().copied());
                             }
                             for (name, idx) in macro_null_params.iter() {
