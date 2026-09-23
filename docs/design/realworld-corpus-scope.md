@@ -11,7 +11,7 @@ match it, or revise it here first.
 Scope says which *files* an oracle measures; `primary_build_config` in the
 same JSON says which *build* of them, and every project section below ends
 with a `Primary build configuration` subsection giving its rationale. See
-[Primary build configuration](#primary-build-configuration-adr-0010-task-1424)
+[Primary build configuration](#primary-build-configuration-adr-0010)
 for what that field does and does not claim.
 
 ## Why this doc exists
@@ -48,7 +48,7 @@ the runner was `mcp_servers/realworld_server.py` (now
 that run measured — they are provenance, not current numbers. Task ids
 cited inside sections refer to the maintainer's task DB.
 
-## Primary build configuration (ADR-0010, task 1424)
+## Primary build configuration (ADR-0010)
 
 Scope answers *which files* an oracle measures. It does not answer *which
 build* of those files, and until ADR-0010 nothing did. Each corpus's
@@ -93,8 +93,8 @@ them, which is the whole argument for a declaration.
 ### What the field cannot express
 
 It is path-granular. A file the build never compiles is expressible; an
-`#ifdef` arm inside a file the build *does* compile is not. Task 1378's five
-INT02-C cases split exactly along that line — `driver_ndis.c`,
+`#ifdef` arm inside a file the build *does* compile is not. An earlier
+audit's five INT02-C cases split exactly along that line — `driver_ndis.c`,
 `rcore_desktop_win32.c` and `service.c` are whole files and are now declared;
 `driver_bsd.c:403`'s `#ifdef WORDS_BIGENDIAN` arm and `build.c:126`'s
 `#if SQLITE_MAX_ATTACHED>30` arm are intra-file and stay in the denominator
@@ -127,7 +127,7 @@ predicate, not a re-implementation.
 denominator gap, listed here so it can be measured, not closed here.
 **Closing one is not a mechanical follow-up:** narrowing `scope_exclude` to
 match a declaration would drop existing `ground_truth` rows out of the
-oracle, which is Brandon's call (and task 739's coordinator note already
+oracle, which is Brandon's call (and an earlier coordinator note already
 warns against piecemeal re-scoping, with a real TP at stake in valkey).
 
 **ventoy is the exception worth reading twice.** ADR-0010 says the
@@ -178,7 +178,7 @@ them: `ext/fts5/fts5_test_tok.c`, `ext/fts5/fts5_test_mi.c` (embedded
 `_test_`), `ext/fts3/fts3_test.c`, `ext/session/session_speed_test.c`
 (`_test` suffix), `ext/fts3/fts3_term.c`, `ext/fts5/fts5_tcl.c`,
 `ext/misc/noop.c`, `ext/misc/qpvtab.c`, `ext/misc/randomjson.c`,
-`ext/misc/urifuncs.c`, `ext/session/changesetfuzz.c` (task 656's one-time
+`ext/misc/urifuncs.c`, `ext/session/changesetfuzz.c` (a one-time
 sweep of the whole `src/`+`ext/` tree, replacing the previous find-one-at-a-
 time-during-adjudication pattern).
 
@@ -229,11 +229,11 @@ model.
 
 ### Scope + file reduction (sqlite lesson)
 
-Per task 158: **`lib/` (libcurl) + `src/` (curl CLI)** — the shipped product.
+**`lib/` (libcurl) + `src/` (curl CLI)** — the shipped product.
 Excludes `tests/`, `docs/`, `scripts/`, vendored/build tooling, and
 **`include/`** (curl's public API headers).
 
-#### Why `include/` is excluded (task 431 follow-up, 2026-08-13)
+#### Why `include/` is excluded (2026-08-13)
 
 This is *not* a blanket "public headers don't count" policy — mosquitto's
 public header (`lib/mosquitto.h`) lives inside `lib/` and stays in-scope
@@ -242,7 +242,7 @@ structurally separate because curl's own repo layout puts its public API in
 a dedicated top-level directory instead of alongside the implementation.
 
 The reason it's excluded here is empirical, not architectural: while
-delta-adjudicating task 431's INT09-C fix, `include/` turned out to produce
+delta-adjudicating an earlier INT09-C fix, `include/` turned out to produce
 218 findings (measured directly, sqc v0.4.198) dominated by three specific,
 *fixable* analyzer gaps rather than a diverse real-bug surface:
 
@@ -259,7 +259,7 @@ delta-adjudicating task 431's INT09-C fix, `include/` turned out to produce
   (`__builtin_choose_expr` semantics).
 - **INT09-C** can't resolve `#define`-based bitmask type tags
   (`CURLINFO_STRING + 1`) in enum-initializer arithmetic — the same
-  const-eval class task 431 fixed for prior-enumerator references, just for
+  const-eval class that fix addressed for prior-enumerator references, just for
   object-like macros instead. All 67 of curl's post-431-fix INT09-C findings
   are this one root cause.
 
@@ -354,7 +354,7 @@ rows behind it, not a typo to fix.
 
 ### Scope
 
-Per task 159: **`src/` + `wpa_supplicant/` + `hostapd/`** — the shipped
+**`src/` + `wpa_supplicant/` + `hostapd/`** — the shipped
 hostapd (AP) and wpa_supplicant (station) daemons and their shared library.
 Excludes `tests/`, `wlantest/` (separate test/monitoring tool), `eap_example/`,
 `hs20/`, `radius_example/`, `wpaspy/` — none of these ship as part of either
@@ -406,8 +406,8 @@ the selection is one-of-N in `src/drivers/drivers.mak` and the `os_*.c` /
     src/l2_packet/l2_packet_none.c
 
 Ten files out of 736 in scope is 1.4% of the file surface, and the finding
-density behind it is why it still matters: task 1378 found 7 of INT02-C's 46
-TP rows in `driver_ndis.c` alone.
+density behind it is why it still matters: that earlier audit found 7 of
+INT02-C's 46 TP rows in `driver_ndis.c` alone.
 
 `CONFIG_*` feature stubs are **in** this configuration and are labeled on the
 construct (ADR-0010 Decision 1) — the ~195 DCL13-C TPs in `CONFIG_SAE` /
@@ -420,7 +420,7 @@ least has a name.
 
 ### Scope
 
-Per task 157: **`lib/` (libmosquitto client library) + `src/` (broker
+**`lib/` (libmosquitto client library) + `src/` (broker
 daemon)** — the shipped product. Excludes `deps/` (vendored
 picohttpparser), `test/`, `client/`, `apps/`, `plugins/` (example plugins),
 `common/`/`libcommon/` (small shared helpers, pulled in only as cross-file
@@ -483,8 +483,8 @@ another concurrent session used for the sqlite FP-reduction benchmark gate
 
 One in-scope file is outside it: `src/service.c`, wholly inside
 `#if defined(WIN32) || defined(__CYGWIN__)` (the Windows service wrapper). It
-is in `src/**` and not excluded, so it is scored today; task 1378 found it via
-INT02-C. Everything else in `lib/`, `src/` and `include/` is portable code
+is in `src/**` and not excluded, so it is scored today; that earlier audit
+found it via INT02-C. Everything else in `lib/`, `src/` and `include/` is portable code
 whose Windows handling is intra-file and therefore in-configuration.
 
 ## sel4
@@ -767,7 +767,7 @@ nothing else. Everything outside it is out of scope by construction:
 Runner entry (`bench/realworld_runner.py`): `scan_path {path}/library`,
 `-I {path}/include -I {path}/library`, `-d {path}/library -d {path}/include`.
 `library/` is in `-d` on purpose (the sel4 entry omitted its own scan dir and
-lost every cross-file caller — aurora_lint task 987).
+lost every cross-file caller).
 
 ### Manifest: `conf/realworld/mbedtls-rules.toml`
 
@@ -793,7 +793,7 @@ Decision 1 keeps in the denominator and labeled as written.
 
 ### Scope: the whole daemon (`src/**` + `puredb/**`)
 
-**This section was widened by task 551 (2026-08-25); the original onboarding
+**This section was widened by a later pass (2026-08-25); the original onboarding
 scope is preserved below it.** The machine-readable mirror in
 `data/benchmark_repos.json` is `"scope_include": ["src/**", "puredb/**"]`.
 Those are the only two directories in the pinned tree holding `*.c`/`*.h`
@@ -803,15 +803,14 @@ exclude list is needed.
 At the time of writing `ground_truth` held 991 labels for `pureftpd@cc28bff5`
 across 72 distinct files, and every one of them falls inside that predicate.
 Only 6 of those 72 files are the SQL-client files the original audit covered
-— the other 66 came from task 551's whole-daemon 10% random sample (573
+— the other 66 came from that pass's whole-daemon 10% random sample (573
 labels, seed 20260825, source `precision_audit_task551_10pct_sample`) and
-from the per-rule delta passes that followed. Task 578 tracks the remaining
+from the per-rule delta passes that followed. A follow-up tracks the remaining
 ~5,021 unlabeled findings.
 
 The declaration was stale rather than the oracle wrong: it encoded the
-original six-file onboarding scope below and was never updated when 551
-widened it. Fixed under task 717 — see that task for the measured
-92%-out-of-scope signal that surfaced it.
+original six-file onboarding scope below and was never updated when a
+later pass widened it. Fixed once the 92%-out-of-scope signal surfaced it.
 
 #### Original onboarding scope: SQL-client files only
 
@@ -827,8 +826,8 @@ of this scope). The rest of pure-ftpd (`ftpd.c`, `pure-pw.c`, `ls.c`, etc. —
 tracked), but was **not yet labeled** — same "Partial" tier as
 mosquitto/curl/hostap were before their own incremental audits.
 
-No CWE-89-specific rule existed in sqc at the time (that was task 8's job,
-gated on this task landing first). So none of these 449 findings are CWE-89
+No CWE-89-specific rule existed in sqc at the time (that rule didn't
+exist yet, gated on this onboarding landing first). So none of these 449 findings are CWE-89
 findings; they're the *existing* CERT-C ruleset's findings on real
 SQL-client code, which is exactly the ground truth a future CWE-89 rule's
 real-world validation needs as its scoped baseline, and useful in its own
@@ -854,8 +853,8 @@ Linux and are in-configuration.
 
 ### Scope: raylib's own code only (`src/*.c|*.h` + `src/platforms/*.c`)
 
-**23 files**, and the audit covered all 23 (100% coverage — see task 227's
-final line). The machine-readable mirror in `data/benchmark_repos.json` is:
+**23 files**, and the audit covered all 23 (100% coverage — see the
+audit's own final line). The machine-readable mirror in `data/benchmark_repos.json` is:
 
 ```json
 "scope_include": ["src/*.c", "src/*.h", "src/platforms/*.c"],
@@ -912,8 +911,8 @@ them reveals that they are not built.
     rcore_template.c       rcore_web.c            rcore_web_emscripten.c
 
 They are scored today: the first `ground_truth` row this project returns is a
-TP in `src/platforms/rcore_android.c`. Task 1042 (onboarding raylib's platform
-backends as their own configurations) is the measurement-side path.
+TP in `src/platforms/rcore_android.c`. Onboarding raylib's platform
+backends as their own configurations is the measurement-side path.
 
 ## ventoy
 
