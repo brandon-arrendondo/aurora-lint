@@ -1,19 +1,19 @@
 # Cross-rule overlap: policy and decision
 
-**Status:** DECIDED (2026-08-27, task 625). Rollout DONE (2026-08-30, task 626).
+**Status:** DECIDED (2026-08-27). Rollout DONE (2026-08-30).
 
 ## Rollout
 
 `[references] related = ["RULE-ID", ...]` (the sketch's default-outcome field)
 is now populated in 27 rule TOMLs: the top measured co-located/disagreement
-pairs from task 625's canonical queries, minus two clusters deliberately
+pairs from this measurement pass's canonical queries, minus two clusters deliberately
 excluded from this pass because they trace to a different root cause than
 overlap —
 
 - Every `API00-C`-anchored pair (587+ co-located lines): confirmed
   location-coincidence (both rules anchor to the same line for unrelated
-  reasons), tracked as task 628. Re-run the co-location query after 628 lands
-  before deciding whether any `API00-C` pair is genuine overlap.
+  reasons), tracked separately. Re-run the co-location query after that
+  finding lands before deciding whether any `API00-C` pair is genuine overlap.
 - Every `MSC24-C`-anchored pair other than `STR31-C`/`STR32-C` (this doc's own
   counterexample): 97% of `MSC24-C`'s FPs trace to two rule-content bugs,
   which inflate its disagreement counts with other rules
@@ -59,7 +59,7 @@ both findings are reported, optionally tagged as related so a downstream
 consumer (a report, the paper's aggregate counts, a human triager) can choose
 to collapse them, but aurora-lint itself never hides one on the other's say-so.
 
-This rejects decision option (3) from task 625's scoping ("central dedup at
+This rejects decision option (3) from this measurement pass's scoping ("central dedup at
 aggregation, keep the higher-precedence rule") as a *general* mechanism. It
 does not rule out a declared exception for a specific pair that clears the
 bar below — but that bar is high enough that most candidate pairs will not
@@ -69,7 +69,7 @@ incidental.
 
 ## Why: the STR31-C / MSC24-C counterexample
 
-Task 625's measurement (`docs/design/` — see appendix below for the full
+This measurement pass (`docs/design/` — see appendix below for the full
 query results) found 215 ground-truth-labeled lines where `MSC24-C` and
 `STR31-C`/`STR32-C` disagree — and the disagreement runs **both directions**:
 
@@ -106,15 +106,15 @@ policy surfaced two *different* failure modes that are easy to mistake for
    — `API00-C` reports at the function's declaration line, `DCL13-C` reports
    at the parameter's declaration line, and for a single-line signature
    those are the same line number. The two rules are not judging the same
-   defect; they happen to point at the same line. Task 628 tracks this as an
+   defect; they happen to point at the same line. Tracked separately as an
    `API00-C`/`API05-C` precision problem, not an overlap-policy problem.
 2. **One rule's own content bug masquerading as disagreement.** 97% of
    `MSC24-C`'s ground-truth false positives (61 of 63) trace to two concrete
    bugs: it bans `sscanf` (not actually on CERT's obsolescent-function list)
    and it doesn't consult dead-`#ifdef`-branch exclusion the way other rules
    do. Those inflate the raw `MSC24-C` vs. other-rule disagreement counts
-   without reflecting a genuine two-valid-judgments case. Task 629 tracks
-   the fix. Only the `STR31-C`/`STR32-C` slice of `MSC24-C`'s disagreements
+   without reflecting a genuine two-valid-judgments case. Tracked
+   separately for a fix. Only the `STR31-C`/`STR32-C` slice of `MSC24-C`'s disagreements
    is the real overlap case this policy is about.
 
 **Practical implication:** before treating any co-located pair as a policy
@@ -143,29 +143,29 @@ B)` needs all of:
    name what would invalidate it (e.g. "if `STR31-C` ever fires without a
    proof of safety, or `MSC24-C`'s ban list changes, re-verify").
 
-Re: the five pre-existing ad-hoc deference comments (task 625's inventory) —
+Re: the five pre-existing ad-hoc deference comments (this pass's inventory) —
 only two have any ground-truth-labeled co-located data at all
 (`ARR38-C`→`STR31-C`: 8 labeled lines, all agree-FP; `INT08-C`→`INT32-C`: 16
 labeled lines, all agree-FP), and even those samples are far too thin to
 claim subsumption under bar #2 above — 8-16 lines is not "every instance."
 `MSC14-C`→`INT13-C` and `ERR33-C`→`FLP32-C` have **zero** labeled co-located
 data. **None of the five clear this bar today.** They should not be treated
-as validated; task 626 should re-examine each with either more targeted
+as validated; the rollout should re-examine each with either more targeted
 sampling or an argument from the rules' own detection logic (not just "no
 counterexample found yet in a sample this small").
 
 ## Where the relationship is recorded
 
-Sketch only — task 626 owns the actual schema and rollout:
+Sketch only — the rollout owns the actual schema:
 
 - **Related-but-independent** (the default outcome for any measured overlap,
   e.g. `MSC24-C` / `STR31-C`): a `[references] related = ["RULE-ID", ...]`
-  field in both rules' TOML, populated from task 625's measurement query and
+  field in both rules' TOML, populated from this pass's measurement query and
   extended as new pairs are found. Informational only — does not change
   detection or aggregation. Whether this is hand-maintained or ingested from
-  CERT's own "Related Guidelines" wiki cross-reference (task 625's
-  unverified note — worth checking before hand-building the initial list)
-  is task 626's call.
+  CERT's own "Related Guidelines" wiki cross-reference (an unverified
+  note from this pass — worth checking before hand-building the initial
+  list) is the rollout's call.
 - **Declared exception** (rare, must clear the bar above): a distinct field,
   e.g. `[references] defers_to = "RULE-ID"` with a `rationale` string
   required alongside it, so `defers_to` without a rationale is a schema
@@ -186,10 +186,10 @@ Implementation section:
    silently suppress either rule. Default to letting both fire.
 3. Only propose a `defers_to` exception if you can produce the evidence
    required above. If you can't, add the pair to the `related` list instead
-   (or leave it for task 626/the next overlap measurement pass to record —
+   (or leave it for the next overlap measurement pass to record —
    don't block a new rule's landing on doing the bookkeeping yourself).
 
-## Measurement appendix (task 625, 2026-08-27, bench node)
+## Measurement appendix (2026-08-27, bench node)
 
 Real-world (aurora-lint, latest run, all 8 oracles): 8,254 / 52,790 flagged locations
 (15.6%) share a `(project, file, line)` with a different rule. Of the
@@ -202,5 +202,5 @@ rules per scan, which suppresses some overlap as a benchmark artifact rather
 than a real-world signal.
 
 Top overlapping pairs and top disagreement pairs are reproducible via the
-canonical queries in task 625's own record (`todo-sqlite-cli show 625`) —
+canonical queries in this pass's own record --
 not duplicated here to avoid drifting out of sync with a live re-run.
