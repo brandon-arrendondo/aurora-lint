@@ -1005,16 +1005,12 @@ must-detect</strong> fixtures (<code class="docutils literal notranslate"><span 
 must-not-detect</strong> fixtures (<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/pass/*.c</span></code>), labeled
 by construction — 309 distinct rules carry at least one. 121 of the 125
 unvalidated rules already have a must-detect fixture — only <code class="docutils literal notranslate"><span class="pre">FLP01-C</span></code>,
-<code class="docutils literal notranslate"><span class="pre">MSC18-C</span></code>, <code class="docutils literal notranslate"><span class="pre">MSC25-C</span></code> and <code class="docutils literal notranslate"><span class="pre">ENV04-C</span></code> have none, and a fail fixture
-cannot pass for any of the four, for one of two reasons. <code class="docutils literal notranslate"><span class="pre">MSC18-C</span></code>,
-<code class="docutils literal notranslate"><span class="pre">MSC25-C</span></code> and <code class="docutils literal notranslate"><span class="pre">ENV04-C</span></code> have no detection logic at all — no <code class="docutils literal notranslate"><span class="pre">.rs</span></code>
-file exists; see the “Tracked but not implemented” section of
-<a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a> for why they are unimplemented. <code class="docutils literal notranslate"><span class="pre">FLP01-C</span></code> does have
-one (<code class="docutils literal notranslate"><span class="pre">flp01_c.rs</span></code>), but CERT itself marks the rule “unenforceable”
-through automated analysis, and the implementation is a deliberate
-conservative stub whose <code class="docutils literal notranslate"><span class="pre">check()</span></code> unconditionally returns no violations
-— so it is not merely missing a fixture, it has nothing a fixture could
-trigger. A fixture is not the missing piece for any of the four.
+<code class="docutils literal notranslate"><span class="pre">MSC18-C</span></code>, <code class="docutils literal notranslate"><span class="pre">MSC25-C</span></code> and <code class="docutils literal notranslate"><span class="pre">ENV04-C</span></code> have none. Of those, only
+<code class="docutils literal notranslate"><span class="pre">FLP01-C</span></code> is implemented (<code class="docutils literal notranslate"><span class="pre">flp01_c.rs</span></code> exists) and simply lacks a fail
+fixture. <code class="docutils literal notranslate"><span class="pre">MSC18-C</span></code>, <code class="docutils literal notranslate"><span class="pre">MSC25-C</span></code> and <code class="docutils literal notranslate"><span class="pre">ENV04-C</span></code> have no detection logic at
+all — a must-detect fixture for them cannot pass, so a fixture is not the
+missing piece; see the “Tracked but not implemented” section of
+<a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a> for why they are unimplemented.
 Today those fixtures run only as pass/fail unit tests and feed no measured
 metric, so a rule can be fully exercised by tests and still read as having
 no detection evidence.</p>
