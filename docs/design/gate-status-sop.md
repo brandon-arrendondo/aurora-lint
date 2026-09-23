@@ -216,7 +216,7 @@ python -m bench realworld-score RUN --json   # per candidate run_id, once ground
 Baseline 2026-08-25 (task #532, run 187/v0.4.258 vs. v0.4.120 baseline):
 precision 6.2% → **16.6%**, recall 91.7% → **97.4%**, real-world raw
 finding volume down 28% (104,733 → 80,231) despite more rules enabled —
-genuine FP reduction, not just less scanning. Also track Juliet TP rate
+genuine FP reduction, not just less scanning. Also track Juliet precision
 from the paper refresh cadence: 83.8% (v0.4.116) → **87.7%** (v0.4.249),
 still climbing, not flat.
 
