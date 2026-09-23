@@ -1,10 +1,10 @@
 # Scoping + implementation: STR31-C relay-function resolution → FunctionSummary
 
 **Status:** Done. Implemented in the same session as this doc,
-after Phase 1-3 of `docs/design/str31c-arr00-migration-scoping.md` (tasks
-503/504/505) closed the capability gap that made an earlier fold unsafe.
+after Phase 1-3 of `docs/design/str31c-arr00-migration-scoping.md`
+closed the capability gap that made an earlier fold unsafe.
 
-**Driver:** Task 506, filed by the `str31c-arr00-migration-scoping.md` Phase
+**Driver:** Filed by the `str31c-arr00-migration-scoping.md` Phase
 4 write-up: `find_relay_call`/`resolve_relay_source_size` hand-rolled
 same-file interprocedural "source relay" detection (`data =
 someSource(data)`, Juliet flow variants 21/22) via a direct AST walk over
@@ -15,7 +15,7 @@ to fold these blindly — do the scoping pass first.
 
 ## What the scoping pass found
 
-At the time task 492 wrote Phase 4, folding same-file into
+At the time the sibling scoping doc's Phase 4 was written, folding same-file into
 `FunctionSummary` would have been a real regression: the same-file AST
 branch called `self.find_buffer_size` — STR31-C's full size-resolution
 dispatcher (define-constant → array-decl → strlen-alloc → fixed-alloc →
@@ -75,8 +75,8 @@ the same-file path had no cross-file equivalent to draw on.
   (Juliet-style + CERT-wiki fixtures), covering the relay-pattern flow
   variants this change touches.
 - Real-world benchmark run required per CLAUDE.md protocol item 6 before
-  citing any precision/recall claim for this change — see the task note on
-  task 506 for the run id and result once complete.
+  citing any precision/recall claim for this change — see the task note
+  for the run id and result once complete.
 
 ## Residual scope not touched by this change
 

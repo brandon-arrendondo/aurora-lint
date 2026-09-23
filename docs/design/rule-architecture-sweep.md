@@ -1,13 +1,13 @@
 # Rule Architecture Sweep: What Can This Tool's Current Architecture Actually Support?
 
 **Status:** First-pass complete. This doc produces a *map* — per Brandon's
-ruling on task 1419, no rule is dropped, disabled, or rearchitected as part
+ruling on this sweep, no rule is dropped, disabled, or rearchitected as part
 of this sweep itself; every disposition below becomes its own scoped
 follow-up task, with its own justification, when someone picks it up.
 
 ## 1. Motivation
 
-Task 1419 found that EXP33-C's `check_cross_file_uninit_calls` was wrong in
+This sweep found that EXP33-C's `check_cross_file_uninit_calls` was wrong in
 essentially every sampled real-world instance — not through one bug, but
 through three independent mechanisms (see
 `docs/design/exp33-c-cross-file-uninit-architecture.md`). Brandon's ruling:
@@ -71,7 +71,7 @@ misfiring on the callee's own source. So:
    for how much scrutiny it has already had: a thin, single-origin
    implementation with zero follow-on fixes means *unaudited*, not *sound*.
    A string of narrow patches over time (MEM31-C's `frees_params_guessed`,
-   tasks 1367/1269/1289/401) means *known-limited and actively maintained*,
+   several earlier fixes) means *known-limited and actively maintained*,
    a different and generally safer place to be than *unaudited*.
 
 Every entry below states which of these signals it rests on, and whether it
@@ -87,9 +87,9 @@ Full detail in `docs/design/exp33-c-cross-file-uninit-architecture.md`,
 which this sweep treats as already complete and does not repeat. Summary: a
 single "read-only classification is wrong" symptom decomposed into three
 independent mechanisms (a text misfire, an indirection gap, and a separate
-InitState tracking bug), three of four proposed increments landed as their
-own tasks (1437, 1442, 1444, plus a fourth gap found and split off as 1450),
-one increment (concrete indirect-target resolution) explicitly declined
+InitState tracking bug), three of four proposed increments landed
+(pieces (a), (b) and (d), plus a fourth gap found and split off as its own
+follow-on), one increment (concrete indirect-target resolution) explicitly declined
 against the same "no measured driver" precedent
 `docs/design/cfg-substrate-adoption-decision.md` already set. Combined
 measured local delta: 1489 → 1444 findings (-3.0%, this checkout's own
@@ -101,8 +101,8 @@ symptom that looks like one architecture problem is often two or three
 independent ones, decompose before committing to a rearchitecture; (2) a
 design doc's own hypothesis about *why* a case fails needs re-verification
 against the real callee every time, including when the hypothesis is the
-doc's own — both (b) and 1450 found the actual mechanism was different from
-what the doc originally guessed.
+doc's own — both (b) and the lua follow-on found the actual mechanism was
+different from what the doc originally guessed.
 
 ## 4. Tier 1: the 22 rules with direct cross-file `FunctionSummary` exposure
 
@@ -116,10 +116,10 @@ The family EXP33-C itself belongs to — `modifies_params`,
 | Rule | Field(s) | Bucket | Rationale |
 |---|---|---|---|
 | EXP33-C | `modifies_params` family, `forwards_to_indirect_call`, `conditional_write_return_correlation` | **A (now)** | Done — see §3. |
-| MEM31-C | `frees_params`, `frees_params_guessed`, `frees_param_fields`, `modifies_params` | **A** | Actively maintained MAY/guessed-vs-proven split (`frees_params_guessed` kept apart from real evidence, `requires_manual_review` flagging for MEM30-C — see the field's own doc comment in `function_summary.rs`); 4+ historical fix commits, most recently task 1367 this project's history (a deallocator that frees through a function pointer still frees). Read this pass via git history + doc comments, not a fresh trace. |
-| MEM03-C | `clears_params` | **A** | MAY fact used only to *recognize* a clearing call (suppression direction), own transitive propagation, own hardening tests (task 1127, volatile-pointer/preprocessor-arm cases). Traced this pass (fork); no indirect-call gap found. |
+| MEM31-C | `frees_params`, `frees_params_guessed`, `frees_param_fields`, `modifies_params` | **A** | Actively maintained MAY/guessed-vs-proven split (`frees_params_guessed` kept apart from real evidence, `requires_manual_review` flagging for MEM30-C — see the field's own doc comment in `function_summary.rs`); 4+ historical fix commits, most recently one fixing a deallocator that frees through a function pointer still frees. Read this pass via git history + doc comments, not a fresh trace. |
+| MEM03-C | `clears_params` | **A** | MAY fact used only to *recognize* a clearing call (suppression direction), own transitive propagation, own hardening tests (volatile-pointer/preprocessor-arm cases). Traced this pass (fork); no indirect-call gap found. |
 | WIN05-C | `param_passthroughs` | **A** | MAY-forward *by design*, with an explicit doc comment reasoning about the direction ("a wrapper that opens the key only on some path still opens it," `win05_c.rs:102-104`) — the MAY/MUST choice was deliberate, not defaulted into. Traced this pass. |
-| **MEM01-C** | `dereferences_params`, `modifies_params` | **B — concrete gap, cheap fix** | `build_read_only_params` (`mem01_c.rs:53-67`) is a byte-for-byte copy of EXP33-C's **pre-fix** `build_read_only_deref_fns`: no `modifies_params_pending` exclusion (piece a), no `forwards_to_indirect_call` exclusion (piece b). It silently inherited the *population*-side fix (task 1444's `has_genuine_arrow_read`, same shared field) but never got the *consumption*-side fixes. Concretely: a callee reached only through an unresolvable driver-ops dispatch, or with an undischarged forwarding obligation, is still misclassified read-only, so MEM01-C asserts "genuine read of a possibly-freed pointer" on a call that may reassign it — a direct false positive, same shape hostap's `accounting_sta_update_stats` was for EXP33-C. **Fix is a direct port of EXP33-C pieces (a)+(b)'s two filters into this one function** — no new capability needed. |
+| **MEM01-C** | `dereferences_params`, `modifies_params` | **B — concrete gap, cheap fix** | `build_read_only_params` (`mem01_c.rs:53-67`) is a byte-for-byte copy of EXP33-C's **pre-fix** `build_read_only_deref_fns`: no `modifies_params_pending` exclusion (piece a), no `forwards_to_indirect_call` exclusion (piece b). It silently inherited the *population*-side fix (piece (d)'s `has_genuine_arrow_read`, same shared field) but never got the *consumption*-side fixes. Concretely: a callee reached only through an unresolvable driver-ops dispatch, or with an undischarged forwarding obligation, is still misclassified read-only, so MEM01-C asserts "genuine read of a possibly-freed pointer" on a call that may reassign it — a direct false positive, same shape hostap's `accounting_sta_update_stats` was for EXP33-C. **Fix is a direct port of EXP33-C pieces (a)+(b)'s two filters into this one function** — no new capability needed. |
 | **EXP34-C** (via `null_state.rs`) | `modifies_params` | **B — concrete gap, shared infra, higher priority** | EXP34-C itself only *synthesizes* summary entries for macros; the actual consumer is `null_state.rs::apply_cross_file_output_params_null` (`null_state.rs:620-656`), which marks a `&var` argument `NotNull` whenever `summary.modifies_params.contains(&arg_idx)` — the raw MAY set, not `unconditional_modifies_params`. CERT's own canonical EXP33-C example (`set_flag(n, &sign)`, writes only when `n != 0`) gets the caller's variable marked definitely-non-null even on the no-write path. **This is generic `NullState` dataflow infrastructure, not EXP34-C-specific** — the blast radius is every rule reading null state after such a call, and the direction is a **false negative** (a real null-deref silently marked safe), the opposite direction from — and arguably more serious than — EXP33-C's original FP-shaped bug. Fix shape is the same as piece (a): swap to `unconditional_modifies_params` (or subtract `conditional_modifies_params`) in `apply_cross_file_output_params_null`. |
 | MEM30-C | `conditional_modifies_params`, `frees_params_guessed`, `unconditional_frees_params` | **Not individually traced this pass** | Adjacent to MEM31-C's hardened mechanism (shares two of its three fields) but not itself read closely. Flag for a follow-up trace before assuming MEM31-C's maturity transfers — field-sharing isn't proof of identical consumption discipline (MEM01-C shares `modifies_params` with EXP33-C and did NOT inherit the consumption-side fix). |
 

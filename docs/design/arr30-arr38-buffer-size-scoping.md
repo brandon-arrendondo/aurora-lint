@@ -277,8 +277,8 @@ over-read summary at `check_overread_helper_callsite`/4412, the round-up-
 allocation soundness proof at `index_is_bounded_by_alloc_roundup`/2530)
 are genuinely careful: AST-node-based, explicit comment/string
 sanitization via `text_sans_comments_and_strings`, word-bounded regexes
-(`\b`), thorough doc-comment soundness arguments citing specific tasks
-(172, 206, 210, 211, 434, 436, 443, 446, 448).
+(`\b`), thorough doc-comment soundness arguments citing specific fixes
+from this project's own history.
 
 But three functions that gate the *same* violation decisions are much
 older-style and share a real bug: **regex patterns built directly from

@@ -2,7 +2,7 @@
 
 **Status:** Done. Implemented in the same session as this doc.
 
-**Driver:** Task 507, filed by `str31c-arr00-migration-scoping.md`'s Phase 4
+**Driver:** Filed by `str31c-arr00-migration-scoping.md`'s Phase 4
 write-up as "AST-based whole-program global-buffer-size join... closest
 analog: `ProjectContext::global_var_null_states`."
 
@@ -74,8 +74,8 @@ in the benchmark (see Verification).
 - `cargo build --lib`, `cargo clippy --lib -- -D warnings`, `cargo fmt`: clean.
 - `cargo test --package aurora-lint --lib`: 3793 passed, 0 failed, 12 ignored —
   unchanged from baseline, including all 59 STR31-C generated tests.
-- Real-world benchmark (aurora-lint-only, 9 codebases) run before/after — see task
-  507 for the run ids and result.
+- Real-world benchmark (aurora-lint-only, 9 codebases) run before/after — see
+  the task note for the run ids and result.
 
 ## Residual scope not touched by this change
 
@@ -84,8 +84,7 @@ in the benchmark (see Verification).
   discarding any smaller sizes already found from earlier sites) is a
   pre-existing behavior, unchanged here to keep this a pure AST-migration
   with no resolution-logic changes. Worth a future look if real-world audits
-  ever show it suppressing a legitimate finding, but out of scope for task
-  507.
+  ever show it suppressing a legitimate finding, but out of scope here.
 - True cross-file relay through a non-static (externally-linked) global is
   still unhandled — no evidence found that it's a real driver; not filed as
   a follow-up without such evidence.

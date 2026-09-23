@@ -1,7 +1,7 @@
 # Scoping: Sharding the long-pole Juliet CWEs
 
-**Status:** SCOPED, NOT IMPLEMENTED (2026-08-27). Tracked as task 388 (P4,
-`benchmark`). This document was written on the **work node**, which has no
+**Status:** SCOPED, NOT IMPLEMENTED (2026-08-27, P4, `benchmark`). This
+document was written on the **work node**, which has no
 Juliet suite (`~/toolchain/benchmarks/` absent) and an empty
 `data/benchmarks.db` (0 runs, 0 `cwe_scans`). Everything below marked
 **[verified]** was read out of the source in this repo and is reliable.
@@ -22,7 +22,7 @@ per CWE directory, and `_scan_single_cwe` pins the child to `-j 1`
 parallelizes at CWE level". **[verified]** So one CWE is one indivisible
 serial unit of work.
 
-Per task 388's 2026-07-28 timing analysis (v0.4.126-v0.4.169), three CWEs
+Per this plan's 2026-07-28 timing analysis (v0.4.126-v0.4.169), three CWEs
 consume nearly the entire wall-clock budget on their own:
 
 | CWE     | Files | Duration      |
@@ -170,11 +170,11 @@ The warm step is serial per CWE. That is fine: it costs one prescan where
 the status quo pays N of them, and it only applies to the handful of CWEs
 big enough to shard.
 
-**Outcome (2026-09-15).** Task 388 measured the prescan at ~0.8% of a big
+**Outcome (2026-09-15).** This plan measured the prescan at ~0.8% of a big
 CWE's time and shipped sharding *without* the warm step, each shard
 repeating the full-CWE prescan. That held until the per-file scan got an
-order of magnitude cheaper (the Juliet wall-clock regression task,
-aurora_lint 1162, and its follow-ups): the repeated prescan then became
+order of magnitude cheaper (the Juliet wall-clock regression and its
+follow-ups): the repeated prescan then became
 most of a shard's time -- 11s of a 12s CWE-78 shard. `bench/runner.py`
 now runs the warm step as described here (`_warm_prescan`, an empty
 directory as PATH, `--save-prescan` into a per-run temp dir) and each
@@ -257,7 +257,7 @@ proceeds.
 
 ---
 
-## 8. Scope notes carried from task 388
+## 8. Scope notes carried from this plan
 
 - CWE-count growth (74 → 79, from v0.4.139) driving part of the wall-time
   increase is **expected and fine** — not what this task is about.
