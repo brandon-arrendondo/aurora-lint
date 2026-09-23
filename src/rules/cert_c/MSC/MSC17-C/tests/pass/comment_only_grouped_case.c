@@ -1,6 +1,6 @@
 /*
  * Rule: MSC17-C
- * Source: sel4 src/plat/bcm2837/machine/intc.c (task 632)
+ * Source: sel4 src/plat/bcm2837/machine/intc.c
  * Status: PASS - Should NOT trigger MSC17-C violation
  *
  * An empty grouped case label whose only content is an unrelated comment

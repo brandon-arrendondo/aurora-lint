@@ -9,7 +9,7 @@
  * Status: PASS
  * Reason: Two different functions each declare a local buffer named "buf",
  * with different sizes, and each accesses its own buffer safely within its
- * own bounds. Before the per-function buffer scoping fix (task 389), the
+ * own bounds. Before the per-function buffer scoping fix, the
  * whole-file flat buffer map could conflate these two same-named locals -
  * whichever declaration won the shared map entry could make the *other*
  * function's genuinely in-bounds access look out-of-bounds (buf[50] is

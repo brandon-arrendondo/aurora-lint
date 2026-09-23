@@ -2,7 +2,7 @@
  * Rule: MEM30-C
  * Source: custom
  * Status: PASS - Should NOT trigger MEM30-C violation
- * Description: two more shapes from curl (task 1233). socks_sspi.c frees
+ * Description: two more shapes from curl. socks_sspi.c frees
  * `tok[1].pvBuffer` on the success path and `tok[0].pvBuffer` right after;
  * the lvalue key drops the index, so that read as a double-free -- a member
  * of ONE element is now untracked, the policy `free(arr[i])` already had.

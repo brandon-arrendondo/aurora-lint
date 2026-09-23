@@ -4,7 +4,7 @@
  * Status: PASS - strtol/sqrt errno-checking is ERR30-C/ERR33-C's concern,
  * not ERR01-C's (which is specifically about FILE stream error checking via
  * ferror() vs errno). See ERR33-C's testcases_strtol_unchecked.c for the
- * equivalent fail case under the correct rule ID (task 592).
+ * equivalent fail case under the correct rule ID.
  */
 
 #include <errno.h>

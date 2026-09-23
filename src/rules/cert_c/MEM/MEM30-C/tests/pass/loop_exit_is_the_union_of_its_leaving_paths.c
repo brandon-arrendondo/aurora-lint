@@ -1,7 +1,7 @@
 /*
  * Rule: MEM30-C
  * Source: valkey src/acl.c ACLUserCheckModuleCommandPerm(), src/sds.c
- *         sdscatvprintf() (task 1360)
+ *         sdscatvprintf()
  * Status: PASS - Should NOT trigger MEM30-C violation
  *
  * A loop body was walked as one straight line into the code after the

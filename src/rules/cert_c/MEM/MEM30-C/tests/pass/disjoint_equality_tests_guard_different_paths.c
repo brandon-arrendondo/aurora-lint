@@ -1,7 +1,7 @@
 /*
  * Rule: MEM30-C
  * Source: valkey src/call_reply.c freeCallReplyInternal(), sqlite
- *         src/update.c updateVirtualTable() (task 1360)
+ *         src/update.c updateVirtualTable()
  * Status: PASS - Should NOT trigger MEM30-C violation
  *
  * Two `if`s in a row on the same value, each against constants: a reply

@@ -8,7 +8,7 @@
  * can still read `sign` uninitialised. The callee's summary must therefore
  * report the output-parameter write as a MAY-write and leave the
  * uninitialised state standing; only unconditional_modifies_params, the
- * MUST set, clears it (task 988, aurora_lint).
+ * MUST set, clears it.
  */
 
 void set_flag(int number, int *sign_flag) {

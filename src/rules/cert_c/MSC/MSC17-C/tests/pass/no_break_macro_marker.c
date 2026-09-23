@@ -1,6 +1,6 @@
 /*
  * Rule: MSC17-C
- * Source: sqlite src/insert.c (task 632)
+ * Source: sqlite src/insert.c
  * Status: PASS - Should NOT trigger MSC17-C violation
  *
  * sqlite's `deliberate_fall_through` marker macro expands to

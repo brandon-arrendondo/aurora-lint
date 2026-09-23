@@ -11,7 +11,7 @@
  * BUFFER_SIZE - 1, 0) -- a call whose length argument was given against
  * this exact buffer. recv()'s return value can never exceed that length
  * argument, so inputBuffer[recvResult] is safe by construction even
- * though no runtime bounds check guards the index itself (task 434).
+ * though no runtime bounds check guards the index itself.
  * Modeled on the Juliet CWE-789/121/122/124/126/127 socket
  * connect/listen boilerplate this pattern is shared by verbatim.
  */

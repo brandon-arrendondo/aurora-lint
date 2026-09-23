@@ -1,7 +1,7 @@
 /*
  * Rule: ARR00-C
  * Source: testcases
- * Status: PASS - Should NOT trigger ARR00-C violation (task 195)
+ * Status: PASS - Should NOT trigger ARR00-C violation
  * Description: An array filled by a function call (macro or plain function)
  * that receives it as a bare argument is not "uninitialized" even though
  * check_uninitialized_array_read's write-pattern scan only recognizes

@@ -8,7 +8,7 @@
  * Rule: ERR33-C - Detect and handle standard library errors
  * Status: PASS
  * Reason: The result is assigned inside the very condition that tests it
- *         (task 1373). Compared, negated, a non-first `||` operand, a loop
+ *         . Compared, negated, a non-first `||` operand, a loop
  *         condition, a `?:` condition and a bare truthiness test all count.
  */
 

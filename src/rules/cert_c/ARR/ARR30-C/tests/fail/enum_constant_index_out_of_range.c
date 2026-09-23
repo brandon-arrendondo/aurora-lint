@@ -5,7 +5,7 @@
 
 /*
  * Reason: resolving an enum constant's value must still catch a genuinely
- * out-of-range compile-time index (task 443), not just suppress every
+ * out-of-range compile-time index, not just suppress every
  * enum-indexed access unconditionally.
  */
 

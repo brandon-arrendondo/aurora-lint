@@ -1,7 +1,7 @@
 /*
  * Rule: MSC13-C
  * Status: FAIL - a genuine dead store inside a `#if`/`#endif`-guarded case
- * arm must still be caught (task 445): resolving the preprocessor split
+ * arm must still be caught: resolving the preprocessor split
  * must not blind the CFG to real violations within the visited arm.
  */
 

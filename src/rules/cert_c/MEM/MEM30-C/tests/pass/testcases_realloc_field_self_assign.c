@@ -11,7 +11,7 @@
  *         (cfg->topics = realloc(cfg->topics, n)) stores the result back into
  *         the same field, so the field is valid (modulo the null check) and the
  *         later cfg->topics[i] write is NOT a use-after-free.
- *         Mirrors the mosquitto client_shared.c false positive (task 198).
+ *         Mirrors the mosquitto client_shared.c false positive.
  */
 
 #include <stdlib.h>

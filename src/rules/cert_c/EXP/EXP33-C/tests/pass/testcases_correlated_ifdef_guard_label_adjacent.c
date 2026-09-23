@@ -3,10 +3,10 @@
  * Source: testcases
  * Status: PASS - Should NOT trigger EXP33-C violation.
  *
- * Companion to testcases_correlated_ifdef_guard.c (task 590), covering the
+ * Companion to testcases_correlated_ifdef_guard.c, covering the
  * task 663 sub-shape: the READ site's own `#ifdef CONFIG_ELOOP_SELECT`
  * guard opens immediately after a bare goto-label, so
- * label_preproc_guard::blank_label_guarded_preproc (task 647) removes its
+ * label_preproc_guard::blank_label_guarded_preproc removes its
  * `preproc_ifdef` AST node entirely (tree-sitter-c's `labeled_statement`
  * grammar has no slot for a preprocessor directive right after a label).
  * Without task 663's text-marker fallback, enclosing_ifdef_guard_key sees

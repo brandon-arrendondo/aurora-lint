@@ -6,7 +6,7 @@
 /*
  * Reason: the macro-named bound resolves, but it's WRONG -- larger than the
  * actual buffer -- so this guard doesn't actually make the access safe.
- * Resolving the macro must still catch an insufficient guard (task 443),
+ * Resolving the macro must still catch an insufficient guard,
  * not just accept any `idx < MACRO_NAME` unconditionally.
  */
 

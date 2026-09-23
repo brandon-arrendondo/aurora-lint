@@ -1,6 +1,6 @@
 /*
  * Rule: MSC13-C
- * Source: mbedtls library/psa_crypto.c (task 1387)
+ * Source: mbedtls library/psa_crypto.c
  * Status: PASS - No violation
  *
  * The macro writes `status` only inside its `if` body, so on the

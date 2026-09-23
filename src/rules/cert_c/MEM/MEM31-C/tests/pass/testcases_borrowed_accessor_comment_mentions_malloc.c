@@ -12,7 +12,7 @@
  * contains no malloc/calloc/realloc/aligned_alloc call at all; the doc
  * comment merely *mentions* "malloc()" while explaining why no allocation
  * happens here. FunctionSummary's returns_allocation must not misread that
- * comment as evidence the function allocates (task 427). Modeled on
+ * comment as evidence the function allocates. Modeled on
  * sqlite's real sqlite3_column_blob(), whose doc comment reads "might need
  * to call malloc() to expand the result of a zeroblob() expression".
  */

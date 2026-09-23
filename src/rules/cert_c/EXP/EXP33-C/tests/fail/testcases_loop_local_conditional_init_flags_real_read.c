@@ -13,7 +13,7 @@
  * which is a predecessor of the loop body -- so the bare declaration line
  * itself (`Foo *p;`), which is never a read, got flagged as "may be used
  * uninitialized" instead of (or in addition to) the actual read at
- * `if (p)`. See the companion fix in is_read_context (task 391).
+ * `if (p)`. See the companion fix in is_read_context.
  */
 
 typedef struct Foo Foo;

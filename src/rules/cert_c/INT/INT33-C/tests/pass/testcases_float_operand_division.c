@@ -1,6 +1,6 @@
 /*
  * Rule: INT33-C
- * Source: raylib-audit (task 228)
+ * Source: raylib-audit
  * Status: PASS - Not an INT33-C violation
  * Reason: INT33-C is the INTEGER divide-by-zero rule. Division where either
  *         operand is float-typed is floating-point division (well-defined

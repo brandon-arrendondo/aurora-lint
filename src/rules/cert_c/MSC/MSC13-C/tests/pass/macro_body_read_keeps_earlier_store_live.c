@@ -5,7 +5,7 @@
  * read further down, so "is this variable read anywhere" says yes and the
  * unused-variable guard never fires -- but the FIRST store's only read is
  * inside EMIT_X()'s replacement list, and a statement-level identifier walk
- * sees a call with no arguments (task 756).
+ * sees a call with no arguments.
  */
 
 void use(int);

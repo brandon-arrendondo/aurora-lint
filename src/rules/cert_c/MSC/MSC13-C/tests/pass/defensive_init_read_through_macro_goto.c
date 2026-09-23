@@ -1,6 +1,6 @@
 /*
  * Rule: MSC13-C
- * Source: mbedtls library/aria.c self-test (task 1387)
+ * Source: mbedtls library/aria.c self-test
  * Status: PASS - No violation
  *
  * `int ret = 1;` IS the value the function returns when an assertion

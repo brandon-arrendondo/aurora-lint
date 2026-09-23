@@ -1,7 +1,7 @@
 /*
  * Rule: MEM31-C
  * Source: valkey src/config.c loadServerConfigFromString(), hostap
- *         wpa_supplicant/wpa_supplicant.c wpas_start_assoc_cb() (task 1339)
+ *         wpa_supplicant/wpa_supplicant.c wpas_start_assoc_cb()
  * Status: PASS - Should NOT trigger MEM31-C violation
  *
  * Two shapes that surfaced once a branch's fate was read off its last

@@ -3,7 +3,7 @@
  * Source: testcases
  * Status: PASS - Should NOT trigger INT30-C violation
  *
- * Tests narrow-operand arithmetic through widening casts (task 60). When a
+ * Tests narrow-operand arithmetic through widening casts. When a
  * uint8_t or uint16_t value is cast to uint32_t and combined with another
  * narrow value or a small constant, the result provably fits in uint32_t.
  */

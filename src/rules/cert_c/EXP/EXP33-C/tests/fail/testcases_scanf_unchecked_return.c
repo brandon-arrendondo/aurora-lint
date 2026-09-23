@@ -10,7 +10,7 @@
  * match leaves some of the variadic outputs uninitialized. Task 1029
  * over-corrected by unconditionally crediting every scanf variadic
  * output as initialized regardless of return, so the exact hostap shape
- * below was silently missed (task 1065). The fix (init_state.rs) skips
+ * below was silently missed. The fix (init_state.rs) skips
  * the credit for scanf-family calls whose return is discarded, so the
  * subsequent value-reads of `a[0..3]` correctly trigger EXP33-C.
  *

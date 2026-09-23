@@ -1,7 +1,7 @@
 /*
  * Rule: MSC13-C
  * Source: curl lib/urldata.h + lib/url.c, seL4 include/kernel/boot.h
- *         (task 966)
+ *
  * Status: FAIL - Should trigger MSC13-C violations
  *
  * The macro-hidden-use check asks whether an unexpanded macro body names a

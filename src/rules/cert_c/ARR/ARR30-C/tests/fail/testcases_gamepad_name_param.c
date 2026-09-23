@@ -10,7 +10,7 @@
  * Reason: Unvalidated function-parameter index into a struct member array,
  * where the enclosing function's return type is a pointer (char *) rather
  * than a primitive integer. The array subscript itself is identical in
- * shape to the int-returning case below (task 239) - the element type of
+ * shape to the int-returning case below - the element type of
  * the accessed array, and the pointer-typed return of the enclosing
  * function, must not change whether the unvalidated index is flagged.
  */

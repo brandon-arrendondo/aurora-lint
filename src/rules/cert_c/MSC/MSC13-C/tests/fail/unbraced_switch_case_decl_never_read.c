@@ -1,7 +1,7 @@
 /*
  * Rule: MSC13-C
  * Status: FAIL - resolving declarations under an unbraced `case` label
- * (task 756) must not blind the rule to a genuinely unused one. The `case`
+ * must not blind the rule to a genuinely unused one. The `case`
  * arm declares `unused` and never reads it.
  */
 

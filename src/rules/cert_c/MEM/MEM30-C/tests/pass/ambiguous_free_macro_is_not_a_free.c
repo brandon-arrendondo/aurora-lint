@@ -10,7 +10,7 @@
  * genuine ldap_memfree(attribute) on the next line was reported as a
  * double-free -- on every one of the eight error branches. A macro with two
  * conflicting live definitions is opaque: its NAME is not evidence of a
- * free (task 1233).
+ * free.
  */
 
 #include <stdlib.h>

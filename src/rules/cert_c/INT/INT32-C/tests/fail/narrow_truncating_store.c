@@ -1,5 +1,5 @@
 /* Rule: INT32-C
- * Source: testcases (task 926)
+ * Source: testcases
  * Status: FAIL - the promoted-int result is stored back into a narrower
  * type, so it can lose data on the conversion.
  *

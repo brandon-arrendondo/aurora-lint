@@ -7,7 +7,7 @@
  * Reason: `msg[dataSize]` is provably in-bounds because `msg` is allocated
  * to a size derived from `dataSize` via the classic MD5/SHA1 hash-padding
  * "round up to a multiple of 64" idiom -- the allocated size is always
- * strictly greater than `dataSize` by construction (task 446). Covers both
+ * strictly greater than `dataSize` by construction. Covers both
  * the direct-subterm case (`calloc(dataSize + K, ...)`) and the one-level
  * variable-indirection case (allocate from a local variable that was itself
  * computed as a round-up of `dataSize`).

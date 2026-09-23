@@ -5,7 +5,7 @@
  * Description: FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER, ...) allocates
  * with LocalAlloc and must be released with LocalFree; GlobalFree is the
  * wrong family. The wide entry point the FormatMessage macro expands to
- * under UNICODE was not matched (task 1130).
+ * under UNICODE was not matched.
  */
 
 #include <windows.h>

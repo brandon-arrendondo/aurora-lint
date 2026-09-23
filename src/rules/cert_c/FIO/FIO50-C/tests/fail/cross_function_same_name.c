@@ -6,7 +6,7 @@
  * Two different functions each use a same-named FILE* parameter ("fp").
  * The first function is fully compliant. The second function has a genuine
  * output-then-input violation with no intervening positioning call. This
- * confirms that per-function scoping (task 409) still detects a real
+ * confirms that per-function scoping still detects a real
  * violation local to one function, rather than only ever suppressing
  * findings.
  */

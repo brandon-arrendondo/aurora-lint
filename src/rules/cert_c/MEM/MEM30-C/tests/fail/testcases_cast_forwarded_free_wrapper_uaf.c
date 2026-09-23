@@ -6,7 +6,7 @@
  * release_slot() unconditionally forwards its parameter to backend_free()
  * through a cast, so buf is freed on every path through the call and the
  * following write is a use-after-free. The passthrough edge only exists if
- * the cast is stripped (task 1034, aurora_lint).
+ * the cast is stripped.
  */
 
 #include <stdlib.h>

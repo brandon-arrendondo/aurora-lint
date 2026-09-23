@@ -1,6 +1,6 @@
 /* Rebinding a pointer makes every path hanging off it name different
  * storage, so a free of the previous object's member is not a free of the
- * new one's (aurora_lint 1447).
+ * new one's.
  *
  * sqlite fts3_write.c's flush loop is the case this came from: each
  * iteration points pNode at the next array element and frees that

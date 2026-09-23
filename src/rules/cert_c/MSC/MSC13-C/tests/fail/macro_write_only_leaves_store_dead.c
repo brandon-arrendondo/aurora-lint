@@ -1,6 +1,6 @@
 /*
  * Rule: MSC13-C
- * Source: mosquitto src/persist.h + src/persist_read_v234.c (task 965)
+ * Source: mosquitto src/persist.h + src/persist_read_v234.c
  * Status: FAIL - Should trigger MSC13-C violation
  *
  * `read_e` only ever WRITES `rc` and jumps; it never reads it. So the

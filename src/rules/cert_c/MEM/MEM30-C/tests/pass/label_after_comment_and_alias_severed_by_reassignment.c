@@ -2,7 +2,7 @@
  * Rule: MEM30-C
  * Source: valkey src/cluster.c migrateCommand(), src/modules/lua/debug_lua.c
  *         ldbCatStackValueRec(), hostap src/crypto/crypto_wolfssl.c
- *         dh5_init(), mosquitto lib/net_mosq_ocsp.c (task 1360)
+ *         dh5_init(), mosquitto lib/net_mosq_ocsp.c
  * Status: PASS - Should NOT trigger MEM30-C violation
  *
  * Two walk defects. A label whose predecessor in the flow is a `return`

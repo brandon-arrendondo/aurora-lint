@@ -1,6 +1,6 @@
 /* Storing a dangling pointer into a member makes THAT MEMBER dangle. The
  * object holding it was never freed, so its other members are untouched
- * (aurora_lint 1448).
+ * .
  *
  * Before the fix the assignment marked the ROOT of the assigned lvalue, so
  * every unrelated sibling read came back as a use-after-free of the

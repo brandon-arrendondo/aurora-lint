@@ -1,7 +1,7 @@
 /* Rule: INT08-C
  * Source: testcases
  * Status: FAIL - narrow-typed multiplication/shift whose promoted-int
- * result can genuinely exceed INT_MAX (task 755).
+ * result can genuinely exceed INT_MAX.
  *
  * `+`/`-` on narrow (char/short) operands can never overflow a >=32-bit
  * promoted `int` -- the widest narrow magnitude (unsigned short's 65535)

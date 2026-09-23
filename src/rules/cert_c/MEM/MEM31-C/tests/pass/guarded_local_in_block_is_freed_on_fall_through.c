@@ -1,7 +1,7 @@
 /*
  * Rule: MEM31-C
  * Source: hostap src/ap/beacon.c ieee802_11_vendor_ie_concat() call sites
- *         (task 1339)
+ *
  * Status: PASS - Should NOT trigger MEM31-C violation
  *
  * A local declared inside a block, guarded by an early `return` in a

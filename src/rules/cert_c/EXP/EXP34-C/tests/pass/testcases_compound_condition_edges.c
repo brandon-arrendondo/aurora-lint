@@ -12,7 +12,7 @@
  * sub-conditions verbatim, so apply_edge_refinement applied each operand's own
  * state on those edges: `!(sta && f(...))` was read as `!sta`, and
  * `(!p || !q)` marked BOTH p and q definitely null. Those edges now carry no
- * per-variable conclusion (task 1067).
+ * per-variable conclusion.
  */
 struct sm { int id; };
 struct sta { struct sm *eapol_sm; void *hs20_ie; };

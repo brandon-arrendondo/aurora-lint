@@ -7,7 +7,7 @@
 /*
  * Rule: DCL06-C - Use meaningful symbolic constants
  * Status: FAIL
- * Reason: The version-accessor exemption (task 1153) keys on the callee's
+ * Reason: The version-accessor exemption keys on the callee's
  *         name; a comparison against any other call's result is still a
  *         magic number.
  */

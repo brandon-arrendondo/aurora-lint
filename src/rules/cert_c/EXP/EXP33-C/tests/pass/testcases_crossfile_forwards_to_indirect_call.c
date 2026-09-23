@@ -1,7 +1,7 @@
 /*
  * Rule: EXP33-C
  * Source: testcases (hostap accounting.c/ap_drv_ops.h shape)
- * Status: PASS - Should NOT trigger EXP33-C violation (aurora_lint 1442).
+ * Status: PASS - Should NOT trigger EXP33-C violation.
  * `wrapper` forwards `data` to a call through `driver->read_sta_data`, a
  * struct-of-function-pointers dispatch this build can never resolve to a
  * concrete definition -- the field name has no relationship to any global

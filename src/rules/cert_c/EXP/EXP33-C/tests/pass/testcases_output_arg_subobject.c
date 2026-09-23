@@ -9,7 +9,7 @@
  * that knows about output positions fired only for a bare identifier argument;
  * with a field access in between, sqlite's
  * `memset(uFts.tmpSpace, 0, sizeof(uFts.tmpSpace))` reported `uFts`
- * uninitialized at the very call that clears it (task 1037).
+ * uninitialized at the very call that clears it.
  *
  * Nothing here reads the object back afterwards, deliberately. Writing one
  * member does not make the whole object initialized -- `strcpy(emp.name, ...)`

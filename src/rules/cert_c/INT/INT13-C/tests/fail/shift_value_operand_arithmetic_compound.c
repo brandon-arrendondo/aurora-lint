@@ -1,6 +1,6 @@
 /*
  * Rule: INT13-C
- * Source: raylib src/rtextures.c ResizeImage (task 754)
+ * Source: raylib src/rtextures.c ResizeImage
  * Status: FAIL - Should trigger INT13-C violation
  *
  * Guard rail: the shifted VALUE can be a compound arithmetic expression

@@ -5,7 +5,7 @@
  *
  * printf/fprintf were already recognized as safe (they only read their
  * arguments); this pins down that the wider printf family added via
- * call_roles::is_printf_family (task 499) -- vprintf and friends -- is
+ * call_roles::is_printf_family -- vprintf and friends -- is
  * recognized too, so passing a protected variable as vprintf's first
  * (format) argument isn't wrongly flagged as "may modify it".
  */

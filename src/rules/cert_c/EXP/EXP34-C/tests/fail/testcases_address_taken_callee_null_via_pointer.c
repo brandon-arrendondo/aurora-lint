@@ -1,6 +1,6 @@
 /*
  * Rule: EXP34-C
- * Source: testcases (aurora_lint 1465)
+ * Source: testcases
  * Status: FAIL - `handle_event` guards `port` and then dereferences it
  *         unguarded, and the null that reaches it arrives through the
  *         dispatch table, which names the function nowhere.

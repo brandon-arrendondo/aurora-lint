@@ -10,7 +10,7 @@
  * `int`'s range; `*`/`<<` can, but not at these magnitudes.
  *
  * The operand magnitudes are the originals, deliberately. What changed
- * (task 925) is that each result is now stored somewhere that holds it:
+ * is that each result is now stored somewhere that holds it:
  * `short result = a + b;` at these magnitudes is a safe *computation* and a
  * truncating *store*, and this file is about the computation. The store is
  * tests/fail/narrow_truncating_store.c. The last case here keeps a narrow

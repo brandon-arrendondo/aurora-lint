@@ -1,6 +1,6 @@
 /*
  * Rule: INT09-C
- * Status: PASS - curl.h-style idioms (task 452/453):
+ * Status: PASS - curl.h-style idioms:
  * 1) explicit values built from #define macro arithmetic (not just prior
  *    enumerator names), so distinct type-tag macros must resolve to
  *    distinct values instead of phantom-colliding at 0.

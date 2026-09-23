@@ -1,6 +1,6 @@
 /*
  * Rule: MEM01-C
- * Source: testcases (task 321)
+ * Source: testcases
  * Status: PASS - Should NOT trigger MEM01-C violation
  * Description: The loop variable is reassigned inside the while condition
  * itself (`(entry = next_entry()) != NULL`) before any reuse each iteration,

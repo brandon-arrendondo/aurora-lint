@@ -24,7 +24,7 @@ void set_values(int new_a, int new_b) {
   atomic_store(&b, new_b);
 }
 
-/* Establish real concurrent-execution context (task 608): get_sum/
+/* Establish real concurrent-execution context: get_sum/
  * set_values must be reachable from a thread-spawn root for CON07-C's
  * reachability gate to still fire on this fixture. */
 void *worker(void *arg) {

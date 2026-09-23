@@ -7,7 +7,7 @@
 /*
  * FLP06-C PASS Case: float initializers that are NOT integer arithmetic.
  *
- * Regression guard for the residual raylib FP sub-classes (task 237) that the
+ * Regression guard for the residual raylib FP sub-classes that the
  * old text `contains('+-*/')` heuristic misfired on. The rule now drives off
  * the AST and fires only on a top-level +,-,*,/ binary expression whose
  * operands are all provably integer — so none of these fire.

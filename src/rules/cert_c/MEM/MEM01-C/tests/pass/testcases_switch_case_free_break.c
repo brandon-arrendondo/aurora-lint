@@ -1,12 +1,12 @@
 /*
  * Rule: MEM01-C
- * Source: testcases (task 320)
+ * Source: testcases
  * Status: PASS - Should NOT trigger MEM01-C violation
  * Description: Each switch case frees and reassigns/returns independently,
  * so a free() in one arm must not be treated as reachable-then-reused by
  * code that follows the switch lexically -- mirrors hostap's
  * wpa_supplicant/wpa_cli.c main() option-parsing switch and
- * wpa_supplicant/ctrl_iface_named_pipe.c's error-handling switch (task 320).
+ * wpa_supplicant/ctrl_iface_named_pipe.c's error-handling switch.
  */
 
 #include <stdlib.h>

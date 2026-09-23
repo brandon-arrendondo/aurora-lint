@@ -3,7 +3,7 @@
  * Source: custom
  * Status: PASS - Should NOT trigger API00-C violation
  * Description: The loop-consume idiom -- a size parameter a loop draws down
- * (task 740). rc4_skip and sha1_prf are bounded by an ordering loop condition
+ * . rc4_skip and sha1_prf are bounded by an ordering loop condition
  * and were already suppressed by guard_dominance; bufq_write_pass
  * (`while (len) { len -= n; }`) and hmac_sha256_kdf (`for (;;)` with
  * `if (pos == outlen) break;`) are the two shapes whose loop control is not

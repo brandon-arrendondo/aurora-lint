@@ -2,7 +2,7 @@
  * Rule: EXP34-C
  * Source: testcases
  * Status: FAIL - Should trigger EXP34-C violation. The correlated-exit-guard
- * exemption (task 1074) is exact or it does not apply. Each of these breaks one
+ * exemption is exact or it does not apply. Each of these breaks one
  * of its requirements, and the pointer really can be null at the dereference.
  */
 struct s { int flags; };

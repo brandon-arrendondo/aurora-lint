@@ -1,7 +1,7 @@
 /*
  * Rule: EXP33-C
  * Source: testcases
- * Status: PASS - Should NOT trigger EXP33-C violation (aurora_lint 1437).
+ * Status: PASS - Should NOT trigger EXP33-C violation.
  * `relay` dereferences `out` (a genuine read) AND forwards it to `writer`,
  * whose own write status this translation unit can never resolve (it
  * forwards again to an undefined `external_writer`). `credit_modifies_params`

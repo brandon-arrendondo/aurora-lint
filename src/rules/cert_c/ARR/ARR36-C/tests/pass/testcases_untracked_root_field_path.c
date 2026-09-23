@@ -10,7 +10,7 @@
  * Status: PASS
  * Reason: A field path rooted at a pointer this frame never resolved is not a
  *         different object from that pointer. `extract_array_base` hands an
- *         untracked pointer's raw NAME back as a base (task 962), so leaving
+ *         untracked pointer's raw NAME back as a base, so leaving
  *         the path whole spells one object two ways -- 'mgmt' and
  *         'mgmt->u.req.variable' -- and the pair reads as two arrays.
  *

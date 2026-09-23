@@ -7,7 +7,7 @@
  * release_slot() frees nothing itself; it hands its own void** parameter to
  * backend_free() through a cast, so propagate_transitive_frees_param_pointees
  * only reaches release_slot if collect_param_passthroughs strips the cast
- * (task 1034, aurora_lint).
+ * .
  */
 
 #include <stdlib.h>

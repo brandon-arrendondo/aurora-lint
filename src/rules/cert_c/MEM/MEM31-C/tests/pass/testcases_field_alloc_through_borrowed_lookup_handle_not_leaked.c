@@ -13,7 +13,7 @@
  * object, not something this function is responsible for freeing before it
  * returns -- the owning container releases it in its own teardown.
  * Modeled on real hostap (p2p_add_device()/p2p_create_device()) and curl
- * (ftp_done()/Curl_conn_meta_get()) shapes (task 1200).
+ * (ftp_done()/Curl_conn_meta_get()) shapes.
  */
 
 #include <stdlib.h>

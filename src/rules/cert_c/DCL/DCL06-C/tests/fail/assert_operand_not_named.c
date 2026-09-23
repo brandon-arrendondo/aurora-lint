@@ -7,7 +7,7 @@
 /*
  * Rule: DCL06-C - Use meaningful symbolic constants
  * Status: FAIL
- * Reason: The consistency-assert exemption (task 1153) is only for a literal
+ * Reason: The consistency-assert exemption is only for a literal
  *         pinned against a NAMED quantity. A comparison with a plain variable,
  *         a literal folded into a mask on one side, a call argument inside
  *         the assert, and the same comparison outside any assert are all

@@ -8,7 +8,7 @@
  * rule cannot type at all, or whose width is the data model's choice. The
  * 32-bit bound is the floor, so an operand the rule cannot resolve keeps it
  * -- widening happens only on positive, platform-independent evidence
- * (task 1119).
+ * .
  */
 #include <stdint.h>
 

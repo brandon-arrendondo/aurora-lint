@@ -1,5 +1,5 @@
 /* Rule: INT32-C
- * Source: testcases (task 926)
+ * Source: testcases
  * Status: PASS - arithmetic on char/short operands whose result is consumed
  * at int width. The usual arithmetic conversions promote both operands to
  * `int` before the operation runs, and no `+`, `-` or `*` over two promoted

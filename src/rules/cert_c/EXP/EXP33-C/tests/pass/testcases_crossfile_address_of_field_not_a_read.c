@@ -1,7 +1,7 @@
 /*
  * Rule: EXP33-C
  * Source: testcases (mbedtls mbedtls_ecp_point_init shape)
- * Status: PASS - Should NOT trigger EXP33-C violation (aurora_lint 1444).
+ * Status: PASS - Should NOT trigger EXP33-C violation.
  * `point_init` never reads `pt` at all: every `pt->` occurrence is the
  * operand of an address-of expression (`&pt->x`, `&pt->y`, `&pt->z`),
  * handing each field's address to `field_init`, which writes through it.

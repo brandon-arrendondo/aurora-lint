@@ -1,7 +1,7 @@
 /*
  * Rule: EXP33-C
  * Source: testcases (lua ldblib.c db_getlocal shape)
- * Status: PASS - Should NOT trigger EXP33-C violation (aurora_lint 1450).
+ * Status: PASS - Should NOT trigger EXP33-C violation.
  * Same idiom as fail/../pass/testcases_crossfile_checked_return_conditional_write.c,
  * but the guard's checked-return call is wrapped in a branch-hint macro the
  * same way lua's own callers write it: `if (l_unlikely(!getstack(...)))`.

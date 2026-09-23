@@ -6,7 +6,7 @@
  * somewhere for the callee to write, not a content read, and a callee that
  * writes through it initializes the variable. Both halves used to understand
  * only `&ident`, so hostap's `recvfrom(..., &from.ss, &fromlen)` reported
- * `from` uninitialized at the very call that fills it (task 1028).
+ * `from` uninitialized at the very call that fills it.
  */
 #include <stdio.h>
 

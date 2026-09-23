@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: testcases (task 1360)
+ * Source: testcases
  * Status: FAIL - Should trigger MEM30-C violation
  *
  * The limits of the equality-predicate record: the same test again, a

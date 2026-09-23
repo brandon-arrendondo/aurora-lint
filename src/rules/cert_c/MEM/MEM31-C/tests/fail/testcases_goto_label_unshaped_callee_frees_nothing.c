@@ -3,7 +3,7 @@
  * Source: testcases
  * Status: FAIL - Should trigger MEM31-C violation
  *
- * Guards the label-scan fix (task 1241) from over-crediting: a callee with
+ * Guards the label-scan fix from over-crediting: a callee with
  * no deallocator shape in its name is credited at a cleanup label only
  * when its summary shows it releases the parameter. One that merely reads
  * the object frees nothing, so the `goto fail` path still leaks.

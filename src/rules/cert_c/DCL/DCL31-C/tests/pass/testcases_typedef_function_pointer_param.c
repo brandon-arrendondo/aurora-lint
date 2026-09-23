@@ -12,7 +12,7 @@
  * function_declarator (it looks like an ordinary `Type name` parameter),
  * so the longhand-only detector (`function_pointer_param_names`) misses
  * it and the call reads as an undeclared function. Task 1054 wires the
- * shared typedef-chain resolver (task 736) into DCL31-C so this shape,
+ * shared typedef-chain resolver into DCL31-C so this shape,
  * and the one-hop alias case (`typedef RecordCompare AliasedCompare`),
  * both resolve correctly.
  *

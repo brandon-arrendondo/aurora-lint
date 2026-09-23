@@ -14,7 +14,7 @@
  * sqlite3_value_int64() preserves. Real example: sqlite
  * ext/misc/sqlar.c's sqlarUncompressFunc() reads an archive-entry size
  * via sqlite3_value_int() and passes the truncated result straight to
- * sqlite3_malloc() with no range check (task 174).
+ * sqlite3_malloc() with no range check.
  */
 
 typedef long long sqlite3_int64;

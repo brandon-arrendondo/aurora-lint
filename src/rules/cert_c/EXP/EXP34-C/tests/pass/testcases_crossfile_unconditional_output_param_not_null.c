@@ -1,7 +1,7 @@
 /*
  * Rule: EXP34-C - Do not dereference null pointers
  * Source: testcases
- * Status: PASS - Should NOT trigger EXP34-C violation (aurora_lint 1458).
+ * Status: PASS - Should NOT trigger EXP34-C violation.
  * Companion to fail/testcases_crossfile_conditional_output_param_null.c:
  * `always_get_info` writes `*out` on EVERY path (no conditional), so it
  * belongs in `unconditional_modifies_params` and `caller`'s `p` is

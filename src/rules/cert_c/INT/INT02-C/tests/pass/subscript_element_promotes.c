@@ -1,6 +1,6 @@
 /*
  * Rule: INT02-C
- * Source: regression (task 1213)
+ * Source: regression
  * Status: PASS - Should NOT trigger INT02-C violation
  *
  * The indexed element is an unsigned char, which promotes to int, so the

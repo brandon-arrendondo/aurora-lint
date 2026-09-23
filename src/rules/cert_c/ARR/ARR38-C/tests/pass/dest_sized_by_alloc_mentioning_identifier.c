@@ -1,6 +1,6 @@
 /*
  * Rule: ARR38-C
- * Source: curl lib/altsvc.c altsvc_create (task 746)
+ * Source: curl lib/altsvc.c altsvc_create
  * Status: PASS - Should NOT trigger ARR38-C violation
  *
  * `is_potentially_user_controlled_in_source` never looked at the destination

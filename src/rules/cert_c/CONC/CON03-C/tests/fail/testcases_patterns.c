@@ -36,7 +36,7 @@ void report_error(int code) {
     error_code = code;
 }
 
-/* Establish real concurrent-execution context (task 608): each accessing
+/* Establish real concurrent-execution context: each accessing
  * function must be reachable from a thread-spawn root for CON03-C's
  * reachability gate to still fire on this fixture. */
 void *background_worker(void *arg) {

@@ -7,7 +7,7 @@
  * loop never terminates -- but NOT a signed/unsigned comparison one: char and
  * unsigned char both promote to int, so the comparison itself is
  * signed-vs-signed. Catching it needs range reasoning about the loop counter,
- * not conversion typing (task 1186).
+ * not conversion typing.
  */
 
 #include <limits.h>

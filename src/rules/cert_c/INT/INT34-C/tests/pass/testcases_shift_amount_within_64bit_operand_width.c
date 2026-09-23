@@ -8,7 +8,7 @@
  * operand the rule can resolve to 64 bits on every data model -- directly,
  * through a typedef chain, a cast, a literal suffix, a dereference or an
  * array element. The rule once compared every amount against a fixed 32
- * and reported all of these as if the operand were uint32_t (task 1119).
+ * and reported all of these as if the operand were uint32_t.
  *
  * A bare `long` is deliberately not among them: see the FAIL mirror.
  */

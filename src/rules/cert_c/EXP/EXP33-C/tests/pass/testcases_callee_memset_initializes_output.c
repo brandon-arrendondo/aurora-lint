@@ -8,7 +8,7 @@
  * entered `modifies_params` and every caller read the variable as
  * uninitialized. Modelled on hostap's `ieee802_11_parse_elems`, which is
  * `os_memset(elems, 0, sizeof(*elems))` plus a forward, and had 65 callers
- * flagged (task 1026).
+ * flagged.
  *
  * `os_memset` is declared, not defined, on purpose: the credit has to come
  * from the suffix matcher resolving the name to `memset`, not from a summary

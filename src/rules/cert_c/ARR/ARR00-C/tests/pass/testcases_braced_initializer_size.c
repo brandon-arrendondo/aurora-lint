@@ -8,7 +8,7 @@
  * ARR00-C PASS Case: array bound resolved from the AST declaration
  *
  * Regression guard for the size-misparse FP class found in the raylib audit
- * (task 234). The old text heuristic latched onto subscript *uses* and failed
+ * . The old text heuristic latched onto subscript *uses* and failed
  * to recognize user-typed declarations, so it miscounted these arrays and
  * flagged every legitimate access as out of bounds. All accesses below are
  * in-bounds and must stay silent.

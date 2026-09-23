@@ -1,6 +1,6 @@
 /*
  * Rule: DCL41-C
- * Source: sqlite ext/fts5/fts5_tcl.c (task 573)
+ * Source: sqlite ext/fts5/fts5_tcl.c
  * Status: PASS - Should NOT trigger DCL41-C violation
  *
  * CASE(i,str) expands to `case i: assert(...);` -- the invocation is itself

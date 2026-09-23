@@ -1,7 +1,7 @@
 /*
  * Rule: ENV03-C
  * Source: testcases
- * Status: PASS - Should NOT trigger ENV03-C violation (aurora_lint 1460).
+ * Status: PASS - Should NOT trigger ENV03-C violation.
  *
  * Same shape as pass/extern_global_safe_data.c (Juliet v68 goodG2BSink):
  * a global written by exactly one function, read through a local alias,

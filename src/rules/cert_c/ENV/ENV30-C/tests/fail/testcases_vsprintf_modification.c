@@ -5,7 +5,7 @@
  *
  * vsprintf/vsnprintf write to their first (destination) argument exactly
  * like sprintf/snprintf. Guards is_modification_function's classification
- * of them (task 499): passing a getenv() result as that destination must
+ * of them: passing a getenv() result as that destination must
  * still be flagged even after is_safe_function folds the full printf
  * family in via call_roles::is_printf_family.
  */

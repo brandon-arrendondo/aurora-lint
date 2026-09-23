@@ -1,6 +1,6 @@
 /*
  * Rule: MEM02-C
- * Source: regression (task 405)
+ * Source: regression
  * Status: PASS - Should NOT trigger MEM02-C violation
  * Description: A same-named pointer variable declared with different types
  * in two different functions, each correctly cast to its own function's

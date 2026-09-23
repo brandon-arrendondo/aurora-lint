@@ -7,7 +7,7 @@
 /*
  * Reason: a properly guarded struct-field array access
  * (`if (S.stackCounter < 32) { S.stack[S.stackCounter] = ...; }`) must
- * still be suppressed once the buffer is tracked (task 235) -- the fix
+ * still be suppressed once the buffer is tracked -- the fix
  * adds recall for the unguarded case without breaking correctly-guarded
  * accesses.
  */

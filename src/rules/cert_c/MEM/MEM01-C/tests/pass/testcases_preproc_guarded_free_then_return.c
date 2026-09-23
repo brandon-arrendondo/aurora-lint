@@ -1,7 +1,7 @@
 /*
  * Rule: MEM01-C
  * Source: testcases
- * Status: PASS - Should NOT trigger MEM01-C violation (task 319)
+ * Status: PASS - Should NOT trigger MEM01-C violation
  * Description: A free() immediately followed by return; inside a
  * #ifdef-gated block must not be treated as reaching the unconditional
  * free() that follows the #endif. aurora-lint has no preprocessor, so both

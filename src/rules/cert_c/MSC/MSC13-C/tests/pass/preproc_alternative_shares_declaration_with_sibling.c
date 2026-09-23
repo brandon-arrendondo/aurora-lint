@@ -1,6 +1,6 @@
 /*
  * Rule: MSC13-C
- * Source: mbedtls library/bignum.c mbedtls_int_div_int (task 1386)
+ * Source: mbedtls library/bignum.c mbedtls_int_div_int
  * Status: PASS - Should NOT trigger MSC13-C violation
  *
  * `quotient` is declared once per #if/#else branch (task 751 groups those

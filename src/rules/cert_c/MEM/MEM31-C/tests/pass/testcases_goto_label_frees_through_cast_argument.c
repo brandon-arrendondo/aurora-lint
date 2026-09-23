@@ -8,7 +8,7 @@
  * pointer on the way in -- hostap crypto_openssl.c's
  * `fail: crypto_ec_key_deinit((struct crypto_ec_key *) pkey);` -- credited
  * nothing, while the main walk's `strip_call_argument` had always looked
- * through the cast (task 1241).
+ * through the cast.
  */
 #include <stdlib.h>
 

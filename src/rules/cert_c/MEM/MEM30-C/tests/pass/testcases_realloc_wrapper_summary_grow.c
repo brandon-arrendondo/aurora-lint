@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: hostap ground-truth audit (task 544/563)
+ * Source: hostap ground-truth audit
  * Status: PASS - Should NOT trigger MEM30-C violation
  *
  * Regression: mirrors hostap's os_realloc, a project realloc wrapper whose

@@ -4,7 +4,7 @@
  */
 
 /*
- * Reason: the deliberate validate-then-act split (task 911). `invoke_inject`
+ * Reason: the deliberate validate-then-act split. `invoke_inject`
  * indexes `lr` with its own `index` parameter and re-checks nothing, which
  * read on its own looks like an unvalidated function-parameter index. Its
  * only caller range-checks `index` before passing it, which is the whole

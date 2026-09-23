@@ -2,7 +2,7 @@
  * Rule: MSC13-C
  * Status: FAIL - Should trigger MSC13-C violations
  *
- * Guards the unused-attribute suppression (task 964) against the two ways it
+ * Guards the unused-attribute suppression against the two ways it
  * could swallow real findings:
  *
  *   - a variable that is merely *named* `unused`. The bare token only counts

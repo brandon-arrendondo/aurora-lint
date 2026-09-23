@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: testcases (task 1360)
+ * Source: testcases
  * Status: FAIL - Should trigger MEM30-C violation
  *
  * The other half of modelling a loop's exits: a free on a path that

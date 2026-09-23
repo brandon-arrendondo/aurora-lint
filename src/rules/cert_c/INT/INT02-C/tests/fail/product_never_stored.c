@@ -1,6 +1,6 @@
 /*
  * Rule: INT02-C
- * Source: regression (task 1213)
+ * Source: regression
  * Status: FAIL - Should trigger INT02-C violation
  *
  * Same undefined multiplication with no destination at all. Whether the

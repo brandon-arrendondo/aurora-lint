@@ -1,7 +1,7 @@
 /*
  * Rule: MSC17-C
  * Source: hostap src/ap/ieee802_11.c + src/common/wpa_common.c,
- *         pure-ftpd src/pure-pw.c (task 632)
+ *         pure-ftpd src/pure-pw.c
  * Status: PASS - Should NOT trigger MSC17-C violation
  *
  * Three distinct fixes exercised together:

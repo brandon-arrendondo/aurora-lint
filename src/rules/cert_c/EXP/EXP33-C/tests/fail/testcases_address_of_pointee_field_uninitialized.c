@@ -6,7 +6,7 @@
  * it says nothing about whether `p` was ever set. The address-of credit that
  * covers `&s.field` therefore stops at `->` -- otherwise hostap's intrusive
  * list macros (`dl_list_del(&x->list)`) would silence a genuinely unset `x`
- * (task 1028).
+ * .
  */
 #include <stdio.h>
 

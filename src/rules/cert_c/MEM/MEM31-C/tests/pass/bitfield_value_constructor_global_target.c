@@ -12,7 +12,7 @@
  * files). collect_value_only_locals only ever scans the one function body
  * being analyzed, so it can't see a variable with no local declaration at
  * all; this needs the project-wide `ProjectContext::value_only_globals`
- * registry instead (task 652). Every generated test builds that registry
+ * registry instead. Every generated test builds that registry
  * (prescan_single_file, the same call `-d` makes) before rule.check() runs,
  * so this single-file fixture can exercise it without needing the full
  * multi-file -d harness.

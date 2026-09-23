@@ -1,6 +1,6 @@
 /*
  * Rule: MSC13-C
- * Source: curl lib/curl_addrinfo.c curl_dbg_getaddrinfo (task 751)
+ * Source: curl lib/curl_addrinfo.c curl_dbg_getaddrinfo
  * Status: PASS - Should NOT trigger MSC13-C violation
  *
  * `res` is declared three times, once per mutually exclusive

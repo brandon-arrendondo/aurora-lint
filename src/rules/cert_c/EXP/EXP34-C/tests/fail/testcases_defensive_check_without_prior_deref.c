@@ -2,7 +2,7 @@
  * Rule: EXP34-C
  * Source: testcases
  * Status: FAIL - Should trigger EXP34-C violation. The dominating-dereference
- * exemption (task 1058) must not fire when nothing dereferenced the pointer
+ * exemption must not fire when nothing dereferenced the pointer
  * first: there the `if (p && ...)` is a real guard, the pointer really can be
  * null on the other edge, and the later unguarded dereference is a genuine
  * finding. Keying that exemption on the NotNull lattice value instead of on an

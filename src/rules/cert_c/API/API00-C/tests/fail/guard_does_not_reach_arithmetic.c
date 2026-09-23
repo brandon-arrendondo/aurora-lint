@@ -1,6 +1,6 @@
 /*
  * Rule: API00-C
- * Source: real-world (task 739)
+ * Source: real-world
  * Status: FAIL - Should trigger API00-C violation
  */
 

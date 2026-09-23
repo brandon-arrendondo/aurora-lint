@@ -10,7 +10,7 @@
  *
  * pure-ftpd's `#define stat(A, B) fakestat(A, B)` is exactly this: harmless
  * while `fakestat` had no known output parameter, and a false positive at five
- * sites the moment library-call writes made one visible (task 1026). The macro
+ * sites the moment library-call writes made one visible. The macro
  * path now roots the argument the same way every other credit funnel does.
  */
 #include <stddef.h>

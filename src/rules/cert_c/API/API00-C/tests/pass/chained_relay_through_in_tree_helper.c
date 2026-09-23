@@ -1,6 +1,6 @@
 /*
  * Rule: API00-C
- * Source: real-world (task 759)
+ * Source: real-world
  * Status: PASS - Should NOT trigger API00-C violation
  * Description: hostap's D-Bus getters relay their `DBusError *error` not
  * directly to dbus_set_error(_const) but to an in-tree helper first

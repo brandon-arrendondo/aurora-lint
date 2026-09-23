@@ -1,7 +1,7 @@
 /*
  * Rule: MEM31-C
  * Source: hostap src/utils/os_internal.c and src/utils/os_unix.c
- *         os_rel2abs_path() (task 1365)
+ *         os_rel2abs_path()
  * Status: PASS - Should NOT trigger MEM31-C violation
  *
  * The retry idiom: allocate, try, and on failure free and go round again

@@ -6,7 +6,7 @@
 
 /*
  * Reason: `buf[len - 1]` is the common last-valid-index bounds-check idiom
- * -- len genuinely bounds buf's size here (task 190).
+ * -- len genuinely bounds buf's size here.
  */
 
 #include <stddef.h>

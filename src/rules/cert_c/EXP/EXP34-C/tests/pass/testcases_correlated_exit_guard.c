@@ -13,7 +13,7 @@
  * about pSchema -- which is why task 1067's sound join leaves it PossiblyNull.
  * Where `isIndex` is known TRUE the negation collapses to `!(!pSchema || ...)`,
  * i.e. pSchema non-null, with no approximation. sqlite's btree.c and hostap's
- * wpa.c both regressed on this when 1067 landed (task 1074).
+ * wpa.c both regressed on this when 1067 landed.
  */
 struct schema { int flags; int idxHash; };
 struct ptk { int kck; int kck_len; };

@@ -3,7 +3,7 @@
  * Status: PASS - none of these guards is provably dead
  *
  * Companion to fail/testcases_subsumed_guard.c. Each case is one reason
- * check_subsumed_guard deliberately declines to fire (task 612).
+ * check_subsumed_guard deliberately declines to fire.
  */
 
 int read_byte(void);

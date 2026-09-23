@@ -1,6 +1,6 @@
 /*
  * Rule: API00-C
- * Source: mbedtls include/mbedtls/aes.h (task 1171)
+ * Source: mbedtls include/mbedtls/aes.h
  * Status: PASS - Should NOT trigger API00-C violation
  * Description: The function's own doc comment states that `ctx` must be
  * initialized and `key` must be a readable buffer -- the published contract

@@ -6,7 +6,7 @@
 
 /* Genuinely ambiguous: no initializer at all determines the bound, and
  * this is not `extern` (whose definition-site size is elsewhere). This is
- * the true "unspecified/ambiguous bound" case ARR02-C targets (task 567). */
+ * the true "unspecified/ambiguous bound" case ARR02-C targets. */
 int ambiguous_bound[];
 
 int main() {

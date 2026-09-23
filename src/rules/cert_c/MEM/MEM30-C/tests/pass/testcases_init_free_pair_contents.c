@@ -15,7 +15,7 @@
  *         mbedtls's init/free convention on a malloc'd struct, as in curl's
  *         lib/vtls/mbedtls.c pinned-pubkey path; the library body is not
  *         available to the scan, so no FunctionSummary can settle it and the
- *         name heuristic used to read the pair as a double free (task 1235).
+ *         name heuristic used to read the pair as a double free.
  */
 
 #include <stdlib.h>

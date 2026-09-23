@@ -5,7 +5,7 @@
  * the string it PARSES, not one it writes, so an unwritten buffer handed to it
  * is a real uninitialized read. Crediting the scanf family by falling through
  * to the unknown-function `&var` fallback would have credited this buffer too;
- * modelling the variadic shape keeps argument 0 an input (task 1029).
+ * modelling the variadic shape keeps argument 0 an input.
  */
 #include <stdio.h>
 

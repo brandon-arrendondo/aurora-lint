@@ -7,7 +7,7 @@
  * Reason: the counterpart to pass/callsite_validated_param_index.c. The
  * callee still indexes with a bare parameter, and its one call site passes a
  * value straight from the caller's own unchecked parameter, so nothing in
- * this translation unit bounds `index` (task 911).
+ * this translation unit bounds `index`.
  */
 
 int invoke_inject(unsigned long *lr, unsigned long index, unsigned long virq)

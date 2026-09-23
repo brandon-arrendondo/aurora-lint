@@ -1,6 +1,6 @@
 /*
  * Rule: MEM02-C
- * Source: regression (task 405)
+ * Source: regression
  * Status: FAIL - Should trigger MEM02-C violation
  * Description: A same-named pointer variable declared with different types
  * in two different functions must not share a single file-wide "declared

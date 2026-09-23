@@ -9,7 +9,7 @@
  *
  * is_potentially_signed_modulo used to accept EITHER operand resolving to a
  * non-negative compile-time constant as grounds to suppress, which swallowed
- * this whole class silently. Only the dividend half (task 673) is sound.
+ * this whole class silently. Only the dividend half is sound.
  *
  * Bare integer literals are deliberately excluded from that resolution, so
  * the divisor here has to be NAMED to exercise the bug -- which is also how

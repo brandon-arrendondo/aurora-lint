@@ -1,6 +1,6 @@
 /* A memset over a struct overwrites the pointer members inside it, so a
  * member freed before it does not still hold the freed value afterwards.
- * Both spellings sqlite uses (aurora_lint 1446).
+ * Both spellings sqlite uses.
  *
  * Without the fix each function below reports: the first as a double free
  * of sOut.aBuf, the second as a use-after-free of pCsr->filter.zTerm and

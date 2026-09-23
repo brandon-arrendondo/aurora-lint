@@ -1,6 +1,6 @@
 /*
  * Rule: FIO05-C
- * Source: regression (task 407)
+ * Source: regression
  * Status: PASS - Should NOT trigger FIO05-C violation
  *
  * Two unrelated functions each open and close a file exactly once using a

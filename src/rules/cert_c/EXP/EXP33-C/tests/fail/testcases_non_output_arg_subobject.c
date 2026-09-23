@@ -2,7 +2,7 @@
  * Rule: EXP33-C
  * Source: testcases
  * Status: FAIL - Should trigger EXP33-C violation. Consulting the argument
- * list for the outermost lvalue (task 1037) must answer the position actually
+ * list for the outermost lvalue must answer the position actually
  * asked about, not suppress every field or element handed to a call: `s.vals`
  * passed to a function that only READS through the pointer, and a bare `n` at
  * a non-output position of a call whose FIRST argument is the output, are both

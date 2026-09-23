@@ -4,7 +4,7 @@
  * Reason: A precondition assert() establishes non-null, but the pointer is then
  *         reassigned to a nullable value before the dereference, so the assert's
  *         guarantee no longer holds. The precondition-assert suppression
- *         (task 207) must NOT mask this. Also guards the unguarded-malloc FN.
+ *         must NOT mask this. Also guards the unguarded-malloc FN.
  */
 
 #include <stdlib.h>

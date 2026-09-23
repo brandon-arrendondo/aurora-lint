@@ -30,7 +30,7 @@ void log_event(void) {
     event_count++;
 }
 
-/* Establish real concurrent-execution context (task 608): each accessing
+/* Establish real concurrent-execution context: each accessing
  * function must be reachable from a thread-spawn root for CON07-C's
  * reachability gate to still fire on this fixture. */
 #include <pthread.h>

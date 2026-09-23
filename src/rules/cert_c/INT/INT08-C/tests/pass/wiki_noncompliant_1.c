@@ -12,7 +12,7 @@
  * still belonged to INT08-C's narrow-type scope in this codebase. It
  * doesn't: `i` promotes to `int` before `i + 1` is evaluated, and no
  * `short`/`char` value (nor two of them combined via `+` or `-`) can push a
- * >=32-bit promoted `int` out of range (task 755) -- so this file no longer
+ * >=32-bit promoted `int` out of range -- so this file no longer
  * represents an INT08-C violation as scoped here. The unreliable-check
  * *pattern* CERT is actually warning about (testing for overflow with an
  * expression that already overflowed) is a distinct concern from "can this

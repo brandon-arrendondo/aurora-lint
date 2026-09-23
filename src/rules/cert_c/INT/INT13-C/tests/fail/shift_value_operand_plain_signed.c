@@ -1,6 +1,6 @@
 /*
  * Rule: INT13-C
- * Source: run-229 audited-residue adjudication (task 754)
+ * Source: run-229 audited-residue adjudication
  * Status: FAIL - Should trigger INT13-C violation
  *
  * Guard rail: task 754 restricted shift checks to the LEFT (value) operand

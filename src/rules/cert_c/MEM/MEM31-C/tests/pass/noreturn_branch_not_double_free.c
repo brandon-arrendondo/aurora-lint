@@ -14,7 +14,7 @@
  * ftpd.h), a leading one, the _Noreturn keyword, and a plain exit() call.
  * Found on four pure-ftpd sites -- pure-pw.c:902,1054,1261 and tls.c:301 --
  * whose allocation-failure branch calls a process-terminating helper before
- * the shared cleanup runs (task 1076).
+ * the shared cleanup runs.
  */
 
 #include <stdlib.h>

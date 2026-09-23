@@ -1,6 +1,6 @@
 /*
  * Rule: API00-C
- * Source: mbedtls include/mbedtls/aes.h (task 1171)
+ * Source: mbedtls include/mbedtls/aes.h
  * Status: FAIL - Should trigger API00-C violation
  * Description: A doc comment that merely describes a pointer parameter
  * ("The AES context to use") states no precondition, so the caller-side

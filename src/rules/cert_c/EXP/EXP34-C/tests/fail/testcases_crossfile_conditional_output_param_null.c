@@ -2,7 +2,7 @@
  * Rule: EXP34-C - Do not dereference null pointers
  * Source: testcases (CERT's own EXP33-C noncompliant example, set_flag(n,
  * &sign), adapted to a pointer output)
- * Status: FAIL - Should trigger EXP34-C violation (aurora_lint 1458).
+ * Status: FAIL - Should trigger EXP34-C violation.
  * `maybe_get_info` writes `*out` only when `n > 0`; on every other path
  * `out`'s pointee is left untouched. `caller`'s `p` starts as a null
  * pointer, so on the `n <= 0` path `p` is still null after the call.

@@ -7,7 +7,7 @@
 /*
  * FLP06-C PASS Case: arithmetic whose operands are all floating-point.
  *
- * Regression guard for the raylib audit FP class (task 230): the old text
+ * Regression guard for the raylib audit FP class: the old text
  * heuristic flagged float initializers lacking a literal '.'/'f' or a cast as
  * "integer arithmetic", even when every operand was a float param/local. With
  * operand typing, float*float / float+float / float-float is not integer

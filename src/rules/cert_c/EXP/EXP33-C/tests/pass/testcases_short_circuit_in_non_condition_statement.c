@@ -1,6 +1,6 @@
 /*
  * Rule: EXP33-C
- * Source: testcases (task 460)
+ * Source: testcases
  * Status: PASS - Should NOT trigger EXP33-C violation
  * Description: a `&&`/`||` chain that writes an output parameter in its
  * first clause and reads it (guaranteed-safe by short-circuit evaluation)

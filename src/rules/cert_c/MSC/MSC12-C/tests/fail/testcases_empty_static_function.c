@@ -2,7 +2,7 @@
  * Rule: MSC12-C
  * Status: FAIL - Empty plain `static` function body
  *
- * The boundary of the null-backend exception (task 1005): an empty
+ * The boundary of the null-backend exception: an empty
  * non-static definition of a header-prototyped function is an interface
  * being satisfied and is not reported, but a plain `static` one is
  * unreachable from outside its own translation unit, so it may really be

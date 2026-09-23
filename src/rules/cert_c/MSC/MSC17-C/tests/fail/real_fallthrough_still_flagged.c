@@ -1,6 +1,6 @@
 /*
  * Rule: MSC17-C
- * Source: pure-ftpd src/pure-ftpwho.c (task 632)
+ * Source: pure-ftpd src/pure-ftpwho.c
  * Status: FAIL - Should trigger MSC17-C violation
  *
  * A real, unmarked fallthrough must still be flagged even after the task

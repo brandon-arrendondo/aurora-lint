@@ -1,6 +1,6 @@
 /*
  * Rule: MSC13-C
- * Source: curl lib/vtls/openssl.c ossl_connect_step2 (task 1151/1193/1193)
+ * Source: curl lib/vtls/openssl.c ossl_connect_step2
  * Status: PASS - Should NOT trigger MSC13-C violation
  *
  * `result` is set on every arm of this if/else-if/else chain and read via

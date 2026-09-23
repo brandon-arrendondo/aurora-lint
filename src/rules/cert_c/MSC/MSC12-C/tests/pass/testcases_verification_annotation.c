@@ -6,7 +6,7 @@
  * IS the branch's entire purpose, consumed by a separate proof build
  * invisible to a plain C compile. Modeled on
  * src/arch/x86/64/object/objecttype.c:191/209/233/239 and
- * src/arch/riscv/object/objecttype.c:205 in seL4 (task 476). Scoped to
+ * src/arch/riscv/object/objecttype.c:205 in seL4. Scoped to
  * this specific tag convention, not any comment -- see
  * testcases_empty_if_body.c / testcases_empty_else_body.c for the
  * bare-comment case, which must still be flagged.

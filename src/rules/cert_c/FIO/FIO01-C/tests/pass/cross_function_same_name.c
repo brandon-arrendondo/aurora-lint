@@ -1,6 +1,6 @@
 /*
  * Rule: FIO01-C
- * Source: regression (task 406)
+ * Source: regression
  * Status: PASS - Should NOT trigger FIO01-C violation
  *
  * Two unrelated functions each declare a local variable named

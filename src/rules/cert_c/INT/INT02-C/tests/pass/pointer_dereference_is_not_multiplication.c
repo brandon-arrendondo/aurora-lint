@@ -1,6 +1,6 @@
 /*
  * Rule: INT02-C
- * Source: regression (task 1186)
+ * Source: regression
  * Status: PASS - Should NOT trigger INT02-C violation
  *
  * The defect the previous implementation had: "unsigned short" appears

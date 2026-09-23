@@ -5,7 +5,7 @@
  * `default` is exhaustive by construction, so when every arm writes through an
  * output parameter, so does every path leaving the switch. Modelled on curl's
  * lib/cw-out.c `cw_get_writefunc`, whose four outputs are each set in all three
- * arms and whose callers were still reported uninitialized (task 1025).
+ * arms and whose callers were still reported uninitialized.
  */
 #include <stdio.h>
 

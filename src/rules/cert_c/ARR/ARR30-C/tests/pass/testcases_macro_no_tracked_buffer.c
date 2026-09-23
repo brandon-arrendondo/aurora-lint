@@ -15,7 +15,7 @@
  *         be flagged. The former condition `involves_buffer || !args.is_empty()`
  *         flagged every array-indexing macro call regardless of any tracked
  *         buffer (pure noise); migrating ARR30 onto the shared cross-region
- *         macro collector (task 186) exposed many more such macros, so this
+ *         macro collector exposed many more such macros, so this
  *         guard is what keeps the migration a precision win. The genuine
  *         out-of-bounds-on-a-tracked-buffer case still flags
  *         (see tests/fail/testcases_macro_over.c).

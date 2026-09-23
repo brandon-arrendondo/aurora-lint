@@ -4,7 +4,7 @@
  * Status: FAIL - Should trigger INT32-C violation
  * Description: iPrefix and nTerm come from an untrusted on-disk varint and
  * feed memcpy's destination offset and the index store. The rule caught
- * this before task 1014 and silently dropped it afterwards (task 1256):
+ * this before task 1014 and silently dropped it afterwards:
  *
  *   - VRA read the wrong end of `nData`'s range on the true edge of
  *     `i < nData`, claiming i <= INT_MIN-1 inside the loop -- empty against

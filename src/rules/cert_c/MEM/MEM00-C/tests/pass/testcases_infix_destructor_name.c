@@ -1,7 +1,7 @@
 /*
  * Rule: MEM00-C
  * Source: testcases
- * Status: PASS - Should NOT trigger MEM00-C violation (task 318)
+ * Status: PASS - Should NOT trigger MEM00-C violation
  * Description: A "<module>_<action>_<subject>" compound name where the
  * destructor action word sits in the middle (not a prefix/suffix) still
  * signals a dedicated cleanup helper, e.g. hostap's

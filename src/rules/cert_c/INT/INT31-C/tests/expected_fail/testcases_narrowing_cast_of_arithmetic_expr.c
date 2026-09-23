@@ -14,7 +14,7 @@
  * inside the expression. Real example: sqlite ext/misc/amatch.c's
  * amatchNext() -- nBuf = (char)(nWord + 100); -- both nBuf and nWord are
  * sqlite3_int64, but the (char) cast truncates through a signed byte before
- * the result is stored back and passed to a realloc call (task 174).
+ * the result is stored back and passed to a realloc call.
  */
 
 typedef long long sqlite3_int64;

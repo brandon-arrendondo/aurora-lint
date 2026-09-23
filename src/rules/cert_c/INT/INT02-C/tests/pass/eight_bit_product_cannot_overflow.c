@@ -1,6 +1,6 @@
 /*
  * Rule: INT02-C
- * Source: regression (task 1213)
+ * Source: regression
  * Status: PASS - Should NOT trigger INT02-C violation
  *
  * Two 8-bit operands reach at most 255 * 255 = 65025, which fits in int, so

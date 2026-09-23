@@ -5,8 +5,8 @@
  *
  * The two-stage size computation: `(a * b) * sizeof(T)` performs `a * b`
  * in int before anything is converted to size_t. The outer product is
- * unsigned and INT30-C's (task 1288); the inner one is signed and can
- * overflow with the outer never involved (task 1286). The operands here
+ * unsigned and INT30-C's; the inner one is signed and can
+ * overflow with the outer never involved. The operands here
  * are struct fields and call results -- shapes the operator walker's
  * provenance gate declines -- so only the size-argument sink sees them.
  */

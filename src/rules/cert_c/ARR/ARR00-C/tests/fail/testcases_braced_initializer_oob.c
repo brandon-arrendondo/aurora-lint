@@ -7,7 +7,7 @@
 /*
  * ARR00-C FAIL Case: genuine out-of-bounds access on braced-initialized arrays
  *
- * Confirms the AST size resolver (task 234) still detects real overflows:
+ * Confirms the AST size resolver still detects real overflows:
  *   - size taken from an explicit dimension with a braced initializer, and
  *   - size inferred from the initializer element count when no size is given.
  */

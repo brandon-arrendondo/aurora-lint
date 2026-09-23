@@ -3,7 +3,7 @@
  * Status: FAIL - Should trigger MSC12-C violation
  * Pattern: guard already excluded by the preceding early-return guard
  *
- * Reduced from sqlite ext/fts5/fts5_index.c fts5TestUtf8() (task 612): the
+ * Reduced from sqlite ext/fts5/fts5_index.c fts5TestUtf8() : the
  * 4-byte UTF-8 branch re-tests z[i+2] after a disjunction that already
  * returned on it, and advances i by 3 instead of 4. The duplicated
  * subcondition is the visible half of that copy-paste defect.

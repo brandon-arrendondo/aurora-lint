@@ -1,6 +1,6 @@
 /*
  * Rule: FIO05-C
- * Source: regression (task 407)
+ * Source: regression
  * Status: FAIL - Should trigger FIO05-C violation
  *
  * Companion to tests/pass/cross_function_same_name.c: confirms per-function

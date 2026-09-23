@@ -1,6 +1,6 @@
 /*
  * Rule: INT13-C
- * Source: sqlite src/wal.c sqlite3WalReadFrame (task 754)
+ * Source: sqlite src/wal.c sqlite3WalReadFrame
  * Status: FAIL - Should trigger INT13-C violation
  *
  * Guard rail: the shifted VALUE can itself be a non-shift bitwise

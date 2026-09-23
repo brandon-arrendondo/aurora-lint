@@ -2,7 +2,7 @@
  * Rule: MSC13-C
  * Status: FAIL - crediting a macro call with reading the free identifiers in
  * its body must not credit it with reading everything in scope. LOG_Y()
- * reads `y`, not `x`, so `x = 1` is still a genuine dead store (task 756).
+ * reads `y`, not `x`, so `x = 1` is still a genuine dead store.
  */
 
 void use(int);

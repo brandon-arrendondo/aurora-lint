@@ -8,7 +8,7 @@
  * Rule: MEM31-C - Free dynamically allocated memory when no longer needed
  * Status: FAIL
  * Reason: Unlinking with HASH_DELETE does not itself free anything, so the
- * genuine double free() below must still be detected (task 426).
+ * genuine double free() below must still be detected.
  */
 
 #define HASH_DELETE(hh, head, item) ((void)(hh), (void)(head), (void)(item))

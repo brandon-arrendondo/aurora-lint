@@ -1,7 +1,7 @@
 /*
  * Rule: MEM30-C
  * Source: hostap wpa_supplicant/eapol_test.c + src/eapol_supp/eapol_supp_sm.h
- *         (task 654)
+ *
  * Status: PASS - Should NOT trigger MEM30-C violation on 'ctx'
  *
  * hostap's eapol_supp_sm.h declares the real eapol_sm_init() under

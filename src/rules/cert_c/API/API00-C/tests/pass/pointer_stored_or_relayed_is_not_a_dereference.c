@@ -3,8 +3,8 @@
  * Source: custom
  * Status: PASS - Should NOT trigger API00-C violation
  * Description: The pointer-parameter shapes that never read or write through
- * the pointer (task 743), plus the one whose guard lives one frame down
- * (task 744).
+ * the pointer, plus the one whose guard lives one frame down
+ * .
  *
  * Storing a pointer in caller-owned memory, handing it to a registrar as an
  * opaque cookie, accepting and ignoring it, or comparing it against NULL are

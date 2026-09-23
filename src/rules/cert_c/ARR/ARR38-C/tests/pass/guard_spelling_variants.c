@@ -1,7 +1,7 @@
 /*
  * Rule: ARR38-C
  * Source: sqlite ext/session/sqlite3session.c, plus the other guard spellings
- *         from task 731's delta-adjudication (task 747)
+ *         from task 731's delta-adjudication
  * Status: PASS - Should NOT trigger ARR38-C violation
  *
  * `has_size_validation` used to search for seven literal substrings --

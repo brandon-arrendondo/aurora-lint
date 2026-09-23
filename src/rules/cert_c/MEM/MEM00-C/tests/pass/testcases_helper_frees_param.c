@@ -1,7 +1,7 @@
 /*
  * Rule: MEM00-C
  * Source: testcases
- * Status: PASS - Should NOT trigger MEM00-C violation (task 318)
+ * Status: PASS - Should NOT trigger MEM00-C violation
  * Description: A function whose own name signals it's a dedicated
  * cleanup/destructor helper (cleanup_*/free_*/destroy_*/...) is
  * SUPPOSED to free what's passed in -- that's the entire point of the

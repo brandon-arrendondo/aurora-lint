@@ -3,7 +3,7 @@
  * its own) still establish a fact about that status variable for the rest
  * of the branch. A later `if (rc == SUCCESS)` is an EqPred, and disjoint
  * from it, so the object freed alongside `rc = FAILURE` is not freed on
- * the path that reaches the guarded block (aurora_lint 1461).
+ * the path that reaches the guarded block.
  *
  * sqlite ext/fts3/fts3_write.c's fts3PendingListAppend caller is the case
  * this came from: a nested pointer-identity `if` frees `pList` and sets

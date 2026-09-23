@@ -1,6 +1,6 @@
 /*
  * Rule: ENV01-C
- * Source: real-world shape (task 1174)
+ * Source: real-world shape
  * Status: FAIL - sprintf's %s argument is a getenv() result, no bound
  */
 

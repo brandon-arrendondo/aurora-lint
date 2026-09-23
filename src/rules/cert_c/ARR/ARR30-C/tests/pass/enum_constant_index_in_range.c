@@ -7,7 +7,7 @@
  * Reason: an `enum` constant used as an array index is a compile-time
  * constant, not a runtime-variable index -- indexing a fixed-size lookup
  * table with it (`buttonState[MOUSE_BUTTON_LEFT]`) needs no bounds guard
- * when every enumerator is provably within range (task 443).
+ * when every enumerator is provably within range.
  */
 
 typedef enum {

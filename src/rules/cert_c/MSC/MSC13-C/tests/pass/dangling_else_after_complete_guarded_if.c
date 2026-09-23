@@ -1,6 +1,6 @@
 /*
  * Rule: MSC13-C
- * Source: curl lib/vtls/openssl.c ossl_connect_step2 (task 1151/1193),
+ * Source: curl lib/vtls/openssl.c ossl_connect_step2,
  *   SSL_ERROR_WANT_ASYNC/SSL_ERROR_WANT_RETRY_VERIFY guards
  * Status: PASS - Should NOT trigger MSC13-C violation
  *

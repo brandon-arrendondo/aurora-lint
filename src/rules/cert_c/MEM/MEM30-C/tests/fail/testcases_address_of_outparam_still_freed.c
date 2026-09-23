@@ -7,7 +7,7 @@
 /*
  * Rule: MEM30-C - Do not access freed memory
  * Status: FAIL
- * Reason: The `&p` out-parameter credit (task 1234) is withheld on POSITIVE
+ * Reason: The `&p` out-parameter credit is withheld on POSITIVE
  *         evidence only: a summary proving the callee has a returning path
  *         that writes nothing through the parameter keeps p freed, and a
  *         callee that frees the POINTEE (`void **` safe-free wrapper) is a

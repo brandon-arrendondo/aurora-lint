@@ -2,7 +2,7 @@
  * Rule: API00-C
  * Source: custom
  * Status: FAIL - SHOULD trigger API00-C violation
- * Description: Negative controls for the loop-consume idiom (task 740). Each
+ * Description: Negative controls for the loop-consume idiom. Each
  * of these is one loop away from the suppressed shape and must keep firing:
  * a loop whose condition tests the parameter but whose body never draws it
  * down, a body that reassigns it from elsewhere, a parameter in the

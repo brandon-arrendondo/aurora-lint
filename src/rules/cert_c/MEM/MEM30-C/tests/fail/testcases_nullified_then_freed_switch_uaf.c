@@ -4,7 +4,7 @@
  * Status: FAIL - Should trigger MEM30-C violation on 'data'
  *
  * Regression: same pattern as testcases_nullified_then_freed_branch_uaf.c
- * but through merge_switch_arms (task 398) instead of merge_if_branches.
+ * but through merge_switch_arms instead of merge_if_branches.
  * 'data' starts NULL; one case allocates and frees it, other cases/the
  * implicit fallthrough-to-end path never touch it, so the merge must not
  * let their stale nullified state mask the free.

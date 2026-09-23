@@ -3,10 +3,10 @@
  * Source: custom
  * Status: PASS - Should NOT trigger MEM30-C violation
  * Description: curl lib/ldap.c `_ldap_url_parse2` and lib/ftp.c. Three
- * things the scope-flat walker got wrong (task 1233): (1) a fresh
+ * things the scope-flat walker got wrong: (1) a fresh
  * `char *unescaped;` in a later sibling block is a new binding and must
  * clear the freed state the previous block left behind -- the same rule
- * `T *p = ...;` already followed (task 232); (2) `f(&p)` passes the ADDRESS
+ * `T *p = ...;` already followed; (2) `f(&p)` passes the ADDRESS
  * of `p`, not the freed pointer in it, and refills `p` as an output
  * parameter; (3) `&p` is address-of, not a dereference.
  */

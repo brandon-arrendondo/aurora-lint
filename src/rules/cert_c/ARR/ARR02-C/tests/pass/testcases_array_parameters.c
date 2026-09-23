@@ -6,7 +6,7 @@
 
 /* Array-typed function parameters are adjusted to pointer type by C
  * (C11 6.7.6.3p7) -- not array OBJECT declarations, so an omitted bound
- * here is out of scope for ARR02-C (task 567). Covers both a prototype
+ * here is out of scope for ARR02-C. Covers both a prototype
  * declaration and a K&R-style old-style parameter declaration. */
 void proto_with_array_param(int arr[]);
 

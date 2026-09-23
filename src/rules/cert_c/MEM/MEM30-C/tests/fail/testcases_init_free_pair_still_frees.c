@@ -7,7 +7,7 @@
 /*
  * Rule: MEM30-C - Do not access freed memory
  * Status: FAIL
- * Reason: The init/free pairing (task 1235) only reclassifies the paired
+ * Reason: The init/free pairing only reclassifies the paired
  *         `X_free(obj)` as a contents-free. It must not hide a real double
  *         free of the object afterwards, nor a name-shaped free with no init
  *         partner, nor a paired free applied to an object already released.

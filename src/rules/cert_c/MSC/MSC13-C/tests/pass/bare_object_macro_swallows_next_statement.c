@@ -1,6 +1,6 @@
 /*
  * Rule: MSC13-C
- * Source: hostap src/utils/xml_libxml2.c:239 (task 964)
+ * Source: hostap src/utils/xml_libxml2.c:239
  * Status: PASS - Should NOT trigger MSC13-C violations
  *
  * `LIBXML_TEST_VERSION` is an object-like macro invoked as a whole statement

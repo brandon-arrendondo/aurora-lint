@@ -15,7 +15,7 @@
  *         callee with no summary alike (EXP33-C's `&var`-initializes policy,
  *         task 1065 bug #3). curl's lib/ftp.c `curlx_free(newhost); result =
  *         ftp_control_addr_dup(data, &newhost);` and the six uses that
- *         followed it (task 1234).
+ *         followed it.
  */
 
 #include <stdlib.h>

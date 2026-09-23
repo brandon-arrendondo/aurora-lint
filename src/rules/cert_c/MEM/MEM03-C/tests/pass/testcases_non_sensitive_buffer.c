@@ -3,7 +3,7 @@
  * Source: testcases
  * Status: PASS - MEM03-C must only flag plausibly-sensitive buffers
  * Description: freeing/reallocating a generic, non-sensitive buffer
- * without a prior memset is not a MEM03-C violation (task 317).
+ * without a prior memset is not a MEM03-C violation.
  */
 
 #include <stdlib.h>

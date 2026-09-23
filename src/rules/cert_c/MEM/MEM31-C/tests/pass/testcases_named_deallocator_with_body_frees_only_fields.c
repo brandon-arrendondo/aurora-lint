@@ -11,7 +11,7 @@
  * wrapper is a teardown pair, not a double free. curl's Curl_close ->
  * Curl_req_free(&data->req, data) -> Curl_client_cleanup(data), and
  * hostap's wpa_supplicant_deinit_iface -> wpa_supplicant_cleanup(wpa_s) ->
- * free_hw_features(wpa_s), were both this (task 1269).
+ * free_hw_features(wpa_s), were both this.
  */
 #include <stdlib.h>
 

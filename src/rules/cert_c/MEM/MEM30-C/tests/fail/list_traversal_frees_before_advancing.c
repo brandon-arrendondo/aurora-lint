@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: testcases (task 1360)
+ * Source: testcases
  * Status: FAIL - Should trigger MEM30-C violation
  *
  * The bug the old list_uaf fixture meant to show: the node is freed and

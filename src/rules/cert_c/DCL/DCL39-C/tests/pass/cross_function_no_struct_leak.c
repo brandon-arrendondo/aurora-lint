@@ -1,6 +1,6 @@
 /*
  * Rule: DCL39-C
- * Source: regression (task 412)
+ * Source: regression
  * Status: PASS - Should NOT trigger DCL39-C violation
  *
  * struct_vars must be scoped per-function. A same-named local variable in

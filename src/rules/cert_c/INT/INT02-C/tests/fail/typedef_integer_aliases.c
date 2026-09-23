@@ -1,6 +1,6 @@
 /*
  * Rule: INT02-C
- * Source: regression (task 1213)
+ * Source: regression
  * Status: FAIL - Should trigger INT02-C violation
  *
  * The operands are spelled with project integer aliases rather than standard

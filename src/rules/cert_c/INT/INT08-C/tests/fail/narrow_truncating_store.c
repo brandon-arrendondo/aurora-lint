@@ -1,5 +1,5 @@
 /* Rule: INT08-C
- * Source: custom (task 925)
+ * Source: custom
  * Status: FAIL - SHOULD trigger INT08-C violation
  *
  * The store, not the arithmetic. `a + b` here is a correct int computation

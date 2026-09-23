@@ -7,7 +7,7 @@
  * a single-value output parameter, not an unsized array — there is no
  * possible size argument for it anywhere in the signature, so a
  * memory-safe implementation can only ever write one element through it
- * (task 450).
+ * .
  */
 
 #include <stddef.h>

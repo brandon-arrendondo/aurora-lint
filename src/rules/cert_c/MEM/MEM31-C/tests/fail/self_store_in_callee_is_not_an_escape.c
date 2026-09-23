@@ -1,7 +1,7 @@
 /*
  * Rule: MEM31-C
  * Source: hostap src/crypto/tls_openssl.c tls_context_new() + src/utils/list.h
- *         (task 1227)
+ *
  * Status: FAIL - Should trigger MEM31-C violation
  *
  * dl_list_init() writes `list->next = list`: a store INTO the parameter's

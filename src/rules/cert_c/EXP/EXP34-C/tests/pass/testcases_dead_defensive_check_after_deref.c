@@ -8,7 +8,7 @@
  * DefinitelyNull anyway downgraded the pointer at the join and reported a null
  * dereference much further down -- hostap's ieee802_1x_encapsulate_radius
  * dereferences `sta` in its first statement, tests `if (sta && ...)` 36 lines
- * later, and was reported at a `sta->` 65 lines after that (task 1058).
+ * later, and was reported at a `sta->` 65 lines after that.
  */
 struct sm { int id; };
 struct sta { struct sm *eapol_sm; void *hs20_ie; };

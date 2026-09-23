@@ -6,7 +6,7 @@
  * releases the block through `sqlite3GlobalConfig.m.xFree(p)` -- a call
  * through a function POINTER, which no summary can follow -- so its
  * `frees_params`, `frees_param_pointees` and `frees_param_fields` are all
- * empty. A summary is trusted over a name shape (task 1128), so that
+ * empty. A summary is trusted over a name shape, so that
  * emptiness read as "this `*_free` releases nothing it was handed" and
  * sqlite's one deallocator counted for nothing: the straight-line free
  * below reported a leak at the `return`, and the `goto` reported one

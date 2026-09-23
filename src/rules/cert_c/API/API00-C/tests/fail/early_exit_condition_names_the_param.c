@@ -3,7 +3,7 @@
  * Source: custom
  * Status: FAIL - SHOULD trigger API00-C violation
  * Description: An early-exit guard used to credit any parameter whose NAME
- * appeared in the condition TEXT (task 902). None of these conditions tests
+ * appeared in the condition TEXT. None of these conditions tests
  * its parameter for NULL, and each function dereferences the parameter
  * afterwards:
  *

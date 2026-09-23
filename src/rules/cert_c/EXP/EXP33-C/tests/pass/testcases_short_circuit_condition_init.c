@@ -1,6 +1,6 @@
 /*
  * Rule: EXP33-C
- * Source: testcases (task 322)
+ * Source: testcases
  * Status: PASS - Should NOT trigger EXP33-C violation
  * Description: `value` is written via an output parameter in the FIRST
  * clause of a short-circuited `||`/`&&` condition, then read in the SECOND

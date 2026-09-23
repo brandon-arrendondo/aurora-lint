@@ -1,6 +1,6 @@
 /*
  * Rule: MSC13-C
- * Source: mbedtls MBEDTLS_MPI_CHK idiom (task 1387)
+ * Source: mbedtls MBEDTLS_MPI_CHK idiom
  * Status: FAIL - Should trigger MSC13-C violation
  *
  * `ret = 0;` is overwritten by the CHK macro's `ret = (f)` on every path

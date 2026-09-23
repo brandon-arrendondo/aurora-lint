@@ -11,7 +11,7 @@
  *         Struct fields are independent allocations (unlike union members,
  *         which overlap in storage). Freeing data->state.range does not
  *         invalidate data->state.host or data->multi. Regression for the
- *         struct-field-free cascade FP (task 181); the union-member aliasing
+ *         struct-field-free cascade FP; the union-member aliasing
  *         heuristic is now gated on genuinely union-typed variables.
  */
 

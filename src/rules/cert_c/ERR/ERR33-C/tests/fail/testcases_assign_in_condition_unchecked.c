@@ -9,7 +9,7 @@
  * Status: FAIL
  * Reason: The result is assigned inside a condition but the condition does
  *         not TEST it: it is dereferenced, passed to another call, or used in
- *         arithmetic. Sitting inside an `if` is not a check (task 1373).
+ *         arithmetic. Sitting inside an `if` is not a check.
  */
 
 #include <stdio.h>

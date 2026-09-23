@@ -6,7 +6,7 @@
  * Counterpart to testcases_inner_signed_product_under_sizeof.c: the inner
  * product's operands are bounded, so it fits int; and a guard on the
  * factors before the allocation is honoured. The outer unsigned product
- * is not this rule's either way (task 1288).
+ * is not this rule's either way.
  */
 #include <stdlib.h>
 #include <string.h>

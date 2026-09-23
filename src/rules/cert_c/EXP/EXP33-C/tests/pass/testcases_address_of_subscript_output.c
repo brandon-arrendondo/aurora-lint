@@ -5,7 +5,7 @@
  * takes the address of an array element to pass as an output-parameter
  * buffer; it is not itself a content read of `mime`, mirroring curl's
  * lib/mime.c:1193 `Curl_rand_alnum(easy, (unsigned char
- * *)&mime->boundary[MIME_BOUNDARY_DASHES], ...)` (task 457).
+ * *)&mime->boundary[MIME_BOUNDARY_DASHES], ...)`.
  */
 #include <stdio.h>
 #include <stdlib.h>

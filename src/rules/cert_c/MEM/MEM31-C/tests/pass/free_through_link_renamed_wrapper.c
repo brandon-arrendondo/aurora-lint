@@ -10,7 +10,7 @@
  * `valkey_free`, found no summary, and credited nothing: every object
  * released through decrRefCount read as a leak once its constructor was
  * recognised. An alias onto a name the scan never saw now falls back to
- * the spelling it did see (task 1227).
+ * the spelling it did see.
  */
 #include <stdlib.h>
 

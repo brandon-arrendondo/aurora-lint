@@ -8,7 +8,7 @@
  * ...)`) before touching it again, including when that call sits inside an
  * if-condition. Modeled on mosquitto's mosquitto_properties_to_json()
  * (libcommon/cjson_common.c), which false-positived once switch/case bodies
- * became visible to the CFG (task 320).
+ * became visible to the CFG.
  */
 
 #include <stdlib.h>

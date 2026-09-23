@@ -1,7 +1,7 @@
 /*
  * Rule: MSC13-C
  * Source: seL4 src/arch/arm/64/kernel/vspace.c, src/arch/arm/32/kernel/vspace.c,
- *         src/arch/x86/32/kernel/vspace.c (task 964)
+ *         src/arch/x86/32/kernel/vspace.c
  * Status: PASS - Should NOT trigger MSC13-C violations
  *
  * `__attribute__((unused))`, usually behind a project macro like seL4's

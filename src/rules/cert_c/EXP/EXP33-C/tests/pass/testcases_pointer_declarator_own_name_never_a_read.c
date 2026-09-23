@@ -15,7 +15,7 @@
  * shared predecessor of every iteration), it produced real false positives
  * on straight-line "declare, assign unconditionally, use immediately"
  * pointer locals -- exactly this shape, matching sqlite's vdbe.c
- * (`VdbeOp *pCaller;` / `Mem *pMem = p->pResultRow;`) (task 391).
+ * (`VdbeOp *pCaller;` / `Mem *pMem = p->pResultRow;`) .
  */
 
 typedef struct Mem Mem;

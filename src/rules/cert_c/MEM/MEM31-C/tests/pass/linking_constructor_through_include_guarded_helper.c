@@ -1,7 +1,7 @@
 /*
  * Rule: MEM31-C
  * Source: hostap src/p2p/p2p.c p2p_create_device() + src/utils/list.h
- *         (task 1227)
+ *
  * Status: PASS - Should NOT trigger MEM31-C violation
  *
  * The intrusive-list helper lives in an include-guarded header. The

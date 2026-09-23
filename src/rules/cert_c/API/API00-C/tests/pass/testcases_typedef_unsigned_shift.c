@@ -12,7 +12,7 @@
  * type (sqlite's `sqlite3_uint64`, hostap's `os_time_t`-adjacent aliases)
  * fell through to `None` and the site was kept as unchecked arithmetic.
  * Task 1057 wires the check through the shared resolve_typedef_chain
- * (task 736) so `sqlite3_uint64` -> `unsigned long long` -> width 64 -> a
+ * so `sqlite3_uint64` -> `unsigned long long` -> width 64 -> a
  * literal `<< 8` is recognised as safe.
  */
 

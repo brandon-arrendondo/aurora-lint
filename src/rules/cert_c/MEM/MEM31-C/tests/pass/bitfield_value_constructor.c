@@ -14,7 +14,7 @@
  * name-shape heuristic, so every one of them was reported as a leak (0/60 TP
  * in task 552's seL4 sample). A local declared with a plain declarator that
  * is never dereferenced, indexed or NULL-checked cannot hold heap memory, so
- * a name-heuristic-only "allocation" stored into it isn't tracked (task 580).
+ * a name-heuristic-only "allocation" stored into it isn't tracked.
  */
 
 typedef unsigned long word_t;

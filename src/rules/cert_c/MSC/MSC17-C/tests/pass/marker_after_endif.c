@@ -1,6 +1,6 @@
 /*
  * Rule: MSC17-C
- * Source: lua lparser.c (task 632)
+ * Source: lua lparser.c
  * Status: PASS - Should NOT trigger MSC17-C violation
  *
  * A genuine fallthrough marker comment can itself sit right after the

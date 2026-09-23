@@ -4,7 +4,7 @@
  * Status: FAIL - Should trigger MEM12-C violation
  *
  * open()/socket() are part of the resource-acquisition set migrated to
- * call_roles::is_resource_acquisition_text (task 499); previously
+ * call_roles::is_resource_acquisition_text; previously
  * untested at the rule level. Modeled on tests/fail/wiki_posix.c's
  * fopen/malloc shape.
  */

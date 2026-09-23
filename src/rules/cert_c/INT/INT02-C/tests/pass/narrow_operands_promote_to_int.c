@@ -1,6 +1,6 @@
 /*
  * Rule: INT02-C
- * Source: regression (task 1186)
+ * Source: regression
  * Status: PASS - Should NOT trigger INT02-C violation
  *
  * Both operands are narrower than int, so both promote to int and the

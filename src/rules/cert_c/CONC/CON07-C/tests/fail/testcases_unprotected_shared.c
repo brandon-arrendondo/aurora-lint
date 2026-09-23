@@ -19,7 +19,7 @@ int unsafe_read(void) {
     return shared_counter;
 }
 
-/* Establish real concurrent-execution context (task 608): the accessing
+/* Establish real concurrent-execution context: the accessing
  * functions must be reachable from a thread-spawn root for CON07-C's
  * reachability gate to still fire on this fixture. */
 void *worker(void *arg) {

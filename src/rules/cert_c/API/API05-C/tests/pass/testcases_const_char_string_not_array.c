@@ -7,7 +7,7 @@
 /*
  * Reason: a NUL-terminated `const char *` string is self-delimiting -- an
  * accompanying size_t param (e.g. a separate max-length limit) is not
- * evidence that the string itself should be a conformant array (task 190).
+ * evidence that the string itself should be a conformant array.
  */
 
 #include <stddef.h>

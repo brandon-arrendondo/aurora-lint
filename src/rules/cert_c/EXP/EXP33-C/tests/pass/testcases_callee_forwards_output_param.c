@@ -7,7 +7,7 @@
  * walk that discharges forwarded-write obligations was never asked about it.
  * Both shapes here are curl's: a bare forward (`my_md5_init`) and a forward
  * whose argument is cast on the way (`randit`), which a bare-identifier match
- * could not see either (task 1027).
+ * could not see either.
  */
 #include <stdio.h>
 

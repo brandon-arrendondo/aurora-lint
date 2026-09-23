@@ -9,7 +9,7 @@
  * "round up to a multiple of 64" idiom -- expressed as a mod-based two-
  * statement computation (`paddedSize = dataSize + K; paddedSize += (64 -
  * paddedSize % 64);`) rather than `match_roundup_formula`'s single-
- * expression div-mul shape (task 448). The added term is always in
+ * expression div-mul shape. The added term is always in
  * `[1, 64]`, so `paddedSize` is always strictly greater than `dataSize`.
  * Also covers `RL_CALLOC(count, sizeof(unsigned char))` being recognized
  * as an element-size-1 allocation, same as a literal `1`.

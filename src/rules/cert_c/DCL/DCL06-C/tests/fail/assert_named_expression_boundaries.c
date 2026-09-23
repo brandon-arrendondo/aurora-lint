@@ -8,7 +8,7 @@
  * Rule: DCL06-C - Use meaningful symbolic constants
  * Status: FAIL
  * Reason: The named-EXPRESSION form of the consistency-assert exemption
- *         (task 1153) holds only while the whole other side is names.
+ *         holds only while the whole other side is names.
  *         A bare literal leaf means substituting a symbolic constant for
  *         the asserted value does NOT make the assertion `X == X` -- the
  *         spelled-out operand is still there -- so the value stays a magic

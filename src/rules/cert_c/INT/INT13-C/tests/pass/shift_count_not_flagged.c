@@ -1,6 +1,6 @@
 /*
  * Rule: INT13-C
- * Source: run-229 audited-residue adjudication (task 754)
+ * Source: run-229 audited-residue adjudication
  * Status: PASS - Should NOT trigger INT13-C violation
  *
  * All three of these are the same FP class: a signed variable used only as

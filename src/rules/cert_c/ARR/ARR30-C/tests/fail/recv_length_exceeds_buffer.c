@@ -9,7 +9,7 @@
  * Status: FAIL
  * Reason: recv()'s own length argument (BUFFER_SIZE + 10) exceeds
  * inputBuffer's actual size (BUFFER_SIZE), so the recv()-return-value
- * bounded-index proof (task 434) must NOT apply here -- recvResult can
+ * bounded-index proof must NOT apply here -- recvResult can
  * legitimately reach a value past the end of inputBuffer, and nothing else
  * guards the index.
  */

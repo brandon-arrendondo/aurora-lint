@@ -6,7 +6,7 @@
  * seL4 spells ordinary accessors with FREE in the name. Nothing is released
  * through an argument that is not a pointer: `cap_get_capFreeIndex` takes a
  * `cap_t` BY VALUE and `OFFSET_TO_FREE_INDEX` an integer counter, and marking
- * either freed made every later read of it a use-after-free (task 1350).
+ * either freed made every later read of it a use-after-free.
  */
 #include <stddef.h>
 

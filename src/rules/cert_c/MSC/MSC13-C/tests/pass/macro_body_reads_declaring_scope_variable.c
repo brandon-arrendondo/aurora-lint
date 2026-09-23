@@ -6,7 +6,7 @@
  * here `IdChar(...)` both writes and reads the caller's `c`, and the name
  * never appears at the call site for an identifier walk to find.
  *
- * Reduced from sqlite src/complete.c (task 756). `IdChar` is defined twice
+ * Reduced from sqlite src/complete.c. `IdChar` is defined twice
  * under mutually exclusive guards and only the second definition mentions
  * `c`, so the check has to consult every preprocessor alternative of a
  * macro name rather than whichever one an expander would have picked.

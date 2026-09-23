@@ -5,7 +5,7 @@
  *
  * credit_frees_params() only recognized a literal `free(param)` call when
  * building a function's own summary, missing a function-like macro that
- * frees its argument (task 1236). deinit_ctx() frees its own parameter
+ * frees its argument. deinit_ctx() frees its own parameter
  * only through SAFE_FREE(), a macro - not literally `free` - so its
  * summary must still show it releases `ctx`, or every caller that
  * allocates and passes it through deinit_ctx() reads as a leak.

@@ -1,6 +1,6 @@
 /*
  * Rule: MEM31-C
- * Source: testcases (task 1339)
+ * Source: testcases
  * Status: FAIL - Should trigger MEM31-C violation
  *
  * Companion to the pass fixture that walks the else arm from the records

@@ -1,7 +1,7 @@
 /*
  * Rule: MEM31-C
  * Source: hostap src/crypto/tls_openssl.c, src/eap_peer/eap_sim.c,
- *         src/drivers/driver_wext.c; mosquitto src/net.c (task 1339)
+ *         src/drivers/driver_wext.c; mosquitto src/net.c
  * Status: PASS - Should NOT trigger MEM31-C violation
  *
  * Four ways a branch's tail leaves the flow without its last statement
