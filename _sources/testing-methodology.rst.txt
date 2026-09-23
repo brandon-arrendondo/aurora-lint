@@ -429,7 +429,7 @@ that repo's README) -- not in a hand-maintained file here
 (``REALWORLD_RESULTS.md``, which carried this role until it was retired
 2026-09-03). Oracle methodology, including the DCL31-C worked example of
 why a per-rule 0.0% can be a corpus artifact rather than a rule defect, is
-in README.md's "Rule-suite coverage" section.
+in `Rule-suite coverage`_ below.
 
 Known Per-Rule Corpus Caveats
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
