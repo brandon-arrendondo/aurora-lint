@@ -96,7 +96,23 @@ running aurora-lint at the pinned tag on the pinned commit; the dataset adds a
 verdict, not new information about where to look.
 
 **Calling something a vulnerability takes more evidence, and that evidence is
-what this ADR guards.** Before we claim a defect or file an issue upstream we
+what this ADR guards — and that evidence has a real track record of changing
+the answer.** A TP that reads as a critical security defect on first pass has
+repeatedly been downgraded or flipped to FP once someone actually did the
+further work: adversarial re-review, tracing whether the flagged value is
+bounded elsewhere in the codebase, or attempting a reproducer. This isn't
+hypothetical caution — it is this project's own recurring experience (e.g.
+task 1438's adversarial pass downgrading rows a first read called confirmed
+defects, and an upstream maintainer characterizing a genuine out-of-bounds
+subscript as a benign consequence once they looked at what was adjacent to
+it). That is a second, independent reason the extended layer stays gated
+until it is done and reviewed: not only can premature severity language leak
+a roadmap to an unpatched issue, our own first-pass severity read is
+frequently wrong until that further work happens. The base verdict does not
+have this problem — "the construct is present, the rule fires here" doesn't
+get revised by adversarial review the way "this is exploitable" does.
+
+Before we claim a defect or file an issue upstream we
 confirm it with dynamic testing (AddressSanitizer / UBSan / valgrind on a
 reproducer) and by reading the path that reaches it. That evidence and its
 write-up (reproducers and trigger inputs, sanitizer or valgrind output,
