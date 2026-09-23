@@ -1760,6 +1760,15 @@ impl BranchState {
         analyzer.realloc_updated = self.realloc_updated.clone();
         analyzer.realloc_invalidated = self.realloc_invalidated.clone();
     }
+
+    /// This path leaves `lv` holding NULL, so nothing it pointed to is
+    /// reachable through it any more.
+    fn forget_freed(&mut self, lv: &LValue) {
+        self.freed_vars.remove(lv);
+        self.freed_under.remove(lv);
+        self.freed_at.remove(lv);
+        self.realloc_invalidated.remove(lv);
+    }
 }
 
 struct MemoryAnalyzer {
@@ -1855,8 +1864,10 @@ struct MemoryAnalyzer {
     /// last: `Some(exits)` for a loop, collecting the state at each `break`
     /// and `continue` that leaves its body, `None` for a `switch`, whose
     /// `break` belongs to the switch and is merged by `merge_switch_arms`.
-    /// Read by `Frame::AfterLoop`.
-    breakables: Vec<Option<Vec<BranchState>>>,
+    /// Read by `Frame::AfterLoop` Each exit records whether it
+    /// was a `continue`, which re-tests the loop's condition before it can
+    /// reach the code after the loop; a `break` does not.
+    breakables: Vec<Option<Vec<(BranchState, bool)>>>,
     /// Known compile-time constant values (project `#define`s and
     /// enumerators plus this file's), for `equality_predicate`.
     macro_constants: const_eval::MacroConstantMap,
@@ -2045,6 +2056,7 @@ impl MemoryAnalyzer {
             /// .
             AfterLoop {
                 body: Option<Node<'a>>,
+                condition: Option<Node<'a>>,
                 pre_state: Box<BranchState>,
             },
         }
@@ -2292,6 +2304,7 @@ impl MemoryAnalyzer {
                         self.breakables.push(Some(Vec::new()));
                         stack.push(Frame::AfterLoop {
                             body: n.child_by_field_name("body"),
+                            condition: n.child_by_field_name("condition"),
                             pre_state: Box::new(BranchState::fork(self)),
                         });
                         push_children(&mut stack, &n, source, &no_skip);
@@ -2410,7 +2423,11 @@ impl MemoryAnalyzer {
                         exit_states,
                     );
                 }
-                Frame::AfterLoop { body, pre_state } => self.finish_loop(body, &pre_state, source),
+                Frame::AfterLoop {
+                    body,
+                    condition,
+                    pre_state,
+                } => self.finish_loop(body, condition, &pre_state, source),
             }
         }
     }
@@ -3192,7 +3209,7 @@ impl MemoryAnalyzer {
             self.breakables.last_mut().and_then(|b| b.as_mut())
         };
         if let Some(exits) = target {
-            exits.push(state);
+            exits.push((state, continuing));
         }
     }
 
@@ -3205,16 +3222,83 @@ impl MemoryAnalyzer {
     /// acl.c ends a `for` body with `sdsfreesplitres(argv, argc); ...;
     /// return 1;` and frees `argv` again right after the loop, on the path
     /// that only the body's `continue`s reach.
-    fn finish_loop(&mut self, body: Option<Node>, pre_state: &BranchState, source: &str) {
+    ///
+    /// Every path but a `break` reaches the code after the loop only by
+    /// failing the loop's condition. When that condition is a non-NULL test
+    /// of one pointer -- `for (; p; p = pNext) { ...; free(p); }` -- those
+    /// paths leave with that pointer NULL, so the last iteration's freed mark
+    /// does not survive on them: sqlite's vdbesort.c stores `p` back into the
+    /// list head after such a loop. A `break` skips the test and can leave
+    /// the pointer freed and non-NULL, so its exits keep the mark.
+    fn finish_loop(
+        &mut self,
+        body: Option<Node>,
+        condition: Option<Node>,
+        pre_state: &BranchState,
+        source: &str,
+    ) {
         let exits = self.breakables.pop().flatten().unwrap_or_default();
         let end_state = BranchState::fork(self);
         let body_reaches_after = body.is_none_or(|b| !self.loop_body_leaves_function(&b, source));
-        let mut live: Vec<&BranchState> = vec![pre_state];
-        live.extend(exits.iter());
+        let mut tested_pre = pre_state.clone();
+        let mut tested_end = end_state;
+        let mut exits = exits;
+        if let Some(lv) = condition.and_then(|c| Self::condition_tests_non_null(&c, source)) {
+            tested_pre.forget_freed(&lv);
+            tested_end.forget_freed(&lv);
+            for (state, continuing) in &mut exits {
+                if *continuing {
+                    state.forget_freed(&lv);
+                }
+            }
+        }
+        let mut live: Vec<&BranchState> = vec![&tested_pre];
+        live.extend(exits.iter().map(|(state, _)| state));
         if body_reaches_after {
-            live.push(&end_state);
+            live.push(&tested_end);
         }
         Self::merge_live_states(self, pre_state, &live);
+    }
+
+    /// The pointer a loop condition proves NULL when it fails: `p`,
+    /// `p != NULL` and `NULL != p` (or `0`/`nullptr`), where `p` is a
+    /// variable or a member path. Anything else -- a dereference, a
+    /// subscript, a conjunction -- proves nothing about one pointer.
+    fn condition_tests_non_null(condition: &Node, source: &str) -> Option<LValue> {
+        fn path(node: &Node, source: &str) -> Option<LValue> {
+            let node = unwrap_parens(node);
+            match node.kind() {
+                "identifier" => lvalue_of(&node, source),
+                "field_expression" => {
+                    path(&node.child_by_field_name("argument")?, source)?;
+                    lvalue_of(&node, source)
+                }
+                _ => None,
+            }
+        }
+        fn is_null(node: &Node, source: &str) -> bool {
+            matches!(
+                get_node_text(&unwrap_parens(node), source),
+                "NULL" | "0" | "nullptr"
+            )
+        }
+        let cond = unwrap_parens(condition);
+        if cond.kind() != "binary_expression" {
+            return path(&cond, source);
+        }
+        let op = cond.child_by_field_name("operator")?;
+        if get_node_text(&op, source) != "!=" {
+            return None;
+        }
+        let left = cond.child_by_field_name("left")?;
+        let right = cond.child_by_field_name("right")?;
+        if is_null(&right, source) {
+            path(&left, source)
+        } else if is_null(&left, source) {
+            path(&right, source)
+        } else {
+            None
+        }
     }
 
     /// Whether a loop body's last statement leaves the function -- returns,
