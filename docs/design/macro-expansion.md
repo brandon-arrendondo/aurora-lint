@@ -11,10 +11,10 @@ engine" row of the disposition table for current status. Do not
 reimplement macro-invocation detection with a name heuristic (e.g.
 matching `*_free`/`*_FREE` by string) without first checking whether
 `context.function_macros` + the helpers above already solve it
-name-independently — this has been done by mistake at least once (task 2,
-MEM31-C, v0.4.117-119, before the engine was wired in at v0.4.120).
+name-independently — this has been done by mistake at least once (an
+early MEM31-C macro fix, v0.4.117-119, before the engine was wired in at v0.4.120).
 **Driver:** Recurring, codebase-independent false positives rooted in aurora-lint's
-inability to see through C macros. Tracked from task 180 (EXP33/EXP34 macro
+inability to see through C macros. Tracked from Phase 1 (EXP33/EXP34 macro
 opacity), but the problem is broader than two rules.
 
 ---
@@ -142,7 +142,7 @@ A solution must be evaluated against the *whole* taxonomy, not just FOREACH:
 ## 5. Approaches
 
 ### A. Per-macro semantic allowlist (status quo, extended)
-Hardcode each external macro's dataflow effect (what task 180 was about to do:
+Hardcode each external macro's dataflow effect (what Phase 1 was about to do:
 add utlist/uthash to `FOR_EACH_MACROS` + mark the right arg indices).
 
 - **Pros:** trivial, surgical, no architecture change, immediate FP win on the
@@ -217,7 +217,7 @@ recall-gated independently:
   utlist/uthash as vendored in real projects. Decide the splice representation
   (re-parsed sub-tree vs. synthetic dataflow events). Output: a go/no-go note
   appended here.
-- **Phase 1 — Shared macro-semantics registry (replaces task 180 hack).**
+- **Phase 1 — Shared macro-semantics registry (replaces the earlier hack).**
   One module modeling iterator/find/output macros (utlist + uthash + BSD queue)
   as dataflow effects; consumed by init-state (EXP33) and null-state (EXP34).
   Retire `FOR_EACH_MACROS`'s first-arg-only logic. *This alone is projected to
@@ -235,7 +235,7 @@ recall-gated independently:
   lookup, not a re-walk. NB: adding a `ProjectContext` field changes the bincode
   layout of aurora-lint's `--save-prescan`/`--load-prescan` cache format (see
   `src/analyze/context.rs`); bump a cache-format version if that CLI-level cache
-  is ever used. The benchmark runners do not use it (task 209: measured ~10%
+  is ever used. The benchmark runners do not use it (measured ~10%
   wall-time savings on sqlite, not worth the staleness risk — every benchmark
   run is a fresh in-memory prescan). The registry (Phase 1) remains the
   fallback for macros with **no** collected definition (system headers like
@@ -248,7 +248,7 @@ recall-gated independently:
   default.
 
 Phases 1→3 each ship behind a Juliet-recall gate and a real-world FP-delta check
-(sqlite + mosquitto). Phase 1 unblocks GATE task 171 on the macro-opacity front.
+(sqlite + mosquitto). Phase 1 unblocks the macro-opacity gate.
 
 ---
 
@@ -275,7 +275,7 @@ Phases 1→3 each ship behind a Juliet-recall gate and a real-world FP-delta che
 
 ---
 
-## 8a. Phase 0 spike results (2026-06-16, task 184) — GO
+## 8a. Phase 0 spike results (2026-06-16) — GO
 
 Verified against aurora-lint's **exact grammar** (tree-sitter-c 0.21) via
 `examples/dump_ast.rs` (a kept dev tool: `echo CODE | cargo run --example dump_ast`).
@@ -320,7 +320,7 @@ expansion for non-control-flow function-like macros.
 (mark outputs Initialized) and null-state (mark iterator/out NotNull within the
 following block).
 
-## 8b. Phase 1 results (2026-06-16, task 180) — DONE
+## 8b. Phase 1 results (2026-06-16) — DONE
 
 Shipped `src/analyze/macro_semantics.rs`: a positional registry (iterator table:
 utlist/uthash `*_FOREACH[_SAFE]`, `HASH_ITER`, BSD `<sys/queue.h>`) plus a
@@ -363,14 +363,14 @@ is fragile and prefix/structural rules generalize better (the Phase 2 lesson).
   only shows when the macro is opaque)? Must verify none before Phase 2.
 - Interaction with conditional compilation (§3.7): which `#if` branch is "live"
   when a macro has multiple definitions? Out of scope for Phases 1–3. Scoped
-  and measured in `docs/design/multi-configuration-scanning.md` (task 1422,
-  2026-09-22): still open as *code*, but no longer open as a *design* question
+  and measured in `docs/design/multi-configuration-scanning.md`
+  (2026-09-22): still open as *code*, but no longer open as a *design* question
   — that note recommends a declared macro-state table plus alternative
   retention over configuration enumeration, and names the cheap follow-ups.
 
 ---
 
-## 10. Phase 3 stock-take (task 186, 2026-06-17)
+## 10. Phase 3 stock-take (2026-06-17)
 
 The §1 / §5A figure of **"51 of 290 rule files (~18%) carry bespoke macro
 logic"** is a *pre-Phase-1* count. Phases 1 and 2c already
@@ -386,14 +386,14 @@ shared infra, legitimately definition-side, or incidental AST traversal.
 
 | Category | Rules | Disposition | Why |
 |---|---|---|---|
-| **Already on the engine** (`macro_expand` / `macro_semantics`) | EXP33, EXP34, MEM30, DCL31, MEM31, MSC13 | done | Migrated in Phase 1 / 2c. MEM31-C added 2026-07-22 (task 2, v0.4.120): `frees_param_fields` in `function_summary.rs` now checks `macro_nulls_param_indices` before falling back to the `is_deallocation_call_name` name heuristic, so a macro-wrapped free (e.g. `mosquitto_FREE`, `Curl_safefree`) is credited by its actual free+null body shape, not by name pattern-matching. 2026-09-15 (aurora_lint task 1202): the walk itself now reads a freeing macro invoked directly in the analyzed function through `macro_param_indices_released_by` (`process_freeing_macro`, and the goto-label prescan), with MEM31-C's own direct-call classifier as the predicate; until then `Curl_safefree(p)` in the function body was not a free at all, since it is neither `free`, a summarized callee, nor name-shaped. |
+| **Already on the engine** (`macro_expand` / `macro_semantics`) | EXP33, EXP34, MEM30, DCL31, MEM31, MSC13 | done | Migrated in Phase 1 / 2c. MEM31-C added 2026-07-22 (v0.4.120): `frees_param_fields` in `function_summary.rs` now checks `macro_nulls_param_indices` before falling back to the `is_deallocation_call_name` name heuristic, so a macro-wrapped free (e.g. `mosquitto_FREE`, `Curl_safefree`) is credited by its actual free+null body shape, not by name pattern-matching. 2026-09-15: the walk itself now reads a freeing macro invoked directly in the analyzed function through `macro_param_indices_released_by` (`process_freeing_macro`, and the goto-label prescan), with MEM31-C's own direct-call classifier as the predicate; until then `Curl_safefree(p)` in the function body was not a free at all, since it is neither `free`, a summarized callee, nor name-shaped. |
 | **Engine duplicate — MIGRATE** | **ARR30** | **migrate** | Local `extract_function_macros` + dead-code `FunctionMacro` struct = a single-file reimplementation of `context.function_macros` (`macro_expand::FunctionMacro`). Its `check_macro_invocation` is *live* (~60 manual-review flags across the curl audit), so this is also a precision lever — cross-file context exposes header macros → must gate the flag count. |
 | **`const_eval` consumers — DRY candidate** | INT30, INT32, INT33, INT34, FIO30, FLP03, STR02, ERR33, ENV03, ENV33, DCL07 | optional DRY | Already consume the shared `const_eval::collect_macro_constants` / `collect_macro_aliases` + `context.macro_constants` / `macro_aliases`. *Not opaque-macro debt.* They repeat a "collect-per-file + merge cross-file context, per-file wins" idiom (~10×) that could fold into one `const_eval` helper for consistency — mechanical, low-risk, modest payoff. |
 | **Definition-side hygiene / naming / declaration rules — KEEP** | PRE00–13, PRE30–32, MSC38, MSC41, API10, API03, DCL37, EXP44, DCL19, DCL15 | keep | Audit macro *definitions* as written (reserved-name `#undef`/`#define`, `_Generic`, `static`-in-macro-prefix, multiple-eval hygiene). Per §3.8 these need the raw view; expansion would defeat their purpose. |
 | **Incidental `preproc_` AST traversal — KEEP** | MSC37, MSC07, DCL40, DCL30, SIG31, ARR01, ARR36, API00 | keep | Only skip/recurse `preproc_*` nodes during a normal AST walk (e.g. `kind().starts_with("preproc_")`). No macro semantics. |
-| **Shared `is_likely_macro_constant` name heuristic — KEEP** | MEM05, ARR32, MEM33, DCL03 | keep | Uppercase-name guess ("is this an ALL_CAPS macro constant?"), not value extraction; does not duplicate `const_eval` (which resolves values). Text-heuristic family — see task 197, not the expansion engine. **Deduped in task 603** (v0.4.288): all four now call `ast_utils::is_likely_macro_constant`, previously reimplemented per-rule with divergent edge cases. EXP08-C's copy was unreachable dead code and was deleted (see task 618 for whether it should be made live). |
+| **Shared `is_likely_macro_constant` name heuristic — KEEP** | MEM05, ARR32, MEM33, DCL03 | keep | Uppercase-name guess ("is this an ALL_CAPS macro constant?"), not value extraction; does not duplicate `const_eval` (which resolves values). Text-heuristic family, not the expansion engine. **Deduped in an earlier pass** (v0.4.288): all four now call `ast_utils::is_likely_macro_constant`, previously reimplemented per-rule with divergent edge cases. EXP08-C's copy was unreachable dead code and was deleted (whether it should be made live is left for a follow-up). |
 
-MSC13-C moved from "incidental traversal" to "on the engine" in task 756. A
+MSC13-C moved from "incidental traversal" to "on the engine" in a later migration. A
 liveness rule is a consumer nobody anticipated here: it does not need to
 *expand* an invocation, only to ask whether some definition of the invoked
 macro names a free identifier, because a free identifier in a replacement
@@ -418,13 +418,13 @@ declaration is usually not the first (sqlite `complete.c`'s `IdChar`).
    surface across INT/FIO/STR/ERR/ENV. Deferrable to its own task.
 3. **Do NOT touch** the keep categories.
 
-This re-scopes task 186 from "migrate ~51 files" to "migrate ARR30 + optional
+This re-scopes Phase 3 from "migrate ~51 files" to "migrate ARR30 + optional
 const_eval DRY"; the bulk of the original estimate was already retired by
 Phases 1/2c. Recall-gate per §8.
 
 ---
 
-## 11. Phase 4 as built (task 187, 2026-08-27)
+## 11. Phase 4 as built (2026-08-27)
 
 **Phase 4 shipped as compile-database *ingestion*, not as approach C.** §5(C)
 scoped it as "shell out to `cpp`/`clang -E`, parse the expanded TU, back-map via
@@ -545,10 +545,10 @@ reachable), ARR30-C +8 and INT32-C +4 (newly foldable constants). Not one
 detected true positive moved.
 
 **The first attempt at this measurement was wrong, and instructively so.** Runs
-#222/#223, taken before task 690 was fixed, showed −362 findings and looked
+#222/#223, taken before a related bug was fixed, showed −362 findings and looked
 like a large FP win. It was not: 374 of it was DCL31-C being *silently
 disabled*, because adding `/usr/include` to the search path tripped the
-unresolved-project-header gate (see task 690 —
+unresolved-project-header gate --
 `is_missing_project_header` counted a system directory as evidence about the
 project). The rule was reporting nothing at all, including genuine violations.
 Once that was fixed, the same flag's real effect is −10.
@@ -562,7 +562,7 @@ whole line of work as *"recurring, codebase-independent false positives rooted
 in aurora-lint's inability to see through C macros"*, and that framing was right about
 the FP class — but the reachability half of it is done and it bought almost
 nothing measurable here. What did move real-world numbers was per-rule
-structural work (task 553's MSC17-C fix alone: −81% of that rule's findings).
+structural work (an MSC17-C fix alone: −81% of that rule's findings).
 
 Two honest reasons the payoff is small, both worth knowing before anyone
 re-opens this:
@@ -616,7 +616,7 @@ and got two things wrong as a result):
 
 Net over the labeled subset: **−31 FP, +14 FP, +1 TP** — a net −17 false
 positives and one newly-detected real bug (`mosquitto lib/tls_mosq.c:53`,
-labeled TP by `task-644-full-reaudit`). The flag is therefore a small
+labeled TP by a full re-audit pass). The flag is therefore a small
 *improvement* in both directions rather than the FP-only wash the first pass
 reported; it is still far too small to justify running the corpus with the flag
 by default.
@@ -683,7 +683,7 @@ not to read a multi-arch project's compile-DB delta as a straight improvement.
 
 ---
 
-## 12. Surfacing the gaps (task 1180, 2026-09-15)
+## 12. Surfacing the gaps (2026-09-15)
 
 External feedback: a user integrating aurora-lint into a strict CI pipeline had no
 way to know *where* the engine was silently blind — a variadic macro skipped,
