@@ -1,6 +1,6 @@
 # Scoping: Project-Relevance Gating
 
-**Status:** v1 IMPLEMENTED (2026-07-08, v0.4.86); v2 (task 300, 2026-08-19)
+**Status:** v1 IMPLEMENTED (2026-07-08, v0.4.86); v2 (2026-08-19)
 did the C11/Annex-K per-rule audit §5 called for and DECIDED AGAINST
 auto-gating: none of the 14 originally-tangled rules qualified for a
 whole-rule disable (6 have C11 primitives only as one of several
@@ -11,11 +11,11 @@ mention was in remediation-suggestion text or an unrelated gating axis,
 not detection logic — see `C11_TANGLED_RULE_IDS`'s doc comment in
 `src/analyze/relevance.rs` for the full per-rule breakdown).
 `detect_min_c_standard`'s coverage gaps flagged below (header-only C11
-evidence, Annex-K call detection) WERE closed in task 300 as reporting
-signals for the remaining 8 genuinely-tangled rules. **Check
-`todo-sqlite-cli show 300`/`216` for the latest status, not this header.**
+evidence, Annex-K call detection) WERE closed as reporting
+signals for the remaining 8 genuinely-tangled rules. **Check the current
+task status rather than trusting this header.**
 User-facing docs: `docs/cli-usage.rst` ("Project-Relevance Detection").
-**Driver:** Task 151 established that per-project rule applicability is
+**Driver:** An earlier scoping pass established that per-project rule applicability is
 currently curated *by hand* in `conf/realworld/<project>-rules.toml` — each
 file hand-disables categorically-inapplicable rule classes and documents why
 in `[metadata].description` prose. That works for 7 benchmark codebases we
@@ -84,7 +84,7 @@ run": `effective_manifest = gate(loaded_manifest, project_profile)`.
 |---|---|---|---|
 | Threading/concurrency | Any `#include <pthread.h>\|<threads.h>`, or identifier match `pthread_*\|mtx_*\|cnd_*\|thrd_*\|atomic_*\|_Atomic` anywhere in the corpus (including headers pulled in via `-I`) | CON0x, CON3x (23 rules) | High — POSIX threads and C11 threads are the only two APIs CERT-C's CON rules target; absence of both across the *whole* scanned corpus is a strong negative signal |
 | Windows platform | Any `#include <windows.h>` (and common variants `winsock2.h`, `windef.h`), or identifiers `Win32`, `HANDLE`, `LPCSTR` at file scope | WIN00–04-C, WIN30-C (6 rules) | High — same logic, narrower API surface |
-| C11/Annex-K availability | `lang_parsing_substrate::detect_min_c_standard` (added v0.3.0, task 22 upstream) aggregated as a project-wide max across every scanned file's AST — see §3.1 — **plus** the existing include/identifier scan for signals the substrate deliberately doesn't cover (`<threads.h>`/`<stdatomic.h>` includes with no C11 *syntax* yet used, and Annex-K `*_s(` calls, which the substrate excludes because `_Bool`/`_Complex`/`typeof`/`_BitInt` aren't distinctly tokenized and Annex-K functions aren't a syntax construct at all) | *Sub-behavior* inside CON02/03/07/31/32/33-C, ENV31-C, API04/07-C, PRE04/30/31-C, EXP44-C, FIO11-C — **not a whole-rule disable** | Now High for the syntax-marker half (upstream, tested, syntax-only — no more hand-rolled `_Generic(` text matching); still Medium overall because the include/Annex-K half stays a bespoke scan and because gating is finer-grained than a whole-rule toggle (see open question in §5) |
+| C11/Annex-K availability | `lang_parsing_substrate::detect_min_c_standard` (added v0.3.0, upstream) aggregated as a project-wide max across every scanned file's AST — see §3.1 — **plus** the existing include/identifier scan for signals the substrate deliberately doesn't cover (`<threads.h>`/`<stdatomic.h>` includes with no C11 *syntax* yet used, and Annex-K `*_s(` calls, which the substrate excludes because `_Bool`/`_Complex`/`typeof`/`_BitInt` aren't distinctly tokenized and Annex-K functions aren't a syntax construct at all) | *Sub-behavior* inside CON02/03/07/31/32/33-C, ENV31-C, API04/07-C, PRE04/30/31-C, EXP44-C, FIO11-C — **not a whole-rule disable** | Now High for the syntax-marker half (upstream, tested, syntax-only — no more hand-rolled `_Generic(` text matching); still Medium overall because the include/Annex-K half stays a bespoke scan and because gating is finer-grained than a whole-rule toggle (see open question in §5) |
 
 ### 3.1 Using `detect_min_c_standard`
 
@@ -198,11 +198,11 @@ rule set that silently changes as the codebase evolves.
   v1 as a reporting-only signal — it's now cheap enough (one upstream call
   per already-parsed file) that there's no reason to wait for the per-rule
   audit to at least show the evidence.
-- **Ties to task 194 (C99 corpus validation)**: the "strict C99 target"
-  signal doubles as the applicability check that task 194's synthetic
+- **Ties to a related C99-conformance-validation effort**: the "strict C99
+  target" signal doubles as the applicability check that effort's synthetic
   conformance corpus would need anyway. `detect_min_c_standard` now defines
   "C11 construct present" precisely (and upstream-tested) for the syntax
-  half, so task 194 and this task can share that definition directly instead
+  half, so that effort and this one can share that definition directly instead
   of each inventing its own marker list — only the include/Annex-K half
   still needs a bespoke decision.
 - **Interaction with existing per-project manifests**: `conf/realworld/*.toml`
@@ -245,5 +245,5 @@ rule set that silently changes as the codebase evolves.
    `compile_commands.json`/build-flag signals, any change to the existing
    `conf/realworld/*-rules.toml` files.
 
-Once this lands, task 216 stays open for a v2 that revisits C11/Annex-K after
-task 194 defines the C99-conformance detection list precisely.
+Once this lands, a v2 follow-up stays open to revisit C11/Annex-K after
+the C99-conformance-validation effort defines its detection list precisely.
