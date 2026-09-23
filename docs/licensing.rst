@@ -152,9 +152,11 @@ at any commit rather than trusted from prose:
    # rule manifests carrying CERT title/description text
    find src/rules -name '*-C.toml' | wc -l
 
-As of 2026-09-05: 313 rule manifests, every one carrying a CERT title and
-description, 310 citing their source wiki page, 33 embedding a CERT code
-example; and 1,337 fixtures declaring wiki provenance out of 3,577.
+These commands measure the checkout you run them in, which is why their
+output is not copied here: every rule manifest carries a CERT title and
+description, nearly all cite their source wiki page, a minority embed a CERT
+code example, and roughly a third of the fixtures declare wiki provenance
+(``fixture_provenance.py --by-rule --json`` gives the split per rule).
 
 ``fixture_provenance.py`` reports what each header *declares*. The independent
 check on that claim is ``scripts/audit_wiki_fixture_staleness.py``, which
