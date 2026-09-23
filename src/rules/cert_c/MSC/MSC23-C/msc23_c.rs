@@ -12,7 +12,7 @@
 //! from the file's actual byte size.
 //!
 //! Flagging every text-mode `fopen()`/`freopen()` call was tried and
-//! reverted (task 347): text mode is the overwhelmingly common, correct
+//! reverted: text mode is the overwhelmingly common, correct
 //! idiom on POSIX targets (grepping sqlite/mosquitto/curl found 160+ such
 //! calls with no corresponding real defect), so a blanket check is a major
 //! false-positive source for a rule with no CWE and no benchmark presence
@@ -25,7 +25,7 @@
 //! The read/counter co-occurrence check was initially looser (any
 //! stream-read call anywhere in a loop, alongside any increment of any
 //! other variable anywhere in that loop), but spot-checking the pinned
-//! real-world corpora (task 347/419) turned up several false positives
+//! real-world corpora turned up several false positives
 //! that shape doesn't distinguish from a genuine byte counter:
 //!   - `fgets()`-based line readers where an unrelated pointer walk in a
 //!     *nested* loop happens to use `++` (sqlite's `sqllogFindFile`,

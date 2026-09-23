@@ -181,7 +181,7 @@ impl Str31C {
     ///
     /// `use_node`, when supplied, is a node at the point of use (typically the
     /// copy call's argument) in the SAME function as `fn_range` — it lets the
-    /// shared AST array-size resolver (task 504) walk that function's block
+    /// shared AST array-size resolver walk that function's block
     /// scopes to find `var_name`'s fixed-array declaration, in preference to
     /// the text-regex fallback below. Callers that only have a *different*
     /// function's range (the relay/global-buffer lookups) pass `None`, since
@@ -314,7 +314,7 @@ impl Str31C {
     /// `X`/`XBuffer`/`XGoodBuffer`/`XBadBuffer` naming convention makes this
     /// collision common. That falsely attributed another variable's
     /// allocation to `data`, masking real overflows reached only through
-    /// `find_buffer_size`'s alias-chasing paths (task 203).
+    /// `find_buffer_size`'s alias-chasing paths.
     fn line_assigns_to(line: &str, var_name: &str) -> bool {
         let pattern = format!(r"\b{}\b\s*=[^=]", regex::escape(var_name));
         regex::Regex::new(&pattern)
@@ -325,7 +325,7 @@ impl Str31C {
     /// Look for malloc/calloc assignments with specific numeric sizes.
     /// Handles casts (`data = (char *)malloc(N*sizeof(char))`), parenthesized
     /// arithmetic (`malloc((N+M)*sizeof(type))`), plain `malloc(N)`, and a
-    /// bare single-element `malloc(sizeof(type))` (task 515) resolved via
+    /// bare single-element `malloc(sizeof(type))` resolved via
     /// [`buffer_size::extract_sizeof_value`] rather than a fresh type-size
     /// table.
     fn find_fixed_alloc_size(
@@ -544,7 +544,7 @@ impl Str31C {
     /// [`Self::find_global_buffer_size`], which locates the range of a
     /// DIFFERENT function than the one performing the copy).
     ///
-    /// Delegates to [`buffer_size::resolve_bare_alias_in_range`] (task 503):
+    /// Delegates to [`buffer_size::resolve_bare_alias_in_range`]:
     /// this used to be an independent, near-identical regex re-implementation
     /// of that shared helper.
     fn resolve_pointer_alias_in_range(
@@ -637,7 +637,7 @@ impl Str31C {
     /// a different file (Juliet variant 22's sink/source file split), falls
     /// back to the cross-file `produces_param_buffer_size` prescan summary.
     ///
-    /// The same-file check must run first and is NOT optional (task 610):
+    /// The same-file check must run first and is NOT optional:
     /// `produces_param_buffer_size` is a whole-project prescan summary keyed
     /// only by function name (`ProjectContext::function_summaries`), with no
     /// file/translation-unit scoping. Static helper functions that share a
@@ -696,7 +696,7 @@ impl Str31C {
 
         // Callee not defined in this file (Juliet variant 22's sink/source
         // file split) — consult the cross-file prescan summary of what the
-        // callee itself produces for that parameter (task 506).
+        // callee itself produces for that parameter.
         self.produces_param_buffer_size
             .borrow()
             .get(&callee_name)?
@@ -741,7 +741,7 @@ impl Str31C {
     /// Every `global_name = target;` (optionally through a single-level
     /// parenthesized cast: `global_name = (Type *)target;`) assignment
     /// anywhere in the file, as the RHS identifier text paired with the
-    /// assignment's 0-indexed row. AST-based replacement (task 507) for a
+    /// assignment's 0-indexed row. AST-based replacement for a
     /// former line-regex scan: walking `assignment_expression` nodes and
     /// checking the `left` field is itself an `identifier` matching
     /// `global_name` exactly means a struct/union field write that merely

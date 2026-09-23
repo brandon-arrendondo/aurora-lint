@@ -184,7 +184,7 @@ impl Str34C {
     /// one level of indirection -- the only depth at which a single
     /// `*name`/`name[i]` dereference actually yields a scalar `char`. At
     /// depth > 1 (`char **`, `char ***`, ...) the same syntax yields another
-    /// pointer, not a char (task 430).
+    /// pointer, not a char.
     fn is_single_indirection_char(
         &self,
         char_vars: &HashMap<String, (usize, bool, usize)>,
@@ -198,7 +198,7 @@ impl Str34C {
     /// A single `*`/`[]` on the tracked variable only reaches a scalar
     /// `char` when depth is exactly 1 -- at depth > 1 it yields another
     /// pointer, so treating it as a char-widening site misclassifies e.g.
-    /// `char **`/`char ***` as plain `char` (task 430).
+    /// `char **`/`char ***` as plain `char`.
     fn declarator_depth(&self, node: &Node) -> usize {
         match node.kind() {
             "pointer_declarator" | "array_declarator" => {
@@ -421,7 +421,7 @@ impl Str34C {
                         // For `*ptr = value`, this pointer_expression is the
                         // assignment's write *target* -- the char byte is being
                         // written, not read and widened, so STR34-C's
-                        // sign-extension-on-read premise doesn't apply (task 574).
+                        // sign-extension-on-read premise doesn't apply.
                         let is_assignment_write_target = parent.kind() == "assignment_expression"
                             && parent
                                 .child_by_field_name("left")

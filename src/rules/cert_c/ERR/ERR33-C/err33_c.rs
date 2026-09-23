@@ -358,7 +358,7 @@ impl Err33C {
                         // `if (!(p = malloc(n)))`, `while ((c = fgetc(f)) != EOF)` -- is
                         // checked right there. The forward search below cannot see it:
                         // it starts at the statement AFTER the assignment, and the
-                        // enclosing `if` starts before it (task 1373). The strtol family
+                        // enclosing `if` starts before it. The strtol family
                         // is held to the same bar as the forward search applies to it:
                         // its error signal is errno/endptr, which a comparison of the
                         // value alone (`(n = strtoul(s, NULL, 8)) > 0777`) does not read.

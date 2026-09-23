@@ -22,11 +22,11 @@ pub struct Arr36C {
     /// `callee name -> argument-position pairs some call site ANYWHERE in the
     /// pre-scanned project proves denote two different objects`, from the
     /// prescan. Empty without `-d`, which is what the file-local
-    /// `CallSiteBases` pass still covers (task 936).
+    /// `CallSiteBases` pass still covers.
     project_call_sites: RefCell<HashMap<String, HashSet<(usize, usize)>>>,
     /// `typedef struct Tag Alias;` from the prescan, `Alias -> Tag`. Without
     /// it a member reached through the alias does not resolve and falls back
-    /// to naming storage (task 963).
+    /// to naming storage.
     struct_typedef_aliases: RefCell<Arc<HashMap<String, String>>>,
 }
 
@@ -106,7 +106,7 @@ impl Arr36C {
                 // Member types FIRST: `collect_declarations` resolves a field
                 // path through its root only when the path holds no pointer
                 // member, so the answer has to be in the frame before the
-                // first declaration is read (task 993).
+                // first declaration is read.
                 analyzer.collect_pointer_members(func, source, &field_types);
                 analyzer.collect_local_types(func, source);
                 analyzer.collect_declarations(func, source);
@@ -274,7 +274,7 @@ struct FrameContext<'a> {
     objects: &'a ObjectFrame,
     call_sites: &'a CallSiteBases,
     /// The same predicate over every pre-scanned translation unit, so a
-    /// callee whose callers all live elsewhere is still decided (task 936).
+    /// callee whose callers all live elsewhere is still decided.
     project_call_sites: &'a HashMap<String, HashSet<(usize, usize)>>,
 }
 
@@ -291,17 +291,17 @@ impl FrameContext<'_> {
     /// the fact lives in the caller. So the default is inverted here: two
     /// parameters are taken to share an object unless a call site passes two
     /// provably distinct objects -- in this file, or anywhere the prescan
-    /// reached (tasks 753 and 936).
+    /// reached.
     ///
-    /// A pointer-typed struct member is the same thing one level over
-    /// (task 935): `pOut->z` and `pC->aRow` are two different paths, and what
+    /// A pointer-typed struct member is the same thing one level over:
+    /// `pOut->z` and `pC->aRow` are two different paths, and what
     /// they point AT is exactly as unknowable here as a parameter's target.
     /// An ARRAY-typed member is not -- `u.int_array` really is its own
     /// object, which is what ARR36-C-EX1 turns on -- so the two are told
     /// apart by the member's declared type, not by the shape of the path.
     ///
     /// An untracked pointer variable is the third instance of the same shape
-    /// (task 962). `extract_array_base` returns the RAW NAME for an
+    /// . `extract_array_base` returns the RAW NAME for an
     /// identifier it has no base for, so `end = next` over a bare
     /// `const u8 *next;` records `next` as a base and it then compares as
     /// though it named storage -- the one case the analyzer explicitly knows
@@ -370,7 +370,7 @@ impl FrameContext<'_> {
 /// only frame `check()` has to itself. It is file-local by construction; the
 /// prescan runs the same predicate over the whole project and delivers it as
 /// `Arr36C::project_call_sites`, so a callee whose callers all live in other
-/// translation units is covered there and only there (task 936).
+/// translation units is covered there and only there.
 #[derive(Default)]
 struct CallSiteBases {
     per_callee: HashMap<String, HashSet<(usize, usize)>>,
@@ -473,7 +473,7 @@ fn parameter_indices(func: &Node, source: &str) -> HashMap<String, usize> {
 /// decided what every operand meant, including operands written textually
 /// ABOVE it. `pos = rbuf;` at the bottom of a function re-based the
 /// `pos - peer->rsnie_i` fifty lines higher, so one object read as two
-/// (task 1010).
+/// .
 ///
 /// So a base is recorded WITH the byte offset of the declaration or
 /// assignment that established it, and a query at byte offset P answers with
@@ -520,7 +520,7 @@ impl PointerBases {
     /// per arm has a single timeline interleaving two lifetimes that never
     /// occur together -- hostap's `wpa_driver_ndis_get_names` declares `pos`
     /// in each arm, and the `#ifdef` arm's allocation was answering the
-    /// `#else` arm's `pos - names` (task 1048).
+    /// `#else` arm's `pos - names`.
     fn at(&self, name: &str, pos: usize) -> Option<&String> {
         let entries = self.by_name.get(name)?;
         let above = entries.partition_point(|(offset, _)| *offset <= pos);
@@ -541,7 +541,7 @@ struct PointerAnalyzer {
     // carry: it records only names declared as a POINTER or an ARRAY, so
     // "absent from it" spans an integer local, a typedef array and a name the
     // frame never saw at all. Reading the declared type separates the first
-    // from the other two (task 1049).
+    // from the other two.
     local_types: HashMap<String, String>,
     // Which names in scope denote storage, which merely hold a pointer, and
     // which field paths are pointer-typed. `variable_arrays` answers "which
@@ -580,7 +580,7 @@ impl PointerAnalyzer {
     /// -- `(T *) (behind_tag + 8)` and `(T *) behind_tag + 8` -- and it is the
     /// cast, not the name, that makes the result a pointer. Only the ARITHMETIC
     /// operand is read this way; `&count` never reaches here, so the address of
-    /// a non-pointer scalar keeps naming an object (task 962).
+    /// a non-pointer scalar keeps naming an object.
     ///
     /// Positive-only, and deliberately so: a name with no declaration in this
     /// frame -- an extern, a global -- answers `false` and keeps the reading it
@@ -663,7 +663,7 @@ impl PointerAnalyzer {
     /// That is right for an ARRAY member, which is storage of its own
     /// (ARR36-C-EX1), and wrong for a pointer member, whose target this frame
     /// cannot name any better than it can name a pointer parameter's
-    /// (task 935). The member's declared type is what separates the two, so
+    /// . The member's declared type is what separates the two, so
     /// it is read rather than guessed at from the path.
     ///
     /// A path whose type does not resolve -- no `-d`, and no declaration in
@@ -769,7 +769,7 @@ impl PointerAnalyzer {
                         // `startAngle = endAngle; endAngle = tmp;` over three
                         // floats -- puts both names in `variable_arrays`, and the
                         // subtraction below them is then reported as pointer
-                        // subtraction between different arrays (task 769).
+                        // subtraction between different arrays.
                         if !self.objects.pointer_vars.contains(&var_name) {
                             continue;
                         }
@@ -777,7 +777,7 @@ impl PointerAnalyzer {
                         if !array_base.is_empty() {
                             // The assignment site, so the base takes effect
                             // below this statement and no operand above it
-                            // is re-based (task 1010).
+                            // is re-based.
                             self.variable_arrays
                                 .record(var_name, left.start_byte(), array_base);
                         }
@@ -798,7 +798,7 @@ impl PointerAnalyzer {
     /// walks one array twice rather than spanning two. The member really is
     /// storage -- a flexible array member, which is why 935's
     /// pointer-vs-array member test correctly leaves it naming storage -- but
-    /// it is storage inside the array the other operand walks (task 993).
+    /// it is storage inside the array the other operand walks.
     ///
     /// Only a POSITIVE fact collapses a path. A path rooted at a plain struct
     /// variable is left alone, because the frame never learned that struct
@@ -808,7 +808,7 @@ impl PointerAnalyzer {
     /// is not in fact inside the root:
     ///
     /// - A POINTER member, at the end of the path or anywhere along it. Where
-    ///   the member points is unknowable here (task 935), and the root says
+    ///   the member points is unknowable here, and the root says
     ///   nothing about it: the caller of `row_before_out(&m, &cur)` passes two
     ///   distinct structs, which is not evidence that `pOut->z` and
     ///   `pC->aRow` are two arrays. Resolving those to their roots would hand
@@ -836,7 +836,7 @@ impl PointerAnalyzer {
                     }
                     // An UNTRACKED pointer root still names the object the
                     // path lives in, because `extract_array_base` hands its
-                    // raw name back as a base (task 962). Leaving the path
+                    // raw name back as a base. Leaving the path
                     // whole here spells one object two ways -- hostap's
                     // `ml_end = ml + n` records `ml` while
                     // `pos = common_info->variable` records `ml->variable`,
@@ -846,7 +846,7 @@ impl PointerAnalyzer {
                     //
                     // A plain struct variable is deliberately NOT included:
                     // the frame knows that object and its layout, so
-                    // `o.in1.arr` and `o.in2.arr` stay two arrays (task 993).
+                    // `o.in1.arr` and `o.in2.arr` stay two arrays.
                     if self.objects.pointer_vars.contains(&name)
                         && !self.objects.array_objects.contains(&name)
                     {
@@ -872,7 +872,7 @@ impl PointerAnalyzer {
     /// `field_path_root_base` answers a different question -- "which tracked
     /// array does this path live inside" -- and deliberately answers nothing
     /// for a path rooted at a plain struct variable, so that `o.in1.arr` and
-    /// `o.in2.arr` stay two arrays (task 993). Taking an ADDRESS is where the
+    /// `o.in2.arr` stay two arrays. Taking an ADDRESS is where the
     /// containing object is the right answer: `&iwe_buf.u.data.length` and
     /// `&iwe_buf` are a member and the object holding it, which ARR36-C-EX1
     /// treats as one object, and which is what the old spelling meant by
@@ -883,7 +883,7 @@ impl PointerAnalyzer {
     ///
     /// A pointer member anywhere on the path stops the walk for the reason it
     /// stops `field_path_root_base`'s: what it points at is not inside the
-    /// root, so the root is not the object (task 935).
+    /// root, so the root is not the object.
     fn field_path_container(&self, node: &Node, source: &str) -> Option<String> {
         let text = |n: &Node| source[n.start_byte()..n.end_byte()].to_string();
         if self.objects.pointer_members.contains(&text(node)) {
@@ -921,7 +921,7 @@ impl PointerAnalyzer {
             }
             "field_expression" => {
                 // A path rooted at a pointer whose base is known is storage
-                // inside that base (task 993). Otherwise the full path, so
+                // inside that base. Otherwise the full path, so
                 // that u.int_array and u.float_array stay distinct.
                 self.field_path_root_base(node, source)
                     .unwrap_or_else(|| source[node.start_byte()..node.end_byte()].to_string())
@@ -984,7 +984,7 @@ impl PointerAnalyzer {
                     // here; hostap allocates through those almost everywhere,
                     // and a call that misses this list gets no base at all, so
                     // a field path rooted at it cannot collapse to it either
-                    // (task 1001, aurora_lint). Keep in step with
+                    // . Keep in step with
                     // `analyze::argument_objects::allocation_object`.
                     if matches!(
                         canonical,
@@ -1034,13 +1034,13 @@ impl PointerAnalyzer {
                 // the left name unconditionally records `behind_tag` as a
                 // base; the name is neither a declared pointer nor a declared
                 // array, so it then reads as STORAGE and is reported against a
-                // real object (task 1049).
+                // real object.
                 //
                 // Note the narrow test: only a name whose non-pointer
                 // declaration this frame actually read is dropped. Adding
                 // integer names to the untracked-pointer bucket instead would
                 // be wrong -- the address of a non-pointer scalar IS storage,
-                // and `&count` has to keep naming an object (task 962).
+                // and `&count` has to keep naming an object.
                 match node.child_by_field_name("left") {
                     Some(left) if self.is_declared_scalar(&left, source) => String::new(),
                     Some(left) => self.extract_array_base(&left, source),
@@ -1091,7 +1091,7 @@ impl PointerAnalyzer {
             // &struct.member: keep just the struct instance, so two members of
             // one struct compare equal (ARR36-C-EX1) -- unless the whole path
             // resolves through its root to an object this frame tracks, which
-            // is one level more specific (task 993).
+            // is one level more specific.
             "field_expression" => self
                 .field_path_root_base(&argument, source)
                 .or_else(|| self.field_path_container(&argument, source))
@@ -1131,7 +1131,7 @@ impl PointerAnalyzer {
     /// against ITSELF under two spellings and reports a violation: `workend =
     /// &work[N]` recorded `work` where the parameter had recorded
     /// `param:work`, and `pEnd = &aData[n]` recorded `aData` where the
-    /// declaration had recorded `pPg->aData` (task 770).
+    /// declaration had recorded `pPg->aData`.
     fn resolve_base(&self, name: String, pos: usize) -> String {
         match self.variable_arrays.at(&name, pos) {
             Some(base) => base.clone(),
@@ -1145,7 +1145,7 @@ impl PointerAnalyzer {
     /// `u8 **cursor` is a pointer and keeps cursor's base; `*s` over a
     /// single-level `char *s` is the pointed-to VALUE and has no base at all,
     /// so `return *s1 - *s2;` is char arithmetic rather than pointer
-    /// subtraction between two arrays (task 934).
+    /// subtraction between two arrays.
     ///
     /// A name this frame never saw declared keeps the old reading. Absence of
     /// a recorded depth is not evidence of a depth -- the stance
@@ -1206,7 +1206,7 @@ impl PointerAnalyzer {
                                 source[argument.start_byte()..argument.end_byte()].to_string();
                             // Root resolution first, so this reader and
                             // `extract_base_from_address_or_deref` produce one
-                            // spelling for one object (task 770).
+                            // spelling for one object.
                             let rooted = self.field_path_root_base(&argument, source);
                             if is_address_of {
                                 // Same order as

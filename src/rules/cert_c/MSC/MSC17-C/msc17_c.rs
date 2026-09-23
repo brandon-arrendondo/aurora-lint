@@ -108,7 +108,7 @@ impl Msc17C {
     /// if/else, since a case section hidden behind a conditional that
     /// *can* compile away with no `#else` can fall through either way. An
     /// `if` with no `else`, or a `#if`/`#ifdef` with no `#else`, is
-    /// therefore never treated as terminating (task 633).
+    /// therefore never treated as terminating.
     fn terminates_section(&self, node: &Node) -> bool {
         match node.kind() {
             "break_statement" | "return_statement" | "continue_statement" | "goto_statement" => {

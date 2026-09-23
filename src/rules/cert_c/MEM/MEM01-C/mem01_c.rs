@@ -29,7 +29,7 @@ pub struct Mem01C {
 /// Per-callee parameter indices confirmed to be read-only-dereferenced,
 /// derived from `FunctionSummary`. Threaded through the classification
 /// helpers so an `&ptr_name` output-param argument can be resolved precisely
-/// instead of always assumed safe (task 324). Confirmed writers and unknown
+/// instead of always assumed safe. Confirmed writers and unknown
 /// callees both fall back to the existing "assume safe reassignment"
 /// behavior (see `call_address_of_action`), so only the read-only set needs
 /// tracking.
@@ -393,7 +393,7 @@ fn classify_stmt_for_ptr(
         // reassigns ptr *within* the condition before any use — the assignment
         // is nested inside a binary_expression, not a top-level
         // expression_statement, so it's invisible to classify_expr_for_ptr's
-        // top-level match. Recognize it directly here (task 321).
+        // top-level match. Recognize it directly here.
         "parenthesized_expression" => {
             if subtree_assigns_identifier(node, source, ptr_name) {
                 return PtrAction::Reassigned;
@@ -413,7 +413,7 @@ fn classify_stmt_for_ptr(
             // (e.g. inside an if-condition: `if(read_pair(..., &ptr) ==
             // NULL)`) is the output-param idiom, not a use of the old value
             // (see the "call_expression" arm of classify_expr_for_ptr) --
-            // unless the callee is known (task 324) to only dereference,
+            // unless the callee is known to only dereference,
             // never write, that parameter.
             if let Some(action) = subtree_address_of_call_action(node, source, ptr_name, addr_ctx) {
                 action
@@ -513,7 +513,7 @@ fn subtree_contains_identifier(node: &Node, source: &str, name: &str) -> bool {
 /// True if an `assignment_expression` with `ptr_name` as its LHS appears
 /// anywhere in the subtree (e.g. nested inside a condition's
 /// parenthesized/binary wrapper: `(ptr = next()) != NULL`). See the
-/// `parenthesized_expression` case of `classify_stmt_for_ptr` (task 321).
+/// `parenthesized_expression` case of `classify_stmt_for_ptr`.
 fn subtree_assigns_identifier(node: &Node, source: &str, name: &str) -> bool {
     query::find_first_descendant(*node, |n| {
         if n.kind() != "assignment_expression" {

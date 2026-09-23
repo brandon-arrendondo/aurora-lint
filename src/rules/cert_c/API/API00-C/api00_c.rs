@@ -65,8 +65,8 @@ use tree_sitter::Node;
 /// Everything [`pointer_typing`] needs to answer "is this operand a pointer?",
 /// gathered once per file and threaded through the arithmetic-site walk.
 ///
-/// The integer half of this rule only ever asks the question to *suppress*
-/// (task 738), which is why a borrowed bundle is enough — no site is created
+/// The integer half of this rule only ever asks the question to *suppress*,
+/// which is why a borrowed bundle is enough — no site is created
 /// by a positive answer.
 struct PointerTypes<'a> {
     type_map: &'a HashMap<String, String>,
@@ -77,7 +77,7 @@ struct PointerTypes<'a> {
     /// (`sqlite3_uint64`, `os_time_t`, ...) to a builtin whose width
     /// `integer_type_width` knows -- otherwise a shift on such a
     /// parameter fails the width gate and the site is kept as
-    /// unchecked arithmetic (task 1057).
+    /// unchecked arithmetic.
     typedef_types: &'a HashMap<String, String>,
 }
 
@@ -196,7 +196,7 @@ impl Api00C {
         // function's own statement, not an inference from its callers (the
         // task 644 blind spot), and only explicit wording counts: mbedtls's
         // "\p ctx must be initialized" does, "The AES context to use" does
-        // not (task 1171).
+        // not.
         let documented_names: HashSet<String> = documented
             .get(&self.get_function_name(function_node, source))
             .map(|indices| {
@@ -208,7 +208,7 @@ impl Api00C {
             })
             .unwrap_or_default();
 
-        // NOTE (task 628): a prior version of this rule exempted
+        // NOTE: a prior version of this rule exempted
         // dispatch-table-registered callbacks here (task 594, "reachable
         // only through the table, so its contract is established at
         // registration") -- removed. Task 644's full re-audit of API00-C's
@@ -384,7 +384,7 @@ impl Api00C {
 
     /// Check if an integer parameter is used in arithmetic without overflow validation
     ///
-    /// Both halves of that question are answered structurally (task 739). The
+    /// Both halves of that question are answered structurally. The
     /// prior version searched the body *text* for arithmetic patterns and for a
     /// canonical validation spelling, and got both wrong in the same way:
     ///
@@ -568,7 +568,7 @@ impl Api00C {
         // `end = ies + ies_len` is pointer arithmetic, not integer
         // arithmetic: the value that moves is `ies`, and a pointer operand
         // cannot produce the integer overflow this half of the rule is about
-        // (task 738). The shared engine answers positively-only, so an
+        // . The shared engine answers positively-only, so an
         // operand whose type does not resolve keeps its site and the rule
         // keeps its recall.
         let is_site = is_site
@@ -609,7 +609,7 @@ impl Api00C {
     /// wraparound is *defined* behaviour (C11 6.2.5p9), and in a CRC it is the
     /// algorithm (libcrc's `update_crc_64`). The only undefined shift of an
     /// unsigned value is one whose count reaches the operand's width, so a
-    /// literal count below that width settles it outright (task 741).
+    /// literal count below that width settles it outright.
     ///
     /// Deliberately narrow. The parameter must be the *shifted value*, not the
     /// count -- `x << n` for a parameter `n` is exactly the unbounded-count
@@ -683,7 +683,7 @@ impl Api00C {
     ///
     /// An assert compiles out under `NDEBUG`, so arithmetic that happens only
     /// there is not a production computation and the rule has nothing to ask
-    /// about it (task 741). This is the same direction as
+    /// about it. This is the same direction as
     /// [`guard_dominance`], which deliberately refuses to credit an assert as
     /// *validation*: an assert neither validates nor counts as a use.
     ///
@@ -789,7 +789,7 @@ impl Api00C {
     /// - if (!ptr || !ptr2) return;
     ///
     /// Deliberately does NOT accept a bare `assert(ptr != NULL)`/`ASSERT(...)`
-    /// as validation (task 646): assert calls compile to nothing under
+    /// as validation: assert calls compile to nothing under
     /// NDEBUG/release builds, so they don't satisfy API00-C's requirement
     /// that the check survive into production code. Confirmed empirically by
     /// task 644's full ground-truth re-audit: the single largest driver of
@@ -800,7 +800,7 @@ impl Api00C {
     /// preprocessor-block children, so it's bounded by preprocessor nesting
     /// depth (lower risk than the statement-chain cases in task 262), but
     /// still an unbounded native recursion in principle -- the same risk
-    /// class as the original ARR00-C/MEM33-C bug (task 153) -- so it gets
+    /// class as the original ARR00-C/MEM33-C bug -- so it gets
     /// the same treatment for consistency.
     fn check_validation_patterns(
         &self,
@@ -919,7 +919,7 @@ impl Api00C {
     /// way), `base` for `if (*base != 0 && chdir(base)) return -1;` (a test of
     /// the pointee and a *use*), and, being a substring rather than a word
     /// match, a parameter named `ie` for any condition containing
-    /// `update_dh_ie` (task 902). That is the same defect task 745 fixed in
+    /// `update_dh_ie`. That is the same defect task 745 fixed in
     /// the positive-guard path, and it costs true positives rather than
     /// producing false ones.
     ///
@@ -1152,7 +1152,7 @@ impl Api00C {
     /// straight-line path either way. `src/analyze/prescan.rs`'s
     /// `node_contains_return` has always accepted it; this copy had not, which
     /// left API00-C reporting parameters whose guard exits by `goto`
-    /// (task 745).
+    /// .
     fn contains_return_or_error(&self, node: &Node, source: &str) -> bool {
         match node.kind() {
             "return_statement" | "goto_statement" => true,
@@ -1210,7 +1210,7 @@ impl Api00C {
     /// positives in task 664's 110-row API00-C pointer sample were exactly
     /// this — opaque `void *` cookies handed to a callback registrar, function
     /// pointers stored in a struct and never invoked here,
-    /// `xml_node_get_text`'s `ctx` accepted and ignored outright (task 743).
+    /// `xml_node_get_text`'s `ctx` accepted and ignored outright.
     ///
     /// A forward into a callee is the interesting case, and it is decided by
     /// what the callee does, never by the shape of the forward. The 59-row
@@ -1218,7 +1218,7 @@ impl Api00C {
     /// the 11-row `validation-in-called-helper` false positive class are
     /// structurally IDENTICAL thin forwarding wrappers at the flagged
     /// function; only the callee's body tells them apart, which is what made
-    /// them mislabeled in the first place (task 744). So:
+    /// them mislabeled in the first place. So:
     ///
     /// * a callee that never dereferences the argument makes the forward a
     ///   non-use,
@@ -1424,7 +1424,7 @@ impl Api00C {
     /// want (libdbus's own `dbus_set_error` doc: "If error is NULL, does
     /// nothing"). Not reachable via `checks_null_params`/interprocedural
     /// summaries since libdbus isn't in the scanned tree, so it has to be
-    /// declared here rather than inferred (task 742).
+    /// declared here rather than inferred.
     fn is_null_accepting_stdlib(func_name: &str, arg_idx: usize) -> bool {
         matches!(
             (func_name, arg_idx),

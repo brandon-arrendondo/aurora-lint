@@ -52,17 +52,17 @@ pub struct Int30C {
     /// (`overflow_helpers::collect_function_return_types`), so a call
     /// operand can be typed the same way INT32-C types it -- one half of the
     /// signed/unsigned dispatch cannot see `size_t` returns while the other
-    /// does (task 1288).
+    /// does.
     function_return_types: RefCell<HashMap<String, String>>,
     /// One-level typedef alias map from the project context, resolved
     /// through `overflow_helpers::typedef_chain_is_unsigned` in
-    /// `is_unsigned_type` (task 1288).
+    /// `is_unsigned_type`.
     typedef_types: RefCell<Arc<HashMap<String, String>>>,
     /// The project-wide name sets `const_eval::is_compile_time_constant_expr`
     /// wants, mirroring INT34-C: every object-like and function-like
     /// `#define` the scan saw, and the functions whose every `return` is a
     /// compile-time constant. What lets a `calloc` count spelled with a
-    /// macro from another header still read as fixed (task 1325).
+    /// macro from another header still read as fixed.
     project_macro_names: RefCell<Arc<HashSet<String>>>,
     project_function_macro_names: RefCell<HashSet<String>>,
     constant_returning_functions: RefCell<HashSet<String>>,
@@ -407,7 +407,7 @@ impl Int30C {
         // expression to float/double the moment either operand is
         // float-typed, at which point there is no unsigned wrap at all — so
         // skip float-typed operations entirely. Mirrors INT32-C's
-        // operands_are_floating gate (task 643).
+        // operands_are_floating gate.
         if self.operands_are_floating(node, source, type_map) {
             return;
         }
@@ -415,7 +415,7 @@ impl Int30C {
         // `ptr + int` / `ptr - int` is pointer arithmetic and `ptr - ptr` a
         // ptrdiff_t computation; neither is the unsigned integer wrap this
         // rule detects. Forming an out-of-bounds pointer is ARR30-C's
-        // concern (task 914).
+        // concern.
         if self.is_pointer_arithmetic(node, source, type_map) {
             return;
         }
@@ -921,7 +921,7 @@ impl Int30C {
     /// sizeof(peer->mi)` wrap as unsigned, not as signed overflow. These
     /// checks asked about the LEFT operand alone and INT32-C's asked about
     /// its own left operand alone, so once INT32-C learned to decline an
-    /// unsigned right operand (task 1287) these three labeled true positives
+    /// unsigned right operand these three labeled true positives
     /// would have been reported by neither rule. Same exhaustive-dispatch
     /// requirement as task 1288, one level down in the expression.
     ///
@@ -1327,7 +1327,7 @@ impl Int30C {
     /// `data * sizeof(T)`, `from_len * 2U + 1U`, a sum of `strlen()`s -- that
     /// can wrap `size_t` before `malloc` ever sees it.
     ///
-    /// Moved here from INT32-C (task 1288). The dispatch rule is the
+    /// Moved here from INT32-C. The dispatch rule is the
     /// operands' types under the usual arithmetic conversions: every operand
     /// signed is signed overflow and INT32-C's; either operand unsigned (of
     /// sufficient rank) makes the operation unsigned arithmetic and its
@@ -1335,12 +1335,12 @@ impl Int30C {
     /// `size_t`, so the classic `data * sizeof(T)` was never INT32-C's. The
     /// two-stage `(a * b) * sizeof(T)` is deliberately not collapsed: the
     /// outer product is reported here, and the inner signed `a * b` stays
-    /// INT32-C's concern (task 1286).
+    /// INT32-C's concern.
     ///
     /// Same mechanics the carve-out had there: only the argument positions
-    /// that carry a size are read (task 915), a bare identifier is resolved
-    /// one assignment hop back to the expression that computed it (task 604),
-    /// pointer arithmetic is bounded by its object and skipped (task 1276),
+    /// that carry a size are read, a bare identifier is resolved
+    /// one assignment hop back to the expression that computed it,
+    /// pointer arithmetic is bounded by its object and skipped,
     /// and a product that provably fits 64 bits without wrapping a 32-bit
     /// `size_t` is clean.
     fn check_allocation_size_wrap(
@@ -1485,7 +1485,7 @@ impl Int30C {
 
     /// Does `node` contain arithmetic that C performs in an UNSIGNED integer
     /// type -- the dual of INT32-C's `has_signed_integer_arithmetic`, and
-    /// the other half of the same dispatch rule (task 1288)?
+    /// the other half of the same dispatch rule?
     ///
     /// Looks through parentheses. Pointer arithmetic is neither. An
     /// operation is unsigned when the usual arithmetic conversions make it
@@ -1575,7 +1575,7 @@ impl Int30C {
     }
 
     /// Is `nmemb * size`, the product `calloc` forms from its two arguments,
-    /// provably free of a wrap (task 1325)? A finding here names a runtime
+    /// provably free of a wrap? A finding here names a runtime
     /// size calculation that unexpected input can push past `SIZE_MAX`; the
     /// call is clean when no such calculation exists:
     ///
@@ -1947,7 +1947,7 @@ impl Int30C {
     /// and any typedef alias whose chain resolves to one -- the same
     /// resolution INT32-C applies (`classify_declared_type`), so the two
     /// rules type the same operand the same way and the signed/unsigned
-    /// dispatch between them is exhaustive (task 1288). `word_t` ->
+    /// dispatch between them is exhaustive. `word_t` ->
     /// `unsigned long` was unsigned to INT32-C and `int` here.
     fn is_unsigned_type(&self, type_str: &str) -> bool {
         type_str.contains("unsigned")

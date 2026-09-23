@@ -185,7 +185,7 @@ impl CertRule for Exp34C {
                                 }
                                 let entry = merged.entry(name.clone()).or_default();
                                 entry.modifies_params.extend(idx.iter().copied());
-                                // Also MUST-strength (task 1458, aurora_lint):
+                                // Also MUST-strength:
                                 // `apply_cross_file_output_params_null` reads
                                 // `unconditional_modifies_params`, not the MAY
                                 // set, to assert NotNull. `macro_writes_param_indices`
@@ -543,8 +543,8 @@ fn check_call_expression_cfg(
         }
     }
 
-    // Call-site null propagation, scoped to true vararg positions only
-    // (task 1418): an ordinary positional parameter's unguarded dereference
+    // Call-site null propagation, scoped to true vararg positions only:
+    // an ordinary positional parameter's unguarded dereference
     // is reported at the callee via its own seeded state
     // (`FunctionSummary::callsite_param_null_states`), but a vararg slot has
     // no parameter index for that seed to attach to -- the callee body only
@@ -609,7 +609,7 @@ fn check_function_arguments_cfg(
 
 /// Call-site null propagation for a vararg callee: flag a possibly/definitely
 /// null pointer landing in the `...` tail, where no `FunctionSummary`
-/// parameter index exists for the callee's own analysis to seed (task 1418).
+/// parameter index exists for the callee's own analysis to seed.
 /// Callers gate this to `param_idx >= callee_summary.variadic_from` already;
 /// this still re-checks per argument since a vararg call can pass several
 /// tail arguments and each needs its own position.
@@ -714,12 +714,12 @@ fn check_callsite_null_args(
 
 /// True when calling `name` with a possibly-null argument is safe -- either
 /// because `name` is itself [`is_null_safe_function`], or because `name` is a
-/// function-like macro whose entire body forwards to one (task 757).
+/// function-like macro whose entire body forwards to one.
 ///
 /// hostap's `#define os_free(p) free((p))` is the motivating case: the macro
 /// is a transparent `free()` wrapper, so it is exactly as null-tolerant as
 /// `free()` itself. Rather than adding `os_free` to the name table by hand,
-/// this reuses [`macro_expand::macro_forwarding_target`] (task 589) to derive
+/// this reuses [`macro_expand::macro_forwarding_target`] to derive
 /// it: any macro whose body is nothing but a single call to a real function,
 /// passing its own parameters through, inherits that function's null-safety
 /// automatically -- covering every macro shaped this way, not just this one
@@ -802,7 +802,7 @@ fn is_sqlite_null_safe_api(name: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Declared-type verification (task 558)
+// Declared-type verification
 // ---------------------------------------------------------------------------
 
 /// True when `name`'s nearest lexical declaration provably resolves to a
@@ -822,7 +822,7 @@ fn is_sqlite_null_safe_api(name: &str) -> bool {
 /// "possibly-NULL pointer" findings against plain integers. Re-deriving the
 /// argument's actual declared type at the call site, independent of that
 /// dataflow-internal set, catches this before it's reported. Uses the shared
-/// `ast_utils::resolve_identifier_binding` primitive (task 387) rather than
+/// `ast_utils::resolve_identifier_binding` primitive rather than
 /// hand-rolling a new declaration lookup.
 fn identifier_is_declared_pointer(ident_node: &Node, name: &str, source: &str) -> Option<bool> {
     match ast_utils::resolve_identifier_binding(ident_node, name, source)? {
@@ -1081,7 +1081,7 @@ fn is_in_expression_guard(var_name: &str, node: &Node, source: &str) -> bool {
     //   if (isIndex) { ... pSchema->idxHash ... }
     // Reaching past the guard says nothing about `pSchema` on its own, which is
     // why the sound join in task 1067 leaves it PossiblyNull. Where `isIndex`
-    // is known true the negation collapses and proves it non-null (task 1074).
+    // is known true the negation collapses and proves it non-null.
     if guard_dominance::is_nonnull_by_correlated_exit_guard(var_name, node, source) {
         return true;
     }
@@ -1090,7 +1090,7 @@ fn is_in_expression_guard(var_name: &str, node: &Node, source: &str) -> bool {
     //   if (!key || (!items && num_items != 0) || ...) return FALSE;
     //   for (i = 0; i < num_items; i++) ... items[i] ...
     // `i < num_items` with `i` non-negative gives `num_items != 0`, which
-    // collapses the surviving disjunct and proves `items` non-null (task 1074).
+    // collapses the surviving disjunct and proves `items` non-null.
     if guard_dominance::is_nonnull_by_loop_bounded_exit_guard(var_name, node, source) {
         return true;
     }
@@ -1101,7 +1101,7 @@ fn is_in_expression_guard(var_name: &str, node: &Node, source: &str) -> bool {
     //   if (a && !b) return 1;
     //   if (!a && !b) return 0;
     //   ... a->num_attr < b->num_attr ...
-    // No single guard settles anything; together they do (task 1074).
+    // No single guard settles anything; together they do.
     if guard_dominance::is_nonnull_by_exhaustive_case_guards(var_name, node, source) {
         return true;
     }

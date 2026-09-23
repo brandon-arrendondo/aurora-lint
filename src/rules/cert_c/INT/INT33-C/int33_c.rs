@@ -558,7 +558,7 @@ impl Int33C {
             current = node.parent();
         }
 
-        // Guards the if-statement walk above cannot see (task 1274): the
+        // Guards the if-statement walk above cannot see: the
         // condition of a `?:` whose guarded arm holds the division, the left
         // operand of an `&&`/`||` whose right operand holds it, an enclosing
         // condition that proves non-zero by ordering rather than equality

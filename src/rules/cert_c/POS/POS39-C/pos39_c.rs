@@ -63,7 +63,7 @@ impl CertRule for Pos39C {
         // conversion check there -- confirmed via a minimal repro where
         // `func_b`'s plain `int id` got reported as "uint32_t" solely
         // because an unrelated `func_a` happened to declare a `uint32_t
-        // id` elsewhere in the file (task 418). `converted_vars` has the
+        // id` elsewhere in the file. `converted_vars` has the
         // same cross-function leak in the opposite direction (a
         // conversion in one function could mask a missing conversion on
         // an unrelated same-named variable in another). Scope all three

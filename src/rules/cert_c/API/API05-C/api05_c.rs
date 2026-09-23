@@ -42,7 +42,7 @@ use tree_sitter::Node;
 
 /// Functions whose signature ties a buffer argument to a count/length
 /// argument at the call site. Used to establish that a pointer parameter and
-/// a size_t parameter are actually associated (task 190) -- without this,
+/// a size_t parameter are actually associated -- without this,
 /// the rule previously fired on ANY pointer param whenever the signature had
 /// ANY size_t param anywhere, regardless of whether the two were related.
 const BUFFER_OP_CALLS: &[&str] = &[
@@ -300,7 +300,7 @@ impl Api05C {
             // of the size_t params as an element count -- a size_t param
             // elsewhere in the signature that's unrelated to this pointer (e.g.
             // an unrelated timeout/flags param) is not evidence of a missed
-            // conformant array (task 190).
+            // conformant array.
             if !skip_plain_pointer {
                 if let Some(body) = body {
                     if self.is_plain_pointer_param(param, &declarator, source) {
@@ -349,7 +349,7 @@ impl Api05C {
             return false;
         }
         // Pointer-to-pointer (e.g. `char **out`) is almost always an
-        // out-parameter, not a counted buffer -- exclude (task 190).
+        // out-parameter, not a counted buffer -- exclude.
         if declarator
             .named_child(0)
             .is_some_and(|c| c.kind() == "pointer_declarator")
@@ -361,13 +361,13 @@ impl Api05C {
         };
         let type_text = get_node_text(&type_node, source);
         // `void *` is an opaque context pointer with no element type to
-        // count -- exclude (task 190).
+        // count -- exclude.
         if type_text.trim() == "void" {
             return false;
         }
         // A NUL-terminated `const char *` string has no separate count --
         // its own bytes are self-delimiting, so an accompanying size_t param
-        // is not evidence it should be a conformant array (task 190). Plain
+        // is not evidence it should be a conformant array. Plain
         // `char`, not `unsigned char`/`signed char` -- those are byte
         // buffers, not conventionally NUL-terminated strings.
         //
@@ -401,7 +401,7 @@ impl Api05C {
     /// element count: either `ptr_name` is subscripted by `size_name -
     /// <literal>` (the last-valid-index bounds-check idiom), or both appear
     /// as arguments to the same call to a known buffer-op function
-    /// (`memcpy(ptr_name, ..., size_name)`, etc.) (task 190).
+    /// (`memcpy(ptr_name, ..., size_name)`, etc.).
     ///
     /// Deliberately excludes a bare `ptr_name[size_name]` subscript (and any
     /// `+`-offset variant): `size_name` there is at least as often a write
@@ -518,7 +518,7 @@ impl Api05C {
                     // A name that isn't a parameter at all (a #define/enum
                     // constant, e.g. `uint64_t H[SHA512_256_HASH_SIZE_WORDS]`)
                     // is not a "declared after" ordering problem -- there is
-                    // no such parameter to declare before it (task 190).
+                    // no such parameter to declare before it.
                     if !all_param_names.contains(&var_name) {
                         return;
                     }

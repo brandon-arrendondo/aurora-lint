@@ -58,13 +58,13 @@ pub struct Int10C {
     /// Resolved recursively by `overflow_helpers::typedef_chain_is_unsigned`
     /// so a multi-level, cross-file typedef family is recognized as
     /// unsigned even though `type_map` only records the alias name as
-    /// written (task 657).
+    /// written.
     typedef_types: RefCell<Arc<HashMap<String, String>>>,
     /// Project-wide compile-time constants (enum constants, `#define`s,
     /// file-scope `static const`), populated by `set_project_context` and
     /// merged with per-file constants in `check`. Lets a modulo operand
     /// that's an enum constant with a provably non-negative *value* clear
-    /// the check even when its enum *type* is signed (task 673).
+    /// the check even when its enum *type* is signed.
     project_macros: RefCell<Arc<MacroConstantMap>>,
     /// `project_macros` merged with the current file's own `#define`s, kept
     /// for the duration of `check` so the VRA range lookup can resolve
@@ -73,7 +73,7 @@ pub struct Int10C {
     /// Per-function CFGs and value-range results, supplied by the driver
     /// because [`needs_vra`] is true. Used to prove a signed *dividend* is
     /// non-negative at the modulo site -- e.g. a local `int` derived from a
-    /// guard-bounded parameter (task 674).
+    /// guard-bounded parameter.
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
 }
@@ -255,14 +255,14 @@ impl Int10C {
         // `interrupt_t` enum constant set to a macro like `IRQ_INT_OFFSET`
         // (0x20) is provably non-negative even though the enum itself has
         // an unrelated negative member (`int_invalid = -1`) and is
-        // therefore a signed type overall (task 673).
+        // therefore a signed type overall.
         //
         // DIVIDEND ONLY, for the same reason the VRA check below is: C99
         // 6.5.5p6 truncates toward zero, so `a % b` carries the sign of `a`
         // and a non-negative `b` proves nothing. This used to accept either
         // operand, which silently swallowed the whole `signed % NAMED_CONST`
         // class -- `a % GRANULE` with `a == -5` yields -5, exactly what this
-        // rule exists to flag (task 777).
+        // rule exists to flag.
         if self.operand_is_nonnegative_constant(&left_node, source, macros) {
             return false;
         }
@@ -274,7 +274,7 @@ impl Int10C {
         // enclosing guard flow rather than from its declared type -- e.g.
         // seL4's `int normal_irq = irq - NORMAL_IRQ_OFFSET;` inside an
         // `else if` reached only after `if (irq < NORMAL_IRQ_OFFSET) return;`
-        // (task 674). Deliberately dividend-only: a non-negative *divisor*
+        // . Deliberately dividend-only: a non-negative *divisor*
         // proves nothing (`-5 % 3 == -2`).
         if self.dividend_is_nonnegative_by_vra(&left_node, source, macros) {
             return false;
@@ -325,7 +325,7 @@ impl Int10C {
             // A cast that tree-sitter-c mis-parsed -- `(seL4_Word)&x` comes
             // back as a bitwise AND, `(seL4_Word)(x)` as a call. The name is
             // only a type if the typedef chain resolves it, which is what
-            // separates this from a genuine `(mask) & flags` (task 675).
+            // separates this from a genuine `(mask) & flags`.
             if let Some(name) = misparsed_cast_type_name(&n, source) {
                 if overflow_helpers::typedef_chain_is_unsigned(name, &typedef_types) {
                     return true;
@@ -363,7 +363,7 @@ impl Int10C {
     /// directly in the modulo expression, since a literal on one side
     /// (e.g. `x % 60`) says nothing about whether the *other*, unresolved
     /// operand can be negative, and treating it as safe would suppress
-    /// genuine findings (task 673).
+    /// genuine findings.
     fn operand_is_nonnegative_constant(
         &self,
         node: &Node,

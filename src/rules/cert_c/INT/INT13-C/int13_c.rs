@@ -51,7 +51,7 @@ impl CertRule for Int13C {
         // (only `declaration`-kind locals), so a stale entry from one
         // function (e.g. a signed `int mask`) could leak into an unrelated
         // same-named variable in another function (e.g. an `unsigned int
-        // mask` parameter) and misfire here (task 418). Scope both the
+        // mask` parameter) and misfire here. Scope both the
         // collection and the check per `function_definition`, mirroring
         // EXP39-C/STR32-C's per-function reset pattern.
         let functions = query::find_descendants_of_kind(*node, "function_definition");
@@ -146,7 +146,7 @@ impl Int13C {
                     ) {
                         // For a shift, only the LEFT operand (the value being
                         // shifted) is INT13-C's concern -- a signed shift
-                        // COUNT (right) is INT34-C's territory (task 754).
+                        // COUNT (right) is INT34-C's territory.
                         // `&`/`|`/`^` have no such asymmetry, so both
                         // operands still matter there.
                         if let Some(violation) =
@@ -244,7 +244,7 @@ impl Int13C {
     /// `exclMask & (1<<i)`: the right operand `(1<<i)` is itself a shift, so
     /// only ITS left side (`1`, a constant) is examined -- `i` is never
     /// reachable, exactly as if this expression had been the top-level
-    /// check (task 754).
+    /// check.
     ///
     /// A non-shift binary operand (`x*xRatio`, `sz&0x0001`) has no such
     /// asymmetry, so its left side is tried first, then its right --

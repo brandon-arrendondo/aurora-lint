@@ -93,7 +93,7 @@ impl Win00C {
 
             // `LoadLibrary` and its `A`/`W` entry points search the default
             // DLL path unconditionally. `LoadLibraryEx` only does so when
-            // its flags say nothing about the search path (task 1130).
+            // its flags say nothing about the search path.
             let unspecific = if call_roles::is_win32_api(func_name, "LoadLibrary") {
                 true
             } else if call_roles::is_win32_api(func_name, "LoadLibraryEx") {

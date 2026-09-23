@@ -668,7 +668,7 @@ impl NonArrayPointerAnalyzer {
                 // treating every unary_expression as address-of (regardless
                 // of operator) mistakenly classified plain arithmetic like
                 // `e = -e;` as `&e`, marking a non-pointer int as NonArray
-                // and causing ARR37-C to misfire on it (task 556).
+                // and causing ARR37-C to misfire on it.
                 let is_address_of = node
                     .child_by_field_name("operator")
                     .map(|op| &source[op.start_byte()..op.end_byte()] == "&")

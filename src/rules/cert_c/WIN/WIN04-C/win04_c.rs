@@ -7,7 +7,7 @@
 //! - Function pointer declarations initialized directly without EncodePointer
 //! - A `GetProcAddress` result stored raw -- by assignment to an
 //!   already-declared pointer, by a typedef'd declaration, or by a macro
-//!   body -- without EncodePointer (task 1132)
+//!   body -- without EncodePointer
 //!
 //! COMPLIANT:
 //! - Function pointers stored using EncodePointer() or EncodeSystemPointer()

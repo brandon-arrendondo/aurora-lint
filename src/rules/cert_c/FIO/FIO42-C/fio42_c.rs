@@ -254,7 +254,7 @@ impl FileResourceTracker {
         // Classify each initialized declarator by the actual function it calls.
         // Substring matching is unsound here because `fopen(`/`freopen(` both
         // contain `open(`, which would otherwise track a FILE* as both a FILE
-        // pointer and a POSIX file descriptor (task 223).
+        // pointer and a POSIX file descriptor.
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
                 if child.kind() == "init_declarator" {

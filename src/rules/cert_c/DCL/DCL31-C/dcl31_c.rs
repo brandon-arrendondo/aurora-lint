@@ -200,7 +200,7 @@ impl Dcl31C {
         // the function body. They never reach the branch above because a
         // `parameter_declaration` node's kind is neither "function_definition"
         // nor "declaration", so they were falling through as apparently
-        // undeclared calls (task 691).
+        // undeclared calls.
         if node.kind() == "function_definition" {
             for name in function_pointer_param_names(node, source) {
                 self.declared_functions.borrow_mut().insert(name);
@@ -215,7 +215,7 @@ impl Dcl31C {
         // branch above never sees it. sqlite's `columnNullValue` (a
         // conditional `__attribute__((aligned(8)))` inside its declarator) and
         // every `__THROW`-decorated glibc prototype have that shape
-        // (tasks 1038, 1040).
+        // .
         if node.kind() == "ERROR" {
             for name in ast_utils::function_names_in_error_declaration(&node, source) {
                 self.declared_functions.borrow_mut().insert(name);
@@ -237,7 +237,7 @@ impl Dcl31C {
     /// `init_declarator` wrapping the real declarator, not the declarator
     /// itself. Without unwrapping it here, an initialized local (including a
     /// function-pointer local like `int (*xLocal)(int) = 0;`) is silently
-    /// never tracked (task 691). Delegates everything else to
+    /// never tracked. Delegates everything else to
     /// `ast_utils::get_identifier_from_declarator`, which already handles
     /// `function_declarator`/`pointer_declarator`/`array_declarator`/
     /// `parenthesized_declarator` recursion (needed for the parenthesized
@@ -292,7 +292,7 @@ impl Dcl31C {
                 // `__attribute__((aligned(8)))` puts a call-shaped
                 // expression in the grammar's attribute argument list, so the
                 // attribute's own argument reads as a call to an undeclared
-                // `aligned`. Nothing inside an attribute is a call (task 1040).
+                // `aligned`. Nothing inside an attribute is a call.
                 if is_inside_attribute(node) {
                     return;
                 }
@@ -439,7 +439,7 @@ impl CertRule for Dcl31C {
         // in it is invisible to us, so the undeclared-call check has no sound
         // basis anywhere in this project and is switched off; the
         // missing-type-specifier and implicit-return-type checks, which only
-        // read declarations we *can* see, keep running (task 580).
+        // read declarations we *can* see, keep running.
         *self.incomplete_declarations.borrow_mut() = !context.unresolved_project_headers.is_empty();
     }
 
@@ -468,7 +468,7 @@ impl Dcl31C {
     /// xRecordCompare)` where the typedef `typedef int
     /// (*RecordCompare)(void *, int);` lives in `sqliteInt.h` -- the
     /// parameter's own declarator subtree carries no `function_declarator`,
-    /// so [`function_pointer_param_names`] alone misses it (task 1054).
+    /// so [`function_pointer_param_names`] alone misses it.
     ///
     /// Cross-file: reads `typedef_types` and `function_pointer_typedef_names`
     /// populated from `ProjectContext` (see [`Dcl31C::set_project_context`]).

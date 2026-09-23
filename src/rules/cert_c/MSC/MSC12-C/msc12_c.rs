@@ -60,7 +60,7 @@ impl Msc12C {
     /// statement (`NODE_LOCK_SYS;`, `IPI_MEM_BARRIER;`) may expand to real
     /// code (lock acquire/release, a memory-barrier instruction) that
     /// tree-sitter can't see without preprocessing. See
-    /// data/precision_audit/sel4/README.md (task 475).
+    /// data/precision_audit/sel4/README.md.
     fn is_known_macro(&self, name: &str, source: &str) -> bool {
         is_defined_macro_name(name, source) || self.cross_file_macro_names.borrow().contains(name)
     }
@@ -148,7 +148,7 @@ impl Msc12C {
                 // the condition itself does the real work (reads through a
                 // pointer/field/subscript, or calls a function), so an
                 // "empty" body is the idiom, not a bug. See
-                // data/precision_audit/sel4/README.md (task 381/473) — this
+                // data/precision_audit/sel4/README.md — this
                 // was the dominant MSC12-C FP family on real embedded/kernel
                 // code (UART/timer/IOMMU register polling).
                 if let Some(cond) = self.enclosing_loop_condition_for_empty_body(node) {
@@ -246,7 +246,7 @@ impl Msc12C {
             }
         };
 
-        // ── Misparse guards (task 1004) ───────────────────────────────────
+        // ── Misparse guards ───────────────────────────────────
         // tree-sitter has no preprocessor and no type table, so several
         // non-expressions reach this point parsed as expression statements.
         // Every guard below rests on the same argument: what the parser
@@ -582,7 +582,7 @@ impl Msc12C {
         // `#if defined(HAVE_POSIX_FALLOCATE) && HAVE_POSIX_FALLOCATE` leaves
         // the `)` as an ERROR sibling and both operands reading
         // `HAVE_POSIX_FALLOCATE` — identical only because the `defined(`
-        // wrapper was dropped (task 1004).
+        // wrapper was dropped.
         if query::find_first_descendant(*node, |n| n.is_error() || n.is_missing()).is_some() {
             return;
         }
@@ -609,7 +609,7 @@ impl Msc12C {
             // that increments or assigns evaluates to something different
             // each time, so the second occurrence is doing real work.
             // sqlite's varint decoder chains seven copies of
-            // `(*pIter++)&0x80` precisely to walk the buffer (task 1004).
+            // `(*pIter++)&0x80` precisely to walk the buffer.
             if query::find_first_descendant(left, |n| {
                 matches!(n.kind(), "update_expression" | "assignment_expression")
             })
@@ -653,7 +653,7 @@ impl Msc12C {
     /// so it is never the left/right pair of one binary_expression.
     ///
     /// Filed from a real instance found by hand in sqlite's
-    /// `fts5TestUtf8()` (task 612), where the duplicated subcondition sits
+    /// `fts5TestUtf8()`, where the duplicated subcondition sits
     /// next to an off-by-one advance -- the copy-paste shape this looks for.
     ///
     /// Deliberately narrow, because "provably dead" has to actually hold:
@@ -933,7 +933,7 @@ impl Msc12C {
     /// over a `volatile uint32_t *reg` is the same idiom).
     ///
     /// This is the evidence [`Self::condition_indicates_polling`]'s
-    /// bare-dereference exclusion was left open for (task 473). A volatile
+    /// bare-dereference exclusion was left open for. A volatile
     /// read cannot be hoisted out of the loop, so a condition that reads
     /// one re-reads it every iteration *by definition* and an empty body is
     /// the idiom -- seL4's `while (!node_boot_lock);` and `while
@@ -1301,7 +1301,7 @@ impl Msc12C {
                 // no-op from a forgotten body -- `case cap_asid_control_cap:
                 // break;` and an unfinished case look identical. Flag
                 // rather than guess; see data/precision_audit/sel4/README.md
-                // (task 474) for the measured ambiguity.
+                // for the measured ambiguity.
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: self.severity(),
@@ -1388,7 +1388,7 @@ impl Msc12C {
     /// that is not C as a function — raylib's emscripten `EM_ASM` blocks put
     /// JavaScript in a macro argument, and `catch (e) { }` in there parses as
     /// a function named `catch` with an empty body. Same root cause as the
-    /// EM_ASM misparses the expression-statement checks decline (task 1004),
+    /// EM_ASM misparses the expression-statement checks decline,
     /// reaching a different check.
     ///
     /// GCC's nested-function extension is real C some projects use, but an
@@ -1808,7 +1808,7 @@ impl Msc12C {
         // `while (*s++)\n  ;` walks a string to measure it. This is not a
         // widening of the bare-dereference exclusion below -- it keys on a
         // side effect, which is affirmative evidence of progress rather
-        // than an absence of evidence (task 1006).
+        // than an absence of evidence.
         if query::find_first_descendant(*cond, |n| {
             matches!(n.kind(), "update_expression" | "assignment_expression")
         })

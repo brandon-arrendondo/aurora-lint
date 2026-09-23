@@ -473,7 +473,7 @@ impl Int00C {
         // Keep the `*`: the type specifier alone is the POINTEE type, and
         // `is_unsigned_type` would read `unsigned char *pos` as an unsigned
         // integer and call `pos - orig_pos` an unguarded unsigned subtraction
-        // (task 914).
+        // .
         match param.child_by_field_name("declarator") {
             Some(d) if declarator_utils::is_pointer_declarator(&d) => Some(format!("{} *", base)),
             _ => Some(base),
@@ -513,7 +513,7 @@ impl Int00C {
                         // A pointer declarator's text is `*p`, which never
                         // matches the operand name `p` this map is looked up
                         // by; resolve the bound identifier and keep the
-                        // pointerness in the type instead (task 914).
+                        // pointerness in the type instead.
                         let name = ast_utils::get_identifier_from_declarator(&decl, source);
                         if !name.is_empty() && !type_text.is_empty() {
                             let declared = if declarator_utils::is_pointer_declarator(&decl) {
@@ -532,7 +532,7 @@ impl Int00C {
     fn is_unsigned_type(type_text: &str) -> bool {
         // A pointer is not an unsigned integer however unsigned its pointee
         // is: `ptr - ptr` is a signed ptrdiff_t, and cannot wrap the way the
-        // unsigned subtraction this rule guards does (task 914).
+        // unsigned subtraction this rule guards does.
         if ast_utils::is_pointer_type(type_text) {
             return false;
         }

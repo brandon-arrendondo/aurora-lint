@@ -38,7 +38,7 @@ impl Msc04C {
     /// `ProjectContext::ambiguous_call_targets`). Such a callee is opaque
     /// dispatch: it may or may not actually reach back into the caller, and
     /// chasing it through the cycle-detection DFS fabricates recursion
-    /// cycles that don't exist in the source (task 562).
+    /// cycles that don't exist in the source.
     fn strip_ambiguous_callees(
         graph: &HashMap<String, HashSet<String>>,
         ambiguous: &HashSet<String>,

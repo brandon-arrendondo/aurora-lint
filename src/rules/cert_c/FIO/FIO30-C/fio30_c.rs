@@ -42,12 +42,12 @@ pub struct Fio30C {
     /// used to resolve cross-file wrapper calls: Juliet's CWE-134 b/c/d/e
     /// flow variants put a sink helper (`badSink`/`goodG2BSink`) in a
     /// different file than its single caller, so this is the only way to
-    /// know whether that caller passed tainted or literal data (task 201).
+    /// know whether that caller passed tainted or literal data.
     function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
     /// Project-wide macro aliases from prescan (e.g. `#define LOG_FMT printf`
     /// defined in a header), merged with per-file aliases in `check` so a
     /// format-string wrapper alias defined outside the file under scan is
-    /// still resolved (task 617).
+    /// still resolved.
     project_macro_aliases: RefCell<Arc<HashMap<String, String>>>,
 }
 

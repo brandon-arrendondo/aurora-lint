@@ -222,7 +222,7 @@ impl Exp39C {
         // function's `function_declarator`, not in a `declaration` node
         // scanned below. Without this, any cast of an unmatched parameter
         // identifier fell through to `infer_type_from_name`'s naming-based
-        // guess and could silently default to "int" (task 569).
+        // guess and could silently default to "int".
         self.collect_parameter_types(node, source, var_types);
 
         for descendant in query::find_descendants_of_kinds(

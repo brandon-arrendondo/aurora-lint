@@ -187,7 +187,7 @@ impl Con03C {
     /// `var_name` (identifier text match — same precision level as the
     /// rest of this rule, no scope/shadowing analysis). CON03-C reports at
     /// the variable's declaration site, which is itself never a call-graph
-    /// node, so this is how reachability gets checked instead (task 608).
+    /// node, so this is how reachability gets checked instead.
     fn collect_accessing_functions(
         &self,
         root: &Node,

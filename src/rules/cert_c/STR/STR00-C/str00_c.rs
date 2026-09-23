@@ -69,7 +69,7 @@ impl CertRule for Str00C {
         // cross function boundaries: two unrelated functions in the same
         // file commonly reuse a local name like `ret`/`pos` with different
         // types, and a file-wide map would misattribute one function's
-        // type onto the other's identically-named variable (task 394).
+        // type onto the other's identically-named variable.
         // File-scope (global) declarations are collected separately,
         // without descending into any function body, and are visible to
         // every function as well as to file-scope code itself.

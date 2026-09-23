@@ -68,7 +68,7 @@ impl CertRule for Int15C {
         // locals), so a stale entry from one function (e.g. a local
         // `myint_t x`) could leak into an unrelated same-named variable
         // (e.g. an `int x` parameter) in another function and misfire the
-        // scanf check there (task 418). Scope `var_types` per
+        // scanf check there. Scope `var_types` per
         // `function_definition`, mirroring EXP39-C/STR32-C's per-function
         // reset pattern.
         let typedef_names = self.collect_typedef_names(node, source);

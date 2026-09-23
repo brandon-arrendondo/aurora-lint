@@ -14,7 +14,7 @@ use tree_sitter::Node;
 pub struct Exp36C {
     /// Struct/typedef names known to be `__attribute__((packed))` (or the
     /// project's packed-struct macro) across ALL scanned files, from
-    /// prescan (task 395). Needed because the struct's *definition* usually
+    /// prescan. Needed because the struct's *definition* usually
     /// lives in a header, not the file containing the cast being checked.
     packed_structs: RefCell<Arc<HashSet<String>>>,
     /// Cross-file typedef alias map. Reached through the shared
@@ -639,7 +639,7 @@ impl Exp36C {
     /// Without this, a qualified target type like `const uint8_t *` never
     /// matched the map's `"uint8_t *"` entry, silently fell through to the
     /// "pointer type not in map -> assume 4-byte alignment" default, and
-    /// fabricated an alignment mismatch for byte-sized types (task 572).
+    /// fabricated an alignment mismatch for byte-sized types.
     fn normalize_type_for_alignment_lookup(&self, type_str: &str) -> String {
         let trimmed = type_str.trim();
         let is_pointer = trimmed.ends_with('*');
@@ -752,7 +752,7 @@ impl Exp36C {
         // `typedef long long int sqlite_int64;` chain resolves the base to
         // `long long int` (alignment 8), which is the same width as `u64 *`
         // and defeats the fabricated 4->8 alignment jump this default
-        // would otherwise produce (task 736).
+        // would otherwise produce.
         let is_pointer = normalized.ends_with('*');
         let base = if is_pointer {
             normalized.trim_end_matches('*').trim().to_string()

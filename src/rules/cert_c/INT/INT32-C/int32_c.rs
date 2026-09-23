@@ -29,7 +29,7 @@ const PROMOTED_ARITH_BITS: u32 = 32;
 /// Width, in bits, of arithmetic performed on a 64-bit signed operand. The
 /// usual arithmetic conversions carry the whole operation up to the wider
 /// operand's type, so `INT_MAX` is the wrong limit to check such an
-/// operation against (task 1323).
+/// operation against.
 const WIDE_ARITH_BITS: u32 = 64;
 
 /// Depth cap on the recursive walk that asks an operand's type, matching
@@ -56,9 +56,9 @@ pub struct Int32C {
     /// One-level typedef alias map (`word_t` -> `unsigned long`, `paddr_t` ->
     /// `word_t`, ...), populated project-wide by `set_project_context`.
     /// Resolved recursively by `overflow_helpers::typedef_chain_is_unsigned`
-    /// in `classify_declared_type` (task 657).
+    /// in `classify_declared_type`.
     typedef_types: RefCell<Arc<HashMap<String, String>>>,
-    /// Function-like macro definitions, project-wide (task 676). Lets
+    /// Function-like macro definitions, project-wide. Lets
     /// `infer_type` recognize a call-like operand (e.g. seL4's `BIT(n)`) as
     /// unsigned via `macro_yields_unsigned_constant` rather than falling
     /// through to "unknown" and flagging a signed-overflow FP on
@@ -89,7 +89,7 @@ pub struct Int32C {
     /// same function's text once per risky-operand candidate; on a function
     /// with many candidates that was O(candidates * function_size) = O(n^2).
     /// Cleared at the start of each `check()`, same as `risky_vars_cache`
-    /// (task 672).
+    /// .
     function_text_cache: RefCell<HashMap<usize, std::rc::Rc<str>>>,
     /// File-scope pointer names and pointer-returning functions, for the
     /// pointer-arithmetic gate. Rebuilt per file.
@@ -97,7 +97,7 @@ pub struct Int32C {
     /// Declared return type of every function this file defines or
     /// prototypes (`overflow_helpers::collect_function_return_types`), so a
     /// call operand can be classified instead of falling to "unknown"
-    /// (task 1276). Rebuilt per file.
+    /// . Rebuilt per file.
     function_return_types: RefCell<HashMap<String, String>>,
 }
 
@@ -143,7 +143,7 @@ impl Int32C {
     /// so [`const_eval::expression_fits_in_signed_vra`] cannot prove the
     /// thing promotion guarantees, and the expression falls through to the
     /// provenance gate -- which fires on an unresolved operand by design
-    /// (task 926).
+    /// .
     ///
     /// `type_map` is already function-scoped by `check_node`, so a name that
     /// is `char` in one function and `int` in another does not leak a bogus
@@ -239,7 +239,7 @@ impl CertRule for Int32C {
         // `report_inner_signed_size_arithmetic` names an operation nested in
         // a size argument; the operator walker may have reported that same
         // operation on its own. One overflow, one finding: the sink report
-        // yields to the operator one on its line (task 1286).
+        // yields to the operator one on its line.
         let operator_reports: HashSet<(usize, String)> = violations
             .iter()
             .filter(|v| !v.message.contains(" before its conversion to size_t: '"))
@@ -406,7 +406,7 @@ impl Int32C {
         // `ptr + int` / `ptr - int` is pointer arithmetic and `ptr - ptr` a
         // ptrdiff_t computation; neither is the signed integer overflow this
         // rule detects. Forming an out-of-bounds pointer is ARR30-C's
-        // concern (task 914).
+        // concern.
         if self.is_pointer_arithmetic(node, source, type_map) {
             return;
         }
@@ -1532,7 +1532,7 @@ impl Int32C {
         // `realloc`'s first argument is the pointer being resized, never a
         // size, but the loop below used to check every argument and would
         // report "realloc() argument 1 contains arithmetic that may
-        // overflow: 'pglob->gl_pathv'" (task 915). `calloc` has two --
+        // overflow: 'pglob->gl_pathv'". `calloc` has two --
         // nmemb and size -- and either can overflow the product.
         let is_size_arg = |idx: usize| match function_name {
             "realloc" => idx == 1,
@@ -1558,7 +1558,7 @@ impl Int32C {
                     // to the statement that computed it -- `to_len =
                     // from_len * 2U + 1U;` -- so that expression gets the
                     // same overflow check an inline `malloc(from_len * 2U +
-                    // 1U)` would (task 604).
+                    // 1U)` would.
                     let resolved_rhs = if arg_node.kind() == "identifier" {
                         let var_name = get_node_text(&arg_node, source);
                         ast_utils::find_containing_function(&arg_node)
@@ -1574,7 +1574,7 @@ impl Int32C {
                     let check_node = resolved_rhs.as_ref().unwrap_or(&arg_node);
 
                     // Signedness-gated like every other path in this rule
-                    // (task 1288). An allocation size computed by UNSIGNED
+                    // . An allocation size computed by UNSIGNED
                     // arithmetic -- `data * sizeof(T)`, `from_len * 2U + 1U`
                     // -- wraps rather than overflows, and that CWE-680 shape
                     // is INT30-C's (`check_allocation_size_wrap`). What stays
@@ -1716,12 +1716,12 @@ impl Int32C {
                         // wrap-on-negative there is well-defined unsigned behavior,
                         // not an INT32-C concern. Reuses the same declared-type
                         // classification (now typedef-chain-aware) the other
-                        // arithmetic checks already use (task 657).
+                        // arithmetic checks already use.
                         // That gate looked only at a bare `binary_expression`,
                         // so `(len - curlen + 1)` in parentheses, and pointer
                         // differences like `n1 - p` or `SPT.end - SPT.base`
                         // (ptrdiff_t, not "unsigned"), still reached the report
-                        // (task 1276). The predicate below unwraps parentheses,
+                        // . The predicate below unwraps parentheses,
                         // treats pointer arithmetic as not-integer, and looks
                         // INSIDE an unsigned product for a signed sub-term.
                         let Some(signed) = self.signed_arithmetic_in(&arg_node, source, type_map)
@@ -1785,9 +1785,9 @@ impl Int32C {
     /// Report `signed`, a signed operation nested under an unsigned size
     /// computation handed to `call` (`(a * b) * sizeof(T)`), unless interval
     /// arithmetic proves it fits promoted int width or the call is guarded.
-    /// The outer unsigned product is INT30-C's (task 1288); the inner
+    /// The outer unsigned product is INT30-C's; the inner
     /// signed one is this rule's, and it overflows or not on its own
-    /// operands, so the fit is tested on it alone (task 1286).
+    /// operands, so the fit is tested on it alone.
     fn report_inner_signed_size_arithmetic(
         &self,
         call: &Node,
@@ -1801,7 +1801,7 @@ impl Int32C {
         // hazard. An additive one -- `(n + 1) * sizeof(T)`, `(nNew - i) *
         // sizeof(T)` -- overflows int only for a count already within one
         // of INT_MAX; measured on the corpora, every such report was an
-        // adjudicated judgment FP on a small count (task 1286).
+        // adjudicated judgment FP on a small count.
         if !self
             .get_operator(signed, source)
             .is_some_and(|op| matches!(op.as_str(), "*" | "<<"))
@@ -1857,7 +1857,7 @@ impl Int32C {
     /// (`sizeof(T) * n`, `len - curlen + 1` on size_t) or non-integer is
     /// not signed either -- but its operands may be: `(a * b) * sizeof(T)`
     /// performs `a * b` in int before anything is converted, and that
-    /// product can overflow with the outer one never involved (task 1286).
+    /// product can overflow with the outer one never involved.
     /// So an unsigned result is not the end of the question, only the end
     /// of it for THIS operation. Anything else -- signed, narrow, or
     /// unresolved -- counts, so an operand this rule cannot type keeps the
@@ -2056,7 +2056,7 @@ impl Int32C {
         // Parentheses do not change a type. Without this, `(random() %
         // kvstoreSize(kvs)) + 1` typed its left operand from the TEXT of the
         // parenthesized expression -- "unknown" -- and the `+ 1` read as a
-        // signed addition on an unsigned long long (task 1276).
+        // signed addition on an unsigned long long.
         if node.kind() == "parenthesized_expression" {
             if let Some(inner) = node.named_child(0) {
                 return self.infer_type(&inner, source, type_map);
@@ -2076,7 +2076,7 @@ impl Int32C {
         }
 
         // A call to a function this file defines or declares has the return
-        // type it was declared with (task 1276): `kvstoreSize(kvs)` is
+        // type it was declared with: `kvstoreSize(kvs)` is
         // `unsigned long long`, so `random() % kvstoreSize(kvs)` converts to
         // it and the `+ 1` after is unsigned arithmetic.
         if node.kind() == "call_expression" {
@@ -2090,7 +2090,7 @@ impl Int32C {
         // this looked like an ordinary unresolvable call and fell through
         // to "unknown", making a signed-looking operand on the other side
         // of `-`/`+` look risky even though the macro's own definition
-        // makes the result an unsigned constant (task 676).
+        // makes the result an unsigned constant.
         if node.kind() == "call_expression" {
             if let Some(t) = self.infer_type_from_macro_call(node, source) {
                 return t;
@@ -2259,7 +2259,7 @@ impl Int32C {
         // directly if it happens to spell out "unsigned"/"uint"/"size_t".
         // Resolve the full, possibly multi-level and cross-file typedef
         // chain before falling through to the signed/not_applicable
-        // guesses below (task 657).
+        // guesses below.
         if overflow_helpers::typedef_chain_is_unsigned(declared_type, &self.typedef_types.borrow())
         {
             return "unsigned".to_string();
@@ -2272,7 +2272,7 @@ impl Int32C {
         // valkey's `mstime_t`. The unsigned side of this question already
         // walks the chain above; the signed side used to stop at the
         // spelling and call every such operand `not_applicable`, so
-        // arithmetic on it fell out of the rule entirely (task 1287).
+        // arithmetic on it fell out of the rule entirely.
         // Classify the chain's terminal instead of the alias name.
         //
         // An alias whose chain reaches nothing we recognize -- an opaque
@@ -2515,7 +2515,7 @@ impl Int32C {
     /// The limit macros a suggestion should name for arithmetic performed at
     /// `bits`. A `long long` addition cannot exceed `INT_MAX`, so telling the
     /// reader to check against it describes an overflow that is not the one
-    /// being reported (task 1323).
+    /// being reported.
     fn limit_names(bits: u32) -> (&'static str, &'static str) {
         if bits >= WIDE_ARITH_BITS {
             ("INT64_MAX", "INT64_MIN")
@@ -2531,8 +2531,8 @@ impl Int32C {
     /// [`PROMOTED_ARITH_BITS`]'s own doc scopes it to "anything `int`-wide or
     /// NARROWER", and the rule applied it to every signed operand anyway, so
     /// a `long long` addition was checked -- and its suggestion written --
-    /// against `INT_MAX` (task 1323). The signed counterpart of INT30-C's
-    /// `arith_width_bits` (task 916), and it splits the operand shapes the
+    /// against `INT_MAX`. The signed counterpart of INT30-C's
+    /// `arith_width_bits`, and it splits the operand shapes the
     /// same way, because C does: a shift is performed in the promoted type of
     /// its LEFT operand alone, a compound assignment and `++`/`--` convert
     /// back into their destination, and a binary expression is as wide as its
@@ -2665,7 +2665,7 @@ impl Int32C {
     /// against the `short` or `char` it is being stored back into. Anything
     /// `int`-wide or wider is the overflow channel instead, and there the
     /// question is how wide the arithmetic itself is -- `INT_MAX` is simply
-    /// not the limit a `long long` operation can exceed (task 1323).
+    /// not the limit a `long long` operation can exceed.
     fn check_width_bits(
         &self,
         destination_bits: u32,
@@ -2708,7 +2708,7 @@ impl Int32C {
     /// declared 8 or 16 bits inverted the premise in both directions at once:
     /// the fits-check refused to skip provably-safe promoted arithmetic, and
     /// the definite-overflow channel of the provenance gate called `short a =
-    /// 32000, b = 1000; a + b` a *certain* overflow (task 926).
+    /// 32000, b = 1000; a + b` a *certain* overflow.
     ///
     /// What can still lose data is storing that promoted result back into
     /// something narrow -- `short result = data * data`, which is Juliet's
@@ -2846,7 +2846,7 @@ impl Int32C {
         overflow_helpers::extract_operand_names(node, source)
     }
 
-    /// Opt-in provenance gate (task 140).
+    /// Opt-in provenance gate.
     ///
     /// Returns true when at least one operand of this arithmetic node derives
     /// from untrusted or unbounded input — a full-range parser (`atoi`,
@@ -3097,7 +3097,7 @@ impl Int32C {
     }
 
     /// AST dual of [`Self::contains_arithmetic`], used for allocation-size
-    /// arguments (task 915). A raw text scan cannot tell an arithmetic
+    /// arguments. A raw text scan cannot tell an arithmetic
     /// operator from a punctuation coincidence: the `->` of a member access
     /// reads as `-`, and the deref in `sizeof *p` reads as `*`. Both spell
     /// a size argument with zero arithmetic in it, and both were flagged as
@@ -3418,7 +3418,7 @@ impl Int32C {
         // surrounding spaces, so `count > SIZE_MAX/sizeof(int)` -- the exact
         // idiom it exists to honour -- did not match. The dominance form is
         // spacing- and order-insensitive and also sees the guard as an `&&`
-        // conjunct or an earlier `if` (task 916).
+        // conjunct or an earlier `if`.
         self.has_surrounding_check(node, source, &["SIZE_MAX", " / ", " > ", "if"])
             || guard_dominance::has_dominating_limit_guard(node, node, source)
     }
@@ -3521,8 +3521,8 @@ impl Int32C {
             if parent.kind() == "function_definition" {
                 // Sanitized so a comment/string literal elsewhere in the
                 // function can't spoof an overflow-guard pattern and
-                // silently suppress a real violation. Memoized per function
-                // (task 672): this used to re-walk the whole function body
+                // silently suppress a real violation. Memoized per function:
+                // this used to re-walk the whole function body
                 // for every risky-operand candidate.
                 let func_text = {
                     let mut cache = self.function_text_cache.borrow_mut();

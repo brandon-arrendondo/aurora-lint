@@ -28,7 +28,7 @@
 //! know that validator's name in advance.
 //!
 //! Parameters are tainted-by-default (external input), but
-//! `collect_literal_only_static_params` (task 469) lifts that default for
+//! `collect_literal_only_static_params` lifts that default for
 //! a `static` function's parameter when every call site *in this same
 //! file* passes a string literal at that position -- e.g. hostap's
 //! `db_table_exists(sqlite3 *db, const char *name)`, reimplemented as a
@@ -49,7 +49,7 @@
 //! is unconditionally safe regardless of how deep the taint analysis goes.
 //!
 //! Two more FP shapes found adjudicating hostap's remaining findings
-//! (task 470), both fixed:
+//! , both fixed:
 //!
 //! - `is_char_loop_validated_before` recognizes an inline char-allowlist
 //!   validation loop (`for (i = 0; i < len; i++) { if (allowed) continue;
@@ -125,7 +125,7 @@ const TAINT_PROPAGATORS: &[&str] = &[
 /// (as opposed to `strcat`/`wcscat`-style append, which layers onto
 /// dest's existing content and so can't launder prior taint). When one of
 /// these calls has no tainted source arg, dest's taint from an earlier,
-/// unrelated write is stale and gets cleared (task 470): hostap's
+/// unrelated write is stale and gets cleared: hostap's
 /// `eap_user_db.c` reuses one `cmd` buffer for two separate queries in the
 /// same function -- the first `os_snprintf` pulls in a tainted `id_str`,
 /// the second is a pure string literal with no substitutions -- and
@@ -143,7 +143,7 @@ pub struct Str02C {
     /// Reverse call graph: callee_name → set of caller names. Built from
     /// ProjectContext's forward `call_graph` in `set_project_context`.
     callers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
-    /// Per-file (task 469): `static` function name → parameter indices
+    /// Per-file: `static` function name → parameter indices
     /// where every in-file call site passed a string literal. Recomputed
     /// at the start of every `check()` call by
     /// `collect_literal_only_static_params`.
@@ -179,7 +179,7 @@ impl Str02C {
     /// non-function nesting at translation-unit scope, which is rarely deep
     /// in real C), but it's still an unbounded native recursion in
     /// principle -- the same risk class as the original ARR00-C/MEM33-C bug
-    /// (task 153) -- so it gets the same treatment for consistency.
+    /// -- so it gets the same treatment for consistency.
     fn check_functions(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         let mut stack = vec![*root];
         while let Some(node) = stack.pop() {
@@ -750,7 +750,7 @@ impl Str02C {
     /// unconditional early exit (`return`/`goto`), reached only when none
     /// of the preceding per-character checks decided otherwise (typically
     /// via `continue`). This is the inline char-allowlist validation
-    /// shape found on hostap's `eap_user_sqlite_get` (task 470) --
+    /// shape found on hostap's `eap_user_sqlite_get` --
     /// CERT's own "validate then use" pattern, just spelled as a loop
     /// instead of the single guard call `is_validated_before` recognizes.
     fn is_char_loop_validated_before(

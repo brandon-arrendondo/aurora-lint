@@ -51,7 +51,7 @@ impl CertRule for Pos37C {
         // invoked exactly once on the given node. The previous version ran them at
         // both the translation_unit level (whole tree) and again per function body,
         // re-walking each function and emitting every in-function finding twice
-        // (task 221).
+        // .
         self.check_privilege_drop(node, source, &mut violations);
         self.check_win_privilege_apis(node, source, &mut violations);
 

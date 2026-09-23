@@ -56,7 +56,7 @@ impl Msc07C {
 
             // A label or a case is reachable by construction: control
             // arrives by `goto` or by the switch dispatch, never from the
-            // statement above it (task 1171).
+            // statement above it.
             if matches!(child.kind(), "labeled_statement" | "case_statement") {
                 seen_terminal = None;
             }

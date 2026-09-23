@@ -36,7 +36,7 @@ impl Msc15C {
     /// Scope- and shadowing-aware: two different functions (or blocks)
     /// declaring a same-named variable of a different type are not conflated.
     /// Uses the shared `ast_utils::resolve_identifier_type` fallback chain
-    /// (task 387/584) rather than hand-rolling the local/parameter/global
+    /// rather than hand-rolling the local/parameter/global
     /// resolution independently.
     fn declared_type_is_unsigned(&self, ident: &Node, source: &str) -> bool {
         let name = ast_utils::get_node_text(ident, source);

@@ -294,7 +294,7 @@ impl Dcl40C {
             // `struct foo { ... } STRUCT_PACKED;`) as if it declared an
             // object named after the macro — it never does, and every such
             // struct in the file would otherwise "redeclare" that same name
-            // with a different (real) type (task 432).
+            // with a different (real) type.
             if declarator.kind() == "identifier"
                 && Self::type_field_is_definition_with_body(node)
                 && self.is_known_macro(&get_node_text(&declarator, source), source)

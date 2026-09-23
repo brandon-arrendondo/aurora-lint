@@ -117,7 +117,7 @@ pub struct Arr30C {
     /// reset base for each function's own buffer tracking in
     /// `check_with_buffer_info`'s `function_definition` arm, so two
     /// functions with a same-named local buffer never conflate each
-    /// other's size/allocation_line (task 389). Cleared per file.
+    /// other's size/allocation_line. Cleared per file.
     global_scope_buffers: RefCell<HashMap<String, BufferInfo>>,
     /// Names of object-like macros whose replacement text is exactly the null
     /// terminator (`#define EOS '\0'`, `#define NUL 0`), so that the
@@ -263,13 +263,13 @@ impl CertRule for Arr30C {
             self.param_decode_buf_cache.borrow_mut().clear();
             self.param_decode_reported.borrow_mut().clear();
             *self.null_sentinel_macros.borrow_mut() = collect_null_sentinel_macros(node, source);
-            // Build the interprocedural over-read helper summary for this file
-            // (task 211): function name -> indices of `const char *` params it
+            // Build the interprocedural over-read helper summary for this file:
+            // function name -> indices of `const char *` params it
             // walks unbounded. Consumed by `check_overread_helper_callsite`.
             *self.helper_overread_summary.borrow_mut() =
                 Some(self.build_helper_overread_summary(node, source));
             // Which parameters this file's callers already bounds-check before
-            // passing (task 911). Consumed by `check_unvalidated_param_index`.
+            // passing. Consumed by `check_unvalidated_param_index`.
             *self.caller_validated_params.borrow_mut() =
                 Some(self.build_caller_validated_params(node, source));
             let mut buffer_info = self.analyze_buffer_allocations(source);
@@ -400,7 +400,7 @@ impl Arr30C {
     /// *tracked buffer at all*, never reading its size or allocation_line).
     /// It is NOT safe to use for size/line-sensitive violation checks across
     /// function boundaries; see `analyze_global_scope_buffers` and its use
-    /// in `check_with_buffer_info`'s `function_definition` arm (task 389).
+    /// in `check_with_buffer_info`'s `function_definition` arm.
     fn analyze_buffer_allocations(&self, source: &str) -> HashMap<String, BufferInfo> {
         let mut buffers = HashMap::new();
 
@@ -439,7 +439,7 @@ impl Arr30C {
     /// never a local declared inside a function body. This is the safe,
     /// collision-free base that every function starts its own buffer
     /// tracking from in `check_with_buffer_info`'s `function_definition`
-    /// arm (task 389): each function then layers its own locals on top via
+    /// arm: each function then layers its own locals on top via
     /// a fresh `extract_buffers_from_ast` call scoped to just that
     /// function's body, so two functions with a same-named local buffer
     /// (different size, different declaration line) never see each other's
@@ -1227,7 +1227,7 @@ impl Arr30C {
         // a `#define`, tree-sitter never substitutes an enumerator's value
         // inline, so without this lookup every such index looks like an
         // unbounded runtime variable even though its value is fixed at
-        // compile time (task 443). `collect_macro_constants` already folds
+        // compile time. `collect_macro_constants` already folds
         // enum constants into this same map (see `Arr30C::collect_constants`
         // doc comment) -- restricted to a bare identifier (no `.`/`->`/
         // arithmetic) so this can't misfire on a struct field or expression
@@ -1767,7 +1767,7 @@ impl Arr30C {
     ) -> bool {
         let func_text = Self::text_sans_comments_and_strings(*func_node, source);
         // \b-anchored so a short param name (n, i, sz) can't match as a
-        // substring of an unrelated longer identifier (task 512/678).
+        // substring of an unrelated longer identifier.
         let param_b = format!(r"\b{}\b", regex::escape(param_name));
 
         // Check for various bounds checking patterns:
@@ -1817,7 +1817,7 @@ impl Arr30C {
                             // Look for function calls in the body (skip the declaration part)
                             // Pattern: function_name( — \b-anchored so a name that's a
                             // substring of another identifier (e.g. "foo" inside "myfoo")
-                            // can't inflate the match count (task 512/678).
+                            // can't inflate the match count.
                             let call_pattern = format!(r"\b{}\s*\(", regex::escape(func_name));
                             if let Ok(re) = regex::Regex::new(&call_pattern) {
                                 // Count matches - if more than 1, it's recursive (declaration + call)
@@ -1857,7 +1857,7 @@ impl Arr30C {
             // Look for recursive calls with index modifications like: func(arr, index + 2, ...)
             // Pattern: function_name(.*index \+ \d+ — \b-anchored on both the
             // function and index names so neither can match as a substring of
-            // an unrelated longer identifier (task 512/678).
+            // an unrelated longer identifier.
             let modification_pattern = format!(
                 r"\b{}\s*\([^)]*\b{}\s*\+\s*(\d+)",
                 regex::escape(&func_name),
@@ -2166,8 +2166,8 @@ impl Arr30C {
         // — it doesn't need a paired lower-bound check to be safe against an
         // *upper*-bound overrun, which is all ARR30-C's static-buffer check
         // cares about here. Resolve the macro (or literal) and compare
-        // against the real buffer size, exactly like the for-loop path
-        // (task 436/443): a `touchSlot < MAX_TOUCH_POINTS` guard on a
+        // against the real buffer size, exactly like the for-loop path:
+        // a `touchSlot < MAX_TOUCH_POINTS` guard on a
         // 10-element buffer is safe whether `touchSlot` is a plain local or
         // a struct field — `extract_and_resolve_macro_from_condition` never
         // looks at the left-hand side, so it already handles both shapes.
@@ -2593,7 +2593,7 @@ impl Arr30C {
 
                 // Resolve the name to the declaration in scope at this
                 // access, not to whichever same-named declaration the
-                // prescan saw last (task 1273).
+                // prescan saw last.
                 let resolved = node.child(0).and_then(|array_node| {
                     self.buffer_in_scope_at(actual_buffer_name, &array_node, source, buffers)
                 });
@@ -2644,7 +2644,7 @@ impl Arr30C {
     /// index expression itself: `CORE.Input.Gamepad.axisCount[gamepad]`
     /// (enclosing function returns `int`) was flagged while the
     /// structurally identical `CORE.Input.Gamepad.name[gamepad]` (enclosing
-    /// function returns `char *`) was missed (task 239). Reuses
+    /// function returns `char *`) was missed. Reuses
     /// `find_function_declarator`, which already unwraps one level of
     /// `pointer_declarator` for exactly this reason (see its use in
     /// `check_return_pointer_arith_binary_expr`).
@@ -2818,7 +2818,7 @@ impl Arr30C {
 
     /// Is `array_name[var]` provably in-bounds because `array_name` was
     /// allocated to a size that's a "round `var` up to a multiple of `D`,
-    /// plus padding" expression of `var` itself (task 446)?
+    /// plus padding" expression of `var` itself?
     ///
     /// This is the classic MD5/SHA1-style hash padding idiom:
     /// ```c
@@ -2866,7 +2866,7 @@ impl Arr30C {
             }
             return k1 + d * (c - 1) + k_outer >= k2;
         }
-        // Fall back to the two-statement mod-based round-up idiom (task 448),
+        // Fall back to the two-statement mod-based round-up idiom,
         // e.g. SHA-256-style padding, which `match_roundup_formula` can't
         // match since it's a single-expression div-mul pattern.
         k_outer >= 0
@@ -3126,7 +3126,7 @@ impl Arr30C {
             2 => {
                 let elem_text = source[args[1].start_byte()..args[1].end_byte()].trim();
                 // `sizeof(char)`/`sizeof(unsigned char)`/`sizeof(signed char)`
-                // are also always 1, same as a literal `1` (task 448).
+                // are also always 1, same as a literal `1`.
                 let is_size_one = elem_text == "1"
                     || matches!(
                         elem_text
@@ -3412,7 +3412,7 @@ impl Arr30C {
         if vra_safe {
             return false;
         }
-        // Pointer-aliasing constant resolution (task 206): an additional
+        // Pointer-aliasing constant resolution: an additional
         // proof source alongside VRA, for patterns VRA can't model at all
         // (VRA has zero pointer-dereference modeling) — write-then-read
         // through an aliased pointer (`*dataPtr1 = data; ... *dataPtr2`,
@@ -3430,7 +3430,7 @@ impl Arr30C {
         if alias_safe {
             return false;
         }
-        // recv()/read()-family return-value proof (task 434): a third proof
+        // recv()/read()-family return-value proof: a third proof
         // source alongside VRA and alias resolution above, for the Juliet
         // CWE-789 boilerplate idiom `recvResult = recv(sock, inputBuffer,
         // CHAR_ARRAY_SIZE - 1, 0); ... inputBuffer[recvResult] = '\0';`. The
@@ -3447,7 +3447,7 @@ impl Arr30C {
         ) {
             return false;
         }
-        // NUL-sentinel walk proof (task 1021): a `for` loop whose own
+        // NUL-sentinel walk proof: a `for` loop whose own
         // condition is the terminator test on the very buffer being
         // subscripted bounds the index by the terminator's offset -- a bound
         // none of the comparison-based channels below can see, because the
@@ -3462,7 +3462,7 @@ impl Arr30C {
         ) {
             return false;
         }
-        // Guard already evaluated on the way here (task 1278): an
+        // Guard already evaluated on the way here: an
         // early-return size check or a clamp, neither of which ENCLOSES the
         // access and so neither of which `has_proper_bounds_check` below can
         // see.
@@ -3492,7 +3492,7 @@ impl Arr30C {
 
     /// True when a guard already evaluated by the time `node` runs proves
     /// `var < bound` for a `bound <= effective_size`, and nothing reassigns
-    /// `var` between that guard and the access (task 1278).
+    /// `var` between that guard and the access.
     ///
     /// Two idioms, both invisible to the enclosing-`if`/`for` checks because
     /// the guard PRECEDES the access rather than enclosing it:
@@ -3751,7 +3751,7 @@ impl Arr30C {
     /// where `buf` is textually the same buffer being indexed and
     /// `len_expr` evaluates to a constant `<= effective_size`. Such a
     /// call's return value can never exceed the length it was given
-    /// against that exact buffer (task 434).
+    /// against that exact buffer.
     ///
     /// Searches the whole enclosing function (not just `var`'s own
     /// declaration-scope block, unlike `find_last_assigned_value_expr`):
@@ -4592,8 +4592,8 @@ impl Arr30C {
     /// pointer: a `while`/`for`/`do` loop that advances a tainted pointer (or
     /// feeds it to a varint reader) while chasing a terminator or continuation
     /// bit, with no dominating bound check (`p < end`, a counter `< len`, etc.).
-    /// This is the ARR30-C false-negative family from the sqlite real-world audit
-    /// (task 172): the rule formerly fired on bounded indices it misread and
+    /// This is the ARR30-C false-negative family from the sqlite real-world audit:
+    /// the rule formerly fired on bounded indices it misread and
     /// missed these genuine over-reads.
     fn check_unbounded_decode_loop(&self, loop_node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
@@ -5012,7 +5012,7 @@ impl Arr30C {
             .unwrap_or(false)
     }
 
-    /// Build the per-file interprocedural over-read summary (task 211): walk every
+    /// Build the per-file interprocedural over-read summary: walk every
     /// `function_definition` in the translation unit and record, by function name,
     /// the positional indices of its `const char *` parameters that are walked
     /// unbounded. Only functions with at least one such parameter are stored.
@@ -5082,7 +5082,7 @@ impl Arr30C {
     /// the integer length immediately after the pointer, so a `const char *`
     /// not followed by an integer scalar is treated as length-unbounded.
     ///
-    /// Single implementation of that scan for the file (task 680) --
+    /// Single implementation of that scan for the file --
     /// `collect_param_decode_buffers` reuses it and discards the positions.
     fn const_char_ptr_params_without_length(
         func_node: &Node,
@@ -5198,7 +5198,7 @@ impl Arr30C {
         }
     }
 
-    /// Interprocedural over-read at a call site (task 211). When the callee is a
+    /// Interprocedural over-read at a call site. When the callee is a
     /// helper that walks one of its `const char *` parameters unbounded (per the
     /// per-file `helper_overread_summary`) and the corresponding argument resolves
     /// — after stripping `+ offset` / casts — to a pointer tainted by a
@@ -5357,7 +5357,7 @@ impl Arr30C {
     /// Only feeds `check_malloc_null_pointer_arithmetic`'s NULL-check-
     /// before-pointer-arithmetic tracking here, not any numeric-size
     /// extraction — so widening from the original malloc/calloc/realloc-only
-    /// list to the shared `call_roles::is_allocator_call` set (task 498)
+    /// list to the shared `call_roles::is_allocator_call` set
     /// is a plain recall improvement: `aligned_alloc`/`strdup`/`strndup`
     /// can also return NULL and are equally subject to the same
     /// missing-NULL-check bug.
@@ -5599,7 +5599,7 @@ impl Arr30C {
     /// `sizeof(struct X) + N * sizeof(elem)`-style expression that reserves
     /// *extra* space beyond the struct itself -- proof that the member's
     /// real element count lives at the allocation site, not its declared
-    /// size (task 554). Both a direct literal-arithmetic size expression
+    /// size. Both a direct literal-arithmetic size expression
     /// and one hidden behind a file-local function-like macro (e.g. a
     /// `SZ(n)` wrapper) are recognized: the macro case is resolved via
     /// `macro_expand::expand_invocation` before pattern-matching, since
@@ -5756,7 +5756,7 @@ impl Arr30C {
             // under C99 or `1` otherwise -- aurora-lint has no preprocessor, so the
             // bracket contents are seen as a bare, unresolved identifier
             // either way). All three are the same "real size lives at the
-            // allocation site, not the declaration" pattern (task 554).
+            // allocation site, not the declaration" pattern.
             if let Some(open_pos) = field_text.rfind('[') {
                 if let Some(close_rel) = field_text[open_pos..].find(']') {
                     let inside = field_text[open_pos + 1..open_pos + close_rel].trim();
@@ -5859,7 +5859,7 @@ impl Arr30C {
     /// finding per struct -- all at that same line, each naming a struct and
     /// member the line does not mention. In sqlite's fts5_index.c the loop
     /// was `while( *p++ & 0x80 );`, an unrelated varint skip, credited to
-    /// five different structs at once (task 912).
+    /// five different structs at once.
     fn find_any_flexible_member_arithmetic(
         &self,
         node: &Node,
@@ -6003,7 +6003,7 @@ impl Arr30C {
     fn has_lower_bound_check(&self, func_node: &Node, param_name: &str, source: &str) -> bool {
         let func_text = Self::text_sans_comments_and_strings(*func_node, source);
         // \b-anchored so a short param name can't match as a substring of an
-        // unrelated longer identifier (task 512/678).
+        // unrelated longer identifier.
         let param_b = format!(r"\b{}\b", regex::escape(param_name));
 
         // Look for patterns like: if (param >= 0) or if (param > -1) or if (0 <= param)
@@ -6131,7 +6131,7 @@ impl Arr30C {
                 ));
                 // Interprocedural over-read: a tainted (blob/value-derived)
                 // pointer passed into a helper that walks the matching param
-                // unbounded, with no length argument (task 211).
+                // unbounded, with no length argument.
                 violations.extend(self.check_overread_helper_callsite(node, source));
             }
             "return_statement" => {
@@ -6151,10 +6151,10 @@ impl Arr30C {
                     &local_buffers,
                 ));
                 // Taint-gated unbounded decode-loop over untrusted blob/column
-                // bytes (task 172).
+                // bytes.
                 violations.extend(self.check_unbounded_decode_loop(node, source));
                 // Param-decoder index over-read: const-char* parameter walked by
-                // an embedded-increment subscript with no length bound (task 210).
+                // an embedded-increment subscript with no length bound.
                 violations.extend(self.check_param_decode_overread(node, source));
             }
             "for_statement" | "do_statement" => {
@@ -6321,7 +6321,7 @@ impl Arr30C {
     /// `profiler_entries`, at `MAX_UNIQUE_CHECKPOINTS` and
     /// `MAX_UNIQUE_INSTRUCTIONS` elements. Exactly one is compiled, and
     /// nothing in the AST says which, so a bound taken from either is a
-    /// coin flip -- reported as fact (task 912).
+    /// coin flip -- reported as fact.
     ///
     /// Same-size redeclarations are NOT conflicts: both branches agree on the
     /// bound, so it stays checkable.
@@ -6379,7 +6379,7 @@ impl Arr30C {
     /// declarator-shaped sibling after it is really initializer text.
     ///
     /// See the call sites for why the `=` is the discriminator rather than
-    /// `has_error()` alone (task 912).
+    /// `has_error()` alone.
     fn declarator_split_by_parse_error(node: &Node, source: &str) -> bool {
         for i in 0..node.child_count() {
             let Some(child) = node.child(i) else { continue };
@@ -6403,7 +6403,7 @@ impl Arr30C {
         // the INITIALIZER -- the subscript read `arg[7]` -- behind as a stray
         // `array_declarator`. Read as a declaration, that says `arg` has size
         // 7, which made index 7 of an 8-element array look out of bounds
-        // (task 912).
+        // .
         //
         // The `=` is what identifies this: an ERROR spanning it means the
         // declarator/initializer boundary was mis-parsed, so a declarator-
@@ -6465,7 +6465,7 @@ impl Arr30C {
     /// Extract buffer information from a declaration AST node (without typedefs)
     fn extract_buffer_from_declaration(&self, node: &Node, source: &str) -> Option<BufferInfo> {
         // See extract_buffer_from_declaration_with_typedefs: a declarator left
-        // behind by a mis-parsed initializer cannot size a buffer (task 912).
+        // behind by a mis-parsed initializer cannot size a buffer.
         if Self::declarator_split_by_parse_error(node, source) {
             return None;
         }

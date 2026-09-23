@@ -68,7 +68,7 @@ impl CertRule for Sig31C {
         // the field_expression branch and again when the recursion reaches the
         // base identifier — both at the same position — producing an exact
         // duplicate. Collapse those; distinct accesses always start at distinct
-        // (line, column), so genuine multi-access lines are preserved (task 222).
+        // (line, column), so genuine multi-access lines are preserved.
         let mut seen = HashSet::new();
         violations.retain(|v| seen.insert((v.line, v.column)));
 

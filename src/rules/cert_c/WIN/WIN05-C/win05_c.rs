@@ -8,7 +8,7 @@
 //! `GetRegDwordValue(HKEY_LOCAL_MACHINE, ...)` whose body forwards its first
 //! parameter to `RegOpenKeyExA` is the same HKLM access as the direct call,
 //! and requiring the literal `HKEY_LOCAL_MACHINE` at the `RegOpenKeyEx*` site
-//! missed every such wrapper (task 1167). The walk is bounded and follows
+//! missed every such wrapper. The walk is bounded and follows
 //! `FunctionSummary::param_passthroughs` for function hops and
 //! `macro_forwarding_target` for a function-like macro hop, so a chain like
 //! ventoy's `ReadRegistryKey32(root, key)` -> `GetRegistryKey32(root, ...)`

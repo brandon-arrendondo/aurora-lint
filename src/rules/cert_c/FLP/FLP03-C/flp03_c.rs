@@ -63,7 +63,7 @@ pub struct Flp03C {
     /// Project-wide macro constants from prescan (e.g. a divisor-guard
     /// constant defined in a header), merged with per-file constants in
     /// the divisor-provably-{non}zero checks so a guard defined outside the
-    /// file under scan is still resolved (task 617).
+    /// file under scan is still resolved.
     project_macros: RefCell<Arc<MacroConstantMap>>,
 }
 
@@ -981,7 +981,7 @@ impl Flp03C {
     /// [`Self::walk_scope_for_last_assignment`], this has no branch-value
     /// return dependency (it only accumulates into the shared `&mut`
     /// flags), so a plain node stack suffices -- same unbounded-depth risk
-    /// class as the original ARR00-C/MEM33-C bug (task 153).
+    /// class as the original ARR00-C/MEM33-C bug.
     fn check_all_assignments(
         scope: &Node,
         var_name: &str,

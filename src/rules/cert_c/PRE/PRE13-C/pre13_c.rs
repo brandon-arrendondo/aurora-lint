@@ -177,7 +177,7 @@ impl Pre13C {
     /// the tree, so a deeply nested `#if`/`#elif` chain (or just deeply
     /// nested code in general) would cost one native call frame per level
     /// -- the same hostap-style risk class as the original ARR00-C/MEM33-C
-    /// bug (task 153). `defined_macros` is read-only once built for a given
+    /// bug. `defined_macros` is read-only once built for a given
     /// subtree (only ever appended-to when entering a new `preproc_if`, never
     /// mutated in place or merged back), so an `Rc<Vec<String>>` shared
     /// handle reproduces the original borrowed-slice-vs-forked-clone

@@ -43,7 +43,7 @@ impl ENV30C {
         // where it is called: lua declares `l_getenv` at file scope, binds it
         // in `pmain` and calls it from `lua_initreadline`. So the bindings are
         // collected once over the whole translation unit, before any function
-        // is walked (aurora_lint 1433).
+        // is walked.
         let fn_ptr_bindings = fn_ptr_bindings::file_scope_function_pointer_bindings(node, source);
 
         // Check function definitions to track variable assignments from protected functions
@@ -174,7 +174,7 @@ impl ENV30C {
     /// so a `/* like strchr(p, c) */` or a call to some `utf8_strchr` read
     /// as the real thing. Nothing was observed firing from it on the
     /// current corpora -- this is the same bug class in the same file,
-    /// closed before it costs a finding (aurora_lint 1433).
+    /// closed before it costs a finding.
     ///
     /// Matching the argument as a node rather than as text also drops the
     /// four spelling patterns the old check enumerated: a call split
@@ -310,7 +310,7 @@ impl ENV30C {
     /// calls it as `l_getenv(...)`. On the `&getenv` path the returned
     /// pointer is a protected object like any other, and the old text scan
     /// credited it only by accident -- the spelling `l_getenv` happens to
-    /// contain `getenv` (aurora_lint 1428, 1433).
+    /// contain `getenv`.
     ///
     /// MAY, not MUST: one binding being protected is enough, because that
     /// path exists. The occurrence is resolved to its declaration first, so
@@ -588,7 +588,7 @@ impl ENV30C {
                 // function: without it the call falls through to the
                 // may-modify branch below, which reports the same line for a
                 // weaker reason and marks it requires_manual_review
-                // (aurora_lint 1421).
+                // .
                 | "mktime"
         )
     }
@@ -654,7 +654,7 @@ impl ENV30C {
                 // branch, which reports "may modify it" about a pointer
                 // dlopen provably does not touch -- lua's
                 // `dlopen(rllib, RTLD_NOW | RTLD_LOCAL)` where rllib came
-                // from getenv (aurora_lint 1433).
+                // from getenv.
                 | "dlopen"
                 | "stat"
                 | "lstat"

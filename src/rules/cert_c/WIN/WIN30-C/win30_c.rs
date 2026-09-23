@@ -51,7 +51,7 @@ impl Win30C {
                 return false;
             };
             let function_name = get_node_text(&function_node, source);
-            // The macro or either entry point it expands to (task 1130).
+            // The macro or either entry point it expands to.
             if !call_roles::is_win32_api(function_name, "FormatMessage") {
                 return false;
             }

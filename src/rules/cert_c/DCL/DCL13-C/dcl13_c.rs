@@ -16,7 +16,7 @@ pub struct Dcl13C {
     /// `call_expression`, and an element lvalue passed to it --
     /// `CHACHA20_QUARTERROUND(st[0], st[4], …)` -- is a write to `st` when
     /// the macro body assigns that parameter, which no real function call
-    /// with the same shape could be (task 1254). Handle only, per the
+    /// with the same shape could be. Handle only, per the
     /// project-context convention in `docs/design/internal-capability-catalog.md`.
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
 }
@@ -736,7 +736,7 @@ fn arg_is_param(node: &Node, param_name: &str, source: &str) -> bool {
 /// object `param` points to, so a callee that writes through it (e.g.
 /// hostap's `WPA_PUT_BE32(block + AES_BLOCK_SIZE - 4, val)`, which parses as
 /// `(block + AES_BLOCK_SIZE) - 4`) modifies memory owned by `param`'s
-/// pointee just as directly as passing `param` itself would (task 391).
+/// pointee just as directly as passing `param` itself would.
 fn arg_is_param_pointer_offset(node: &Node, param_name: &str, source: &str) -> bool {
     match node.kind() {
         "identifier" => ast_utils::get_node_text(node, source) == param_name,
@@ -898,7 +898,7 @@ fn analyze_parameter(param: &Node, source: &str) -> Option<(String, bool, bool, 
                     // the pointer variable itself, not the pointee (code), so
                     // it doesn't carry the same meaning CERT intends here and
                     // isn't idiomatic C. Skip it entirely rather than
-                    // flagging it as an unmodified pointer (task 642).
+                    // flagging it as an unmodified pointer.
                     if declarator_utils::is_function_declarator(&child) {
                         continue;
                     }

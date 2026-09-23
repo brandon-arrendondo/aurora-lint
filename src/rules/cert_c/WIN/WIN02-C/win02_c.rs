@@ -58,7 +58,7 @@ impl Win02C {
 
                 // The macro and both entry points it expands to;
                 // `CreateProcessAsUser*` is the compliant form and does not
-                // match (task 1130).
+                // match.
                 if call_roles::is_win32_api(func_name, "CreateProcess") {
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),

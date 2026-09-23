@@ -90,7 +90,7 @@ impl Api02C {
     /// own children, to avoid double-counting nested function-pointer
     /// params) keeps this bounded in practice, but depth outside a matched
     /// list is otherwise unbounded native recursion -- the same risk class
-    /// as the original ARR00-C/MEM33-C bug (task 153).
+    /// as the original ARR00-C/MEM33-C bug.
     fn check_parameters_recursive(
         &self,
         root: &Node,
@@ -232,7 +232,7 @@ impl Api02C {
         // by other parameters that could have been (but weren't) its
         // size, is still the genuine strncpy-style violation this rule
         // targets. Confirmed via 589 adjudicated real-world API02-C false
-        // positives (task 450): sqlite's pRes/pResOut/pAmt/pMask/pnOpt,
+        // positives: sqlite's pRes/pResOut/pAmt/pMask/pnOpt,
         // curl's curl_easy_recv's `size_t *n`, curl_multi_perform's
         // `int *running_handles`, curl_multi_timeout's `long *milliseconds`
         // — every one a trailing scalar-typed out-pointer with no

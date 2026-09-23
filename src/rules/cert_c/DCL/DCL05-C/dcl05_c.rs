@@ -41,7 +41,7 @@ const WIN32_POINTER_TYPEDEFS: &[&str] = &[
 
 pub struct Dcl05C {
     /// Names every scanned file's typedefs bind to a pointer type in this
-    /// rule's sense, from prescan (task 1188): the typedef usually lives in a
+    /// rule's sense, from prescan: the typedef usually lives in a
     /// header, and `const LPPOINT pt` in a .c file is only recognisable as
     /// "const on the pointer, not the pointee" if `LPPOINT` is known to be
     /// one.

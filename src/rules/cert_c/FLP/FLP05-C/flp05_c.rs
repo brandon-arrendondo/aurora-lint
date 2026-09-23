@@ -57,7 +57,7 @@ impl CertRule for Flp05C {
         // (only `declaration`-kind local vars), so a stale entry from one
         // function's local (e.g. `float x`) could otherwise leak into
         // another function's unrelated same-named parameter or local
-        // (task 418). Scope the whole-source walk per `function_definition`,
+        // . Scope the whole-source walk per `function_definition`,
         // mirroring EXP39-C/STR32-C's per-function reset pattern.
         let functions = query::find_descendants_of_kind(*node, "function_definition");
         if functions.is_empty() {

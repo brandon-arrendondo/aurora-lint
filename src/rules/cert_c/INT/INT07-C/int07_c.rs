@@ -57,7 +57,7 @@ impl CertRule for Int07C {
         // commonly reuse a local name (e.g. `ret`, `pos`) with different
         // types, and a file-wide map would misattribute one function's
         // char-typed variable onto the other's identically-named
-        // int/pointer variable (task 394). File-scope (global) plain-char
+        // int/pointer variable. File-scope (global) plain-char
         // declarations are collected separately, without descending into
         // any function body, and are visible to every function as well as
         // to file-scope code itself (e.g. the CERT wiki example, which

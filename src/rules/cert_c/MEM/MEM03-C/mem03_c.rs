@@ -33,7 +33,7 @@ use tree_sitter::Node;
 pub struct Mem03C {
     /// Cross-file summaries: a callee whose `clears_params` names an
     /// argument position overwrites that buffer, whatever it is called
-    /// (task 1127).
+    /// .
     function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
     /// Function-like macros, for `macro_clears_param_indices`.
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
@@ -95,7 +95,7 @@ impl Mem03C {
     /// (`macro_clears_param_indices`); a function whose summary says its
     /// body clears the parameter (`clears_params`) -- the fact that makes
     /// mbedtls's `mbedtls_platform_zeroize` a clearer without anyone naming
-    /// it (task 1127).
+    /// it.
     fn cleared_arg_indices(
         &self,
         spelled_name: &str,
@@ -171,7 +171,7 @@ impl Mem03C {
     /// every nested block and if/while/for body, and a chain of deeply
     /// nested braces (or an obfuscated/generated deep block nesting) would
     /// cost one native call frame per level -- the same hostap-style risk
-    /// class as the original ARR00-C/MEM33-C bug (task 153).
+    /// class as the original ARR00-C/MEM33-C bug.
     ///
     /// Each frame is `(container, next_child_index, cleared)`, mirroring
     /// where a native recursive call would resume the sibling loop, and
@@ -210,7 +210,7 @@ impl Mem03C {
                 }
 
                 // Check for free() calls without prior clearing. Only
-                // plausibly-sensitive buffers are in scope (task 317): this
+                // plausibly-sensitive buffers are in scope: this
                 // rule previously fired on every free() regardless of what
                 // the pointer held, which made it explode once macro-wrapped
                 // frees were recognized (any project's dominant free-wrapper
@@ -396,7 +396,7 @@ impl Mem03C {
     /// might hold sensitive data? Matches on the same name list as
     /// [`Self::check_sensitive_data_cleanup`] so the free()/realloc() checks
     /// in `analyze_block` and the scope-exit check agree on what counts as
-    /// "sensitive" (task 317).
+    /// "sensitive".
     fn is_sensitive_name(name: &str) -> bool {
         let lower = name.to_lowercase();
         Self::SENSITIVE_NAMES.iter().any(|n| lower.contains(n))

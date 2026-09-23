@@ -69,7 +69,7 @@ impl Flp06C {
                 // residual FP sub-classes that scan picked up — the `->` arrow
                 // in call arguments, integer index arithmetic inside a subscript
                 // *read*, unary minus on a literal, and brace initializers — and
-                // float-returning calls or float operands (task 230/237), none
+                // float-returning calls or float operands, none
                 // of which are integer arithmetic implicitly converted to float.
                 let is_integer_arith = initializer_value_node(node)
                     .map(|v| is_integer_arithmetic(&v, source, type_map))

@@ -138,7 +138,7 @@ impl Int09C {
         // enumerator's name and its `=` initializer (e.g. curl's
         // `NAME CURL_DEPRECATED(ver, "msg") = EXPR`) produces ERROR nodes
         // that fragment the AST into extra phantom `enumerator` siblings
-        // with no `value` field (task 453) -- operating on raw text instead
+        // with no `value` field -- operating on raw text instead
         // sidesteps that corrupted structure entirely.
         let list_start = enumerator_list.start_byte();
         let list_end = enumerator_list.end_byte();

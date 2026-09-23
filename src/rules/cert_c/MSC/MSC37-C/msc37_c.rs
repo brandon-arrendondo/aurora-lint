@@ -84,7 +84,7 @@ impl Msc37C {
     /// Function-like macros whose replacement list contains a `return`:
     /// `MBEDTLS_MPS_TRACE_RETURN(val)` is how every function in mbedtls's
     /// mps_reader.c returns, and the body shows no `return_statement` at
-    /// all (task 1171). A call to one is a return for this rule's purposes.
+    /// all. A call to one is a return for this rule's purposes.
     /// This file's own definitions first, then the project's.
     fn collect_returning_macros(&self, source: &str) -> HashSet<String> {
         fn returns(body: &str) -> bool {

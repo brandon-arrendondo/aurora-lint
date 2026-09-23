@@ -74,7 +74,7 @@ impl Int31C {
     /// walks the cross-file typedef chain to a terminal builtin and
     /// tries again -- so `typedef double real_t;` or a
     /// `sqlite3_int64 -> long long int` chain lands on the same width
-    /// row an unaliased spelling would (task 1057).
+    /// row an unaliased spelling would.
     fn get_type_width_resolved(&self, type_str: &str) -> Option<u32> {
         if let Some(w) = get_type_width(type_str) {
             return Some(w);
@@ -687,10 +687,10 @@ const WIDE_TYPES: &[&str] = &[
     "size_t",
     // Bare "int64"/"uint64" substring (not just the "_t"-suffixed stdint
     // form) catches project-specific 64-bit typedefs like sqlite3_int64/
-    // sqlite3_uint64 and the older sqlite_int64 alias (task 174).
+    // sqlite3_uint64 and the older sqlite_int64 alias.
     "int64",
     "uint64",
-    // Floating types (task 665): not narrower/wider than the integer types
+    // Floating types: not narrower/wider than the integer types
     // above in any bit-width sense, but a float/double/long double cast down
     // to a NARROW_TYPES (char-width) target is exactly as lossy as an
     // integer-to-char narrowing, e.g. `(char)some_double_var`. NARROW_TYPES
@@ -854,7 +854,7 @@ impl Int31C {
     /// The type specifier alone is the *pointee* type: dropping the star
     /// recorded `unsigned char *buf` as `unsigned char`, so `buf += readnb`
     /// (an `ssize_t`) read as a 64-into-8-bit narrowing assignment rather than
-    /// a pointer advance (task 914). `get_type_width` matches type names
+    /// a pointer advance. `get_type_width` matches type names
     /// exactly, so a starred type has no integer width at all -- which is
     /// precisely right for a pointer -- and the shared `pointer_typing` engine
     /// reads the same spelling.
@@ -1225,7 +1225,7 @@ impl Int31C {
     /// Flag `x = sqlite3_value_int(...)` (or `sqlite3_column_int`) when `x`
     /// later flows into an allocation call's size argument -- the 32-bit
     /// accessor truncates a value that may need the full 64-bit range, and a
-    /// `..._int64` sibling exists precisely for that case (task 174).
+    /// `..._int64` sibling exists precisely for that case.
     fn check_narrow_accessor_before_alloc(
         &self,
         node: &Node,

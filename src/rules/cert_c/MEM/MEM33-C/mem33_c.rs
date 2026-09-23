@@ -1760,7 +1760,7 @@ impl FlexibleArrayAnalyzer {
     /// genuine flexible-array-member struct? Previously any `pointer_expression`
     /// at all counted, so e.g. `*d ^= *s` on a plain `u32 *` (no struct, let
     /// alone a flexible-array one, anywhere in sight) misfired MEM33-C
-    /// (task 391).
+    /// .
     fn is_flexible_struct_dereference(&self, node: &Node, source: &str) -> bool {
         if node.kind() != "pointer_expression" {
             return false;
@@ -1786,7 +1786,7 @@ impl FlexibleArrayAnalyzer {
 
     /// Is `ident` declared `const` at its actual declaration/parameter site?
     /// Resolves via `find_identifier_declaration_node` instead of guessing
-    /// from the identifier's spelling (task 524).
+    /// from the identifier's spelling.
     fn is_identifier_const_qualified(&self, ident: &Node, source: &str) -> bool {
         let Some(decl) = self.find_identifier_declaration_node(ident, source) else {
             return false;
@@ -1795,7 +1795,7 @@ impl FlexibleArrayAnalyzer {
     }
 
     /// Find `ident`'s declaration node -- its nearest local declaration
-    /// first, then the enclosing function's parameter list, then (task 521)
+    /// first, then the enclosing function's parameter list, then
     /// file-scope declarations, needed for e.g. a global pointer referenced
     /// from inside a function that neither declares nor takes it as a
     /// parameter. Returns the `declaration` or `parameter_declaration` node
@@ -2608,7 +2608,7 @@ impl FlexibleArrayAnalyzer {
         source: &str,
     ) -> Option<String> {
         // Resolve the assignment via the AST's own structure rather than
-        // scanning node_text as if it were a single source line (task 528):
+        // scanning node_text as if it were a single source line:
         // node_text can span multiple lines and embed comments, so a text
         // scan for "{var_name} =" can match inside a comment (e.g.
         // `/* old: x = wrong */ x = right;`) and return the commented-out
@@ -3542,7 +3542,7 @@ impl FlexibleArrayAnalyzer {
     /// of a `+`/`-` arithmetic expression -- real manual address/size
     /// arithmetic, the actual MEM33-C concern -- and only when the type
     /// argument names a struct this file has recorded as a genuine
-    /// flexible-array-member struct (task 526).
+    /// flexible-array-member struct.
     ///
     /// Previously this file had three separate offsetof checks
     /// (`check_offsetof_misuse`/`_in_init`/`_in_binary`), all keyed on

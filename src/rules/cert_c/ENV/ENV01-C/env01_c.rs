@@ -25,7 +25,7 @@
 //! substring `MAX`, "may be used with environment variable", without looking
 //! for one -- 570 of the 572 labels it accumulated across eleven real-world
 //! oracles were false, every one of them a `PATH_MAX`/`NI_MAXHOST`/`MAX_PATH`
-//! buffer in a function that never touched the environment (task 1174). A
+//! buffer in a function that never touched the environment. A
 //! finding that names a construct absent from the line is a misfire
 //! (ADR-0005), so that check is gone rather than narrowed.
 //!

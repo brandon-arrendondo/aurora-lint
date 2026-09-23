@@ -92,7 +92,7 @@ impl CertRule for Mem12C {
         // Function-like macro definitions visible in this file, so a
         // cleanup macro (e.g. `SAFE_FREE`, `mosquitto_FREE`) is recognized
         // as a deallocation the same as a bare free()/fclose()/close() call
-        // (task 315).
+        // .
         let function_macros = collect_function_macros(node, source);
 
         // Check function definitions, including nested ones (though uncommon in C)
@@ -182,7 +182,7 @@ impl Mem12C {
                 };
 
                 // Check if it's a deallocation function, or a function-like
-                // macro whose body releases one of its arguments (task 315).
+                // macro whose body releases one of its arguments.
                 let arg_idx =
                     if func_name == "fclose" || func_name == "free" || func_name == "close" {
                         Some(0)

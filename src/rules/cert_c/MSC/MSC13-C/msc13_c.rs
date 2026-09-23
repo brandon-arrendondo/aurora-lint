@@ -70,12 +70,12 @@ impl Msc13C {
     /// the specific `declaration` node that bound this name, so a later
     /// read can be checked against the exact declaration it resolves to
     /// rather than just its name — disambiguating same-named shadowing
-    /// declarations in nested blocks (task 386). `enclosing_scope_start_byte`
+    /// declarations in nested blocks. `enclosing_scope_start_byte`
     /// is the byte offset of the nearest real C scope (`compound_statement`/
     /// `for_statement`) containing the declaration, preprocessor-transparent
     /// like `find_enclosing_declaration_for_identifier`'s own scope search —
     /// used to group same-scope, same-name declarations split across
-    /// mutually exclusive `#if`/`#elif`/`#else` branches (task 751).
+    /// mutually exclusive `#if`/`#elif`/`#else` branches.
     fn collect_local_vars(
         &self,
         body: &Node,
@@ -106,7 +106,7 @@ impl Msc13C {
 
     /// Group declarations gathered by `collect_local_vars` that are
     /// mutually-exclusive preprocessor alternatives of one another: same
-    /// enclosing scope, same name (task 751). C forbids two unconditional
+    /// enclosing scope, same name. C forbids two unconditional
     /// declarations of the same name in one scope, so any two same-scope,
     /// same-name declarations found here are necessarily each guarded by
     /// some combination of `#if`/`#ifdef`/`#elif`/`#else`/`#ifndef` that
@@ -122,7 +122,7 @@ impl Msc13C {
     /// `quotient`'s two-member group collide, and which one survived was
     /// whichever `by_key` happened to iterate last -- a per-process
     /// `HashMap` order, so the same file was clean in one run and had an
-    /// unused `quotient` in the next (task 1386).
+    /// unused `quotient` in the next.
     fn build_decl_start_to_group(
         &self,
         local_vars: &[(String, usize, bool, usize, Option<usize>)],
@@ -217,7 +217,7 @@ impl Msc13C {
             // type_identifier and recovers `$0` as a bare `identifier`
             // inside an ERROR node, which this pass would otherwise flag
             // as a phantom "declared but never used" variable named `$0`
-            // (task 444). Name-independent by design -- any macro that
+            // . Name-independent by design -- any macro that
             // embeds non-C content the same way hits the same guard.
             if decl_text.contains("extern ") || decl_text.contains("typedef ") || node.has_error() {
                 // Don't flag extern/typedef declarations or malformed parses
@@ -301,7 +301,7 @@ impl Msc13C {
     }
 
     /// True if the parse-repair pass replaced an unused-attribute macro in
-    /// this declaration with its marker (task 1019). The macro sits either
+    /// this declaration with its marker. The macro sits either
     /// inside the declaration's span (`word_t totalObjectSize UNUSED;`) or
     /// immediately before its first token (`UNUSED pptr_t vaddr = ...;`,
     /// where the macro precedes the type and so falls outside the recovered
@@ -415,10 +415,10 @@ impl Msc13C {
     /// declaration(s) this count is for; an occurrence is only counted when
     /// it actually resolves (via `find_enclosing_declaration_for_identifier`)
     /// to one of those declarations, not a same-named shadowing declaration
-    /// in a nested or sibling block (task 386). More than one byte offset
+    /// in a nested or sibling block. More than one byte offset
     /// means the declarations are mutually-exclusive preprocessor
     /// alternatives of one another treated as a single liveness entity
-    /// (task 751) -- a read resolving to any of them counts as a read of
+    /// -- a read resolving to any of them counts as a read of
     /// all of them. `None` falls back to unscoped name matching, for
     /// callers that can't resolve a specific declaration.
     fn count_reads(
@@ -731,8 +731,8 @@ impl Msc13C {
         let unused_annotated =
             self.collect_unused_annotated_decls(body, source, unused_attr_macros);
         // Same-scope, same-name declarations split across mutually
-        // exclusive `#if`/`#elif`/`#else` branches are one liveness entity
-        // (task 751): group them so a read resolving to any one of them
+        // exclusive `#if`/`#elif`/`#else` branches are one liveness entity:
+        // group them so a read resolving to any one of them
         // counts as a read of all of them.
         let decl_groups = self.build_decl_start_to_group(&local_vars);
 
@@ -807,7 +807,7 @@ impl Msc13C {
         // A macro whose body jumps (`goto exit;` / `return ret;`) gives its
         // invocation that edge, so a value read only at the label -- the
         // `int ret = 1;` a self-test returns when an assertion macro bails
-        // out -- is live on that path (task 1387).
+        // out -- is live on that path.
         let macro_jumps = Self::macro_jumps(macros);
         match cfg_mod::build_function_cfg_full(
             func_node,
@@ -857,7 +857,7 @@ impl Msc13C {
         // path through the invocation, exactly as the expanded text would.
         // Without it the macro-hidden `goto` edge (see `macro_jumps`) would
         // carry the earlier store to the label's read and call it live
-        // (task 1387).
+        // .
         let first_synthetic = definitions.len();
         self.add_macro_hidden_definitions(cfg, body, source, macros, &mut definitions);
         let reaching = compute_reaching_definitions(cfg, definitions);
@@ -974,7 +974,7 @@ impl Msc13C {
             // A variable never read anywhere in the function is already
             // reported by the unused-variable pass above; don't
             // double-report the same root cause per definition. Scoped to
-            // this definition's own governing declaration (task 386) so a
+            // this definition's own governing declaration so a
             // read of an unrelated same-named shadowing variable elsewhere
             // in the function doesn't suppress this report.
             let decl_start = self.declaration_scope_for_definition(cfg, def, body, source);
@@ -1023,7 +1023,7 @@ impl Msc13C {
     }
 
     /// Append a [`Definition`] for every caller variable a macro invocation
-    /// statement writes through its replacement list (task 1387).
+    /// statement writes through its replacement list.
     fn add_macro_hidden_definitions(
         &self,
         cfg: &FunctionCfg,
@@ -1115,7 +1115,7 @@ impl Msc13C {
     /// Every function-like macro whose replacement list contains a `goto
     /// <label>` (the label) or a `return`, for the CFG builder: an
     /// invocation as a statement then carries that edge as well as its
-    /// fallthrough (task 1387). Where alternatives disagree, a goto wins
+    /// fallthrough. Where alternatives disagree, a goto wins
     /// over a return and the first label seen wins.
     fn macro_jumps(macros: &HashMap<String, Vec<FunctionMacro>>) -> HashMap<String, MacroJump> {
         let mut out = HashMap::new();
@@ -1151,7 +1151,7 @@ impl Msc13C {
     }
 
     /// Resolve the specific local declaration governing `def`'s write, for
-    /// shadow-aware read counting (task 386): locate the definition's own
+    /// shadow-aware read counting: locate the definition's own
     /// statement via its CFG block/index, find the identifier occurrence
     /// naming `def.variable` within it, then walk up to the nearest
     /// enclosing declaration that binds that name. Returns `None` when it
@@ -1206,7 +1206,7 @@ impl Msc13C {
         // a dead store. Every preprocessor alternative contributes, and
         // names that match no definition are simply never looked up.
         //
-        // Reads only, not the union (task 965). Liveness turns on reads: a
+        // Reads only, not the union. Liveness turns on reads: a
         // macro that assigns to a caller-scope variable and never reads it
         // leaves the previously-active definition just as dead as before,
         // so counting its write here would resurrect a genuine dead store

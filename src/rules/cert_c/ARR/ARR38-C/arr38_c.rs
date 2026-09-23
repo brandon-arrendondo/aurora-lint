@@ -12,12 +12,12 @@ use std::collections::HashMap;
 use tree_sitter::Node;
 
 /// function name → parameter index → field name → minimum element-count
-/// buffer size (task 304).
+/// buffer size.
 type FieldBufferSizeMap = HashMap<String, HashMap<usize, HashMap<String, usize>>>;
 
 #[derive(Default)]
 pub struct Arr38C {
-    /// Cross-file struct-field buffer sizes (task 304): for each function,
+    /// Cross-file struct-field buffer sizes: for each function,
     /// parameter index → field name → minimum element-count buffer size
     /// every observed caller resolved that field to. Seeded from
     /// [`crate::analyze::function_summary::FunctionSummary::callsite_param_field_buffer_size`]
@@ -93,7 +93,7 @@ impl CertRule for Arr38C {
         let mut unused_offsets: HashMap<String, PointerOffsetInfo> = HashMap::new();
 
         // First pass: collect the file-scope-only buffer allocations and size
-        // variable assignments (task 410) — the safe, collision-free base every
+        // variable assignments — the safe, collision-free base every
         // function's own tracking is layered onto below. `include_function_bodies
         // = false` means this never descends into a `function_definition`'s body,
         // so two functions that each declare a same-named local buffer of a
@@ -114,7 +114,7 @@ impl CertRule for Arr38C {
         // Second pass: check each function independently with function-scoped resolution.
         // This prevents cross-function contamination where "data = dataBadBuffer - 8" (bad fn)
         // and "data = dataGoodBuffer" (good fn) would share the same offset/alias entry —
-        // and (task 410) where two functions each declaring their own same-named local
+        // and where two functions each declaring their own same-named local
         // buffer/size-var would otherwise share the same buffer_info/size_vars entry.
         let functions = self.collect_function_definitions(node);
         for func_node in &functions {
@@ -167,7 +167,7 @@ impl Arr38C {
     /// struct-by-value PARAMETER's field -- either `data = myStruct.field;`
     /// or a declaration initializer `T *data = myStruct.field;` (the
     /// shape Juliet's own sink functions actually use) -- return that
-    /// parameter's name and the field name (task 304).
+    /// parameter's name and the field name.
     fn find_struct_field_param_alias(
         &self,
         func: &Node,
@@ -223,7 +223,7 @@ impl Arr38C {
 
     /// When `var` aliases a struct-by-value parameter's field within the
     /// enclosing function, return the minimum element-count buffer size
-    /// every observed caller resolved that field to (task 304). Resolves
+    /// every observed caller resolved that field to. Resolves
     /// Juliet flow variant 67 ("struct passed in a struct from one function
     /// to another, often in different source files"). Returns `None` when
     /// `var` isn't such an alias, the enclosing function has no prescan
@@ -252,7 +252,7 @@ impl Arr38C {
     }
 
     /// True iff `dest_arg` aliases a struct-by-value parameter's field
-    /// (task 304) whose caller-proven minimum buffer size is at least as
+    /// whose caller-proven minimum buffer size is at least as
     /// large as `size_arg`'s element count. Conservative: any unresolved
     /// piece (non-identifier destination, no caller-side bound, unparsable
     /// size) returns `false`, leaving the existing heuristics in control.
@@ -284,7 +284,7 @@ impl Arr38C {
     /// `node`.
     ///
     /// `include_function_bodies` controls whether this descends into a
-    /// `function_definition`'s body at all (task 410). Callers building the
+    /// `function_definition`'s body at all. Callers building the
     /// shared file-scope base (`check`'s first pass) pass `false` so two
     /// functions' same-named locals never land in the same map; callers
     /// re-scanning a single function's own body (`check`'s per-function
@@ -968,7 +968,7 @@ impl Arr38C {
             let src_arg = &args[1];
             let size_arg = &args[2];
 
-            // (task 304) Struct-by-value cross-file destination bound --
+            // Struct-by-value cross-file destination bound --
             // see `check_buffer_size_mismatch`'s identical check for the
             // full rationale.
             if self.copy_bounded_by_caller_struct_field(dest_arg, size_arg, node, source) {
@@ -1148,7 +1148,7 @@ impl Arr38C {
         let src_arg = if args.len() >= 2 { &args[1] } else { dest_arg };
         let size_arg = &args[2];
 
-        // (task 304) Struct-by-value cross-file destination bound -- see
+        // Struct-by-value cross-file destination bound -- see
         // `check_buffer_size_mismatch`'s identical check for the full
         // rationale.
         if self.copy_bounded_by_caller_struct_field(dest_arg, size_arg, node, source) {
@@ -1432,7 +1432,7 @@ impl Arr38C {
             let buf_arg = &args[buf_idx];
             let size_arg = &args[size_idx];
 
-            // (task 304) Struct-by-value cross-file destination bound --
+            // Struct-by-value cross-file destination bound --
             // see `check_buffer_size_mismatch`'s identical check for the
             // full rationale.
             if self.copy_bounded_by_caller_struct_field(buf_arg, size_arg, node, source) {
@@ -1792,7 +1792,7 @@ impl Arr38C {
         let dest_arg = &args[0];
         let size_arg = &args[2];
 
-        // (task 304) If the destination resolves to a struct-by-value
+        // If the destination resolves to a struct-by-value
         // parameter's field whose buffer size every observed caller pins
         // down, and the copy provably fits, this is the Juliet flow
         // variant 67 goodG2BSink pattern -- the caller-side truth is
@@ -2528,7 +2528,7 @@ impl Arr38C {
     /// True when `buf_arg`'s underlying variable is declared with a struct
     /// type in the function containing `node`.
     ///
-    /// Replaces the two weaker tests this used to be (task 685):
+    /// Replaces the two weaker tests this used to be:
     ///
     /// - `buf_arg.contains("struct")` read the argument's *name*, not its
     ///   type, so a `char *structured_buf` counted as struct-based.
@@ -2565,7 +2565,7 @@ impl Arr38C {
 
     /// Check if there's validation for a size parameter.
     ///
-    /// Structural, not textual (task 747): does a comparison on `size_arg`
+    /// Structural, not textual: does a comparison on `size_arg`
     /// dominate the copy site? The seven `format!("if ({} <", ...)` substrings
     /// this replaced mistook one canonical spelling for the concept, so they
     /// missed every guard written even slightly differently. The purest case
@@ -2686,7 +2686,7 @@ impl Arr38C {
     /// `scoped_source` must already be scoped to the containing function: the
     /// signature lookup below takes the first `{` in it as the end of the
     /// parameter list, which is only that function's opening brace when the
-    /// slice is that one function (task 682). Callers scope via
+    /// slice is that one function. Callers scope via
     /// `find_containing_function`. `source` is the whole file, for the AST
     /// guard test -- see `has_size_validation`.
     fn is_unvalidated_function_parameter(
@@ -2836,7 +2836,7 @@ impl Arr38C {
     /// is a substring search for a hardcoded declaration shape, so on
     /// whole-file input a same-named array declared with a different type in
     /// an unrelated function could trigger or suppress the verdict for this
-    /// one (task 683).
+    /// one.
     ///
     /// The pattern set itself remains narrow -- eight `type name[` / `type*name`
     /// spacing variants, so typedef'd element types, multi-declarator lines and
@@ -3025,7 +3025,7 @@ impl Arr38C {
     }
 
     /// Get size of common C types. Delegates to the shared canonical table
-    /// (task 511) — this used to be a rule-local reimplementation that
+    /// — this used to be a rule-local reimplementation that
     /// disagreed with `buffer_size::sizeof_type_bytes`/`extract_sizeof_value`
     /// on coverage.
     ///
@@ -3307,7 +3307,7 @@ impl Arr38C {
     /// `function_definition` boundaries keeps this shallow in practice, but
     /// depth within a single function body is otherwise unbounded -- the
     /// same hostap-style risk class as the original ARR00-C/MEM33-C bug
-    /// (task 153).
+    /// .
     fn collect_function_definitions_recursive<'a>(
         &self,
         root: &Node<'a>,

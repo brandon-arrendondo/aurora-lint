@@ -49,7 +49,7 @@ impl Win03C {
             let function_name = get_node_text(&function_node, source);
 
             // `OpenMutex` is a <windows.h> macro over OpenMutexA/OpenMutexW;
-            // real code names either directly (task 1130).
+            // real code names either directly.
             if call_roles::is_win32_api(function_name, "OpenMutex") {
                 self.check_open_mutex_call(node, source, violations);
                 return;

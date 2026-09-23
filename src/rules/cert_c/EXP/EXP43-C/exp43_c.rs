@@ -116,7 +116,7 @@ impl CertRule for Exp43C {
         // A call that repeats or overlaps an argument is undefined only when
         // the parameter it lands on is restrict-qualified. Without that fact
         // the rule fired on every `mbedtls_mpi_add_mpi(X, X, Y)` in a library
-        // that documents self-aliasing as supported (task 1171). The file's
+        // that documents self-aliasing as supported. The file's
         // own prototypes take precedence over the pre-scan's.
         let mut restrict_params = self.cross_file_restrict_params.borrow().clone();
         restrict_params.extend(restrict_parameter_indices(node, source));
@@ -309,7 +309,7 @@ impl Exp43C {
     /// to a plain identifier from a pointer-shaped right-hand side counts:
     /// `ik += 16` used to file `ik` under base `16`, and `p = ssl->out_msg`
     /// under `ssl`, so two unrelated buffers "derived from" the same thing
-    /// and every memcpy between them was reported (task 1171).
+    /// and every memcpy between them was reported.
     fn track_pointer_assignment(
         node: &Node,
         source: &str,

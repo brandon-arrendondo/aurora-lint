@@ -118,7 +118,7 @@ impl Sig00C {
     /// relative to `target`, not by node kind), so deeply nested code
     /// before the target would cost one native call frame per level --
     /// same unbounded-depth risk class as the original ARR00-C/MEM33-C bug
-    /// (task 153). Pure existence check, so traversal order doesn't affect
+    /// . Pure existence check, so traversal order doesn't affect
     /// the result.
     fn contains_sigaddset_before(&self, scope: &Node, target: &Node, source: &str) -> bool {
         let target_start = target.start_byte();

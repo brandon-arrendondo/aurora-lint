@@ -2362,7 +2362,7 @@ fn find_pointer_source_array_recursive(
 /// is a boundary on the right by construction.
 ///
 /// A plain `rfind` matches `"pos = "` inside `hpos = hash;`, and every `pos` in
-/// the function is then attributed to the array `hash` (task 752). Same defect
+/// the function is then attributed to the array `hash`. Same defect
 /// class as tasks 678/679/681 fixed in `ARR30-C`.
 fn rfind_identifier_anchored(text: &str, pattern: &str, ident_offset: usize) -> Option<usize> {
     let mut end = text.len();
@@ -2391,7 +2391,7 @@ fn rfind_identifier_anchored(text: &str, pattern: &str, ident_offset: usize) -> 
 /// Reduce an already-matched right-hand side to the last link in an
 /// assignment chain, so `pos = hs_start = verify_data;` resolves `pos` to
 /// `verify_data` rather than stopping at the intermediate `hs_start`
-/// (task 752). The recursive resolve cannot recover this itself: it only ever
+/// . The recursive resolve cannot recover this itself: it only ever
 /// searches text to the LEFT of its own match, where the chain's real base
 /// never appears.
 ///

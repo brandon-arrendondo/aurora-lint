@@ -51,7 +51,7 @@ pub struct Int34C {
     /// Project-wide typedef alias map, walked by
     /// `overflow_helpers::resolve_typedef_chain` so a left operand declared
     /// `vptr_t` reaches `unsigned long` and is measured at 64 bits, not the
-    /// 32-bit floor an unrecognized spelling falls back to (task 1119).
+    /// 32-bit floor an unrecognized spelling falls back to.
     typedef_types: RefCell<Arc<HashMap<String, String>>>,
 }
 
@@ -167,7 +167,7 @@ impl Int34C {
             // The bound every range gate below compares against. C11 6.5.7p3
             // makes the hazard relative to the LEFT operand's width, so a
             // 64-bit operand shifted by [32, 63] is defined behaviour and
-            // must not be reported as if it were `uint32_t` (task 1119).
+            // must not be reported as if it were `uint32_t`.
             let width = self.operand_bit_width(&left_node, source);
 
             // If the shift amount is a non-negative integer literal the rule is
@@ -483,7 +483,7 @@ impl Int34C {
     /// is the data model's choice -- see `width_of_type_text`) keeps the
     /// narrower bound, so widening is only ever the result of positive,
     /// platform-independent evidence. The reverse default would assert
-    /// safety for `uint32_t x >> 40` (task 1119).
+    /// safety for `uint32_t x >> 40`.
     fn operand_bit_width(&self, left: &Node, source: &str) -> i64 {
         match self.resolve_operand_width(left, source, 0) {
             Some(w) if w >= 64 => 64,

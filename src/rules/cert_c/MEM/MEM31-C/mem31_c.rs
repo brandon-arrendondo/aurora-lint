@@ -77,12 +77,12 @@ pub struct Mem31C {
     known_functions: RefCell<Arc<HashSet<String>>>,
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     /// Cross-file noreturn function names from the prescan, unioned in
-    /// `check` with the ones this file declares for itself (task 1076).
+    /// `check` with the ones this file declares for itself.
     noreturn_functions: RefCell<Arc<HashSet<String>>>,
     /// Project-wide `#define ALIAS target` map, merged in `check` with this
     /// file's own. A callee is classified by the name the chain ends at, so
     /// `mbedtls_calloc(...)` is an allocation and `mbedtls_free(...)` is a
-    /// literal `free`, not a `*_free`-shaped guess (task 1128).
+    /// literal `free`, not a `*_free`-shaped guess.
     project_aliases: RefCell<Arc<HashMap<String, String>>>,
 }
 
@@ -174,7 +174,7 @@ impl CertRule for Mem31C {
 /// Everything a path carries in this walk: the branch state plus the
 /// allocation and escape records. Recorded at each `break`/`continue` that
 /// leaves a loop body, and merged into what continues after the loop
-/// (task 1365).
+/// .
 #[derive(Clone)]
 struct LoopExitState {
     state: LeakBranchState,
@@ -223,7 +223,7 @@ struct MemoryLeakAnalyzer<'a> {
     /// last: `Some(exits)` for a loop, collecting the path state at each
     /// `break` and `continue` that leaves its body, `None` for a `switch`,
     /// whose `break` belongs to the switch. Read by `Frame::ExitLoop`
-    /// (task 1365).
+    /// .
     breakables: Vec<Option<Vec<LoopExitState>>>,
     // What is freed at each label (for goto analysis): the label's byte
     // offset and the pointers its cleanup block frees, one entry per
@@ -282,7 +282,7 @@ struct MemoryLeakAnalyzer<'a> {
     // Local variables bound to whatever an unrecognized call or a field/
     // subscript read handed back (`dev = p2p_create_device(...)`, `ftpc =
     // Curl_conn_meta_get(...)`) rather than a fresh allocation this
-    // function made itself (task 1200). Such a local is a borrowed handle
+    // function made itself. Such a local is a borrowed handle
     // into a longer-lived object -- almost always a lookup/registry
     // accessor that already filed the object somewhere with its own
     // teardown -- so `local->field = alloc()` through it is that object's
@@ -303,7 +303,7 @@ struct MemoryLeakAnalyzer<'a> {
     // no unary `*`, no subscript, no NULL comparison). Nothing that holds
     // heap memory can look like this, so a `*_new`-style *name-heuristic*
     // allocation stored into one of them is not an allocation at all
-    // (task 580).
+    // .
     value_only_locals: HashSet<String>,
     // Project-wide value-only globals (`ProjectContext::value_only_globals`,
     // task 652): the cross-file counterpart of `value_only_locals` for a
@@ -349,7 +349,7 @@ struct MemoryLeakAnalyzer<'a> {
     function_macros: &'a HashMap<String, FunctionMacro>,
     // Names of functions that never return to their caller, from the prescan
     // (headers included) unioned with this file's own declarations. A call to
-    // one ends a branch the way `return` does (task 1076).
+    // one ends a branch the way `return` does.
     noreturn_names: &'a HashSet<String>,
     // `#define ALIAS target` map (project-wide plus this file); see
     // `callee_name`.
@@ -404,7 +404,7 @@ type LoopArrayPattern = (
 );
 
 /// Explicit continuation-stack frames driving `MemoryLeakAnalyzer::
-/// analyze_node` (task 295) — see that method's doc comment for why.
+/// analyze_node` — see that method's doc comment for why.
 enum Frame<'a> {
     Visit(Node<'a>),
     /// Resume an `if`'s else-branch handling once the then-branch's own
@@ -452,7 +452,7 @@ enum Frame<'a> {
     /// state before it, every `break`/`continue` recorded while the body was
     /// walked (`breakables`), and the end of the body when the loop can end
     /// by its condition and the body's last statement does not leave the
-    /// function (task 1365).
+    /// function.
     ExitLoop {
         loop_node: Node<'a>,
         array_pattern: Option<LoopArrayPattern>,
@@ -712,7 +712,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// free/realloc, allocator, summary lookup, deallocator name shape)
     /// reads this, never the raw spelling, so a renamed allocator is seen by
     /// what it is rather than by what its name happens to contain
-    /// (task 1128).
+    /// .
     fn callee_name(&self, function: &Node, source: &str) -> String {
         let raw = ast_utils::get_node_text(function, source);
         const_eval::resolve_macro_alias(self.macro_aliases, raw).to_string()
@@ -855,7 +855,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         // every live allocation at each `exit()`/`abort()`/
                         // noreturn-helper call site, which is exactly the
                         // shape of the ftpd.c `fortunes_file` findings this
-                        // heuristic produced (task 1089). Checked before the
+                        // heuristic produced. Checked before the
                         // name test because the terminating callee usually
                         // matches it too.
                         if crate::analyze::noreturn::is_process_terminating_name(
@@ -956,7 +956,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// constructors are named exactly like that (`pte_new`,
     /// `cap_frame_cap_new`, `seL4_Fault_VMFault_new`) but return a small
     /// struct *by value* — `pte_t pte = pte_new(...)` is a register/stack
-    /// value, so "not freed" is never a leak (task 580).
+    /// value, so "not freed" is never a leak.
     ///
     /// A pointer typedef (`typedef struct foo *foo_t;`) declared without a
     /// `*` is the case this deliberately does not exclude on the declarator
@@ -1159,7 +1159,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// (`fc_ret`) -- without this split, a field assignment on a plain
     /// value-type local never matches anything in `value_only_locals`
     /// (which only ever holds bare declared identifiers), so the guard
-    /// silently never fires for the field-target path (task 651).
+    /// silently never fires for the field-target path.
     fn track_allocation_guarded(
         &mut self,
         var_name: String,
@@ -1370,7 +1370,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // reaches such a callee through `process_freeing_callee`
                 // on its summary alone; gating this scan on the name first
                 // left every `goto` into those labels reading as a leak
-                // (task 1241). `named_deallocator_releases_arg` below then
+                // . `named_deallocator_releases_arg` below then
                 // asks the same summary WHICH argument.
                 if func_name == "free"
                     || self.is_named_deallocator(&func_name)
@@ -1389,7 +1389,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                                 // here as in the walk's `strip_call_argument`:
                                 // hostap's `fail:` hands `pkey` to
                                 // `crypto_ec_key_deinit` as `(struct
-                                // crypto_ec_key *) pkey` (task 1241).
+                                // crypto_ec_key *) pkey`.
                                 let arg = peel_casts_and_parens(arg);
                                 let through_address_of = arg.kind() == "pointer_expression";
                                 if func_name != "free"
@@ -1428,7 +1428,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
     /// Entry point: analyze a function body (or any subtree) using an
     /// explicit heap-allocated frame stack instead of native recursion
-    /// (task 295). `analyze_node`/`analyze_children`/`analyze_if`/
+    /// . `analyze_node`/`analyze_children`/`analyze_if`/
     /// `analyze_switch`/`analyze_for_loop`/`analyze_simple_loop`/
     /// `process_statement` previously formed a mutually-recursive walk whose
     /// depth tracked C statement nesting — deeply/adversarially nested
@@ -1499,7 +1499,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     // continue; } else { ... }` in valkey's config.c
                     // otherwise carried `new_argv` past the `if` with its
                     // free left behind in the discarded arm, and reported it
-                    // leaked at every later exit (task 1339). Same record
+                    // leaked at every later exit. Same record
                     // `after_true_branch` keeps for the else-less shape.
                     match (true_leaves, else_leaves) {
                         (true, false) => {}
@@ -1654,7 +1654,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// left `file2` in `freed_memory` across the label, so the label's free
     /// read as a double free -- of a pointer that, on every path that can
     /// actually reach the label, had never been freed at all. The `return`
-    /// ends that path first (task 1088).
+    /// ends that path first.
     ///
     /// The entry state is recovered from the gotos themselves rather than
     /// discarded: `record_goto_entry_state` intersects `freed_memory` across
@@ -1850,7 +1850,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// binds to the innermost breakable and only a loop needs telling (a
     /// switch's cases are settled by `switch_next_case`); a `continue` goes
     /// back to the head of the innermost LOOP through any switch in between
-    /// (task 1365).
+    /// .
     fn record_loop_exit(&mut self, continuing: bool) {
         let mut state = LoopExitState::fork(self);
         // `p = alloc(); if (!p) break;` -- on this path `p` holds nothing,
@@ -1947,7 +1947,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// `nbuf = os_realloc(subelem, n); if (!nbuf) os_free(subelem);` then read
     /// as a double free of a block that is still perfectly alive. The
     /// callee's early return and the caller's null test are the SAME path,
-    /// and this is where the walk gets to say so (task 1279).
+    /// and this is where the walk gets to say so.
     fn restore_realloc_old_ptr_on_failure(&mut self, result_var: &str) {
         let Some(old_ptr) = self.realloc_relations.get(result_var).cloned() else {
             return;
@@ -2137,7 +2137,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // the `switch`. hostap's driver_wext.c `default: os_free(ext);
             // return -1;` followed by the shared `os_free(ext)` read as a
             // double free once the enclosing branch's state was kept
-            // (task 1339).
+            // .
             pre_state.restore(self);
             self.allocated_memory = pre_allocated;
         }
@@ -2186,7 +2186,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// os_free(data); return NULL; #endif` -- contributes nothing to the
     /// state below the `#endif`: in the translation unit that compiles it,
     /// that code is never reached, and folding its free in reported the
-    /// real arm's later `os_free(data)` as a double free (task 1339). If no
+    /// real arm's later `os_free(data)` as a double free. If no
     /// arm falls through, the code below is dead in every unit and the
     /// entry state is kept, as `finish_if` keeps it when both branches
     /// leave.
@@ -2244,7 +2244,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// break; } ... os_free(buf);` read the end of the body -- the arm that
     /// loops back and re-allocates -- as reaching the free below, so the
     /// free was a double free and the `if` a conditional leak; only the
-    /// `break` arm gets there, with `buf` live (task 1365). Same optimism
+    /// `break` arm gets there, with `buf` live. Same optimism
     /// the `if` merge has: freed on any path counts as freed, and a block
     /// the loop entered with that some path released or handed over (`free(
     /// a[i]); a[i] = NULL;` drops the record) stays released; a block some
@@ -2753,7 +2753,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// function should be held responsible for, or does it reach into a
     /// caller-owned/borrowed struct via a bare function parameter (task
     /// 306), or a LOCAL that merely holds a reference to a longer-lived
-    /// object this function never allocated (task 1200)?
+    /// object this function never allocated?
     ///
     /// A parameter's struct is only "owned" by this function if the
     /// parameter itself was used as an out-parameter that this function
@@ -2789,7 +2789,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
     /// Track `*param = malloc(...)`-shaped out-parameter allocations: this is
     /// the signal that a struct reached through `param` was freshly
-    /// allocated by this function, not borrowed from the caller (task 306).
+    /// allocated by this function, not borrowed from the caller.
     fn record_deref_allocated_param(&mut self, left: &Node, right: &Node, source: &str) {
         let op = left
             .child_by_field_name("operator")
@@ -2854,7 +2854,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // `*out = malloc(...)` parses as "pointer_expression" in this
             // tree-sitter-c grammar, not "unary_expression" -- without this
             // arm, record_deref_allocated_param's out-parameter tracking
-            // (task 306) never fired for the real dereference-assignment
+            // never fired for the real dereference-assignment
             // pattern it exists to detect.
             if matches!(left.kind(), "unary_expression" | "pointer_expression") {
                 self.record_deref_allocated_param(&left, &right, source);
@@ -3137,7 +3137,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// of it read as a double free: hostap's `ndis_events.c`, where `pObj`
     /// comes back from `IEnumWbemClassObject_Next(..., &pObj, ...)` after an
     /// earlier `_Release`, and curl's `Curl_cwriter_create(&writer, ...)`
-    /// after `Curl_cwriter_free` on the previous arm (task 1270).
+    /// after `Curl_cwriter_free` on the previous arm.
     ///
     /// EVIDENCE POLARITY, stated because it is the whole decision. The
     /// consumer is a double-free ACCUSATION, so the safe direction is to
@@ -3257,7 +3257,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// (`escape_stored_block`) and being returned (`escape_returned_block`):
     /// until this, handing a pointer to a callee was never an escape at all,
     /// so `he = hash_elem_create(...); hash_elem_link(h, slot, he);` reported
-    /// `he` leaked on the very statement that gives it away (task 1198).
+    /// `he` leaked on the very statement that gives it away.
     ///
     /// Reads `stores_params` and nothing else -- no name shape. The summary
     /// is a MAY fact, which is the polarity a suppression needs: hostap's
@@ -3435,7 +3435,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         // the int fd nor the macro token, and `sk_X509_pop_free(certs,
         // X509_free)` frees no variable called `X509_free` -- that one is a
         // misfire under ADR-0005, naming a construct that is not there.
-        // Credit nothing rather than credit everything (task 1197).
+        // Credit nothing rather than credit everything.
         if self.function_summaries.get(func_name).is_none() {
             let nameable = (0..arguments.child_count())
                 .filter_map(|i| arguments.child(i))
@@ -3519,7 +3519,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // removed (`frees_params_guessed`): curl's `Curl_req_free` is
             // credited with `data` only because it calls
             // `Curl_client_cleanup(data)`, and that is no more evidence here
-            // than it was there (task 1269).
+            // than it was there.
             if self.free_is_name_guess(
                 func_name,
                 this_param_idx,
@@ -3764,7 +3764,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         // the int fd nor the macro token, and `sk_X509_pop_free(certs,
         // X509_free)` frees no variable called `X509_free` -- that one is a
         // misfire under ADR-0005, naming a construct that is not there.
-        // Credit nothing rather than credit everything (task 1197).
+        // Credit nothing rather than credit everything.
         if self.function_summaries.get(func_name).is_none() {
             let nameable = (0..arguments.child_count())
                 .filter_map(|i| arguments.child(i))
@@ -3808,7 +3808,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         // back a fresh block is realloc-shaped, and it can
                         // only have taken the old block if it succeeded.
                         // Recording the pair lets the caller's `if (!result)`
-                        // branch undo the mark (task 1279).
+                        // branch undo the mark.
                         if summary.returns_allocation && !through_address_of {
                             if let Some(result) = Self::assigned_result_var(node, source) {
                                 self.realloc_relations.insert(result, var_name.clone());
@@ -4135,7 +4135,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// zeroizes the members and frees no pointer -- must not mark its
     /// argument freed, or the `mbedtls_free(ctx)` that follows in every
     /// `*_ctx_free` destructor reads as a double free. The name shape is
-    /// the fallback for a callee with no body in the scan (task 1128).
+    /// the fallback for a callee with no body in the scan.
     /// The prescan saw `func_name`'s body release a parameter -- by value
     /// or through a `&var` pointee. Evidence, not a name guess.
     fn summary_frees_some_param(&self, func_name: &str) -> bool {
@@ -4164,12 +4164,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     // then counted for nothing, in the walk and in the label
                     // prescan alike, so both a plain `sqlite3_free(a); return`
                     // and a `goto decode_out` into a label that frees that way
-                    // reported a leak (task 1367). Falling back to the name
+                    // reported a leak. Falling back to the name
                     // here restores the no-summary reading for exactly the
                     // case where the body had nothing to say; a body that was
                     // read through and releases nothing -- mbedtls's
                     // `mbedtls_gcm_free(ctx)`, which only zeroizes members --
-                    // still refutes its name (task 1128).
+                    // still refutes its name.
                     || summary.sole_param_escapes_unnamed_call
             }
             None => true,
@@ -4183,7 +4183,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// argument is `&var`. A callee whose summary shows it frees only
     /// FIELDS off the parameter (`mbedtls_cipher_free(ctx)` releasing
     /// `ctx->cipher_ctx`) leaves the parameter itself alive, and the fields
-    /// are credited separately (task 1128).
+    /// are credited separately.
     fn named_deallocator_releases_arg(
         &self,
         func_name: &str,
@@ -4451,7 +4451,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// `continue` and `break` count: the statements after them in the loop
     /// body are not reached on that path. What the path holds is not lost --
     /// `record_loop_exit` captured it, and `merge_loop_exits` folds it into
-    /// the code after the loop (task 1365). A preprocessor arm is looked
+    /// the code after the loop. A preprocessor arm is looked
     /// into (`preproc_arm_cannot_fall_through`), because a branch that ends
     /// `#ifdef X ... return; #endif }` ends there.
     fn statement_cannot_fall_through(&self, stmt: &Node, source: &str) -> bool {

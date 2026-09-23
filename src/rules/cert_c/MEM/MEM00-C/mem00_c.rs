@@ -69,7 +69,7 @@ impl Mem00C {
             // A function whose own name signals it's a destructor is
             // SUPPOSED to free what's passed in -- that's the entire point
             // of a "free_X"/"X_destroy"/"module_cleanup_thing" helper, not
-            // a same-abstraction-level violation (task 318).
+            // a same-abstraction-level violation.
             if let Some(name) = extract_function_name(&func_def, source) {
                 if Self::name_has_destructor_token(&name) {
                     continue;

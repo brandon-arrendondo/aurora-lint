@@ -62,7 +62,7 @@ impl CertRule for Int08C {
         // (only `declaration`-kind locals), so a stale entry from one
         // function (e.g. a narrow `char c`) could leak into an unrelated
         // same-named variable in another function (e.g. an `int c`
-        // parameter) and misfire here (task 418). Scope both the
+        // parameter) and misfire here. Scope both the
         // collection and the check per `function_definition`, mirroring
         // EXP39-C/STR32-C's per-function reset pattern.
         let functions = query::find_descendants_of_kind(*node, "function_definition");
@@ -278,7 +278,7 @@ impl Int08C {
     /// the suite catches it: INT31-C's conversion check compares DECLARED
     /// widths, so `short = short + short` is width-equal and it stays silent
     /// (a value-based channel there is its own task), and INT32-C's premise
-    /// is about the arithmetic, which is fine here (task 925).
+    /// is about the arithmetic, which is fine here.
     ///
     /// Both rules firing would be acceptable under
     /// `docs/design/cross-rule-overlap.md`; INT08-C takes it because the
@@ -466,7 +466,7 @@ impl Int08C {
     /// the very inverted premise task 755 fixed, on every expression the
     /// range engine could not resolve -- in real code, most of them.
     ///
-    /// This channel has zero measured recall (task 927): zero findings on
+    /// This channel has zero measured recall: zero findings on
     /// the official real-world run (sqc-0.4.336-117d1624, all nine oracle
     /// codebases) and absent from Juliet's own CWE-190/191/197 rule
     /// breakdowns. Not a wiring bug -- the requirement that the WHOLE
@@ -493,8 +493,8 @@ impl Int08C {
 
         // A call result is a WIDE operand whatever its range: `b * rand()`
         // leaves `int` because `rand()` reaches `INT_MAX`, not because `b` is
-        // a `char`. The range engine now bounds a standard PRNG by contract
-        // (task 1275), which would otherwise turn the policy above on its
+        // a `char`. The range engine now bounds a standard PRNG by contract,
+        // which would otherwise turn the policy above on its
         // head for exactly the calls it can resolve; the policy is about
         // whose overflow it is, not about what resolves.
         if query::find_first_descendant(*expr, |n| n.kind() == "call_expression").is_some() {

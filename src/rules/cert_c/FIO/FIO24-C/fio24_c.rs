@@ -104,7 +104,7 @@ impl Fio24C {
     /// file (as before) meant an fopen() in one function could be
     /// misreported as "already open" because of an unrelated fopen() (on a
     /// same-named local, or an unrelated same-named file) in a completely
-    /// unrelated, never-called function (task 413).
+    /// unrelated, never-called function.
     ///
     /// But wholesale resetting per function is also wrong: it would lose
     /// the rule's own canonical CERT wiki example, where `main()` opens

@@ -22,7 +22,7 @@
 //! same calls -- MSC24-C's concern (deprecated API) is orthogonal to
 //! theirs (provable buffer safety).
 //!
-//! `sscanf` was removed from this list (task 629): it is not on CERT's
+//! `sscanf` was removed from this list: it is not on CERT's
 //! actual MSC24-C obsolescent-function table, and its suggested
 //! replacement (`sscanf_s()`) is an optional, rarely-implemented Annex K
 //! extension unavailable on glibc -- flagging it was a 100% FP class (47

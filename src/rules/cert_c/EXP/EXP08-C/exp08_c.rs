@@ -237,8 +237,8 @@ impl Exp08C {
         // NOTE: an ALL_CAPS-macro-constant exclusion ("likely an array size, not a
         // byte offset") used to sit below this return, where it was unreachable —
         // same `identifier` guard, and `text` is already lowercased. Deleted as dead
-        // code rather than folded into the shared `is_likely_macro_constant` helper
-        // (task 603); making the exclusion actually fire is a behavior change,
+        // code rather than folded into the shared `is_likely_macro_constant` helper;
+        // making the exclusion actually fire is a behavior change,
         // tracked separately.
         if node.kind() == "identifier" {
             return text.contains("offset") || text.contains("skip");

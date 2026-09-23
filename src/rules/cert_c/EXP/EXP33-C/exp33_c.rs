@@ -110,7 +110,7 @@ impl Exp33C {
     /// The MUST set, not `modifies_params`: this map clears a variable's
     /// uninitialised state, so a callee that writes the output parameter on
     /// only some of its paths must not clear it. `set_flag(n, &sign)` leaves
-    /// `sign` untouched when `n == 0` (task 988, aurora_lint).
+    /// `sign` untouched when `n == 0`.
     fn build_cross_file_output_params(&self) -> HashMap<String, HashSet<usize>> {
         let summaries = self.cross_file_summaries.borrow();
         let mut result = HashMap::new();
@@ -159,8 +159,8 @@ impl Exp33C {
         result
     }
 
-    /// The proven-correlation companion to `build_cross_file_conditional_output_params`
-    /// (task 1450, aurora_lint): for the subset of conditional writers where
+    /// The proven-correlation companion to `build_cross_file_conditional_output_params`:
+    /// for the subset of conditional writers where
     /// `FunctionSummary::conditional_write_return_correlation` could prove the
     /// write lines up with the function's own return value, lets the init-state
     /// dataflow promote `&var` to `Initialized` (not just `MaybeUninitialized`)
@@ -521,7 +521,7 @@ fn is_function_macro_output_arg(
 /// literal leading token. Returns `None` when `node` is in the `#else`/`#elif`
 /// alternative of the nearest conditional (a different, unrelated branch) or
 /// there is no enclosing conditional before `boundary` (the function body).
-/// See [`all_write_sites_ifdef_correlated`] for why this matters (task 590).
+/// See [`all_write_sites_ifdef_correlated`] for why this matters.
 fn enclosing_ifdef_guard_key(node: &Node, boundary: &Node, source: &str) -> Option<String> {
     let mut current = *node;
     while current.id() != boundary.id() {
@@ -545,7 +545,7 @@ fn enclosing_ifdef_guard_key(node: &Node, boundary: &Node, source: &str) -> Opti
             // No real `preproc_ifdef` ancestor -- fall back to the
             // text-level marker `label_preproc_guard::blank_label_guarded_preproc`
             // leaves behind when it removes a label-adjacent
-            // `#ifdef`/`#ifndef` guard's AST node entirely (task 663).
+            // `#ifdef`/`#ifndef` guard's AST node entirely.
             // Without this, a read site inside such a guard reports `None`
             // even though a real, unblanked occurrence of the identical
             // macro elsewhere in the function correctly resolves via the
@@ -608,7 +608,7 @@ fn blanked_label_guard_key(node: &Node, boundary: &Node, source: &str) -> Option
 /// EVERY such write site sits under the identical `#ifdef`/`#ifndef` guard
 /// as `read_guard_key` (from [`enclosing_ifdef_guard_key`] at the read site).
 ///
-/// Motivation (task 590): aurora-lint has no preprocessor, so
+/// Motivation: aurora-lint has no preprocessor, so
 /// `cfg::process_preproc_conditional` models each `#ifdef GUARD ... #endif`
 /// occurrence as an independent "maybe compiled, maybe not" branch+join.
 /// When a variable's only writes AND the read in question are all under the
@@ -1236,7 +1236,7 @@ fn check_deref_read(
     // check above already surfaces that as a softer "used without explicit
     // initialization" note). Dereferencing it is a null-pointer-deref
     // concern, not "uninitialized/indeterminate content" -- EXP33-C's own
-    // domain (task 459).
+    // domain.
     if info.is_static {
         return;
     }
@@ -1350,7 +1350,7 @@ fn check_subscript_read(
     // A static/thread-local array with no explicit initializer is
     // zero-initialized per C11 6.7.9p10 -- its elements are determinate
     // (just possibly not what the programmer intended), not indeterminate
-    // content the way an uninitialized auto array's would be (task 459).
+    // content the way an uninitialized auto array's would be.
     if info.is_static {
         return;
     }
@@ -1513,13 +1513,13 @@ fn is_read_context(
         "field_expression" => {
             // `&s.f` — the address handed to the callee lies inside `s`'s own
             // storage, so this is the address-of case, not a content read
-            // (task 1028).
+            // .
             if is_addressed_subobject_root(node, &parent, source) {
                 return false;
             }
             // `memset(u.tmpSpace, 0, sizeof(u.tmpSpace))` — the field access is
             // the whole argument, and it sits at an output position, so the
-            // call fills that storage rather than reading it (task 1037).
+            // call fills that storage rather than reading it.
             if let Some(verdict) = output_arg_read_verdict(node, source, cross_file_output_params) {
                 return verdict;
             }
@@ -1533,13 +1533,13 @@ fn is_read_context(
         // `&(x)` — a redundant parenthesis inside an address-of. The address
         // still lies in `x`'s own storage, so this is the address-of case and
         // not a content read; without this arm it fell to the catch-all below
-        // and reported `x` read at the very call that fills it (task 1028).
+        // and reported `x` read at the very call that fills it.
         "parenthesized_expression" => {
             if is_addressed_subobject_root(node, &parent, source) {
                 return false;
             }
             // `memset((buf), 0, n)` — a redundant parenthesis must not hide the
-            // output position from the argument-list check either (task 1037).
+            // output position from the argument-list check either.
             output_arg_read_verdict(node, source, cross_file_output_params).unwrap_or(true)
         }
         // Cast expression — reading the value, EXCEPT the `(void)x;`
@@ -1687,7 +1687,7 @@ fn is_read_in_pointer_expression(parent: &Node, source: &str) -> bool {
 ///
 /// It is not, as a rule: handing a callee an address is handing it somewhere to
 /// write. The exception is a callee known to only read through the pointer
-/// (task 457). Anywhere other than a call argument, taking an address reads
+/// . Anywhere other than a call argument, taking an address reads
 /// nothing at all.
 ///
 /// One function because the answer must not depend on the lvalue's shape.
@@ -1724,7 +1724,7 @@ fn is_address_of_read(pointer_expr: &Node, source: &str) -> bool {
 /// draws that line, and asking it (rather than re-walking down) keeps the
 /// credit funnel and this read predicate answering from one traversal — they
 /// disagreed before, which is how `recvfrom(..., &from.ss, &fromlen)` reported
-/// `from` uninitialised at the call that fills it (task 1028, aurora_lint).
+/// `from` uninitialised at the call that fills it.
 fn is_addressed_subobject_root(node: &Node, parent: &Node, source: &str) -> bool {
     let mut outer = *parent;
     while let Some(next) = outer.parent() {
@@ -1905,7 +1905,7 @@ fn is_read_in_argument_list(
     // Check if this is a known initializing function (exact or suffix match).
     // `variadic_from` carries the scanf family, whose outputs are "every
     // argument past the format string" and so have no fixed index to list
-    // (task 1029, aurora_lint) -- without it `sscanf(s, "%s", name)` reads as a
+    // -- without it `sscanf(s, "%s", name)` reads as a
     // content read of the buffer the call is about to fill.
     let mut variadic_from: Option<usize> = None;
     let output_indices: HashSet<usize> = match init_state::match_initializing_function(&func_name) {
@@ -1918,7 +1918,7 @@ fn is_read_in_argument_list(
         None => {
             // Not a built-in-registry initializer. Fall back to whether a
             // (same-file or cross-file) FunctionSummary found this function
-            // writes through one of its pointer params (task 456) —
+            // writes through one of its pointer params —
             // e.g. eloop_sock_table_set_fds(table, fd_set *fds) writing
             // `fds` via FD_ZERO/FD_SET. Without this, a bare pointer
             // variable passed by value (not `&var`, not an array) to such a
@@ -2011,7 +2011,7 @@ fn is_subscript_read_context(
             // pointer into an array, curl's `&mime->boundary[N]` passed to
             // Curl_rand_alnum) is not itself a content read, same as
             // is_read_in_pointer_expression's identical exception for &var
-            // (task 457) -- unless that address is then handed to a function
+            // -- unless that address is then handed to a function
             // known to only read through it.
             "pointer_expression" => {
                 let text = get_node_text(&parent, source);
@@ -2025,7 +2025,7 @@ fn is_subscript_read_context(
             // at an output position, so the call fills it rather than reading
             // it. Without this arm the walk fell to the catch-all below and the
             // element read as a use of its own uninitialized content, the same
-            // dispatch gap the identifier path had (task 1037).
+            // dispatch gap the identifier path had.
             "argument_list" => {
                 if is_misparsed_asm_output_operand(&parent, source) {
                     return false;
@@ -2091,7 +2091,7 @@ fn scan_realloc_wrappers(node: &Node, source: &str, wrappers: &mut HashSet<Strin
 /// is classed conditional and every caller is reported. Prescan's
 /// `conditional_modifies_params` asks for a proven unwritten returning path
 /// instead, and `build_read_only_deref_fns` covers the parameter prescan saw
-/// no write through at all (task 1078, aurora_lint).
+/// no write through at all.
 ///
 /// The fallback still matters: a scan with no `-d` and no prescan of its own
 /// targets summarises almost nothing, and there the local read is the only

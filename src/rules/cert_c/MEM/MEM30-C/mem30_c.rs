@@ -27,12 +27,12 @@ pub struct Mem30C {
     /// "does the function's NAME contain FREE" heuristic below — the name
     /// heuristic false-positives on functions like hostap's `plink_free_count`
     /// (a pure counter, no free at all) and misattributes multi-arg frees to
-    /// the wrong parameter (task 396).
+    /// the wrong parameter.
     function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
     /// Project-wide `#define ALIAS target` map, merged in `check` with this
     /// file's own, so `mbedtls_free(p)` dispatches as the literal `free` it
     /// expands to rather than through the name-contains-FREE guess
-    /// (task 1128).
+    /// .
     project_aliases: RefCell<Arc<HashMap<String, String>>>,
     /// Function-like macros the prescan found defined more than one way in a
     /// single file under conditions the platform profile cannot settle
@@ -42,18 +42,18 @@ pub struct Mem30C {
     /// Cross-file noreturn function names from the prescan, unioned in
     /// `check` with this file's own declarations and the stdlib set, so a
     /// branch ending in `exit(1)` or a project `fatal()` is known to have
-    /// no successor (task 1360).
+    /// no successor.
     noreturn_functions: RefCell<Arc<HashSet<String>>>,
     /// Typedefs that hide a pointer, and the project-wide one-level typedef
     /// alias map. Both feed `arg_can_be_freed`, which must not read a
     /// pointer-hiding alias (`client`, `LPPOINT`) as a non-pointer and drop a
-    /// real free on the name-heuristic path (task 1348).
+    /// real free on the name-heuristic path.
     pointer_typedef_names: RefCell<Arc<HashSet<String>>>,
     project_typedef_types: RefCell<Arc<HashMap<String, String>>>,
     /// Project-wide `#define NAME value` / enumerator values, merged in
     /// `check` with this file's own, so two constant names an `if` compares
     /// a value against are told apart by VALUE where the value is known:
-    /// `x == A` and `x == B` partition nothing if both are 1 (task 1360).
+    /// `x == A` and `x == B` partition nothing if both are 1.
     project_macros: RefCell<Arc<const_eval::MacroConstantMap>>,
 }
 
@@ -155,7 +155,7 @@ impl CertRule for Mem30C {
         };
 
         // Names of union typedefs in this file, so the analyzer can restrict
-        // member-aliasing-on-free to genuine union variables (task 181).
+        // member-aliasing-on-free to genuine union variables.
         let mut union_typedef_names = HashSet::new();
         collect_union_typedef_names(node, source, &mut union_typedef_names);
 
@@ -182,7 +182,7 @@ impl CertRule for Mem30C {
 
         // Functions that never return to their caller: the stdlib set, the
         // prescan's cross-file `_Noreturn`/`__attribute__((noreturn))`
-        // declarations, and this file's own (task 1360).
+        // declarations, and this file's own.
         let mut noreturn_names = HashSet::clone(&self.noreturn_functions.borrow());
         noreturn_names.extend(crate::analyze::noreturn::collect_noreturn_function_names(
             node, source,
@@ -291,9 +291,9 @@ fn is_fresh_allocation_name(name: &str) -> bool {
 /// `luaD_reallocstack(L, newsize, raiseerror);`, which mutates state via its
 /// first argument rather than returning a new pointer to assign back) is
 /// not that idiom, and must not be treated as invalidating its first
-/// argument (task 563).
+/// argument.
 /// The `<stem>` of a `<stem>_init` callee name, the in-place initializer
-/// half of the `X_init(obj)` / `X_free(obj)` convention (task 1235).
+/// half of the `X_init(obj)` / `X_free(obj)` convention.
 fn init_stem(function_name: &str) -> Option<&str> {
     function_name
         .strip_suffix("_init")
@@ -772,7 +772,7 @@ impl GlobalTracker {
     /// walk — `has_recursive_call` is order-dependent (it's read by
     /// `scan_identifier_access` at the point of traversal), so the explicit
     /// stack below must visit nodes in exactly the same sequence a recursive
-    /// descent would. Converted (task 295) after a deep-if-nesting stress
+    /// descent would. Converted after a deep-if-nesting stress
     /// fixture showed this walk — despite being described as a "secondary,
     /// bounded-depth concern" — does in fact overflow the native stack on
     /// the same adversarial input class the main `MemoryAnalyzer` conversion
@@ -1663,7 +1663,7 @@ fn is_all_caps_or_literal_constant(node: &Node, source: &str) -> bool {
 /// condition of the form `x == A`, `x == A || x == B` or `x != A` asserts on
 /// the arm it guards, with `A`/`B` literals or ALL_CAPS names. Two such
 /// predicates on the same `lv` can be provably disjoint, which is what makes
-/// a free under one of them not a free under the other (task 1360).
+/// a free under one of them not a free under the other.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct EqPred {
     lv: LValue,
@@ -1706,14 +1706,14 @@ struct BranchState {
     /// records `rep->val.array -> [rep->type == ARRAY]`, and a free nested
     /// under two such tests records both. A later arm guarded by a
     /// predicate disjoint from ANY of them -- `if (rep->type == MAP)` --
-    /// does not have the object freed (task 1360). A predicate is dropped
+    /// does not have the object freed. A predicate is dropped
     /// when its lvalue is assigned; the record is ignored once the object
     /// is no longer in `freed_vars`.
     freed_under: HashMap<LValue, Vec<EqPred>>,
     /// Where each freed object was freed. Forked with `freed_vars`: the
     /// preprocessor-split test compares a report site against this, and a
     /// then-branch free must not become the "prior free" the else-branch
-    /// is measured from (task 1233).
+    /// is measured from.
     freed_at: HashMap<LValue, usize>,
     nullified_vars: HashSet<LValue>,
     aliases: AliasMap,
@@ -1752,12 +1752,12 @@ struct MemoryAnalyzer {
     freed_under: HashMap<LValue, Vec<EqPred>>,
     // Byte offset (start_byte) of the free site that most recently marked each
     // name freed. Consulted only on a candidate double-free, to detect whether a
-    // preprocessor conditional directive separates the two free sites (task 251).
+    // preprocessor conditional directive separates the two free sites.
     freed_at: HashMap<LValue, usize>,
     // The callee whose summary marked each name freed on a NAME GUESS alone
     // (`FunctionSummary::frees_params_guessed`): the free was credited because
     // some callee down the chain is spelled like a deallocator, not because
-    // any body was seen to release the parameter (task 1289). Like
+    // any body was seen to release the parameter. Like
     // `freed_at`, consulted only while the name is in `freed_vars`; a later
     // free backed by real evidence removes the entry.
     guessed_freed: HashMap<LValue, String>,
@@ -1796,15 +1796,15 @@ struct MemoryAnalyzer {
     // does freeing one member invalidate the sibling members (genuine storage
     // aliasing). Struct/struct-pointer bases are excluded, which prevents the
     // struct-field-free cascade FP — e.g. `free(data->state.range)` must not
-    // poison `data->state` / other `data->*` fields (task 181). Repopulated per
+    // poison `data->state` / other `data->*` fields. Repopulated per
     // function in `analyze_function`.
     union_typed_vars: HashSet<String>,
     // Cross-file function summaries from prescan. When a callee's real
     // `frees_params` is known, it overrides the name-based free heuristic
-    // below (task 396) — see `process_call_expression`.
+    // below — see `process_call_expression`.
     function_summaries: Arc<HashMap<String, FunctionSummary>>,
     // `#define ALIAS target` map (project-wide plus this file); a callee is
-    // dispatched on the name its alias chain ends at (task 1128).
+    // dispatched on the name its alias chain ends at.
     macro_aliases: HashMap<String, String>,
     // Objects this function has handed to a `<stem>_init(obj)` callee, keyed
     // by canonical lvalue, with the set of stems: `mbedtls_x509_crt_init(p)`
@@ -1822,23 +1822,23 @@ struct MemoryAnalyzer {
     init_stems: HashMap<LValue, HashSet<String>>,
     // Function-like macros with more than one live definition (project-wide
     // plus this file). A callee named here whose only claim to being a free
-    // is its NAME is treated as an opaque call, not a free (task 1233).
+    // is its NAME is treated as an opaque call, not a free.
     ambiguous_macros: HashSet<String>,
     /// Callees that never return to this function (`exit`, `abort`,
     /// `longjmp`, anything declared noreturn). A branch ending in one has
     /// no join edge: whatever it freed is not carried past the `if`,
-    /// `switch` or label it sits in (task 1360).
+    /// `switch` or label it sits in.
     noreturn_names: HashSet<String>,
     // Typedefs that hide a pointer, and the project-wide one-level typedef
     // alias map. `arg_can_be_freed` needs both to tell a genuine non-pointer
-    // argument from a pointer wearing an alias (task 1348).
+    // argument from a pointer wearing an alias.
     pointer_typedef_names: Arc<HashSet<String>>,
     typedef_types: Arc<HashMap<String, String>>,
     /// The open `break` targets around the statement being walked, innermost
     /// last: `Some(exits)` for a loop, collecting the state at each `break`
     /// and `continue` that leaves its body, `None` for a `switch`, whose
     /// `break` belongs to the switch and is merged by `merge_switch_arms`.
-    /// Read by `Frame::AfterLoop` (task 1360).
+    /// Read by `Frame::AfterLoop`.
     breakables: Vec<Option<Vec<BranchState>>>,
     /// Known compile-time constant values (project `#define`s and
     /// enumerators plus this file's), for `equality_predicate`.
@@ -1953,7 +1953,7 @@ impl MemoryAnalyzer {
     /// Analyze nodes within a function.
     ///
     /// Uses an explicit heap-allocated frame stack instead of native
-    /// recursion (task 295): deeply/adversarially nested `if`/expression
+    /// recursion: deeply/adversarially nested `if`/expression
     /// trees (Juliet-style generated code) can otherwise blow the native
     /// call stack, one frame per nesting level. `Frame::Visit` mirrors the
     /// original per-node dispatch + "recurse into children" fallthrough;
@@ -2002,7 +2002,7 @@ impl MemoryAnalyzer {
             },
             /// `switch` statement whose condition has just been visited —
             /// forks the pre-switch state and starts the first case arm
-            /// (task 398).
+            /// .
             StartSwitchCases {
                 cases: Vec<Node<'a>>,
             },
@@ -2025,7 +2025,7 @@ impl MemoryAnalyzer {
             /// `breakables` while the body was walked), and from the end of
             /// the body -- unless the body's last statement leaves the
             /// function, in which case the end of the body reaches nothing
-            /// (task 1360).
+            /// .
             AfterLoop {
                 body: Option<Node<'a>>,
                 pre_state: Box<BranchState>,
@@ -2158,7 +2158,7 @@ impl MemoryAnalyzer {
         /// to a direct jump from the switch dispatch, which only ever sees
         /// `pre_state`), then push this case's own statements (excluding the
         /// `case`/`default` keyword and value) onto the stack followed by a
-        /// `SwitchCaseDone` continuation (task 398).
+        /// `SwitchCaseDone` continuation.
         fn push_switch_case<'a>(
             analyzer: &mut MemoryAnalyzer,
             stack: &mut Vec<Frame<'a>>,
@@ -2217,7 +2217,7 @@ impl MemoryAnalyzer {
                     "switch_statement" => {
                         // Each `case`/`default` arm is mutually exclusive with
                         // its siblings — a free in one arm must not poison a
-                        // later arm's use of the same variable (task 398).
+                        // later arm's use of the same variable.
                         // Collect the arms first, then visit the condition
                         // before starting the first arm.
                         stack.push(Frame::StartSwitchCases {
@@ -2429,7 +2429,7 @@ impl MemoryAnalyzer {
         // `if (buf != staticbuf)`: on this arm the two are not the same
         // object, whatever `char *buf = staticbuf;` recorded earlier --
         // valkey's sds.c frees `buf` under exactly that test, and the alias
-        // made it a free of `staticbuf` too (task 1360). The else arm of
+        // made it a free of `staticbuf` too. The else arm of
         // `==` is the same fact; `enter_else_arm` handles it.
         if let Some((a, b)) = condition.and_then(|c| Self::pointer_comparison(&c, source, true)) {
             self.unalias_pair(&a, &b);
@@ -2661,7 +2661,7 @@ impl MemoryAnalyzer {
     /// frees `rep->val.array` under `rep->type == ARRAY || rep->type ==
     /// SET` and walks it again under `rep->type == MAP || rep->type ==
     /// ATTRIBUTE`; sqlite's update.c ends the WHERE loop under `eOnePass ==
-    /// ONEPASS_OFF` and uses it in the else of the same test (task 1360).
+    /// ONEPASS_OFF` and uses it in the else of the same test.
     fn drop_frees_disjoint_from(&mut self, pred: &EqPred) {
         let dropped: Vec<LValue> = self
             .freed_under
@@ -2813,7 +2813,7 @@ impl MemoryAnalyzer {
 
     /// The state after a construct that several paths reach: the union of
     /// what each live path freed and invalidated. Shared by `switch` arms
-    /// and loop exits (task 1360).
+    /// and loop exits.
     fn merge_live_states(analyzer: &mut Self, pre_state: &BranchState, live: &[&BranchState]) {
         let mut freed_vars = HashSet::new();
         let mut freed_at = HashMap::new();
@@ -2958,7 +2958,7 @@ impl MemoryAnalyzer {
     /// function -- NOT by falling through from that preceding statement,
     /// since it never falls through at all. Carrying forward the state
     /// accumulated up to that point is therefore wrong: e.g. hostap's
-    /// eap_sim.c pattern (task 630) frees `resp` on the normal post-loop
+    /// eap_sim.c pattern frees `resp` on the normal post-loop
     /// fallthrough path, `return`s, and an `invalid:` label after that
     /// return (reached only via a forward `goto invalid;` from inside the
     /// loop) frees the SAME variable again on its own, mutually exclusive
@@ -2969,7 +2969,7 @@ impl MemoryAnalyzer {
     fn reset_state_if_label_unreachable_by_fallthrough(&mut self, label_node: &Node, source: &str) {
         // A comment is a named sibling too, and valkey's cluster.c puts a
         // three-line one between `return;` and `socket_err:`; the label's
-        // predecessor in the FLOW is the last statement before it (task 1360).
+        // predecessor in the FLOW is the last statement before it.
         let mut prev = label_node.prev_named_sibling();
         while let Some(p) = prev {
             if p.kind() != "comment" {
@@ -3010,12 +3010,12 @@ impl MemoryAnalyzer {
     /// `longjmp`, a project `fatal()` declared `_Noreturn`) diverges the
     /// same way a `return` does: control never comes back to this function,
     /// so the arm has no join edge and nothing it freed is carried past the
-    /// merge (task 1360). sqlite's `if( rc!=SQLITE_OK ){ ...;
+    /// merge. sqlite's `if( rc!=SQLITE_OK ){ ...;
     /// sqlite3_close(db); exit(1); }` was reporting every later use of `db`
     /// as a use-after-free, and valkey's `freeReplyObject(reply);
     /// valkeyFree(ctx); exit(1);` the single legitimate frees after it.
     fn control_flow_diverges(&self, node: &Node, source: &str, break_diverges: bool) -> bool {
-        // Explicit work/result stacks instead of native recursion (task 295):
+        // Explicit work/result stacks instead of native recursion:
         // a chain of else-less nested `if`s (each testing this function on
         // its own consequence) recurses once per nesting level here too,
         // independent of `analyze_function_body`'s own conversion, so it
@@ -3038,7 +3038,7 @@ impl MemoryAnalyzer {
         // `else_clause` fell through to the `_ => false` arm below), making
         // `else_returns` always false and any free in an `else` arm leak into
         // the general "neither branch returns" union-merge as if it hadn't
-        // terminated. Unwrap it the same way as `compound_statement` (task 563).
+        // terminated. Unwrap it the same way as `compound_statement`.
         fn resolve<'a>(mut node: Node<'a>) -> Option<Node<'a>> {
             loop {
                 match node.kind() {
@@ -3148,7 +3148,7 @@ impl MemoryAnalyzer {
     /// `return`/`goto`/`continue` (which really do skip past it). Getting
     /// this wrong made a free-then-break arm look "unreachable after the
     /// switch" and silently drop the free from the merged post-switch state
-    /// (task 398).
+    /// .
     fn case_reaches_after_switch(&self, case_node: &Node, source: &str) -> bool {
         match Self::case_last_statement(case_node) {
             Some(stmt) => !self.control_flow_diverges(&stmt, source, false),
@@ -3166,7 +3166,7 @@ impl MemoryAnalyzer {
     /// to the innermost breakable, and only a loop needs telling -- a switch
     /// arm's exit state is recorded by `SwitchCaseDone`; a `continue` goes
     /// back to the head of the innermost LOOP, through any switch in
-    /// between, and the condition there can fail (task 1360).
+    /// between, and the condition there can fail.
     fn record_loop_exit(&mut self, continuing: bool) {
         let state = BranchState::fork(self);
         let target = if continuing {
@@ -3187,7 +3187,7 @@ impl MemoryAnalyzer {
     /// last statement returns, jumps away or never returns does. valkey's
     /// acl.c ends a `for` body with `sdsfreesplitres(argv, argc); ...;
     /// return 1;` and frees `argv` again right after the loop, on the path
-    /// that only the body's `continue`s reach (task 1360).
+    /// that only the body's `continue`s reach.
     fn finish_loop(&mut self, body: Option<Node>, pre_state: &BranchState, source: &str) {
         let exits = self.breakables.pop().flatten().unwrap_or_default();
         let end_state = BranchState::fork(self);
@@ -3204,7 +3204,7 @@ impl MemoryAnalyzer {
     /// jumps to a label, or calls something that never returns -- so the end
     /// of the body reaches nothing. A `break` reaches the code after the
     /// loop and a `continue` re-tests the condition, so neither counts here;
-    /// both record their state in `breakables` when walked (task 1360).
+    /// both record their state in `breakables` when walked.
     fn loop_body_leaves_function(&self, body: &Node, source: &str) -> bool {
         let resolved = match body.kind() {
             "compound_statement" => Self::compound_last_statement(body),
@@ -3399,7 +3399,7 @@ impl MemoryAnalyzer {
         if let Some(function_node) = node.child_by_field_name("function") {
             // The spelling in the source keys the safe-free macro table
             // (`macro_null_params`); everything else classifies the callee
-            // by the name its `#define` alias chain ends at (task 1128).
+            // by the name its `#define` alias chain ends at.
             let spelled_name = get_node_text(&function_node, source);
             let function_name = const_eval::resolve_macro_alias(&self.macro_aliases, spelled_name);
 
@@ -3454,7 +3454,7 @@ impl MemoryAnalyzer {
                     // handle, not the pointer being reallocated) must NOT be
                     // pushed through `track_realloc_old_pointer`, which would
                     // wrongly invalidate that handle with no reassignment to
-                    // ever clear it (task 563).
+                    // ever clear it.
                     if upper_name.contains("REALLOC") && call_result_is_assigned(node) {
                         self.track_realloc_old_pointer(node, source);
                         return HashSet::new();
@@ -3475,7 +3475,7 @@ impl MemoryAnalyzer {
                     // conditional path (e.g. an error branch) doesn't definitely
                     // free it at every call site, and marking it as freed
                     // unconditionally here caused cascading false UAF/double-free
-                    // reports at callers who took a different path (task 401).
+                    // reports at callers who took a different path.
                     if let Some(summary) = self.function_summaries.get(function_name).cloned() {
                         if !summary.unconditional_frees_params.is_empty() {
                             let callee = function_name.to_string();
@@ -3524,7 +3524,7 @@ impl MemoryAnalyzer {
                         // of caller-owned storage, or a structural-reference
                         // drop; see `init_stems`), so obj is not marked freed
                         // and the real `free(p)` that follows is not a double
-                        // free (task 1235). It is still a use of obj, so a
+                        // free. It is still a use of obj, so a
                         // prior free of it is reported.
                         if self.is_contents_free_of_initialized(function_name, node, source) {
                             self.check_function_args_for_freed(node, source, violations);
@@ -3584,7 +3584,7 @@ impl MemoryAnalyzer {
 
     /// Is this name-shaped free a `<stem>_free(obj)` whose `obj` this function
     /// earlier passed to `<stem>_init`? The freed operand is the last argument,
-    /// as `process_free_call` assumes (task 1235).
+    /// as `process_free_call` assumes.
     fn is_contents_free_of_initialized(
         &self,
         function_name: &str,
@@ -3652,7 +3652,7 @@ impl MemoryAnalyzer {
     /// takes a `cap_t` BY VALUE, `OFFSET_TO_FREE_INDEX(offset)` an integer
     /// counter -- and the last-argument rule marked each one freed, so every
     /// later read of the cap or the counter became a use-after-free
-    /// (task 1350).
+    /// .
     ///
     /// The bar is POSITIVE evidence of a non-pointer, never the absence of a
     /// `*` in the type's spelling. `resolve_identifier_declared_type` hands
@@ -3703,7 +3703,7 @@ impl MemoryAnalyzer {
     }
 
     /// Mark the SPECIFIC parameter positions a cross-file `FunctionSummary`
-    /// determined this callee actually frees (task 396). Unlike
+    /// determined this callee actually frees. Unlike
     /// `process_free_call`'s "assume it's the last argument" heuristic —
     /// needed when all we have is the callee's *name* — this is driven by
     /// real analysis of the callee's body, so it correctly frees e.g. the
@@ -3793,7 +3793,7 @@ impl MemoryAnalyzer {
         // `lvalue_of` drops the index, so `a[1].f` and `a[0].f` would share a
         // key -- curl's `socks_sspi.c` frees `sspi_w_token[1].pvBuffer` on
         // the success path and `sspi_w_token[0].pvBuffer` right after, and
-        // was reported as a double-free (task 1233). Same policy as the
+        // was reported as a double-free. Same policy as the
         // `free(arr[i])` skip above: not tracked rather than tracked wrongly.
         if path_has_subscript(&actual_arg) {
             return None;
@@ -3815,7 +3815,7 @@ impl MemoryAnalyzer {
         // two frees may sit in mutually-exclusive build configurations (sibling
         // `#if`-guarded `else if` arms, or a diverging `#else` branch followed by a
         // fall-through free). Their parse order is not a real execution sequence, so
-        // the inferred double-free is unsound (task 251).
+        // the inferred double-free is unsound.
         let preproc_split = self
             .freed_at
             .get(&canonical)
@@ -3851,7 +3851,7 @@ impl MemoryAnalyzer {
         self.freed_at.insert(canonical.clone(), free_byte);
         self.freed_at.insert(lv.clone(), free_byte);
         // Record -- or, on real evidence, retract -- that this free is a name
-        // guess (task 1289).
+        // guess.
         match guessed_by {
             Some(callee) => {
                 self.guessed_freed
@@ -3869,7 +3869,7 @@ impl MemoryAnalyzer {
         // GATED on the base being a genuine union-typed variable: freeing a
         // struct field (e.g. `free(data->state.range)`) must NOT poison sibling
         // fields, which was the dominant MEM30 cascade FP on real-world C
-        // (task 181). Members of a true union overlap in storage, so freeing one
+        // . Members of a true union overlap in storage, so freeing one
         // does invalidate the others; struct fields are independent allocations.
         if let Some(base) = base_var {
             if !base.is_empty() && self.union_typed_vars.contains(&base) {
@@ -3895,7 +3895,7 @@ impl MemoryAnalyzer {
         // Report this argument's node id so callers can skip re-walking it
         // as a "use" of the pointer it just marked freed — the call site
         // that passes a pointer to be freed isn't itself a use-after-free
-        // (task 400).
+        // .
         Some(arg.id())
     }
 
@@ -3908,7 +3908,7 @@ impl MemoryAnalyzer {
     /// same shape runs through curl's `Curl_urldecode(..., &unescaped, ...)`
     /// and `Curl_cwriter_create(&writer, ...)`, hostap's gnutls and EHT
     /// paths, and 88 findings from a single `cmd` in valkey-benchmark.c
-    /// (task 1234).
+    /// .
     ///
     /// Policy mirrors EXP33-C's `&var`-initializes rule (task 1065 bug #3):
     /// credit the write by DEFAULT -- for a callee with no summary as much
@@ -4135,7 +4135,7 @@ impl MemoryAnalyzer {
                 // arbitrary project function (e.g. hostap's
                 // `eap_sim_db_get_next_pseudonym`) left the field permanently
                 // marked freed even though this statement, like any
-                // reassignment, plainly gives it a fresh value (task 563).
+                // reassignment, plainly gives it a fresh value.
                 self.freed_vars.remove(&left_var);
                 self.nullified_vars.remove(&left_var);
                 self.realloc_invalidated.remove(&left_var);
@@ -4200,7 +4200,7 @@ impl MemoryAnalyzer {
         }
     }
 
-    /// `x = f(x)` where `f` freed `x` (task 1355): the store of `f`'s result
+    /// `x = f(x)` where `f` freed `x`: the store of `f`'s result
     /// into `x` follows the call, so `x` no longer holds the value that was
     /// freed and does not keep its state -- the same overwrite-clears rule
     /// `process_assignment` applies to `free(p); p = make_buffer();`. That
@@ -4253,7 +4253,7 @@ impl MemoryAnalyzer {
     /// destination, so a path freed before it no longer holds the value a
     /// later read returns -- the same overwrite-clears rule
     /// `process_assignment` applies to `free(p); p = NULL;`, reached by a
-    /// route that assignment tracking cannot see (task 1446).
+    /// route that assignment tracking cannot see.
     ///
     /// sqlite uses both spellings of the idiom. `sqlite3session.c`'s
     /// `sqlite3_free(sOut.aBuf); memset(&sOut, 0, sizeof(sOut));` nulls the
@@ -4279,7 +4279,7 @@ impl MemoryAnalyzer {
         };
         // Same classification order as `process_call_expression`: the
         // source spelling keys the macro table, everything else resolves
-        // through the `#define` alias chain first (task 1128).
+        // through the `#define` alias chain first.
         let spelled_name = get_node_text(&function_node, source);
         let function_name = const_eval::resolve_macro_alias(&self.macro_aliases, spelled_name);
         let dest_indices: Vec<usize> = if call_roles::is_memory_clearing_call(function_name) {
@@ -4331,7 +4331,7 @@ impl MemoryAnalyzer {
     /// 1447). Every rebind site already cleared the rebound lvalue itself;
     /// none of them reached the paths hanging off it.
     ///
-    /// The counterpart of `forget_freed_path`'s other caller (task 1446)
+    /// The counterpart of `forget_freed_path`'s other caller
     /// from the opposite direction: there the storage was overwritten, here
     /// the path now names different storage.
     fn rebind_forgets_paths_inside(&mut self, lv: &LValue) {
@@ -4387,13 +4387,13 @@ impl MemoryAnalyzer {
             // Aliasing a dangling pointer (`p = q;` after free(q)) — the
             // new variable also dangles. Gated on an identifier RHS:
             // a subscript/field RHS copies a value out of a container,
-            // not the dangling pointer itself (task 232).
+            // not the dangling pointer itself.
             //
             // What dangles is the ASSIGNED LOCATION, not the object it
             // sits in. `h->head = p;` after free(p) makes `h->head`
             // dangle; `h` itself was never freed, and marking the root
             // reported every unrelated sibling (`h->count`) as a
-            // use-after-free of `h` (task 1448). For a plain identifier
+            // use-after-free of `h`. For a plain identifier
             // LHS the path IS the root, so that case is unchanged.
             self.freed_vars.insert(left_lv.clone());
             self.aliases.insert(left_lv.clone(), right_var.clone());
@@ -4415,7 +4415,7 @@ impl MemoryAnalyzer {
             }
         }
         // Either way the assigned location now holds a different pointer,
-        // so the paths hanging off it name different storage (task 1447).
+        // so the paths hanging off it name different storage.
         self.rebind_forgets_paths_inside(left_lv);
     }
 
@@ -4425,7 +4425,7 @@ impl MemoryAnalyzer {
     /// alone left `old_s -> s` in place across `old_s = s; s = create(); free(
     /// old_s);`, and the free of the previous object reached the fresh one
     /// through the stale entry: valkey's debug_lua.c reported `return s` as
-    /// returning freed memory (task 1360).
+    /// returning freed memory.
     fn sever_aliases_of(&mut self, var: &LValue) {
         self.aliases.remove(var);
         self.aliases.retain(|_, target| target != var);
@@ -4448,7 +4448,7 @@ impl MemoryAnalyzer {
     /// `ldap.c::_ldap_url_parse2`, which declares `char *unescaped;` in
     /// three sibling blocks and frees it in each, saw the second block's
     /// `Curl_urldecode(..., &unescaped, ...)` as a use of the FIRST block's
-    /// freed pointer (task 1233). `init_declarator` children are left to
+    /// freed pointer. `init_declarator` children are left to
     /// their own handler; only bare `identifier`/`pointer_declarator`
     /// declarators are cleared here.
     fn process_plain_declarators(&mut self, node: &Node, source: &str) {
@@ -4581,7 +4581,7 @@ impl MemoryAnalyzer {
         }
 
         // `&p` is address-of, not a dereference: it names the variable's own
-        // storage, which is live whatever `p` points at (task 1233).
+        // storage, which is live whatever `p` points at.
         if is_address_of(node, source) {
             return;
         }
@@ -4960,7 +4960,7 @@ impl MemoryAnalyzer {
     }
 
     /// Finish a use-after-free finding on `lv` with what is known about how
-    /// `lv` came to be freed (task 1289).
+    /// `lv` came to be freed.
     ///
     /// A free that reached this rule on a callee's NAME alone -- `frees_params_
     /// guessed` in the summary that credited it -- is a MAY-free, the same
@@ -4982,7 +4982,7 @@ impl MemoryAnalyzer {
         // `#ifdef USE_LWIPSOCK / #elif / #else` chain, and the linear walk
         // sees arm two "use" what arm one freed. The double-free path has
         // declined to report across such a split since task 251; a
-        // use-after-free across one is the same unsound sequence (task 1233).
+        // use-after-free across one is the same unsound sequence.
         let freed_byte = self
             .freed_at
             .get(lv)
@@ -5188,7 +5188,7 @@ fn is_preproc_if_zero(node: &tree_sitter::Node, source: &str) -> bool {
 /// byte offsets `start` and `end`. Used to suppress a double-free inferred across
 /// such a directive: without a preprocessor aurora-lint cannot know whether the two free
 /// sites are co-compiled or live in mutually-exclusive configurations, so their
-/// raw parse order is not a sound execution sequence (task 251). `#define` /
+/// raw parse order is not a sound execution sequence. `#define` /
 /// `#include` and other non-conditional directives are ignored — they do not
 /// gate code in or out.
 /// Byte offset at which 1-based `line` starts (the source length when the

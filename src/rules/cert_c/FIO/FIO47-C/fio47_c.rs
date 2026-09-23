@@ -684,7 +684,7 @@ impl CertRule for Fio47C {
         // stale entry from one function (e.g. `float x`) leak into an
         // unrelated same-named variable in another function (e.g. an
         // `int x` parameter), producing a bogus format-specifier type
-        // mismatch there (task 418). Scope per `function_definition`,
+        // mismatch there. Scope per `function_definition`,
         // mirroring EXP39-C/STR32-C's per-function reset pattern.
         let functions = query::find_descendants_of_kind(*node, "function_definition");
         if functions.is_empty() {
