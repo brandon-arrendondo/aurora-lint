@@ -1,6 +1,6 @@
 /*
  * Cross-file returns_allocation test — header-only allocator + constructor
- * (task 1343). Resolved only via #include + -I, never scanned under -d.
+ * . Resolved only via #include + -I, never scanned under -d.
  */
 #ifndef CONSTRUCTOR_H
 #define CONSTRUCTOR_H

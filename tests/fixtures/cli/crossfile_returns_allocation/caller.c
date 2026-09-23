@@ -1,5 +1,5 @@
 /*
- * Cross-file returns_allocation test — caller (task 1343).
+ * Cross-file returns_allocation test — caller.
  * thing_ctor() is a header-defined (static inline) constructor: it calls
  * os_zalloc(), itself header-defined, and returns the result. Its name
  * matches none of MEM31-C's allocator-name heuristics, so flagging the

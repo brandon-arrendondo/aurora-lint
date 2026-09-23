@@ -385,7 +385,7 @@ fn prescan_save_load_round_trip() {
     );
 }
 
-/// Regression (task 185, Phase 2c-i): a function-like macro invocation
+/// Regression (Phase 2c-i): a function-like macro invocation
 /// (`xfree(p)`, defined in a header reached via -d) must not be flagged by
 /// DCL31-C as an undeclared function. This is the curl `curlx_free`/`curlx_calloc`
 /// false-positive class — the prescan pre-pass collects the macro definitions
@@ -428,7 +428,7 @@ fn manifest_exp33() -> PathBuf {
 /// a later read. The prescan collects the macro definition into
 /// ProjectContext.function_macros; `macro_output_param_indices` identifies the
 /// assigned parameter; EXP33-C's read-checker and the init-state transfer both
-/// consume it. This is the curl CF_DATA_SAVE FP class (task 185, Phase 2c-ii).
+/// consume it. This is the curl CF_DATA_SAVE FP class (Phase 2c-ii).
 #[test]
 fn macro_output_arg_not_flagged_uninitialized() {
     let dir = tempfile::tempdir().unwrap();
@@ -625,7 +625,7 @@ fn without_d_flag_reports_undeclared_function() {
 fn without_d_flag_directory_target_is_its_own_context() {
     // Same helper_compute, but the target is the directory holding both the
     // caller and helpers/helper.c. With no -d the scan set itself is
-    // prescanned (task 980), so the definition is known without naming the
+    // prescanned, so the definition is known without naming the
     // directory a second time with -d.
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
@@ -649,7 +649,7 @@ fn without_d_flag_directory_target_is_its_own_context() {
 #[test]
 fn without_d_flag_single_file_sees_its_own_definitions() {
     // A single-file target with no -d: the two callees are defined later in
-    // the same file. Before task 980 only sibling headers were consulted and
+    // the same file. Before an earlier fix only sibling headers were consulted and
     // the file's own definitions were never prescanned, so both calls were
     // flagged -- and vanished the moment the same file's directory was
     // passed with -d.
@@ -1052,7 +1052,7 @@ fn manifest_mem30() -> PathBuf {
 /// use-after-free (the pointer is NULL, not dangling). MEM30-C already treats
 /// the macro as a free via its name; the prescan-collected function_macros +
 /// `macro_nulls_param_indices` reveal the hidden `= NULL` so the freed state is
-/// cleared. Task 185, Phase 2c-iii.
+/// cleared. Phase 2c-iii.
 #[test]
 fn safe_free_macro_not_flagged_double_free() {
     let dir = tempfile::tempdir().unwrap();
@@ -1180,7 +1180,7 @@ fn crossfile_header_constructor_returns_allocation_flags_leak() {
     // functions are resolved only via #include + -I (not -d), so crediting
     // make_thing() with returns_allocation depends on propagate_returns_
     // allocation rerunning in resolve_includes's re-propagation block
-    // (task 1343). Before that fix this leak was dark.
+    // . Before that fix this leak was dark.
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
     let fixture_dir = fixtures().join("crossfile_returns_allocation");
@@ -1409,7 +1409,7 @@ fn manifest_arr36() -> PathBuf {
     fixtures().join("manifest_arr36.toml")
 }
 
-/// The cross-file half of ARR36-C's parameter model (task 936).
+/// The cross-file half of ARR36-C's parameter model.
 ///
 /// `span(const char *pos, const char *end)` is checked with no caller in its
 /// own file, so the rule's file-local call-site pass has nothing to read and

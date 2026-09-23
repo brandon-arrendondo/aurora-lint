@@ -1,7 +1,7 @@
 /* Calls two functions before their definitions further down the SAME file.
  * DCL31-C's sequential walk sees each call before any declaration; only a
  * prescan of this very file makes them known. A scan with no -d must build
- * that context for its own target (task 980). */
+ * that context for its own target. */
 void caller_function(void) {
     int result = helper_compute(42);
     process_buffer("hello", 5);
