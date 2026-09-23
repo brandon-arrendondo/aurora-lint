@@ -1,6 +1,6 @@
 # Frama-C on the real-world suite: why it is bounded and partial
 
-**Status:** IMPLEMENTED (2026-09-04, task 767). Read the "What a Frama-C row
+**Status:** IMPLEMENTED (2026-09-04). Read the "What a Frama-C row
 means" section before quoting any Frama-C real-world figure — the bound is
 not a tuning detail, it is what the number means.
 
@@ -204,5 +204,5 @@ The published competitor Juliet runs used Frama-C **32.0 (Germanium)**;
 `playbooks/install-static-analyzers.yml` installs whatever opam currently
 resolves, which as of 2026-09-04 is **33.0 (Arsenic)**. The runner records the
 version it actually saw in the `run_id`, so the difference is visible in the
-data — but a single-date, single-version table still needs the re-run tracked
-as task 768.
+data — but a single-date, single-version table still needs the re-run
+tracked as a follow-up.

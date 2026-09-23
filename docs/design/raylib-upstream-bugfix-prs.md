@@ -1,6 +1,6 @@
 # raylib Upstream Bugfix PRs — Tier 1
 
-Surfaced by the aurora-lint real-world audit of **raylib @ `962bbfc`** (ground-truth oracle `raylib-v1.0`, task 227).
+Surfaced by the aurora-lint real-world audit of **raylib @ `962bbfc`** (ground-truth oracle `raylib-v1.0`).
 These are the **Tier 1** findings: genuine public-API memory-safety bugs reachable with *ordinary* inputs —
 **independent of raylib's "load trusted assets only" threat model**. In two of three, the author's own
 guard is present but ineffective, and all three have bounds-checking *siblings*, so each is a clear
@@ -321,5 +321,5 @@ sibling style exactly to keep the PR minimal. Decide during review.)
 | 2 | `TextReplaceBetween` buffer overflow | ✅ `fix-textreplacebetween-overflow` | ✅ ASan | ✅ `99936bc` | ✅ [#5936](https://github.com/raysan5/raylib/pull/5936) |
 | 3 | gamepad-index OOB (`GetGamepadAxisCount`/`GetGamepadName`) | ✅ `fix-gamepad-index-bounds` | ✅ adjacency + ASan | ✅ `fe17e47` | ✅ [#5937](https://github.com/raysan5/raylib/pull/5937) |
 
-Tier 2 (malformed-file robustness: IQM/BDF/OBJ/glTF parsers — task 233) and Tier 3 (platform input
+Tier 2 (malformed-file robustness: IQM/BDF/OBJ/glTF parsers) and Tier 3 (platform input
 callbacks) are tracked separately and not part of this detour.
