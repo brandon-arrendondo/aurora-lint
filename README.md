@@ -104,6 +104,16 @@ nonsense on a C++ header it encounters.
 - **Cross-file analysis**: pre-scans directories for function definitions to reduce false positives
 - **Fast**: tree-sitter based parsing with control-flow graphs and inter-procedural reasoning
 
+## Rules Out of Scope for Static Analysis
+
+aurora-lint tracks every CERT C rule and recommendation, but being tracked, enabled, and shipping a `.rs` file is not the same claim as "this reliably detects its defect." Most enabled rules produce real findings; the table below is a distinct, deliberately short list of rules where that claim is *not* made — a specific, checkable reason automated analysis of this kind cannot do the job, not merely a rule that hasn't produced a true positive yet (a low real-world hit rate alone doesn't belong here; see `docs/adr/0002`). This is not the same list as the [4 tracked-but-not-yet-implemented rules](docs/configuration.rst#tracked-but-not-implemented) above — those simply haven't been written; the rule below has been, on purpose, as a no-op.
+
+| Rule | Description | Why it's out of scope |
+|------|-------------|------------------------|
+| FLP01-C | Take care in rearranging floating-point expressions | CERT itself classifies this rule as unenforceable through automated analysis. Telling an intentional floating-point reassociation from one that breaks a precision requirement needs to know what precision the code actually needs, which isn't recoverable from source text alone. aurora-lint ships a documented no-op rather than a heuristic CERT does not endorse. |
+
+This table is expected to grow: it is the landing place for any rule where careful measurement across Juliet and the real-world corpus — not just a low score so far — establishes that no codebase shape lets this class of tool resolve it reliably. See [`docs/configuration.rst`](docs/configuration.rst#enabled-but-out-of-scope) for the fuller reasoning kept in sync with this table.
+
 ## How Well Does It Work?
 
 Measured, not asserted. Two benchmarks, both with published methodology.

@@ -158,3 +158,34 @@ are simply not yet written:
 - **MSC19-C** — CERT's description and risk assessment are complete
   (severity Low), and 2 ``fail`` + 2 ``pass`` fixtures are already staged —
   the closest of the 4 to being implementable.
+
+Enabled but out of scope
+-------------------------
+
+The four rules above have no detection logic *yet*. This is a different
+list: rules that **do** have a ``.rs`` file, **are** enabled by default, and
+count toward |rules_enabled| above, but are not claimed as working
+detection — because no amount of further work makes them one. A rule
+belongs here only when there is a specific, checkable reason automated
+analysis cannot do the job, not merely because it has produced few or no
+true positives so far (that alone is ``docs/adr/0002`` territory — a low
+real-world true-positive rate does not by itself mean a rule is broken or
+unneeded — not this list).
+
+- **FLP01-C** — *Take care in rearranging floating-point expressions*. CERT
+  itself classifies this rule as unenforceable through automated analysis:
+  telling an intentional floating-point reassociation from one that breaks a
+  precision requirement needs to know what precision the code actually
+  needs, which is not recoverable from the source text. aurora-lint ships a
+  documented no-op (``check()`` unconditionally returns no violations)
+  rather than a heuristic CERT itself does not endorse. See
+  ``src/rules/cert_c/FLP/FLP01-C/flp01_c.rs`` for the rule's own reasoning.
+
+This list is expected to grow. Benchmarking every enabled rule against
+Juliet and the real-world corpus (:doc:`testing-methodology`) can surface
+a rule where the same case applies for a measured rather than a
+CERT-declared reason — repeated, careful measurement finding no codebase
+shape this class of static analyzer can reliably resolve, as opposed to a
+rule that is simply unproven so far. README's `Rules Out of Scope for
+Static Analysis <../README.md#rules-out-of-scope-for-static-analysis>`_
+table is the summary of this same list, kept in sync by hand.
