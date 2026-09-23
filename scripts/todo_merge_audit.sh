@@ -4,7 +4,7 @@
 # The merge driver reconciles cross-node AUTOINCREMENT id collisions silently:
 # it reports "N task(s) merged, 0 conflict(s)" while concatenating the
 # colliding tasks' details bodies, unioning their tag sets, and leaving deps
-# rows pointing at pre-renumber ids (see task 615).
+# rows pointing at pre-renumber ids.
 #
 # Run this after any merge that touched todo-sqlite-cli.db.
 #

@@ -7,8 +7,8 @@ docs/adr/0007 governs: nothing that locates a defect in a real-world corpus
 (project, file, line, mechanism) may appear there until the upstream fix has
 landed. scripts/generate_changelog.py builds both from task titles, which are
 internal working notes -- "confirmed OOB write at foo.c:579", "hostap
-disclosure: act on maintainer response" -- and until task 1375 it published
-them verbatim.
+disclosure: act on maintainer response" -- and until a dedicated filter was
+added, it published them verbatim.
 
 The generator now publishes only tasks explicitly marked for release (see its
 docstring); this check is the second, independent layer: a content scan over

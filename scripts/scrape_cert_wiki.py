@@ -257,8 +257,7 @@ class WikiScraper:
         # as None; generate_toml_metadata() treats a missing wiki-side date
         # as "can't compare, skip" for existing TOML files, so this doesn't
         # cause spurious overwrites -- it only means newly-created TOMLs get
-        # last_modified = "Unknown" until a real source is identified. See
-        # task 325.
+        # last_modified = "Unknown" until a real source is identified.
         item.last_modified = None
 
         body = page.get("body") or {}
@@ -670,7 +669,7 @@ def toml_inline_string(value: str) -> str:
     has no single quote or control char; otherwise fall back to a properly
     escaped basic string. This prevents scraped titles that contain embedded
     double quotes (e.g. DCL16-C: 'Use "L," not "l,"...') from emitting invalid
-    TOML. See task 200 / task 130 (build-time manifest validation).
+    TOML.
     """
     if "'" not in value and "\n" not in value and "\r" not in value:
         return f"'{value}'"
@@ -690,7 +689,7 @@ def toml_multiline_string(value: str) -> str:
     Prefer a multi-line literal string (''' ... ''') so prose containing
     backslashes (\\x10, \\U, \\u, \\0, Windows paths like \\\\.\\) is taken
     verbatim — these are the exact sequences that broke 8 rule TOMLs before
-    task 130 added validation. Fall back to an escaped multi-line basic string
+    validation was added. Fall back to an escaped multi-line basic string
     only if the text contains a triple single-quote, which a literal string
     cannot represent.
     """
@@ -784,7 +783,7 @@ def generate_toml_metadata(item: ItemMetadata, output_path: Path, force: bool = 
     toml_lines.append(f"title = {toml_inline_string(title)}")
 
     # Description with multi-line string (literal-string-encoded so scraped
-    # backslashes/quotes can't produce invalid TOML — see task 200).
+    # backslashes/quotes can't produce invalid TOML).
     if description:
         toml_lines.append("description = " + toml_multiline_string(description))
     else:

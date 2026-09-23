@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Task 328 triage: determine which of the pre-existing wiki_*.c fixtures are
+Wiki fixture staleness triage: determine which of the pre-existing wiki_*.c fixtures are
 actually stale relative to the CURRENT cmu-sei.github.io page content,
 before attempting any resynthesis.
 
-Task 328's premise is that some/all of 569 existing wiki_*.c fixtures may
+The premise here is that some/all of 569 existing wiki_*.c fixtures may
 no longer reflect current wiki content (post-Confluence migration, possible
 rule revisions). But most existing fixtures are hand/AI-synthesized wrappers
 around the wiki's example code, not literal extractions -- so a byte-diff

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Report ADR-0007-restricted vocabulary in rule test-fixture comments.
 
-Standalone counts-only reporting script (bmdb 1414 step 4) -- deliberately
+Standalone counts-only reporting script -- deliberately
 not a Rust test in a rule file (see CLAUDE.md: no #[cfg(test)] in rule
 implementation files), and deliberately not wired into any CI gate here:
 this repo owns the fixtures but not ADR-0007 or the disclosure-safety

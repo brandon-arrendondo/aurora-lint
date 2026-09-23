@@ -69,11 +69,11 @@ hard-fail lint above:
     repo's own docs still say "nine" (data/benchmark_repos.json has twelve,
     since mbedtls/valkey/ventoy were added) and whether those three count
     toward an "audited real-world corpus" claim is an open editorial
-    question gated on their ground_truth adjudication completeness --
-    aurora_lint task 1245 / sqc_paper task 1245. Wiring a hard-fail check
-    against len(benchmark_repos.json) before that question is answered
-    would break every unrelated doc commit for a number nobody has decided
-    yet. Once 1245 resolves, extending TARGETS/patterns here the same way
+    question gated on their ground_truth adjudication completeness.
+    Wiring a hard-fail check against len(benchmark_repos.json) before that
+    question is answered would break every unrelated doc commit for a
+    number nobody has decided yet. Once it resolves, extending
+    TARGETS/patterns here the same way
     ENABLED/IMPLEMENTED work is the mechanical follow-up -- do that, don't
     re-derive this reasoning.
 """

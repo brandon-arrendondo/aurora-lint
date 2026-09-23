@@ -16,7 +16,7 @@ only (never its title) -- ADR-0009 calls an uncategorised note a defect in
 the note, not something to default into "Added". Task titles are never
 published: they are internal working notes, and a large share of them locate
 a defect in a real-world corpus, which docs/adr/0007 keeps out of the public
-record until the fix has landed upstream (task 1375). A tagged task is also
+record until the fix has landed upstream. A tagged task is also
 dropped, with a warning, if it carries a disclosure-family tag
 (`disclosure`, `upstream`, `adr-0007`, ...) or a never-shipped tag
 (adjudication, paper, ...), or if the bullet matches a content deny pattern
