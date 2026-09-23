@@ -445,6 +445,23 @@ fn address_of_operand<'a>(node: &Node<'a>) -> Option<Node<'a>> {
     (op.kind() == "&").then(|| node.child_by_field_name("argument"))?
 }
 
+/// A call passing exactly ONE argument, by value: `sqlite3_free(p)` and not
+/// `sqlite3_free(&p)`.
+///
+/// Both halves guard the same credit. Arity one is the summary's
+/// one-nameable-argument rule: a deallocator NAME says a release happened
+/// and never says through which parameter, so with a second argument there
+/// is nothing to attach it to (`Curl_hash_delete(h, key, key_len)` reported
+/// the lookup KEY freed when MEM31-C tried it without the guard). And an
+/// `&var` argument is a claim about the pointee, not the parameter -- the
+/// same line MEM31-C draws with `through_address_of` -- so it is left to
+/// `process_address_of_args`, which already treats an unknown callee's
+/// `&var` as a possible refill.
+fn sole_by_value_argument(call: &Node) -> bool {
+    let args = crate::analyze::macro_semantics::positional_args(call);
+    matches!(args.as_slice(), [arg] if address_of_operand(arg).is_none())
+}
+
 fn is_address_of(node: &Node, source: &str) -> bool {
     node.kind() == "pointer_expression"
         && node
@@ -3405,7 +3422,7 @@ impl MemoryAnalyzer {
 
             match function_name {
                 "free" => {
-                    return self.process_free_call(node, source, violations);
+                    return self.process_free_call(node, source, None, violations);
                 }
                 "malloc" | "calloc" => {
                     // Allocation will be tracked via assignment
@@ -3476,6 +3493,10 @@ impl MemoryAnalyzer {
                     // free it at every call site, and marking it as freed
                     // unconditionally here caused cascading false UAF/double-free
                     // reports at callers who took a different path.
+                    // The callee that credits the free below on its NAME
+                    // alone, when its own body could not be read past a
+                    // function-pointer call. `None` for every other route.
+                    let mut escaped_sole_param: Option<String> = None;
                     if let Some(summary) = self.function_summaries.get(function_name).cloned() {
                         if !summary.unconditional_frees_params.is_empty() {
                             let callee = function_name.to_string();
@@ -3489,11 +3510,34 @@ impl MemoryAnalyzer {
                             );
                             self.process_address_of_args(node, source, Some(&summary), violations);
                             return freed;
+                        } else if summary.sole_param_escapes_unnamed_call
+                            && sole_by_value_argument(node)
+                        {
+                            // An empty free set refutes the name only when the
+                            // body was READABLE throughout. `sqlite3_free(void
+                            // *p)` releases through
+                            // `sqlite3GlobalConfig.m.xFree(p)`, so every free
+                            // set comes out empty and the summary -- present,
+                            // and therefore trusted over the name -- said
+                            // sqlite's one deallocator frees nothing. MEM31-C
+                            // reads that as a leak it must not report; here
+                            // the polarity is inverted, so it is a
+                            // use-after-free this rule never got to see. Fall
+                            // through to the name heuristic, which is the
+                            // reading a callee with NO summary already gets,
+                            // and carry the callee so the finding says the
+                            // free was inferred from a name.
+                            //
+                            // A body that was read all the way through and
+                            // releases nothing -- mbedtls's
+                            // `mbedtls_gcm_free(ctx)`, which only zeroizes
+                            // members -- still refutes its name.
+                            escaped_sole_param = Some(function_name.to_string());
                         } else {
                             self.check_function_args_for_freed(node, source, violations);
+                            self.process_address_of_args(node, source, Some(&summary), violations);
+                            return HashSet::new();
                         }
-                        self.process_address_of_args(node, source, Some(&summary), violations);
-                        return HashSet::new();
                     }
 
                     // Check for common free-related macros. A name is the
@@ -3531,7 +3575,12 @@ impl MemoryAnalyzer {
                             return HashSet::new();
                         }
                         // Treat as free() call
-                        let freed_arg_ids = self.process_free_call(node, source, violations);
+                        let freed_arg_ids = self.process_free_call(
+                            node,
+                            source,
+                            escaped_sole_param.as_deref(),
+                            violations,
+                        );
                         // "Safe free" macros (curl Curl_safefree, mosquitto
                         // mosquitto_FREE, …) also set the argument to NULL inside
                         // the macro body — invisible to us without expansion. If
@@ -3607,6 +3656,7 @@ impl MemoryAnalyzer {
         &mut self,
         node: &Node,
         source: &str,
+        guessed_by: Option<&str>,
         violations: &mut Vec<RuleViolation>,
     ) -> HashSet<usize> {
         let Some(arguments) = node.child_by_field_name("arguments") else {
@@ -3636,7 +3686,7 @@ impl MemoryAnalyzer {
         if !self.arg_can_be_freed(arg, source) {
             return HashSet::new();
         }
-        self.mark_arg_freed(node, arg, source, None, violations)
+        self.mark_arg_freed(node, arg, source, guessed_by, violations)
             .into_iter()
             .collect()
     }
