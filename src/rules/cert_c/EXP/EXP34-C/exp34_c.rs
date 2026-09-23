@@ -519,8 +519,15 @@ fn check_call_expression_cfg(
 
     let func_name = ast_utils::get_node_text_owned(&function, source);
 
-    // Check deref-function arguments. Skip when the callee is known to
-    // accept NULL (free/fclose no-op on NULL per C standard).
+    // Check deref-function arguments: a curated set of libc functions that
+    // unconditionally dereference their pointer argument, with no
+    // project-analyzable body to relocate a report into (task 1418's ruling
+    // against blaming a caller for what might be a guarded callee assumes an
+    // interprocedural target to point at instead; these are opaque external
+    // functions whose null-argument behavior is fixed by the C standard, not
+    // inferred, so the call site is the only, and the correct, place to
+    // report). Skip when the callee is known to accept NULL (free/fclose
+    // no-op on NULL per C standard).
     if is_deref_function(&func_name) && !is_null_safe_callee(&func_name, macros) {
         if let Some(args) = node.child_by_field_name("arguments") {
             check_function_arguments_cfg(
