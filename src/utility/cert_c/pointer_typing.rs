@@ -12,7 +12,7 @@
 //! Each of those rules classified an operand's type from its own map and each
 //! independently lost the pointer, so `buf += readnb` read as a narrowing
 //! assignment into `unsigned char` and `prot + prot_len - icv_len` as an
-//! unsigned subtraction (task 914). The classification lives here once.
+//! unsigned subtraction. The classification lives here once.
 //!
 //! The inference is deliberately one-directional: an expression is reported
 //! pointer-typed only when *positively* determined to be one, so an operand

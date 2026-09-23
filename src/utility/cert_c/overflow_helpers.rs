@@ -9,7 +9,7 @@
 //! surface found in that sweep. Filed and worked as task 490.
 //!
 //! **Not everything with a matching name lives here.** A follow-up audit
-//! (task 490) found that the `has_overflow_check_*` family and
+//! found that the `has_overflow_check_*` family and
 //! `is_small_increment_of_opaque` only *look* duplicated: `INT30-C`'s
 //! versions detect unsigned-wraparound guard idioms (`UINT_MAX`/`SIZE_MAX`
 //! thresholds) and `INT32-C`'s detect signed-overflow guard idioms

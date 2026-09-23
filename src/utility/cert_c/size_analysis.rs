@@ -33,7 +33,7 @@ pub fn find_element_size(var_name: &str, preceding_text: &str) -> usize {
 
     // Candidate type keywords a declaration might end with, immediately
     // before `var_name[`. Byte sizes themselves come from the shared
-    // canonical table (task 511) rather than a rule-local copy.
+    // canonical table rather than a rule-local copy.
     let type_names = [
         "char",
         "short",

@@ -347,7 +347,7 @@ pub fn is_full_range_return_function(name: &str) -> bool {
 /// standard function is declared in a system header the scan does not read,
 /// so without this table `strlen(a) + strlen(b)` has no type at all and the
 /// signed/unsigned dispatch between INT32-C and INT30-C cannot see that it
-/// is `size_t` arithmetic (task 1288). The `<string.h>` / `<stdio.h>` /
+/// is `size_t` arithmetic. The `<string.h>` / `<stdio.h>` /
 /// `<stdlib.h>` / `<wchar.h>` / `<time.h>` functions whose C11 prototype
 /// returns `size_t`, nothing inferred.
 pub fn returns_size_t(name: &str) -> bool {

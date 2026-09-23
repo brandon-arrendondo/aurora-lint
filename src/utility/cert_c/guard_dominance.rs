@@ -299,7 +299,7 @@ fn enclosing_conditions<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
 ///   FALSE. Returning it as a fact let EXP34-C's
 ///   [`is_nonnull_by_correlated_exit_guard`] discharge a conjunct that had not
 ///   been established and drop a real possibly-null dereference — a
-///   suppression that was not provable (task 1327).
+///   suppression that was not provable.
 /// - an `else` branch's condition, which is false exactly where the branch runs.
 /// - a `switch` condition, where the case label governs and not truthiness.
 ///
@@ -336,7 +336,7 @@ pub fn conditions_known_true_at<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
 /// `var` is null (`!var`, `var == NULL`, `0 == var`). Then `!guard` implies
 /// `var != NULL` with no approximation. Anything less exact returns false.
 ///
-/// Does NOT cover two shapes from the same cohort (task 1074): a loop bound
+/// Does NOT cover two shapes from the same cohort: a loop bound
 /// discharging the other disjunct (`for (i = 0; i < n; i++)` proving `n != 0`
 /// against a `(!items && n != 0)` guard), which needs integer reasoning; and
 /// multi-guard case analysis (`!a && b`, `a && !b`, `!a && !b` in sequence),
@@ -538,7 +538,7 @@ fn normalized_text(node: &Node, source: &str) -> String {
 /// dead-defensive code, and treating it as evidence of nullability is what let
 /// hostap's `ieee802_1x_encapsulate_radius` — `sta->eapol_sm` in its first
 /// statement, `if (sta && …)` 36 lines later — report a null dereference of
-/// `sta` further down (task 1058, aurora_lint).
+/// `sta` further down.
 ///
 /// Counted as dominating: a dereference inside a condition that encloses
 /// `site` (it was evaluated to get here), and one in a preceding block-level

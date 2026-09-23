@@ -482,7 +482,7 @@ pub fn resolve_identifier_binding<'a>(
 /// Extract the type text (tokens before the declarator) of a `declaration`
 /// node, e.g. `time_t x;` -> `"time_t"`, `static unsigned int x;` ->
 /// `"static unsigned int"`. Public because this exact scan was independently
-/// hand-rolled in ARR39-C, MSC15-C, and FIO34-C (task 387/584) before being
+/// hand-rolled in ARR39-C, MSC15-C, and FIO34-C before being
 /// consolidated here.
 pub fn declaration_type_text(decl: &Node, source: &str) -> String {
     (0..decl.child_count())
@@ -615,7 +615,7 @@ pub fn is_in_preproc_condition(node: &Node) -> bool {
 /// for a `#if X ... #else` stub body) makes every function in every guarded
 /// header conditional: hostap's `dl_list_add` in `list.h` then earns no
 /// `stores_params`, and the intrusive-list linkers built on it lose their
-/// borrowed-result reading (task 1227). Ask this before walking up to a
+/// borrowed-result reading. Ask this before walking up to a
 /// preprocessor ancestor and stop at a guard.
 ///
 /// Deliberately tight: top level of the file (`translation_unit` parent), the
@@ -661,7 +661,7 @@ pub fn is_include_guard(node: &Node, source: &str) -> bool {
 /// That distinction is the whole point. tree-sitter has no preprocessor, so a
 /// directive it cannot place is absorbed into an `ERROR` node — and then there
 /// is no `preproc_if`, no `condition` field, and nothing for the tree-level
-/// predicate to match. Measured on the real corpus (aurora_lint 1272/1284):
+/// predicate to match. Measured on the real corpus:
 /// `is_in_preproc_condition` answers `false` at *every* site where a rule was
 /// actually misreading a directive as C, because the parse damage that confuses
 /// the rule is the same damage that destroyed the nodes. A directive intact
@@ -833,7 +833,7 @@ pub fn get_identifier_from_declarator(declarator: &Node, source: &str) -> String
 /// tokens. glibc writes most of POSIX that way — every `sigaction`,
 /// `sigprocmask` and `setuid` prototype has this shape — so a walk that only
 /// visits `declaration`/`function_definition` nodes reads the whole POSIX
-/// surface as undeclared (task 1038). sqlite's `columnNullValue`, whose
+/// surface as undeclared. sqlite's `columnNullValue`, whose
 /// definition carries a conditional `__attribute__((aligned(8)))`, is the
 /// same node shape reached from the other cause.
 ///
@@ -893,7 +893,7 @@ pub struct ErrorDeclaration {
 
 /// Read every declaration back out of an `ERROR` node -- name, return type
 /// and parameter list, where [`function_names_in_error_declaration`] returns
-/// only the name (task 1060).
+/// only the name.
 ///
 /// RECOGNITION is unchanged in kind: a run of type/storage specifiers
 /// immediately followed by a function declarator, and any other sibling ends
@@ -1023,7 +1023,7 @@ fn parameters_of_declarator(declarator: &Node, source: &str) -> Vec<(String, Str
 /// before scanning its children — needed for a bare, unwrapped declarator
 /// (`int j = 0;`) where the declarator field IS the identifier directly.
 /// The old children-only scan returned `None` for that shape, which caused a
-/// live regression in CON34-C's OpenMP shared-variable detection (task 385).
+/// live regression in CON34-C's OpenMP shared-variable detection.
 pub fn find_identifier_in_declarator(declarator: &Node, source: &str) -> Option<String> {
     let name = get_identifier_from_declarator(declarator, source);
     if name.is_empty() {
@@ -1775,7 +1775,7 @@ pub fn is_write_context(node: &Node) -> bool {
 /// the typedef being out of scope in a per-file parse -- there is no scanner
 /// state to pre-seed, and no amount of cross-file typedef knowledge reaches
 /// it. Recognising the shape after the fact is the only available fix
-/// (task 675).
+/// .
 ///
 /// Deliberately PURELY STRUCTURAL: it returns the name whatever it is, and the
 /// caller must confirm the name is a typedef before treating the node as a
@@ -2145,8 +2145,8 @@ pub fn is_defined_macro_name(name: &str, source: &str) -> bool {
 /// from `int a[n]` (a VLA).
 ///
 /// Single source of truth for a heuristic that was independently
-/// reimplemented in five rules with slightly different edge cases
-/// (task 603): MEM05-C, ARR32-C, MEM33-C, DCL03-C, EXP08-C.
+/// reimplemented in five rules with slightly different edge cases:
+/// MEM05-C, ARR32-C, MEM33-C, DCL03-C, EXP08-C.
 ///
 /// # Examples
 /// ```

@@ -177,7 +177,7 @@ impl TypedefShape {
 /// *LPCPOINT`, where `const` already sits on the pointee). Shared by the
 /// rule, which flags such a typedef where it is written, and the prescan,
 /// which records the names cross-file so `const LPPOINT pt` in another file
-/// can be recognised for what it is (task 1188). A typedef with an ERROR
+/// can be recognised for what it is. A typedef with an ERROR
 /// among its own children (a calling-convention macro left unresolved) is
 /// skipped; an ERROR inside a struct body is not held against the name.
 pub fn pointer_typedef_names_in(type_definition: &Node, source: &str) -> Vec<String> {

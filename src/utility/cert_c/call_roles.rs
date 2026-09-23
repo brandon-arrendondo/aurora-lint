@@ -17,7 +17,7 @@
 //! from the broader `is_allocator_call`. `ARR30-C`'s buffer-size-tracking
 //! allocator list is intentionally NOT folded in here yet -- it sits inside
 //! an oversized, text-heuristic-heavy rule file flagged for its own
-//! dedicated audit (task 497) before any migration.
+//! dedicated audit before any migration.
 
 /// Core heap allocators that return `void *` (the `MEM02-C` "must
 /// immediately cast" set). Does NOT include `strdup`/`strndup`, which
@@ -81,7 +81,7 @@ pub const MEMORY_CLEARING_FUNCS: &[&str] = &[
 /// the variant directly at least as often as it uses the macro -- every
 /// `LoadLibrary`/`CreateProcess` in Ventoy2Disk is an `A` or `W` call --
 /// so a rule that compares against the bare macro name alone has no recall
-/// on real code (task 1130).
+/// on real code.
 pub fn is_win32_api(name: &str, base: &str) -> bool {
     name.strip_prefix(base)
         .is_some_and(|rest| rest.is_empty() || rest == "A" || rest == "W")
@@ -109,7 +109,7 @@ pub fn is_allocator_call(name: &str) -> bool {
 /// A call that overwrites the buffer its first argument points at -- one of
 /// [`MEMORY_CLEARING_FUNCS`]. The name-level half of MEM03-C's "was this
 /// sensitive buffer cleared" question; the wrapper half is
-/// `FunctionSummary::clears_params` (task 1127).
+/// `FunctionSummary::clears_params`.
 pub fn is_memory_clearing_call(name: &str) -> bool {
     MEMORY_CLEARING_FUNCS.contains(&name)
 }
