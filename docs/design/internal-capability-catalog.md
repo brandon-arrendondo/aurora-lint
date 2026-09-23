@@ -309,7 +309,7 @@ their own recursive descent.
 | `is_function_declarator` | `(node: &Node) -> bool` | Contains a `function_declarator` (i.e. this is a function-pointer declarator). |
 | `inner_declarator` | `(n: &Node) -> Option<Node>` | The declarator one level inside `n`. Pointer/array/function declarators expose it as the `declarator` field; a `parenthesized_declarator` has **no field** for it (`( declarator )`, possibly with an `ms_call_modifier` first), so a walk keyed on `child_by_field_name("declarator")` alone stops dead at `(*signal(...))`. Use this to walk any declarator chain inward. |
 | `typedef_declarators` | `(n: &Node) -> Vec<Node>` | Every `declarator` field of a `type_definition`, one per name: `typedef struct tagPOINT { ... } POINT, *LPPOINT;` yields two, and only the second is a pointer. |
-| `TypedefShape::of` | `(declarator: &Node, source: &str) -> TypedefShape { is_pointer, is_function, name }` | What one typedef declarator chain spells, read from the outside in and **never entering a struct body** — a struct's pointer members say nothing about the type being named. `name` is the terminal `type_identifier`, i.e. the name defined, not the first type name in the subtree (which for `typedef BOOL (*PF)(...)` is `BOOL`). Task 1187 documents both mistakes at scale. |
+| `TypedefShape::of` | `(declarator: &Node, source: &str) -> TypedefShape { is_pointer, is_function, name }` | What one typedef declarator chain spells, read from the outside in and **never entering a struct body** — a struct's pointer members say nothing about the type being named. `name` is the terminal `type_identifier`, i.e. the name defined, not the first type name in the subtree (which for `typedef BOOL (*PF)(...)` is `BOOL`). Both mistakes are documented at scale. |
 | `pointer_typedef_names_in` | `(type_definition: &Node, source: &str) -> Vec<String>` | The names a typedef binds to a pointer type in DCL05-C's sense: pointer in the chain, not a function pointer (CERT exempts those), not pointer-to-const (`typedef const POINT *LPCPOINT`). Shared by the rule and the prescan's `pointer_typedef_names` collector so the two can never disagree. |
 
 ### `src/utility/cert_c/fn_ptr_bindings.rs`
@@ -342,7 +342,7 @@ told apart on the declarator one level in, not on the name.
 ### `src/utility/cert_c/call_roles.rs`
 **Problem solved:** `std_functions.rs` answers "is this a known std/POSIX/
 Windows function at all" but has no "classify this call by role" layer on
-top of it. Task 481's ruleset-wide sweep found `is_allocation_call`/
+top of it. A ruleset-wide sweep found `is_allocation_call`/
 `is_alloc_call` reimplemented in 7 files with disagreeing lists (some
 missing `strdup`/`strndup`/`aligned_alloc`), and `is_printf_family` (or an
 equivalent list embedded in a broader `is_safe_function`) reimplemented in
@@ -370,7 +370,7 @@ function answers a materially different "does this call leave the
 buffer's contents alone" question specific to that rule. These are
 candidates for a later migration pass, not oversights.
 
-**Task 499 migration notes:** `STR30-C`'s printf sub-list migration is
+**Migration notes:** `STR30-C`'s printf sub-list migration is
 behaviorally inert either way — `is_safe_function` there only gates
 `check_unknown_function_literal_arg`, which itself immediately bails
 unless the callee's name contains "modify"/"change"/"set"/"update", so
@@ -462,7 +462,7 @@ filed separately since it's a one-line fix, not a duplication.
 
 ### `src/utility/cert_c/float_typing.rs`
 **Problem solved:** distinguishing integer arithmetic from floating-point
-arithmetic via the C usual arithmetic conversions. Task 481's sweep found
+arithmetic via the C usual arithmetic conversions. A sweep found
 only 2 of 14 FLP rules (`FLP06-C`, `FLP30-C`) actually called this module;
 A follow-up migrated 3 more and confirmed the other 6 flagged rules are
 checking genuinely different concepts (format specifiers, `long double`
