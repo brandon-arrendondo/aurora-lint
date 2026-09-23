@@ -1,20 +1,20 @@
 # Scoping: ARR30-C's and ARR38-C's Buffer-Size/Declaration Subsystems
 
 **Status:** Scoping complete for both the size-resolution layer
-and the bounds-checking layer (task 512, sections 6-8 below). Migration/fix
+and the bounds-checking layer (this document's own extension pass, sections 6-8 below). Migration/fix
 work NOT started — no rule file has been touched by either pass. This
-document is the "dedicated fix-scoping pass" task 497 asked for before any
-migration attempt, extended by task 512 to cover the layer task 497
+document is the "dedicated fix-scoping pass" the original scoping request asked for before any
+migration attempt, extended by this document's own extension pass to cover the layer the original scoping request
 explicitly left unread.
 
-**Driver:** Task 497: ARR30-C (~6650 lines, ~150 helpers) and ARR38-C
+**Driver:** The original scoping request: ARR30-C (~6650 lines, ~150 helpers) and ARR38-C
 (~3200 lines, ~90 helpers) are two more independent buffer-size-resolution
-subsystems, flagged by task 481's final deep-dive fork as "hiding
+subsystems, flagged by that audit's final deep-dive fork as "hiding
 substantially more, not clean" even after a partial read. This is now the
 3rd/4th independent buffer-size-resolution reimplementation found in the
-ruleset (STR31-C already scoped in task 492/
+ruleset (STR31-C already scoped in STR31-C's own scoping pass/
 `docs/design/str31c-arr00-migration-scoping.md`; ARR30-C and ARR38-C here;
-MEM05-C flagged separately under task 481).
+MEM05-C flagged separately under the deep-dive audit).
 
 **Coverage caveat (read before trusting completeness claims below):**
 ARR30-C's ~150 functions and ARR38-C's ~90 were **not** all read
@@ -39,9 +39,9 @@ about, but confirming that needs its own read, not claimed here.
 **Update:** that remaining layer has now been read — see
 sections 6-8 below. It turned up a real false-negative bug class in
 ARR30-C's older regex-heuristic layer (missing word-boundary anchors) and
-confirmed the same unscoped-whole-file-search bug class task 496 fixed
+confirmed the same unscoped-whole-file-search bug class the find_array_size fix fixed
 elsewhere in ARR38-C is still present in two functions this pass hadn't
-reached. Task 481's "hiding substantially more" assessment was directionally
+reached. The deep-dive audit's "hiding substantially more" assessment was directionally
 right.
 
 ---
@@ -77,7 +77,7 @@ shared primitives:**
    arm, line 5575). The self-method is called once, from
    `extract_buffer_from_malloc_call` (line 5716). This is the exact
    "shadowing an already-imported shared primitive with a rule-local
-   re-implementation" pattern task 481's sweep was built around — just
+   re-implementation" pattern the deep-dive audit's sweep was built around — just
    caught here *within* a single file instead of across files.
 
 2. **`extract_variable_name_from_declarator`** (line 4607) is a second,
@@ -117,12 +117,12 @@ the shared layer:
 
 | Item | Category | Notes |
 |---|---|---|
-| `find_array_size`, `find_string_literal_length` | **(d) fixed, keep as-is** | Task 496's fix has already landed: both callers (`is_short_string_source`) pass `scoped_source` derived from `find_containing_function(node)` before calling either helper (line 2503), so the "whole-file unscoped search" risk task 496 flagged is closed. No further action needed here. |
-| `try_parse_size`, `extract_elem_count_from_byte_expr` | **(b) replaceable with extension** | Independent reimplementation of `buffer_size::calculate_malloc_size`'s `N*sizeof(T)` / `sizeof(T)*N` pattern (buffer_size.rs only tries `COUNT * sizeof(TYPE)` in that left-to-right order; ARR38-C's version also tries the reverse `sizeof(TYPE) * COUNT` order that buffer_size.rs does not). Needs `calculate_malloc_size` extended with the reversed-order case before ARR38-C can drop its copy — a small, additive change (same shape as task 509's nested-multiply fix for STR31-C). |
+| `find_array_size`, `find_string_literal_length` | **(d) fixed, keep as-is** | That fix has already landed: both callers (`is_short_string_source`) pass `scoped_source` derived from `find_containing_function(node)` before calling either helper (line 2503), so the "whole-file unscoped search" risk the find_array_size fix flagged is closed. No further action needed here. |
+| `try_parse_size`, `extract_elem_count_from_byte_expr` | **(b) replaceable with extension** | Independent reimplementation of `buffer_size::calculate_malloc_size`'s `N*sizeof(T)` / `sizeof(T)*N` pattern (buffer_size.rs only tries `COUNT * sizeof(TYPE)` in that left-to-right order; ARR38-C's version also tries the reverse `sizeof(TYPE) * COUNT` order that buffer_size.rs does not). Needs `calculate_malloc_size` extended with the reversed-order case before ARR38-C can drop its copy — a small, additive change (same shape as that extension's nested-multiply fix for STR31-C). |
 | `sizeof_type` | **(c) needs reconciliation, not just dedup** | ARR38-C has its **own third** `type_name -> byte_size` table, distinct from both `buffer_size::extract_sizeof_value`'s and `size_analysis.rs`'s (per the capability catalog, `size_analysis.rs` is a separate legacy file with likely a fourth). ARR38-C's table also contains a Juliet-specific hack — `"twoIntsStruct" => Some(8)` — hardcoded for one Juliet test struct name, which has no place in a genuinely shared primitive. Consolidating four divergent type-size tables into one canonical `sizeof_type_bytes(&str) -> Option<usize>` in `buffer_size.rs` is worth doing on its own before any rule migrates onto it, and the Juliet-specific entry should NOT be carried into the shared version (flag it as a rule-local Juliet accommodation if still needed, not a real "sizeof" answer). |
 | `collect_pointer_aliases` | **(d) keep as-is, note for future unification** | AST-scoped (`query::find_descendants_of_kind(node, "expression_statement")`, so already function/range-scoped by its caller) rather than STR31-C's raw regex-over-lines. Returns *all* simple-identifier-to-simple-identifier aliases in a `Vec`, a different shape than `buffer_size::resolve_bare_alias_in_range`'s "first hit for one specific variable" — not a strict duplicate, but conceptually the same "bare alias" question answered a third way (STR31-C's regex scan, `buffer_size.rs`'s shared single-lookup, this AST-scoped batch collector). Worth a future "which shape does buffer_size.rs actually want to export" design question, not an immediate fix. |
-| `extract_array_var_name`, `extract_array_size` (both `&str`-based, ARR38-C lines 2780/2798) | **(d) keep as-is, naming-trap risk only** | Confirms and extends the "extract_array_size naming trap" task 481 already flagged (ARR02-C's AST-`Node` version vs. ARR38-C's text version) — ARR30-C *also* has its own `extract_array_size(&self, node: &Node, source: &str) -> Option<BufferSize>` (line 5689), a third same-named function with yet another signature/return type. Not a behavioral bug (each is only called within its own file), but a real maintainer trap: renaming one during a future refactor without checking the others risks a silent wrong-function call if any of these are ever made `pub`/shared under the same name. Worth a drive-by rename if any of the three is touched for other reasons; not worth a dedicated task on its own. |
-| `is_alloc_call` (ARR30-C, line 4519) | **(b) already tracked** | Not new — this is exactly task 498 ("Migrate ARR30-C's is_alloc_call to call_roles::is_allocator_call once task 497's dedicated audit lands"), already filed and now unblocked. One nuance worth carrying into that task: `call_roles::is_allocator_call` covers malloc/calloc/realloc/aligned_alloc/strdup/strndup, but ARR30-C's `is_alloc_call` (malloc/calloc/realloc only) feeds a NULL-pointer-arithmetic check specifically — `alloca` is correctly excluded there (it can't return NULL the way heap allocators can), so migrating to `is_allocator_call` should keep excluding `alloca`/`_alloca`/`ALLOCA`, which `is_allocator_call` already does (it has no alloca in its list) — no conflict, just worth confirming during that task rather than assuming a blind swap. |
+| `extract_array_var_name`, `extract_array_size` (both `&str`-based, ARR38-C lines 2780/2798) | **(d) keep as-is, naming-trap risk only** | Confirms and extends the "extract_array_size naming trap" the deep-dive audit already flagged (ARR02-C's AST-`Node` version vs. ARR38-C's text version) — ARR30-C *also* has its own `extract_array_size(&self, node: &Node, source: &str) -> Option<BufferSize>` (line 5689), a third same-named function with yet another signature/return type. Not a behavioral bug (each is only called within its own file), but a real maintainer trap: renaming one during a future refactor without checking the others risks a silent wrong-function call if any of these are ever made `pub`/shared under the same name. Worth a drive-by rename if any of the three is touched for other reasons; not worth a dedicated task on its own. |
+| `is_alloc_call` (ARR30-C, line 4519) | **(b) already tracked** | Not new — this is exactly the is_alloc_call migration, already filed and now unblocked. One nuance worth carrying into that task: `call_roles::is_allocator_call` covers malloc/calloc/realloc/aligned_alloc/strdup/strndup, but ARR30-C's `is_alloc_call` (malloc/calloc/realloc only) feeds a NULL-pointer-arithmetic check specifically — `alloca` is correctly excluded there (it can't return NULL the way heap allocators can), so migrating to `is_allocator_call` should keep excluding `alloca`/`_alloca`/`ALLOCA`, which `is_allocator_call` already does (it has no alloca in its list) — no conflict, just worth confirming during that task rather than assuming a blind swap. |
 
 ---
 
@@ -143,8 +143,8 @@ too, which is a strict coverage superset) — same risk profile.
 **Phase 2: ARR38-C `try_parse_size`/`extract_elem_count_from_byte_expr`
 dedup against `buffer_size::calculate_malloc_size`.** Requires extending
 `calculate_malloc_size` with the reversed `sizeof(T)*N` order first (small,
-additive — mirrors task 509's already-planned nested-multiply extension
-for the same function). Do this alongside or after task 509 rather than as
+additive — mirrors that already-planned nested-multiply extension
+for the same function). Do this alongside or after the nested-multiply extension rather than as
 a third independent edit to the same function.
 
 **Phase 3: consolidate the sizeof-type-size tables.** At least three
@@ -156,15 +156,15 @@ detection-logic-changing on its own, but touches enough call sites
 (ARR30-C, ARR38-C, `size_analysis.rs` consumers) to warrant its own
 Juliet/real-world validation pass rather than folding into Phase 2.
 
-**Phase 4 (done — task 512): the ~2000 unread lines of ARR30-C's VRA/CFG
+**Phase 4 (done — this document's own extension pass): the ~2000 unread lines of ARR30-C's VRA/CFG
 bounds-checking logic and ~1500 unread lines of ARR38-C's per-library
 checkers.** Read in full; see sections 6-8 below for findings. Confirms
-task 481's "hiding substantially more, not clean" assessment — both files
+the deep-dive audit's "hiding substantially more, not clean" assessment — both files
 have live false-negative bugs in this layer, not just duplication.
 
 **Out of scope / already resolved:** ARR38-C's `find_array_size`/
-`find_string_literal_length` scoping (task 496, confirmed fixed);
-ARR30-C's `is_alloc_call` migration (task 498, already filed, now
+`find_string_literal_length` scoping (the find_array_size fix, confirmed fixed);
+ARR30-C's `is_alloc_call` migration (the is_alloc_call migration, already filed, now
 unblocked by this doc).
 
 ---
@@ -186,12 +186,12 @@ Not filed by this pass — listed here for the coordinator to create via
    site (`extract_assignment_lhs`, line 4587) — same treatment. Acceptance
    bar: Juliet + real-world byte-identical (expected by construction, same
    logic). See `docs/design/arr30-arr38-buffer-size-scoping.md` section 1.
-   Depends on: task 497 (this doc).
+   Depends on: the original scoping request (this doc).
 
 2. **P3, infra** — "buffer_size.rs: extend `calculate_malloc_size` with
    reversed `sizeof(T)*N` order; dedup ARR38-C's `try_parse_size`/
    `extract_elem_count_from_byte_expr` onto it." Bundle with or sequence
-   after task 509 (STR31-C's nested-multiply extension to the same
+   after the nested-multiply extension (STR31-C's nested-multiply extension to the same
    function) rather than editing `calculate_malloc_size` a third time
    independently. See section 2 above.
 
@@ -205,8 +205,8 @@ Not filed by this pass — listed here for the coordinator to create via
 
 4. **P4, infra, needs its own scoping pass** — "ARR30-C's ~2000-line
    VRA/CFG-integrated bounds-checking logic and ARR38-C's ~1500-line
-   per-library-function checkers: unread by task 497's scoping pass, may
-   still be 'hiding substantially more' per task 481's original
+   per-library-function checkers: unread by the original scoping request's scoping pass, may
+   still be 'hiding substantially more' per the deep-dive audit's original
    assessment." Not confirmed to contain issues — this is an honest gap
    flag, not a known-bug task. See section 3 (Phase 4) above.
 
@@ -242,7 +242,7 @@ Not filed by this pass — listed here for the coordinator to create via
   arrays-of-pointers-to-arrays shapes in this pass. Not a confirmed bug —
   flagged as an area a future full read should specifically exercise
   given the file's own comment trail shows this logic has been touched
-  for edge cases before (task 235's `field_identifier` fix, cited inline
+  for edge cases before (an earlier `field_identifier` fix, cited inline
   at line 5524).
 - **`extract_variable_name_from_declarator`'s narrow coverage** (line
   4607, only `identifier`/`pointer_declarator`) — not observed to cause a
@@ -314,12 +314,12 @@ raw (non-comment-stripped) function text**:
   depth-limited.
 
 This is a concrete, non-hypothetical false-negative class, and the
-strongest candidate for what task 481's "hiding substantially more, not
+strongest candidate for what the deep-dive audit's "hiding substantially more, not
 clean" assessment was pointing at — not because the newer code is bad
 (it's the opposite), but because this older layer still gates the same
 violation paths and hasn't been brought up to the same rigor.
 
-### 6.2 Intra-file duplication (same pattern task 497 found elsewhere in this file)
+### 6.2 Intra-file duplication (same pattern the original scoping request found elsewhere in this file)
 
 - **The "identifier-substring-contains-size/length/count" FN-risk
   heuristic appears twice**, verbatim in shape: `has_dynamic_bounds_check`
@@ -336,7 +336,7 @@ violation paths and hasn't been brought up to the same rigor.
   is-int-scalar / "next param is length" convention) for two different
   call sites (`check_param_decode_overread` vs. the interprocedural
   helper-overread summary) — a clear candidate to factor into one shared
-  helper, same shape as task 497's `find_identifier_in_declarator`
+  helper, same shape as the original scoping request's `find_identifier_in_declarator`
   finding.
 - **`find_matching_param_declaration`** (3493-3517) uses raw
   `param_text.contains(offset)` to find which parameter a
@@ -346,13 +346,13 @@ violation paths and hasn't been brought up to the same rigor.
   (2442-2458), ~1000 lines earlier in the same file, which does this
   correctly via `.split(...).any(|w| w == var_name)` token matching. Same
   "one correct pattern already exists in-file, another function reinvents
-  it wrong" pattern as task 497.
+  it wrong" pattern as the original scoping request.
 
 ### 6.3 Not new / already resolved
 
 `is_alloc_call` (4568) already calls `call_roles::is_allocator_call` —
-task 498 landed and was validated (byte-identical Juliet/real-world) on
-2026-08-22. Task 497's "already tracked, now unblocked" language for this
+the is_alloc_call migration landed and was validated (byte-identical Juliet/real-world) on
+2026-08-22. The original scoping request's "already tracked, now unblocked" language for this
 item is stale/confirmed-done, not a live gap.
 
 ---
@@ -374,7 +374,7 @@ estimate (closer to ~1900 lines) because the size/declaration-collection
 helpers turned out to feed directly into this checking layer's
 correctness and were read in full rather than sampled. Everything from
 line 2546 (`find_array_size`) onward is the text-based size-parsing
-family task 497 already scoped — not re-read here except to confirm the
+family the original scoping request already scoped — not re-read here except to confirm the
 boundary.
 
 ### 7.1 Latent risks/bugs, most significant first
@@ -394,7 +394,7 @@ boundary.
    against the whole file, so an `if (n > ...)` validation in *any*
    function suppresses the Heartbleed-pattern warning for `n` in *every*
    function. This is the exact "whole-file unscoped search" bug class
-   task 496 already fixed for this same file's `find_array_size`/
+   the find_array_size fix already fixed for this same file's `find_array_size`/
    `find_string_literal_length` (section 2 above) — but these two
    functions were missed by that fix and still have it.
    `is_short_string_source`, defined a few dozen lines below at 2495,
@@ -469,7 +469,7 @@ checking-layer dispatch structure is reasonably factored.
 
 ---
 
-## 8. Task 512 follow-up tasks filed
+## 8. This document's own extension pass follow-up tasks filed
 
 Filed via `todo-sqlite-cli add ... --depends-on 512`:
 
