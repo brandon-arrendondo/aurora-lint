@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FLP34-C: Ensure that floating-point conversions are within range of the new type
 //!
 //! This rule detects unchecked floating-point type conversions that can result in

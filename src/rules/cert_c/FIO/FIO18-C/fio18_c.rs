@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO18-C: Never expect fwrite() to terminate the writing process at a null character
 //!
 //! fwrite() writes exactly the number of bytes specified, regardless of null characters.

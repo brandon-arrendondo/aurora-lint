@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! ENV31-C: Do not rely on an environment pointer following an operation that may invalidate it
 //!
 //! The envp argument to main() becomes invalidated after calls to setenv(),

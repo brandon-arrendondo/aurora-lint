@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! WIN01-C: Do not forcibly terminate execution of threads
 //!
 //! TerminateThread() forcibly kills a thread without cleanup - unsafe.

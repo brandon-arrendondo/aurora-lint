@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! PRE09-C: Do not replace secure functions with less secure functions through macro definitions
 //!
 //! Don't use #define to replace secure standard library functions (like vsnprintf)

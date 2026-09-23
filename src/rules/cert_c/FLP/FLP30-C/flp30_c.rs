@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FLP30-C: Do not use floating-point variables as loop counters
 //!
 //! Floating-point numbers cannot represent all decimal values exactly.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! PRE01-C: Use parentheses within macros around parameter names
 //!
 //! This rule addresses operator precedence issues in macro expansions.

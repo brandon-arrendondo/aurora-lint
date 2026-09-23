@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MSC04-C: Do not use recursive function calls
 //!
 //! Detects functions that participate in recursion cycles:

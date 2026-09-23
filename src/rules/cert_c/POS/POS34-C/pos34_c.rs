@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! POS34-C: Do not call putenv() with a pointer to an automatic variable as the argument
 //!
 //! The POSIX `putenv()` function stores a pointer to the string argument in the environment,

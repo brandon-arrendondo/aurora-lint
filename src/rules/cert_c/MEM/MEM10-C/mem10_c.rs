@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MEM10-C: Define and use a pointer validation function
 //!
 //! Dereferencing invalid pointers leads to undefined behavior. Functions that accept

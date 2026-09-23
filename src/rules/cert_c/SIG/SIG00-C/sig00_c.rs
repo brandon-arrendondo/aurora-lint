@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! SIG00-C: Mask signals handled by noninterruptible signal handlers
 //!
 //! This rule ensures that signal handlers that require noninterruptible execution

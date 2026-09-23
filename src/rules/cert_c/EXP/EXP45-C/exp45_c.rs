@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! EXP45-C: Do not perform assignments in selection statements
 //!
 //! Performing assignments in selection statements can lead to confusion between

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! POS37-C: Ensure that privilege relinquishment is successful
 //!
 //! Detects two patterns:

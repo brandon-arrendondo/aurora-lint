@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! ERR00-C: Adopt and implement a consistent and comprehensive error-handling policy
 //!
 //! This recommendation emphasizes that systems must check error returns from

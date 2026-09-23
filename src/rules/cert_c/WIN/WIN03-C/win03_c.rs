@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! WIN03-C: Understand HANDLE inheritance
 //!
 //! This rule detects unsafe HANDLE inheritance patterns on Windows that can leak

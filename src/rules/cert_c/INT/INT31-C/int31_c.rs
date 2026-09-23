@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! INT31-C: Ensure that integer conversions do not result in lost or misinterpreted data
 //!
 //! This rule detects integer conversions that may result in lost or misinterpreted data:

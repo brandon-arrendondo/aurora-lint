@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! DCL15-C: Declare file-scope objects or functions that do not need external linkage as static
 //!
 //! This rule detects file-scope functions and objects that lack the `static` keyword

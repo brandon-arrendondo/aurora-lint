@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! POS38-C: Beware of race conditions when using fork and file descriptors
 //!
 //! This rule detects race conditions that occur when:

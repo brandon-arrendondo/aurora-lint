@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! STR09-C: Don't assume numeric values for expressions with type plain character
 //!
 //! This rule detects ordering comparisons (<, >, <=, >=) on plain char values

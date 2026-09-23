@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 // DCL16-C: Use "L," not "l," to indicate a long value
 //
 // This rule detects integer literals that use lowercase 'l' suffix instead

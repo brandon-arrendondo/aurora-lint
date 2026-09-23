@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! STR32-C: Do not pass a non-null-terminated character sequence to a library function that expects a string
 //!
 //! This rule detects when character sequences that may not be null-terminated are passed

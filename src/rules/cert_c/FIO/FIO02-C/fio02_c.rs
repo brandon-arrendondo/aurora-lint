@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO02-C: Canonicalize path names originating from tainted sources
 //!
 //! This rule detects file operations on path names from untrusted sources without

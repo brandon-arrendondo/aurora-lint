@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::argument_objects::{self, ObjectFrame};
 use crate::analyze::context::ProjectContext;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! ENV03-C: Sanitize the environment when invoking external programs
 //!
 //! This rule detects when external programs are invoked via system() or popen()

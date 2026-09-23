@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! CON34-C: Declare objects shared between threads with appropriate storage durations
 //!
 //! Accessing the automatic or thread-local variables of one thread from another thread

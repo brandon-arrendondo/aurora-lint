@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FLP05-C: Do not use denormalized numbers
 //!
 //! This rule detects operations involving denormalized floating-point constants

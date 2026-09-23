@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! PRE02-C: Macro replacement lists should be parenthesized
 //!
 //! This rule addresses operator precedence issues when macros are used in expressions.

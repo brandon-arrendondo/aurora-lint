@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! ERR33-C: Detect and handle standard library errors
 //!
 //! This rule ensures that return values from standard library functions that can indicate

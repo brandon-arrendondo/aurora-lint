@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! DCL09-C: Declare functions that return errno with a return type of errno_t
 //!
 //! This rule detects functions that return errno values but are declared with type int

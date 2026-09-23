@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! STR37-C: Arguments to character-handling functions must be representable as an unsigned char
 //!
 //! This rule detects when arguments to character-handling functions from <ctype.h> are not

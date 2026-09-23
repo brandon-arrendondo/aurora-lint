@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! POS04-C: Avoid using PTHREAD_MUTEX_NORMAL type mutex locks
 //!
 //! This rule detects usage of PTHREAD_MUTEX_NORMAL or PTHREAD_MUTEX_DEFAULT

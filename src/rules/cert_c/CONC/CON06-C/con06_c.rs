@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! CON06-C: Ensure that every mutex outlives the data it protects
 //!
 //! This rule detects cases where a mutex may not outlive the data it protects,

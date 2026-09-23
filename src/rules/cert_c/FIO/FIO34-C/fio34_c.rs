@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO34-C: Distinguish between characters read from a file and EOF or WEOF
 //!
 //! This rule ensures that character input functions (getc, fgetc, getchar)

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! CON04-C: Join or detach threads even if their exit status is unimportant
 //!
 //! Threads must be properly cleaned up by either joining (thrd_join/pthread_join)

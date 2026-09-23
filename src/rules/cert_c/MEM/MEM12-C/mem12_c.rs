@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MEM12-C: Consider using a goto chain when leaving a function on error when using and releasing resources
 //!
 //! When a function acquires multiple resources (files, memory) and can fail at multiple points,

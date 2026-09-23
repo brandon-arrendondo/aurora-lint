@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! CON08-C: Do not assume that a group of calls to independently atomic methods is atomic
 //!
 //! A consistent locking policy guarantees that multiple threads cannot simultaneously

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! API10-C: APIs should have security options enabled by default
 //!
 //! APIs with security-related options should be secure by default. This prevents

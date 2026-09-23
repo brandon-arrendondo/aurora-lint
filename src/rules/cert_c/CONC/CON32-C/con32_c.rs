@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! CON32-C: Prevent data races when accessing bit-fields from multiple threads
 //!
 //! When accessing a bit-field, a thread may inadvertently access a separate bit-field

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO37-C: Do not assume that fgets() or fgetws() returns a nonempty string when successful
 //!
 //! This rule detects code that assumes fgets() or fgetws() returns a nonempty string.

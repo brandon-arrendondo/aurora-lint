@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! INT01-C: Use size_t or rsize_t for all integer values representing the size of an object
 //!
 //! Variables that hold object sizes should be size_t, not int or other types,

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! POS05-C: Limit access to files by creating a jail
 //!
 //! Programs running with elevated privileges that perform file operations based on

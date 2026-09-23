@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO22-C: Close files before spawning processes
 //!
 //! This rule detects when files are opened but not closed before spawning child processes

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO08-C: Take care when calling remove() on an open file
 //!
 //! Calling remove() on an open file is implementation-defined behavior.

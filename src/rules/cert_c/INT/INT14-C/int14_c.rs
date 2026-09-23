@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! INT14-C: Avoid performing bitwise and arithmetic operations on the same data
 //!
 //! This rule addresses performing bitwise and arithmetic operations on the same data.

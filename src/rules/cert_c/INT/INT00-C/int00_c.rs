@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! INT00-C: Understand the data model used by your implementation(s)
 //!
 //! This rule detects code that makes assumptions about the sizes of integer types,

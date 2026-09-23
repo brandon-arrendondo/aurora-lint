@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MEM01-C: Store a new value in pointers immediately after free()
 //!
 //! Uses CFG-based forward reachability to detect actual danger after free():

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! EXP20-C: Perform explicit tests to determine success, true and false, and equality
 //!
 //! Code should use explicit tests (e.g., `!= 0` instead of implicit truthiness)

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 // DCL11-C: Understand the type issues associated with variadic functions
 //
 // This rule detects type mismatches between printf-style format specifiers

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! EXP03-C: Do not assume the size of a structure is the sum of the sizes of its members
 //!
 //! This rule detects manual struct size calculations where sizeof(member1) + sizeof(member2)

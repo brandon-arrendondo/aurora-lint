@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MSC30-C: Do not use the rand() function for generating pseudorandom numbers
 //!
 //! This rule addresses the use of the C Standard library's rand() function,

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! PRE13-C: Use the Standard predefined macros to test for versions and features
 //!
 //! This rule ensures that standard predefined macros are tested with `defined()` before

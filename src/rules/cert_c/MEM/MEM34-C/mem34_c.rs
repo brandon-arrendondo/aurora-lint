@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MEM34-C: Only free memory allocated dynamically
 //!
 //! This rule detects attempts to free or reallocate memory that was not dynamically allocated.

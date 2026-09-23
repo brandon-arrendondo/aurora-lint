@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! PRE04-C: Do not reuse a standard header file name
 //!
 //! This rule prevents creating user-defined header files that reuse names of

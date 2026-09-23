@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! EXP02-C: Be aware of the short-circuit behavior of the logical AND and OR operators
 //!
 //! This rule detects side effects (function calls, assignments, increments/decrements) in the

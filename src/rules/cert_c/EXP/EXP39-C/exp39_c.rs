@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! EXP39-C: Do not access a variable through a pointer of an incompatible type
 //!
 //! This rule detects pointer casts to incompatible types, which can lead to undefined

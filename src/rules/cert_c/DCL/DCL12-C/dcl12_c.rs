@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! DCL12-C: Implement abstract data types using opaque types
 //!
 //! This rule detects when a struct definition exposes its internal members

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! DCL06-C: Use meaningful symbolic constants to represent literal values
 //!
 //! Magic numbers (literal values) obscure code intent and create maintenance risks.

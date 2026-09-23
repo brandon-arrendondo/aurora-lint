@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! WIN30-C: Properly pair allocation and deallocation functions
 //!
 //! Windows provides several memory allocation APIs that must be paired with

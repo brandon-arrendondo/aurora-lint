@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! STR38-C: Do not confuse narrow and wide character strings and functions
 //!
 //! Don't use narrow string functions (strlen, strcpy, etc.) on wide strings (wchar_t*),

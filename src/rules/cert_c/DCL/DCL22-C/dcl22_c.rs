@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! DCL22-C: Use volatile for data that cannot be cached
 //!
 //! This rule detects variables that should be declared volatile but aren't.

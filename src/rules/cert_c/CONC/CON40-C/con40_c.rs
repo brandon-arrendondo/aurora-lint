@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 // CON40-C: Do not refer to an atomic variable twice in an expression
 //
 // This rule detects when an atomic variable is referenced multiple times

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MSC40-C: Do not violate constraints
 //!
 //! This rule enforces C Standard constraints related to inline function definitions.

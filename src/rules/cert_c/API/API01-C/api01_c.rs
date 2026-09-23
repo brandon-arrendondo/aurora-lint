@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! API01-C: Avoid laying out strings in memory directly before sensitive data
 //!
 //! This rule detects structs where string buffers (char arrays) are placed before

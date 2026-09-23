@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! ENV34-C: Do not store pointers returned by certain functions
 //!
 //! Certain standard library functions return pointers to internal storage that may be

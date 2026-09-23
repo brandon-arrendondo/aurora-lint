@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! EXP09-C: Use sizeof to determine the size of a type or variable
 //!
 //! Do not hard code the size of a type into an application. Because of alignment,

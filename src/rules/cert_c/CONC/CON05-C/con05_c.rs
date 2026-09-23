@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! CON05-C: Do not perform operations that can block while holding a lock
 //!
 //! This rule detects blocking operations (I/O, network operations, etc.) that

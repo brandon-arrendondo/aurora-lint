@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 // DCL20-C: Explicitly specify void when a function accepts no arguments
 //
 // This rule detects function declarations and definitions that have empty

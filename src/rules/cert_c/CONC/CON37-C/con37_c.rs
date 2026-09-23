@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! CON37-C: Do not call signal() in a multithreaded program
 //!
 //! The C Standard (C11 7.14.1.1 paragraph 7) states that the use of the signal()

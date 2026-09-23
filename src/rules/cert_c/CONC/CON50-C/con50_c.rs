@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 // CON50-C: Do not destroy a mutex while it is locked
 //
 // This rule detects when a mutex with automatic storage duration is passed

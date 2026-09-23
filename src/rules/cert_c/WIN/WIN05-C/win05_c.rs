@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! WIN05-C: Do not violate least privilege when creating processes or accessing registry
 //!
 //! Detects two patterns:

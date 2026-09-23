@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MSC13-C: Detect and remove unused values
 //!
 //! Detects local variables that are initialized or assigned but never

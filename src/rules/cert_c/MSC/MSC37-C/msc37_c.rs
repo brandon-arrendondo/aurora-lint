@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MSC37-C: Ensure that control never reaches the end of a non-void function
 //!
 //! This rule addresses undefined behavior that occurs when a non-void function

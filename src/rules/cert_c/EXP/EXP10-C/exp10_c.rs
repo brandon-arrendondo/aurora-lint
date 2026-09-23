@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! EXP10-C: Do not depend on the order of evaluation of subexpressions or the order
 //! in which side effects take place
 //!

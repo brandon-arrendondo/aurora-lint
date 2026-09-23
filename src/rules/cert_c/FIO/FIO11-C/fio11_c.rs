@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO11-C: Take care when specifying the mode parameter of fopen()
 //!
 //! This rule detects non-standard mode strings passed to fopen() and fopen_s().

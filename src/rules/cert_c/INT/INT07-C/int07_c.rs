@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! INT07-C: Use only explicitly signed or unsigned char type for numeric values
 //!
 //! The plain `char` type has implementation-defined signedness, making it unsuitable

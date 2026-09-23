@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! EXP15-C: Do not place a semicolon on the same line as an if, for, or while statement
 //!
 //! This rule detects when a semicolon appears on the same line as an if, for, or while

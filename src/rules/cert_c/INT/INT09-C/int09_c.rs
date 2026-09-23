@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! INT09-C: Ensure enumeration constants map to unique values
 //!
 //! When enumeration constants are assigned explicit values, mixing explicit and

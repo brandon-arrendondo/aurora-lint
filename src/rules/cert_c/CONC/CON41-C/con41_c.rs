@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! CON41-C: Wrap functions that can fail spuriously in a loop
 //!
 //! Atomic compare-exchange weak functions can fail spuriously and must be wrapped

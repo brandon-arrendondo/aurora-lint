@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! INT18-C: Evaluate integer expressions in a larger size before comparing or assigning to that size
 //!
 //! This rule detects integer arithmetic operations that are compared to or assigned to

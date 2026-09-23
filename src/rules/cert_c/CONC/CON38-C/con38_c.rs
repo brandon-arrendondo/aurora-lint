@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! CON38-C: Preserve thread safety and liveness when using condition variables
 //!
 //! This rule detects use of `cnd_signal()` which can cause deadlock when multiple

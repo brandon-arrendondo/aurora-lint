@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! EXP33-C: Do not read uninitialized memory
 //!
 //! Detects reads of local variables that may not have been initialized.

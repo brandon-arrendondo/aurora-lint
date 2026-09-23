@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MSC12-C: Detect and remove code that has no effect or is never executed
 //!
 //! Detects several patterns of dead or no-effect code:

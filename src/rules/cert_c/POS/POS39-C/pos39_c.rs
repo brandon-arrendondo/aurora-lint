@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! POS39-C: Use the correct byte ordering when transferring data between systems
 //!
 //! When receiving network data into multi-byte integer types, the byte order

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO42-C: Close files when they are no longer needed
 //!
 //! A call to fopen() or freopen() must be matched with a call to fclose()

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! PRE05-C: Understand macro replacement when concatenating tokens or performing stringification
 //!
 //! This rule requires understanding how the C preprocessor handles the `##` (token

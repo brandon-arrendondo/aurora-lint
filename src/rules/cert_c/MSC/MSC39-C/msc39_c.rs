@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MSC39-C: Do not call va_arg() on a va_list that has an indeterminate value
 //!
 //! This rule addresses undefined behavior that occurs when a va_list is used after

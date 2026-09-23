@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! INT36-C: Converting a pointer to integer or integer to pointer
 //!
 //! This rule addresses unsafe conversions between pointers and integers.

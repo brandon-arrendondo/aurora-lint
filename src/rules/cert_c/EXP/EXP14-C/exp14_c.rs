@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! EXP14-C: Beware of integer promotion when performing bitwise operations on integer types smaller than int
 //!
 //! When performing bitwise operations on types smaller than int (e.g., char, uint8_t, int8_t),

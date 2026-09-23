@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO19-C: Do not use fseek() and ftell() to compute the size of a regular file
 //!
 //! Using fseek() to seek to the end of a file and ftell() to compute the file size

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MSC42-C: Do not use deprecated or weak cryptographic algorithms
 //!
 //! Flags use of weak/deprecated crypto algorithms in Windows Crypto API and

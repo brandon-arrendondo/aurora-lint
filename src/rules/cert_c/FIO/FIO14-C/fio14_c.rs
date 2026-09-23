@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO14-C: Understand the difference between text mode and binary mode with file streams
 //!
 //! This rule detects improper use of file positioning functions with text/binary streams:

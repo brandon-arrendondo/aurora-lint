@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO05-C: Identify files using multiple file attributes
 //!
 //! Files can often be identified by attributes other than the file name, such as by

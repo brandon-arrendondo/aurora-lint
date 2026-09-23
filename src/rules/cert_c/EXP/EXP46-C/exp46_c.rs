@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! EXP46-C: Do not use a bitwise operator with a Boolean-like operand
 //!
 //! This rule detects the incorrect use of bitwise operators (&, |, ^) with Boolean-like

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! API02-C: Functions that read or write to or from an array should take an argument
 //! to specify the source or target size
 //!

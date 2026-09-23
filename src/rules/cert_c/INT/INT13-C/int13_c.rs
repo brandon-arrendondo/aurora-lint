@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! INT13-C: Use bitwise operators only on unsigned operands
 //!
 //! Bitwise operations on signed integers can produce implementation-defined

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MEM02-C: Immediately cast the result of a memory allocation function call into a pointer to the allocated type
 //!
 //! This rule detects memory allocation calls (malloc, calloc, realloc, aligned_alloc)

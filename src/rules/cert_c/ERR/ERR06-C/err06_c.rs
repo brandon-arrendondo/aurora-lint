@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! ERR06-C: Understand the termination behavior of assert() and abort()
 //!
 //! The assert() macro calls abort(), which means cleanup functions registered

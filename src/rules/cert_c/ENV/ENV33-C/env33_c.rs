@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! ENV33-C: Do not call system()
 //!
 //! The C Standard system() function executes a specified command by invoking

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! API09-C: Compatible values should have the same type
 //!
 //! Make sure compatible values have the same type. For example, when the return

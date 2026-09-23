@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! ERR04-C: Choose an appropriate termination strategy
 //!
 //! This recommendation detects use of `abort()` or `_Exit()` after file I/O operations.

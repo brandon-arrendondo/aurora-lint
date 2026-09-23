@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MSC38-C: Do not treat a predefined identifier as an object if it might only be implemented as a macro
 //!
 //! This rule addresses undefined behavior that occurs when attempting to suppress

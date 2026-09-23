@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! EXP16-C: Do not compare function pointers to constant values
 //!
 //! This rule detects comparisons of function pointers to constant values

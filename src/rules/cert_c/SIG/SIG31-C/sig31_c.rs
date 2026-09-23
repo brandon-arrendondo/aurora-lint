@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! SIG31-C: Do not access shared objects in signal handlers
 //!
 //! Accessing shared objects (global/static variables) in signal handlers causes

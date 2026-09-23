@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! INT12-C: Do not make assumptions about the type of a plain int bit-field when used in an expression
 //!
 //! Plain `int` bit-fields have implementation-defined signedness, creating portability issues.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! CON07-C: Ensure that compound operations on shared variables are atomic
 //!
 //! Compound operations are operations that consist of more than one discrete

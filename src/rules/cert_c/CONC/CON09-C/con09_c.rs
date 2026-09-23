@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! CON09-C: Avoid the ABA problem when using lock-free algorithms
 //!
 //! This rule detects potential ABA problems when using atomic compare-exchange operations

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! DCL02-C: Use visually distinct identifiers
 //!
 //! This rule detects identifiers that differ only by visually similar characters.

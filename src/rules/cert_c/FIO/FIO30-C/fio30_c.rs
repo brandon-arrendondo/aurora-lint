@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO30-C: Exclude user input from format strings
 //!
 //! This rule detects when user-controlled input is used as a format string

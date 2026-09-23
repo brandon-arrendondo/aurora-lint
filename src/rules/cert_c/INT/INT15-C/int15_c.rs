@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! INT15-C: Use intmax_t or uintmax_t for formatted IO on programmer-defined integer types
 //!
 //! This rule detects formatted I/O operations (printf, scanf) on programmer-defined

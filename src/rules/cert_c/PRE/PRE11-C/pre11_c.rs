@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! PRE11-C: Do not conclude macro definitions with a semicolon
 //!
 //! This rule prevents macro definitions from ending with a semicolon, which can

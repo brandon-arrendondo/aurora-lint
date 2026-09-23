@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! DCL30-C: Declare objects with appropriate storage durations
 //!
 //! This rule detects when pointers to automatic storage (local variables) are

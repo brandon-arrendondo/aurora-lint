@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FLP00-C: Understand the limitations of floating-point numbers
 //!
 //! Floating-point numbers have finite precision and are prone to rounding errors.

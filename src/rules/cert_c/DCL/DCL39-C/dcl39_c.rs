@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! DCL39-C: Avoid information leakage when passing a structure across a trust boundary
 //!
 //! Structures may contain padding bytes with uninitialized data. When passing

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! INT16-C: Do not make assumptions about representation of signed integers
 //!
 //! The C Standard permits three different representations for signed integers:

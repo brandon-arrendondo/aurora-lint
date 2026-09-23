@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! CON01-C: Acquire and release synchronization primitives in the same module, at the same level of abstraction
 //!
 //! This rule detects functions that unlock mutexes they didn't lock themselves,

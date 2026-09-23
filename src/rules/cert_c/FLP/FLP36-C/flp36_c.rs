@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FLP36-C: Preserve precision when converting integral values to floating-point type
 //!
 //! This rule detects conversions from integer types to floating-point types that may

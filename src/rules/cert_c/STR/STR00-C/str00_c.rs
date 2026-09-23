@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! STR00-C: Represent characters using an appropriate type
 //!
 //! Character types must be chosen appropriately:

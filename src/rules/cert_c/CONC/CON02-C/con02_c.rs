@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! CON02-C: Do not use volatile as a synchronization primitive
 //!
 //! This rule detects the use of volatile variables as synchronization primitives

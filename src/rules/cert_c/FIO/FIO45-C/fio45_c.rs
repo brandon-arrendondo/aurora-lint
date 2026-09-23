@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO45-C: Avoid TOCTOU race conditions while accessing files
 //!
 //! A TOCTOU (time-of-check, time-of-use) race condition is possible when two or more

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MEM00-C: Allocate and free memory in the same module, at the same level of abstraction
 //!
 //! Memory should be freed in the same function or module where it was allocated.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO40-C: Reset strings on fgets() or fgetws() failure
 //!
 //! When fgets() or fgetws() fail, the contents of the target array are indeterminate.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! PRE10-C: Wrap multistatement macros in a do-while loop
 //!
 //! Multi-statement macros should be wrapped in do { ... } while(0) to prevent issues

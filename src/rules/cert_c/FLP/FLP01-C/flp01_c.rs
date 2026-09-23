@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FLP01-C: Take care in rearranging floating-point expressions
 //!
 //! This rule cautions against reorganizing floating-point expressions without accounting

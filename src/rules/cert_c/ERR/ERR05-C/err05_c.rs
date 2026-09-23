@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! ERR05-C: Application-independent code should provide error detection without dictating error handling
 //!
 //! Application-independent code (libraries, reusable modules) must detect errors and

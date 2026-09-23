@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! POS30-C: Use the readlink() function properly
 //!
 //! The readlink() function does NOT null-terminate its buffer. It returns the number

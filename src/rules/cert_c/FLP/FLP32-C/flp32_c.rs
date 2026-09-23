@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FLP32-C: Prevent or detect domain and range errors in math functions
 //!
 //! Math functions can produce domain errors, range errors, or pole errors:

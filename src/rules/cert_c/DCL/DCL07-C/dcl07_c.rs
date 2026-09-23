@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 // DCL07-C: Include the appropriate type information in function declarators
 //
 // This rule detects function declarators that lack proper type information:

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 // FIO46-C: Do not access a closed file
 // https://wiki.sei.cmu.edu/confluence/display/c/FIO46-C
 

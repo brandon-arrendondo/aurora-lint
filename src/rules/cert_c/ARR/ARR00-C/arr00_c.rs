@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! ARR00-C: Understand how arrays work
 //!
 //! This rule checks for common misunderstandings about how arrays work in C:

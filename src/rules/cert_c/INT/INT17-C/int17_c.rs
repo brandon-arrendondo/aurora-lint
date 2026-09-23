@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! INT17-C: Define integer constants in an implementation-independent manner
 //!
 //! Integer constants, especially hexadecimal ones, should not assume specific bit-widths

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! POS47-C: Do not use threads that can be canceled asynchronously
 //!
 //! Threads should not be set to asynchronous cancellation mode because it can lead

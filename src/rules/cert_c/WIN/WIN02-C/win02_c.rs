@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! WIN02-C: Restrict privileges when spawning child processes
 //!
 //! CreateProcess() inherits parent privileges - unsafe.

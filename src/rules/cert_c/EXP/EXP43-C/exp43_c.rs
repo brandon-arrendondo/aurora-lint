@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! EXP43-C: Avoid undefined behavior when using restrict-qualified pointers
 //!
 //! Restrict-qualified pointers must not alias each other. Assigning one restrict

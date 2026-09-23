@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! POS35-C: Avoid race conditions while checking for the existence of a symbolic link
 //!
 //! This rule addresses Time-Of-Check, Time-Of-Use (TOCTOU) race conditions that occur

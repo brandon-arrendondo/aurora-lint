@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! POS54-C: Detect and handle POSIX library errors
 //!
 //! This rule detects calls to POSIX library functions that return error indicators

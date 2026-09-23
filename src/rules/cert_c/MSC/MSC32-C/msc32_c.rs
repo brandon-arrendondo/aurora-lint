@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MSC32-C: Properly seed pseudorandom number generators
 //!
 //! This rule detects calls to random number generation functions (rand, random)

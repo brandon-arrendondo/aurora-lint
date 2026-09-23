@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MEM11-C: Do not assume infinite heap space
 //!
 //! Memory is fundamentally limited. Programs that continuously allocate memory

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! INT35-C: Use correct integer precisions
 //!
 //! Integer types have both size and precision. Size is the number of bytes (`sizeof`),

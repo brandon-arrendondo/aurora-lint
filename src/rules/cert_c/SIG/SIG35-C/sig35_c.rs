@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! SIG35-C: Do not return from a computational exception signal handler
 //!
 //! According to the C Standard, if a signal handler returns after being invoked

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! ARR02-C: Explicitly specify array bounds, even if implicitly defined by an initializer
 //!
 //! This rule detects array declarations where the bounds are implicitly defined

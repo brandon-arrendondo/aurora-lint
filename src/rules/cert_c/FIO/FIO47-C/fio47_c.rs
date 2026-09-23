@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO47-C: Use valid format strings
 //!
 //! The formatted output functions (fprintf(), printf(), sprintf(), snprintf(), etc.)

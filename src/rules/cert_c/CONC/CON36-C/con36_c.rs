@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! CON36-C: Wrap functions that can spuriously wake up in a loop
 //!
 //! This rule detects uses of cnd_wait() or cnd_timedwait() wrapped in 'if'

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! ARR01-C: Do not apply the sizeof operator to a pointer when taking the size of an array
 //!
 //! This rule detects when `sizeof` is applied to array function parameters, which

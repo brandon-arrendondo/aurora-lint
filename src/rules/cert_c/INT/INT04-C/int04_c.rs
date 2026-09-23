@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! INT04-C: Enforce limits on integer values originating from tainted sources
 //!
 //! This rule detects integer values from tainted sources (user input, environment,

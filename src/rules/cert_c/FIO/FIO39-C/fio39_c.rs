@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO39-C: Do not alternately input and output from a stream without an intervening flush or positioning call
 //!
 //! This rule detects alternating read/write operations on a stream without

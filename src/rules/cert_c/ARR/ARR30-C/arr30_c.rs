@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! ARR30-C: Do not form or use out-of-bounds pointers or array subscripts
 //!
 //! This rule checker detects various patterns of out-of-bounds array access including:

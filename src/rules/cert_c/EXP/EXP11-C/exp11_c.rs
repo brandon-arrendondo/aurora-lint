@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! EXP11-C: Do not make assumptions regarding the layout of structures with bit-fields
 //!
 //! Bit-field members in structures have implementation-defined layout. Making assumptions

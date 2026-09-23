@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! POS53-C: Do not use more than one mutex for concurrent waiting operations on a condition variable
 //!
 //! This rule detects violations where the same condition variable is used with

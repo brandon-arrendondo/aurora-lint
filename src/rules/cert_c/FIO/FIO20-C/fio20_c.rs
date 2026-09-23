@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO20-C: Avoid unintentional truncation when using fgets() or fgetws()
 //!
 //! fgets() reads at most n-1 characters. If input is longer, it's truncated

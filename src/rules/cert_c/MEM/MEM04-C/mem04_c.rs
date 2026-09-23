@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! MEM04-C: Beware of zero-length allocations
 //!
 //! When the requested size is 0, the behavior of malloc(), calloc(), and realloc() is

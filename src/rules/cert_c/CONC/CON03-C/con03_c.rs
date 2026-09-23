@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! CON03-C: Ensure visibility when accessing shared variables
 //!
 //! This rule detects shared primitive variables accessed across threads without proper

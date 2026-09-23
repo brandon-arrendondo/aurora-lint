@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! SIG02-C: Avoid using signals to implement normal functionality
 //!
 //! This rule detects when signals are misused for normal program functionality

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! SIG30-C: Call only asynchronous-safe functions within signal handlers
 //!
 //! Signal handlers can interrupt program execution at any point. Calling functions

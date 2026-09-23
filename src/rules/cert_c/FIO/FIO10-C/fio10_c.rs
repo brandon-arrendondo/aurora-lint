@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! FIO10-C: Take care when using the rename() function
 //!
 //! The behavior of rename() when the destination file exists is implementation-defined.

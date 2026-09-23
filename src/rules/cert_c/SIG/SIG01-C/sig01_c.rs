@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! SIG01-C: Understand implementation-specific details regarding signal handler persistence
 //!
 //! The signal() function has implementation-defined behavior regarding signal handler

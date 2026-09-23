@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
+
 //! STR02-C: Sanitize data passed to complex subsystems
 //!
 //! This rule detects when string data is passed to complex subsystems (command
