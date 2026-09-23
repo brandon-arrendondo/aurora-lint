@@ -59,6 +59,7 @@ struct FilePrescanResult {
     defined_macro_names: HashSet<String>,
     unused_attribute_macros: HashSet<String>,
     initializer_function_refs: HashSet<String>,
+    value_position_identifiers: HashSet<String>,
     global_constants: HashMap<String, i64>,
     global_var_null_states: HashMap<String, NullState>,
     global_writers: HashMap<String, HashSet<String>>,
@@ -114,6 +115,7 @@ impl FilePrescanResult {
             defined_macro_names: HashSet::new(),
             unused_attribute_macros: HashSet::new(),
             initializer_function_refs: HashSet::new(),
+            value_position_identifiers: HashSet::new(),
             global_constants: HashMap::new(),
             global_var_null_states: HashMap::new(),
             global_writers: HashMap::new(),
@@ -156,6 +158,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
 
         collect_function_names(&root, &source, &mut result.known_functions);
         collect_initializer_function_refs(&root, &source, &mut result.initializer_function_refs);
+        collect_value_position_identifiers(&root, &source, &mut result.value_position_identifiers);
 
         if is_header {
             collect_header_declarations(&root, &source, &mut result.header_declared_functions);
@@ -456,6 +459,7 @@ fn prescan_file_list(
     let mut defined_macro_names: HashSet<String> = HashSet::new();
     let mut unused_attribute_macros: HashSet<String> = HashSet::new();
     let mut initializer_function_refs: HashSet<String> = HashSet::new();
+    let mut value_position_identifiers: HashSet<String> = HashSet::new();
     let mut global_constants: HashMap<String, i64> = HashMap::new();
     let mut global_var_null_states: HashMap<String, NullState> = HashMap::new();
     let mut global_writers: HashMap<String, HashSet<String>> = HashMap::new();
@@ -634,6 +638,7 @@ fn prescan_file_list(
         defined_macro_names.extend(r.defined_macro_names);
         unused_attribute_macros.extend(r.unused_attribute_macros);
         initializer_function_refs.extend(r.initializer_function_refs);
+        value_position_identifiers.extend(r.value_position_identifiers);
         global_constants.extend(r.global_constants);
         global_var_null_states.extend(r.global_var_null_states);
 
@@ -746,6 +751,39 @@ fn prescan_file_list(
         .collect();
 
     // Phase 4: post-processing passes (require fully-merged data, stay sequential)
+
+    // `has_internal_linkage` says every caller is in this translation unit,
+    // which is what lets `callsite_param_proven_nonnull` read the collected
+    // call sites as the complete set. That holds only while every call is
+    // spelled `f(...)`. A static function whose address is also stored
+    // somewhere is called through the pointer by code that never names it, so
+    // its collected sites are a subset and a proof drawn from them is not one.
+    // Withdrawn here, once, before any aggregation reads it -- the propagation
+    // loop re-aggregates and clears the proof set each pass, but never this
+    // flag.
+    //
+    // Over the WHOLE scanned set rather than the defining file alone. A static
+    // function's address can only be taken in its own translation unit, so the
+    // defining file looks like the exact answer -- except that a `static
+    // inline` lives in a header and is referenced from the `.c` files that
+    // include it, which puts the definition and the reference in different
+    // files. Both scopes were measured across the twelve pinned corpora: the
+    // wider one withdraws a few more proofs (hostap 56 against 39 of 3373) and
+    // changes not one finding either way, so it is taken for the gap it closes
+    // at no measured cost. It also pools two same-named statics in different
+    // files, which over-approximates in the safe direction.
+    for (key, summary) in function_summaries.iter_mut() {
+        if !summary.has_internal_linkage {
+            continue;
+        }
+        let bare = key
+            .as_str()
+            .split_once('\0')
+            .map_or(key.as_str(), |(_, name)| name);
+        if value_position_identifiers.contains(bare) {
+            summary.address_taken = true;
+        }
+    }
 
     aggregate_callsite_null_states(
         &callsite_args,
@@ -1260,6 +1298,73 @@ fn unwrap_to_identifier(node: Node<'_>) -> Option<Node<'_>> {
 /// literal isn't necessarily a function), which is fine: the caller
 /// intersects the result against `known_functions` before treating a name
 /// as a registered callback (task 594).
+/// Every identifier this file uses as a VALUE -- i.e. every one that is
+/// neither the target of a direct `identifier(...)` call nor the name being
+/// declared in a declarator.
+///
+/// Intersected project-wide with `known_functions`, this is the set of
+/// functions whose address is taken somewhere: `&handler`,
+/// `static ops_t ops = {.cb = handler}`, `aeCreateFileEvent(..., handler, ...)`,
+/// `void (*f)(int *) = handler`. The intersection is done at the merge, not
+/// here, because a `static inline` defined in a header is referenced from the
+/// `.c` files that include it, and neither file alone sees both halves.
+///
+/// Collecting every value-position identifier rather than enumerating the
+/// contexts that can take an address is the deliberate choice: a missed
+/// context would leave a static callee looking as though every call site had
+/// been seen, which is the unsound direction. A cast, a ternary, a comparison
+/// or an array element read all pass a function pointer along just as well as
+/// `&f` does, and the surplus names cost nothing -- only a name that is also a
+/// function's is ever looked up.
+fn collect_value_position_identifiers(node: &Node, source: &str, out: &mut HashSet<String>) {
+    if node.kind() == "identifier" && !is_direct_call_target(node) && !is_declarator_name(node) {
+        if let Ok(name) = node.utf8_text(source.as_bytes()) {
+            out.insert(name.to_string());
+        }
+    }
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_value_position_identifiers(&child, source, out);
+        }
+    }
+}
+
+/// Is this identifier the callee of a direct call -- the `f` of `f(x)`?
+///
+/// A call through a stored pointer (`ops->cb(x)`, `table[i](x)`) is not one:
+/// its `function` field is a `field_expression` or a `subscript_expression`,
+/// so the identifier inside it is reached as a value, which is exactly right.
+fn is_direct_call_target(node: &Node) -> bool {
+    node.parent().is_some_and(|parent| {
+        parent.kind() == "call_expression"
+            && parent
+                .child_by_field_name("function")
+                .is_some_and(|f| f.id() == node.id())
+    })
+}
+
+/// Is this identifier the name being declared, rather than a use of one?
+///
+/// Covers a function definition's own name and every prototype
+/// (`function_declarator`), plus a variable's declarator
+/// (`int x;` / `int *p;` / `int a[4];`) -- but NOT an `init_declarator`'s
+/// value, which is a use.
+fn is_declarator_name(node: &Node) -> bool {
+    node.parent().is_some_and(|parent| {
+        matches!(
+            parent.kind(),
+            "function_declarator" | "array_declarator" | "pointer_declarator"
+        ) && parent
+            .child_by_field_name("declarator")
+            .is_some_and(|d| d.id() == node.id())
+            || parent.kind() == "declaration"
+                && parent
+                    .child_by_field_name("declarator")
+                    .is_some_and(|d| d.id() == node.id())
+    })
+}
+
 fn collect_initializer_function_refs(node: &Node, source: &str, out: &mut HashSet<String>) {
     if node.kind() == "initializer_list" {
         let mut cursor = node.walk();
@@ -1662,6 +1767,10 @@ fn aggregate_callsite_null_states(
     // 1335 and not relitigated here.
     for (callee_name, arg_vectors) in &callsite_args {
         if let Some(summary) = summaries.get_mut(callee_name) {
+            // Read before the mutable borrow below, and only the PROOF reads
+            // it: the vote keeps every call site it has, since an unseen
+            // caller cannot make a seen one's argument any less null.
+            let address_taken = summary.address_taken;
             let max_params = arg_vectors.iter().map(|v| v.len()).max().unwrap_or(0);
             for param_idx in 0..max_params {
                 let mut null_count: usize = 0;
@@ -1694,11 +1803,14 @@ fn aggregate_callsite_null_states(
                 // `Unknown` caller is an unanswered question, not an abstention,
                 // so `sites_supplying` counts it and it breaks the proof. A
                 // parameter no call site supplies at all proves nothing either.
+                // And a function whose address is taken has call sites nothing
+                // collected, so no count over the ones it has is a proof --
+                // see `FunctionSummary::address_taken`.
                 let sites_supplying = arg_vectors
                     .iter()
                     .filter(|args| args.get(param_idx).is_some())
                     .count();
-                if sites_supplying > 0 && not_null_count == sites_supplying {
+                if sites_supplying > 0 && not_null_count == sites_supplying && !address_taken {
                     summary.callsite_param_proven_nonnull.insert(param_idx);
                 }
             }
@@ -7310,6 +7422,45 @@ no_mem:
     }
 
     // -- aggregate_callsite_null_states --
+
+    /// Two summaries that differ only in `address_taken`, over the same
+    /// all-NotNull call sites: the vote is NotNull for both, and only the one
+    /// whose address nothing takes gets the proof. The vote is deliberately
+    /// left alone -- a caller nothing collected cannot make a collected one's
+    /// argument less non-null -- so asserting both halves is what pins the
+    /// change down to the proof.
+    #[test]
+    fn an_address_taken_callee_gets_the_vote_but_not_the_proof() {
+        for address_taken in [false, true] {
+            let mut summaries = HashMap::new();
+            summaries.insert(
+                "sink".to_string(),
+                FunctionSummary {
+                    dereferences_params: vec![0].into_iter().collect(),
+                    has_internal_linkage: true,
+                    address_taken,
+                    ..Default::default()
+                },
+            );
+            let callsite_args = HashMap::from([(
+                "sink".to_string(),
+                vec![vec![NullState::NotNull], vec![NullState::NotNull]],
+            )]);
+            aggregate_callsite_null_states(&callsite_args, &mut summaries, &HashSet::new());
+            let summary = summaries.get("sink").unwrap();
+            assert_eq!(
+                summary.callsite_param_null_states.get(&0),
+                Some(&NullState::NotNull),
+                "the vote is unchanged either way (address_taken = {address_taken})"
+            );
+            assert_eq!(
+                summary.callsite_param_proven_nonnull.contains(&0),
+                !address_taken,
+                "the proof holds only while no call site is unaccounted for \
+                 (address_taken = {address_taken})"
+            );
+        }
+    }
 
     #[test]
     fn test_aggregate_all_not_null() {

@@ -339,6 +339,26 @@ pub struct FunctionSummary {
     /// the prescanned call sites are provably all of them.
     #[serde(default)]
     pub has_internal_linkage: bool,
+    /// This function's name is mentioned somewhere as a VALUE rather than
+    /// called directly: `&handler`, `{ .cb = handler }`, `register(handler)`.
+    ///
+    /// What it withdraws is the claim
+    /// [`Self::has_internal_linkage`] makes on its own —
+    /// "the prescanned call sites are provably all of them". They are all the
+    /// SYNTACTIC ones; a call through the stored pointer is a call site with
+    /// no `identifier(...)` anywhere to collect, so a static callee in a
+    /// dispatch table can be handed a null by code that never names it. So
+    /// `callsite_param_proven_nonnull` is withheld for such a function while
+    /// the majority vote in `callsite_param_null_states`, which never
+    /// licenses discarding a null, is left alone.
+    ///
+    /// Deliberately over-approximate: it is a name match, so a local variable
+    /// sharing a function's spelling sets it. `docs/adr/0006` forbids
+    /// resolving what an occurrence REFERS to by spelling, and this does not
+    /// do that -- the flag only ever takes a proof away, so a spurious match
+    /// costs a suppression and can never manufacture one.
+    #[serde(default)]
+    pub address_taken: bool,
     /// The number of fixed (named) parameters before a trailing `...`, for a
     /// variadic function declaration. `None` for a non-variadic function.
     ///

@@ -1577,6 +1577,11 @@ fn run_null_state_worklist(
 /// breaks the proof independently; this gate also covers a non-static function
 /// that simply has no header declaration among the scanned files.)
 ///
+/// The set itself carries the other half of that argument: a static function
+/// whose address is taken is called through the stored pointer by code that
+/// names it nowhere, so `aggregate_callsite_null_states` withholds the proof
+/// for it (`FunctionSummary::address_taken`) and this returns empty.
+///
 /// Empty whenever anything is missing — no `func_name`, no summary, external
 /// linkage — so the caller keeps its existing conservative behaviour.
 fn collect_proven_nonnull_params(
