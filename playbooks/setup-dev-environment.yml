@@ -30,7 +30,7 @@
 #   - cargo-sweep + an hourly cron job bounding cargo's target/ growth --
 #     found missing entirely on one of two otherwise-identically-provisioned
 #     dev nodes (2026-08-31), which is exactly the kind of silent drift this
-#     playbook exists to prevent. Hourly (not nightly) per task 661: cargo
+#     playbook exists to prevent. Hourly (not nightly): cargo
 #     never collects old incremental sessions on its own, so a long gap
 #     between passes lets target/ accrete well past MAX_TARGET_GB between
 #     checks. Small-disk nodes need this; a node with plenty of headroom

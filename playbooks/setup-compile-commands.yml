@@ -1,7 +1,7 @@
 ---
 # Ansible playbook: generate compile_commands.json for every benchmark corpus
 #
-# Prep infra for task 187 (Macro-expansion Phase 4, opt-in compile_commands.json
+# Prep infra for macro-expansion Phase 4 (opt-in compile_commands.json
 # preprocessed mode) and any other upcoming include-resolution/macro-expansion
 # work that wants a real compile DB: full system-header correctness and
 # per-file macro defines, instead of the hand-curated -I list in
@@ -12,7 +12,7 @@
 # this is a playbook you run on each node rather than a file checked into
 # aurora-lint's git history. Output lands inside each project's own checkout
 # (<bench_root>/<name>/compile_commands.json), untracked by that project's
-# git repo -- harmless there since `python -m bench corpus-check` (task 619)
+# git repo -- harmless there since `python -m bench corpus-check`
 # only flags untracked/ignored *.c/*.h files, never *.json. Juliet's is
 # synthesized (no real build system -- see scripts/
 # generate_juliet_compile_commands.py) and written to
@@ -383,8 +383,8 @@
     # NB: compile_commands.json is written at CONFIGURE time, so it exists
     # even when the build fails. The build is still worth running here --
     # it produces the generated headers (structures_gen.h et al) that six of
-    # the DB's 21 include paths point at, which is what task 580 had to work
-    # around the absence of. Without the build, aurora-lint warns that those six
+    # the DB's 21 include paths point at, which is what an earlier fix had to
+    # work around the absence of. Without the build, aurora-lint warns that those six
     # paths do not exist.
     # Both sel4 tasks pin PATH to the system interpreter first, deliberately.
     # seL4's build shells out to a bare `python3` and its generators need

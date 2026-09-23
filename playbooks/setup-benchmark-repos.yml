@@ -29,7 +29,7 @@
     # Pins live in data/benchmark_repos.json -- the single source of truth,
     # shared with `python -m bench corpus-check`, which verifies the
     # checkouts this playbook creates are still sitting on them. Do not
-    # inline the SHAs here again (task 619).
+    # inline the SHAs here again.
     repos: "{{ (lookup('file', playbook_dir + '/../data/benchmark_repos.json') | from_json)['repos'] }}"
 
   tasks:

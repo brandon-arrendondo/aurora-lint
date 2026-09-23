@@ -35,7 +35,7 @@
 # Infer and Frama-C are the BUILD-BASED pair: neither can be pointed at a
 # source tree the way cppcheck and aurora-lint can, so a real-world run of either
 # also needs playbooks/setup-compile-commands.yml to have generated that
-# checkout's compile_commands.json (task 767).
+# checkout's compile_commands.json.
 #
 # After running:
 #   cppcheck --version && clang-tidy --version   # expect LLVM 21.x
