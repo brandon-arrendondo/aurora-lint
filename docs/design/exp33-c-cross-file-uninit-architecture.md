@@ -1,20 +1,20 @@
 # EXP33-C `check_cross_file_uninit_calls`: What a Correct Check Needs
 
-**Status:** IMPLEMENTED. (a) landed as task 1437 (`50fb0681`), (b) as task
-1442 (`9ed4c319`), (d) as task 1444 (`1e180eb0`) — its mbedtls half; its lua
+**Status:** IMPLEMENTED. (a) landed (`50fb0681`), (b) as well
+(`9ed4c319`), (d) too (`1e180eb0`) — its mbedtls half; its lua
 half turned out to be a distinct InitState gap (checked-return-value
 correlation with a conditional write, not a naming convention) and was split
-into task 1450 (`c9da0945`). (c) was declined as recommended below. See §6
-for the outcome and what it implies for the rest of task 1434's sweep — this
-doc is that sweep's first worked example, referenced rather than repeated by
+into its own follow-on (`c9da0945`). (c) was declined as recommended below. See §6
+for the outcome and what it implies for the rest of the rule-architecture
+sweep — this doc is that sweep's first worked example, referenced rather than repeated by
 `docs/design/rule-architecture-sweep.md`.
 
 ## 1. The question
 
-Brandon's ruling on task 1418 (EXP34-C) relocated a caller-side null-argument
+Brandon's ruling on EXP34-C's relocation (see that rule's design history) relocated a caller-side null-argument
 check to the callee's own unguarded dereference, on the principle that C has
 no contract semantics: a caller handing a possibly-bad value to a callee never
-itself violates a rule, only the callee's unguarded use does. Task 1419 asked
+itself violates a rule, only the callee's unguarded use does. This doc asks
 whether `check_cross_file_uninit_calls` (`exp33_c.rs:710`) — EXP33-C's
 cross-file counterpart, which flags `&uninit_var` passed to a project function
 classified as "read-only" on that parameter — should get the same treatment.
@@ -119,7 +119,7 @@ write anywhere."
 
 Swapping the read-only test from `dereferences_params.difference(&modifies_params)`
 to something keyed off `conditional_modifies_params`/pending-obligation state
-would immediately close every FP in the shape of task 1011's
+would immediately close every FP in the shape of an earlier fix's
 `fts5CsrPoslist` pattern (a callee that writes on some but not all paths,
 forwarded through another function) without inventing anything new. It does
 **not** close bucket B — indirection is invisible to this machinery too,
@@ -176,7 +176,7 @@ would confound the measurement of (a)/(b)'s actual effect.
 
 ## 5. Recommendation
 
-Not a drop. Disposition for task 1434's sweep:
+Not a drop. Disposition for the rule-architecture sweep:
 
 - **(a)** is *fixable with known infra* — reuse already-built MUST-write
   propagation, no new capability.
@@ -196,7 +196,7 @@ whether (d) is still worth scoping given the FP shape that remains. Each
 becomes its own scoped task per Brandon's ruling, not implemented as part of
 this proposal.
 
-## 6. Outcome (task 1434 sweep note)
+## 6. Outcome (rule-architecture sweep note)
 
 Each piece landed as its own task, in the sequence recommended above, each
 verified by revert-confirmation (stash the fix, rebuild, confirm the fixture
@@ -233,6 +233,6 @@ Two things worth carrying into the rest of the sweep:
   `hostapd_drv_read_sta_data` showed the coverage-proof walk requires a
   matched `if`/`else`, so a bare `if (cond) return err;` guard (hostap's
   actual shape) never even raised the obligation — a different, independent
-  fact (`forwards_to_indirect_call`) was needed. Task 1450 repeated the
-  pattern: filed from tracing lua's *real* `lua_getstack`/`lua_getlocal`
-  pair, not from the naming-convention framing task 1444 was given.
+  fact (`forwards_to_indirect_call`) was needed. The lua follow-on repeated
+  the pattern: filed from tracing lua's *real* `lua_getstack`/`lua_getlocal`
+  pair, not from the naming-convention framing piece (d) was given.
