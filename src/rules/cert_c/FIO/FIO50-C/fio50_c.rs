@@ -102,15 +102,39 @@ impl Fio50C {
         matches!(name, "fflush" | "fseek" | "fsetpos" | "rewind")
     }
 
-    /// Extract the first argument (FILE* variable) from function call
-    fn get_file_argument(&self, arguments: &Node, source: &str) -> Option<String> {
+    /// Whether the call takes its `FILE *` as the LAST argument.
+    /// `fread`/`fwrite`/`fgets`/`fputs`/`putc`-style calls do; `fprintf`,
+    /// `fscanf`, `getc`/`fgetc` and the positioning calls take it first.
+    /// Reading the first argument of `fread(buf, ..., fp)` keyed the sequence
+    /// on `buf`, a buffer and not a stream.
+    fn stream_is_last_argument(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "fread"
+                | "fwrite"
+                | "fgets"
+                | "fputs"
+                | "putc"
+                | "fputc"
+                | "fputwc"
+                | "fputws"
+                | "fgetws"
+        )
+    }
+
+    /// Extract the `FILE *` argument of a stream call.
+    fn get_file_argument(&self, func_name: &str, arguments: &Node, source: &str) -> Option<String> {
         let mut cursor = arguments.walk();
-        for child in arguments.children(&mut cursor) {
-            if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
-                return Some(get_node_text(&child, source).to_string());
-            }
-        }
-        None
+        let args: Vec<Node> = arguments
+            .named_children(&mut cursor)
+            .filter(|c| c.kind() != "comment")
+            .collect();
+        let arg = if self.stream_is_last_argument(func_name) {
+            args.last()
+        } else {
+            args.first()
+        }?;
+        Some(get_node_text(arg, source).to_string())
     }
 
     /// Analyze function definition or translation unit for I/O violations
@@ -126,62 +150,13 @@ impl Fio50C {
         }
     }
 
-    /// Check if this is a C++ stream input operation (operator>>)
-    fn is_cpp_input_operator(&self, node: &Node, source: &str) -> Option<String> {
-        if node.kind() == "binary_expression" {
-            if let Some(operator_node) = node.child_by_field_name("operator") {
-                let operator = get_node_text(&operator_node, source);
-                if operator == ">>" {
-                    // Get the left operand (the stream object)
-                    if let Some(left) = node.child_by_field_name("left") {
-                        return Some(get_node_text(&left, source).to_string());
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Check if this is a C++ stream output operation (operator<<)
-    fn is_cpp_output_operator(&self, node: &Node, source: &str) -> Option<String> {
-        if node.kind() == "binary_expression" {
-            if let Some(operator_node) = node.child_by_field_name("operator") {
-                let operator = get_node_text(&operator_node, source);
-                if operator == "<<" {
-                    // Get the left operand (the stream object)
-                    if let Some(left) = node.child_by_field_name("left") {
-                        return Some(get_node_text(&left, source).to_string());
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Check if this is a C++ positioning call (seekg, seekp, etc.)
-    fn is_cpp_positioning_call(&self, node: &Node, source: &str) -> Option<String> {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_text = get_node_text(&function, source);
-                // Check for method calls like file.seekg()
-                if func_text.contains(".seekg")
-                    || func_text.contains(".seekp")
-                    || func_text.contains("->seekg")
-                    || func_text.contains("->seekp")
-                {
-                    // Extract the stream object name before the dot or arrow
-                    if let Some(dot_pos) = func_text.find('.') {
-                        return Some(func_text[..dot_pos].to_string());
-                    } else if let Some(arrow_pos) = func_text.find("->") {
-                        return Some(func_text[..arrow_pos].to_string());
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Recursively collect file operations (both C and C++ styles)
+    /// Recursively collect stream calls.
+    ///
+    /// Only the C stdio calls count. The C++ `<<`/`>>`/`seekg` forms this rule
+    /// borrowed from FIO50-CPP are not stream operations in C: aurora-lint
+    /// parses C only, where `x >> 8` and `x << 6` are shifts, and treating
+    /// them as input and output reported bit-twiddled integers and byte
+    /// arrays as file streams.
     fn collect_file_operations(
         &self,
         node: &Node,
@@ -206,7 +181,9 @@ impl Fio50C {
 
                     if let Some(op_type) = op_type {
                         if let Some(arguments) = n.child_by_field_name("arguments") {
-                            if let Some(file_var) = self.get_file_argument(&arguments, source) {
+                            if let Some(file_var) =
+                                self.get_file_argument(func_name, &arguments, source)
+                            {
                                 let operation = FileOperation {
                                     op_type,
                                     file_var: file_var.clone(),
@@ -218,54 +195,6 @@ impl Fio50C {
                             }
                         }
                     }
-                }
-
-                // Check for C++ positioning calls
-                if let Some(stream_var) = self.is_cpp_positioning_call(&n, source) {
-                    let operation = FileOperation {
-                        op_type: OperationType::Positioning,
-                        file_var: stream_var.clone(),
-                        line: n.start_position().row + 1,
-                        column: n.start_position().column + 1,
-                    };
-
-                    file_operations
-                        .entry(stream_var)
-                        .or_default()
-                        .push(operation);
-                }
-            }
-
-            // C++ stream operators (<< and >>)
-            if n.kind() == "binary_expression" {
-                // Check for input operator (>>)
-                if let Some(stream_var) = self.is_cpp_input_operator(&n, source) {
-                    let operation = FileOperation {
-                        op_type: OperationType::Input,
-                        file_var: stream_var.clone(),
-                        line: n.start_position().row + 1,
-                        column: n.start_position().column + 1,
-                    };
-
-                    file_operations
-                        .entry(stream_var)
-                        .or_default()
-                        .push(operation);
-                }
-
-                // Check for output operator (<<)
-                if let Some(stream_var) = self.is_cpp_output_operator(&n, source) {
-                    let operation = FileOperation {
-                        op_type: OperationType::Output,
-                        file_var: stream_var.clone(),
-                        line: n.start_position().row + 1,
-                        column: n.start_position().column + 1,
-                    };
-
-                    file_operations
-                        .entry(stream_var)
-                        .or_default()
-                        .push(operation);
                 }
             }
         }
