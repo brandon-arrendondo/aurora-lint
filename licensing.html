@@ -246,9 +246,11 @@ python3<span class="w"> </span>scripts/fixture_provenance.py
 find<span class="w"> </span>src/rules<span class="w"> </span>-name<span class="w"> </span><span class="s1">&#39;*-C.toml&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>wc<span class="w"> </span>-l
 </pre></div>
 </div>
-<p>As of 2026-09-05: 313 rule manifests, every one carrying a CERT title and
-description, 310 citing their source wiki page, 33 embedding a CERT code
-example; and 1,337 fixtures declaring wiki provenance out of 3,577.</p>
+<p>These commands measure the checkout you run them in, which is why their
+output is not copied here: every rule manifest carries a CERT title and
+description, nearly all cite their source wiki page, a minority embed a CERT
+code example, and roughly a third of the fixtures declare wiki provenance
+(<code class="docutils literal notranslate"><span class="pre">fixture_provenance.py</span> <span class="pre">--by-rule</span> <span class="pre">--json</span></code> gives the split per rule).</p>
 <p><code class="docutils literal notranslate"><span class="pre">fixture_provenance.py</span></code> reports what each header <em>declares</em>. The independent
 check on that claim is <code class="docutils literal notranslate"><span class="pre">scripts/audit_wiki_fixture_staleness.py</span></code>, which
 re-fetches each rule’s wiki page and measures how much of the original code
