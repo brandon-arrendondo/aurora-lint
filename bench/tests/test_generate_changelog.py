@@ -109,6 +109,19 @@ FIXTURE = [
      note("something", "changed"), "aurora_lint", "done", T % 14),
     (15, "old fix in 0.2.0's window", {"release-note"},
      note("DCL31-C sees macro-wrapped declarators."), "aurora_lint", "done", OLD % 10),
+    (16, "API00-C: wrapped release note must not be truncated at the first line break",
+     {"release-note", "rule-bug"},
+     "Body prose.\nrelease-note: API00-C again reports a function that passes an unvalidated\n"
+     "pointer parameter to a helper whose only use of it is taking a member's\n"
+     "address (&p->field), a case missed since 0.5.2.\ncategory: fixed\n",
+     "aurora_lint", "done", T % 16),
+    (17, "macro-gaps: informal 'release note' prose must not shadow the real directive",
+     {"release-note", "rule-bug"},
+     "RELEASE NOTE: proposing one, since this is documented CLI output and\n"
+     "the old kind no longer appears. Coordinator's call on tagging:\n"
+     "  release-note: the real, tagged bullet text.\n"
+     "  category: fixed\nmore prose",
+     "aurora_lint", "done", T % 17),
 ]
 
 CURATED = """# Changelog
@@ -183,6 +196,24 @@ class TestGenerator(unittest.TestCase):
     def test_unknown_category_is_refused(self):
         self.assertFalse(any(b == "something" for b in self.bullets))
         self.assertTrue(any("task 14:" in w and "changed" in w for w in self.warnings), self.warnings)
+
+    def test_wrapped_release_note_is_joined_not_truncated(self):
+        # Regression: RELEASE_NOTE_LINE used to anchor on end-of-line ($), so a
+        # bullet wrapped across several lines (as the coordinator writes them)
+        # published only its first line.
+        self.assertIn(
+            "API00-C again reports a function that passes an unvalidated "
+            "pointer parameter to a helper whose only use of it is taking a "
+            "member's address (&p->field), a case missed since 0.5.2.",
+            self.sections["Fixed"],
+        )
+
+    def test_informal_release_note_mention_does_not_shadow_the_real_directive(self):
+        # Regression: searching for the FIRST "release note" occurrence could
+        # pick up an earlier informal mention in the task's own discussion
+        # instead of the actual tagged `release-note:` line further down.
+        self.assertIn("the real, tagged bullet text.", self.sections["Fixed"])
+        self.assertFalse(any("proposing one" in b for b in self.bullets))
 
     def test_disclosure_family_tag_blocks_even_with_allow_tag(self):
         self.assertFalse(any(b == "anything" for b in self.bullets))

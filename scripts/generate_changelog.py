@@ -73,7 +73,7 @@ ALLOW_TAG = "release-note"
 
 # The two body lines a published task must carry. First match of each wins;
 # matched case-insensitively at line start.
-RELEASE_NOTE_LINE = re.compile(r"^\s*release[- ]note:\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+RELEASE_NOTE_START = re.compile(r"^[ \t]*release[- ]note:[ \t]*", re.IGNORECASE | re.MULTILINE)
 CATEGORY_LINE = re.compile(r"^\s*category:\s*([A-Za-z]+)\s*$", re.IGNORECASE | re.MULTILINE)
 
 # ADR-0009's headings, in the order they are emitted. Keep a Changelog's other
@@ -185,16 +185,16 @@ def publishable(task):
     never = sorted(task.tags & NEVER_SHIPPED)
     if never:
         return None, f"carries never-shipped tag(s) {', '.join(never)}"
-    note = RELEASE_NOTE_LINE.search(task.details)
-    if not note:
-        return None, "has no `release-note: <bullet>` line; the title is never published"
     category = CATEGORY_LINE.search(task.details)
     if not category:
         return None, "has no `category: added|fixed|removed` line"
+    note_text = extract_release_note(task.details, category)
+    if not note_text:
+        return None, "has no `release-note: <bullet>` line; the title is never published"
     key = category.group(1).lower()
     if key not in CATEGORIES:
         return None, f"category {category.group(1)!r} is not one of added|fixed|removed"
-    text = escape_bullet(note.group(1))
+    text = escape_bullet(note_text)
     if is_sensitive(text):
         return None, "release note matches a content deny pattern (see scripts/check_changelog_safety.py)"
     return key, text
@@ -227,9 +227,32 @@ def render_section(heading, tasks, warn=None):
     return lines
 
 
+def extract_release_note(details, category_match):
+    """The bullet text of the `release-note:` line immediately preceding
+    `category_match`, joining any wrapped continuation lines.
+
+    Anchored on the release-note occurrence closest to (and before) the
+    category line, not the first one in the body: a task sometimes discusses
+    "release note" informally in its prose before writing the actual
+    directive lower down, and taking the first match would capture that
+    prose instead. A blank line ends the bullet even without a category line
+    right after it, so an unrelated paragraph further down is never pulled in.
+    """
+    before = details[:category_match.start()]
+    starts = list(RELEASE_NOTE_START.finditer(before))
+    if not starts:
+        return None
+    text = before[starts[-1].end():]
+    blank = re.search(r"\n[ \t]*\n", text)
+    if blank:
+        text = text[:blank.start()]
+    return text
+
+
 def escape_bullet(text):
-    # Notes are prose, not markdown; keep them on one line.
-    return text.replace("\n", " ").strip()
+    # Notes are prose, not markdown; keep them on one line, collapsing
+    # wrapped-line indentation rather than just gluing lines together.
+    return " ".join(text.split())
 
 
 def _warn(msg):
