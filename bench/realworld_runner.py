@@ -317,7 +317,7 @@ CODEBASES = {
             # single-headers). examples/, projects/ and tools/ are demo programs,
             # not the library, and fall outside scan_path. raylib is the suite's
             # structural-C99 oracle (compound literals + designated initializers),
-            # the idioms Lua/the other oracles lack (task 217).
+            # the idioms Lua/the other oracles lack.
             "scan_path": "{path}/src",
             "manifest": "conf/realworld/raylib-rules.toml",
             "includes": ["-I", "{path}/src"],
@@ -926,7 +926,7 @@ def _count_sqc_scanned(cfg: dict) -> tuple[int, int]:
     was actually running over.
 
     Note this is NOT the oracle scope predicate (`bench.corpus.in_scope`):
-    that filters *findings* at scoring time (task 636) and is never applied to
+    that filters *findings* at scoring time and is never applied to
     the scan, so it cannot describe what a scan cost.
     """
     path = str(cfg["path"])
@@ -1574,7 +1574,7 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False) -> dict:
         # failure, and xargs keeps invoking clang-tidy on every other file
         # regardless -- the result file already holds every finding the run
         # could produce. Judge success on that (a parsable result file), the
-        # same signal Infer's capture phase judges on (task 767), not on the
+        # same signal Infer's capture phase judges on, not on the
         # aggregate exit code of a pipeline that overloads it.
         ok = "error" not in parsed
     else:

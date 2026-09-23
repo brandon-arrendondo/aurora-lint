@@ -16,7 +16,7 @@ concrete DB class -- callers decide what `db` is (see `bench/__main__.py`'s
 `render-docs` command, which always uses `bench.db.BenchDB` against the local
 SQLite file, same as every other `bench` subcommand).
 
-CROSS-REPO CONTRACT (task 707). The other caller is `benchmarking_db`'s
+CROSS-REPO CONTRACT. The other caller is `benchmarking_db`'s
 `bin/refresh_tools_sqc_docs.py`, which imports these functions and hands them
 its own Postgres-backed handle so the same blocks render from the shared
 multi-node database. That makes `db` an implicit protocol owned by this
@@ -39,7 +39,7 @@ bearing rather than cosmetic:
 
   - `overall.published_basis` / `overall.definition_version` -- the basis the
     figures were computed on, printed as a table row by `_basis_cell`.
-    Supplied by benchmarking_db's metrics layer (task 701); ABSENT from this
+    Supplied by benchmarking_db's metrics layer; ABSENT from this
     repo's local scorer, which is a supported case and prints "not recorded"
     rather than nothing. Read with `.get`.
   - `overall.unlabeled_fraction`, `per_rule`, `per_project`

@@ -279,7 +279,7 @@ class ShardPartial:
     additive field (tp_count, violations, ...) but none of the derived
     rate/pct fields -- those are computed once, after all of a CWE's shards
     are merged, by `merge_shards`. Never read a rate field off a bare
-    ShardPartial.analysis (task 388).
+    ShardPartial.analysis.
     """
     analysis: CWEAnalysis
     rule_tp: dict = field(default_factory=lambda: defaultdict(int))

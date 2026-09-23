@@ -42,7 +42,7 @@ from bench.config import JULIET_BASE, opam_wrap
 # CWE762 (Mismatched Memory Management Routines) was such an entry: 6,092
 # .cpp files and no .c, since new/delete-vs-malloc/free is a C++ defect by
 # construction. It scored 0/0 in every run from April 2026 onward while
-# counting toward the "11 CWEs" this tool was credited with (task 909).
+# counting toward the "11 CWEs" this tool was credited with.
 #
 # Eight further Juliet directories are C++-only and are correctly absent:
 # CWE23, CWE36, CWE396, CWE397, CWE440, CWE500, CWE672, CWE676. CWE676 is the
@@ -298,7 +298,7 @@ def _run_framac_file(filepath: Path, entry_func: str,
     # FileNotFoundError -- which the bare `except Exception` below swallowed
     # into "no alarms". A whole Frama-C benchmark then scored zero on every
     # file and looked like a tool that found nothing rather than one that
-    # never ran (task 775).
+    # never ran.
     cmd = opam_wrap([
         "frama-c", "-eva",
         "-eva-precision", "1",

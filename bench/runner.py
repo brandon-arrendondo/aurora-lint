@@ -119,7 +119,7 @@ def _cwe_shard_dirs(cwe_dir: Path) -> list[Path] | None:
 # One shard is either a single `sNN` subdirectory (a large CWE, split) or an
 # entire CWE dir (the common case, unsplit) -- callers treat both uniformly,
 # submitting shard_count(cwe) futures per CWE and merging them once all land
-# (task 388). No DB writes happen here: multiple shards of the same CWE
+# . No DB writes happen here: multiple shards of the same CWE
 # would race on the same `cwe_scans` row (UNIQUE(run_id, cwe_dir_name)), so
 # writing is deferred to the coordinator after `merge_shards`.
 
@@ -306,7 +306,7 @@ def _finish_cwe(db: BenchDB, scan_map: dict, cwe_dir_name: str,
     # parallelism (bench/db.py sums this same field across CWEs). A sharded
     # CWE's *wall*-clock benefit shows up in the run's total wall_s, not in
     # its own duration_s -- don't read a flat/higher duration_s here as
-    # "sharding didn't help" (task 388). With the shared cache the
+    # "sharding didn't help". With the shared cache the
     # whole-CWE prescan is counted once per CWE rather than once per shard,
     # which is a real drop in the work done, not an accounting change.
     total_duration_s = round(
@@ -326,7 +326,7 @@ def _build_submissions(work_items: list[tuple]) -> tuple[list[dict], dict]:
     """Expand the work list into pool submissions, largest first.
 
     Returns the submissions and, per CWE, how many of them it has."""
-    # Expand each CWE into 1+ shard submissions (task 388): a large CWE
+    # Expand each CWE into 1+ shard submissions: a large CWE
     # (>= SHARD_MIN_FILES, with sNN subdirs) becomes one submission per sNN
     # dir; everything else stays a single submission for the whole CWE dir.
     # Sharded or not, every submission is scheduled the same way — LPT by
@@ -551,7 +551,7 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
 
     # Longest-processing-time-first: submit the biggest CWEs first so they
     # start at t=0 instead of whenever their name comes up alphabetically.
-    # The largest CWEs dominate wall-clock (task 388) — starting them last
+    # The largest CWEs dominate wall-clock — starting them last
     # means workers idle waiting on a straggler that could have started
     # 30+ minutes earlier. file_count is an imperfect proxy for scan time
     # but a far better signal than sorted-CWE-name order.

@@ -1240,7 +1240,7 @@ def main():
                             "time workflow: pull all findings in this file)")
     p_unl.add_argument("--no-scope", action="store_true",
                        help="Don't apply each project's scope_include/"
-                            "scope_exclude predicate (task 636) -- show the "
+                            "scope_exclude predicate -- show the "
                             "raw unfiltered set, including out-of-scope files")
     p_unl.add_argument("--json", action="store_true", help="Emit JSON")
     p_unl.set_defaults(func=cmd_realworld_unlabeled)
@@ -1251,7 +1251,7 @@ def main():
     p_gt.add_argument("--json", action="store_true", help="Emit JSON")
     p_gt.set_defaults(func=cmd_ground_truth)
 
-    # calibration-sample (task 637)
+    # calibration-sample
     p_cs = sub.add_parser(
         "calibration-sample",
         help="Blind stratified sample of already-labeled ground-truth rows "
@@ -1270,7 +1270,7 @@ def main():
                            "review' instead of hand-editing a CSV")
     p_cs.set_defaults(func=cmd_calibration_sample)
 
-    # calibration-import (task 637)
+    # calibration-import
     p_ci = sub.add_parser(
         "calibration-import",
         help="Import a filled-in calibration batch (verdict/reason columns)")
@@ -1283,7 +1283,7 @@ def main():
                       help="Adjudication date (ISO; default: now)")
     p_ci.set_defaults(func=cmd_calibration_import)
 
-    # calibration-import-gavel (task 637)
+    # calibration-import-gavel
     p_cig = sub.add_parser(
         "calibration-import-gavel",
         help="Import a gavel 'export --status adjudicated' JSON file")
@@ -1293,14 +1293,14 @@ def main():
                             "verdict.reviewer is empty (default: manual)")
     p_cig.set_defaults(func=cmd_calibration_import_gavel)
 
-    # calibration-report (task 637)
+    # calibration-report
     p_cr = sub.add_parser(
         "calibration-report",
         help="Claude-vs-human agreement report from calibration_labels")
     p_cr.add_argument("--json", action="store_true", help="Emit JSON")
     p_cr.set_defaults(func=cmd_calibration_report)
 
-    # concurrency-context (task 607)
+    # concurrency-context
     p_cc = sub.add_parser(
         "concurrency-context",
         help="CON03/07/33-C ground-truth precision split by whether the "

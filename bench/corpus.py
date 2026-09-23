@@ -1,6 +1,6 @@
 """Verify every real-world benchmark checkout is still sitting on its pinned commit.
 
-Why this exists (task 619): the pinned SHAs were recorded only in
+Why this exists: the pinned SHAs were recorded only in
 `playbooks/setup-benchmark-repos.yml`, which runs once at provisioning time.
 Nothing ever re-checked them, and `bench/realworld_runner.py` records
 whatever SHA it finds at scan time rather than asserting the expected one. So a
@@ -40,7 +40,7 @@ Independently of status, three contamination flags are reported:
 
 Both untracked and gitignored counts are run through the SAME --exclude globs
 `bench/realworld_runner.py`'s CODEBASES[...]["sqc"]["extra_args"] passes to the
-real scan (task 1218): a stray .c/.h sitting under an already-excluded tree
+real scan: a stray .c/.h sitting under an already-excluded tree
 (hostap's tests/fuzzing/, curl's tests/, ...) never reaches the scanner, so it
 is split into its own harmless bucket instead of being counted as
 contamination it cannot actually cause. This is a different mechanism from

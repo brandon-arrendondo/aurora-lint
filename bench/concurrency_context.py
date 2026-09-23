@@ -13,7 +13,7 @@ path exists at all?
 This is a per-TU heuristic, not a call-graph or reachability check -- a
 `has_evidence: True` result means "this file has *something* that could
 plausibly explain a race," not "this specific line is reachable from it."
-That's why real-world adjudication (task 546/547/549) found single-threaded
+That's why real-world adjudication found single-threaded
 codebases (mosquitto's broker event loop, cf. the design doc's root-cause
 writeup) still carrying the bulk of the FP mass: those TUs show zero
 evidence under any of the three patterns below.

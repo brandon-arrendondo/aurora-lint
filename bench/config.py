@@ -113,7 +113,7 @@ def opam_wrap(argv: list[str]) -> list[str]:
     and no benchmark runner is one. Calling `frama-c` directly from
     subprocess.run raises FileNotFoundError, and both runners used to catch
     that alongside real analysis errors and return "no alarms", so a Frama-C
-    benchmark scored a clean zero on every file instead of failing (task 775).
+    benchmark scored a clean zero on every file instead of failing.
 
     `opam env` failing is tolerated rather than required: a Frama-C installed
     some other way is already on PATH.

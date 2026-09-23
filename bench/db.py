@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS runs (
     ram_gb          REAL,
     os_version      TEXT,
     -- Juliet runner never passes --load-prescan (bench/runner.py), so every
-    -- run is a fresh prescan; always 'cold' until a warm path is wired (task 209).
+    -- run is a fresh prescan; always 'cold' until a warm path is wired.
     cache_state     TEXT NOT NULL DEFAULT 'cold'
 );
 
@@ -159,7 +159,7 @@ CREATE TABLE IF NOT EXISTS realworld_results (
     -- at. Infer and Frama-C do not: Infer captures only what preprocesses,
     -- and Frama-C's per-entry-point mode is bounded by wall clock. Without
     -- this column a partial scan's violation_count is indistinguishable from
-    -- a complete one's, which is the whole hazard (task 767) -- so it is
+    -- a complete one's, which is the whole hazard -- so it is
     -- recorded next to the count rather than left in the results directory.
     coverage        TEXT,
     UNIQUE(run_id, project, tool)
@@ -322,7 +322,7 @@ class BenchDB:
             if "codebase_commit" not in cols:
                 conn.execute(
                     "ALTER TABLE realworld_results ADD COLUMN codebase_commit TEXT")
-            # Partial-scan provenance for the build-based tools (task 767).
+            # Partial-scan provenance for the build-based tools.
             if "coverage" not in cols:
                 conn.execute(
                     "ALTER TABLE realworld_results ADD COLUMN coverage TEXT")
@@ -334,13 +334,13 @@ class BenchDB:
             if "confidence" not in gt_cols:
                 conn.execute(
                     "ALTER TABLE ground_truth ADD COLUMN confidence TEXT")
-            # runs gained cache_state (task 208); backfill existing rows as
+            # runs gained cache_state; backfill existing rows as
             # 'cold' since no run ever used a prescan cache.
             run_cols = self._table_columns(conn, "runs")
             if "cache_state" not in run_cols:
                 conn.execute(
                     "ALTER TABLE runs ADD COLUMN cache_state TEXT NOT NULL DEFAULT 'cold'")
-            # realworld_violations gained requires_manual_review (task 478):
+            # realworld_violations gained requires_manual_review:
             # sqc's JSON export now carries this per-finding confidence flag
             # (RuleViolation.requires_manual_review), used by rules that
             # can't structurally distinguish a real violation from an
@@ -785,7 +785,7 @@ class BenchDB:
             """, (run_id,))
             agg_row = cur.fetchone()
 
-            # CWEs MEASURED, not CWEs attempted (task 910).
+            # CWEs MEASURED, not CWEs attempted.
             #
             # `file_count > 0` is load-bearing. The runner enumerates every
             # CWE directory under testcases/ and nine of them are C++-only in
@@ -1276,7 +1276,7 @@ class BenchDB:
                                 duration_s: float = None,
                                 codebase_commit: str = None,
                                 coverage: dict | None = None) -> None:
-        """`coverage` is the build-based tools' partial-scan record (task 767);
+        """`coverage` is the build-based tools' partial-scan record;
         pass None for a tool that scanned everything it was given."""
         with self._cursor() as cur:
             cur.execute("""
@@ -1306,7 +1306,7 @@ class BenchDB:
     def _insert_realworld_violations_cur(self, cur, result_id: int,
                                           violations: list[dict]) -> None:
         """Same as `insert_realworld_violations`, but reuses a cursor already
-        inside an open transaction (task 655) — lets `ingest_realworld_run`
+        inside an open transaction — lets `ingest_realworld_run`
         do its DELETE + result-row upsert + per-violation insert as one
         atomic unit instead of two separate transactions, which is what let
         two concurrent ingests of the same (run_id, project, tool) both see
@@ -1494,7 +1494,7 @@ class BenchDB:
                 result_id = cur.fetchone()["id"]
 
                 # Insert per-violation detail in the SAME transaction as the
-                # delete+upsert above (task 655) -- keeps a re-ingest atomic
+                # delete+upsert above -- keeps a re-ingest atomic
                 # so a crash mid-ingest can't leave a result row with no
                 # violations or a stale partial set.
                 if result_id and violations:
@@ -1913,7 +1913,7 @@ class BenchDB:
         the checkout root. Strips everything up to and including the FIRST
         ``/<project>/`` segment; returns the input unchanged if absent.
 
-        The first, not the last (task 762). This used ``rfind`` while
+        The first, not the last. This used ``rfind`` while
         documenting ``first``, and the two differ exactly when a checkout
         holds a subdirectory named after the project -- which four of the
         nine corpora in ``data/benchmark_repos.json`` do: mosquitto's
@@ -2423,7 +2423,7 @@ class BenchDB:
             "unlabeled_count": overall_unlabeled_count,
             "unlabeled_fraction": (round(overall_unlabeled_count / overall_run_findings, 3)
                                    if overall_run_findings else None),
-            # RAW vs SCORED basis, mirroring benchmarking_db (task 708) so a
+            # RAW vs SCORED basis, mirroring benchmarking_db so a
             # caller handed either dict reads the same key names with the same
             # meaning. Unsuffixed finding counts stay RAW -- every finding the
             # run emitted, including from projects with no commit or no labels
