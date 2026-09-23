@@ -25,7 +25,7 @@
     "Re-derive from the README, don't hand-edit ad hoc -- these two must stay",
     "in sync (the README is the human-readable rationale, this is what code runs).",
     "",
-    "'primary_build_config' (ADR-0010 Decision 6, task 1424): the ONE build",
+    "'primary_build_config' (ADR-0010 Decision 6): the ONE build",
     "configuration each corpus's precision/recall figure is a statement about.",
     "It was implicit until now -- Linux/POSIX on the benchmark host for every",
     "corpus except ventoy, which is a Win32 program measured as the suite's",
@@ -61,8 +61,8 @@
     "are NOT the same thing.",
     "",
     "This paragraph used to say the opposite -- that these were fnmatch",
-    "patterns where '*' crosses '/' -- and that was true when task 636 wrote",
-    "the predicate by inheriting fnmatch. benchmarking_db's bench_db/corpus.py",
+    "patterns where '*' crosses '/' -- and that was true when the predicate",
+    "first inherited fnmatch's semantics. benchmarking_db's bench_db/corpus.py",
     "replaced it: fnmatch has no concept of a path, so '*.c' also matched",
     "testes/libs/lib1.c and handed lua five files sqc never scans, overstating",
     "its coverage denominator by 8%. The new predicate was applied to all nine",
@@ -81,8 +81,8 @@
     "A NEW declaration that means 'recursively' must therefore write '**'. One",
     "that writes '*' and means it gets the narrower answer, which is usually",
     "what you want -- and benchmarking_db's assertions check both directions of",
-    "drift between what these globs accept and what the runner actually scans",
-    "(their tasks 704, 722, 737)."
+    "drift between what these globs accept and what the runner actually",
+    "scans."
   ],
   "repos": [
     {
