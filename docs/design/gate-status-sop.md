@@ -213,7 +213,7 @@ SELECT run_id, sqc_version, finished_at FROM runs ORDER BY finished_at DESC LIMI
 python -m bench realworld-score RUN --json   # per candidate run_id, once ground_truth covers it
 ```
 
-Baseline 2026-08-25 (task #532, run 187/v0.4.258 vs. v0.4.120 baseline):
+Baseline 2026-08-25 (run 187/v0.4.258 vs. v0.4.120 baseline):
 precision 6.2% → **16.6%**, recall 91.7% → **97.4%**, real-world raw
 finding volume down 28% (104,733 → 80,231) despite more rules enabled —
 genuine FP reduction, not just less scanning. Also track Juliet precision
@@ -261,7 +261,7 @@ grep -m1 "^version" Cargo.toml             # current version
 
 Baseline 2026-08-26 (pre-refresh): comparison table pinned to **v0.4.116**,
 current repo **v0.4.267** — a ~150-version gap, and *not* touched by the
-routine paper refreshes (task #533 explicitly left it out of scope:
+routine paper refreshes (deliberately left out of scope:
 re-running it requires re-executing all 4 external tools, not a number
 swap). Report the gap every week; it will only close via a deliberate
 re-run task, not incidentally. Flag if this becomes the long-pole item
@@ -305,7 +305,7 @@ self-flagged stale since v0.4.55 (`fig:scan-time` is used as a proxy
 trend chart instead) — a deliberate, tracked gap, not new information,
 but this SOP's weekly runtime read is exactly the input that would let
 someone decide to finally re-measure it properly before submission
-(controlled serial single-process rerun, per task #533's notes — not a
+(controlled serial single-process rerun, per that same scoping decision — not a
 docs-only fix).
 
 - **Suggested heuristic**: track wall-clock per enabled rule
