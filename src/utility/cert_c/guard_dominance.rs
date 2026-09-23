@@ -27,7 +27,7 @@
 //!   asking "was this parameter validated before here?" wants.
 //!
 //! **Deliberately not here: `assert(...)`.** An assert compiles out under
-//! `NDEBUG`, and task 644's re-audit of API00-C found crediting
+//! `NDEBUG`, and an earlier fix's re-audit of API00-C found crediting
 //! assert-only guards as validation was the single largest source of missed
 //! true positives in that rule. A rule for which an assert *is* the right
 //! answer (a bounds precondition inside a codebase that ships with asserts
@@ -327,7 +327,7 @@ pub fn conditions_known_true_at<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
 /// ```
 ///
 /// Reaching past the guard means `!(isIndex && (…))`. That alone says nothing
-/// about `pSchema` — which is exactly why the sound join in task 1067 reports
+/// about `pSchema` — which is exactly why the sound join in an earlier fix reports
 /// PossiblyNull here. But at a site where `isIndex` is *known true*, the
 /// negation collapses to `!(!pSchema || …)`, i.e. `pSchema` non-null.
 ///
@@ -1261,7 +1261,7 @@ pub fn dominating_condition_branch(cond: &Node, site: &Node) -> Option<bool> {
 /// condition `i < num_items` with `i` non-negative gives `num_items > 0`.
 ///
 /// Only `<` qualifies. `i <= n` leaves `n == 0` reachable when `i` is 0, and
-/// crediting it would turn this into exactly the unsound refinement task 1067
+/// crediting it would turn this into exactly the unsound refinement an earlier fix
 /// replaced.
 pub fn is_nonnull_by_loop_bounded_exit_guard(var: &str, site: &Node, source: &str) -> bool {
     let positive = loop_bounded_positive_vars(site, source);

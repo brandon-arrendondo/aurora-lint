@@ -131,7 +131,7 @@ pub fn expr_is_pointer(
             // The type map spells a local ARRAY by its element type -- `char
             // lastbytes[N]` is recorded as "char" -- yet `lastbytes + rem`
             // is pointer arithmetic exactly as it is on `char *lastbytes`
-            // (task 1276; valkey replication.c, valkey-cli.c, zmalloc.c).
+            // (valkey replication.c, valkey-cli.c, zmalloc.c).
             // Resolve the occurrence to its own declarator (ADR-0006): the
             // declarator's kind says whether the name decays to a pointer
             // here, for a local, a parameter or a file-scope variable alike.
@@ -277,7 +277,7 @@ fn declarator_decays_to_pointer(declarator: &Node) -> bool {
 /// the struct is anonymous, so no `struct_field_types` entry can name it and
 /// the base variable is in no function-local type map. Resolve the base
 /// identifier to its declaration and read the field's own declarator from
-/// the inline `struct_specifier` body (task 1276; valkey setproctitle.c).
+/// the inline `struct_specifier` body (valkey setproctitle.c).
 fn inline_struct_field_is_pointer(node: &Node, source: &str) -> bool {
     let (Some(argument), Some(field)) = (
         node.child_by_field_name("argument"),

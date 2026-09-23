@@ -1610,7 +1610,7 @@ fn check_uninitialized_array_read(node: &Node, source: &str) -> Option<RuleViola
     // `fill_array(arr, n)`, or a macro-wrapped equivalent. The write-pattern
     // scan above only recognizes `arr[i] = ...` subscript assignment, so any
     // array filled through a call is otherwise a guaranteed false positive
-    // (task 195 Part A/B). Mirrors init_state.rs's process_unknown_function_call
+    // (an earlier fix Part A/B). Mirrors init_state.rs's process_unknown_function_call
     // "array passed by name -> assume the callee writes it" default.
     if found_write
         || array_passed_to_call_before(&function_node, array_name, subscript_position, source)
@@ -2363,7 +2363,7 @@ fn find_pointer_source_array_recursive(
 ///
 /// A plain `rfind` matches `"pos = "` inside `hpos = hash;`, and every `pos` in
 /// the function is then attributed to the array `hash`. Same defect
-/// class as tasks 678/679/681 fixed in `ARR30-C`.
+/// class as an earlier fix in `ARR30-C`.
 fn rfind_identifier_anchored(text: &str, pattern: &str, ident_offset: usize) -> Option<usize> {
     let mut end = text.len();
     loop {

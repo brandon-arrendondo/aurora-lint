@@ -36,8 +36,7 @@
 //! unsequenced only with respect to a third call outside both. The previous
 //! implementation counted every call in the operand subtree, which made
 //! `outer(inner(x)) + 1` a finding -- the largest single false-positive driver
-//! across every real-world project (aurora_lint task 1147: 388 of 389
-//! adjudicated findings were FP).
+//! across every real-world project (388 of 389 adjudicated findings were FP).
 //!
 //! `,`, `?:` and assignment sequence or exclude their operands, so calls
 //! under them combine into one group that is only unsequenced against calls
@@ -62,7 +61,7 @@
 //!   impure call (`#define READ(p) in8(p)`) stays impure and a macro whose
 //!   body cannot even be parsed as an expression is treated as impure;
 //! - a cast that tree-sitter mis-parsed as a call: `(u64)(x)` comes back as
-//!   a call to `u64` (`ast_utils::misparsed_cast_type_name`, task 675). The
+//!   a call to `u64` (`ast_utils::misparsed_cast_type_name`). The
 //!   name is accepted as a type when it is a known typedef, or when it is
 //!   not a known function at all -- `(name)(x)` on a real function is the
 //!   rare macro-suppression idiom `(free)(p)`, and a function-pointer

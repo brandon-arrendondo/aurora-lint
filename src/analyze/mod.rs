@@ -158,7 +158,7 @@ pub fn analyze_project(
     // get their names resolved under a configuration that excludes them, which
     // can leave a name defined only in a ruled-out arm resolving to nothing.
     // Say so rather than let it look like ordinary imprecision; scoping the
-    // declaration per TU is aurora_lint 1432.
+    // declaration per TU is an earlier fix.
     if let Some(db) = compile_db {
         let uncovered = db.uncovered_sources(&c_files);
         if !uncovered.is_empty() && !db.declared_macro_state().is_empty() {
@@ -196,7 +196,7 @@ pub fn analyze_project(
         // nesting depth, and real C reaches thousands of levels, so a
         // parallel scan aborted the whole process on input a `-j 1` run --
         // which does this work on the 8 MiB main thread -- completed
-        // (task 952, this repo).
+        // (this repo).
         const WORKER_STACK_BYTES: usize = 16 * 1024 * 1024;
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(effective_jobs)
@@ -379,8 +379,8 @@ fn load_project_context(
         // definitions in the file it is about to analyse. Before this, a
         // single-file target got only its sibling headers' declarations and
         // a directory target nothing at all, producing findings that
-        // vanished the moment the same directory was named with -d (task
-        // 980). -d remains the way to add context from OUTSIDE the target.
+        // vanished the moment the same directory was named with -d. -d remains
+        // the way to add context from OUTSIDE the target.
         let mut files: Vec<std::path::PathBuf> = project_source
             .get_c_files()?
             .into_iter()
@@ -697,7 +697,7 @@ fn analyze_one_file(
 
         // CFGs for every function definition in this file, plus VRA if any
         // enabled rule needs it. The generated fixture tests build their state
-        // through this same call (task 951, this repo).
+        // through this same call (this repo).
         let analysis = build_file_analysis(&root_node, &source, context, needs_vra);
 
         // Extract suppressions from the current file
@@ -855,7 +855,7 @@ pub fn handle_generate_suppression(spec: &str) -> Result<()> {
 /// Both `analyze_one_file` and the fixture tests `build.rs` generates go
 /// through [`build_file_analysis`] and [`FileAnalysis::apply_to`], so a rule
 /// can never be exercised in tests under a context the shipped scan does not
-/// build (task 951, this repo).
+/// build (this repo).
 pub(crate) struct FileAnalysis {
     pub(crate) function_cfgs: HashMap<usize, cfg::FunctionCfg>,
     pub(crate) vra_results: HashMap<usize, value_range::RangeAnalysisResult>,

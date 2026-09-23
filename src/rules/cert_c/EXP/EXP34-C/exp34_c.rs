@@ -26,8 +26,8 @@ pub struct Exp34C {
     /// Function-like macro definitions (for macro output-arg recognition).
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     /// Output-parameter indices (per `macro_expand::macro_writes_param_indices`)
-    /// for the function-like macros actually invoked in the current file. Task
-    /// 195 Part A: the macro analog of `FunctionSummary::modifies_params`.
+    /// for the function-like macros actually invoked in the current file: the
+    /// macro analog of `FunctionSummary::modifies_params`.
     macro_write_params: RefCell<HashMap<String, Vec<usize>>>,
     /// "Safe free" null-parameter indices (per
     /// `macro_expand::macro_nulls_param_indices`) for the function-like macros
@@ -111,7 +111,7 @@ impl CertRule for Exp34C {
                 *self.file_global_states.borrow_mut() = globals;
 
                 // Precompute write-through-param indices for the function-like
-                // macros actually invoked in this file (task 195 Part A).
+                // macros actually invoked in this file (an earlier fix Part A).
                 if !all_macros.is_empty() {
                     let mut invoked = HashSet::new();
                     collect_invoked_macro_names(node, source, &all_macros, &mut invoked);
@@ -155,7 +155,7 @@ impl CertRule for Exp34C {
                         .child_by_field_name("declarator")
                         .and_then(|d| extract_function_name(&d, source));
 
-                    // Merge macro write-through params (task 195 Part A) and
+                    // Merge macro write-through params (an earlier fix Part A) and
                     // "safe free" null params into the cross-file summaries
                     // map: any macro invoked in this file that writes through
                     // a param, or unconditionally nulls one, gets a
@@ -473,7 +473,7 @@ fn check_field_deref_cfg(
 /// positions. For an ordinary positional parameter, the callee's own
 /// unguarded dereference (seeded from `FunctionSummary::callsite_param_null_states`,
 /// see prescan's `aggregate_callsite_null_states`) is the only EXP34-C
-/// violation site (Brandon's ruling 2026-09-21, aurora_lint 1418): passing a
+/// violation site (Brandon's ruling 2026-09-21): passing a
 /// possibly-null pointer is not itself a violation, since C has no contract
 /// semantics. A `...` slot has no such parameter index to seed, so it stays
 /// a call-site check (see `check_callsite_null_args`).
@@ -521,7 +521,7 @@ fn check_call_expression_cfg(
 
     // Check deref-function arguments: a curated set of libc functions that
     // unconditionally dereference their pointer argument, with no
-    // project-analyzable body to relocate a report into (task 1418's ruling
+    // project-analyzable body to relocate a report into (an earlier fix's ruling
     // against blaming a caller for what might be a guarded callee assumes an
     // interprocedural target to point at instead; these are opaque external
     // functions whose null-argument behavior is fixed by the C standard, not
@@ -777,7 +777,7 @@ fn is_null_safe_function(name: &str) -> bool {
 
 /// SQLite's own C-API functions that are documented and implementation-verified
 /// (vdbeapi.c / printf.c) to tolerate a NULL or misused `sqlite3_stmt *` /
-/// pointer argument without dereferencing it unsafely (task 559, delta-adjudication
+/// pointer argument without dereferencing it unsafely (delta-adjudication
 /// in `data/precision_audit/DELTA_EXP34_TASK539.md`):
 ///
 /// - `sqlite3_column_*` / `sqlite3_bind_*`: per the SQLite docs, "The pointer to
@@ -812,8 +812,8 @@ fn is_sqlite_null_safe_api(name: &str) -> bool {
 /// as "can't tell" rather than using it to suppress a finding.
 ///
 /// This guards EXP34-C's call-argument null-propagation checks against the
-/// class of type-confusion bug found in task 558 (shared with ARR37-C's
-/// task 556): `declared_pointers` in `null_state.rs` is a flat, whole-function
+/// class of type-confusion bug found in an earlier fix (shared with ARR37-C's
+/// an earlier fix): `declared_pointers` in `null_state.rs` is a flat, whole-function
 /// set rather than one scoped per lexical block, so a pointer declared under
 /// one name in one scope (e.g. `HashElem *i;` in one `PRAGMA` case of
 /// sqlite's giant `sqlite3Pragma` function) can make an unrelated `int i;`
@@ -1080,7 +1080,7 @@ fn is_in_expression_guard(var_name: &str, node: &Node, source: &str) -> bool {
     //   ...
     //   if (isIndex) { ... pSchema->idxHash ... }
     // Reaching past the guard says nothing about `pSchema` on its own, which is
-    // why the sound join in task 1067 leaves it PossiblyNull. Where `isIndex`
+    // why the sound join in an earlier fix leaves it PossiblyNull. Where `isIndex`
     // is known true the negation collapses and proves it non-null.
     if guard_dominance::is_nonnull_by_correlated_exit_guard(var_name, node, source) {
         return true;
@@ -1585,7 +1585,7 @@ fn node_is_within(parent_node: &Node, child_node: &Node) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Caller-contract / precondition-assert suppression (task 207, EXP34 bucket 2)
+// Caller-contract / precondition-assert suppression (EXP34 bucket 2)
 // ---------------------------------------------------------------------------
 
 /// True when a dominating `assert(...)` (or `ALWAYS(...)`) establishes `var_name`

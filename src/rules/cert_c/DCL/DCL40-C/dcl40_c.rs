@@ -37,8 +37,8 @@ pub struct Dcl40C {
     // 31 characters may collide on conforming implementations, which is
     // undefined behavior even though the full names differ.
     truncated_external_decls: RefCell<HashMap<String, String>>,
-    // Names of #define macros collected cross-file during pre-scan (task
-    // 432): a struct's trailing attribute-position macro (e.g. hostap's
+    // Names of #define macros collected cross-file during pre-scan: a
+    // struct's trailing attribute-position macro (e.g. hostap's
     // STRUCT_PACKED) commonly has its #define in a different file than the
     // struct definition itself.
     cross_file_macro_names: RefCell<Arc<HashSet<String>>>,

@@ -1,12 +1,12 @@
 //! Shared helpers for arithmetic-overflow-detection rules (`INT30-C`,
 //! `INT32-C`, and one primitive each for `INT10-C`).
 //!
-//! Task 481's ruleset-wide duplication sweep found `INT30-C` (~2760 lines)
+//! An earlier fix's ruleset-wide duplication sweep found `INT30-C` (~2760 lines)
 //! and `INT32-C` (~2920 lines) independently defining ~20 identically-named
 //! private helpers for the same sub-problems (building a local
 //! variable/parameter type map, extracting operand identifiers, resolving
 //! an identifier's originating call, etc.) -- the single largest duplicated
-//! surface found in that sweep. Filed and worked as task 490.
+//! surface found in that sweep. Filed and worked as an earlier fix.
 //!
 //! **Not everything with a matching name lives here.** A follow-up audit
 //! found that the `has_overflow_check_*` family and
@@ -18,7 +18,7 @@
 //! directions. Those stay rule-local; folding them in here would require
 //! designing a genuinely parameterized guard-detection engine, not a
 //! mechanical extraction. `INT10-C` used to keep its own, simpler
-//! `collect_variable_types` duplicate; task 570 found it silently dropped
+//! `collect_variable_types` duplicate; an earlier fix found it silently dropped
 //! every bare (non-`init_declarator`, non-pointer, non-array) comma-list
 //! declarator -- e.g. `u32 size, hash;` -- from the type map, misflagging
 //! provably-unsigned `%` operands as signed. `INT10-C` now calls this
@@ -36,8 +36,8 @@ use tree_sitter::Node;
 /// The prescan keeps no return types, so a call operand's type is otherwise
 /// unknowable and the integer-hazard rules classify it "unknown" -- which
 /// made `random() % kvstoreSize(kvs) + 1` a signed addition even though
-/// `kvstoreSize` is defined forty lines up as `unsigned long long` (task
-/// 1276, valkey kvstore.c). Same-file only, by construction: a function this
+/// `kvstoreSize` is defined forty lines up as `unsigned long long`
+/// (valkey kvstore.c). Same-file only, by construction: a function this
 /// file neither defines nor declares is not resolvable here, and stays
 /// unknown rather than guessed.
 pub fn collect_function_return_types(root: &Node, source: &str) -> HashMap<String, String> {
@@ -475,7 +475,7 @@ pub fn is_short_unsigned_typedef(s: &str) -> bool {
 ///
 /// The single shared primitive backing every rule's typedef question:
 /// `is unsigned?` for INT10-C/INT32-C, `alignment/width?` for
-/// EXP36-C/INT31-C/API00-C (task 736 -- previously each rule kept its own
+/// EXP36-C/INT31-C/API00-C (an earlier fix -- previously each rule kept its own
 /// per-question exact-match table with no chain resolution and its own
 /// per-file FP class).
 pub fn resolve_typedef_chain(type_name: &str, typedef_types: &HashMap<String, String>) -> String {

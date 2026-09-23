@@ -19,7 +19,7 @@ pub struct Exp36C {
     packed_structs: RefCell<Arc<HashSet<String>>>,
     /// Cross-file typedef alias map. Reached through the shared
     /// [`resolve_typedef_chain`] to answer alignment for a typedef'd
-    /// integer type (task 736 -- previously sqlite's `i64` -> `sqlite_int64`
+    /// integer type (an earlier fix -- previously sqlite's `i64` -> `sqlite_int64`
     /// -> `long long int` fell through to the "unknown pointer -> assume
     /// 4-byte" default and every `(u64 *)&<i64 var>` cast fabricated an
     /// alignment mismatch. 15 labeled sqlite FPs across two adjudication

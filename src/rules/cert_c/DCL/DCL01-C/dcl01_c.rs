@@ -45,7 +45,7 @@ type Scope = HashMap<String, (usize, usize)>;
 /// an `if_statement` as the `alternative` of the previous one, so a
 /// generated/obfuscated chain thousands deep would blow the native call
 /// stack if each link were a recursive call (the same hostap-style shape
-/// that motivated task 153).
+/// that motivated an earlier fix).
 ///
 /// Each stack entry pairs a node with the scope of variable names visible
 /// from its enclosing scopes (name -> declaration location); this mirrors

@@ -124,7 +124,7 @@ impl CertRule for Mem30C {
         // `-d` has no prescan table at all, so a macro defined in the scanned
         // file itself was invisible and every later `free(p)` after
         // `my_safefree(p)` was reported as a double-free (the follow-up to
-        // MEM31-C ownership task 1139). Collecting from the file is one AST
+        // MEM31-C ownership an earlier fix). Collecting from the file is one AST
         // walk; the old "skip when the prescan table is empty" shortcut is
         // what hid the macro.
         let (macro_null_params, macro_clear_params) = {
@@ -169,7 +169,7 @@ impl CertRule for Mem30C {
         // keeps the first body; whether the macro frees anything is
         // genuinely unknown to a scan with no configuration, so the
         // name-contains-FREE guess must not turn such a call into a free
-        // (task 1233; the same audit `--report-macro-gaps` prints).
+        // (the same audit `--report-macro-gaps` prints).
         let mut ambiguous_macros: HashSet<String> =
             HashSet::clone(&self.project_ambiguous_macros.borrow());
         ambiguous_macros.extend(
@@ -272,7 +272,7 @@ fn collect_invoked_macro_names(
 /// True if a function name denotes a fresh heap allocation — the libc
 /// `malloc`/`calloc` or a project wrapper such as `mosquitto_malloc`,
 /// `curlx_calloc`, `Curl_strdup`, `xstrndup`. Used to clear a pointer's freed
-/// state on reassignment (task 181 pattern 1). `realloc` is matched and handled
+/// state on reassignment (an earlier fix pattern 1). `realloc` is matched and handled
 /// separately by the caller (it also invalidates the old pointer), so it is
 /// excluded here.
 fn is_fresh_allocation_name(name: &str) -> bool {
@@ -971,7 +971,7 @@ impl GlobalTracker {
     /// variable.
     ///
     /// Two things have to be true, and each is read from the declarators
-    /// rather than from a name being global or not (task 1349, ADR-0006):
+    /// rather than from a name being global or not (ADR-0006):
     ///
     /// - The assignment's target IS the global pointer variable. A field,
     ///   dereference or element on the left (`mct->global.tcon = GTCON_EN`
@@ -1832,7 +1832,7 @@ struct MemoryAnalyzer {
     // `X_init`/`X_free` on a malloc'd struct, followed by the real
     // `free(p)`), or the init took a functional reference and the free drops
     // a structural one (OpenSSL's `ENGINE_init`/`ENGINE_free`, after which
-    // `ENGINE_finish(engine)` is still legitimate). Task 1235.
+    // `ENGINE_finish(engine)` is still legitimate). An earlier fix.
     // Function-scoped and monotone: it is evidence about the API's
     // ownership convention, not path state, so it is not forked or merged
     // with the branch state.
@@ -1936,7 +1936,7 @@ impl MemoryAnalyzer {
     /// Analyze a single function with isolated state
     fn analyze_function(&mut self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Identify union-typed locals/params first so member-aliasing on free is
-        // restricted to genuine unions (not struct fields). See task 181.
+        // restricted to genuine unions (not struct fields). See an earlier fix.
         self.collect_union_typed_vars(node, source);
         self.analyze_function_body(node, source, violations);
     }
@@ -2050,7 +2050,7 @@ impl MemoryAnalyzer {
         }
 
         // `skip_ids` names argument nodes a just-processed call_expression
-        // already marked freed (task 400's `freed_arg_ids`) — the free's own
+        // already marked freed (an earlier fix's `freed_arg_ids`) — the free's own
         // target isn't a use of the pointer it just freed, so re-walking it
         // as one would misreport "accessing freed memory" at the free
         // call's own line. Empty for every non-call_expression caller.
@@ -2508,7 +2508,7 @@ impl MemoryAnalyzer {
     /// `case_reaches_after_switch` (return/goto/continue truly skip past the
     /// switch; a `break`, unlike in `case_arm_diverges`'s fallthrough sense,
     /// does NOT — it's exactly how an arm reaches the code after the switch)
-    /// — using `case_arm_diverges` here instead was task 398's bug: it
+    /// — using `case_arm_diverges` here instead was an earlier fix's bug: it
     /// treated a free-then-`break` arm as "unreachable after the switch"
     /// and silently dropped the free from the merged state. If the switch
     /// has no `default` arm, a value that matches none of the cases falls
@@ -2965,7 +2965,7 @@ impl MemoryAnalyzer {
     /// sibling `if(...){ free(p); goto/break; }`) is wrongly flagged as
     /// use-after-free / double-free. This was the dominant remaining MEM30 FP on
     /// real-world C (curl ldap.c / fopen.c, mosquitto ctrl_shell_*.c), where
-    /// error branches free-then-`goto cleanup` / free-then-`break` (task 181
+    /// error branches free-then-`goto cleanup` / free-then-`break` (an earlier fix
     /// pattern 2). The merge only recognized `return` before.
     /// This walker processes a function body as one linear sequence,
     /// threading free-tracking state through textual/AST order (if/switch
@@ -3020,7 +3020,7 @@ impl MemoryAnalyzer {
     /// `unconditionally_diverges`'s existing, unchanged behavior). But for a
     /// `switch` ARM itself, `break` is exactly how control reaches the code
     /// after the *switch* — the opposite of diverging past it — while
-    /// `return`/`goto`/`continue` still skip past it entirely (task 398; see
+    /// `return`/`goto`/`continue` still skip past it entirely (see
     /// `case_reaches_after_switch`).
     ///
     /// A statement that calls a noreturn function (`exit(1)`, `abort()`,
@@ -3403,8 +3403,8 @@ impl MemoryAnalyzer {
     }
 
     /// Process function calls - free(), malloc(), printf(), etc.
-    /// Returns the node ids of arguments this call just marked freed (task
-    /// 400) — the call site that passes a pointer to be freed must not be
+    /// Returns the node ids of arguments this call just marked freed --
+    /// the call site that passes a pointer to be freed must not be
     /// re-walked as a "use" of that same pointer, or the free call's own
     /// argument gets flagged as accessing freed memory at its own line.
     fn process_call_expression(
@@ -3437,8 +3437,8 @@ impl MemoryAnalyzer {
                 _ => {
                     let upper_name = function_name.to_uppercase();
                     // `<stem>_init(obj, ...)`: record every plain-lvalue
-                    // argument as initialized in place under `stem` (task
-                    // 1235; consumed by `is_contents_free_of_initialized`).
+                    // argument as initialized in place under `stem` (consumed by
+                    // `is_contents_free_of_initialized`).
                     // `function_name` borrows `self.macro_aliases`, so the
                     // insert is on the field, not through a `&mut self` call.
                     if let Some(stem) = init_stem(function_name) {
@@ -3483,7 +3483,7 @@ impl MemoryAnalyzer {
                     // `plink_free_count`, a pure counter whose name happens to
                     // contain "FREE") and misattribution (freeing the wrong
                     // parameter of a multi-arg call like `ap_free_sta(hapd, sta)`,
-                    // task 396). Only fall back to the name heuristic when we have
+                    // an earlier fix). Only fall back to the name heuristic when we have
                     // no summary for this callee (library/system function, or no
                     // -d cross-file scan).
                     //
@@ -3548,7 +3548,7 @@ impl MemoryAnalyzer {
                     // other, with the non-Windows arm's `attr = attribute`
                     // alias visible in the same walk -- so the guess produced a
                     // "double-free" of `attribute` on every error branch of
-                    // ldap.c, task 1233). Such a call is opaque: its argument
+                    // ldap.c). Such a call is opaque: its argument
                     // is still checked for prior frees like any other call.
                     let ambiguous_free_macro = (upper_name.contains("FREE")
                         || upper_name == "XFREE"
@@ -3730,7 +3730,7 @@ impl MemoryAnalyzer {
         // callback on a list; the last-argument rule read the callback itself
         // as the freed thing, and registering the same one on two lists in a
         // function came back as "aofListFree freed multiple times" (valkey
-        // aof.c, sentinel.c, valkey-cli.c; task 1350). A name carrying a
+        // aof.c, sentinel.c, valkey-cli.c). A name carrying a
         // FunctionSummary is one the prescan saw defined, which is what makes
         // this a resolution rather than a guess about the spelling.
         if self.function_summaries.contains_key(name) {
@@ -3960,7 +3960,7 @@ impl MemoryAnalyzer {
     /// paths, and 88 findings from a single `cmd` in valkey-benchmark.c
     /// .
     ///
-    /// Policy mirrors EXP33-C's `&var`-initializes rule (task 1065 bug #3):
+    /// Policy mirrors EXP33-C's `&var`-initializes rule (an earlier fix bug #3):
     /// credit the write by DEFAULT -- for a callee with no summary as much
     /// as for one that writes on every path -- and withhold it only on
     /// POSITIVE evidence. "Absent from the MUST set" is not evidence: that
@@ -4142,7 +4142,7 @@ impl MemoryAnalyzer {
             // realloc-invalidated state below (that logic is for "this
             // storage location now holds a fresh/live value", which isn't
             // true here: only one element changed). `lvalue_of` is
-            // deliberately index-insensitive (task 1), so a subscript LHS's
+            // deliberately index-insensitive, so a subscript LHS's
             // `left_lv` collapses to the exact same LValue as the
             // container/field itself — without this early return, the
             // "reassigning to a live value" branch below would incorrectly
@@ -4204,7 +4204,7 @@ impl MemoryAnalyzer {
             // Clear freed status if reassigning the pointer to a fresh
             // allocation. Reassignment overwrites the dangling pointer, so the
             // variable is no longer freed; `FREE(p); p = wrapper_alloc(...);
-            // if(!p){}` was a dominant free-then-reassign FP (task 181 pattern
+            // if(!p){}` was a dominant free-then-reassign FP (an earlier fix pattern
             // 1). Two generalizations over the old literal `malloc`/`calloc`
             // check: (a) the RHS may be cast-wrapped, e.g. `p = (char *)x_malloc(n)`;
             // (b) the allocator is often a project *wrapper* — mosquitto_malloc,
@@ -4377,8 +4377,8 @@ impl MemoryAnalyzer {
     /// NodeWriter *pNode = &pWriter->aNodeWriter[i]; ...
     /// sqlite3_free(pNode->block.a); sqlite3_free(pNode->key.a); }` frees a
     /// DIFFERENT element's two buffers each time round, and without this the
-    /// second iteration read as a repeat free of `pNode->block.a` (task
-    /// 1447). Every rebind site already cleared the rebound lvalue itself;
+    /// second iteration read as a repeat free of `pNode->block.a`. Every
+    /// rebind site already cleared the rebound lvalue itself;
     /// none of them reached the paths hanging off it.
     ///
     /// The counterpart of `forget_freed_path`'s other caller
@@ -4408,7 +4408,7 @@ impl MemoryAnalyzer {
 
     /// `left = right` where the right-hand side names a variable: the alias
     /// and realloc bookkeeping of a pointer copy (extracted from
-    /// `process_assignment_inner`, task 1360).
+    /// `process_assignment_inner`).
     fn rebind_from_variable(
         &mut self,
         left: &Node,
@@ -4451,7 +4451,7 @@ impl MemoryAnalyzer {
             // Reassigning the pointer to a live value overwrites any
             // prior dangling state: `free(p); p = newbuf;` and the
             // reassign-before-return shape (`free(text); text = temp;
-            // return text;`) must clear `p`/`text` (task 232 patterns
+            // return text;`) must clear `p`/`text` (an earlier fix patterns
             // 1 & 2). Clear the assigned lvalue path; for a plain
             // identifier that IS the base name, so `free(s); s->f = x;`
             // does not un-track the still-freed base `s`.
@@ -4493,7 +4493,7 @@ impl MemoryAnalyzer {
     }
 
     /// A declaration WITHOUT an initializer (`char *unescaped;`) is as much a
-    /// fresh binding as one with (`process_init_declarator`, task 232), and
+    /// fresh binding as one with (`process_init_declarator`), and
     /// needs the same clearing: the analyzer is scope-flat, so curl's
     /// `ldap.c::_ldap_url_parse2`, which declares `char *unescaped;` in
     /// three sibling blocks and frees it in each, saw the second block's
@@ -4543,7 +4543,7 @@ impl MemoryAnalyzer {
             // repeated per if/else arm — rmodels.c glTF loaders) would
             // otherwise inherit the prior arm's freed state and false-flag the
             // new buffer's use/free. Clearing on declaration is always sound:
-            // the new variable cannot alias the old freed storage (task 232,
+            // the new variable cannot alias the old freed storage (
             // init-declarator analog of free-then-reassign). The alias branch
             // below re-marks it freed if it genuinely aliases a freed pointer.
             self.freed_vars.remove(&left_var);
@@ -4599,7 +4599,7 @@ impl MemoryAnalyzer {
             // storage. A subscript/field/cast initializer (`Image f =
             // imFonts[0];`) copies a value OUT of a container — freeing the
             // container (`free(imFonts)`) must NOT mark the copy freed
-            // (task 232 container-vs-member; rtext.c fullFont). Restricting
+            // (an earlier fix container-vs-member; rtext.c fullFont). Restricting
             // aliasing to an identifier RHS prevents that false UAF.
             if value.kind() == "identifier" {
                 let right_var = LValue::Var(get_node_text(&value, source).to_string());
@@ -4778,7 +4778,7 @@ impl MemoryAnalyzer {
                     // `f(&p)` passes the ADDRESS of the variable, not the
                     // freed pointer it holds; the callee receiving a slot is
                     // the out-parameter idiom that refills it
-                    // (`process_address_of_args`), not a use (tasks 1233,
+                    // (`process_address_of_args`), not a use (
                     // 1234).
                     if is_address_of(&arg, source) {
                         continue;
@@ -4961,7 +4961,7 @@ impl MemoryAnalyzer {
 
         // Check if the full field expression is freed (e.g., buf->data) —
         // structurally, so `p->buf` and `(*p).buf` are recognized as the
-        // same field regardless of spelling (task 1).
+        // same field regardless of spelling.
         let Some(lv) = lvalue_of(node, source) else {
             return;
         };
@@ -5031,7 +5031,7 @@ impl MemoryAnalyzer {
         // curl's `curl_dbg_freeaddrinfo` frees `freethis` in each arm of an
         // `#ifdef USE_LWIPSOCK / #elif / #else` chain, and the linear walk
         // sees arm two "use" what arm one freed. The double-free path has
-        // declined to report across such a split since task 251; a
+        // declined to report across such a split since an earlier fix; a
         // use-after-free across one is the same unsound sequence.
         let freed_byte = self
             .freed_at

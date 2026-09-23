@@ -170,8 +170,8 @@ impl Int08C {
                 // `/`, `%` and `>>` are excluded entirely: none of them can
                 // grow a value's magnitude past whatever the dividend/shiftee
                 // already was, so a narrow-typed operand promoted to `int`
-                // can never make one of these exceed `int`'s range (task
-                // 755) -- unlike `+`/`-`/`*`/`<<`, which can grow magnitude
+                // can never make one of these exceed `int`'s range -- unlike
+                // `+`/`-`/`*`/`<<`, which can grow magnitude
                 // and so are still worth checking below.
                 if matches!(op_text.trim(), "+" | "-" | "*" | "<<") {
                     // Get the operands
@@ -271,7 +271,7 @@ impl Int08C {
     /// ```
     ///
     /// The *arithmetic* there is correct and deliberately not flagged: both
-    /// operands promote to `int` and 33000 fits it comfortably (task 755
+    /// operands promote to `int` and 33000 fits it comfortably (an earlier fix
     /// moved this shape out of tests/fail for exactly that reason). The
     /// **store** is the defect, and it is what this rule's own title asks
     /// about -- verify that all integer values are in range. Nothing else in
@@ -303,7 +303,7 @@ impl Int08C {
     /// check withdrew its claim whenever any operand had a dominating
     /// comparison -- which also withdrew it from `if (data == CHAR_MAX)`,
     /// where the guard PROVES the truncation (44 true positives in the same
-    /// cohort). Since task 1014 a contradicted branch has no range entry, so
+    /// cohort). Since an earlier fix a contradicted branch has no range entry, so
     /// `stored_value_range` returns `None` there and the store is never
     /// judged; a satisfiable guard leaves the range it admits. No gate of
     /// this rule's own is needed, and none is applied.
@@ -366,7 +366,7 @@ impl Int08C {
     /// Only a bare identifier destination counts. A field, subscript or
     /// dereference names an object whose declared type this rule's
     /// `variables` map does not hold, and guessing one is how the inverted
-    /// premise task 755 removed got in.
+    /// premise an earlier fix removed got in.
     fn collect_stores<'a>(node: &Node<'a>, source: &str) -> Vec<(String, Node<'a>)> {
         let mut stores = Vec::new();
         for init in query::find_descendants_of_kind(*node, "init_declarator") {
@@ -463,7 +463,7 @@ impl Int08C {
     /// heuristic. Whatever overflow risk such an expression carries is the
     /// *wide* operand's, and `int` overflow is INT32-C's concern, not this
     /// rule's (see `is_narrow_integer_type`'s doc). Falling back re-emitted
-    /// the very inverted premise task 755 fixed, on every expression the
+    /// the very inverted premise an earlier fix fixed, on every expression the
     /// range engine could not resolve -- in real code, most of them.
     ///
     /// This channel has zero measured recall: zero findings on
@@ -514,7 +514,7 @@ impl Int08C {
 
     /// The value range a narrow integer type takes on after promotion to
     /// `int`. Delegates to [`const_eval::promoted_range_for_type`], shared
-    /// with `INT32-C` since task 926 found the same inverted premise there.
+    /// with `INT32-C` since an earlier fix found the same inverted premise there.
     fn promoted_range_for_type(&self, type_name: &str) -> Option<ValueRange> {
         const_eval::promoted_range_for_type(type_name)
     }
@@ -533,9 +533,9 @@ impl Int08C {
     /// int itself is NOT narrow - overflow on int is covered by INT32-C.
     ///
     /// Recorded in this rule's TOML as `[references] related = ["INT32-C"]`
-    /// (task 626, cross-rule overlap policy:
+    /// (cross-rule overlap policy:
     /// docs/design/cross-rule-overlap.md). This is a `related` tag, not a
-    /// validated `defers_to` exception -- task 625 found only 16
+    /// validated `defers_to` exception -- an earlier fix found only 16
     /// ground-truth-labeled co-located lines for this pair (all agree-FP),
     /// far short of the "every labeled instance" subsumption bar. If `int`
     /// is ever added back to the narrow-type set, it is a detection-behavior

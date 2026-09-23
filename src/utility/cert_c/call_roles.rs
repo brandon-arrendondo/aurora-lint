@@ -3,7 +3,7 @@
 //! formatted-input, ...), as opposed to `std_functions`'s flat "is this a
 //! known std/POSIX/Windows name at all."
 //!
-//! Filed as task 487 after task 481's ruleset-wide duplication sweep found
+//! Filed after a ruleset-wide duplication sweep found
 //! `is_allocation_call`/`is_alloc_call` reimplemented in 7 files with
 //! disagreeing lists, and `is_printf_family` (or an equivalent list embedded
 //! in a broader `is_safe_function`) reimplemented in 5+ files, each a
@@ -31,7 +31,7 @@ const STRING_DUP_FUNCS: &[&str] = &["strdup", "strndup"];
 /// printf-family formatted-output functions, including the `dprintf`/
 /// `vdprintf` (fd-based) and wide-character (`wprintf`/`fwprintf`/
 /// `swprintf`) variants. Union of every printf list found across
-/// `FIO47-C`/`DCL10-C`/`DCL11-C` during the task-481 sweep -- FIO47-C's
+/// `FIO47-C`/`DCL10-C`/`DCL11-C` during a dedup sweep -- FIO47-C's
 /// version was the most complete of the three but still missed the
 /// wide-character variants DCL11-C had.
 const PRINTF_FUNCS: &[&str] = &[

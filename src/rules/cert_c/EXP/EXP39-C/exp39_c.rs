@@ -845,7 +845,7 @@ impl Exp39C {
         // resolve the identifier. Falling back to a concrete guess (e.g.
         // defaulting unmatched names to "int") fabricates a type the source
         // never declared and manufactures false-confidence violations
-        // (task 569: raylib's `GetPixelColor` parameter went unmatched and
+        // (an earlier fix: raylib's `GetPixelColor` parameter went unmatched and
         // was silently treated as `int`, producing 31/31 FPs). When no
         // naming convention matches, return `None` (unknown type) so the
         // caller treats the cast as unanalyzable rather than firing on a

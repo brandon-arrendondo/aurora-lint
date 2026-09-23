@@ -5,7 +5,7 @@
 //! `while (len) { … len -= n; }` — reads to an overflow rule as an unguarded
 //! subtraction on a parameter, because the fact that bounds it is the loop's
 //! own control rather than a guard statement above the expression. Four of the
-//! 40 rows in task 664's integer-overflow adjudication sample were this one
+//! 40 rows in an earlier fix's integer-overflow adjudication sample were this one
 //! idiom, all false positives.
 //!
 //! [`guard_dominance`] already answers the two shapes whose loop condition is

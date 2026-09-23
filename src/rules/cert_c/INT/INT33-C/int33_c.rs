@@ -629,7 +629,7 @@ impl Int33C {
     /// `assert()` out because it compiles away under `NDEBUG`, but a division
     /// guarded only by `assert(n != 0)` is not what this rule's finding says --
     /// "without checking for zero" -- and a fifth of one corpus's findings were
-    /// this shape (valkey, task 1274). The check compiling out is the assert's
+    /// this shape (valkey). The check compiling out is the assert's
     /// own well-known caveat, not an unguarded division.
     fn guarded_nonzero_at(&self, div_node: &Node, divisor: &Node, source: &str) -> bool {
         let mut targets = vec![guard_dominance::squeeze_text(divisor, source)];
@@ -803,7 +803,7 @@ impl Int33C {
     /// an `if_statement` inside every else clause, so a generated/
     /// obfuscated chain thousands deep would blow the native call stack if
     /// each link were a recursive call (the same hostap-style shape that
-    /// motivated task 153). This is a pure existence check (true as soon as
+    /// motivated an earlier fix). This is a pure existence check (true as soon as
     /// any guard is found anywhere), so traversal order doesn't affect the
     /// result.
     fn has_early_return_for_zero(
@@ -1416,7 +1416,7 @@ impl Int33C {
     /// below descends into every unmatched child kind (if/while/compound/
     /// etc.), so a pathologically nested if/else-if or block chain could
     /// blow the native call stack one frame per level (the same hostap-
-    /// style shape that motivated task 153). `found_any` is write-only
+    /// style shape that motivated an earlier fix). `found_any` is write-only
     /// (set true, never cleared) and any bad assignment aborts the whole
     /// walk immediately, so processing children out of document order via
     /// the stack doesn't change the result.

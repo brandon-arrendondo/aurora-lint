@@ -61,7 +61,7 @@ impl CParser {
     /// source alongside the parse tree.
     pub fn parse_file(&mut self, file_path: &str) -> Result<(Tree, String)> {
         let source = read_source_or_transcode(file_path)?;
-        // Task 1043: neutralize emscripten EM_ASM/EM_JS embedded-JavaScript
+        // An earlier fix: neutralize emscripten EM_ASM/EM_JS embedded-JavaScript
         // macro bodies. A JS block parses as ordinary-looking C rather than
         // an ERROR node, so without this every rule walks it -- DCL31-C
         // reported every JS call in reach as an undeclared function, the JS
@@ -69,7 +69,7 @@ impl CParser {
         // only C. Length- and newline-preserving.
         let source = crate::analyze::embedded_js_blank::blank_embedded_js(&source);
 
-        // Task 435: blank empty WINAPI/RLAPI-style export-specifier macros
+        // An earlier fix: blank empty WINAPI/RLAPI-style export-specifier macros
         // before parsing -- tree-sitter-c's grammar can't parse a bare
         // identifier immediately before a declaration's type, and the
         // resulting ERROR-node recovery can swallow unrelated content later
@@ -77,7 +77,7 @@ impl CParser {
         // unaffected by this substitution.
         let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(&source);
 
-        // Task 441: blank #if/#ifdef/#ifndef + #endif directive pairs that
+        // An earlier fix: blank #if/#ifdef/#ifndef + #endif directive pairs that
         // wrap a dangling `else` fragment (an if/else-if chain split across
         // a build-time feature guard) -- tree-sitter-c's grammar has no
         // production for that incomplete-statement shape and can misparse
@@ -86,7 +86,7 @@ impl CParser {
         // unconditionally rather than gated on a parse error being present.
         let source = crate::analyze::preproc_dangling_else::blank_dangling_else_preproc(&source);
 
-        // Task 647: blank a #if/#ifdef/#ifndef + matching #endif pair that
+        // An earlier fix: blank a #if/#ifdef/#ifndef + matching #endif pair that
         // opens immediately after a bare goto-label line -- tree-sitter-c's
         // `labeled_statement` grammar rule requires exactly one statement
         // right after the label and has no alternative for a preprocessor
@@ -97,7 +97,7 @@ impl CParser {
         // unconditionally like the pass above.
         let source = crate::analyze::label_preproc_guard::blank_label_guarded_preproc(&source);
 
-        // Task 1044: blank a #if/#ifdef/#ifndef + matching #endif pair that
+        // An earlier fix: blank a #if/#ifdef/#ifndef + matching #endif pair that
         // opens inside an unclosed parenthesized expression (a build-time-
         // optional operand of a condition, or entry in a parameter or
         // argument list). tree-sitter-c has no production for a
@@ -109,7 +109,7 @@ impl CParser {
         // definition from every rule while leaving its calls visible.
         let source = crate::analyze::paren_preproc_guard::blank_paren_guarded_preproc(&source);
 
-        // Task 1066: a guard that falls between a control-flow header and the
+        // An earlier fix: a guard that falls between a control-flow header and the
         // body it governs (`#if ...` / `if (cond)` / `#endif` / `{ ... }`).
         // `preproc_if` is a block item, so the brace block parses as a
         // SIBLING of the `if` and GLR recovery gives the `if` a synthesized
@@ -119,14 +119,14 @@ impl CParser {
                 &source,
             );
 
-        // Task 1070: the same split across a MULTI-ARM chain. The pass above
+        // An earlier fix: the same split across a MULTI-ARM chain. The pass above
         // refuses those on purpose -- blanking a chain's directive lines
         // splices every arm into one statement stream, so the outer `if` gets
         // a non-compound consequence and EXP19-C fires MORE, not less. This
         // pass keeps one arm and blanks the other arms' dangling fragments.
         let source = crate::analyze::preproc_split_chain::blank_split_chain_preproc(&source);
 
-        // Task 437: if a parse error remains (e.g. an externally-defined
+        // An earlier fix: if a parse error remains (e.g. an externally-defined
         // attribute macro with no local #define for the pass above to
         // find), iteratively blank single-token unknown-identifier ERROR
         // nodes and re-parse. Length-preserving and bounded; a no-op reparse
@@ -149,7 +149,7 @@ impl CParser {
     /// length- and line-count-preserving but not necessarily *content*-
     /// preserving on the lines it rewrites (e.g. `label_preproc_guard`
     /// leaves a recoverable marker comment rather than blank whitespace,
-    /// task 663), so text sliced from the wrong string at an otherwise
+    /// an earlier fix), so text sliced from the wrong string at an otherwise
     /// correct byte range can silently return stale content.
     pub fn parse_source(&mut self, source: &str) -> Result<(Tree, String)> {
         let source = crate::analyze::embedded_js_blank::blank_embedded_js(source);

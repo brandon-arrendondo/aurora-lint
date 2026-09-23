@@ -166,7 +166,7 @@ impl Flp38C {
     /// scan's `float_t`/`double_t` (whose underlying type is
     /// implementation-defined -- treating `float_t` as distinct from `float`
     /// would manufacture a mismatch finding). Only the extended-type list is
-    /// shared with the utility module; see task 502.
+    /// shared with the utility module; see an earlier fix.
     fn is_floating_type(type_text: &str) -> bool {
         matches!(type_text, "float" | "double" | "long double")
             || float_typing::EXTENDED_FLOAT_TYPES.contains(&type_text)

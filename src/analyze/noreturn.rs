@@ -8,7 +8,7 @@
 //! exactly the same effect on reachability but wasn't recognized, so a null
 //! check whose failure branch calls one of these was invisible to the CFG
 //! and the guarded dereference after it looked unguarded. Found on seL4's
-//! `src/fastpath/fastpath.c` (task 598's delta-adjudication): `cap_pd`/
+//! `src/fastpath/fastpath.c` (an earlier fix's delta-adjudication): `cap_pd`/
 //! `reply` are only reached after a NULL check whose failure branch calls
 //! `slowpath()`, declared `NORETURN` in `include/arch/*/arch/fastpath/
 //! fastpath.h`.
@@ -32,7 +32,7 @@
 //!    `unknown_identifier_recovery`'s ERROR-node recovery blanks the token
 //!    -- except for names in [`NORETURN_ATTRIBUTE_MACRO_NAMES`], where it
 //!    leaves [`MARKER`] in its place instead (same length-preserving
-//!    recoverable-marker idiom task 663 used for label-guarded
+//!    recoverable-marker idiom an earlier fix used for label-guarded
 //!    preprocessor directives), so this module can still recognize the
 //!    declaration as noreturn post-parse.
 
@@ -130,7 +130,7 @@ fn has_noreturn_qualifier_or_attribute(decl_or_def: &Node, source: &str) -> bool
 /// inside the declaration's `declarator`, not off the declaration node, so
 /// [`has_noreturn_qualifier_or_attribute`]'s direct-children scan sees only
 /// the leading spellings. pure-ftpd declares its `no_mem()` helper this way
-/// in `ftpd.h`, which is the form task 1076 was filed against.
+/// in `ftpd.h`, which is the form an earlier fix was filed against.
 ///
 /// Attributes inside the parameter list are excluded: an attribute on a
 /// parameter says nothing about whether the function returns.

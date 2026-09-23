@@ -240,7 +240,7 @@ fn parse_all_null_conditions(node: &Node, source: &str) -> Vec<ConditionInfo> {
 ///
 /// Structural, so it is insensitive to how the source is spaced: `if(p && x)`,
 /// `if( p && x )` and `if (p&&x)` all answer the same. That is the point of it
-/// existing — task 745 traced two sqlite API00-C false positives to a text
+/// existing — an earlier fix traced two sqlite API00-C false positives to a text
 /// matcher looking for `"(p &&"`, which requires the variable to sit
 /// immediately after the opening paren and so never fires on sqlite's
 /// `if( p && ... )` brace style. Text matching also produced the mirror-image
@@ -350,7 +350,7 @@ fn process_statement_for_null_state(
     declared_pointers: &mut HashSet<String>,
     summaries: &HashMap<String, FunctionSummary>,
 ) {
-    // Cross-file output params (task 195/319 follow-on to the EXP33-C fix):
+    // Cross-file output params (a follow-on to the EXP33-C fix):
     // any call anywhere in this statement -- bare statement, assignment RHS,
     // or nested inside an if/while condition -- that FunctionSummary::modifies_params
     // says writes through a pointer param marks that param's address-of/bare-array
@@ -611,15 +611,15 @@ fn propagate_cast_pointee_state(var_name: &str, value: &Node, source: &str, stat
 }
 
 /// Mark `&var`/bare-array output args of `call` as NotNull, using cross-file
-/// `FunctionSummary::unconditional_modifies_params` (task 195/319 follow-on
-/// to the EXP33-C fix -- see `Exp33C::build_cross_file_output_params` /
+/// `FunctionSummary::unconditional_modifies_params` (a follow-on to
+/// the EXP33-C fix -- see `Exp33C::build_cross_file_output_params` /
 /// `init_state.rs`'s `try_process_cross_file_output_params` for the
 /// reference implementation and its "must be additive, not a short-circuit"
 /// lesson, which does not apply here since this helper only ever *adds* a
 /// NotNull marking and never replaces or skips any other transfer logic).
 ///
-/// MUST-write set, not the MAY set `modifies_params` (task 1458, aurora_lint,
-/// found by task 1434's rule architecture sweep): `NotNull` is an assertion,
+/// MUST-write set, not the MAY set `modifies_params` (found by a rule
+/// architecture sweep): `NotNull` is an assertion,
 /// not a suppression, so it needs the same MUST-strength guarantee EXP33-C's
 /// own `build_cross_file_output_params` requires for the same field, and for
 /// the same reason -- CERT's own canonical EXP33-C example, `set_flag(n,
@@ -1929,7 +1929,7 @@ pub fn is_nullable_function(func_name: &str, summaries: &HashMap<String, Functio
             | "calloc"
             | "realloc"
             // sqlite's own allocator wrappers (ext/misc/vfstrace.c:895-class FN,
-            // task 173): sqlite3_malloc/sqlite3_malloc64 return NULL on OOM just
+            // an earlier fix): sqlite3_malloc/sqlite3_malloc64 return NULL on OOM just
             // like the stdlib functions they wrap, but aren't in FunctionSummary
             // unless the whole sqlite3 source tree is in the -d prescan set.
             | "sqlite3_malloc"
@@ -2083,14 +2083,14 @@ void foo() {
 
     #[test]
     fn test_cross_file_output_param_marks_not_null() {
-        // task 195/319 follow-on: a cross-file function known from
+        // A follow-on: a cross-file function known from
         // FunctionSummary::unconditional_modifies_params to write through
         // param index 0 on every path must clear NullState for the
         // address-of'd variable, including when the call sits inside an
         // if-condition and is not wrapped in an rc = call(); if (rc == ...)
         // pattern. Both modifies_params (MAY) and unconditional_modifies_params
         // (MUST) are set here to model a genuinely unconditional writer --
-        // task 1458 made apply_cross_file_output_params_null require the MUST
+        // an earlier fix made apply_cross_file_output_params_null require the MUST
         // set, since the MAY set alone let a conditional writer (CERT's own
         // set_flag(n, &sign) example) wrongly clear a real null-deref finding.
         let code = r#"
@@ -2129,7 +2129,7 @@ void foo(void) {
 
     #[test]
     fn test_cross_file_conditional_output_param_does_not_mark_not_null() {
-        // task 1458: a cross-file function whose write is only CONDITIONAL
+        // an earlier fix: a cross-file function whose write is only CONDITIONAL
         // (in modifies_params but not unconditional_modifies_params -- CERT's
         // own EXP33-C noncompliant example, set_flag(n, &sign), writes *sign
         // only when n != 0) must NOT clear NullState for the address-of'd

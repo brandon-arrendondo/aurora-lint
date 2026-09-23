@@ -198,7 +198,7 @@ fn is_ident_char(c: char) -> bool {
 
 /// Forward-reachability set from `roots` over `call_graph`, treating any
 /// edge into `ambiguous_call_targets` as unresolved rather than chasing it
-/// (same reasoning as task 562's MSC04-C fix, applied to a reachability
+/// (same reasoning as an earlier fix's MSC04-C fix, applied to a reachability
 /// walk instead of a cycle-detection DFS: a callee resolved only by
 /// coincidental name-matching through a struct field or a
 /// parameter-shadowed identifier isn't a real call target). Includes the

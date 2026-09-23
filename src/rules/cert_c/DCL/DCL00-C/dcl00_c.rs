@@ -440,7 +440,7 @@ fn scope_has_mutation(node: &Node, var_name: &str, source: &str, is_array: bool)
         // it just like `&scalar_var` does for a scalar — unlike a scalar
         // passed by value, which the callee can never write back through.
         // Conservatively assume any non-whitelisted callee may write
-        // (task 391: hostap's `radius_msg_get_attr(msg, ATTR, (u8*)nas_id,
+        // (an earlier fix: hostap's `radius_msg_get_attr(msg, ATTR, (u8*)nas_id,
         // ...)`, an out-param write via `(u8*)buf`, not `&buf`).
         "call_expression" if is_array => n.child_by_field_name("arguments").is_some_and(|args| {
             (0..args.child_count())

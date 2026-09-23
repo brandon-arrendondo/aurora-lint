@@ -9,7 +9,7 @@
 //! Uses intra-function taint tracking: only flags system()/popen() calls when
 //! the argument is tainted by external input sources (recv, scanf, fgets, etc.).
 //!
-//! Also covers SQL injection (CWE-89, task 8/301): `sqlite3_exec`,
+//! Also covers SQL injection (CWE-89): `sqlite3_exec`,
 //! `mysql_query`, `mysql_real_query`, and `PQexec` build/execute a SQL
 //! statement from a single string with no separate parameter binding, so
 //! they are exactly the "complex subsystem" this rule's CERT text
@@ -21,7 +21,7 @@
 //! to sanitize.
 //!
 //! `query_buffer_inputs_all_validated` recognizes one real-world defensive
-//! shape found while validating this against hostap (task 8/301): a raw
+//! shape found while validating this against hostap: a raw
 //! tainted var explicitly checked against a project-local allow-list
 //! function (`if (!valid_db_string(x)) return NULL;`) before being
 //! `snprintf`'d into the query buffer, even though STR02-C has no way to
@@ -234,7 +234,7 @@ impl Str02C {
     /// tainted -- unless every call site to this (necessarily `static`)
     /// function within this same file passes a string literal at that
     /// parameter position (e.g. hostap's `db_table_exists(db, name)`,
-    /// always called with a literal table name; task 469). Looked up from
+    /// always called with a literal table name). Looked up from
     /// `literal_only_params`, populated per-file by
     /// `collect_literal_only_static_params`.
     fn collect_param_names(&self, func_node: &Node, source: &str, tainted: &mut HashSet<String>) {
@@ -575,7 +575,7 @@ impl Str02C {
         // (`cmd`, `zSql`, ...) is usually a local buffer built by a
         // sprintf/snprintf-family call from the actually-tainted source
         // vars, not the raw tainted var itself. Real-world code (found on
-        // hostap's src/eap_server/eap_sim_db.c during task 8) commonly
+        // hostap's src/eap_server/eap_sim_db.c during an earlier fix) commonly
         // validates those SOURCE vars against a character allow-list
         // (`if (!valid_db_string(pseudonym)) return NULL;`) before the
         // snprintf that builds the query -- an unnamed, project-local

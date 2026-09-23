@@ -9,7 +9,7 @@
 //! `u16` three times -- `#ifdef _MSC_VER` (`UINT16`), `#ifdef __vxworks`
 //! (`UINT16`), `#ifndef WPA_TYPES_DEFINED` (`uint16_t`) -- and first-wins
 //! kept the Windows one, a type nothing in a POSIX corpus ever defines, so
-//! every width-sensitive rule saw `u16` as unresolvable (task 1142: EXP14-C
+//! every width-sensitive rule saw `u16` as unresolvable (an earlier fix: EXP14-C
 //! alone lost 59 of 62 labeled hostap TPs to this).
 //!
 //! `lang_parsing_substrate::dead_code_ranges` cannot settle that on its own:

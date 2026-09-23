@@ -1488,7 +1488,7 @@ justification = "Third-party code"
 
     #[test]
     fn test_dead_code_always_defined_macro_else_is_dead() {
-        // task 560: raylib's ExportFontAsCode gates on `SUPPORT_COMPRESSED_FONT_ATLAS`,
+        // an earlier fix: raylib's ExportFontAsCode gates on `SUPPORT_COMPRESSED_FONT_ATLAS`,
         // unconditionally `#define`d earlier in the same file with no `#undef` —
         // the `#else` branch is provably dead, not just the literal-`#if 0` case.
         let source = "#define SUPPORT_COMPRESSED_FONT_ATLAS\n\

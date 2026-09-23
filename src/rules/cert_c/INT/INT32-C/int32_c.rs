@@ -1044,8 +1044,7 @@ impl Int32C {
     /// overflow. The binary path already makes that dispatch
     /// (`check_addition` skips whenever EITHER operand is unsigned); the
     /// compound path never asked, and nothing noticed while an `i64` operand
-    /// classified `not_applicable` and left the rule before this point (task
-    /// 1287).
+    /// classified `not_applicable` and left the rule before this point.
     ///
     /// Deliberately not applied to `<<=`: a shift's result type is its
     /// promoted LEFT operand's type and the right operand takes no part in
@@ -1581,9 +1580,9 @@ impl Int32C {
                     // here is a size computed in a signed type, `n * 4` on
                     // an `int`. The predicate also excludes pointer
                     // arithmetic (`n1 - p + 1` is bounded by its object,
-                    // task 1276), and reads a two-stage `(a * b) * sizeof(T)`
+                    // an earlier fix), and reads a two-stage `(a * b) * sizeof(T)`
                     // as unsigned throughout -- the inner signed product is
-                    // task 1286's.
+                    // an earlier fix's.
                     let Some(signed) = self.signed_arithmetic_in(check_node, source, type_map)
                     else {
                         arg_idx += 1;
@@ -2041,7 +2040,7 @@ impl Int32C {
         if node.kind() == "identifier" {
             // The map is built over the whole file and keyed by name, so a
             // `size_t wpa_ie_len` in one function reads as the `int
-            // wpa_ie_len` of another (task 1276, hostap wpa_auth.c). The
+            // wpa_ie_len` of another (hostap wpa_auth.c). The
             // occurrence's own declaration is authoritative (ADR-0006); the
             // map answers only for a name this file does not declare.
             if let Some(declared) = ast_utils::resolve_identifier_declared_type(node, text, source)
@@ -2065,7 +2064,7 @@ impl Int32C {
 
         // `sizeof` yields size_t whatever its operand spells: `sizeof(int)`
         // used to read as "signed" off the `int` in its text, so
-        // `sizeof(int) * numconns` was a signed multiplication (task 1276,
+        // `sizeof(int) * numconns` was a signed multiplication (
         // valkey rio.c). Unsigned wrap of a size_t product is INT30-C's.
         if node.kind() == "sizeof_expression" {
             return "unsigned".to_string();
@@ -2326,7 +2325,7 @@ impl Int32C {
         // Look for unsigned literals. The suffix may carry a length too:
         // `1ul`, `1UL`, `0x80ull` are all unsigned, and reading `1ul` as
         // "unknown" let `(1ul << n) - 1ul` type itself from `n` alone
-        // (task 1276, valkey hashtable.c).
+        // (valkey hashtable.c).
         if text.ends_with('u') || text.ends_with('U') {
             return Some("unsigned".to_string());
         }
@@ -3175,7 +3174,7 @@ impl Int32C {
     /// variable — a small loop trip count says nothing about the range of
     /// an unrelated value used inside the loop body (e.g. `data * 2` where
     /// `data` comes from external input, inside `for (j = 0; j < 1; j++)`).
-    /// Pre-existing gap found while auditing task 302's comment-sanitization
+    /// Pre-existing gap found while auditing an earlier fix's comment-sanitization
     /// fix here: 18 genuine Juliet overflow/underflow violations (flow
     /// variant 17, for-loop control flow) were only being correctly flagged
     /// because a comment mentioning "LLONG_MAX" (substring-matching

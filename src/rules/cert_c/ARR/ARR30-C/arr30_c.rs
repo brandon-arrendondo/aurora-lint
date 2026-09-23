@@ -81,7 +81,7 @@ pub struct Arr30C {
     /// Per-function cache of `const char *` / `const unsigned char *` parameter
     /// names (and their cast-aliases) that have no paired length parameter —
     /// candidate unbounded input buffers for the param-decoder index over-read
-    /// family (task 210, sqlite `kvvfsDecode` class). Keyed by function start
+    /// family (sqlite `kvvfsDecode` class). Keyed by function start
     /// byte. Cleared per file.
     param_decode_buf_cache: RefCell<HashMap<usize, HashSet<String>>>,
     /// Function start bytes that already produced a param-decoder over-read
@@ -91,7 +91,7 @@ pub struct Arr30C {
     /// Per-translation-unit interprocedural over-read summary, keyed by function
     /// name: the positional indices of `const char *` parameters that the
     /// function walks unbounded (embedded-increment subscript with no length
-    /// bound). Drives the task-211 callsite over-read detector, where the
+    /// bound). Drives a callsite over-read detector, where the
     /// over-reading loop sits in a helper (`readUtf8(z, ...)`) and the caller
     /// passes a tainted pointer (+offset) with no length argument. Built once per
     /// file; `None` until the root pass populates it. Cleared per file.
@@ -168,7 +168,7 @@ struct PointerAlias {
 /// Accessors that return a pointer into untrusted/binary data that is *not*
 /// guaranteed to be NUL-terminated or length-validated at the call site.
 /// Walking such a pointer in a decode loop without a dominating bound check is
-/// an out-of-bounds read (task 172, the sqlite real-world ARR30 FN family of
+/// an out-of-bounds read (the sqlite real-world ARR30 FN family of
 /// varint / terminator-chase decode loops over column/blob bytes). Gating on a
 /// blob/value accessor — rather than any `char *` — keeps the plain
 /// NUL-terminated C-string walk idiom (`while (*s) s++;`) out of scope, since
@@ -205,7 +205,7 @@ const VARINT_READERS: &[&str] = &[
 /// suppress a real violation. Recorded as a false-negative risk in section
 /// 6.2 of docs/design/arr30-arr38-buffer-size-scoping.md; narrowing it to
 /// token equality is a behavior change and deliberately not bundled with
-/// the task-679 dedup.
+/// an earlier dedup pass.
 const BOUND_NAME_SUBSTRINGS: &[&str] = &["size", "length", "count"];
 
 /// As [`BOUND_NAME_SUBSTRINGS`], plus the abbreviated `len` that
@@ -274,7 +274,7 @@ impl CertRule for Arr30C {
                 Some(self.build_caller_validated_params(node, source));
             let mut buffer_info = self.analyze_buffer_allocations(source);
             let pointer_aliases = self.analyze_pointer_aliases(source, &buffer_info);
-            // Task 389: the file-scope-only base each function's own buffer
+            // An earlier fix: the file-scope-only base each function's own buffer
             // tracking resets to in `check_with_buffer_info`'s
             // `function_definition` arm, plus the typedef table it's built
             // from, cached so it isn't recomputed per function.
@@ -287,7 +287,7 @@ impl CertRule for Arr30C {
             let function_macros = collect_function_macros(node, source);
             let flexible_array_structs = self.find_flexible_array_structs(node, source);
 
-            // Task 554: a C99/struct-hack flexible array member's *declared*
+            // An earlier fix: a C99/struct-hack flexible array member's *declared*
             // size (often a literal `[1]` or empty `[]`) is a placeholder --
             // the real element count lives at whatever allocation reserves
             // `sizeof(struct X) + n * sizeof(elem)`-style extra space for it
@@ -312,7 +312,7 @@ impl CertRule for Arr30C {
                 }
             }
 
-            // Task 912: the same array declared with DIFFERENT sizes in two
+            // An earlier fix: the same array declared with DIFFERENT sizes in two
             // mutually exclusive preprocessor branches. Which one is compiled
             // depends on a macro this analysis does not evaluate, so neither
             // size is a fact about the built kernel -- and the name-keyed
@@ -486,7 +486,7 @@ impl Arr30C {
     /// grammar -- a declaration directly inside a struct/union body was
     /// never seen at all, so an access like `RLGL.State.stack[idx]` had no
     /// buffer size to check against and silently produced no violation,
-    /// regardless of whether `idx` was validated (task 235; real example:
+    /// regardless of whether `idx` was validated (real example:
     /// raylib's rlgl.h `RLGL.State.stack[RL_MAX_MATRIX_STACK_SIZE]`).
     /// `field_declaration` reuses the same declarator grammar as
     /// `declaration`, so the existing extractor works unmodified once
@@ -518,7 +518,7 @@ impl Arr30C {
     ///
     /// `include_function_bodies` controls whether this descends into a
     /// `function_definition`'s body at all. Callers building the shared
-    /// file-scope base (`analyze_global_scope_buffers`, task 389) pass
+    /// file-scope base (`analyze_global_scope_buffers`) pass
     /// `false` so function-local buffers from different functions never
     /// land in the same name-keyed map; callers that need every buffer in
     /// the file regardless of scope (`analyze_buffer_allocations`, whose
@@ -1118,7 +1118,7 @@ impl Arr30C {
     /// branches. The per-function prescan keeps whichever declaration it saw
     /// LAST, so every `buf` access was reported against `buf[4]` and every
     /// `mib` access against `mib[2]` -- a size that is not the one on the
-    /// line (task 1273; a misfire per ADR-0005).
+    /// line (a misfire per ADR-0005).
     ///
     /// Resolve the occurrence to its declaration. An entry recorded on that
     /// declaration's line is the one in scope, and stays (it may carry a
@@ -1157,7 +1157,7 @@ impl Arr30C {
             return entry.cloned();
         };
         // A declarator left behind by a mis-parsed initializer (the GNU
-        // register-asm form, task 912) cannot size a buffer here either.
+        // register-asm form) cannot size a buffer here either.
         if decl.kind() != "declaration" || Self::declarator_split_by_parse_error(&decl, source) {
             return entry.cloned();
         }
@@ -1346,7 +1346,7 @@ impl Arr30C {
 
         // Regex pattern: var_name = digit+ OR var_name = -digit+, and nothing
         // else before the `;` -- `datalen = 1024 - 1;` is not an assignment of
-        // 1024, which is what an unanchored match made it (task 1278; the
+        // 1024, which is what an unanchored match made it (the
         // clamp `if (datalen >= 1024) datalen = 1024 - 1;` then reported
         // `data[datalen]` as a constant index one past the end).
         let pattern = format!(r"\b{}\s*=\s*(-?\d+)\s*;", regex::escape(var_name));
@@ -2550,7 +2550,7 @@ impl Arr30C {
         // the read/write bounds checks below apply; this function only ever
         // sees the subscript itself, never a later dereference of the
         // resulting pointer. `pCx->aOffset = &pCx->aType[nField];` (sqlite
-        // vdbe.c, a real-world FP -- task 1000) is exactly this shape.
+        // vdbe.c, a real-world FP -- an earlier fix) is exactly this shape.
         if node
             .parent()
             .is_some_and(|p| is_address_of_expression(&p, source))
@@ -2772,7 +2772,7 @@ impl Arr30C {
         // present the file-local one can credit a position the project-wide one
         // disqualifies (an unguarded caller in another file). Letting the
         // cross-file view *revoke* a file-local suppression would be a separate
-        // decision in the other direction, reinstating findings task 911
+        // decision in the other direction, reinstating findings an earlier fix
         // removed; this task only extends the suppression's reach.
         validated_in_file
             || self
@@ -4751,7 +4751,7 @@ impl Arr30C {
         false
     }
 
-    /// Detect the param-decoder index over-read family (task 210, sqlite
+    /// Detect the param-decoder index over-read family (sqlite
     /// `kvvfsDecode` class). Target shape: a function whose input buffer is a
     /// `const char *` / `const unsigned char *` *parameter* (or a cast-alias of
     /// one) with no paired length parameter, walked inside a loop by an
@@ -5629,7 +5629,7 @@ impl Arr30C {
     /// `member_name`, via either the `sizeof(struct struct_name) +
     /// N*sizeof(elem)` idiom or the `offsetof(struct_name, member_name) +
     /// N*sizeof(elem)` idiom (the latter is how real-world code -- e.g.
-    /// sqlite's FTS3/FTS5 code, task 537's corpus -- actually computes this
+    /// sqlite's FTS3/FTS5 code, an earlier fix's corpus -- actually computes this
     /// size, since it doesn't depend on the compiler's struct padding)?
     ///
     /// Deliberately a whole-file text scan rather than tracing the
@@ -6162,7 +6162,7 @@ impl Arr30C {
                 violations.extend(self.check_param_decode_overread(node, source));
             }
             "function_definition" => {
-                // Task 389: reset to the file-scope-only base (globals,
+                // An earlier fix: reset to the file-scope-only base (globals,
                 // struct/union member arrays, typedef-array members) rather
                 // than additively prescanning onto whatever buffer state
                 // was inherited from the parent scope — that inherited
@@ -6176,7 +6176,7 @@ impl Arr30C {
                 // (if-blocks, loops) are visible to sibling scopes for
                 // overflow checks — scoped to this function alone.
                 local_buffers = self.global_scope_buffers.borrow().clone();
-                // Task 555: a parameter's name (e.g. `buf`) can collide with
+                // An earlier fix: a parameter's name (e.g. `buf`) can collide with
                 // an unrelated global-scope buffer of the same name -- a
                 // struct/union member array, a typedef-array member, or a
                 // global variable declared in a completely different part of
@@ -6662,7 +6662,7 @@ impl Arr30C {
                     // array size was itself a bare identifier (a macro name,
                     // not yet expanded here), IT got misread as the "name"
                     // instead, silently dropping the buffer entirely
-                    // (task 235; real example: raylib's rlgl.h `Matrix
+                    // (real example: raylib's rlgl.h `Matrix
                     // stack[RL_MAX_MATRIX_STACK_SIZE];`).
                     "identifier" | "field_identifier" => {
                         if var_name.is_none() {

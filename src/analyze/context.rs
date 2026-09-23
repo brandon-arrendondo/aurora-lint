@@ -133,8 +133,8 @@ pub struct ProjectContext {
     /// through a direct-by-name `identifier(...)` call anywhere in the
     /// project. Such a function is reachable only through the single
     /// indirect call site that walks the table, so API00-C treats it like
-    /// a project-internal helper (task 594, extending task 169's
-    /// internal-contract suppression to the dispatch-table-callback shape).
+    /// a project-internal helper (extending an earlier internal-contract
+    /// suppression to the dispatch-table-callback shape).
     #[serde(default)]
     pub dispatch_table_callbacks: HashSet<String>,
     /// `#include` paths that name a *project* header which is not on disk:
@@ -182,7 +182,7 @@ pub struct ProjectContext {
     /// project has no such root anywhere (e.g. a genuinely single-threaded
     /// codebase). Used by CON03-C/CON07-C to gate findings on whether the
     /// flagged code is ever reachable from a concurrent context at all,
-    /// rather than firing unconditionally (task 608; see
+    /// rather than firing unconditionally (see
     /// `docs/design/con03-con07-isr-thread-reachability.md`).
     #[serde(default)]
     pub concurrency_reachable: Arc<HashSet<String>>,
@@ -249,8 +249,8 @@ pub struct ProjectContext {
     /// function-pointer typedef leaves that map with no entry for its
     /// alias name; DCL31-C needs the *category* (function-pointer
     /// typedef?), not the RHS text, to decide whether a parameter of
-    /// that type is directly callable (task 1054, second consumer of
-    /// task 736's shared typedef-chain resolver).
+    /// that type is directly callable (second consumer of
+    /// an earlier fix's shared typedef-chain resolver).
     #[serde(default)]
     pub function_pointer_typedef_names: Arc<HashSet<String>>,
     /// Names of typedefs that hide a pointer in DCL05-C's sense -- a pointer
@@ -274,7 +274,7 @@ pub struct ProjectContext {
     /// that check it. A name with no external definition anywhere therefore
     /// has no project-wide entry at all, which is the sound answer for a
     /// caller in neither file -- it cannot legally call either definition
-    /// (task 1385, `docs/design/multiply-defined-names.md`).
+    /// (`docs/design/multiply-defined-names.md`).
     ///
     /// Keys are canonicalized, because the walk that fills this and the walk
     /// that looks it up need not spell a path the same way.

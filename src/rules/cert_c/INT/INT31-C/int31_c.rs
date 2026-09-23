@@ -45,11 +45,11 @@ pub struct Int31C {
     param_names_cache: RefCell<HashMap<usize, HashSet<String>>>,
     /// Cross-file typedef alias map, reached through the shared
     /// [`overflow_helpers::resolve_typedef_chain`] before every
-    /// `get_type_width` lookup so a `typedef double real_t;` (task 665
+    /// `get_type_width` lookup so a `typedef double real_t;` (an earlier fix
     /// left this uncovered) or a `sqlite3_int64` chain to
-    /// `long long int` (task 664 sample) resolves to a known width
-    /// instead of falling through as `None` (task 1057, third consumer
-    /// of task 736's shared resolver).
+    /// `long long int` (an earlier fix sample) resolves to a known width
+    /// instead of falling through as `None` (third consumer
+    /// of an earlier fix's shared resolver).
     typedef_types: RefCell<Arc<HashMap<String, String>>>,
 }
 
@@ -585,7 +585,7 @@ fn trailing_integer(s: &str) -> Option<i64> {
 /// Returns the bit-width of a known integer type, or None for unknown types.
 ///
 /// The integer table itself is [`ast_utils::integer_type_width`] (shared since
-/// task 741, which needed the same widths in API00-C); what stays here is the
+/// an earlier fix, which needed the same widths in API00-C); what stays here is the
 /// floating-type branch, which is an INT31-C convention rather than a width.
 fn get_type_width(type_str: &str) -> Option<u32> {
     if let Some(bits) = ast_utils::integer_type_width(type_str) {
@@ -1165,7 +1165,7 @@ impl Int31C {
     /// sibling exists for -- specifically the sqlite3_value_*/sqlite3_column_*
     /// "int" variants, which return a 32-bit `int` even though the underlying
     /// storage may hold a full 64-bit value, and a `..._int64` sibling exists
-    /// for exactly that reason (task 174; real example: sqlite
+    /// for exactly that reason (real example: sqlite
     /// ext/misc/sqlar.c's sqlarUncompressFunc uses `sqlite3_value_int()` on an
     /// attacker-controlled archive-entry size, then passes the truncated
     /// result as an allocation size to `sqlite3_malloc()`).
@@ -1588,7 +1588,7 @@ impl Int31C {
             // ("nWord + 100") never matches a var_types key. Resolve the
             // dominant identifier inside the operand (same helper used for
             // call-argument narrowing below) so a wide value narrowed via an
-            // arithmetic expression is still caught (task 174; real example:
+            // arithmetic expression is still caught (real example:
             // sqlite ext/misc/amatch.c `nBuf = (char)(nWord + 100);` where
             // nBuf/nWord are sqlite3_int64 and the result feeds a realloc).
             if let Some(op) = self.get_cast_operand_node(node) {

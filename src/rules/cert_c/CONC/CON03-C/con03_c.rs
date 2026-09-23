@@ -88,7 +88,7 @@ use tree_sitter::Node;
 #[derive(Debug, Default)]
 pub struct Con03C {
     /// Function names reachable from a real concurrent-execution root (ISR,
-    /// thread-spawn entry point, or `signal()` handler) — see task 608 /
+    /// thread-spawn entry point, or `signal()` handler) — see an earlier fix /
     /// `docs/design/con03-con07-isr-thread-reachability.md`. Populated from
     /// `ProjectContext::concurrency_reachable` when a `-d` prescan ran;
     /// `check()` ORs it with a same-file-only fallback so the rule still
@@ -147,7 +147,7 @@ impl CertRule for Con03C {
                 // (rather than always flag) when no accessing function is
                 // reachable from a concurrent root: the value can't race if
                 // nothing that reads/writes it ever runs concurrently.
-                // Task 608 / docs/design/con03-con07-isr-thread-reachability.md.
+                // An earlier fix / docs/design/con03-con07-isr-thread-reachability.md.
                 let accessors = self.collect_accessing_functions(node, &var_name, source);
                 let reachable = self.concurrency_reachable.borrow();
                 let is_reachable = accessors.iter().any(|f| reachable.contains(f.as_str()));

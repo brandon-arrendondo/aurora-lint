@@ -17,9 +17,9 @@
 //! operand used for overflow detection -- is a platform dependency too, but
 //! that exact pattern is already covered by INT13-C ("Use bitwise operators
 //! only on unsigned operands"); this rule does not duplicate it. Recorded in
-//! this rule's TOML as `[references] related = ["INT13-C"]` (task 626,
+//! this rule's TOML as `[references] related = ["INT13-C"]` (
 //! cross-rule overlap policy: docs/design/cross-rule-overlap.md). This is a
-//! `related` tag, not a validated `defers_to` exception -- task 625 found no
+//! `related` tag, not a validated `defers_to` exception -- an earlier fix found no
 //! ground-truth-labeled co-located data for this pair either way, so the
 //! subsumption bar is unmet; re-examine if either rule's detection logic
 //! changes or labeled data accumulates.

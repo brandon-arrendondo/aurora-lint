@@ -64,12 +64,12 @@ impl Exp33C {
     /// answer already claimed. That means a merely-pending parameter looks
     /// identical here to one proven never written, and this is exactly the
     /// consumer `credit_modifies_params`'s own comment calls out: crediting it as
-    /// read-only turns an open question into an asserted violation (aurora_lint
-    /// 1437, piece (a) of docs/design/exp33-c-cross-file-uninit-architecture.md).
+    /// read-only turns an open question into an asserted violation (see
+    /// piece (a) of docs/design/exp33-c-cross-file-uninit-architecture.md).
     /// Excluding still-pending parameters here means "not proven to write" no
     /// longer doubles as "proven not to write."
     ///
-    /// Three-state classification (aurora_lint 1442, piece (b)): a parameter
+    /// Three-state classification (piece (b)): a parameter
     /// is ProvenReadOnly only once neither a MAY-write, a still-pending
     /// obligation, NOR `forwards_to_indirect_call` accounts for it.
     /// `forwards_to_indirect_call` is the "Unknown-due-to-indirection" state
@@ -105,7 +105,7 @@ impl Exp33C {
     /// that write through a pointer param, per
     /// `FunctionSummary::unconditional_modifies_params`.
     /// Complements `build_read_only_deref_fns` — where that returns the read-only
-    /// complement, this returns the write set directly (task 195/319 follow-on).
+    /// complement, this returns the write set directly (a follow-on).
     ///
     /// The MUST set, not `modifies_params`: this map clears a variable's
     /// uninitialised state, so a callee that writes the output parameter on
@@ -139,8 +139,8 @@ impl Exp33C {
     /// `process_unknown_function_call`'s "assume `&var` initializes" default
     /// instead, and had its conditional write credited as a full one: curl's
     /// `Curl_sasl_decode_mech` writes `*len` only on a table match, and
-    /// `openldap.c:730` compares `llen` on the no-match path (task 1065
-    /// bug #3, aurora_lint).
+    /// `openldap.c:730` compares `llen` on the no-match path (a real-world
+    /// bug).
     ///
     /// Sourced from `FunctionSummary::conditional_modifies_params`, which is
     /// PROOF of an unwritten returning path, not the MAY-minus-MUST
@@ -282,7 +282,7 @@ impl CertRule for Exp33C {
                         // `Curl_rand(a,b,c)` -> `Curl_rand_bytes(a,b,c)`) whose
                         // forwarded function genuinely writes through one of
                         // those args, per its own (already-computed)
-                        // FunctionSummary -- task 589.
+                        // FunctionSummary -- an earlier fix.
                         if idx.is_empty() {
                             if let Some((callee, param_map)) =
                                 crate::analyze::macro_expand::macro_forwarding_target(
@@ -561,7 +561,7 @@ fn enclosing_ifdef_guard_key(node: &Node, boundary: &Node, source: &str) -> Opti
 /// Text-level fallback for [`enclosing_ifdef_guard_key`]: scan `source`
 /// backward, line by line, from `node`'s own line up to (not past)
 /// `boundary`'s start line, looking for a marker left by
-/// `label_preproc_guard::blank_label_guarded_preproc` (task 663 -- kept
+/// `label_preproc_guard::blank_label_guarded_preproc` (an earlier fix -- kept
 /// manually in sync with that module's `open_marker`/`CLOSE_MARKER`
 /// formats: `"/*G{d|n}:{NAME}*/"` opening, `"/*E*/"` closing).
 ///
@@ -668,7 +668,7 @@ fn all_write_sites_ifdef_correlated(
 /// assigned directly, or it is `#define`d to a constant that the
 /// preprocessor substitutes at every later use (including this read) for
 /// the rest of the translation unit -- so in that configuration this
-/// "read" is never actually of the declared variable at all (task 461
+/// "read" is never actually of the declared variable at all (an earlier fix
 /// category 5; sqlite's insert.c/delete.c/update.c pTrigger/tmask/isView).
 fn has_macro_shadow_definition(body: &Node, var_name: &str, source: &str) -> bool {
     query::find_descendants_of_kind(*body, "preproc_def")
@@ -976,7 +976,7 @@ fn check_identifier_read(
     // translation unit, so in every real compiled configuration the write
     // and this read either both happen or both don't. Flagging
     // MaybeUninitialized here is an artifact of modeling each occurrence as
-    // an independent coin flip, not a real risk (task 590; hostap's
+    // an independent coin flip, not a real risk (hostap's
     // eloop_run: `rfds` is declared+malloc'd only under
     // `#ifdef CONFIG_ELOOP_SELECT` and read here under the identical
     // guard). Scoped to MaybeUninitialized only -- a bare Uninitialized
@@ -1046,8 +1046,8 @@ fn check_identifier_read(
 ///
 /// `openldap.c` is the same call with the test dropped -- it compares `llen`
 /// having only stored the returned bit for later -- which is the whole
-/// difference between the four safe call sites and the defect (task 1065
-/// bug #3, aurora_lint).
+/// difference between the four safe call sites and the defect (a
+/// real-world bug).
 ///
 /// The correlation itself is not proven here, and cannot be by this rule: that
 /// the write and the nonzero return happen together is a fact about the
@@ -1210,7 +1210,7 @@ fn check_deref_read(
     // has_sizeof_or_alignof_ancestor, but that path is never reached here:
     // check_reads visits `*ptr` itself as its own pointer_expression node
     // (real-world FPs: sqlite's `pRhs = sqlite3_malloc64(sizeof(*pRhs))`,
-    // hostap's `vhdr` in `while (left >= sizeof(*vhdr))`, task 391).
+    // hostap's `vhdr` in `while (left >= sizeof(*vhdr))`).
     if let Some(parent) = node.parent() {
         if has_sizeof_or_alignof_ancestor(parent) {
             return;
@@ -1408,7 +1408,7 @@ fn check_subscript_read(
 /// descending from the tree root, so it costs O(depth) -- and walking from
 /// every identifier up to its function therefore cost O(depth^2) each,
 /// O(depth^3) over a file whose node count grows with its nesting depth. 800
-/// nested `if`s took this rule 12 s before the change (task 952, this repo).
+/// nested `if`s took this rule 12 s before the change (this repo).
 /// Nearly all C has no inline asm at all, so the usual result is an empty
 /// slice and no test at all.
 fn asm_call_ranges(body: &Node, source: &str) -> Vec<(usize, usize)> {
@@ -1456,7 +1456,7 @@ fn is_read_context(
     // in the surrounding function. aurora-lint has no preprocessor, so this
     // directive's tokens land as ordinary descendants of the function body
     // and fell through to the catch-all `_ => true` below, misflagging the
-    // `#define` line itself as a read of that variable (task 461 category
+    // `#define` line itself as a read of that variable (an earlier fix category
     // 5 -- real-world sqlite insert.c/delete.c/update.c: `#ifndef
     // SQLITE_OMIT_TRIGGER ... #else # define pTrigger 0 ... #endif`).
     // Function-like macros (`preproc_function_def`) and their parameter
@@ -1477,7 +1477,7 @@ fn is_read_context(
     // scalars (`int x;`); a pointer or array declarator wraps the identifier
     // one or more levels deeper (`pointer_declarator`/`array_declarator`),
     // which fell through to the catch-all `_ => true` and misflagged the
-    // declaration line itself as a read (task 391's "plain declaration
+    // declaration line itself as a read (an earlier fix's "plain declaration
     // statements misflagged as reads" category — real-world sqlite examples:
     // vdbe.c `VdbeOp *pCaller;` and `Mem *pMem = p->pResultRow;`).
     if is_declarator_name_of_declaration(node) {
@@ -1547,7 +1547,7 @@ fn is_read_context(
         // standard "suppress unused-variable warning" convention, which
         // GCC/Clang special-case to never actually load the operand's
         // value when it's a plain identifier -- so this is not a real
-        // content read regardless of what follows (task 461 category 10;
+        // content read regardless of what follows (an earlier fix category 10;
         // curl's ldap.c/mbedtls.c `(void)ldap_option;` / `(void)ldap_ca;`
         // on an `#else` branch that never assigned them, immediately
         // before an error-return path).
@@ -1693,8 +1693,7 @@ fn is_read_in_pointer_expression(parent: &Node, source: &str) -> bool {
 /// One function because the answer must not depend on the lvalue's shape.
 /// `&var` and `&arr[i]` each carried their own copy of this and `&var.field`
 /// carried none, which is why `recvfrom(..., &from.ss, &fromlen)` reported
-/// `from` read-uninitialised at the very call that fills it (task 1028,
-/// aurora_lint).
+/// `from` read-uninitialised at the very call that fills it.
 fn is_address_of_read(pointer_expr: &Node, source: &str) -> bool {
     let Some(arg_list) = pointer_expr.parent() else {
         return false;
@@ -1785,7 +1784,7 @@ fn outermost_lvalue<'a>(node: &Node<'a>) -> Node<'a> {
 /// only when the argument was a BARE identifier. With a `field_expression` in
 /// between, `memset`'s own destination read as a use of the object it clears
 /// (sqlite's `memset(uFts.tmpSpace, 0, sizeof(uFts.tmpSpace))`). Same principle
-/// as task 1028: the read predicate and the credit funnel have to agree about
+/// as an earlier fix: the read predicate and the credit funnel have to agree about
 /// argument shapes, so consult the outermost lvalue rather than the identifier.
 fn output_arg_read_verdict(
     node: &Node,

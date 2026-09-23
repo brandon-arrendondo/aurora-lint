@@ -63,7 +63,7 @@ impl CertRule for Int01C {
         // different function (e.g. `func_b`'s `int len`), which
         // `find_int_size_t_comparisons` then reads as "an int compared
         // with size_t" for an ordinary int-to-int comparison in `func_b`
-        // that never involves `func_a` at all (task 418; confirmed with a
+        // that never involves `func_a` at all (confirmed with a
         // minimal repro). Scope both maps and their two consuming checks
         // per `function_definition`, mirroring EXP39-C/STR32-C's
         // per-function reset pattern.

@@ -84,7 +84,7 @@ pub struct RangeAnalysisResult {
     /// Every statement's byte range across all blocks, sorted by start byte,
     /// for O(log n) "which block contains this offset" lookup in
     /// [`get_all_var_ranges_at`] (replacing a linear scan over every
-    /// statement in the function, also part of task 669's O(n) per query).
+    /// statement in the function, also part of an earlier fix's O(n) per query).
     statement_index: Vec<(usize, usize, BlockId)>,
 }
 
@@ -299,7 +299,7 @@ fn apply_range_transfer(
     // Resolve every statement in this block in one linear pass rather than
     // calling `find_node_at_range` (which re-descends from `body`'s root
     // every time) once per statement -- the same O(n^2)-per-block-visit
-    // pattern fixed for the query path in task 669 (task 672 follow-up).
+    // pattern fixed for the query path elsewhere (this is the follow-up).
     for stmt_node in resolve_block_statement_nodes(body, block)
         .into_iter()
         .flatten()
@@ -1839,7 +1839,7 @@ fn build_block_checkpoints(
 /// [`find_node_at_range`] once per statement (which re-descends from `body`'s
 /// root every time -- O(1)+O(2)+...+O(n) to resolve n siblings, quadratic in
 /// statements-per-block on its own regardless of the query-side fix above;
-/// task 669).
+/// an earlier fix).
 ///
 /// A basic block's statements are, by construction, a straight-line run with
 /// no branches between them, so they are almost always literal siblings

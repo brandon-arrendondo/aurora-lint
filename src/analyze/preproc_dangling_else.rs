@@ -26,7 +26,7 @@
 //!     { ... }
 //! ```
 //!
-//! A third shape (task 670; real example: hostap's `tlsv1_server_read.c`,
+//! A third shape (real example: hostap's `tlsv1_server_read.c`,
 //! `tls_process_certificate_verify`/`tls_process_client_finished`, and
 //! several sibling TLS files -- 8 instances confirmed across the codebase):
 //! an `if (cond) { ... } else {` whose `else`-clause's OPENING brace is the
@@ -53,7 +53,7 @@
 //! both get blanked by the same local, per-block test as the other two
 //! shapes: no cross-block pairing or guard-name matching is needed.
 //!
-//! A fourth shape (task 1193; real example: curl's `lib/vtls/openssl.c`,
+//! A fourth shape (real example: curl's `lib/vtls/openssl.c`,
 //! `ossl_connect_step2`): the guarded block's content is a *complete*,
 //! self-contained fragment -- a whole `if (...) { ... }` with nothing
 //! dangling -- but the very next real line after `#endif` is a bare
@@ -184,7 +184,7 @@ fn starts_with_bare_else(line: &str) -> bool {
 /// else once the guarded arm is braced (mbedtls's `psa_key_derivation_abort`
 /// and `mbedtls_pk_write_pubkey`: `if (...) { ... } else` as the last line
 /// before `#endif`, with the next arm or the final `{ ... }` on the far side;
-/// task 1387).
+/// an earlier fix).
 pub(crate) fn is_bare_else_line(line: &str) -> bool {
     strip_trailing_line_comment(line.trim()) == "else"
 }
@@ -193,7 +193,7 @@ pub(crate) fn is_bare_else_line(line: &str) -> bool {
 /// `} else` -- the trailing dangling else of a BRACED guarded arm (mbedtls's
 /// `psa_key_derivation_abort`: `if (...) { ... } else` as the last line
 /// before `#endif`, with the next arm or the final `{ ... }` on the far side;
-/// task 1387).
+/// an earlier fix).
 fn is_brace_else_line(line: &str) -> bool {
     strip_trailing_line_comment(line.trim())
         .strip_suffix("else")
@@ -363,7 +363,7 @@ fn after_endif_comment(lines: &[&str], endif: usize) -> usize {
     k
 }
 
-/// The `} else` chain shape (task 1387; mbedtls's `psa_key_derivation_abort`,
+/// The `} else` chain shape (mbedtls's `psa_key_derivation_abort`,
 /// `mbedtls_pk_write_pubkey`): a run of guarded blocks each holding one
 /// braced arm that ends in `} else`, closed by an unconditional line (the
 /// final `{ ... }` or a plain statement):
@@ -496,7 +496,7 @@ pub fn blank_dangling_else_preproc(source: &str) -> String {
             let trailing_dangling_open_brace =
                 last_content.is_some_and(|k| ends_with_dangling_else_open_brace(lines[k]));
             let lone_closing_brace = block_is_lone_closing_brace(&lines, i + 1, end_idx);
-            // Fourth shape (task 1193; curl's lib/vtls/openssl.c
+            // Fourth shape (curl's lib/vtls/openssl.c
             // SSL_ERROR_WANT_ASYNC/SSL_ERROR_WANT_RETRY_VERIFY guards): the
             // block's own content is a complete, self-contained fragment --
             // no dangling else inside it at all -- but the very next
@@ -595,7 +595,7 @@ int f(int fmt) {
 
     #[test]
     fn fixes_trailing_brace_else_before_endif() {
-        // task 1387: the guarded arm is braced, so the line before `#endif`
+        // an earlier fix: the guarded arm is braced, so the line before `#endif`
         // is `} else`, not a lone `else`; the chain's tail is on the far side.
         let src = "\
 int f(int alg) {
@@ -803,7 +803,7 @@ int f(int x) {
 
     #[test]
     fn fixes_brace_else_open_brace_split_across_two_guards() {
-        // Real hostap shape (task 670; tlsv1_server_read.c's
+        // Real hostap shape (tlsv1_server_read.c's
         // tls_process_certificate_verify): an if/else whose else-clause
         // opening brace is the last token before #endif, matched by a later,
         // separate guard whose entire content is the closing brace.
@@ -890,7 +890,7 @@ int f(void) {
 
     #[test]
     fn fixes_leading_else_hidden_behind_a_comment() {
-        // Real curl shape (task 1193/1151; lib/vtls/openssl.c's
+        // Real curl shape (lib/vtls/openssl.c's
         // ossl_connect_step2, guarded by
         // SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED): a comment explaining the
         // guard sits between `#ifdef` and the real `else if`, which used to
@@ -920,7 +920,7 @@ int f(int lib, int reason) {
 
     #[test]
     fn fixes_trailing_else_after_complete_guarded_if() {
-        // Real curl shape (task 1193; lib/vtls/openssl.c's
+        // Real curl shape (lib/vtls/openssl.c's
         // ossl_connect_step2, SSL_ERROR_WANT_ASYNC/SSL_ERROR_WANT_RETRY_VERIFY):
         // the guarded block's own content is a *complete* `if (...) { ... }`
         // with nothing dangling inside it -- so neither leading_else nor

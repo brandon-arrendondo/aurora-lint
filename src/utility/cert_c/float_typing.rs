@@ -279,7 +279,7 @@ fn extract_type_and_name(node: &Node, source: &str, type_map: &mut HashMap<Strin
 /// when there's an initializer (e.g. `float *p = get_ptr();`), not a bare
 /// `pointer_declarator` -- a case this function's direct-kind-check
 /// predecessor missed, silently recording such a variable as non-pointer
-/// (the same bug task 490 fixed in INT32-C's equivalent helper).
+/// (the same bug an earlier fix fixed in INT32-C's equivalent helper).
 fn is_pointer_declarator_field(node: &Node) -> bool {
     if node.kind() == "pointer_declarator" {
         return true;
@@ -346,7 +346,7 @@ mod tests {
     fn collect_variable_types_records_multi_token_and_extended_float_types() {
         // tree-sitter-c emits `long double` as ONE sized_type_specifier node,
         // so extract_type_and_name's overwrite-per-specifier loop does not
-        // truncate it to "long" -- the concern raised by task 502 when
+        // truncate it to "long" -- the concern raised by an earlier fix when
         // comparing against FLP38-C's token-concatenating declared_type_text.
         // The extended types parse as type_identifier and survive too.
         let src = "void f(void) { long double a; _Float32 b; _Decimal64 c; }";
@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn collect_variable_types_marks_init_declarator_pointer() {
-        // Regression test for the same init_declarator-unwrap bug task 490
+        // Regression test for the same init_declarator-unwrap bug an earlier fix
         // fixed in overflow_helpers.rs: a single declarator with an
         // initializer (`declarator` field IS the init_declarator itself)
         // must still be recorded as a pointer type.

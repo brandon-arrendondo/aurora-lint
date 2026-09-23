@@ -22,7 +22,7 @@
 //! `fclose()` on an error/cleanup path can still fail (EOF, errno set) and the
 //! compliant way to discard that is an explicit `(void)fclose(fp)`. An earlier
 //! "cleanup context" heuristic suppressed exactly that shape and hid real
-//! findings (aurora_lint task 727: 13 hand-verified sites in one file).
+//! findings (13 hand-verified sites in one file).
 //!
 //! The rule uses forward-looking AST analysis to find error checking patterns in subsequent
 //! statements after assignment, with sophisticated context detection to minimize false positives.
@@ -564,9 +564,9 @@ impl Err33C {
 
             // Math functions covered by FLP32-C — removed to avoid double-flagging.
             // Recorded in this rule's TOML as `[references] related = [...,
-            // "FLP32-C"]` (task 626, cross-rule overlap policy:
+            // "FLP32-C"]` (cross-rule overlap policy:
             // docs/design/cross-rule-overlap.md). This is a `related` tag,
-            // not a validated `defers_to` exception -- task 625 found zero
+            // not a validated `defers_to` exception -- an earlier fix found zero
             // ground-truth-labeled co-located data for this pair. If math
             // functions are ever added back to this list, it is a
             // detection-behavior change and needs delta-adjudication before

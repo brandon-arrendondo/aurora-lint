@@ -923,7 +923,7 @@ impl Int30C {
     /// its own left operand alone, so once INT32-C learned to decline an
     /// unsigned right operand these three labeled true positives
     /// would have been reported by neither rule. Same exhaustive-dispatch
-    /// requirement as task 1288, one level down in the expression.
+    /// requirement as an earlier fix, one level down in the expression.
     ///
     /// Not applied to `<<=`: a shift's result type is its promoted LEFT
     /// operand's type, and the right operand takes no part in the usual
@@ -1456,7 +1456,7 @@ impl Int30C {
 
     /// A call typed by its declared return: a standard function whose
     /// prototype returns `size_t` (`strlen`, `fread`), or a function this
-    /// file defines or declares (task 1288, mirroring INT32-C's method of
+    /// file defines or declares (mirroring INT32-C's method of
     /// the same name). `None` for anything else, so it stays untyped.
     fn infer_type_from_call_return(&self, node: &Node, source: &str) -> Option<String> {
         let func = node.child_by_field_name("function")?;
@@ -1531,7 +1531,7 @@ impl Int30C {
 
     /// The `count > SIZE_MAX / sizeof(T)` idiom around an allocation: a
     /// dominating limit guard (spacing- and order-insensitive, also seen as
-    /// an `&&` conjunct or an earlier exiting `if`; task 916), or the same
+    /// an `&&` conjunct or an earlier exiting `if`), or the same
     /// function-context text reading the calloc check beside this one uses
     /// -- which is what recognises the wiki's own compliant example, whose
     /// guard body only comments "Handle error" and so dominates nothing.
@@ -1586,7 +1586,7 @@ impl Int30C {
     ///   same test `check_allocation_size_wrap` applies to an explicit
     ///   `data * sizeof(T)`, so `calloc(4, sizeof(int))` is clean and
     ///   `calloc(1073741825, sizeof(int))` still wraps a 32-bit `size_t`
-    ///   (the ILP32 stance both share until task 1298 gives it a setting).
+    ///   (the ILP32 stance both share until an earlier fix gives it a setting).
     ///   The ranges come from VRA first and the syntactic constant
     ///   propagation second, in that order, for the reason
     ///   `expression_fits_in_unsigned_vra` gives: VRA's loop widening can
@@ -2290,7 +2290,7 @@ impl Int30C {
     }
 
     /// `arith_width_bits`, or `None` when an operand's declared type resolves
-    /// to a spelling this rule cannot place (task 1358, ADR-0006).
+    /// to a spelling this rule cannot place (ADR-0006).
     ///
     /// sqlite's `(u64)1486995408 * (u64)100000` (date.c) was reported as a
     /// definite wrap: the width fell to the 32-bit floor because `u64`
@@ -2397,7 +2397,7 @@ impl Int30C {
     }
 
     /// The width a declared type spelling gives an operation, resolved
-    /// through the project's typedef chain first (task 1358, ADR-0006):
+    /// through the project's typedef chain first (ADR-0006):
     /// hostap's `u64` is `uint64_t` and was judged 32-bit by name.
     ///
     /// `Some(64)` for the unsigned types that are 64-bit under *both* LP64

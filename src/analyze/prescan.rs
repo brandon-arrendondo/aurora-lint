@@ -338,7 +338,7 @@ pub fn prescan_directories(
 ///
 /// Used by the generated rule fixture tests so that a green test means the
 /// shipped analysis is clean on that input, rather than a test-only
-/// reimplementation of it being clean (task 951, this repo).
+/// reimplementation of it being clean (this repo).
 #[cfg(test)]
 pub fn prescan_single_file(path: &Path, needs_vra: bool) -> Result<ProjectContext> {
     prescan_files(vec![path.to_path_buf()], None, needs_vra)
@@ -536,7 +536,7 @@ fn prescan_file_list(
         // static one is folded into it, which also stops
         // `has_internal_linkage` being claimed for a name whose real
         // definition is external -- a claim `collect_proven_nonnull_params`
-        // reads as "every call site is in the scanned set" (task 1385,
+        // reads as "every call site is in the scanned set" (
         // aurora_lint; raylib's SaveFileText, `static` in raudio.c and
         // external in rcore.c, is the labeled TP this lost).
         //
@@ -713,12 +713,12 @@ fn prescan_file_list(
     // are two unrelated functions, not the same node. Unioning their callee
     // sets under one bare-name key (the loop above) fabricates cross-file
     // call edges that don't exist -- e.g. curl's docs/examples/ each define
-    // their own `static void timer_cb(...)` (task 299, surfaced by task
-    // 297's call-graph migration finding more of these collisions than the
+    // their own `static void timer_cb(...)` (surfaced when a call-graph
+    // migration found more of these collisions than the
     // old hand-rolled walk did). Mark any name defined `static` in more
     // than one file ambiguous, so consumers (MSC04-C's cycle DFS,
     // concurrency reachability) stop trusting edges *into* it -- the same
-    // treatment task 562 already gives callback/field-dispatch ambiguity.
+    // treatment an earlier fix already gives callback/field-dispatch ambiguity.
     //
     // Marking is the whole fix; the merged entry itself stays. Deleting it
     // (`call_graph.remove(name)`) also erased the colliding name's outgoing
@@ -884,7 +884,7 @@ fn prescan_file_list(
         }
     }
 
-    // A function registered in a dispatch-table initializer (task 594's
+    // A function registered in a dispatch-table initializer (an earlier fix's
     // pattern: `{ ..., pw_mysql_check, ... }` / `.check = pw_mysql_check`)
     // is treated as reachable only through that indirect call when it is
     // never also invoked by a direct `identifier(...)` call anywhere in the
@@ -977,7 +977,7 @@ fn invert_call_graph(
 /// `ambiguous_call_targets` stripped first: a callee resolved only by
 /// coincidental name-matching through a struct field or a
 /// parameter-shadowed identifier must not be chased (same reasoning as
-/// task 562's MSC04-C fix, applied here to a reachability walk instead of a
+/// an earlier fix's MSC04-C fix, applied here to a reachability walk instead of a
 /// cycle-detection DFS). Includes the roots themselves. Empty when no root
 /// is found anywhere in the scanned project (e.g. a single-threaded
 /// codebase with no `pthread_create`/ISR/`signal()` anywhere) — see
@@ -1088,7 +1088,7 @@ type FileScope<'a> = Option<(&'a str, &'a HashSet<String>)>;
 /// otherwise. This is the whole of the (file, name) key -- every stage of the
 /// prescan that resolves a callee or an enclosing function by name has to go
 /// through it, or it silently re-pools the definitions the fold separated
-/// (task 1385: the propagation passes re-parse every file and re-derive call
+/// (an earlier fix: the propagation passes re-parse every file and re-derive call
 /// sites, which is how a half-threaded key loses a caller and callee that sit
 /// in the same file).
 fn scoped_name(scope: FileScope<'_>, name: &str) -> String {
@@ -1290,7 +1290,7 @@ fn unwrap_to_identifier(node: Node<'_>) -> Option<Node<'_>> {
 /// `{ "mysql", pw_mysql_parse, pw_mysql_check, pw_mysql_exit }`, a
 /// designated `.check = pw_mysql_check`, or the same shape through a
 /// function-pointer cast (`(WPADBusMethodHandler)
-/// wpas_dbus_handler_create_interface`, task 628). A function's address
+/// wpas_dbus_handler_create_interface`). A function's address
 /// decays implicitly from its bare name, so no `&` is needed for this to be
 /// a function-pointer registration.
 ///
@@ -1565,7 +1565,7 @@ fn collect_call_graph(
 }
 
 /// Collect callee names that a name-matching call graph must never resolve
-/// to a specific same-named function definition — see task 562 (MSC04-C
+/// to a specific same-named function definition — see an earlier fix (MSC04-C
 /// fabricating spurious recursion cycles through function-pointer/callback
 /// dispatch).
 ///
@@ -1763,8 +1763,8 @@ fn aggregate_callsite_null_states(
     // `Unknown` callers still abstain -- they are unanswered questions, not
     // evidence either way. This does not by itself make an exported
     // function's caller set complete; see `has_internal_linkage` and the
-    // header-declared implicit-Unknown entry below, held per bmdb/aurora_lint
-    // 1335 and not relitigated here.
+    // header-declared implicit-Unknown entry below, a settled decision not
+    // relitigated here.
     for (callee_name, arg_vectors) in &callsite_args {
         if let Some(summary) = summaries.get_mut(callee_name) {
             // Read before the mutable borrow below, and only the PROOF reads
@@ -2878,7 +2878,7 @@ fn propagate_param_buffer_sizes(
     // (new bounds arise only from such edges), so skip the (per-pass, all-files)
     // re-parse entirely. Gating on bare param-forwarding was too broad — most
     // CWE dirs forward *some* parameter, so non-buffer CWEs paid the re-parse
-    // for nothing (observed via the task-202 timing metric: non-buffer CWE-78
+    // for nothing (observed via a timing metric: non-buffer CWE-78
     // +163s / CWE-190 +54s with zero FP change).
     let has_forwardable_buffer = summaries.values().any(|s| {
         s.callsite_param_buffer_size
@@ -2895,7 +2895,7 @@ fn propagate_param_buffer_sizes(
     // otherwise re-parsing it re-derives the same result already cached. The
     // full `fresh` map merges every file's cached result each pass, not just
     // the ones re-parsed this pass -- re-parsing only a subset must never
-    // drop a still-valid contribution from an untouched file (task 204 did,
+    // drop a still-valid contribution from an untouched file (an earlier fix did,
     // regressing STR31-C: functions bound only via a direct-buffer call in a
     // non-forwarder file lost that bound the first time their file wasn't
     // reprocessed).
@@ -3194,7 +3194,7 @@ fn collect_buf_sizes_from_declaration(
 /// under the dotted key "myStruct.field" (reuses the null-state dotted-key
 /// convention, see `assign_field_state`) so a later call passing `myStruct`
 /// by value can recover the field's buffer size even though the sink
-/// function's own body never sees this assignment (task 304, Juliet flow
+/// function's own body never sees this assignment (Juliet flow
 /// variant 67: struct passed across files).
 fn collect_buf_sizes_from_assignment(
     node: &Node,
@@ -3531,7 +3531,7 @@ fn collect_buf_calls_in_node_with_bindings(
 /// The propagation is monotone today and was measured to be, not assumed:
 /// instrumented over all twelve corpora, no pass ever retracted a parameter
 /// state (`PossiblyNull` -> `NotNull`/absent), and every corpus converged well
-/// inside the bound. That is what distinguishes this from aurora_lint 1439,
+/// inside the bound. That is what distinguishes this from an earlier fix,
 /// where VRA's loop genuinely could not converge and burning its (generous)
 /// cap was the symptom rather than the cause.
 const MAX_PROPAGATION_PASSES: usize = 64;
@@ -5507,12 +5507,12 @@ fn collect_from_struct_tag_typedef(
 /// same top-level declaration set. Struct/union/enum-bodied typedefs are
 /// deliberately excluded here (`collect_struct_definitions`/
 /// `collect_from_typedef` already handle those); this only feeds the scalar
-/// signedness chain a name like `word_t` or `paddr_t` actually walks (task
-/// 657 -- see `ProjectContext::typedef_types` and
+/// signedness chain a name like `word_t` or `paddr_t` actually walks
+/// (see `ProjectContext::typedef_types` and
 /// `overflow_helpers::typedef_chain_is_unsigned`).
 ///
 /// A typedef inside a branch the assumed platform never compiles is skipped
-/// (`dead_regions`, task 1142): hostap redefines `u8`..`u64` under
+/// (`dead_regions`): hostap redefines `u8`..`u64` under
 /// `_MSC_VER` and `__vxworks` before the real `#ifndef WPA_TYPES_DEFINED`
 /// arm, and first-wins used to keep the Windows spelling.
 pub(crate) fn collect_typedef_aliases(
@@ -5683,7 +5683,7 @@ fn collect_from_simple_typedef(
 
 /// Walk `node` recording every struct (and typedef alias) definition's
 /// packed-attribute signal — mirrors `collect_struct_definitions`'
-/// traversal shape but only cares about packed-ness (task 395: EXP36-C
+/// traversal shape but only cares about packed-ness (an earlier fix: EXP36-C
 /// needs this cross-file since the struct definition is usually in a
 /// header, not the file containing the cast).
 ///
@@ -6123,7 +6123,7 @@ pub fn resolve_includes(
     // A pointer-returning wrapper's allocating callee may only resolve once a
     // header defines that callee's own constructor (e.g. a static inline
     // constructor in a header), so this closure needs the same rerun as its
-    // siblings above (task 1343; propagate_returns_allocation is otherwise
+    // siblings above (propagate_returns_allocation is otherwise
     // dark for header-defined constructors here).
     function_summary::propagate_returns_allocation(Arc::make_mut(&mut context.function_summaries));
     function_summary::propagate_returned_value_escapes(
@@ -6378,7 +6378,7 @@ mod tests {
         // the merge, whichever file the prescan processes first wins --
         // when the &-variant wins first, callers of the real nullable
         // variant dereference its return without a null check (hostap
-        // eap_teap.c:1387 recall regression, task 1065 #2).
+        // eap_teap.c:1387 recall regression, an earlier fix #2).
         let dir = std::env::temp_dir().join("aurora-lint-prescan-variants-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -6415,7 +6415,7 @@ mod tests {
     #[test]
     fn function_summaries_merge_output_param_sets_across_variants() {
         // Two definitions of one name, each unconditional about the parameter
-        // the other is conditional about. Before task 1079 none of these sets
+        // the other is conditional about. Before an earlier fix none of these sets
         // was merged: whichever file the parallel walk reached first was
         // inserted whole and the other was dropped.
         //
@@ -6494,7 +6494,7 @@ mod tests {
     fn test_collect_buf_args_resolves_struct_field_size() {
         // `myStruct.structFirst = data;` where `data` aliases a 100-element
         // buffer -- the call to `sink` should record that field's size at
-        // param 0 (task 304, Juliet flow variant 67).
+        // param 0 (Juliet flow variant 67).
         let code = r#"
             void caller(void) {
                 twoIntsStruct * data;
@@ -7735,7 +7735,7 @@ void caller(void) {
 
     #[test]
     fn test_early_return_arg_itself_does_not_vote_not_null() {
-        // aurora_lint 1426: `if (!data) return sink(data);` -- the risky call
+        // an earlier fix: `if (!data) return sink(data);` -- the risky call
         // is the RETURN STATEMENT'S OWN ARGUMENT, evaluated inside the branch
         // where data is still null, not after the guard.
         // has_early_return_consequence sees a return anywhere in the
@@ -7781,8 +7781,8 @@ void caller(char *other) {
 
     #[test]
     fn test_prescan_directories_marks_colliding_static_ambiguous() {
-        // Two files each define their own unrelated `static timer_cb` (task
-        // 299's curl docs/examples pattern) -- a `static` function has
+        // Two files each define their own unrelated `static timer_cb` (a shape
+        // from curl's docs/examples) -- a `static` function has
         // internal linkage, so these are two functions, not one node.
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(
@@ -7907,7 +7907,7 @@ void caller(char *other) {
 
     #[test]
     fn a_system_search_root_cannot_make_an_include_a_missing_project_header() {
-        // Task 690. The real failure: once /usr/include is a search root,
+        // An earlier fix. The real failure: once /usr/include is a search root,
         // `sys/` exists as a parent directory, so <sys/_types.h> -- absent on
         // Debian but referenced conditionally in the glibc graph reachable
         // from <stdio.h> -- was classified as a missing PROJECT header. That
@@ -8026,7 +8026,7 @@ void caller(char *other) {
 
     /// Two external definitions -- the build configuration picks one, and
     /// nothing in the source says which. The pick stays first-wins (sorted,
-    /// so at least deterministic); task 1385 does not claim to settle it.
+    /// so at least deterministic); an earlier fix does not claim to settle it.
     #[test]
     fn two_external_definitions_keep_the_deterministic_first_wins_pick() {
         let dir = std::env::temp_dir().join("aurora-lint-prescan-two-external-test");
@@ -8293,7 +8293,7 @@ void caller(char *other) {
     /// re-parses every file and re-derives call sites by name -- so a key
     /// scoped only in the fold loses it, and the callee's parameter goes from
     /// PossiblyNull to no state at all even though caller and callee sit in
-    /// the same file (task 1385, stage 3).
+    /// the same file (stage 3).
     #[test]
     fn propagation_reaches_a_file_scoped_static_from_its_own_file() {
         let dir = std::env::temp_dir().join("aurora-lint-prescan-scoped-propagation-test");

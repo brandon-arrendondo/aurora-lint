@@ -191,7 +191,7 @@ impl Api05C {
     /// `(T* buf, size_t, size_t, void* userdata)`, return the buffer
     /// parameter's name. `T` is restricted to `char` (allowing `signed`/
     /// `unsigned` qualifiers) -- the shape observed in the wild for
-    /// fread/fwrite and libcurl read/write/header callbacks (task 1007,
+    /// fread/fwrite and libcurl read/write/header callbacks (
     /// aurora_lint; curl's mime_file_read, tool_header_cb, tool_write_cb,
     /// tool_mime_stdin_read).
     fn stdio_callback_buffer_name(params_node: &Node, source: &str) -> Option<String> {

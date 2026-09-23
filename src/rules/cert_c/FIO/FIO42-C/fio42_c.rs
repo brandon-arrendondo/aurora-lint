@@ -168,7 +168,7 @@ impl FileResourceTracker {
             // transitively through a chain of forwarding helpers) is closed
             // as far as this function's scope is concerned, even though the
             // `fclose`/`close`/`CloseHandle` call itself lives in the
-            // callee's body (task 146; e.g. Juliet CWE-773 variants 21/22/
+            // callee's body (e.g. Juliet CWE-773 variants 21/22/
             // 41/42/45/51-54/63-66, where a goodB2GSink helper closes the
             // FILE* it's handed).
             self.collect_passthrough_closes(&body, source, summaries);
@@ -280,7 +280,7 @@ impl FileResourceTracker {
         ) {
             // Classify by the called function, not by substring, so an `fopen`
             // RHS is tracked only as a FILE pointer and not also as a POSIX file
-            // descriptor (`fopen(` contains `open(`) — see task 223.
+            // descriptor (`fopen(` contains `open(`) — see an earlier fix.
             if let Some(rtype) = Self::callee_name(&right, source)
                 .as_deref()
                 .and_then(Self::classify_callee)

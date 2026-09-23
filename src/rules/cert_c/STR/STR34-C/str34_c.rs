@@ -607,7 +607,7 @@ impl Str34C {
     ///
     /// Walks ancestors via the per-file parent map (O(1) per step) instead of
     /// `Node::parent()` (O(depth)), which turned this predicate cubic on
-    /// deep-nested fixtures -- see task 984.
+    /// deep-nested fixtures -- see an earlier fix.
     fn has_unsigned_char_cast<'a>(
         &self,
         node: &Node<'a>,

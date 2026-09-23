@@ -862,7 +862,7 @@ mod tests {
 
     #[test]
     fn a_branch_the_file_proves_dead_is_not_attributed_to_the_profile() {
-        // hostap src/crypto/aes_i.h's shape, the case task 1429 was filed for:
+        // hostap src/crypto/aes_i.h's shape, the case an earlier fix was filed for:
         // an unconditional #define above the #ifndef test, so the arm is dead
         // on the file's own evidence with no platform assumption involved.
         // Reported as platform-dead, this row claimed the POSIX profile had

@@ -151,7 +151,7 @@ impl Int14C {
             // variable holding a value -- collecting it here misattributed a
             // "mixed bitwise and arithmetic" finding to the macro/function
             // name instead of the actual variable receiving the result
-            // (task 462, hostap wmm.c:251: `duration = (le_to_host16(...) &
+            // (hostap wmm.c:251: `duration = (le_to_host16(...) &
             // 0x7fff) * 8 / ...`).
             if let Some(parent) = n.parent() {
                 if parent.kind() == "call_expression"

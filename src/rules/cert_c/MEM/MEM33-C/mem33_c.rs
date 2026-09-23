@@ -931,7 +931,7 @@ impl FlexibleArrayAnalyzer {
     /// subscript base) declared with a type this file has recorded as a
     /// genuine flexible-array-member struct? Resolves the identifier's
     /// actual declared type via `identifier_declared_type_name` instead of
-    /// guessing from its spelling (task 521 -- the previous
+    /// guessing from its spelling (an earlier fix -- the previous
     /// `is_likely_flexible_struct_pointer`/`_variable` string heuristics
     /// matched unrelated identifiers like `reflex_timer`, `global_config`,
     /// `thread_id` via unbounded substring checks on "flex"/"shared"/
@@ -973,7 +973,7 @@ impl FlexibleArrayAnalyzer {
     /// Does `call_node` invoke a function defined in this file whose return
     /// type is a known flexible-array struct returned *by value* (not via a
     /// pointer)? Resolves the callee's actual definition and declarator
-    /// instead of guessing from the call's spelling (task 522 -- the
+    /// instead of guessing from the call's spelling (an earlier fix -- the
     /// previous heuristic flagged any call whose name contained "create",
     /// "get", "flex", or "struct", matching nearly any real-world
     /// getter/factory such as `get_config()` or `create_thread()`).
@@ -1429,14 +1429,14 @@ impl FlexibleArrayAnalyzer {
     /// `array_declarator(identifier)` vs one wrapping a `pointer_declarator`)
     /// -- so it is authoritative here. Two removed heuristic fallbacks
     /// (`is_explicitly_declared_array`/`is_clearly_struct_array_pattern` +
-    /// `array_contains_flexible_structs`, task 529) matched purely on the
+    /// `array_contains_flexible_structs`) matched purely on the
     /// array *variable's name* ending in `_array` and containing "flex" --
     /// which cannot tell `struct flex_array_struct flex_array[3]` (an actual
     /// violation) apart from `struct flex_array_struct *flex_array[3]` (an
     /// array of pointers, fully compliant): both share the same name. That
     /// false-positive was latent but masked by a separate, since-fixed bug
-    /// in `is_compliant_pointer_access`'s allocation-context scan (task
-    /// 525) that happened to short-circuit the pointer-array case for
+    /// in `is_compliant_pointer_access`'s allocation-context scan that
+    /// happened to short-circuit the pointer-array case for
     /// unrelated reasons; fixing 525 alone would have unmasked it here.
     fn is_flexible_array_struct_array(&self, array_node: &Node, source: &str) -> bool {
         let array_text = source[array_node.start_byte()..array_node.end_byte()].to_string();
@@ -1499,7 +1499,7 @@ impl FlexibleArrayAnalyzer {
         //
         // The subscript's `argument` is the expression being indexed; if that's a
         // field_expression whose field name matches a known flexible-array-member
-        // naming convention (task 527: not just "data"), this subscript indexes the
+        // naming convention (an earlier fix: not just "data"), this subscript indexes the
         // flexible array member itself rather than an array of structures.
         let Some(argument) = subscript_node.child_by_field_name("argument") else {
             return false;
@@ -1579,7 +1579,7 @@ impl FlexibleArrayAnalyzer {
     /// Look for a `malloc`/`calloc` allocation of `variable_name`, scoped to
     /// `scope_node`'s enclosing function (falling back to the whole file
     /// only when there is no enclosing function, e.g. file-scope arrays) --
-    /// task 525 -- an unscoped whole-file text scan let an allocation of a
+    /// an earlier fix -- an unscoped whole-file text scan let an allocation of a
     /// same-named variable/parameter (e.g. a common name like `buf`/`len`)
     /// in a completely unrelated function suppress a real violation here.
     fn find_allocation_context(
@@ -2799,7 +2799,7 @@ impl FlexibleArrayAnalyzer {
     /// Is `target_node` a flexible-array-struct pointer/value? Resolves the
     /// underlying identifier's *declared type* against the AST-derived
     /// `flexible_structs` map instead of guessing from the target's spelling
-    /// (task 519 -- the previous name-substring/short-identifier heuristic
+    /// (an earlier fix -- the previous name-substring/short-identifier heuristic
     /// flagged nearly any `memset` target, e.g. `memset(buf, 0, sizeof(hdr))`
     /// where `hdr` is an unrelated small struct).
     fn is_flexible_array_struct_target(&self, target_node: &Node, source: &str) -> bool {
@@ -3420,7 +3420,7 @@ impl FlexibleArrayAnalyzer {
     /// declared type is resolvable and disagrees with `target_struct_name`.
     /// Resolves the referenced variable's declared type via
     /// `identifier_declared_type_name` instead of guessing from its name
-    /// (task 523 -- the previous heuristic was inverted: it flagged the cast
+    /// (an earlier fix -- the previous heuristic was inverted: it flagged the cast
     /// as invalid unless the variable's *name* happened to contain "flex" or
     /// the struct name literally, so a correctly cast variable with an
     /// unrelated name, e.g. `&packet`, was flagged, while an actually wrong
@@ -3471,7 +3471,7 @@ impl FlexibleArrayAnalyzer {
     /// Look for `(struct target *)&var` where `var` is actually declared
     /// `const`. Resolves the referenced variable's declaration via
     /// `is_identifier_const_qualified` instead of guessing from its name
-    /// (task 524 -- the previous heuristic decided this purely from whether
+    /// (an earlier fix -- the previous heuristic decided this purely from whether
     /// the variable's name contained the substring "const", so a variable
     /// literally named `const_thing` that wasn't const-qualified triggered a
     /// bogus violation, while a genuinely const-qualified variable named

@@ -81,7 +81,7 @@ fn is_ident_char(c: char) -> bool {
 /// fills names the AST missed (`or_insert`), so clean files are unaffected.
 ///
 /// Both passes skip a definition inside a branch the assumed platform never
-/// compiles ([`DeadRegions`], task 1142), so first-wins arbitrates only among
+/// compiles ([`DeadRegions`]), so first-wins arbitrates only among
 /// the definitions that could actually be live: hostap's `os.h` defines
 /// `os_strdup(s)` as `_strdup(s)` under `_MSC_VER` and as `strdup(s)` in the
 /// `#else`, and the Windows body used to win.
@@ -1172,7 +1172,7 @@ pub fn macro_nulls_param_indices(table: &HashMap<String, FunctionMacro>, name: &
 /// [`macro_output_param_indices`]), a whole-object read-modify-write
 /// (`param += …`, `param ^= …`, `param++` — [`is_compound_assignment_target`];
 /// pure-ftpd's `CHACHA20_QUARTERROUND(A,B,C,D)` touches `A` and `C` only this
-/// way, task 1254), or a write through the pointer/array itself
+/// way), or a write through the pointer/array itself
 /// — `param->field = …`, `param[i] = …`, `*param = …`. The latter forms are
 /// deliberately *excluded* from `macro_output_param_indices` because they
 /// presuppose `param` already holds a valid address (relevant to EXP33-C's

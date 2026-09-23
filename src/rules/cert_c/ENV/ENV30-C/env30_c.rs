@@ -269,7 +269,7 @@ impl ENV30C {
     /// (`azDirs[0] = osGetenv(...)`, a pointer store into an array element)
     /// report as a modification of the returned string -- five findings in
     /// os_win.c, all of them naming a construct that is not there
-    /// (aurora_lint 1428, ADR-0005).
+    /// (ADR-0005).
     ///
     /// Matching a `call_expression` whose `function` is exactly one of the
     /// protected identifiers fixes both halves at once: a comment is not a

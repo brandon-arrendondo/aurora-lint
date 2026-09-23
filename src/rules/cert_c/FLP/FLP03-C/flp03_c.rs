@@ -398,8 +398,8 @@ impl Flp03C {
                     return;
                 }
 
-                // Opt-in provenance gate (task 517, mirroring INT30/32-C's
-                // task 140 redesign): flag only when the divisor is provably
+                // Opt-in provenance gate (mirroring INT30/32-C's
+                // an earlier fix redesign): flag only when the divisor is provably
                 // zero, or derives from untrusted/full-range input with no
                 // local guard. Real-world code almost never uses fenv.h, so
                 // gating solely on its absence flags nearly every float
@@ -838,7 +838,7 @@ impl Flp03C {
     /// mechanically flattened via a generic descendant query, and a long
     /// chain of feasible nested ifs/compounds would cost one native call
     /// frame per level (the same hostap-style risk class as the original
-    /// ARR00-C/MEM33-C bug, task 153). Each frame owns its scope's local
+    /// ARR00-C/MEM33-C bug). Each frame owns its scope's local
     /// `last_val` accumulator; when a frame's scan finishes, its `last_val`
     /// becomes the "return value" applied to the resuming parent frame --
     /// mirroring `if let Some(v) = recursive_call() { last_val = Some(v); }`

@@ -602,7 +602,7 @@ impl CfgBuilder {
         // -- mirrors evaluate_constant_condition's dead-branch pruning for
         // if/while/for. Without this, e.g. `switch(5) { case 6: ...; default:
         // data = 5; }` looks like `data` is only conditionally initialized,
-        // even though 5 can never hit the `case 6:` arm (task 320 follow-up).
+        // even though 5 can never hit the `case 6:` arm (an earlier fix follow-up).
         let reachable: Option<std::collections::HashSet<BlockId>> = switch_const.map(|sc| {
             let matched: Vec<BlockId> = case_blocks
                 .iter()
@@ -631,7 +631,7 @@ impl CfgBuilder {
         // skip straight to exit when one is present and the value isn't a
         // known-non-matching constant. Only add the "no case matches" edge
         // when there's no default, or the constant switch value is known and
-        // provably matches nothing (task 320 follow-up).
+        // provably matches nothing (an earlier fix follow-up).
         let skips_switch_entirely = match &reachable {
             Some(r) => r.is_empty(),
             None => !has_default,
@@ -791,7 +791,7 @@ impl CfgBuilder {
 
     /// Model a `#ifdef`/`#ifndef`/`#if`/`#elif` conditional block.
     ///
-    /// aurora-lint has no preprocessor (task 319 / macro-expansion-strategy): it cannot know
+    /// aurora-lint has no preprocessor (an earlier fix / macro-expansion-strategy): it cannot know
     /// which branch of a conditional-compilation directive would actually be
     /// compiled, so both the consequence and any `#else`/`#elif` alternative must be
     /// modeled as reachable, forking/joining CFG paths — exactly like an `if` with a
@@ -1217,7 +1217,7 @@ mod tests {
 
     #[test]
     fn test_preproc_ifdef_return_is_a_real_exit() {
-        // task 319: a `return;` nested inside a `#ifdef`-gated block must still
+        // an earlier fix: a `return;` nested inside a `#ifdef`-gated block must still
         // terminate the CFG path — it must not silently fall through into code
         // that follows the `#endif`.
         let code = r#"

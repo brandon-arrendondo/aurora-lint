@@ -268,7 +268,7 @@ struct MemoryLeakAnalyzer<'a> {
     loop_array_patterns: HashMap<String, (Option<String>, Option<String>)>,
     // Function summaries from prescan for inter-procedural analysis
     function_summaries: &'a HashMap<String, FunctionSummary>,
-    // Names of this function's own parameters (task 306: a struct reached
+    // Names of this function's own parameters (an earlier fix: a struct reached
     // through a bare parameter is caller-owned/borrowed — this function
     // populating one of its fields doesn't make this function responsible
     // for freeing it at return).
@@ -306,7 +306,7 @@ struct MemoryLeakAnalyzer<'a> {
     // .
     value_only_locals: HashSet<String>,
     // Project-wide value-only globals (`ProjectContext::value_only_globals`,
-    // task 652): the cross-file counterpart of `value_only_locals` for a
+    // an earlier fix): the cross-file counterpart of `value_only_locals` for a
     // name-heuristic allocation stored straight into a genuine global/extern
     // variable with no local declaration in this function at all (e.g.
     // seL4's `current_lookup_fault = lookup_fault_new(...)`, assigned from
@@ -328,7 +328,7 @@ struct MemoryLeakAnalyzer<'a> {
     // `src/fastpath/fastpath.c`.
     struct_field_types: &'a HashMap<String, HashMap<String, String>>,
     // `Alias -> Tag` for every `typedef struct Tag Alias;`
-    // (`ProjectContext::struct_typedef_aliases`, task 963). Required, not
+    // (`ProjectContext::struct_typedef_aliases`). Required, not
     // optional: seL4 spells all three of the structs this guard needs as a
     // BODYLESS typedef sitting apart from its body -- `struct cte { cap_t
     // cap; };` on one line and `typedef struct cte cte_t;` four lines later.
@@ -1151,7 +1151,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     }
 
     /// Like `track_allocation`, but checks `value_only_locals` (and its
-    /// project-wide counterpart `value_only_globals`, task 652) against
+    /// project-wide counterpart `value_only_globals`) against
     /// `guard_name` rather than the tracked `var_name` key itself. Needed
     /// for a struct-field/array-element target (`fc_ret.remainder = ...`),
     /// where the tracked key is the whole field expression's text but the
@@ -1590,7 +1590,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // name -- that order is the whole answer. Processing the
                 // assignment first let the rebind clear the freed mark and
                 // the call then re-applied it to the NEW block, so the next
-                // `free(buf)` read as a double free (task 1294; introduced by
+                // `free(buf)` read as a double free (introduced by
                 // 14f1d004 and caught by hostap's
                 // `extra_ies = p2p_pasn_service_hash(p2p, extra_ies)`).
                 if let Some(right) = n.child_by_field_name("right") {
@@ -2410,7 +2410,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // Both arms reach the code below, or neither does. When neither
             // does, nothing below is reachable and what continues only has
             // to keep the end-of-function sweep honest: restoring the
-            // pre-`if` freed set there -- what this did until task 1339 --
+            // pre-`if` freed set there -- what this did until an earlier fix --
             // reported `p = malloc(n); if (c) { free(p); return 1; } else {
             // free(p); return 0; }` as never freed, because the sweep saw
             // the allocation and neither arm's free. The union of the two
@@ -2453,7 +2453,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // shadows. This state is keyed by name with no scope attached, so
             // without the reset a sibling block's `char *zSql = ...` inherited
             // the previous block's freed mark and its `sqlite3_free(zSql)`
-            // read as a double free (sqlite mptest.c:1192, task 1440). Only
+            // read as a double free (sqlite mptest.c:1192). Only
             // the three shapes handled below used to clear anything, and only
             // by overwriting the allocation record, so an initializer that is
             // not a recognised allocator -- `sqlite3_mprintf` is not one --
@@ -2464,7 +2464,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // This state is keyed by name with no scope attached, so without
             // the reset a sibling block's `char *zSql = ...` inherited the
             // previous block's mark and its `sqlite3_free(zSql)` read as a
-            // double free (sqlite mptest.c:1192, task 1440). Only three
+            // double free (sqlite mptest.c:1192). Only three
             // initializer shapes were handled below, and only by overwriting
             // the allocation record, so an initializer that is not a
             // recognised allocator -- `sqlite3_mprintf` is not one -- left
@@ -2539,7 +2539,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         });
                     }
                 } else if value.kind() == "call_expression" || value.kind() == "field_expression" {
-                    // task 1200: `struct foo *dev = lookup(...);` in
+                    // an earlier fix: `struct foo *dev = lookup(...);` in
                     // combined declaration+initializer form -- same
                     // borrowed-handle reasoning as the plain-assignment
                     // catch-all in process_assignment, just not reachable
@@ -2701,8 +2701,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// `field_expression` -> `argument`, `subscript_expression` -> `argument`,
     /// `parenthesized_expression` unwrapping, and unary `*` dereference.
     /// Returns `(root_name, saw_deref)` where `saw_deref` is true if a `*`
-    /// dereference or `[]` subscript was crossed en route to the root (task
-    /// 306: distinguishes `cfg->field` — direct borrowed-struct-parameter
+    /// dereference or `[]` subscript was crossed en route to the root:
+    /// distinguishes `cfg->field` — direct borrowed-struct-parameter
     /// access — from `(*out)->field` — an out-parameter pattern that may
     /// point at a struct this function itself just allocated).
     fn root_identifier_of_lvalue(&self, node: &Node, source: &str) -> Option<(String, bool)> {
@@ -2751,8 +2751,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
     /// Is `left` (a struct-field/array-element lvalue) a leak candidate this
     /// function should be held responsible for, or does it reach into a
-    /// caller-owned/borrowed struct via a bare function parameter (task
-    /// 306), or a LOCAL that merely holds a reference to a longer-lived
+    /// caller-owned/borrowed struct via a bare function parameter, or a
+    /// LOCAL that merely holds a reference to a longer-lived
     /// object this function never allocated?
     ///
     /// A parameter's struct is only "owned" by this function if the
@@ -3036,7 +3036,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 self.freed_memory.remove(&var_name);
                 self.maybe_freed.remove(&var_name);
                 self.freed_by_guess.remove(&var_name);
-                // task 1200: this name now holds whatever the unreadable
+                // an earlier fix: this name now holds whatever the unreadable
                 // right-hand side handed back -- a lookup/registry accessor
                 // (`dev = p2p_create_device(...)`) or a field/subscript read
                 // (`writer = data->req.writer_stack`) reaches a longer-lived
@@ -3541,7 +3541,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// this parameter internally (e.g. `destroy_person(&p)` where
     /// `destroy_person` does `free((*p)->name); free(*p);`), credit those
     /// fields as freed here too — otherwise they read as leaks even though
-    /// ownership was transferred to the deallocator (task 2: MEM31-C
+    /// ownership was transferred to the deallocator (an earlier fix: MEM31-C
     /// ownership model). `field` may itself be an arrow-joined chain (e.g.
     /// "will->topic") for nested structs.
     fn credit_callee_freed_fields(
@@ -4219,7 +4219,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// A credit that rests on `sole_param_escapes_unnamed_call` is a guess too,
     /// and for the same reason: the name said a release happened and the
     /// body only declined to contradict it. That is enough to withhold a
-    /// leak report -- what task 1367 is about -- and not enough to accuse a
+    /// leak report -- what an earlier fix is about -- and not enough to accuse a
     /// later `free(p)` of being a double free, which is the polarity
     /// `guess_forbids_double_free` already enforces.
     fn free_is_name_guess(
@@ -4259,8 +4259,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // dropping it leaks nothing the container does not still
                 // hold, and a later release through the container is not a
                 // double free of a block the caller owned. Evidence read off
-                // the callee's body outranks any name shape below (task
-                // 1227; the fact is MAY, the polarity that licenses a
+                // the callee's body outranks any name shape below (the fact is MAY,
+                // the polarity that licenses a
                 // suppression, exactly as `stores_params` is).
                 if self
                     .function_summaries
@@ -4414,12 +4414,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// Decided by the branch's LAST statement, the way the compiler decides
     /// reachability: a `return`, a `goto`, a call to a function that never
     /// returns (`exit()`, `abort()`, a `_Noreturn` error handler -- a
-    /// `free()` before one cannot reach the code after the `if`, task 1076),
+    /// `free()` before one cannot reach the code after the `if`),
     /// or an `if`/`else` whose two arms both cannot fall through. A block
     /// ends where its last statement ends, so nesting is looked through.
     ///
     /// NOT "a return somewhere inside". That reading -- the one this had
-    /// until task 1339 -- made `if (ie) { wps = malloc(n); if (!wps)
+    /// until an earlier fix -- made `if (ie) { wps = malloc(n); if (!wps)
     /// return; free(wps); }` restore the pre-`if` freed set after the outer
     /// branch, because a return existed inside it, while the allocation the
     /// same branch made on its fall-through path stayed recorded. The block
@@ -4438,7 +4438,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// lost by restoring the pre-branch state: `analyze_goto` has already
     /// folded it into the label's entry state.
     ///
-    /// `break` and `continue` join them since task 1365: both leave the
+    /// `break` and `continue` join them since an earlier fix: both leave the
     /// branch, and the path state they carry is recorded for the loop's
     /// exit merge rather than folded into the statement after the `if`.
     fn branch_cannot_fall_through(&self, branch: &Node, source: &str) -> bool {

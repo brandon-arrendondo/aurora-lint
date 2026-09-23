@@ -1,4 +1,4 @@
-//! `compile_commands.json` ingestion — macro-expansion Phase 4 (task 187,
+//! `compile_commands.json` ingestion — macro-expansion Phase 4 (
 //! `docs/design/macro-expansion.md` §5(C)/§6).
 //!
 //! # Why this is not "approach C"

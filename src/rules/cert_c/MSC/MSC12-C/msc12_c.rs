@@ -9,7 +9,7 @@
 //! 6. Stray semicolons (`;` as a statement)
 //! 7. Empty function bodies
 //! 8. A guard already excluded by the preceding early-return guard
-//!    (`if(a||b||c) return; if(c) ...`) -- task 612
+//!    (`if(a||b||c) return; if(c) ...`) -- an earlier fix
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
@@ -26,7 +26,7 @@ use tree_sitter::Node;
 
 pub struct Msc12C {
     // Names of #define macros collected cross-file during pre-scan (same
-    // mechanism DCL40-C uses, task 432): a bare object-like macro invoked
+    // mechanism DCL40-C uses): a bare object-like macro invoked
     // as a statement (`NODE_LOCK_SYS;`) commonly has its #define in a
     // different file (a header) than the .c file that invokes it.
     cross_file_macro_names: RefCell<Arc<HashSet<String>>>,
@@ -181,8 +181,8 @@ impl Msc12C {
                 // function) still got flagged through its orphaned `;`. That
                 // was worth 13 real-world findings of this family and one
                 // wiki fixture, which was itself a file-scope fragment and
-                // is now wrapped in a function -- the same treatment task
-                // 1004 gave fail/wiki_dereference.c, and for the same
+                // is now wrapped in a function -- the same treatment an earlier fix
+                // gave fail/wiki_dereference.c, and for the same
                 // reason: C has no file-scope expression statement, so the
                 // fragment form was only ever detected through debris.
                 if node.prev_sibling().is_some_and(|p| p.kind() == "ERROR") {
@@ -1474,7 +1474,7 @@ impl Msc12C {
     /// contains at least one comment — a deliberate "this is a documented
     /// no-op" idiom (`/* Don't need to do anything */`, `/* Do nothing */`)
     /// pervasive in real embedded/kernel platform-abstraction stub
-    /// functions (see data/precision_audit/sel4/README.md, task 474).
+    /// functions (see data/precision_audit/sel4/README.md).
     ///
     /// Deliberately scoped to `check_empty_function` ONLY — the same
     /// "lone comment in an otherwise-empty block" shape is also how CERT's
@@ -1514,7 +1514,7 @@ impl Msc12C {
     /// a doc-style `/**` (double-star) opener immediately followed by a
     /// known verification-tag + colon (see
     /// `is_verification_annotation_comment`), not any comment.
-    /// `empty_body_has_comment` can't be reused here — task 474 found that
+    /// `empty_body_has_comment` can't be reused here — an earlier fix found that
     /// a bare single-star
     /// comment inside an if/else/for branch is exactly the shape CERT's
     /// own MSC12-C wiki examples use to illustrate the violation

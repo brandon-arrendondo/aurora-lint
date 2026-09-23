@@ -1305,9 +1305,9 @@ impl Arr38C {
         // No-op to avoid duplicate violations with STR31-C.
         //
         // Recorded in this rule's TOML as `[references] related = [...,
-        // "STR31-C"]` (task 626, cross-rule overlap policy:
+        // "STR31-C"]` (cross-rule overlap policy:
         // docs/design/cross-rule-overlap.md). This is a `related` tag, not a
-        // validated `defers_to` exception -- task 625 found only 8
+        // validated `defers_to` exception -- an earlier fix found only 8
         // ground-truth-labeled co-located lines for this pair (all agree-FP),
         // far short of the "every labeled instance" subsumption bar. If this
         // no-op is ever implemented, it is a detection-behavior change and
@@ -2366,7 +2366,7 @@ impl Arr38C {
     ) -> bool {
         let size_arg = size_arg.trim();
 
-        // Task 746: this check never looked at the destination buffer, so it
+        // An earlier fix: this check never looked at the destination buffer, so it
         // fired on the entire population of (buffer, length) parameter pairs
         // regardless of whether the destination actually has room. When
         // `dest_arg` resolves — through `X->field...` / `&X[...]` — to a
@@ -2427,7 +2427,7 @@ impl Arr38C {
         false
     }
 
-    /// Task 746: does `dest_arg` resolve — through a member-access or
+    /// An earlier fix: does `dest_arg` resolve — through a member-access or
     /// array-index shape like `X->field`, `X.field` or `&X[0]` — to a base
     /// variable `X` that is allocated or grown, in the same function, by a
     /// call whose own argument text mentions `size_arg`?
@@ -2576,8 +2576,8 @@ impl Arr38C {
     /// `source` is the WHOLE file here, and deliberately not the
     /// function-scoped slice the substring search needed: `node`'s byte
     /// offsets index into the whole file, and dominance walks up from the site
-    /// and stops at the enclosing `function_definition`, so the scoping task
-    /// 682 had to bolt on is now inherent rather than a caller's obligation.
+    /// and stops at the enclosing `function_definition`, so scoping that used
+    /// to be bolted on by the caller is now inherent.
     ///
     /// `ComparisonKind::Any` because this is a SIZE question, where
     /// `nBuf == 5` pins `nBuf` as well as `nBuf < 6` does. (API00-C passes the
@@ -2597,10 +2597,10 @@ impl Arr38C {
     ///
     /// `guard_dominance` excludes asserts deliberately, and ARR38-C opts back
     /// in here so the choice stays visible at the call site. The question
-    /// differs: for API00-C's *overflow* question, task 644 found crediting an
+    /// differs: for API00-C's *overflow* question, an earlier fix found crediting an
     /// assert hid real defects that ship the moment `NDEBUG` is set, whereas
     /// an `assert(len <= sizeof(buf))` before a copy is the author writing
-    /// down the capacity contract this rule is asking about -- task 731's
+    /// down the capacity contract this rule is asking about -- an earlier fix's
     /// adjudication found six such rows, every one a false positive.
     ///
     /// Only preceding statements are scanned: an assert is a statement, so it
@@ -3032,7 +3032,7 @@ impl Arr38C {
     /// `twoIntsStruct` is kept as a rule-local override rather than folded
     /// into the shared table: it's a Juliet CWE-121/122 test-suite fixture
     /// (two `int` fields, genuinely 8 bytes), not a real general-purpose
-    /// "sizeof" answer, and confirmed via a task-511 benchmark run to be
+    /// "sizeof" answer, and confirmed via a an earlier fix benchmark run to be
     /// exercised 1,647 times across the corpus — dropping it measurably
     /// changed ARR38-C's TP/FP counts, so it stays here instead.
     fn sizeof_type(&self, type_name: &str) -> Option<usize> {

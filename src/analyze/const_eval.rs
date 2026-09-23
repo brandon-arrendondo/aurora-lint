@@ -531,7 +531,7 @@ pub fn merged_macro_constants(
 /// Collect raw `#define NAME value` pairs from the AST, in file order.
 ///
 /// A definition inside a branch the assumed platform never compiles is
-/// skipped ([`DeadRegions`], task 1142): the callers otherwise take hostap's
+/// skipped ([`DeadRegions`]): the callers otherwise take hostap's
 /// `#define close closesocket` (`_MSC_VER` arm of `common.h`) as an alias no
 /// POSIX build ever has, and whichever of a `#ifdef _WIN32` / `#else` pair
 /// their tie-break favours (aliases: last wins; constants: first wins) is
@@ -592,7 +592,7 @@ fn collect_preproc_defs_rec(
                 //   `declaration_list` -- without recursing into these, EVERY
                 //   #define inside that near-universal wrapper (i.e. most of
                 //   the file, in practice) was invisible to macro-constant
-                //   collection (task 453, found via curl.h's CURLINFO_*
+                //   collection (found via curl.h's CURLINFO_*
                 //   macros all sitting inside its `extern "C" { ... }` block).
                 kind if kind.starts_with("preproc_")
                     || kind == "ERROR"

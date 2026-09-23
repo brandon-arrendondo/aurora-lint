@@ -26,7 +26,7 @@
 //! actual MSC24-C obsolescent-function table, and its suggested
 //! replacement (`sscanf_s()`) is an optional, rarely-implemented Annex K
 //! extension unavailable on glibc -- flagging it was a 100% FP class (47
-//! of hostap's ctrl_iface.c findings alone, per task 625's ground_truth).
+//! of hostap's ctrl_iface.c findings alone, per an earlier fix's ground_truth).
 //!
 //! CERT C reference:
 //! https://wiki.sei.cmu.edu/confluence/display/c/MSC24-C.+Do+not+use+deprecated+or+obsolescent+functions

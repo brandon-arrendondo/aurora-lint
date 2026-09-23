@@ -88,10 +88,10 @@ pub struct Api00C {
     /// Cross-file typedef alias map, reached through the shared
     /// [`overflow_helpers::resolve_typedef_chain`] before the shift-
     /// safety width lookup so a `sqlite3_uint64`-typed parameter or an
-    /// `os_time_t` chain (task 664 sample) resolves to a known width
+    /// `os_time_t` chain (an earlier fix sample) resolves to a known width
     /// instead of failing the "shift by literal < width" gate and
-    /// leaving the shift as unchecked (task 1057, third consumer of
-    /// task 736's shared resolver).
+    /// leaving the shift as unchecked (third consumer of
+    /// an earlier fix's shared resolver).
     typedef_types: RefCell<Arc<HashMap<String, String>>>,
     /// `function -> parameter indices with a documented non-NULL
     /// precondition`, from the project pre-scan (header prototypes carry
@@ -194,7 +194,7 @@ impl Api00C {
         // the "validate on one side of the interface" discipline this
         // recommendation describes, chosen and written down. This is the
         // function's own statement, not an inference from its callers (the
-        // task 644 blind spot), and only explicit wording counts: mbedtls's
+        // an earlier fix blind spot), and only explicit wording counts: mbedtls's
         // "\p ctx must be initialized" does, "The AES context to use" does
         // not.
         let documented_names: HashSet<String> = documented
@@ -209,9 +209,9 @@ impl Api00C {
             .unwrap_or_default();
 
         // NOTE: a prior version of this rule exempted
-        // dispatch-table-registered callbacks here (task 594, "reachable
+        // dispatch-table-registered callbacks here ("reachable
         // only through the table, so its contract is established at
-        // registration") -- removed. Task 644's full re-audit of API00-C's
+        // registration") -- removed. An earlier fix's full re-audit of API00-C's
         // ground_truth FP set found this exact "the caller guarantees
         // non-null" argument was wrong 87% of the time across the
         // codebase (assert()-only guards were being credited as real
@@ -221,10 +221,10 @@ impl Api00C {
         // dispatch table registers handlers that dereference a global/
         // struct parameter with zero NULL check in the function body
         // (e.g. wpas_dbus_handler_expect_disconnect's `global->ifaces`),
-        // and task 644's stricter "is it dereferenced unguarded, full
+        // and an earlier fix's stricter "is it dereferenced unguarded, full
         // stop" standard correctly re-flagged 33 of these as TP. Exempting
         // dispatch-bound functions from API00-C reintroduces exactly the
-        // caller-contract blind spot task 644 just spent 33 audit batches
+        // caller-contract blind spot an earlier fix just spent 33 audit batches
         // correcting, so this rule no longer treats dispatch-table
         // registration as a validation exemption. See
         // docs/design/internal-capability-catalog.md /
@@ -396,7 +396,7 @@ impl Api00C {
     ///   return 0;`, hostap's `idx >= wa->num`, sqlite's
     ///   `if(c<128) … else if(c<65536)` range chain and curl's
     ///   `for(i = 1; i < argc; i++)` loop bound all read as *unvalidated*.
-    ///   Six of the 40 rows in task 664's integer-overflow adjudication
+    ///   Six of the 40 rows in an earlier fix's integer-overflow adjudication
     ///   sample were false positives for that reason alone — the largest
     ///   single class in it.
     ///
@@ -644,7 +644,7 @@ impl Api00C {
         // Resolve a typedef spelling to its terminal builtin before asking
         // either "unsigned?" or "how wide?", so a `sqlite3_uint64` or
         // `os_time_t` chain lands on the same row a bare `unsigned long
-        // long` would (task 1057, third consumer of task 736's resolver).
+        // long` would (a third consumer of the same shared resolver).
         let declared_raw = Self::param_base_type(param_type, param_name);
         let resolved = overflow_helpers::resolve_typedef_chain(declared_raw, typedef_types);
         let declared = resolved.as_str();
@@ -792,13 +792,13 @@ impl Api00C {
     /// as validation: assert calls compile to nothing under
     /// NDEBUG/release builds, so they don't satisfy API00-C's requirement
     /// that the check survive into production code. Confirmed empirically by
-    /// task 644's full ground-truth re-audit: the single largest driver of
+    /// an earlier fix's full ground-truth re-audit: the single largest driver of
     /// mislabeled API00-C false positives was exactly this -- a compiled-out
     /// assert being credited as real validation.
     ///
     /// Uses an explicit stack instead of recursion: this only descends into
     /// preprocessor-block children, so it's bounded by preprocessor nesting
-    /// depth (lower risk than the statement-chain cases in task 262), but
+    /// depth (lower risk than the statement-chain cases in an earlier fix), but
     /// still an unbounded native recursion in principle -- the same risk
     /// class as the original ARR00-C/MEM33-C bug -- so it gets
     /// the same treatment for consistency.
@@ -840,7 +840,7 @@ impl Api00C {
                     // descend and classify the statement it carries. Without
                     // this, the guard in a `goto failed;` cleanup epilogue is
                     // invisible — the whole idiom puts its checks behind a
-                    // label (task 745, sqlite3_set_auxdata).
+                    // label (sqlite3_set_auxdata).
                     "labeled_statement" => {
                         stack.push(child);
                     }
@@ -919,7 +919,7 @@ impl Api00C {
     /// way), `base` for `if (*base != 0 && chdir(base)) return -1;` (a test of
     /// the pointee and a *use*), and, being a substring rather than a word
     /// match, a parameter named `ie` for any condition containing
-    /// `update_dh_ie`. That is the same defect task 745 fixed in
+    /// `update_dh_ie`. That is the same defect an earlier fix fixed in
     /// the positive-guard path, and it costs true positives rather than
     /// producing false ones.
     ///
@@ -1207,7 +1207,7 @@ impl Api00C {
     /// (`ctx->aux = pAux`), returned, compared, or handed to a callee. None of
     /// those reads through the pointer, so NULL is a perfectly good value for
     /// them and the finding's premise does not hold: 16 of the 40 false
-    /// positives in task 664's 110-row API00-C pointer sample were exactly
+    /// positives in an earlier fix's 110-row API00-C pointer sample were exactly
     /// this — opaque `void *` cookies handed to a callback registrar, function
     /// pointers stored in a struct and never invoked here,
     /// `xml_node_get_text`'s `ctx` accepted and ignored outright.
@@ -1237,7 +1237,7 @@ impl Api00C {
     /// `usefile()` has nowhere else to get the guarantee. Storing into a
     /// caller-owned struct field or handing an opaque cookie to a registrar
     /// is the opposite: the contract goes back to the caller, and those are
-    /// task 743's false positives.
+    /// an earlier fix's false positives.
     fn parameter_is_dereferenced(
         &self,
         body: &Node,
@@ -1282,7 +1282,7 @@ impl Api00C {
     /// Dereference is tested *positively* — the occurrence has to be the
     /// object of a `*`, `->`/`.`, `[]`, or the callee of an indirect call —
     /// rather than by excluding the shapes that are not one. The negative
-    /// form is what produced task 743's false positives: it read "not inside
+    /// form is what produced an earlier fix's false positives: it read "not inside
     /// an `if` condition" as "dereferenced", which every store, return and
     /// argument satisfies.
     fn classify_param_uses(

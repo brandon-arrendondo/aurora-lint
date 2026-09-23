@@ -19,7 +19,7 @@ pub fn get_node_text<'a>(node: &Node, source: &'a str) -> &'a str {
 /// matching suffix forms)? Shared between MEM31-C's own custom-deallocator
 /// handling and the prescan field-frees collector (`frees_param_fields`),
 /// so a macro-wrapped free like `#define mosquitto_FREE(A) free(A)` is
-/// recognized consistently in both places (task 2: MEM31-C ownership model —
+/// recognized consistently in both places (an earlier fix: MEM31-C ownership model —
 /// aurora-lint has no preprocessor, so such wrapper calls are otherwise invisible).
 pub fn is_deallocation_call_name(func_name: &str) -> bool {
     if crate::analyze::macro_semantics::is_container_unlink_macro(func_name) {
@@ -90,7 +90,7 @@ pub fn get_sanitized_node_text(node: &Node, source: &str) -> String {
 /// walks up from a node therefore pays O(depth^2), and running that once per
 /// descendant of a file whose node count grows with its nesting depth is
 /// cubic. On the 2,000-level `if`-nesting fixture that cost ~24 s total
-/// across the whole rule set (task 984, this repo); STR34-C alone spent 2.9 s
+/// across the whole rule set (this repo); STR34-C alone spent 2.9 s
 /// there re-descending from the root once per identifier.
 ///
 /// Build one map per file with `ParentMap::new(root)` (a single pre-order
@@ -159,7 +159,7 @@ pub fn find_containing_function<'a>(node: &Node<'a>) -> Option<Node<'a>> {
 /// root, so it costs O(depth). An ancestor query per candidate therefore
 /// costs O(depth²), and running one over a whole file whose node count grows
 /// with its nesting depth makes the pass cubic — 800 nested `if`s took
-/// CON40-C 23 s before this replaced two such filters (task 952, this repo).
+/// CON40-C 23 s before this replaced two such filters (this repo).
 /// Pruning is O(n) and needs no ancestor query at all.
 pub fn file_scope_descendants_of_kinds<'a>(root: Node<'a>, kinds: &[&str]) -> Vec<Node<'a>> {
     let mut out = Vec::new();
@@ -234,7 +234,7 @@ pub fn is_declaration_scope(node: &Node) -> bool {
 /// parent by descending from the tree root, so it costs O(depth), one
 /// resolution costs O(depth²), and resolving every read in a file whose node
 /// count grows with its nesting depth is cubic -- 2,000 nested `if`s took
-/// MSC13-C 93 s (task 952, this repo).
+/// MSC13-C 93 s (this repo).
 pub fn find_declaration_in_scope_chain<'a>(
     scopes: &[Node<'a>],
     ident_start: usize,
@@ -382,7 +382,7 @@ pub fn resolve_identifier_declarator<'a>(
 /// exists because a file-wide `{name -> type}` map answers it wrong whenever
 /// two functions declare the same name differently: hostap's wpa_auth.c has
 /// `size_t wpa_ie_len` in one function and `int wpa_ie_len` in another, and
-/// the map handed the second to the first (task 1276; ADR-0006). `None` when
+/// the map handed the second to the first (ADR-0006). `None` when
 /// the occurrence does not resolve to a declaration in this file.
 pub fn resolve_identifier_declared_type(
     ident_node: &Node,
@@ -426,7 +426,7 @@ pub fn resolve_identifier_declared_type(
 /// into an unrelated function body.
 ///
 /// This generalizes a scan that MSC05-C, MSC15-C, and CON34-C each
-/// hand-rolled independently (task 387 item #3) as a type- or
+/// hand-rolled independently (an earlier fix item #3) as a type- or
 /// qualifier-filtered variant of the same walk.
 pub fn find_global_declaration_for_identifier<'a>(
     ident_node: &Node<'a>,
@@ -458,7 +458,7 @@ pub enum IdentifierBinding<'a> {
 /// parameter list, else a file-scope global declaration. Chains
 /// [`find_enclosing_declaration_for_identifier`], [`get_function_parameters`],
 /// and [`find_global_declaration_for_identifier`] in that order so callers
-/// don't each hand-roll the same 3-way fallback (task 387 item #3 -- MSC05-C,
+/// don't each hand-roll the same 3-way fallback (an earlier fix item #3 -- MSC05-C,
 /// MSC15-C, FIO34-C, ENV34-C, INT34-C, and CON34-C all did this
 /// independently).
 pub fn resolve_identifier_binding<'a>(
@@ -521,8 +521,8 @@ pub fn declaration_has_storage_class(decl: &Node, storage_class: &str, source: &
 
 /// True if `node` is a `*p`-style dereference. `*p` and `&p` both parse as
 /// `pointer_expression` in this grammar, disambiguated only by the
-/// `operator` field's text -- conflating them is a real FP source (task
-/// 391's MEM33-C fix, MEM30-C's `scope_derefs_var`), so this is the shared
+/// `operator` field's text -- conflating them is a real FP source (an
+/// earlier MEM33-C fix, MEM30-C's `scope_derefs_var`), so this is the shared
 /// primitive rather than each rule re-deriving the field check.
 pub fn is_dereference_expression(node: &Node, source: &str) -> bool {
     node.kind() == "pointer_expression"
@@ -611,7 +611,7 @@ pub fn is_in_preproc_condition(node: &Node) -> bool {
 /// The idiom guards a header against double inclusion, so the definitions
 /// under it are the header's ONLY definitions — never one arm of an
 /// alternate-body choice. A predicate that treats every `preproc_ifdef`
-/// ancestor as "conditionally compiled" (the shape task 654's gate wanted,
+/// ancestor as "conditionally compiled" (the shape an earlier fix's gate wanted,
 /// for a `#if X ... #else` stub body) makes every function in every guarded
 /// header conditional: hostap's `dl_list_add` in `list.h` then earns no
 /// `stores_params`, and the intrusive-list linkers built on it lose their
@@ -721,7 +721,7 @@ pub fn is_on_preproc_directive_line(source: &str, offset: usize) -> bool {
 /// reparses the literal's own contents as C — the `%` of the `%d` conversion
 /// specifier becomes a modulo operator and the words around it become its
 /// operands, so INT33-C reported "division by 'bss_load_test'" and INT10-C a
-/// signed modulo, on a line holding neither (aurora_lint 1284, ADR-0008).
+/// signed modulo, on a line holding neither (ADR-0008).
 ///
 /// Checking that the operator node exists does not catch this — it does exist,
 /// it is simply made of a character that was inside a literal. The only thing
@@ -866,7 +866,7 @@ pub fn function_names_in_error_declaration(node: &Node, source: &str) -> Vec<Str
 /// `return_type` and `parameters` have no in-tree consumer yet: nothing
 /// stores a *prototype's* parameter types project-wide today
 /// (`FunctionSummary` carries parameter indices, not types), so wiring them
-/// into a rule needs a `ProjectContext` field that task 1060 did not scope.
+/// into a rule needs a `ProjectContext` field that an earlier fix did not scope.
 /// They are read by the real-world probe and are the point of the promotion.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -1056,7 +1056,7 @@ pub fn get_function_parameters(
 /// through preprocessor and linkage blocks; a name declared more than once
 /// keeps the first form seen. This is the only fact EXP43-C needs about a
 /// callee -- a call that repeats an argument is undefined only if the
-/// parameter it lands on is restrict-qualified (aurora_lint task 1171).
+/// parameter it lands on is restrict-qualified.
 pub fn restrict_parameter_indices(root: &Node, source: &str) -> HashMap<String, Vec<usize>> {
     fn walk(node: &Node, source: &str, out: &mut HashMap<String, Vec<usize>>) {
         for i in 0..node.child_count() {
@@ -1131,8 +1131,8 @@ pub fn restrict_parameter_indices(root: &Node, source: &str) -> HashMap<String, 
 /// This is the function's own published contract -- the one place a
 /// caller-side validation discipline is written down -- and the reason
 /// API00-C and EXP34-C stop reporting mbedtls's `ctx`/`operation` parameters
-/// (aurora_lint task 1171). Deliberately NOT a caller-behaviour inference
-/// (task 644 showed those wrong 87% of the time): a parameter whose doc
+/// . Deliberately NOT a caller-behaviour inference
+/// (measured wrong 87% of the time): a parameter whose doc
 /// merely describes it ("The AES context to use") is not covered.
 pub fn documented_nonnull_parameters(root: &Node, source: &str) -> HashMap<String, Vec<usize>> {
     fn walk(node: &Node, source: &str, out: &mut HashMap<String, Vec<usize>>) {
@@ -1570,7 +1570,7 @@ pub fn integer_type_width(type_str: &str) -> Option<u32> {
 /// defined in headers the scan never reads, so no typedef chain can reach
 /// them, and without this a `(UINT32)strlen(s) + 1` allocation size was
 /// signed to one rule and untyped to the other, so neither reported it
-/// (task 1288, ventoy).
+/// (ventoy).
 #[allow(dead_code)]
 pub fn is_unsigned_type(type_str: &str) -> bool {
     type_str.contains("unsigned")
@@ -2122,7 +2122,7 @@ pub fn collect_packed_macro_names(source: &str, out: &mut std::collections::Hash
 /// were the declared object's name, but a real C identifier can never
 /// collide with an in-scope `#define` name (the preprocessor would have
 /// substituted it first) — so if the name is a known macro, this can't be a
-/// real declaration (DCL40-C task 432).
+/// real declaration (DCL40-C an earlier fix).
 pub fn is_defined_macro_name(name: &str, source: &str) -> bool {
     let Ok(re) = regex::Regex::new(&format!(r"(?m)^\s*#\s*define\s+{}\b", regex::escape(name)))
     else {
@@ -2430,7 +2430,7 @@ mod tests {
     /// body) -- not just ones inside a nested `compound_statement`. The
     /// declaration is a direct child of `for_statement`, one level away
     /// from any `compound_statement`, which an earlier version of this
-    /// function never looked at (task 386 regression, fixed alongside).
+    /// function never looked at (an earlier fix regression, fixed alongside).
     #[test]
     fn test_find_enclosing_declaration_for_identifier_for_loop_var() {
         let (tree, source) =

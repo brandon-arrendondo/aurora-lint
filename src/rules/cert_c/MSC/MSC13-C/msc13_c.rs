@@ -876,8 +876,8 @@ impl Msc13C {
         // Names the body's macro invocations read, for the double-report
         // guard below: a variable touched ONLY through `MBEDTLS_ASN1_CHK_ADD`
         // has no textual read in the body, yet it is read (by the macro)
-        // and so is not the unused-variable pass's finding either (task
-        // 1387). Only macro-hidden reads are added; the textual count stays
+        // and so is not the unused-variable pass's finding either. Only
+        // macro-hidden reads are added; the textual count stays
         // declaration-scoped.
         let mut macro_read = HashSet::new();
         self.collect_macro_names_in_node(
@@ -949,7 +949,7 @@ impl Msc13C {
             // statement to "read" back -- so treating it like a real
             // definition made MSC13-C flag the *previous* genuine
             // assignment as a dead store whenever its only reads happened
-            // before the variable was freed (task 391: hostap's rfkill.c
+            // before the variable was freed (an earlier fix: hostap's rfkill.c
             // `found = os_strcmp(phy, rfk_phy) == 0; free(rfk_phy);` --
             // `rfk_phy`'s real read is the `os_strcmp` call, but the
             // `free()` pseudo-definition right after it had no read of its
@@ -996,7 +996,7 @@ impl Msc13C {
             // pass above already decided: if it can, the definition is live
             // and never gets here. A constant initializer that every path
             // overwrites before any read is a dead store whatever it names
-            // (task 1387, which retired task 1171's by-shape exemption: on
+            // (which retired an earlier by-shape exemption: on
             // mbedtls it silenced 91 stores clang's DeadStores also proves
             // dead). The reads the exemption used to stand in for are
             // modelled instead: a macro-hidden `goto`/`return` is a CFG

@@ -36,7 +36,7 @@ impl Msc05C {
     /// Scope- and shadowing-aware: two different functions (or blocks)
     /// declaring a same-named variable of a different type are not conflated.
     /// `ast_utils::resolve_identifier_type` chains the local/parameter/global
-    /// fallback (task 387 item #3) that used to be hand-rolled here.
+    /// fallback (an earlier fix item #3) that used to be hand-rolled here.
     fn is_time_t_typed(&self, ident: &Node, source: &str) -> bool {
         let name = ast_utils::get_node_text(ident, source);
         ast_utils::resolve_identifier_type(ident, name, source)

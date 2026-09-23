@@ -245,7 +245,7 @@ impl Msc37C {
     /// be three mutually recursive functions chaining through nested
     /// if/else-if and compound-statement nesting -- a long else-if chain
     /// would cost one native call frame per link (the same hostap-style
-    /// risk class as the original ARR00-C/MEM33-C bug, task 153). They're
+    /// risk class as the original ARR00-C/MEM33-C bug). They're
     /// unified here into one postorder evaluator using an explicit
     /// instruction/value stack instead of recursion: `if_statement` needs
     /// BOTH its consequence and alternative evaluated before it can AND
@@ -310,7 +310,7 @@ impl Msc37C {
                     // A function whose tail is `#if X ... return 0; #endif`
                     // or an `#if`/`#else` pair whose arms both return does
                     // return under every configuration it is written for
-                    // (mbedtls aes.c, task 1171). Each arm is the last
+                    // (mbedtls aes.c). Each arm is the last
                     // statement of that arm; an `#if` with no `#else` is
                     // judged on the arm the author wrote.
                     "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_else" => {

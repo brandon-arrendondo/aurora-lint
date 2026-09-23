@@ -22,7 +22,7 @@ use tree_sitter::Node;
 
 pub struct Mem01C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
-    /// Cross-file function summaries from prescan (task 324 follow-on to 320/321).
+    /// Cross-file function summaries from prescan (an earlier fix follow-on to 320/321).
     cross_file_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
 }
 
@@ -52,18 +52,18 @@ impl Mem01C {
     /// The same three-state test as EXP33-C's `build_read_only_deref_fns`,
     /// and deliberately the same code shape so the two cannot drift again.
     /// `dereferences_params - modifies_params` alone was this rule's test
-    /// until aurora_lint 1459, which is what EXP33-C's was before 1437 and
+    /// until an earlier fix, which is what EXP33-C's was before 1437 and
     /// 1442 fixed it; MEM01-C inherited 1444's population-side fix for free
     /// (`dereferences_params` is a shared `FunctionSummary` field) and none
     /// of the consumption-side ones.
     ///
-    /// Piece (a), aurora_lint 1437: `credit_modifies_params` withholds a
+    /// Piece (a), an earlier fix: `credit_modifies_params` withholds a
     /// parameter from the MAY set while its forwarding obligation is still
     /// unresolved (`modifies_params_pending`), so a merely-pending parameter
     /// is indistinguishable here from one proven never written. Excluding it
     /// stops "not proven to write" doubling as "proven not to write".
     ///
-    /// Piece (b), aurora_lint 1442: `forwards_to_indirect_call` is the
+    /// Piece (b), an earlier fix: `forwards_to_indirect_call` is the
     /// Unknown-due-to-indirection state. A callee that hands the parameter to
     /// a call through a function pointer or a driver-ops struct field
     /// (`hapd->driver->read_sta_data(...)`) can never be proven to write it
@@ -462,7 +462,7 @@ fn classify_expr_for_ptr(
             // `read_string_pair(props, id, &name, &value, false)` writing a
             // fresh pointer through the argument) -- treat it like a
             // reassignment rather than a use, UNLESS the callee is known
-            // (via cross-file `FunctionSummary`, task 324) to only
+            // (via cross-file `FunctionSummary`) to only
             // dereference that parameter and never write through it, in
             // which case it's a genuine read of the (possibly freed)
             // pointer value. Without this, CFG paths that reach a
@@ -549,7 +549,7 @@ fn subtree_address_of_call_action(
 /// classify the call: `Reassigned` if the callee is a known writer of that
 /// parameter, `Used` if the callee is known to only dereference it (a
 /// genuine read of the possibly-freed value), or `Reassigned` as the
-/// conservative fallback when the callee's behavior is unknown (task 324;
+/// conservative fallback when the callee's behavior is unknown (
 /// keeps the mosquitto output-param fix as a floor when no summary exists).
 /// Returns `None` if the call does not take `&name` as an argument at all.
 fn call_address_of_action(

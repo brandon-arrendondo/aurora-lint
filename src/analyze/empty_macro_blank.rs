@@ -258,7 +258,7 @@ fn terminating_semicolon_to_blank(
 
 /// Fallthrough-annotation macro names that are safe to blank even when this
 /// file has no local `#define` for them at all, because their definition
-/// lives in a header this pass never sees (task 461 category 8; sqlite's
+/// lives in a header this pass never sees (an earlier fix category 8; sqlite's
 /// `vdbe.c` uses `deliberate_fall_through` ~11 times but only `#define`s it
 /// in `sqliteInt.h`, so [`find_empty_object_macros`] -- which only scans
 /// this file's own text -- never finds it, and the bare identifier

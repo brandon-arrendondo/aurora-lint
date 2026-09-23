@@ -34,7 +34,7 @@ impl CertRule for Exp40C {
         // Global (true file-scope) const vars are visible from every function,
         // but locals must stay scoped to the function they're declared in --
         // otherwise a const-qualified local in one function conflates with a
-        // same-named non-const local in another (same bug class as task 389's
+        // same-named non-const local in another (same bug class as an earlier fix's
         // EXP39-C/ARR30-C and the follow-on sweep of 7 other rules).
         let mut global_const_vars = HashSet::new();
         collect_top_level_const_vars(node, source, &mut global_const_vars);

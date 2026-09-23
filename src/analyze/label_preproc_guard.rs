@@ -29,7 +29,7 @@
 //!     ancestor at all, even though the source clearly shows it inside the
 //!     guard -- silently defeating any analysis keyed on "is this inside
 //!     `#ifdef X`" (e.g. EXP33-C's `enclosing_ifdef_guard_key`/
-//!     `all_write_sites_ifdef_correlated`, task 590).
+//!     `all_write_sites_ifdef_correlated`).
 //!
 //! `case`/`default` labels do NOT have this problem: `case_statement`'s body
 //! is `repeat(...)` (zero-or-more), so it can simply match zero statements
@@ -105,7 +105,7 @@ fn blank_line(out: &mut [u8], line_start: usize, line_len: usize) {
 /// Returns `None` for a bare `#if EXPR` (an arbitrary expression, not a
 /// single macro name -- `enclosing_ifdef_guard_key` in EXP33-C only
 /// correlates `preproc_ifdef` nodes, i.e. `#ifdef`/`#ifndef`, so there is
-/// nothing to encode for `#if` here either; see task 663).
+/// nothing to encode for `#if` here either; see an earlier fix).
 fn directive_keyword_and_name(trimmed: &str) -> Option<(&'static str, &str)> {
     let (keyword, after) = if let Some(rest) = trimmed.strip_prefix("#ifdef") {
         ("#ifdef", rest)
@@ -150,7 +150,7 @@ const CLOSE_MARKER: &str = "/*E*/";
 /// space-padding the remainder, when it fits within `line_len` bytes;
 /// otherwise fall back to a full blank ([`blank_line`]) -- length is
 /// preserved either way, and a marker that doesn't fit just means this one
-/// occurrence loses recoverability (degrades to the pre-task-663 behavior),
+/// occurrence loses recoverability (degrades to the pre-an earlier fix behavior),
 /// not a parse failure.
 fn write_marker_or_blank(out: &mut [u8], line_start: usize, line_len: usize, marker: Option<&str>) {
     if let Some(marker) = marker {
@@ -404,7 +404,7 @@ out:
 
     #[test]
     fn leaves_a_recoverable_marker_encoding_the_guard() {
-        // Task 663: the blanked directive lines must not become pure
+        // An earlier fix: the blanked directive lines must not become pure
         // whitespace -- EXP33-C's ifdef/write correlation needs to recover
         // which macro guarded a read site whose `preproc_ifdef` ancestor
         // this pass removed.
@@ -455,7 +455,7 @@ out:
         // A bare `#if EXPR` has no single macro name to encode, and
         // EXP33-C's correlation only ever looks at `preproc_ifdef`
         // (`#ifdef`/`#ifndef`) nodes in the first place -- falls back to a
-        // plain blank, same as before task 663.
+        // plain blank, same as before an earlier fix.
         let src = "\
 void f(void) {
     goto out;

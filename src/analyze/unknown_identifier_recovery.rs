@@ -1,7 +1,7 @@
 //! Iterative parse-error recovery for unknown bare identifiers that have no
-//! local `#define` (task 437, follow-up to task 435's `empty_macro_blank`).
+//! local `#define` (a follow-up to the `empty_macro_blank` pass below).
 //!
-//! Task 435 fixed the WINAPI/RLAPI-style export-macro idiom by blanking a
+//! An earlier fix fixed the WINAPI/RLAPI-style export-macro idiom by blanking a
 //! name that's locally `#define`d to nothing. That approach has nothing to
 //! find when the offending identifier comes from an *external* header not
 //! included in a single-file parse -- e.g. raylib's rlgl.h uses
@@ -30,7 +30,7 @@
 //! `has_error()` has fully cleared (some files may have unrelated parse
 //! issues this pass isn't meant to touch).
 //!
-//! Task 1019 made the choice of WHICH token to blank macro-aware. Blanking
+//! An earlier fix made the choice of WHICH token to blank macro-aware. Blanking
 //! the stranded token is right only when that token really is the macro the
 //! parser could not place; in `MACRO type f(...)` shapes tree-sitter instead
 //! strands the *type* (`CURL_EXTERN CURLcode curl_easy_setopt(...)` strands
@@ -46,7 +46,7 @@
 //! failure signal still has the last word. With no macro table (prescan
 //! itself, single-file callers, tests) the pass behaves exactly as before.
 //!
-//! Task 438 added a second, differently-shaped recovery target to the same
+//! An earlier fix added a second, differently-shaped recovery target to the same
 //! loop: a lone `{`/`}` ERROR-wrapped inside a `#if defined(__cplusplus)`
 //! (or `#ifdef`/`#elif`) conditional -- the dual-C/C++-header idiom for
 //! guarding an `extern "C"` block's open/close brace. See
@@ -63,7 +63,7 @@ use crate::analyze::context::ProjectContext;
 /// Project-wide macro knowledge the repair pass consults when deciding which
 /// token to blank. Empty means "no prescan data" -- every decision then
 /// falls back to the token tree-sitter stranded, which is what this pass did
-/// before task 1019.
+/// before an earlier fix.
 #[derive(Debug, Default, Clone)]
 pub struct RepairMacros {
     /// Every `#define NAME ...` name seen project-wide
@@ -90,8 +90,8 @@ impl RepairMacros {
 }
 
 /// Marker written in place of a blanked [`RepairMacros::unused_attribute_macros`]
-/// token, the same length-preserving recoverable-marker idiom task 663 uses
-/// for label-guarded directives and task 648 for `NORETURN`. Without it the
+/// token, the same length-preserving recoverable-marker idiom an earlier fix uses
+/// for label-guarded directives and an earlier fix for `NORETURN`. Without it the
 /// declaration reaching MSC13-C reads `word_t totalObjectSize       ;` --
 /// correctly parsed, correctly named, and with the annotation that makes it
 /// legitimate silently gone. Consumers must accept it both
@@ -170,7 +170,7 @@ fn find_blankable_identifier_error(node: &Node, source: &str) -> Option<(usize, 
 fn blank_range(source: &str, start: usize, end: usize) -> String {
     let mut bytes = source.as_bytes().to_vec();
     for b in bytes.iter_mut().take(end).skip(start) {
-        // Newlines are preserved even inside a blanked range (task 438's
+        // Newlines are preserved even inside a blanked range (an earlier fix's
         // preproc-brace recovery blanks a whole directive line, including
         // the newline that separates it from the brace) so line numbers
         // downstream never shift.
@@ -184,15 +184,15 @@ fn blank_range(source: &str, start: usize, end: usize) -> String {
 }
 
 /// Same as [`blank_range`], but if the identifier being blanked is a known
-/// noreturn-attribute macro name (task 648 -- e.g. seL4's
+/// noreturn-attribute macro name (an earlier fix -- e.g. seL4's
 /// `void NORETURN slowpath(...)`, where `NORETURN` has no local `#define`
 /// for `empty_macro_blank` to find and expands to
 /// `__attribute__((noreturn))` in a header this single-file parse never
 /// sees), write `crate::analyze::noreturn::MARKER` in its place instead of
 /// plain blanking -- the same length-preserving recoverable-marker idiom
-/// task 663 introduced for label-guarded preprocessor directives.
+/// an earlier fix introduced for label-guarded preprocessor directives.
 ///
-/// An unused-attribute macro (task 1019, resolved through the prescan's
+/// An unused-attribute macro (resolved through the prescan's
 /// [`RepairMacros::unused_attribute_macros`] rather than by spelling) leaves
 /// [`UNUSED_ATTRIBUTE_MARKER`] behind for the same reason: what the macro
 /// expanded to is the author's statement that the variable may go unread,
@@ -334,7 +334,7 @@ fn error_node_count(node: &Node) -> usize {
 /// Requires the ERROR-brace to be the ONLY named child between the
 /// condition and `#endif` (comments aside) -- i.e. that this conditional's
 /// entire guarded content really is just the lone brace, per the doc
-/// comment above. Task 464 found a false match on mosquitto's uthash.h:
+/// comment above. An earlier fix found a false match on mosquitto's uthash.h:
 /// a switch/case-in-macro construct elsewhere in the file cascades into
 /// several small, unrelated single-token `{`/`}` ERROR nodes scattered as
 /// *direct children of the file's own top-level `#ifndef UTHASH_H` header
@@ -512,7 +512,7 @@ mod tests {
     #[test]
     fn recovers_unknown_calling_convention_in_funcptr_typedef() {
         // GL_APIENTRYP has no local #define anywhere in this snippet --
-        // task 435's fix has nothing to find here.
+        // an earlier fix's fix has nothing to find here.
         let src = "typedef void (GL_APIENTRYP PFNGLFOO)(int x);\nint y = 1;\n";
         let (has_error, _) = recover(src);
         assert!(!has_error);
@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn without_a_macro_table_the_stranded_token_is_still_the_one_blanked() {
         // The prescan itself parses, so it runs with no table -- that path
-        // must keep behaving exactly as it did before task 1019.
+        // must keep behaving exactly as it did before an earlier fix.
         let src = "CURL_EXTERN CURLcode curl_easy_setopt(int o);\n";
         let (_, text) = recover(src);
         assert!(text.contains("CURL_EXTERN"));
@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn recovers_cplusplus_guarded_extern_c_brace() {
-        // Task 438: raylib rlgl.h's dual-C/C++ extern "C" guard idiom closes
+        // An earlier fix: raylib rlgl.h's dual-C/C++ extern "C" guard idiom closes
         // the block with `#if defined(__cplusplus) } #endif` -- a lone brace
         // as the guarded content. tree-sitter-c can't place that bare `}`
         // (it isolates it as a leaf ERROR node inside an otherwise-clean
@@ -657,13 +657,13 @@ mod tests {
 
     #[test]
     fn does_not_corrupt_whole_file_header_guard_on_switch_in_macro_error() {
-        // Task 464: minimal reduction of mosquitto's deps/uthash.h. A
+        // An earlier fix: minimal reduction of mosquitto's deps/uthash.h. A
         // backslash-continued do/while(0) macro containing a switch/case
         // (HASH_SFH) makes tree-sitter-c's GLR recovery scatter several
         // small, unrelated single-token `{`/`}` ERROR nodes as *direct
         // children of the file's own top-level `#ifndef UTHASH_H` header
         // guard* -- not wrapped in their own `preproc_if`, unlike the
-        // task-438 extern "C" idiom this recovery targets. The buggy
+        // an earlier fix extern "C" idiom this recovery targets. The buggy
         // version of `find_blankable_preproc_brace_error` paired the
         // first such stray ERROR with this node's `#endif` child
         // regardless of what stood between them; for a whole-file header

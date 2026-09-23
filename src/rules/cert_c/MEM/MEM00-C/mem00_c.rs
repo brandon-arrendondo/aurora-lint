@@ -201,7 +201,7 @@ impl Mem00C {
     /// [`is_deallocation_call_name`]'s prefix/suffix-only check, this also
     /// catches the common `<module>_<action>_<subject>` naming convention
     /// where the action word sits in the middle of a compound identifier
-    /// (task 318 -- hostap's `hostapd_config_free_radius` doesn't start
+    /// (an earlier fix -- hostap's `hostapd_config_free_radius` doesn't start
     /// with `free_` or end with `_free`, but is unambiguously a
     /// dedicated-cleanup helper).
     fn name_has_destructor_token(name: &str) -> bool {

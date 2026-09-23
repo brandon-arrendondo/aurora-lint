@@ -83,8 +83,8 @@ use tree_sitter::Node;
 /// unit, keyed by name to the byte offset(s) of the `declaration` node(s)
 /// that bind them. Plain name matching against this set isn't enough
 /// on its own -- a same-named local variable or parameter in an unrelated
-/// scope would be misattributed as an access to the shared variable (task
-/// 386). [`StaticVars::resolves`] closes that gap by checking, via
+/// scope would be misattributed as an access to the shared variable.
+/// [`StaticVars::resolves`] closes that gap by checking, via
 /// [`resolve_identifier_binding`], that a candidate identifier occurrence
 /// actually binds to one of the recorded declarations rather than shadowing
 /// it.
@@ -121,7 +121,7 @@ impl StaticVars {
 #[derive(Debug, Default)]
 pub struct Con07C {
     /// Function names reachable from a real concurrent-execution root (ISR,
-    /// thread-spawn entry point, or `signal()` handler) — see task 608 /
+    /// thread-spawn entry point, or `signal()` handler) — see an earlier fix /
     /// `docs/design/con03-con07-isr-thread-reachability.md`. Populated from
     /// `ProjectContext::concurrency_reachable` when a `-d` prescan ran;
     /// `check()` ORs it with a same-file-only fallback so the rule still
@@ -287,7 +287,7 @@ impl Con07C {
         // Skip functions never reachable from a real concurrent-execution
         // root (ISR, thread-spawn entry point, signal() handler) -- a
         // compound operation that only ever runs on one execution path
-        // can't race with itself. See task 608 /
+        // can't race with itself. See an earlier fix /
         // docs/design/con03-con07-isr-thread-reachability.md.
         if !self
             .concurrency_reachable

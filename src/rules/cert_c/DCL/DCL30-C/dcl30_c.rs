@@ -218,7 +218,7 @@ impl Dcl30C {
     /// an `if_statement` inside every else clause, so a generated/obfuscated
     /// chain thousands deep would blow the native call stack if each link
     /// were a recursive call (the same hostap-style shape that motivated
-    /// task 153). Each stack entry is a "current body" context, mirroring
+    /// an earlier fix). Each stack entry is a "current body" context, mirroring
     /// the `body` parameter the recursive version rebound on each call.
     fn find_static_address_assignment(&self, body: &Node, var_name: &str, source: &str) -> bool {
         let mut stack = vec![*body];

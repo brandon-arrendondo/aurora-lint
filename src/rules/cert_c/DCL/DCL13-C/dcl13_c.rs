@@ -347,7 +347,7 @@ const READ_ONLY_FUNCTIONS: &[&str] = &[
 /// writes through memory `param` points to, even though the general
 /// argument-derivation check (`arg_is_param`) intentionally treats
 /// `param->field` as "by value, doesn't modify param" for everything else
-/// (task 391: hostap's `os_memcpy(pasn->own_addr, addr, ETH_ALEN)`, where
+/// (an earlier fix: hostap's `os_memcpy(pasn->own_addr, addr, ETH_ALEN)`, where
 /// `own_addr` is a fixed-size array field, decays to a pointer into `pasn`'s
 /// own memory).
 const WRITE_DEST_FIRST_ARG_FUNCTIONS: &[&str] = &[
@@ -404,7 +404,7 @@ fn is_pointer_param_modified(
                 }
                 // `container->field = param;` (or any expression derived
                 // from param) — the parameter's identity escapes into a
-                // struct field for later use elsewhere (task 3's own
+                // struct field for later use elsewhere (an earlier fix's own
                 // example: ringbuffer.c ptrBuffer). Any such store is
                 // sufficient evidence the parameter is potentially
                 // modified; further uses of the field are not traced.
@@ -448,7 +448,7 @@ fn is_pointer_param_modified(
 /// touch `st` -- but a macro substitutes the argument text, so
 /// `CHACHA20_QUARTERROUND(st[0], st[4], st[8], st[12])` expanding to
 /// `st[0] += st[4]; …` writes `st` on every invocation (pure-ftpd
-/// `alt_arc4random.c`, task 1254). Which parameters a macro assigns comes
+/// `alt_arc4random.c`). Which parameters a macro assigns comes
 /// from `macro_expand::macro_writes_param_indices`, which expands the body
 /// (nested macros included) rather than pattern-matching its text here. A
 /// bare `param` argument is not this function's concern: the generic
@@ -575,7 +575,7 @@ fn is_write_through_param(node: &Node, param_name: &str, source: &str) -> bool {
                 // the dereference's operand is the `update_expression`
                 // itself (`param++`), not a bare identifier, so the text
                 // match above never fires even though this is a genuine
-                // write through `param` (task 391: hostap's
+                // write through `param` (an earlier fix: hostap's
                 // `*d++ ^= *s++;` xor idiom).
                 if argument.kind() == "update_expression" {
                     if let Some(inner) = argument.child_by_field_name("argument") {

@@ -38,10 +38,10 @@ pub const WIN_RULE_IDS: &[&str] = &[
 /// Rules whose implementation mixes C11-specific logic with plain-C99 logic
 /// in the same rule file. `max_c_standard`/`has_annex_k` are surfaced as a
 /// reporting-only comment on these — auto-*gating* them is deferred (see
-/// design doc §5 and task 300's audit below): none of the 8 qualify for
+/// design doc §5 and an earlier fix's audit below): none of the 8 qualify for
 /// whole-rule auto-disable.
 ///
-/// Task 300 did the per-rule audit design doc §5 called for, across all 14
+/// An earlier fix did the per-rule audit design doc §5 called for, across all 14
 /// rules originally in this list, and found:
 ///
 /// - **CON02-C, CON03-C, CON07-C, CON31-C, CON32-C, CON33-C** (kept):
@@ -63,13 +63,13 @@ pub const WIN_RULE_IDS: &[&str] = &[
 ///   to gain from disabling either — their dominant value is the plain
 ///   `sizeof`-side-effect / `fopen()`-mode-string check, unrelated to C11.
 /// - **ENV31-C, API04-C, API07-C, PRE30-C, PRE31-C** (removed from this
-///   list, task 300): audit found these were misclassified in the
-///   original task 216 v1 list — each one's *only* C11/Annex-K mention is
+///   list): audit found these were misclassified in the
+///   original an earlier fix v1 list — each one's *only* C11/Annex-K mention is
 ///   inside a remediation *suggestion string* (e.g. "use `strcpy_s()`
 ///   instead") or a single exemption check, never inside the rule's actual
 ///   firing/detection logic. None of these five have a real C11-tangled
 ///   code path to report on at all.
-/// - **PRE04-C** (removed from this list, task 300): a different kind of
+/// - **PRE04-C** (removed from this list): a different kind of
 ///   category mismatch, not a coverage-loss risk — it flags a *local*
 ///   header reusing a standard-library basename (its 28-name list happens
 ///   to include 4 C11 names: `stdatomic.h`/`stdalign.h`/`threads.h`/
@@ -381,7 +381,7 @@ fn gate_rule(
             base_enabled,
             Some(format!(
                 "detected: corpus max C standard = {standard}, Annex-K calls = {} \
-                 (reporting-only, task 300's per-rule audit found none of this group \
+                 (reporting-only, an earlier fix's per-rule audit found none of this group \
                  safe to auto-gate — see C11_TANGLED_RULE_IDS doc comment)",
                 profile.has_annex_k
             )),
@@ -447,8 +447,8 @@ mod tests {
     #[test]
     fn detects_c11_via_stdatomic_header_alone() {
         // atomic_bool/atomic_int parse as plain type_identifier nodes --
-        // detect_min_c_standard's syntax-only walk can't see them (task
-        // 300 gap 2a), so the header itself must be the evidence.
+        // detect_min_c_standard's syntax-only walk can't see them (a known
+        // analysis gap), so the header itself must be the evidence.
         let dir = tempfile::tempdir().unwrap();
         write_file(
             dir.path(),
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn does_not_false_match_user_defined_s_suffixed_function() {
-        // task 300 gap 2b: a project's own `_s`-suffixed name (not one of
+        // an earlier fix gap 2b: a project's own `_s`-suffixed name (not one of
         // the real Annex K functions) must never count as evidence -- this
         // is exactly why detection is an exact AST call-name match, not a
         // `*_s(` text/substring scan.

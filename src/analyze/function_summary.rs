@@ -62,7 +62,7 @@ pub struct FunctionSummary {
     /// is not nested inside any conditional construct other than a null test
     /// on the very pointer being freed (`if (p != NULL) free(p);`, whose
     /// skipped path has nothing to free and so leaves nothing for a caller to
-    /// use — task 988, aurora_lint), so it executes
+    /// use), so it executes
     /// whenever the function itself is entered (modulo an early return
     /// before it, which the AST-position check already accounts for since
     /// it only asks "is this call inside a conditional", not "could an
@@ -125,7 +125,7 @@ pub struct FunctionSummary {
     /// `cf_proxy->cft->query(...)` through a function pointer — absent from
     /// MUST, and yet crediting its callers is correct. Withholding the
     /// `&var`-initializes default on "not in MUST" alone therefore reports
-    /// every such caller (task 1065 bug #3, aurora_lint).
+    /// every such caller (a real-world bug).
     ///
     /// So this set answers the other question outright: is there a path that
     /// reaches a `return` (or the end of a void body) having neither written
@@ -193,7 +193,7 @@ pub struct FunctionSummary {
     /// `resolve_name_shaped_frees` already applies to an empty `may_free`.
     ///
     /// ARITY ONE IS THE WHOLE GUARD, and it is the one-nameable-argument
-    /// rule of task 1197 a level down. A name shape says a release happened
+    /// rule of an earlier fix a level down. A name shape says a release happened
     /// and never says through WHICH parameter, and an escape into an
     /// unreadable call is no better: a comparator, a callback or a trace
     /// hook reads its argument and is spelled identically. With a second
@@ -266,7 +266,7 @@ pub struct FunctionSummary {
     /// since the block is reachable through it). A get-or-create-and-link
     /// constructor's result is therefore BORROWED by its caller: dropping it
     /// leaks nothing the container does not still hold. Read off the body
-    /// and the callees' own summaries, never a name (task 1227; same
+    /// and the callees' own summaries, never a name (same
     /// polarity as `stores_params`).
     #[serde(default)]
     pub returned_value_escapes: bool,
@@ -379,7 +379,7 @@ pub struct FunctionSummary {
     /// resolves which named caller variable reached a given `%s` from
     /// inside the callee's body), so a caller passing a possibly-null
     /// pointer into one is only ever observable at the call site. EXP34-C's
-    /// call-site check is scoped to exactly these positions — task 1418.
+    /// call-site check is scoped to exactly these positions — an earlier fix.
     #[serde(default)]
     pub variadic_from: Option<usize>,
     /// Argument-position pairs `(lower, higher)` at which SOME call site
@@ -449,7 +449,7 @@ pub struct FunctionSummary {
     /// `accounting_sta_update_stats` forwards its own `data` param to the
     /// named (and otherwise ordinary) `hostapd_drv_read_sta_data`, which is
     /// where the actual `hapd->driver->read_sta_data(...)` dispatch lives
-    /// (task 1442, aurora_lint, EXP33-C piece (b) of
+    /// (see EXP33-C piece (b) of
     /// docs/design/exp33-c-cross-file-uninit-architecture.md).
     #[serde(default)]
     pub forwards_to_indirect_call: HashSet<usize>,
@@ -464,7 +464,7 @@ pub struct FunctionSummary {
     /// body, e.g. `free(param->name)` or `free((*param)->name)`. Maps
     /// param_idx → set of field names. Lets MEM31-C credit a custom
     /// deallocator (e.g. `destroy_person(&p)`) with freeing `p->name` even
-    /// though the free happens inside the callee, not the caller (task 2:
+    /// though the free happens inside the callee, not the caller (an earlier fix:
     /// MEM31-C ownership model).
     #[serde(default)]
     pub frees_param_fields: HashMap<usize, HashSet<String>>,
@@ -1105,7 +1105,7 @@ fn analyze_function(
         // struct field -- does not hand a fresh allocation back to its
         // caller via the return value, so callers assigning its result to a
         // local must not have that local treated as owning fresh memory
-        // (task 425: MEM31-C flagging non-pointer status locals like `enum
+        // (an earlier fix: MEM31-C flagging non-pointer status locals like `enum
         // wpa_validate_result`/`u16`/`int` as leaked/double-freed because
         // the assigning callee's body happened to contain a malloc call).
         // Comments are stripped first: a borrowed-accessor
@@ -1145,8 +1145,8 @@ fn analyze_function(
         // `#define GETENV getenv`) so Juliet macro-wrapped sources still
         // poison the caller's summary.
         //
-        // Comments and string literals stripped first (task 1460,
-        // aurora_lint, found by task 1434's rule architecture sweep): this
+        // Comments and string literals stripped first (
+        // aurora_lint, found by an earlier fix's rule architecture sweep): this
         // consumer is MUST-style, not suppression-only (ENV03-C gates "this
         // caller is clean" on `!has_env03_taint_source`), so a comment
         // merely mentioning a source (`// TODO: call getenv(x) here`) or a
@@ -1742,7 +1742,7 @@ fn check_returns_null(body: &Node, source: &str) -> bool {
 ///
 /// The walking-pointer buffer-fill idiom this exists for --
 /// `*rnd++ = (unsigned char)(r & 0xFF);` -- is curl's `Curl_rand_bytes`
-/// (task 589/456: `EXP33-C`'s macro-forwarding fix for `Curl_rand` only
+/// (this only
 /// pays off once the forwarded function's own summary actually recognizes
 /// its write). A literal `"*{param} ="` substring match (the previous
 /// check) misses this because of the `++` in between.
@@ -1845,7 +1845,7 @@ fn cast_then_deref(body_text: &str, param_name: &str) -> bool {
 /// mbedtls_mpi_init(&pt->Y); mbedtls_mpi_init(&pt->Z); }` never reads `pt`
 /// at all, and crediting every one of these as a dereference-read
 /// classified the whole `_init` family as read-only on their own output
-/// parameter (task 1444, aurora_lint, EXP33-C piece (d)). A function that
+/// parameter (see EXP33-C piece (d)). A function that
 /// has both an address-of use and a genuine read elsewhere still counts:
 /// this only withholds credit when EVERY occurrence is address-of'd.
 fn has_genuine_arrow_read(body_text: &str, param_name: &str) -> bool {
@@ -1988,7 +1988,7 @@ fn null_guard_on(condition: &Node, source: &str, name: &str) -> Option<bool> {
 ///
 /// The guard must be on the pointer being freed and on nothing else. Any
 /// other condition — a different variable, a flag, a compound test — is a
-/// real MAY-free and reinstates task 401's answer, because there the skipped
+/// real MAY-free and reinstates an earlier fix's answer, because there the skipped
 /// path can leave a live pointer the caller goes on to use.
 fn is_unconditionally_reached_modulo_null_guard(
     node: &Node,
@@ -2136,8 +2136,7 @@ fn deref_write_root<'a>(lvalue: &Node<'a>, saw_deref: bool) -> Option<Node<'a>> 
 /// the map -- and `credit_modifies_params`, the MUST/MAY refinement and the
 /// forwarded-write obligations are every one of them reached only from there.
 /// hostap's `ieee802_11_parse_elems`, whose body is `os_memset(elems, 0, ...)`
-/// and a forward, had 65 callers reported uninitialised on that account (task
-/// 1026, aurora_lint).
+/// and a forward, had 65 callers reported uninitialised on that account.
 ///
 /// Name-independent by construction: resolution is
 /// `init_state::match_initializing_function`, whose suffix matcher is what
@@ -3162,8 +3161,8 @@ fn compute_conditional_write_return_correlation(
 /// no preprocessor, so it scans all of them and this decides what callers
 /// are told. "First one inserted wins" is never the answer: which definition
 /// a parallel walk reaches first is arbitrary, so it silently picks one at
-/// random (task 401 for `frees_params`, task 1065 #2 for `can_return_null`,
-/// task 1079 for the output-parameter sets).
+/// random (fixed at different times for `frees_params`, for
+/// `can_return_null`, and for the output-parameter sets).
 ///
 /// Each field is folded in the direction its own meaning demands. A MAY fact
 /// unions -- if any definition might do the thing, callers must be prepared
@@ -3184,12 +3183,12 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
     // the real function's nullable return was masked by the
     // stub's non-null return and callers dereferenced its
     // result without a check (hostap eap_teap.c:1387 recall
-    // regression, task 1065 #2).
+    // regression, an earlier fix #2).
     existing.can_return_null |= summary.can_return_null;
     // Same direction, same reason: if ANY definition linked under this name
     // hands back a fresh block, a caller that drops the result may be
     // leaking it, and only tracking the result can say. This was not merged
-    // at all before task 1217 (aurora-lint) -- first-inserted won -- so
+    // at all before an earlier fix (aurora-lint) -- first-inserted won -- so
     // hostap's os_malloc was whichever of os_none.c's `return NULL` stub,
     // os_internal.c's `return malloc(size)` and os_unix.c's traced variant
     // the parallel walk reached first.
@@ -3287,8 +3286,7 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
         existing.conditional_write_return_correlation.remove(idx);
     }
     // The three output-parameter sets, each merged in the
-    // direction its own meaning demands (task 1079,
-    // aurora_lint). Before this they were not merged at all:
+    // direction its own meaning demands. Before this they were not merged at all:
     // whichever definition the parallel walk reached first
     // was inserted whole and every later one was dropped, so
     // a project shipping two definitions of a name got an
@@ -3817,7 +3815,7 @@ fn resolve_name_shaped_frees(
                 // one-resolving-argument rule picks it -- must not make
                 // `prime_len` a freed parameter of `debug_print_bignum`, and
                 // every one of its callers' `prime_len` a double free (34
-                // findings, hostap sae.c, 0 labeled TP; task 1348).
+                // findings, hostap sae.c, 0 labeled TP).
                 //
                 // Asked against `may_free`, which counts the callee's own
                 // STILL-PENDING name guesses as well as its settled frees.
@@ -3899,7 +3897,7 @@ fn returned_names(body: &Node, source: &str) -> HashSet<String> {
 /// call, which is what separates handing a block away from merely rebinding
 /// a local copy of the pointer.
 ///
-/// Three roots qualify, and each is one of task 1198's worked examples:
+/// Three roots qualify, and each is one of an earlier fix's worked examples:
 /// another PARAMETER (`*he_anchor = he` in curl's `hash_elem_link`), a
 /// FILE-SCOPE variable (`eap_methods = method` in hostap's
 /// `eap_peer_method_register`), and a local this function RETURNS
@@ -4243,7 +4241,7 @@ fn analyze_param_usage(
 /// `fd_set *` argument -- the sole arg for `FD_ZERO`, the last arg for
 /// `FD_SET`/`FD_CLR` -- but they're opaque system macros aurora-lint's
 /// macro-expansion engine never sees a definition for, so the arrow/subscript
-/// text scan above can't see the write either (task 456; hostap's
+/// text scan above can't see the write either (hostap's
 /// `eloop_sock_table_set_fds(struct eloop_sock_table *table, fd_set *fds)`
 /// writes its `fds` param purely through `FD_ZERO(fds)`/`FD_SET(sock, fds)`,
 /// leaving `fds` looking never-written to callers passing a malloc'd
@@ -4361,7 +4359,7 @@ fn closes_param_before_reassignment(sweep: &BodySweep, source: &str, param_name:
 ///     Every argument is a candidate, as for literal `free`.
 ///
 /// aurora-lint has no preprocessor, so for (2)/(3) the macro/helper call itself is
-/// the only AST evidence available that a free happened inside it (task 2:
+/// the only AST evidence available that a free happened inside it (an earlier fix:
 /// MEM31-C ownership model).
 fn collect_frees_param_fields(
     calls: &[Node],
@@ -4776,14 +4774,13 @@ fn collect_param_passthroughs(
 
 /// Detect a parameter forwarded, as a bare identifier, into a call through a
 /// `field_expression` (`obj->cb(...)`, `obj.cb(...)`) -- the same
-/// C-semantics test `prescan::collect_ambiguous_call_targets` uses (task
-/// 562): the field name has no relationship to any global function of the
+/// C-semantics test `prescan::collect_ambiguous_call_targets` uses: the
+/// field name has no relationship to any global function of the
 /// same name, so this is always a runtime-bound indirect call this build
 /// cannot resolve, regardless of surrounding control flow. Deliberately not
 /// gated on `is_unconditionally_reached` like `param_passthroughs` is --
 /// reaching the indirect call on ANY path is enough to make the parameter's
-/// write status unknowable, which is a MAY fact, not a coverage proof (task
-/// 1442, aurora_lint).
+/// write status unknowable, which is a MAY fact, not a coverage proof.
 fn collect_param_forwards_to_indirect_call(
     node: &Node,
     source: &str,
@@ -4984,8 +4981,7 @@ pub fn propagate_transitive_modifies(summaries: &mut HashMap<String, FunctionSum
         // `classify(number, out)` writes `*out` directly on one arm and hands
         // `out` to `set_flag` on the other, and `set_flag` writes nothing when
         // `number == 0` -- so `classify` can return without writing too, and a
-        // structural walk of its body alone can never see that (task 1078,
-        // aurora_lint).
+        // structural walk of its body alone can never see that.
         let conditional_snapshot: HashMap<String, HashSet<usize>> = summaries
             .iter()
             .map(|(n, s)| (n.clone(), s.conditional_modifies_params.clone()))
@@ -5033,8 +5029,7 @@ pub fn propagate_transitive_modifies(summaries: &mut HashMap<String, FunctionSum
                 summary.conditional_modifies_params.remove(&idx);
                 // Keeps `unconditional_modifies_params` a subset of the MAY
                 // set for a parameter that reached here through a forward and
-                // never had a direct write to put it there (task 1027,
-                // aurora_lint).
+                // never had a direct write to put it there.
                 summary.modifies_params.insert(idx);
                 changed = true;
             }
@@ -5055,7 +5050,7 @@ pub fn propagate_transitive_modifies(summaries: &mut HashMap<String, FunctionSum
 /// inside THAT function's body. Uses the full `param_passthroughs` set, not
 /// the unconditional subset: unlike a write-coverage proof, "this parameter
 /// might reach an unresolvable call" only needs one reachable path, not
-/// every path (task 1442, aurora_lint, EXP33-C piece (b)).
+/// every path (see EXP33-C piece (b)).
 pub fn propagate_forwards_to_indirect_call(summaries: &mut HashMap<String, FunctionSummary>) {
     for _pass in 0..10 {
         let snapshot: HashMap<String, HashSet<usize>> = summaries
@@ -5162,7 +5157,7 @@ pub fn propagate_transitive_param_taint(
 /// Propagate transitive stores through param pass-through chains.
 ///
 /// If function B hands param 0 to callee C, and C stores it somewhere
-/// outliving the call, then B does too. Without this the idiom task 1198
+/// outliving the call, then B does too. Without this the idiom an earlier fix
 /// exists for is out of reach entirely: curl's `Curl_conn_meta_set` stores
 /// its `meta_data` only by forwarding it to `Curl_hash_add2`, and releases it
 /// on the failure arm through a FUNCTION-POINTER PARAMETER (`meta_dtor(...)`)
@@ -5327,7 +5322,7 @@ pub fn propagate_transitive_frees_param_pointees(summaries: &mut HashMap<String,
 /// helper cleanup functions rather than calling `free(param->field)`
 /// directly — e.g. mosquitto's `mosquitto__destroy(mosq)` calls
 /// `message__cleanup_all(mosq)` and `will__clear(mosq)`, which are the ones
-/// that actually free `mosq`'s fields (task 2: MEM31-C ownership model).
+/// that actually free `mosq`'s fields (an earlier fix: MEM31-C ownership model).
 pub fn propagate_transitive_frees_param_fields(summaries: &mut HashMap<String, FunctionSummary>) {
     for _pass in 0..10 {
         let mut changed = false;
@@ -5854,7 +5849,7 @@ mod tests {
 
     #[test]
     fn test_modifies_params_excludes_read_only_arrow_access() {
-        // task 195/319 follow-on regression: a plain READ through param->field
+        // A follow-on regression: a plain READ through param->field
         // or param[i] (no assignment) must NOT count as modifies_params --
         // confirmed as a real Juliet CWE-476 false-negative source when this
         // was wrongly treated as a write (badSink(struct *data) { if (cond)
@@ -6213,7 +6208,7 @@ mod tests {
 
     #[test]
     fn test_ifdef_spanning_brace_does_not_swallow_sibling_summary() {
-        // Regression for task 267/296 (see the identical fixture and bug
+        // A regression (see the identical fixture and bug
         // description in prescan.rs's
         // test_collect_call_graph_ifdef_spanning_brace_does_not_leak_swallowed_sibling_calls):
         // a brace that opens under `#ifndef SQLITE_OMIT_AUTHORIZATION` and

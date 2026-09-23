@@ -260,7 +260,7 @@ pub fn calculate_malloc_size(malloc_args: &str) -> Option<BufferSize> {
                 return Some(BufferSize::DynamicCalculated(c));
             }
             // Reversed order: sizeof(TYPE) * COUNT - malloc(sizeof(int) * 5)
-            // (task 513, same shape as task 509's nested-multiply extension)
+            // (same shape as the nested-multiply extension elsewhere)
             if left.contains("sizeof") {
                 if let Some(c) = extract_numeric_value(right) {
                     return Some(BufferSize::DynamicCalculated(c));
@@ -303,7 +303,7 @@ pub fn calculate_alloc_bytes(malloc_args: &str) -> Option<usize> {
                 return Some(c * s);
             }
             // Reversed order: sizeof(TYPE) * COUNT - malloc(sizeof(int) * 5)
-            // (task 513, same shape as task 509's nested-multiply extension)
+            // (same shape as the nested-multiply extension elsewhere)
             if let (Some(s), Some(c)) = (extract_sizeof_value(left), extract_numeric_value(right)) {
                 return Some(c * s);
             }
@@ -653,7 +653,7 @@ mod tests {
 
     #[test]
     fn sizeof_type_bytes_exact_match_canonical_table() {
-        // task 511: single canonical table backing extract_sizeof_value,
+        // an earlier fix: single canonical table backing extract_sizeof_value,
         // ARR38-C's former sizeof_type, and size_analysis::find_element_size.
         assert_eq!(sizeof_type_bytes("int"), Some(4));
         assert_eq!(sizeof_type_bytes("unsigned int"), Some(4));

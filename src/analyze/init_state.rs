@@ -306,7 +306,7 @@ pub fn get_output_arg_indices(func_name: &str) -> Vec<usize> {
         "fread" => vec![0],
         // `read(fd, buf, count)`/`recv(sockfd, buf, len, flags)`: the
         // output buffer is argument 1, not 0 (unlike `fread(ptr, ...)`,
-        // whose buffer really is argument 0) -- task 391, hostap's
+        // whose buffer really is argument 0) -- an earlier fix, hostap's
         // `read(rfkill->fd, &event, sizeof(event))` was never recognized
         // as initializing `event` because `rfkill->fd` (index 0) was
         // checked instead.
@@ -315,8 +315,7 @@ pub fn get_output_arg_indices(func_name: &str) -> Vec<usize> {
         // depends on the format string, not on a fixed position, so it
         // has no answer to give here. `variadic_output_from_index` is
         // what carries it -- and an empty list on its own used to mean
-        // strictly LESS credit than not being listed at all (task 1029,
-        // aurora_lint). See the note there.
+        // strictly LESS credit than not being listed at all. See the note there.
         "scanf" | "fscanf" | "sscanf" => vec![],
         "gettimeofday" => vec![0],
         "getaddrinfo" => vec![3],
@@ -431,8 +430,8 @@ pub struct InitAnalysisConfig {
     /// macro output arguments. Keyed by macro name; only invoked macros present.
     pub macro_output_params: HashMap<String, Vec<usize>>,
     /// Output-parameter indices for cross-file functions, computed from the
-    /// prescan's `FunctionSummary::modifies_params` (task 195 follow-on to
-    /// task 319: un-blinding `#ifdef`-wrapped code to the CFG exposed how many
+    /// prescan's `FunctionSummary::modifies_params` (an earlier fix follow-on to
+    /// an earlier fix: un-blinding `#ifdef`-wrapped code to the CFG exposed how many
     /// real, in-repo functions like `erp_parse_tlvs(pos, end, &tlvs, ...)`
     /// write through a non-stdlib, non-macro pointer param that
     /// `get_output_arg_indices`'s hardcoded stdlib table has no entry for).
@@ -451,7 +450,7 @@ pub struct InitAnalysisConfig {
     /// default credited the conditional write as a full one: curl's
     /// `Curl_sasl_decode_mech(ptr, maxlen, &llen)` writes `*len` only when a
     /// mechanism name matches its table, and `openldap.c`'s caller reads
-    /// `llen` on the no-match path (task 1065 bug #3, aurora_lint).
+    /// `llen` on the no-match path (a real-world bug).
     ///
     /// Kept disjoint from `cross_file_output_params` by construction, and
     /// deliberately excludes parameters carrying an undischarged
@@ -461,8 +460,7 @@ pub struct InitAnalysisConfig {
     pub cross_file_conditional_output_params: HashMap<String, HashSet<usize>>,
     /// For a subset of `cross_file_conditional_output_params`'s indices, the
     /// PROVEN correlation between the write and the callee's own return
-    /// value (`FunctionSummary::conditional_write_return_correlation`,
-    /// task 1450, aurora_lint).
+    /// value (`FunctionSummary::conditional_write_return_correlation`).
     ///
     /// Lets the dataflow promote a `&var` argument from `MaybeUninitialized`
     /// straight to `Initialized` along the specific CFG edge where the
@@ -1223,7 +1221,7 @@ fn process_call_expression(
     }
 
     // Cross-file summary says this function writes through specific params
-    // (task 195/319 follow-on). Apply the marking, but don't treat it as a
+    // (a follow-on). Apply the marking, but don't treat it as a
     // complete answer: `modifies_params` is a flow-insensitive text scan that
     // can under-count (e.g. writes via a nested helper call), so still fall
     // through to `process_unknown_function_call`'s broader default below —
@@ -1364,7 +1362,7 @@ fn try_process_macro_output_params(
             // became visible, which populated the map, armed the
             // `true` below, and dropped the credit `stat` -> arg 1 had always
             // got from the stdlib table -- reporting `st` uninitialised at
-            // five pure-ftpd sites (task 1026 follow-up, aurora_lint).
+            // five pure-ftpd sites (a follow-up fix).
             let name = extract_var_from_arg(arg, source);
             if !name.is_empty() {
                 if let Some(info) = state.get_mut(&name) {
@@ -1519,7 +1517,7 @@ fn try_process_known_initializing_function(
     // wpa_supplicant/eapol_test.c:1042. Withhold the credit but
     // still short-circuit the caller: falling through would re-credit each
     // `&arg` via `process_unknown_function_call`'s permissive fallback --
-    // the very hazard that task 1029's note above already warns about.
+    // the very hazard that an earlier fix's note above already warns about.
     let is_scanf_family = variadic_from.is_some();
     if is_scanf_family && !call_return_is_consumed(node) {
         variadic_from = None;
@@ -1587,7 +1585,7 @@ fn process_unknown_function_call(
     let read_only_indices = config.read_only_deref_fns.get(func_name);
     // Same suppression, sourced from the prescan summary rather than from the
     // file-local scan: `conditionally_init_fns` only ever holds callees
-    // defined in the file being analysed (task 1065 bug #3, aurora_lint).
+    // defined in the file being analysed (a real-world bug).
     let cross_file_cond_indices = config.cross_file_conditional_output_params.get(func_name);
 
     let Some(args) = node.child_by_field_name("arguments") else {
@@ -1607,8 +1605,8 @@ fn process_unknown_function_call(
         // and every caller reads only what it was told was written -- so the
         // whole-array granularity of this model turns "may not have written
         // all of it" into a report about code that is fine. The scalar
-        // output parameter is where the distinction is real (task 1065
-        // bug #3, aurora_lint).
+        // output parameter is where the distinction is real (a real-world
+        // bug).
         let skip_addr_of_arg = skip_this_arg
             || cross_file_cond_indices.is_some_and(|indices| indices.contains(&arg_idx));
         // A cast or a redundant parenthesis around the argument changes
@@ -1646,8 +1644,7 @@ fn process_unknown_function_call(
 
 // ---------------------------------------------------------------------------
 // Edge refinement: correlate a caller's checked-return guard with a
-// cross-file conditional writer's proven return correlation (task 1450,
-// aurora_lint).
+// cross-file conditional writer's proven return correlation.
 // ---------------------------------------------------------------------------
 
 /// Names of branch-hint wrappers that evaluate to their first argument's
@@ -2095,7 +2092,7 @@ pub fn get_var_info_at_with_config(
             // Statement contains byte_offset. For switch statements, replay
             // same-case sub-statements that precede the target. For
             // if/while/for, replay earlier clauses of a still-in-progress
-            // short-circuited condition (see task 322).
+            // short-circuited condition (see an earlier fix).
             if let Some(stmt_node) = find_node_at_range(body, start, end) {
                 if stmt_node.kind() == "switch_statement" {
                     replay_within_switch_case(
@@ -2276,7 +2273,7 @@ fn get_declarator_name(node: &Node, source: &str) -> String {
 /// `get_declarator_name` recurses on node kind alone and finds a name
 /// either way, which is exactly why a pointer-returning function prototype
 /// declared inside a function body used to get tracked as an uninitialized
-/// pointer variable (task 461 category 8 -- sqlite's tclsqlite.c:
+/// pointer variable (an earlier fix category 8 -- sqlite's tclsqlite.c:
 /// `extern const char *TCLSH_INIT_PROC(Tcl_Interp*);` under `#if
 /// defined(TCLSH_INIT_PROC)`, later called as `zScript =
 /// TCLSH_INIT_PROC(interp);` and flagged as reading an uninitialized
@@ -2866,7 +2863,7 @@ mod tests {
 
     #[test]
     fn test_cross_file_output_param_marks_initialized() {
-        // task 195/319 follow-on: a cross-file (non-macro, non-stdlib) function
+        // A follow-on: a cross-file (non-macro, non-stdlib) function
         // known from FunctionSummary::modifies_params to write through param
         // index 2 (mirrors hostap's `erp_parse_tlvs(pos, end, &tlvs, flag)`)
         // must mark the address-of'd variable as Initialized.
@@ -2906,7 +2903,7 @@ mod tests {
 
     #[test]
     fn test_macro_output_param_marks_initialized_through_cast() {
-        // task 589: curl's `Curl_rand(data, (unsigned char *)rnd, rnd_size)`
+        // an earlier fix: curl's `Curl_rand(data, (unsigned char *)rnd, rnd_size)`
         // casts the output arg to match the forwarded function's real
         // parameter type. The macro-output-param index (1, "rnd") must still
         // mark `rnd` Initialized even though the argument node at that

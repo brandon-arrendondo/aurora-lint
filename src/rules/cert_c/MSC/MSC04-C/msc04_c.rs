@@ -309,7 +309,7 @@ impl Msc04C {
         // (prescan graph may not include the current file if it wasn't prescanned).
         // Strip ambiguous (struct-field / parameter-shadowed) callees here too --
         // `callees` was collected fresh from this function's own body and hasn't
-        // gone through `strip_ambiguous_callees` yet (see task 562).
+        // gone through `strip_ambiguous_callees` yet (see an earlier fix).
         let ambiguous = self.ambiguous_call_targets.borrow();
         let callees: HashSet<String> = callees
             .into_iter()

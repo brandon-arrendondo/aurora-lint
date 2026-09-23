@@ -32,7 +32,7 @@ pub struct Str31C {
     /// `#define`/`const` table for resolving array dimension expressions
     /// (e.g. `arr[2*SIZE + 2]`) when consulting the shared AST array-size
     /// resolver (see [`crate::analyze::array_size::resolve_declared_array_size`],
-    /// task 504). Built once per file in `check()`.
+    /// an earlier fix). Built once per file in `check()`.
     macros: RefCell<MacroConstantMap>,
 }
 
@@ -645,7 +645,7 @@ impl Str31C {
     /// templates, reused verbatim in every flow-variant file — collide in
     /// that map, and the prescan merge (`prescan.rs`) keeps only the
     /// first-seen entry's `produces_param_buffer_size` on collision. Routing
-    /// same-file relays through the summary unconditionally (as task 506
+    /// same-file relays through the summary unconditionally (as an earlier fix
     /// briefly did) resolves each call against whichever same-named
     /// function happened to be prescanned first project-wide — silently
     /// right or wrong per file — which cost 4 TP and added 9 FP on Juliet

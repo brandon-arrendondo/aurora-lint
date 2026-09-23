@@ -45,8 +45,8 @@ pub struct Dcl31C {
     /// [`resolve_typedef_chain`] to answer "is this parameter's declared
     /// type a function-pointer typedef?" for the sqlite RecordCompare /
     /// sqlite3_callback shape whose typedef lives in `sqliteInt.h`, not
-    /// in the .c file being checked (task 1054, second consumer of
-    /// task 736's shared resolver).
+    /// in the .c file being checked (second consumer of
+    /// an earlier fix's shared resolver).
     typedef_types: RefCell<Arc<HashMap<String, String>>>,
     /// Names of typedefs whose declared type is a function pointer, from
     /// prescan. Consulted after the chain walker terminates.
@@ -118,7 +118,7 @@ impl Dcl31C {
             // trailing or leading GCC-style attribute macro invocation
             // (`ALIGN(...)`, `VISIBLE`, `SKIM_BSS`) confuses the grammar
             // into splitting off a bogus extra `declaration` for the
-            // attribute tail (task 650, seL4 e.g. `pml4e_t arr[N]
+            // attribute tail (seL4 e.g. `pml4e_t arr[N]
             // ALIGN(BIT(X)) VISIBLE;` -> a real `pml4e_t arr[N]` declaration
             // plus a second, spurious `ALIGN(BIT(X)) VISIBLE;` "declaration"
             // with no recognizable type). Since aurora-lint can't tell that shape

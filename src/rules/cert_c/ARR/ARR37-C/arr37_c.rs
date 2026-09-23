@@ -686,8 +686,8 @@ impl NonArrayPointerAnalyzer {
                         // stays NonArray; an Array (or TrailingAllocation)
                         // base makes the resulting pointer safe to treat
                         // the same way, and an unresolved base is left
-                        // Unknown/ambiguous rather than guessed at (task
-                        // 557 — this was the single largest measured
+                        // Unknown/ambiguous rather than guessed at (this was the single largest
+                        // measured
                         // ARR37-C FP source: sqlite/curl/lua all had
                         // `p = &arr[i]` idioms misclassified as pointing to
                         // a non-array object).

@@ -312,8 +312,7 @@ impl Int10C {
                         || overflow_helpers::is_short_unsigned_typedef(t)
                         // `t` is the alias name as written (e.g. "word_t",
                         // "paddr_t") -- resolve the full, possibly
-                        // cross-file typedef chain before giving up (task
-                        // 657).
+                        // cross-file typedef chain before giving up.
                         || overflow_helpers::typedef_chain_is_unsigned(t, &typedef_types);
                 }
             }
@@ -395,7 +394,7 @@ impl Int10C {
     ) -> bool {
         // Without VRA for this function the environment is empty, which
         // still evaluates a dividend that needs no variable at all: a
-        // standard PRNG call (`rand() % n`, task 1275) is bounded by its own
+        // standard PRNG call (`rand() % n`) is bounded by its own
         // contract through `const_eval::contract_return_range`.
         let var_ranges = self
             .vra_var_ranges_at(left_node, source)

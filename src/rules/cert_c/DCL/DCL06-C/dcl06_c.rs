@@ -214,7 +214,7 @@ impl Dcl06C {
     /// Extract array name from array declarator. A struct member's
     /// declarator is a `field_identifier`, not an `identifier`, so
     /// `char name[64];` inside a struct had no name at all and could never
-    /// be matched against a `sizeof(x.name)` (task 1153, mechanism 7).
+    /// be matched against a `sizeof(x.name)` (mechanism 7).
     fn extract_array_name(&self, array_decl: &Node, source: &str) -> Option<String> {
         for i in 0..array_decl.child_count() {
             if let Some(child) = array_decl.child(i) {
@@ -313,7 +313,7 @@ impl Dcl06C {
         }
     }
 
-    /// Structural exemption (bmdb task 757, rounds 181-184): a literal whose
+    /// Structural exemption (bmdb an earlier fix, rounds 181-184): a literal whose
     /// exact hex value is echoed in the name of a SIBLING argument in the same
     /// call is a mechanical table entry pairing a value with its own already-
     /// descriptive identifier, e.g. `init_idt_entry(idt, 0x19, int_19)` --
@@ -371,7 +371,7 @@ impl Dcl06C {
         Some(format!("{n:x}"))
     }
 
-    /// Structural exemption (bmdb task 757, rounds 181-184): a literal
+    /// Structural exemption (bmdb an earlier fix, rounds 181-184): a literal
     /// compared directly against an identifier whose name is a well-known
     /// library/platform version macro is a version-check idiom, not hidden
     /// program logic -- confirmed FP in 19 instances spanning ARES_VERSION,
@@ -385,7 +385,7 @@ impl Dcl06C {
     /// -- `sqlite3_libversion_number() >= 3008002`, curl's
     /// `Curl_conn_http_version(data, conn) != 20` -- is the same check
     /// against a runtime library version, and is recognized by the same
-    /// name predicate applied to the callee (task 1153, mechanism 4).
+    /// name predicate applied to the callee (mechanism 4).
     fn is_version_macro_comparison(&self, node: &Node, source: &str) -> bool {
         let Some(parent) = node.parent() else {
             return false;
@@ -412,7 +412,7 @@ impl Dcl06C {
         Self::is_version_macro_identifier(&get_node_text(&named, source).to_lowercase())
     }
 
-    /// Structural exemption (task 1153, mechanism 3): a literal that an
+    /// Structural exemption (mechanism 3): a literal that an
     /// assertion pins a NAMED quantity to. `assert( sizeof(aSpecial)==32 )`,
     /// `assert( PAGER_JOURNALMODE_WAL==5 )`, `assert( 200==sqlite3LogEst(
     /// 1048576) )`: the literal is not program logic, it is the checked
@@ -487,7 +487,7 @@ impl Dcl06C {
     /// combined, an arithmetic expression EVERY leaf of which is one of
     /// them: sqlite's `assert( 121 == WALINDEX_LOCK_OFFSET + WAL_CKPT_LOCK )`
     /// and the `WALINDEX_LOCK_OFFSET + WAL_READ_LOCK(n)` rows beside it
-    /// (task 1153; the bare-identifier block above them was already exempt).
+    /// (the bare-identifier block above them was already exempt).
     ///
     /// The guarantee stays mechanical rather than inferred: a single bare
     /// literal leaf (`WALINDEX_LOCK_OFFSET + 3`) makes the whole operand not
@@ -618,7 +618,7 @@ impl Dcl06C {
     /// (the K&R spelling, valid C) yielded nothing at all, and `sizeof(x.a)`
     /// yielded "x.a", which never matches the declarator name `a` -- both
     /// left an array that IS measured with `sizeof` reported as if it were
-    /// not (task 1153, mechanisms 7 and 8). The operand is unwrapped through
+    /// not (mechanisms 7 and 8). The operand is unwrapped through
     /// any parentheses; a plain identifier names itself, and a field access
     /// (`x.a`, `p->a`) names the field, which is what the array declarator
     /// inside the struct is spelled as. A subscript or deref (`sizeof

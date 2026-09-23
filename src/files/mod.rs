@@ -11,11 +11,11 @@ use anyhow::Result;
 /// Deliberately NOT `lang_parsing_substrate::is_parseable_extension`: that
 /// function reflects every language feature compiled into the substrate,
 /// including `lang-cpp` (enabled solely for `cpp_header::looks_like_cpp`,
-/// task 571's C++-header detection) — using it here would silently widen
+/// an earlier fix's C++-header detection) — using it here would silently widen
 /// file discovery to `.cpp`/`.hpp`/etc. and run C-only rules against real
 /// C++ source across every project, not just the one ambiguous `.h` case
-/// task 571 targets. `is_extension_for_language` (substrate 0.5.2+, task
-/// 583) is the fix upstream: scoped to the `"c"` key specifically, so it
+/// an earlier fix targets. `is_extension_for_language` (substrate 0.5.2+)
+/// is the fix upstream: scoped to the `"c"` key specifically, so it
 /// can never change just because another `lang-*` feature gets enabled.
 pub(crate) fn is_c_source_extension(ext: &std::ffi::OsStr) -> bool {
     lang_parsing_substrate::is_extension_for_language(ext, "c")
