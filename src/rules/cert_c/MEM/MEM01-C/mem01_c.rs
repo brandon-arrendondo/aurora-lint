@@ -46,17 +46,46 @@ impl Mem01C {
     }
 
     /// Functions confirmed to dereference a pointer parameter WITHOUT ever
-    /// writing through it (`dereferences_params - modifies_params`). Passing
-    /// `&ptr_name` to one of these is a genuine read of the (possibly freed)
-    /// pointer value, not a safe reassignment — mirrors EXP33-C's
-    /// `build_read_only_deref_fns`.
+    /// writing through it. Passing `&ptr_name` to one of these is a genuine
+    /// read of the (possibly freed) pointer value, not a safe reassignment.
+    ///
+    /// The same three-state test as EXP33-C's `build_read_only_deref_fns`,
+    /// and deliberately the same code shape so the two cannot drift again.
+    /// `dereferences_params - modifies_params` alone was this rule's test
+    /// until aurora_lint 1459, which is what EXP33-C's was before 1437 and
+    /// 1442 fixed it; MEM01-C inherited 1444's population-side fix for free
+    /// (`dereferences_params` is a shared `FunctionSummary` field) and none
+    /// of the consumption-side ones.
+    ///
+    /// Piece (a), aurora_lint 1437: `credit_modifies_params` withholds a
+    /// parameter from the MAY set while its forwarding obligation is still
+    /// unresolved (`modifies_params_pending`), so a merely-pending parameter
+    /// is indistinguishable here from one proven never written. Excluding it
+    /// stops "not proven to write" doubling as "proven not to write".
+    ///
+    /// Piece (b), aurora_lint 1442: `forwards_to_indirect_call` is the
+    /// Unknown-due-to-indirection state. A callee that hands the parameter to
+    /// a call through a function pointer or a driver-ops struct field
+    /// (`hapd->driver->read_sta_data(...)`) can never be proven to write it
+    /// OR not to, so the honest answer is neither, and this map must suppress
+    /// rather than assert (ADR-0001). Resolving the indirect target is
+    /// points-to analysis the design doc explicitly declines (piece (c) of
+    /// docs/design/exp33-c-cross-file-uninit-architecture.md).
+    ///
+    /// What that costs HERE, stated because the consumer differs: MEM01-C
+    /// reads this map to say a call is a genuine read of a possibly-freed
+    /// pointer. A parameter dropped by either filter stops earning that claim,
+    /// so the effect is withheld MEM01-C reports, never new ones.
     fn build_read_only_params(&self) -> HashMap<String, HashSet<usize>> {
         let summaries = self.cross_file_summaries.borrow();
         let mut result = HashMap::new();
         for (name, summary) in summaries.iter() {
             let read_only: HashSet<usize> = summary
                 .dereferences_params
-                .difference(&summary.modifies_params)
+                .iter()
+                .filter(|idx| !summary.modifies_params.contains(idx))
+                .filter(|idx| !summary.modifies_params_pending.contains_key(idx))
+                .filter(|idx| !summary.forwards_to_indirect_call.contains(idx))
                 .copied()
                 .collect();
             if !read_only.is_empty() {
