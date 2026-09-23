@@ -97,7 +97,7 @@ Coverage Is The Difference
 .. note::
 
    **PARTLY RESOLVED** — ``python -m bench realworld-run --tool infer`` and
-   ``--tool frama-c`` now work against all nine corpora.
+   ``--tool frama-c`` now work against all nine corpora (aurora_lint task 767).
    Both are driven from each checkout's ``compile_commands.json``, which
    ``playbooks/setup-compile-commands.yml`` generates for all nine —
    including seL4, hostap and pure-ftpd, whose supposed unbuildability was
@@ -322,8 +322,8 @@ Real-world suite, 8 projects, run 215:
    ``duration_s = 0.0``, so its recorded aurora-lint total is 490.9 s. The ~1,190 s
    above substitutes those two projects' run-229 figures (450.4 s and
    253.1 s), which mixes runs and is therefore not a citable number. Quoting
-   the 490.9 s would be wrong in aurora-lint's favor, which is worse. Tracked
-   as a benchmarking_db follow-up.
+   the 490.9 s would be wrong in aurora-lint's favor, which is worse. Tracked as
+   benchmarking_db task 740.
 
 Frama-C and Infer have no row here yet — see the note above. For an order of
 magnitude on what the Frama-C row will cost: its 6-CWE Juliet run is the
@@ -395,7 +395,8 @@ Juliet, all four on one host (2026-09-04), CWE list sizes differing:
    resolves to zero ``.c`` files instead of recording a 0/0 row that reads
    the same as "the tool found nothing". The runs above predate that fix and
    still carry the row; the exported CSV distinguishes them as ``cwe_count``
-   (rows present) and ``cwes_measured``. Tracked separately for both counts.
+   (rows present) and ``cwes_measured``. Tracked as aurora_lint task 909; the
+   same defect on aurora-lint's own count is task 910.
 
 Real-World Precision, Per Rule
 ==============================
@@ -415,9 +416,9 @@ Real-World Precision, Per Rule
    cppcheck additionally needs a native-id-to-CERT-C mapping (or
    ``--addon=cert`` enabled) before a per-rule table is even expressible.
 
-   Tracked as a follow-up for both capture (this repo) and ingest
-   (benchmarking_db, plus the ``ground_truth`` key collision that
-   adjudicating a second tool at the same coordinate would create).
+   Tracked as aurora_lint task 766 (capture) and benchmarking_db task 740
+   (ingest, plus the ``ground_truth`` key collision that adjudicating a
+   second tool at the same coordinate would create).
 
 .. note::
 
@@ -458,7 +459,8 @@ Real-World Precision, Per Rule
    39.7% → 34.5% — so it was refreshed rather than re-dated.
 
    The aurora-lint column is still from 2026-09-02, so the table is now within days
-   of single-date rather than five months from it.  Tracked as a follow-up.
+   of single-date rather than five months from it.  Tracked as aurora_lint
+   task 768.
 
 .. note::
 
