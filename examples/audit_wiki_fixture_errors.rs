@@ -1,7 +1,7 @@
-//! Task 471: walk every wiki_*.c CERT fixture and flag ones whose tree-sitter
+//! Walk every wiki_*.c CERT fixture and flag ones whose tree-sitter
 //! parse tree contains an ERROR node -- i.e. fixtures that are not valid
 //! standalone C, regardless of whether they textually match the current
-//! wiki content (task 328's containment heuristic only checked the latter
+//! wiki content (an earlier containment heuristic only checked the latter
 //! and missed these). A fixture with an ERROR node still "passes" its
 //! generated test trivially (fail tests may or may not still detect a
 //! violation depending on where the ERROR lands; pass tests almost always

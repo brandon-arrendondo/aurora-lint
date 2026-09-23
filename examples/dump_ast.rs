@@ -1,6 +1,6 @@
 //! Dev tool: dump the tree-sitter-c parse tree (S-expression) for a snippet,
 //! using the EXACT grammar version aurora-lint depends on. Used by the macro-expansion
-//! Phase 0 spike (task 184) to confirm how function-like macro invocations
+//! Phase 0 spike to confirm how function-like macro invocations
 //! parse. Reads C source from stdin; prints the S-expression and error flag.
 //!
 //!   echo 'CODE' | cargo run --example dump_ast

@@ -11,7 +11,7 @@
 //! cargo run --release --example dump_summary -- /tmp/ctx.json decrRefCount zfree
 //! ```
 //!
-//! This is how task 1227 found that valkey's `#define zfree valkey_free`
+//! This is how an earlier investigation found that valkey's `#define zfree valkey_free`
 //! sent the transitive-frees edge to a name with no summary.
 
 use aurora_lint::analyze::context::ProjectContext;

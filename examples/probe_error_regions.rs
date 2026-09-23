@@ -1,4 +1,4 @@
-//! Dev probe (aurora_lint task 1052): measure the blast radius of collapsed
+//! Dev probe: measure the blast radius of collapsed
 //! top-level `ERROR` regions across a real codebase.
 //!
 //! For every file handed to it on stdin (one path per line) this parses with
