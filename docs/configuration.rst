@@ -140,13 +140,13 @@ Two are parked on upstream CERT publishing real content for the rule:
   framing; severity, likelihood, priority and level are all unscored, and
   there is no formal description, no compliant/noncompliant examples, and no
   CWE mapping. `CERT wiki page
-  <https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/environment-env/env04-c>`_.
+  <https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/environment-env/env04-c>`__.
   Will be implemented once CERT ships real content; tracked as a gate task
   until then.
 - **MSC25-C** — *Do not use insecure or weak cryptographic algorithms*.
   CERT's scraped description is the single sentence "This rule is a stub,"
   with zero CWE references. `CERT wiki page
-  <https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc25-c>`_.
+  <https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc25-c>`__.
   Will be implemented once CERT ships real content; tracked as a gate task
   until then.
 

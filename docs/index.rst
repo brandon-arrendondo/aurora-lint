@@ -1,6 +1,6 @@
-========================
+============================
 aurora-lint Developer Guide
-========================
+============================
 
 aurora-lint is a terminal-based static analysis tool that validates
 C code compliance with `SEI CERT C Coding Standards
