@@ -227,7 +227,7 @@ model.
 
 ## curl
 
-### Scope (task 158) + file reduction (sqlite lesson)
+### Scope + file reduction (sqlite lesson)
 
 Per task 158: **`lib/` (libcurl) + `src/` (curl CLI)** — the shipped product.
 Excludes `tests/`, `docs/`, `scripts/`, vendored/build tooling, and
@@ -246,18 +246,18 @@ delta-adjudicating task 431's INT09-C fix, `include/` turned out to produce
 218 findings (measured directly, sqc v0.4.198) dominated by three specific,
 *fixable* analyzer gaps rather than a diverse real-bug surface:
 
-- **API02-C** (task 450) misses the size parameter on multi-line wrapped
+- **API02-C** misses the size parameter on multi-line wrapped
   declarations — e.g. `curl_easy_recv(CURL *curl, void *buffer, size_t
   buflen,\n  size_t *n)` gets flagged as missing a size arg even though
   `buflen` is right there on line 2. Also flags genuine single-value
   out-params (`curl_multi_perform`'s `int *running_handles`) that were never
   arrays/buffers to begin with.
-- **PRE00-C** (task 451) flags `typecheck-gcc.h`'s deliberate multi-evaluation
+- **PRE00-C** flags `typecheck-gcc.h`'s deliberate multi-evaluation
   compile-time type-check macro idiom (`curl_easy_setopt`/`curl_easy_getinfo`)
   as a double-evaluation bug, even though the repeated references are
   side-effect-free and only one branch is ever evaluated
   (`__builtin_choose_expr` semantics).
-- **INT09-C** (task 452) can't resolve `#define`-based bitmask type tags
+- **INT09-C** can't resolve `#define`-based bitmask type tags
   (`CURLINFO_STRING + 1`) in enum-initializer arithmetic — the same
   const-eval class task 431 fixed for prior-enumerator references, just for
   object-like macros instead. All 67 of curl's post-431-fix INT09-C findings
@@ -352,7 +352,7 @@ rows behind it, not a typo to fix.
 
 ## hostap
 
-### Scope (task 159)
+### Scope
 
 Per task 159: **`src/` + `wpa_supplicant/` + `hostapd/`** — the shipped
 hostapd (AP) and wpa_supplicant (station) daemons and their shared library.
@@ -475,7 +475,7 @@ sqc src \
 Binary: built from source at Cargo.toml v0.4.30 into an isolated target dir
 (`/tmp/sqc-mosquitto-audit`) so as not to disturb `target/release/sqc`, which
 another concurrent session used for the sqlite FP-reduction benchmark gate
-(task 171).
+.
 
 ### Primary build configuration
 
@@ -813,7 +813,7 @@ original six-file onboarding scope below and was never updated when 551
 widened it. Fixed under task 717 — see that task for the measured
 92%-out-of-scope signal that surfaced it.
 
-#### Original onboarding scope (task 301): SQL-client files only
+#### Original onboarding scope: SQL-client files only
 
 Unlike libcrc/raylib/lua (whole-project exhaustive labeling), this audit is
 scoped to exactly the two files that motivated onboarding this codebase:

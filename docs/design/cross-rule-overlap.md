@@ -2,7 +2,7 @@
 
 **Status:** DECIDED (2026-08-27, task 625). Rollout DONE (2026-08-30, task 626).
 
-## Rollout (task 626)
+## Rollout
 
 `[references] related = ["RULE-ID", ...]` (the sketch's default-outcome field)
 is now populated in 27 rule TOMLs: the top measured co-located/disagreement
@@ -15,10 +15,10 @@ overlap —
   reasons), tracked as task 628. Re-run the co-location query after 628 lands
   before deciding whether any `API00-C` pair is genuine overlap.
 - Every `MSC24-C`-anchored pair other than `STR31-C`/`STR32-C` (this doc's own
-  counterexample): 97% of `MSC24-C`'s FPs trace to two rule-content bugs
-  (task 629), which inflate its disagreement counts with other rules
+  counterexample): 97% of `MSC24-C`'s FPs trace to two rule-content bugs,
+  which inflate its disagreement counts with other rules
   independent of genuine overlap. `MSC24-C`/`STR31-C`(+`STR32-C`) is kept
-  since it's the flagship validated example above, not a task-629 symptom.
+  since it's the flagship validated example above, not that same symptom.
 
 Tagged pairs (all `related`, none cleared the `defers_to` bar):
 `ARR00-C`↔`ARR30-C`, `ARR38-C`↔`INT32-C`, `CON33-C`↔`CON34-C`,

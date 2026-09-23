@@ -27,9 +27,9 @@ benchmark run.
 
 | Rule | Juliet CWE(s) | Juliet TP rate | Real-world adjudicated precision (recall) | Real-world sample |
 |------|--------------|----------------|--------------------------------------------|--------------------|
-| CON03-C | **none** — no `cwe` key in `CON03-C.toml` | N/A (never runs in fast-mode Juliet; see §2) | 4.1% (100%) | 18 in-scope / 6 TP / 12 FP (task 547) |
-| CON07-C | CWE-366, 413, 567, 667 | 8.2% (CWE-366; 13.9% flaw-detection) | 2.4% (100%) | 45 in-scope / 0 TP / 45 FP (task 546) |
-| CON33-C | CWE-330, 377, 676 | 3.0% (CWE-377; 1.4% flaw-detection) | 0% (n/a — 0 TP) | 16 in-scope combined w/ CON34-C+CON37-C / 0 TP / 16 FP (task 549) |
+| CON03-C | **none** — no `cwe` key in `CON03-C.toml` | N/A (never runs in fast-mode Juliet; see §2) | 4.1% (100%) | 18 in-scope / 6 TP / 12 FP |
+| CON07-C | CWE-366, 413, 567, 667 | 8.2% (CWE-366; 13.9% flaw-detection) | 2.4% (100%) | 45 in-scope / 0 TP / 45 FP |
+| CON33-C | CWE-330, 377, 676 | 3.0% (CWE-377; 1.4% flaw-detection) | 0% (n/a — 0 TP) | 16 in-scope combined w/ CON34-C+CON37-C / 0 TP / 16 FP |
 
 Sources: `docs/juliet-coverage.md` (generated from `data/benchmarks.db`),
 tasks 546/547/549 delta-adjudications (private audit archive).
@@ -119,7 +119,7 @@ structural problem that has nothing to do with rule quality:
    already isolated in real-world code, not a separate Juliet-specific
    failure mode.
 
-3. **Resolved 2026-09-01 (task 606):** whether Juliet's CWE-362/364/366/367
+3. **Resolved 2026-09-01:** whether Juliet's CWE-362/364/366/367
    templates actually construct a genuine multi-thread/signal/ISR
    execution context, or merely demonstrate the API-misuse *pattern* in a
    single execution path. Answer is **mixed, not uniform** — direct

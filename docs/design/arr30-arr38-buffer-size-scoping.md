@@ -1,6 +1,6 @@
 # Scoping: ARR30-C's and ARR38-C's Buffer-Size/Declaration Subsystems
 
-**Status:** Scoping complete for both the size-resolution layer (task 497)
+**Status:** Scoping complete for both the size-resolution layer
 and the bounds-checking layer (task 512, sections 6-8 below). Migration/fix
 work NOT started — no rule file has been touched by either pass. This
 document is the "dedicated fix-scoping pass" task 497 asked for before any
@@ -36,7 +36,7 @@ size-*resolution* primitives this task is scoped to, and are a
 plausible source of the "hiding substantially more" the task text warns
 about, but confirming that needs its own read, not claimed here.
 
-**Update (task 512):** that remaining layer has now been read — see
+**Update:** that remaining layer has now been read — see
 sections 6-8 below. It turned up a real false-negative bug class in
 ARR30-C's older regex-heuristic layer (missing word-boundary anchors) and
 confirmed the same unscoped-whole-file-search bug class task 496 fixed
@@ -253,7 +253,7 @@ Not filed by this pass — listed here for the coordinator to create via
 
 ---
 
-## 6. ARR30-C bounds-checking layer (task 512)
+## 6. ARR30-C bounds-checking layer
 
 **Scope actually read vs. sampled:** the ~2000-line estimate undercounted
 the real boundary. This pass traced the bounds-*checking* family from
@@ -357,7 +357,7 @@ item is stale/confirmed-done, not a live gap.
 
 ---
 
-## 7. ARR38-C per-library-function checking layer (task 512)
+## 7. ARR38-C per-library-function checking layer
 
 **Scope actually read:** `src/rules/cert_c/ARR/ARR38-C/arr38_c.rs` lines
 86-2545 — the full `check()` entry point, all buffer/size/pointer-offset

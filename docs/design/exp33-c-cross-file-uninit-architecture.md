@@ -1,4 +1,4 @@
-# EXP33-C `check_cross_file_uninit_calls`: What a Correct Check Needs (task 1419)
+# EXP33-C `check_cross_file_uninit_calls`: What a Correct Check Needs
 
 **Status:** IMPLEMENTED. (a) landed as task 1437 (`50fb0681`), (b) as task
 1442 (`9ed4c319`), (d) as task 1444 (`1e180eb0`) — its mbedtls half; its lua
@@ -110,7 +110,7 @@ not scoped here.
 `FunctionSummary` already has exactly the machinery this check needs and
 isn't using: `unconditional_modifies_params` / `conditional_modifies_params`
 / `modifies_params_pending`, built for EXP33-C's own direct-argument check
-(tasks 988, 1011, 1027, 1065) and carried cross-file by
+and carried cross-file by
 `propagate_transitive_modifies` to a fixpoint. That infrastructure answers
 "is there a returning path that writes nothing through this parameter" —
 the actual question a MUST-uninitialized check needs — instead of

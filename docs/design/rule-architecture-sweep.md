@@ -1,4 +1,4 @@
-# Rule Architecture Sweep: What Can This Tool's Current Architecture Actually Support? (task 1434)
+# Rule Architecture Sweep: What Can This Tool's Current Architecture Actually Support?
 
 **Status:** First-pass complete. This doc produces a *map* — per Brandon's
 ruling on task 1419, no rule is dropped, disabled, or rearchitected as part
@@ -116,7 +116,7 @@ The family EXP33-C itself belongs to — `modifies_params`,
 | Rule | Field(s) | Bucket | Rationale |
 |---|---|---|---|
 | EXP33-C | `modifies_params` family, `forwards_to_indirect_call`, `conditional_write_return_correlation` | **A (now)** | Done — see §3. |
-| MEM31-C | `frees_params`, `frees_params_guessed`, `frees_param_fields`, `modifies_params` | **A** | Actively maintained MAY/guessed-vs-proven split (`frees_params_guessed` kept apart from real evidence, `requires_manual_review` flagging for MEM30-C — see the field's own doc comment in `function_summary.rs`); 4+ historical fix commits (tasks 1367, 1269, 1289, 401), most recently task 1367 this project's history (a deallocator that frees through a function pointer still frees). Read this pass via git history + doc comments, not a fresh trace. |
+| MEM31-C | `frees_params`, `frees_params_guessed`, `frees_param_fields`, `modifies_params` | **A** | Actively maintained MAY/guessed-vs-proven split (`frees_params_guessed` kept apart from real evidence, `requires_manual_review` flagging for MEM30-C — see the field's own doc comment in `function_summary.rs`); 4+ historical fix commits, most recently task 1367 this project's history (a deallocator that frees through a function pointer still frees). Read this pass via git history + doc comments, not a fresh trace. |
 | MEM03-C | `clears_params` | **A** | MAY fact used only to *recognize* a clearing call (suppression direction), own transitive propagation, own hardening tests (task 1127, volatile-pointer/preprocessor-arm cases). Traced this pass (fork); no indirect-call gap found. |
 | WIN05-C | `param_passthroughs` | **A** | MAY-forward *by design*, with an explicit doc comment reasoning about the direction ("a wrapper that opens the key only on some path still opens it," `win05_c.rs:102-104`) — the MAY/MUST choice was deliberate, not defaulted into. Traced this pass. |
 | **MEM01-C** | `dereferences_params`, `modifies_params` | **B — concrete gap, cheap fix** | `build_read_only_params` (`mem01_c.rs:53-67`) is a byte-for-byte copy of EXP33-C's **pre-fix** `build_read_only_deref_fns`: no `modifies_params_pending` exclusion (piece a), no `forwards_to_indirect_call` exclusion (piece b). It silently inherited the *population*-side fix (task 1444's `has_genuine_arrow_read`, same shared field) but never got the *consumption*-side fixes. Concretely: a callee reached only through an unresolvable driver-ops dispatch, or with an undischarged forwarding obligation, is still misclassified read-only, so MEM01-C asserts "genuine read of a possibly-freed pointer" on a call that may reassign it — a direct false positive, same shape hostap's `accounting_sta_update_stats` was for EXP33-C. **Fix is a direct port of EXP33-C pieces (a)+(b)'s two filters into this one function** — no new capability needed. |
@@ -147,7 +147,7 @@ The family EXP33-C itself belongs to — `modifies_params`,
 
 | Rule | Bucket | Rationale |
 |---|---|---|
-| API00-C | **A** | `checks_null_params` is consumed only to *suppress* (valid-validation-pattern direction), with an explicit doc comment on the safe-direction choice ("unknown callee credits nothing," `api00_c.rs:930-934`) — the same deliberate-reasoning shape as WIN05-C. Its own positive-assertion use of `dereferences_params` (`parameter_is_dereferenced`, `api00_c.rs:1241-1274`) shares the field EXP33-C's `has_genuine_arrow_read` fix (task 1444) already hardened, so API00-C got that fix for free — **evidence that population-layer fixes propagate across every consuming rule without per-rule work**, which is itself useful signal for how to prioritize future fixes in this family. |
+| API00-C | **A** | `checks_null_params` is consumed only to *suppress* (valid-validation-pattern direction), with an explicit doc comment on the safe-direction choice ("unknown callee credits nothing," `api00_c.rs:930-934`) — the same deliberate-reasoning shape as WIN05-C. Its own positive-assertion use of `dereferences_params` (`parameter_is_dereferenced`, `api00_c.rs:1241-1274`) shares the field EXP33-C's `has_genuine_arrow_read` fix already hardened, so API00-C got that fix for free — **evidence that population-layer fixes propagate across every consuming rule without per-rule work**, which is itself useful signal for how to prioritize future fixes in this family. |
 
 ### 4.5 Other single-rule facts
 

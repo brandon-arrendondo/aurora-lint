@@ -1,4 +1,4 @@
-# Scoping + implementation: STR31-C `find_global_buffer_size` (task 507)
+# Scoping + implementation: STR31-C `find_global_buffer_size`
 
 **Status:** Done. Implemented in the same session as this doc.
 

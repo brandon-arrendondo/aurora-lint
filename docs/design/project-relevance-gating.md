@@ -1,4 +1,4 @@
-# Scoping: Project-Relevance Gating (task 216)
+# Scoping: Project-Relevance Gating
 
 **Status:** v1 IMPLEMENTED (2026-07-08, v0.4.86); v2 (task 300, 2026-08-19)
 did the C11/Annex-K per-rule audit §5 called for and DECIDED AGAINST

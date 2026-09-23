@@ -315,7 +315,7 @@ detached-block + MISSING-";" shape makes positional AST modeling simpler and
 more robust than re-lexing `preproc_arg` and re-parsing. Reserve full text
 expansion for non-control-flow function-like macros.
 
-**Verdict: GO.** Phase 1 (task 180) is unblocked; the registry is positional
+**Verdict: GO.** Phase 1 is unblocked; the registry is positional
 (per-macro arg roles: iterator / temp / out / head-input) consumed by init-state
 (mark outputs Initialized) and null-state (mark iterator/out NotNull within the
 following block).
@@ -373,7 +373,7 @@ is fragile and prefix/structural rules generalize better (the Phase 2 lesson).
 ## 10. Phase 3 stock-take (task 186, 2026-06-17)
 
 The §1 / §5A figure of **"51 of 290 rule files (~18%) carry bespoke macro
-logic"** is a *pre-Phase-1* count. Phases 1 (task 180) and 2c (task 185) already
+logic"** is a *pre-Phase-1* count. Phases 1 and 2c already
 did the substantive consolidation, and the original count conflated four
 distinct categories that a Phase-3 migration must treat differently. A full
 re-audit of every macro-touching rule `.rs` file (grep `preproc_|macro_|FOR_EACH|
@@ -482,7 +482,7 @@ keep in sync.
   no-op that still looks like it worked. `CompileDb::missing_include_paths`
   drives a CLI warning instead.
 
-### The system-header gap, and how it was closed (task 623)
+### The system-header gap, and how it was closed
 
 A compile database contains the flags a build *passes*, so it does **not**
 contain the compiler's implicit system header directories — the compiler
@@ -723,12 +723,12 @@ broker until `-I .` reached the root `config.h`. §9's open question about
 which `#if` branch is "live" is still open — this makes its cost visible per
 scan rather than answering it. That cost has since been measured from these
 reports across all twelve corpora, with a recommendation, in
-`docs/design/multi-configuration-scanning.md` (task 1422); §6 there noted that
+`docs/design/multi-configuration-scanning.md`; §6 there noted that
 the single `platform-dead-definition` kind over-attributed, since `DeadRegions`
 discarded the substrate's `DeadCodeReason` and a large share of those rows are
 arms the file itself proves dead.
 
-**Fixed (task 1429).** `DeadRegions` now keeps the reason alongside the range,
+**Fixed.** `DeadRegions` now keeps the reason alongside the range,
 and `DeadRegions::attributed` additionally says *what decided* — the file or
 the scan's assumed configuration. The one kind became two,
 `assumed-dead-definition` and `locally-dead-definition`, so "how much does the

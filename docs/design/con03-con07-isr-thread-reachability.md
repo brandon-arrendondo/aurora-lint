@@ -176,7 +176,7 @@ per-file → merge-across-files pattern already used for `call_graph`,
 start-routine argument — some codebases write it either way; C decays a
 function name to a pointer without `&`, but `&fn` is also legal and appears
 in the wild. `src/analyze/points_to.rs` or the existing `is_address_of`-style
-helpers used by the ARR37-C fix (task 556) are the precedent to check first
+helpers used by the ARR37-C fix are the precedent to check first
 rather than re-deriving.
 
 ### 2. Storage — new `ProjectContext` field

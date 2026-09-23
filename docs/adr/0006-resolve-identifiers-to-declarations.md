@@ -10,7 +10,7 @@ Three independent rules were found, independently, doing the same wrong
 thing: standing in for real semantic resolution with matching on an
 identifier's *spelling* rather than resolving what it actually declares.
 
-- **EXP05-C** (aurora_lint 1170): `check_param_list_for_const` and
+- **EXP05-C** : `check_param_list_for_const` and
   `declaration_declares_const_var` asked whether a declarator's *text*
   contained the identifier's name — a substring test, not a scope-aware
   lookup. mbedtls's `aes_test_cfb128_iv` answered for every local `iv`;

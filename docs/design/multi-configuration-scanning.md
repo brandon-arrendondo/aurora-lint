@@ -323,7 +323,7 @@ The asymmetry is structural, not a tuning problem: a compile database is
 per-translation-unit and the profile is per scan, so a file outside the declared
 configuration gets resolved under a configuration that excludes it.
 
-**The obvious fix is wrong, and worth writing down as such** (task 1432). "Scope
+**The obvious fix is wrong, and worth writing down as such** . "Scope
 the declaration the way the database is scoped: a file with no entry resolves
 under the default profile" fails on the first file it meets, because **a compile
 database contains compiled translation units only — never a header**. Every
@@ -433,7 +433,7 @@ resolution and nothing else").
   conclusion one layer up: no general pre-expansion pass, three narrow
   capabilities instead. Same shape of answer, same reason (the blast radius of
   the general mechanism is large; the unmet need is small and enumerable).
-- `docs/design/multiply-defined-names.md` (task 1385) is this note's
+- `docs/design/multiply-defined-names.md` is this note's
   file-level counterpart: this one picks among the arms of one file, that one
   picks among the files defining one name. Its "two externals" population is
   the part only a declared configuration (§7's option D) can settle, and is

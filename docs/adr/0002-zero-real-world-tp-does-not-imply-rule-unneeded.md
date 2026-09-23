@@ -81,6 +81,6 @@ real fix.
 - FP-reduction work on a 0%-TP rule is still worth doing (it reduces CI/CD
   noise ahead of the rule's eventual real findings) but is a different task
   from questioning whether the rule should exist.
-- Precedent: INT02-C (task 1186) — 431/431 FP historically across 8
+- Precedent: INT02-C — 431/431 FP historically across 8
   projects, decided as a rewrite rather than a disable, because the
   detector never attempted the real analysis in the first place.

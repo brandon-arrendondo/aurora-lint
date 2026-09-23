@@ -13,7 +13,7 @@ produces an `ERROR` node and reparents whatever it could still parse
 underneath it. Rules then walk that tree like any other.
 
 The question "should a rule decline to report when its node has an `ERROR`
-ancestor?" has now come up twice. EXP02-C very nearly adopted it (task 1264)
+ancestor?" has now come up twice. EXP02-C very nearly adopted it
 before measurement showed the recall cost: 1 misfire fixed, 10 genuine
 findings lost. EXP02-C instead took a narrow name-match fix, declining only a
 `call_expression` whose callee is literally `defined`.

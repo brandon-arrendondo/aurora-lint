@@ -1,4 +1,4 @@
-# Known Gap: CWE-123 (Write-What-Where Condition) (task 384)
+# Known Gap: CWE-123 (Write-What-Where Condition)
 
 **Status:** TRIAGED, closed as a documented permanent gap (no fix scoped).
 This is a documentation-only outcome — no rule code changed.

@@ -34,9 +34,9 @@ direction varies by table:
 
 | Table | Fold | Site |
 |---|---|---|
-| `function_summaries`, fields `merge_summary_variant` folds | MAY unions, MUST intersects — each field in the direction its meaning demands (tasks 401, 1065, 1079, 1217) | `function_summary.rs`, `merge_summary_variant` |
+| `function_summaries`, fields `merge_summary_variant` folds | MAY unions, MUST intersects — each field in the direction its meaning demands | `function_summary.rs`, `merge_summary_variant` |
 | `function_summaries`, every other field | **first** definition wins | `prescan.rs`, the `get_mut`/`insert` arm |
-| `function_macros` | **first** wins, and a later differing expansion is recorded as a `conflicting-definition` macro gap (task 1180) | `prescan.rs`, the `Entry` match |
+| `function_macros` | **first** wins, and a later differing expansion is recorded as a `conflicting-definition` macro gap | `prescan.rs`, the `Entry` match |
 | `restrict_params` | **first** wins (`or_insert`) | `prescan.rs` |
 | `documented_nonnull_params` | unions the indices | `merge_documented_params` |
 | `typedef_types`, `struct_field_types`, `struct_typedef_aliases`, `macro_constants`, `macro_aliases`, `global_constants`, `global_var_null_states` | **last** wins (`HashMap::extend` overwrites) | `prescan.rs` |
@@ -363,7 +363,7 @@ in one and `unsigned` in the other).
 Two honest routes, both already scaffolded, neither one "pick better":
 
 - **Declare the configuration.** `--compile-commands` already declares the
-  macro state (task 1430) and `compile_commands.rs` already parses which
+  macro state and `compile_commands.rs` already parses which
   files the build compiles (task 1432, `configured_sources`). A definition in
   a file the declared build does not compile is the one to drop. This is the
   per-TU scoping 1432 stopped short of, and it needs a real

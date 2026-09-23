@@ -1,6 +1,6 @@
 # Scoping + implementation: STR31-C relay-function resolution → FunctionSummary
 
-**Status:** Done (task 506). Implemented in the same session as this doc,
+**Status:** Done. Implemented in the same session as this doc,
 after Phase 1-3 of `docs/design/str31c-arr00-migration-scoping.md` (tasks
 503/504/505) closed the capability gap that made an earlier fold unsafe.
 
@@ -28,10 +28,10 @@ same-file relay lookup were redirected to the weaker summary.
 
 That gap has since closed:
 
-- Phase 2 (task 504) moved array-declaration size resolution to the shared,
+- Phase 2 moved array-declaration size resolution to the shared,
   AST-based `array_size::resolve_declared_array_size` (with a real
   `MacroConstantMap`), which `find_buffer_size` now calls directly.
-- Phase 3 (task 505) added `buffer_size::resolves_to_strlen_call`, which
+- Phase 3 added `buffer_size::resolves_to_strlen_call`, which
   `find_buffer_size`'s `find_strlen_based_alloc_size` branch now calls.
 
 So `find_buffer_size`'s remaining resolvers are all now backed by shared

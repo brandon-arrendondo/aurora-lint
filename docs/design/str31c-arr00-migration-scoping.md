@@ -1,6 +1,6 @@
 # Scoping: STR31-C's Text-Based Buffer-Size Engine vs. ARR00-C/buffer_size.rs
 
-**Status:** Scoping complete (task 492). Migration NOT started — no rule
+**Status:** Scoping complete. Migration NOT started — no rule
 file has been touched by this pass. This document is the "dedicated
 design/scoping pass" task 492 asked for before any migration attempt.
 
@@ -39,7 +39,7 @@ didn't have in front of it:
    (`"5 * sizeof(int)"`), not an AST subtree. So "adopt buffer_size.rs" and
    "adopt an AST resolver" are two different, non-overlapping asks.
 
-3. **ARR00-C's "AST-based size resolver" (task 234) is real, but it
+3. **ARR00-C's "AST-based size resolver" is real, but it
    answers a narrower question than most of STR31-C's engine.**
    `resolve_declared_array_size` (`arr00_c.rs:2334`) resolves a *fixed
    array declaration's* element count from the AST: it walks C block scope

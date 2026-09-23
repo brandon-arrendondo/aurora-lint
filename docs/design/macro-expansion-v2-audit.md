@@ -62,7 +62,7 @@ function-like-macro engine above.
 
 **11 consumers**, matching the const_eval row in `macro-expansion.md` §10
 exactly. Confirmed still accurate — no drift here. This category is
-**not opaque-function-like-macro debt**; it is a pure DRY (task 199) that a
+**not opaque-function-like-macro debt**; it is a pure DRY that a
 real expansion pass would not obviously improve, since these rules only
 need scalar constant values, which `const_eval` already resolves
 correctly for the common case. A real expansion pass **could** subsume
@@ -120,7 +120,7 @@ raylib 80, seL4 140). The only divergence the consolidation introduces is
 that DCL03-C's identifier check is now ASCII-only rather than Unicode
 `is_uppercase()`, which no corpus file exercises.
 
-### 1d. The three gated capability gaps (tasks 573, 589, 554)
+### 1d. The three gated capability gaps
 
 | Task | Rule | Macro property needed | Currently modeled by |
 |---|---|---|---|

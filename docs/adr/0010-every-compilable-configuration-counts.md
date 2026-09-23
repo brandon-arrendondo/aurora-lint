@@ -20,7 +20,7 @@ each piece points the same way:
   `src/analyze/suppression.rs` silences a finding only inside `#if 0`, a
   `__cplusplus`-gated region when building as C, or a `#if defined(MACRO)`
   arm whose definedness is provable from an unconditional `#define`/`#undef`
-  in the same file (aurora_lint 196, 229, 560). Those arms cannot be compiled
+  in the same file. Those arms cannot be compiled
   by *any* configuration of a C build; nothing else is suppressed.
 - **The platform profile resolves names, it does not filter findings.**
   `src/analyze/dead_regions.rs` seeds a POSIX assumption table so that a
@@ -166,8 +166,8 @@ dozen legacy FP rows whose stated basis is "compiled out in release" or
   default-config reachability (sqlite `sqlite_fts5_index`, `precision_audit_*`,
   `curl_full_audit_0.4.35`, `hostap_full_audit_0.4.169`, lua
   `precision_audit_0.4.59`, mostly "inside an assert, compiled out under
-  NDEBUG") go to the human-review queue (bmdb 1341) or a reviewed
-  consistency batch; the `validate.py` vocabulary check (bmdb 1414) can flag
+  NDEBUG") go to the human-review queue or a reviewed
+  consistency batch; the `validate.py` vocabulary check can flag
   that phrasing as needing a code-level basis.
 - This does **not** license a rule to report across arms (Decision 4), and
   it does **not** make a preprocessor misread acceptable (ADR-0008): a rule

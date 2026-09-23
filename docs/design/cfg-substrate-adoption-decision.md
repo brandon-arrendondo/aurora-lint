@@ -1,4 +1,4 @@
-# Decision: Keep aurora-lint's Own CFG Builder, Don't Adopt substrate::cfg v1 (task 253)
+# Decision: Keep aurora-lint's Own CFG Builder, Don't Adopt substrate::cfg v1
 
 **Status:** DECIDED, no swap. Re-evaluate only if the trigger in §3 occurs.
 
@@ -44,7 +44,7 @@ even then only for constructs the suites happen to exercise.
 Building a compat shim (a post-pass adding switch/goto/macro-folding on
 top of substrate's CFG) is possible in principle, but is pure engineering
 cost with zero net capability gain over what `cfg.rs` already does today —
-unlike the `substrate::query` migration (tasks 252/254), which won real,
+unlike the `substrate::query` migration, which won real,
 measured value (30.7% Juliet speedup, iterative vs. recursive traversal)
 for the same swap. There is no equivalent win available here: the target
 API is currently a strict subset of the source, not an improvement.
