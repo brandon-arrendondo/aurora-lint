@@ -70,6 +70,19 @@ contain these; with one, each compiler the database names is asked, and without
 one the platform default \fBcc\fR is. Off by default because it spawns a
 compiler. A compiler that cannot be run is reported and skipped, not fatal.
 .TP
+\fB\-\-report\-macro\-gaps\fR[=\fIJSON_FILE\fR]
+After the scan, report where the macro-expansion engine was blind: macro
+definitions it skipped (variadic, \fB#\fR/\fB##\fR, dead under the assumed
+build configuration, ambiguous, or conflicting), \fB#include\fRs that
+resolved to no file, and calls it could not expand or attribute. Prints a
+per-kind summary to stdout after the findings;
+\fB\-\-report\-macro\-gaps\fR=\fIFILE\fR (the \fB=\fR is required, so the path
+is never mistaken for the scan target) also writes every row as JSON. Never
+changes a finding \(em it is a parse-only second pass over the engine's own
+decisions. See
+.I docs/cli\-usage.rst
+for the full list of \fBkind\fR values.
+.TP
 \fB\-\-suppress\-file\fR \fIFILE\fR
 Path to a
 .I .aurora-lint\-suppress.toml
