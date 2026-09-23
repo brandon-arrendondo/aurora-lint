@@ -1136,6 +1136,60 @@ fn guessed_free_mark_reaches_double_free_and_copies() {
     assert_eq!(tagged, 7, "fixture tags changed; update this count");
 }
 
+// ─── DCL18-C message value ──────────────────────────────────────────────────
+
+/// DCL18-C states an octal constant's decimal value with its integer suffix
+/// dropped (`017L` is 15, not the 0 a failed parse used to print), and states
+/// none for digits that are not octal. Asserted per line from the fixture's
+/// `VALUE n` / `VALUE none` tags; the generated fixture test only sees that
+/// the rule fires.
+#[test]
+fn dcl18_message_states_the_octal_value_without_its_suffix() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src/rules/cert_c/DCL/DCL18-C/tests/fail/suffixed_octal_reports_its_value.c");
+
+    let (code, _, _) = run_aurora_lint(&[
+        fixture.to_str().unwrap(),
+        "-m",
+        fixtures().join("manifest_dcl18.toml").to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let source = std::fs::read_to_string(&fixture).unwrap();
+    let mut tagged = 0;
+    for (idx, text) in source.lines().enumerate() {
+        let Some(tag) = text.split("/* VALUE ").nth(1) else {
+            continue;
+        };
+        let want = tag.trim_end_matches(" */").trim();
+        tagged += 1;
+        let line = idx as u64 + 1;
+        let msg = violations
+            .iter()
+            .find(|v| v["line"].as_u64() == Some(line))
+            .and_then(|v| v["message"].as_str())
+            .unwrap_or_else(|| panic!("line {line}: no DCL18-C finding"));
+        if want == "none" {
+            assert!(
+                msg.contains("not a valid octal constant") && !msg.contains("evaluates to"),
+                "line {line}: {msg}"
+            );
+        } else {
+            assert!(
+                msg.contains(&format!("evaluates to {want} in decimal")),
+                "line {line}: {msg}"
+            );
+        }
+    }
+    assert_eq!(tagged, 6, "fixture tags changed; update this count");
+}
+
 // ─── Cross-file frees_params (MEM31-C) ──────────────────────────────────────
 
 fn manifest_mem31() -> PathBuf {

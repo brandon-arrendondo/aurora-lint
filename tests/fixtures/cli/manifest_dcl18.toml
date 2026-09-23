@@ -1,0 +1,8 @@
+[metadata]
+name = "CLI Integration Test - DCL18-C only"
+version = "1.0.0"
+description = "Minimal manifest for the DCL18-C message-value test"
+cert_version = "2016"
+
+[rules.cert_c.DCL18-C]
+enabled = true

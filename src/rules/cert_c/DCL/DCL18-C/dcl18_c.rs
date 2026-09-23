@@ -54,13 +54,15 @@ impl Dcl18C {
         if self.is_unintended_octal(&literal_text) {
             let decimal_value = self.parse_octal_as_decimal(&literal_text);
 
+            let value = match self.octal_to_decimal(&literal_text) {
+                Some(v) => format!("This evaluates to {} in decimal.", v),
+                None => "It is not a valid octal constant.".to_string(),
+            };
             let message = format!(
-                "Integer constant '{}' begins with 0, making it octal (base-8). This evaluates to {} in decimal. \
+                "Integer constant '{}' begins with 0, making it octal (base-8). {} \
                 If you intended decimal {}, remove the leading 0. \
                 If you intended octal, consider using explicit base notation for clarity",
-                literal_text,
-                self.octal_to_decimal(&literal_text),
-                decimal_value
+                literal_text, value, decimal_value
             );
 
             let suggestion = format!(
@@ -135,10 +137,17 @@ impl Dcl18C {
         literal.trim_start_matches('0').to_string()
     }
 
-    /// Convert octal literal to its decimal value
-    fn octal_to_decimal(&self, literal: &str) -> i64 {
-        // Parse as octal (base-8)
-        i64::from_str_radix(literal.trim_start_matches("0o").trim_start_matches('0'), 8)
-            .unwrap_or(0)
+    /// The octal literal's decimal value, or `None` when its digits are not
+    /// valid octal (`09`) or it overflows. The integer suffix is dropped
+    /// first: `017L` is 15, and parsing the `L` along with the digits failed
+    /// and was reported as 0.
+    fn octal_to_decimal(&self, literal: &str) -> Option<u64> {
+        let digits = literal
+            .trim_end_matches(['u', 'U', 'l', 'L'])
+            .trim_start_matches('0');
+        if digits.is_empty() {
+            return Some(0);
+        }
+        u64::from_str_radix(digits, 8).ok()
     }
 }
