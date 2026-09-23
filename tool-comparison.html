@@ -216,7 +216,7 @@ is a property of the Juliet corpus rather than of any run.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p><strong>PARTLY RESOLVED</strong> — <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">realworld-run</span> <span class="pre">--tool</span> <span class="pre">infer</span></code> and
-<code class="docutils literal notranslate"><span class="pre">--tool</span> <span class="pre">frama-c</span></code> now work against all nine corpora (aurora_lint task 767).
+<code class="docutils literal notranslate"><span class="pre">--tool</span> <span class="pre">frama-c</span></code> now work against all nine corpora.
 Both are driven from each checkout’s <code class="docutils literal notranslate"><span class="pre">compile_commands.json</span></code>, which
 <code class="docutils literal notranslate"><span class="pre">playbooks/setup-compile-commands.yml</span></code> generates for all nine —
 including seL4, hostap and pure-ftpd, whose supposed unbuildability was
@@ -470,8 +470,8 @@ and not needing your build.</strong></p>
 <code class="docutils literal notranslate"><span class="pre">duration_s</span> <span class="pre">=</span> <span class="pre">0.0</span></code>, so its recorded aurora-lint total is 490.9 s. The ~1,190 s
 above substitutes those two projects’ run-229 figures (450.4 s and
 253.1 s), which mixes runs and is therefore not a citable number. Quoting
-the 490.9 s would be wrong in aurora-lint’s favor, which is worse. Tracked as
-benchmarking_db task 740.</p>
+the 490.9 s would be wrong in aurora-lint’s favor, which is worse. Tracked
+as a benchmarking_db follow-up.</p>
 </div>
 <p>Frama-C and Infer have no row here yet — see the note above. For an order of
 magnitude on what the Frama-C row will cost: its 6-CWE Juliet run is the
@@ -549,8 +549,7 @@ here rather than a gap to close.</p>
 resolves to zero <code class="docutils literal notranslate"><span class="pre">.c</span></code> files instead of recording a 0/0 row that reads
 the same as “the tool found nothing”. The runs above predate that fix and
 still carry the row; the exported CSV distinguishes them as <code class="docutils literal notranslate"><span class="pre">cwe_count</span></code>
-(rows present) and <code class="docutils literal notranslate"><span class="pre">cwes_measured</span></code>. Tracked as aurora_lint task 909; the
-same defect on aurora-lint’s own count is task 910.</p>
+(rows present) and <code class="docutils literal notranslate"><span class="pre">cwes_measured</span></code>. Tracked separately for both counts.</p>
 </div>
 </section>
 <section id="real-world-precision-per-rule">
@@ -567,9 +566,9 @@ unmeasured, and the Juliet table above is the only cross-tool precision
 figure that exists.</p>
 <p>cppcheck additionally needs a native-id-to-CERT-C mapping (or
 <code class="docutils literal notranslate"><span class="pre">--addon=cert</span></code> enabled) before a per-rule table is even expressible.</p>
-<p>Tracked as aurora_lint task 766 (capture) and benchmarking_db task 740
-(ingest, plus the <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> key collision that adjudicating a
-second tool at the same coordinate would create).</p>
+<p>Tracked as a follow-up for both capture (this repo) and ingest
+(benchmarking_db, plus the <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> key collision that
+adjudicating a second tool at the same coordinate would create).</p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
@@ -620,8 +619,7 @@ almost unchanged (36.4% → 36.7% precision) but individual CWEs move
 materially in both directions — CWE-401 25.7% → 29.1%, CWE-476
 39.7% → 34.5% — so it was refreshed rather than re-dated.</p>
 <p>The aurora-lint column is still from 2026-09-02, so the table is now within days
-of single-date rather than five months from it.  Tracked as aurora_lint
-task 768.</p>
+of single-date rather than five months from it.  Tracked as a follow-up.</p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
