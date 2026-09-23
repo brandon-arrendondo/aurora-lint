@@ -39,15 +39,15 @@ each piece points the same way:
 - **The oracle labels config-disabled arms as violations.** hostap's full
   audit labeled ~195 DCL13-C rows TP in `#else` stubs of `CONFIG_SAE`,
   `CONFIG_GAS`, `CONFIG_PR` and similar — code a default hostap build with
-  those features enabled never compiles. API00-C's standard (bmdb 644,
-  792–796) holds that an `assert()` is not a parameter guard *because*
+  those features enabled never compiles. API00-C's own standard holds
+  that an `assert()` is not a parameter guard *because*
   `NDEBUG` strips it: the release configuration exists, so the unguarded
   path exists.
 - **Platform-specific files are a scope boundary, not a label basis.**
   `docs/design/realworld-corpus-scope.md` puts curl's Windows/Apple-only
   files outside the Linux oracle's denominator and says explicitly this is
-  "a configuration boundary, not a 'don't ship it' boundary". bmdb 1378
-  (INT02-C TPs in code the oracle host never compiles) reached the same
+  "a configuration boundary, not a 'don't ship it' boundary". A similar
+  benchmarking_db finding (INT02-C TPs in code the oracle host never compiles) reached the same
   place: the verdicts stand as statements about the source; what needs
   deciding is the denominator.
 
@@ -117,8 +117,7 @@ dozen legacy FP rows whose stated basis is "compiled out in release" or
    effectively three codebases in one repository and is measured as three
    oracles, the way ventoy was onboarded as the Win32 oracle rather than
    Windows code being scored under the Linux one. Whether the host compiles
-   a file or an arm is therefore a corpus-*scope* question (bmdb 1378, 798,
-   739), never a row's verdict.
+   a file or an arm is therefore a corpus-*scope* question, never a row's verdict.
 
 ## Consequences
 

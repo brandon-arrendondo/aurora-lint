@@ -16,11 +16,11 @@ identifier's *spelling* rather than resolving what it actually declares.
   lookup. mbedtls's `aes_test_cfb128_iv` answered for every local `iv`;
   a sibling parameter `c` was answered by a `const` on parameter `a`
   because both were tested only for "text contains 'c'."
-- **INT02-C** (aurora_lint 1186, pre-rewrite): the entire real-world output
+- **INT02-C** (an early implementation, pre-rewrite): the entire real-world output
   came from testing whether the literal string `"unsigned short"` appeared
   *anywhere earlier in the file* — no scope, no declaration lookup, not
   even a check that the flagged expression involves that variable at all.
-- **INT16-C** (pre-task-1116): a file-wide name-to-type map that resolved
+- **INT16-C** (pre-fix): a file-wide name-to-type map that resolved
   491 identifier occurrences to a type ran 119/120 wrong on that map's
   own stated purpose, because a name collides across scopes, shadowing,
   and unrelated declarations sharing a spelling.
@@ -44,7 +44,7 @@ one per typedef alias, for every translation unit merged together. C
 guarantees nothing of the sort. Two translation units may define entirely
 different types under the same tag, and each is correct in its own file.
 
-Found in INT02-C (aurora_lint 1213, item 3), which merged the project map
+Found in INT02-C (a later recall extension, item 3), which merged the project map
 over the file's own definitions and let the project entry win. curl defines
 two different `struct h3_stream_ctx`, one per QUIC backend, whose `id` field
 is `uint64_t` in the quiche one and `int64_t` in the ngtcp2 one. The ngtcp2

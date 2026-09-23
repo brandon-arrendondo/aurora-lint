@@ -19,7 +19,7 @@ findings lost. EXP02-C instead took a narrow name-match fix, declining only a
 `call_expression` whose callee is literally `defined`.
 
 Because that decision was made inside one rule, nothing stopped the next rule
-from reaching for the same lever. Task 1272 characterized the whole population
+from reaching for the same lever. A later audit characterized the whole population
 so the answer would not have to be rediscovered per-rule.
 
 **Measurement** (all 12 pinned real-world codebases, local characterization
@@ -155,5 +155,5 @@ most of it directly.
   health and finding quality are only loosely coupled: lua has a parse error in
   48 of 58 files and 4 ERROR-ancestor findings; ventoy has 4 damaged files and
   none.
-- Credit: measured by dev-180 under task 1272, from the population EXP02-C's
-  task 1264 first exposed.
+- Credit: measured by dev-180 under that audit, from the population EXP02-C's
+  own earlier finding first exposed.

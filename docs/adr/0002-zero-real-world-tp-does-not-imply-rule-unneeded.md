@@ -23,7 +23,8 @@ That said, a 0% isn't uniformly uninformative — there's a real difference
 between a detector that attempts genuine analysis and comes up empty on hard
 real-world shapes (EXP02-C, PRE31-C: the analysis is attempted and the
 defect class may just be genuinely rare or hard to detect) and one that
-never attempted real analysis in the first place (INT02-C, task 1186: every
+never attempted real analysis in the first place (INT02-C, an early
+implementation: every
 branch was matching variable-name spellings from the CERT wiki's own
 example, not resolving types — so its 0% said nothing about how often the
 underlying defect occurs, only that this implementation couldn't see it).

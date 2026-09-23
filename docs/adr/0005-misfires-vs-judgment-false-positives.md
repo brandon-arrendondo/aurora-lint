@@ -68,8 +68,8 @@ is exactly the thing ADR-0001 says not to do.
 - A **recall** decision (should the rule also flag cases it currently
   misses) is different again from both, and should not be scoped off
   real-world corpus silence either — see ADR-0002's "don't scope recall off
-  the corpus miss rate" consequence and aurora_lint task 1213 (INT02-C
-  recall extension) for a worked example: Juliet and hand-written fixtures
+  the corpus miss rate" consequence and INT02-C's own recall extension
+  for a worked example: Juliet and hand-written fixtures
   are the better check for whether a rule catches what it's supposed to.
 - **What ADR-0002 does NOT license**: loosening constraints that are C
   language semantics rather than tuning — integer promotion of narrow
