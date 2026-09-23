@@ -3536,6 +3536,43 @@ fn collect_buf_calls_in_node_with_bindings(
 /// cap was the symptom rather than the cause.
 const MAX_PROPAGATION_PASSES: usize = 64;
 
+/// The aggregated parameter states of `summary` that may be seeded into its own
+/// body, as call-site evidence for whatever it forwards.
+///
+/// A `NotNull` in `callsite_param_null_states` is a majority **vote**, and it
+/// says only "no caller I collected passes a null here". Seeded into the body it
+/// becomes the parameter's state, so a call forwarding that parameter records it
+/// as an argument's state, and `aggregate_callsite_null_states` counts that
+/// toward the inner callee's `callsite_param_proven_nonnull`. An assumption
+/// about one function's callers then licenses discarding a null in the next one
+/// -- which is the same "the collected sites are not provably all of them" hole
+/// `address_taken` closes one hop down, reached through the seeding instead.
+///
+/// So a `NotNull` seed is withheld unless that non-nullness is actually proven:
+/// the predicate `collect_proven_nonnull_params` applies on the reporting side,
+/// internal linkage together with the proof set (which `address_taken` has
+/// already been subtracted from). Both ways a caller set is open are covered,
+/// the relay whose address is taken and the exported relay whose callers can sit
+/// in a translation unit nothing scanned.
+///
+/// `PossiblyNull` and `DefinitelyNull` seeds are kept exactly as they were: they
+/// only ever add a null disjunct, never discard one, so propagating them cannot
+/// manufacture a proof. Nothing is asserted here and no parameter becomes more
+/// suspicious than its `NotNull` default -- a withheld seed leaves the argument
+/// `Unknown`, and `Unknown` breaks a proof without licensing a report.
+fn seedable_param_states(summary: &FunctionSummary) -> HashMap<usize, NullState> {
+    summary
+        .callsite_param_null_states
+        .iter()
+        .filter(|(idx, state)| {
+            **state != NullState::NotNull
+                || (summary.has_internal_linkage
+                    && summary.callsite_param_proven_nonnull.contains(*idx))
+        })
+        .map(|(idx, state)| (*idx, *state))
+        .collect()
+}
+
 fn propagate_param_null_states(
     source_files: &[PathBuf],
     parser: &mut CParser,
@@ -3545,11 +3582,13 @@ fn propagate_param_null_states(
     scoped_by_file: &HashMap<String, HashSet<String>>,
 ) {
     for _pass in 0..MAX_PROPAGATION_PASSES {
-        // Snapshot the current param null states before re-collection
+        // Snapshot the states that may be seeded, before re-collection. Not the
+        // whole aggregate: see `seedable_param_states`.
         let param_states_snapshot: HashMap<String, HashMap<usize, NullState>> = summaries
             .iter()
             .filter(|(_, s)| !s.callsite_param_null_states.is_empty())
-            .map(|(name, s)| (name.clone(), s.callsite_param_null_states.clone()))
+            .map(|(name, s)| (name.clone(), seedable_param_states(s)))
+            .filter(|(_, states)| !states.is_empty())
             .collect();
 
         // If no functions have param states, nothing to propagate
