@@ -1142,6 +1142,79 @@ fn manifest_mem31() -> PathBuf {
     fixtures().join("manifest_mem31.toml")
 }
 
+/// An array whose elements are allocated in a loop is reported at the
+/// `array[i] = malloc(...)` that allocates them, not at line 1.
+///
+/// Both loop-array messages carried a hardcoded `line: 1, column: 1`, so every
+/// such finding in one file shared the key (file, 1, MEM31-C) and named a
+/// construct that is not on the line. The generated fixture test only sees
+/// whether MEM31-C fires, so the line is asserted here from the fixture's own
+/// LOOP-ALLOC-SITE tags.
+#[test]
+fn loop_allocated_array_is_reported_at_its_allocation_site() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "src/rules/cert_c/MEM/MEM31-C/tests/fail/\
+         loop_allocated_array_reports_the_allocation_site.c",
+    );
+
+    let (code, _, _) = run_aurora_lint(&[
+        fixture.to_str().unwrap(),
+        "-m",
+        manifest_mem31().to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let loop_findings: Vec<_> = violations
+        .iter()
+        .filter(|v| {
+            v["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("elements allocated in loop"))
+        })
+        .collect();
+
+    let source = std::fs::read_to_string(&fixture).unwrap();
+    let tagged: Vec<u64> = source
+        .lines()
+        .enumerate()
+        .filter(|(_, text)| text.contains("LOOP-ALLOC-SITE"))
+        .map(|(idx, _)| idx as u64 + 1)
+        .collect();
+    assert_eq!(tagged.len(), 2, "fixture tags changed; update this count");
+
+    assert_eq!(
+        loop_findings.len(),
+        tagged.len(),
+        "expected one loop-array finding per tagged allocation, got {:?}",
+        loop_findings
+            .iter()
+            .map(|v| (v["line"].clone(), v["message"].clone()))
+            .collect::<Vec<_>>()
+    );
+    for line in &tagged {
+        assert_eq!(
+            loop_findings
+                .iter()
+                .filter(|v| v["line"].as_u64() == Some(*line))
+                .count(),
+            1,
+            "line {line}: expected exactly one loop-array finding here"
+        );
+    }
+    assert!(
+        !violations
+            .iter()
+            .any(|v| v["line"].as_u64() == Some(1) && v["rule_id"] == "MEM31-C"),
+        "a MEM31-C finding is still reported at line 1"
+    );
+}
+
 #[test]
 fn crossfile_frees_param_suppresses_leak() {
     // caller_good.c allocates and passes to cleanup_buffer() (defined in cleanup.c).

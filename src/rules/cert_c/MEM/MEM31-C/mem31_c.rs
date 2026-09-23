@@ -283,7 +283,7 @@ struct MemoryLeakAnalyzer<'a> {
     // Track if signal() has been called in this function
     signal_registered: bool,
     // Track loop allocation/free patterns: array_base -> (alloc_condition, free_condition)
-    loop_array_patterns: HashMap<String, (Option<String>, Option<String>)>,
+    loop_array_patterns: HashMap<String, LoopArrayEvidence>,
     // Function summaries from prescan for inter-procedural analysis
     function_summaries: &'a HashMap<String, FunctionSummary>,
     // Names of this function's own parameters (an earlier fix: a struct reached
@@ -416,10 +416,23 @@ impl LeakBranchState {
 // `MemoryLeakAnalyzer::find_loop_array_pattern` plus the loop's own
 // condition text.
 type LoopArrayPattern = (
-    Option<(String, bool)>,
-    Option<(String, bool)>,
+    Option<(String, (usize, usize))>,
+    Option<(String, (usize, usize))>,
     Option<String>,
 );
+
+/// What the loops over one array base said about it: the allocating loop's
+/// condition together with the site to report, and the freeing loop's
+/// condition.
+///
+/// The condition and the site are one field because neither is meaningful
+/// without the other -- an allocating loop was seen, or it was not. Keeping
+/// them apart is what let the report fall back to a hardcoded line.
+#[derive(Default)]
+struct LoopArrayEvidence {
+    alloc: Option<(String, (usize, usize))>,
+    free_cond: Option<String>,
+}
 
 /// Explicit continuation-stack frames driving `MemoryLeakAnalyzer::
 /// analyze_node` — see that method's doc comment for why.
@@ -808,14 +821,19 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         }
     }
 
-    /// Find array allocation or free pattern in a for loop
-    /// Returns (array_base, is_subscript) if found
+    /// Find array allocation or free pattern in a for loop.
+    ///
+    /// Returns the array's base text and the 1-based line/column of the
+    /// `array[i] = malloc(...)` (or `free(array[i])`) that matched -- the site
+    /// a finding about this loop belongs on. It used to return a `bool` that
+    /// was always `true` and that no caller read, which left `detect_leaks`
+    /// with no position to report and a hardcoded one in its place.
     fn find_loop_array_pattern(
         &self,
         node: &Node,
         source: &str,
         is_alloc: bool,
-    ) -> Option<(String, bool)> {
+    ) -> Option<(String, (usize, usize))> {
         if is_alloc {
             // Looking for array[i] = malloc() pattern
             let assign = query::find_first_descendant(*node, |n| {
@@ -828,7 +846,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             let left = assign.child_by_field_name("left")?;
             // Extract array base (e.g., "array" from "array[i]")
             let base = left.child_by_field_name("argument")?;
-            Some((ast_utils::get_node_text_owned(&base, source), true))
+            let pos = assign.start_position();
+            Some((
+                ast_utils::get_node_text_owned(&base, source),
+                (pos.row + 1, pos.column + 1),
+            ))
         } else {
             // Looking for free(array[i]) pattern
             let call = query::find_first_descendant(*node, |n| {
@@ -853,7 +875,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 .filter_map(|i| arguments.child(i))
                 .find(|arg| arg.kind() == "subscript_expression")?;
             let base = arg.child_by_field_name("argument")?;
-            Some((ast_utils::get_node_text_owned(&base, source), true))
+            let pos = call.start_position();
+            Some((
+                ast_utils::get_node_text_owned(&base, source),
+                (pos.row + 1, pos.column + 1),
+            ))
         }
     }
 
@@ -2370,22 +2396,16 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     ) {
         self.merge_loop_exits(loop_node, pre, source);
         if let Some((alloc_info, free_info, loop_condition)) = array_pattern {
-            if let Some((array_base, _)) = alloc_info {
+            if let Some((array_base, site)) = alloc_info {
                 if let Some(cond) = &loop_condition {
-                    let entry = self
-                        .loop_array_patterns
-                        .entry(array_base)
-                        .or_insert((None, None));
-                    entry.0 = Some(cond.clone());
+                    let entry = self.loop_array_patterns.entry(array_base).or_default();
+                    entry.alloc = Some((cond.clone(), site));
                 }
             }
             if let Some((array_base, _)) = free_info {
                 if let Some(cond) = &loop_condition {
-                    let entry = self
-                        .loop_array_patterns
-                        .entry(array_base)
-                        .or_insert((None, None));
-                    entry.1 = Some(cond.clone());
+                    let entry = self.loop_array_patterns.entry(array_base).or_default();
+                    entry.free_cond = Some(cond.clone());
                 }
             }
         }
@@ -4381,21 +4401,29 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
         }
 
-        // Check for mismatched loop allocation/free patterns
-        for (array_base, (alloc_cond, free_cond)) in &self.loop_array_patterns {
-            if let (Some(alloc), Some(free)) = (alloc_cond, free_cond) {
-                if alloc != free {
+        // Check for mismatched loop allocation/free patterns. Both findings are
+        // about the allocation, so both are reported at the
+        // `array[i] = malloc(...)` that `find_loop_array_pattern` matched --
+        // not, as they were, at line 1 of whatever file the walk was in, which
+        // named a construct that is not there and collapsed every such finding
+        // in one file onto a single key.
+        for (array_base, evidence) in &self.loop_array_patterns {
+            let Some((alloc_cond, (line, column))) = &evidence.alloc else {
+                continue;
+            };
+            match &evidence.free_cond {
+                Some(free_cond) if free_cond != alloc_cond => {
                     // Extract the numeric bounds if possible for a clearer message
                     violations.push(RuleViolation {
                         rule_id: "MEM31-C".to_string(),
                         severity: Severity::High,
                         message: format!(
                             "Array '{}' elements allocated in loop with condition '{}' but freed with different condition '{}' - some elements may leak",
-                            array_base, alloc, free
+                            array_base, alloc_cond, free_cond
                         ),
                         file_path: String::new(),
-                        line: 1,
-                        column: 1,
+                        line: *line,
+                        column: *column,
                         suggestion: Some(format!(
                             "Ensure all elements of '{}' are freed with the same loop bounds used for allocation",
                             array_base
@@ -4403,24 +4431,26 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         ..Default::default()
                     });
                 }
-            } else if alloc_cond.is_some() && free_cond.is_none() {
-                // Allocated in loop but not freed in any loop
-                violations.push(RuleViolation {
-                    rule_id: "MEM31-C".to_string(),
-                    severity: Severity::High,
-                    message: format!(
-                        "Array '{}' elements allocated in loop but not freed in a matching loop - elements may leak",
-                        array_base
-                    ),
-                    file_path: String::new(),
-                    line: 1,
-                    column: 1,
-                    suggestion: Some(format!(
-                        "Free all elements of '{}' in a loop with the same bounds",
-                        array_base
-                    )),
-                    ..Default::default()
-                });
+                Some(_) => {}
+                None => {
+                    // Allocated in loop but not freed in any loop
+                    violations.push(RuleViolation {
+                        rule_id: "MEM31-C".to_string(),
+                        severity: Severity::High,
+                        message: format!(
+                            "Array '{}' elements allocated in loop but not freed in a matching loop - elements may leak",
+                            array_base
+                        ),
+                        file_path: String::new(),
+                        line: *line,
+                        column: *column,
+                        suggestion: Some(format!(
+                            "Free all elements of '{}' in a loop with the same bounds",
+                            array_base
+                        )),
+                        ..Default::default()
+                    });
+                }
             }
         }
     }
