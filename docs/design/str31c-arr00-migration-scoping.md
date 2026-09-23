@@ -1,14 +1,14 @@
 # Scoping: STR31-C's Text-Based Buffer-Size Engine vs. ARR00-C/buffer_size.rs
 
 **Status:** Scoping complete. Migration NOT started — no rule
-file has been touched by this pass. This document is the "dedicated
-design/scoping pass" task 492 asked for before any migration attempt.
+file has been touched by this pass. This document is the dedicated
+design/scoping pass a prior audit asked for before any migration attempt.
 
-**Driver:** Task 492: "`src/rules/cert_c/STR/STR31-C/str31_c.rs` is a large,
+**Driver:** "`src/rules/cert_c/STR/STR31-C/str31_c.rs` is a large,
 fully self-contained, purely text/line-based buffer-size-resolution engine
 … operating on `source.lines()` rather than the AST … a THIRD, independent,
 much larger reimplementation that never adopted ARR00-C's AST-based size
-resolver." Flagged by the task-481 FIO/STR audit fork as the single
+resolver." Flagged by the deep-dive FIO/STR audit fork as the single
 biggest fix-scope item in that sweep.
 
 ---
@@ -139,8 +139,8 @@ sprintf orchestration layered on it).
 | `find_global_buffer_size` (whole-file scan across all assignment sites to a global) | **(c) needs new capability** | Similar shape to `global_var_null_states` in `ProjectContext` (per the capability catalog) but for buffer *size* instead of null state — no existing "global variable's joined buffer-size across all writer functions" primitive. Building one properly means walking every `function_definition` in the AST, not scanning `source.lines()` file-wide as today. |
 | `is_larger_array_variable`, `get_string_length_from_context`, `get_initial_buffer_content_length`, `find_strcpy_source_length` | **(c) needs new capability (lower priority)** | All are variants of "what did this variable last look like at a given program point" — real dataflow, not a metadata lookup like ARR00-C's declarator resolver. Worth deferring behind the relay/global items above; these show up in fewer real-world FPs per the file's own comments (mostly serve Juliet-specific string-literal patterns). |
 | `check_scanf_format`, `check_wcstombs_safety`, `check_sprintf_safety`'s format-width-estimate arithmetic | **(d) keep as-is** | These reason about *format-string content*, not buffer size resolution — swapping the size-lookup underneath them (once done) leaves this logic untouched. Not in scope for a size-resolver migration either way. |
-| `is_variable_from_getenv`, `traces_to_argv`, `is_function_parameter` | **(d) keep as-is, but flagged as fragile independent of this task** | Pure line-text source-taint heuristics with no AST equivalent proposed here and no natural home in a "buffer size" module — they answer "where did this value come from," a different question. Worth its own future ticket if these keep causing FPs, but out of scope for task 492. |
-| `detect_off_by_one_error` + support functions, `detect_manual_string_loop` + support functions | **(d) keep as-is** | Already fully AST-structural (see §2) — not part of the fragility class task 492 is about. No action needed. |
+| `is_variable_from_getenv`, `traces_to_argv`, `is_function_parameter` | **(d) keep as-is, but flagged as fragile independent of this task** | Pure line-text source-taint heuristics with no AST equivalent proposed here and no natural home in a "buffer size" module — they answer "where did this value come from," a different question. Worth its own future ticket if these keep causing FPs, but out of scope here. |
+| `detect_off_by_one_error` + support functions, `detect_manual_string_loop` + support functions | **(d) keep as-is** | Already fully AST-structural (see §2) — not part of the fragility class this pass is about. No action needed. |
 | `analyze_buffer_size` | **(d) keep as-is (dead code)** | `#[allow(dead_code)]`, unused. Should just be deleted in the same pass that touches this file, regardless of migration scope — noted as a drive-by cleanup opportunity, not fixed here per the "flag, don't quick-patch" instruction. |
 
 ---
@@ -201,8 +201,8 @@ Not filed by this pass — listed here for the coordinator to create via
    `resolve_alloc_assigned_in_range`'s regex with the
    parenthesized-arithmetic capture STR31-C's `find_fixed_alloc_size`/
    `find_alloca_size` already have, then delete STR31-C's private copies.
-   Juliet + real-world byte-identical is the acceptance bar (task 252/254
-   precedent). Depends on: task 492 (this doc).
+   Juliet + real-world byte-identical is the acceptance bar (an earlier
+   precedent). Depends on: this doc's own scoping, nothing further.
 
 2. **P2, infra** — "STR31-C/ARR00-C Phase 2: extract
    `resolve_declared_array_size` (+ scope-walk helpers) from `arr00_c.rs`
@@ -217,14 +217,14 @@ Not filed by this pass — listed here for the coordinator to create via
    STR31-C's `find_strlen_based_alloc_size`/`find_realloc_dynamic_size`
    strlen-indirect branches can be deduped. Standalone scoping not required
    — the shape is already fully specified by the existing STR31-C code
-   this task 492 doc catalogs.
+   this doc catalogs.
 
 4. **P3, infra, needs its own scoping pass** — "STR31-C relay-function
    buffer-size resolution: fold same-file `find_relay_call`/
    `resolve_relay_source_size` AST lookup into `FunctionSummary` so
    same-file and cross-file relay resolution share one code path instead
    of branching AST-vs-prescan as today." Do not attempt without a
-   dedicated design pass per task 492's own instruction — this is
+   dedicated design pass per this scoping pass's own instruction — this is
    interprocedural dataflow, not a metadata lookup.
 
 5. **P4, infra, needs its own scoping pass** — "STR31-C
