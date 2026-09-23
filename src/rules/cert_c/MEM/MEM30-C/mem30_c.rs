@@ -3941,6 +3941,7 @@ impl MemoryAnalyzer {
                 // Also track base variable
                 self.nullified_vars.insert(left_var.clone());
                 self.freed_vars.remove(&left_var);
+                self.rebind_forgets_paths_inside(&left_lv);
                 return;
             }
 
@@ -4015,6 +4016,7 @@ impl MemoryAnalyzer {
                 self.nullified_vars.remove(&left_var);
                 self.realloc_invalidated.remove(&left_var);
                 self.aliases.remove(&left_var);
+                self.rebind_forgets_paths_inside(&left_var);
             } else if left.kind() == "field_expression" {
                 // Same reassignment-overwrites-dangling-state principle as the
                 // identifier case above, for a field LHS whose RHS is a
@@ -4033,6 +4035,7 @@ impl MemoryAnalyzer {
                 self.nullified_vars.remove(&left_lv);
                 self.realloc_invalidated.remove(&left_lv);
                 self.aliases.remove(&left_var);
+                self.rebind_forgets_paths_inside(&left_lv);
             }
 
             // Check if right side is pointer arithmetic on freed memory
@@ -4208,6 +4211,34 @@ impl MemoryAnalyzer {
     /// in alone. The companion to `clear_freed_state`, which also clears the
     /// base variable -- wrong here, because overwriting `s`'s members says
     /// nothing about `s` itself.
+    /// A rebind of `lv` also invalidates every freed path INSIDE it: once
+    /// `p` points at different storage, `p->buf` names a different object
+    /// and the mark left by freeing the previous object's buffer is stale.
+    ///
+    /// sqlite's fts3_write.c flush loop is the case: `for(i=0;i<iRoot;i++){
+    /// NodeWriter *pNode = &pWriter->aNodeWriter[i]; ...
+    /// sqlite3_free(pNode->block.a); sqlite3_free(pNode->key.a); }` frees a
+    /// DIFFERENT element's two buffers each time round, and without this the
+    /// second iteration read as a repeat free of `pNode->block.a` (task
+    /// 1447). Every rebind site already cleared the rebound lvalue itself;
+    /// none of them reached the paths hanging off it.
+    ///
+    /// The counterpart of `forget_freed_path`'s other caller (task 1446)
+    /// from the opposite direction: there the storage was overwritten, here
+    /// the path now names different storage.
+    fn rebind_forgets_paths_inside(&mut self, lv: &LValue) {
+        let stale: Vec<LValue> = self
+            .freed_vars
+            .iter()
+            .chain(self.realloc_invalidated.iter())
+            .filter(|path| path.is_inside(lv))
+            .cloned()
+            .collect();
+        for path in stale {
+            self.forget_freed_path(&path);
+        }
+    }
+
     fn forget_freed_path(&mut self, lv: &LValue) {
         self.freed_vars.remove(lv);
         self.freed_at.remove(lv);
@@ -4268,6 +4299,9 @@ impl MemoryAnalyzer {
                 self.aliases.insert(left_var.clone(), right_var.clone());
             }
         }
+        // Either way the assigned location now holds a different pointer,
+        // so the paths hanging off it name different storage (task 1447).
+        self.rebind_forgets_paths_inside(left_lv);
     }
 
     /// A variable that has just been given a new value aliases nothing it
@@ -4317,6 +4351,7 @@ impl MemoryAnalyzer {
             self.nullified_vars.remove(&lv);
             self.realloc_invalidated.remove(&lv);
             self.sever_aliases_of(&lv);
+            self.rebind_forgets_paths_inside(&lv);
         }
     }
 
@@ -4350,6 +4385,7 @@ impl MemoryAnalyzer {
             self.nullified_vars.remove(&left_var);
             self.realloc_invalidated.remove(&left_var);
             self.sever_aliases_of(&left_var);
+            self.rebind_forgets_paths_inside(&left_var);
 
             // Check if this is a realloc initialization
             if value.kind() == "call_expression" {
