@@ -3,7 +3,7 @@
  * Source: mbedtls library/bignum.c mbedtls_int_div_int
  * Status: PASS - Should NOT trigger MSC13-C violation
  *
- * `quotient` is declared once per #if/#else branch (task 751 groups those
+ * `quotient` is declared once per #if/#else branch (an earlier fix groups those
  * as one liveness entity), but in the first branch it shares its
  * `declaration` node with `dividend`. The group map was keyed by the
  * declaration's start byte alone, so `dividend`'s singleton group and

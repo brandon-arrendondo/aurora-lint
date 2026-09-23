@@ -12,7 +12,7 @@
  *         recognized because the operand was read from the text between the
  *         parentheses: `sizeof buf` (no parentheses, valid C) and
  *         `sizeof(x.name)` (a struct member, whose declarator is a
- *         field_identifier the rule never matched). Task 1153, mechanisms 7
+ *         field_identifier the rule never matched). An earlier fix, mechanisms 7
  *         and 8.
  */
 

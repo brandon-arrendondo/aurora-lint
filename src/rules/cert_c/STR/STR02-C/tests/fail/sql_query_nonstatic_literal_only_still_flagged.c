@@ -1,6 +1,6 @@
 /*
  * Rule: STR02-C
- * Source: custom (CWE-89, task 469 -- literal-only-param suppression must
+ * Source: custom (CWE-89; literal-only-param suppression must
  *   stay scoped to `static` functions; a non-static function could have
  *   external callers this file can't see, so it must stay conservative)
  * Status: FAIL - Should trigger STR02-C violation

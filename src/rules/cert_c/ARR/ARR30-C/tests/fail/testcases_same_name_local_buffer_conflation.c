@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 389
+ * Source: real-world
  * Status: FAIL - Should trigger ARR30-C violation
  */
 

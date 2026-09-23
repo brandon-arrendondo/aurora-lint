@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 912 (sqlite ext/fts5/fts5_index.c:3705, src/where.c:1368)
+ * Source: real-world (sqlite ext/fts5/fts5_index.c:3705, src/where.c:1368)
  * Status: PASS - Should NOT trigger ARR30-C violation
  * Reason: the flexible-array-member check ignored the member it was asked
  *         about and returned the line of ANY while loop with ++/-- in its

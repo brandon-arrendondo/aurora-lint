@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: task 1349 (companion to pass/task_1349_write_through_global_and_local_pointer_are_not_escapes.c)
+ * Source: real-world (companion to pass/write_through_global_and_local_pointer_are_not_escapes.c)
  * Status: FAIL - Should trigger MEM30-C violation
  * Reason: Reading the escape from declarators must keep every real one: a
  *         local array or VLA decaying into a global pointer, and `&` of a

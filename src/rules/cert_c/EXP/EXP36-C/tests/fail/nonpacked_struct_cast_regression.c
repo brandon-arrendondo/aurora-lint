@@ -1,6 +1,6 @@
 /*
  * Rule: EXP36-C
- * Source: hostap ground-truth audit (task 159 adversarial pass) / task 395
+ * Source: hostap ground-truth audit (adversarial pass)
  * Status: FAIL - Should trigger EXP36-C violation
  * Regression: a struct with no packed attribute at all should still be
  * flagged when cast from a less-aligned pointer -- guards against the

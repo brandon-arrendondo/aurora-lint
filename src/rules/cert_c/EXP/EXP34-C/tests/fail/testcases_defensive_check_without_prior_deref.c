@@ -34,7 +34,7 @@ void deref_only_in_branch(struct sta *sta, int cond) {
 
 /* the exact FALSE edge of a lone test still refines -- `if (p) {}` leaves p
    definitely null on the fallthrough, and the compound-operator change of
-   task 1067 must not have disabled that */
+   an earlier fix must not have disabled that */
 void lone_test_then_deref(struct sta *sta) {
     if (sta)
         use(5);

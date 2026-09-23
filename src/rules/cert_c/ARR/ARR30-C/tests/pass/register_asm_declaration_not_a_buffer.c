@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 912 (sel4 src/arch/arm/object/smc.c:42)
+ * Source: real-world (sel4 src/arch/arm/object/smc.c:42)
  * Status: PASS - Should NOT trigger ARR30-C violation
  * Reason: tree-sitter's C grammar has no rule for the GNU register-asm
  *         declaration, so `register word_t r7 asm("x7") = smc_args.arg[7];`

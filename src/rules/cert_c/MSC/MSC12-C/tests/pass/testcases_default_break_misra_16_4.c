@@ -8,7 +8,7 @@
  * every switch shall have a default label, and `break` is the canonical way
  * to say "every other value is deliberately ignored". Compilers ask for it
  * under -Wswitch-default. Removing it is a standards regression, not a
- * cleanup (task 999; the shape recurs across curl, lua and raylib).
+ * cleanup (the shape recurs across curl, lua and raylib).
  *
  * Distinct from testcases_empty_case_acting_default.c: here the default does
  * nothing, so the surrounding cases stay flagged on their own merits -- there

@@ -1,6 +1,6 @@
 /*
  * Rule: INT32-C
- * Source: task 1287
+ * Source: real-world
  * Status: PASS - the alias's chain reaches a macro, not a type, so nothing
  *         here is known to be signed and the rule reports nothing.
  *

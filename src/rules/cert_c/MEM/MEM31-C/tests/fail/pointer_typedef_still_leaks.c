@@ -1,13 +1,13 @@
 /*
  * Rule: MEM31-C
- * Source: task_580
+ * Source: real-world regression
  * Status: FAIL - Should trigger MEM31-C violation
  */
 
 /*
  * Rule: MEM31-C - Free dynamically allocated memory when no longer needed
  * Status: FAIL
- * Reason: Task 580's value-local exclusion keys off pointer *evidence*, not
+ * Reason: An earlier fix's value-local exclusion keys off pointer *evidence*, not
  * the declarator alone, so a pointer typedef declared without a `*` is still
  * tracked: dereferencing it (`h->field`) or NULL-checking it proves it holds
  * a pointer, and the missing free is a genuine leak.

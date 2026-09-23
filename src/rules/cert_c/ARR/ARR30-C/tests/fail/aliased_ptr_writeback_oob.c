@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 206 (alias-bound CWE-129 subscript FP)
+ * Source: real-world (alias-bound CWE-129 subscript FP)
  * Status: FAIL - Should trigger ARR30-C violation
  * Reason: mirrors Juliet CWE121_..._CWE129_large_32's bad(): same
  * write-through-one-pointer, read-through-another-aliased-pointer shape as

@@ -1,6 +1,6 @@
 /*
  * Rule: STR02-C
- * Source: custom (CWE-89, task 8/301)
+ * Source: custom (CWE-89)
  * Status: FAIL - Should trigger STR02-C violation
  *
  * username is a function parameter (tainted by default, no caller

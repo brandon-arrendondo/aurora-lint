@@ -3,7 +3,7 @@
  * Source: testcases
  * Status: PASS - Should NOT trigger ARR36-C violation
  *
- * Regression test for task 769: ARR36-C fired on operands that are not
+ * Regression test for an earlier fix: ARR36-C fired on operands that are not
  * pointers at all.
  *
  * PointerAnalyzer type-gates parameters and declarations, but process_assignment

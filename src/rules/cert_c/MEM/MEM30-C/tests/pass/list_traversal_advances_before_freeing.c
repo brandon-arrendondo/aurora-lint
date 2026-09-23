@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: testcases (was fail/testcases_list_uaf.c until task 1360)
+ * Source: testcases (was fail/testcases_list_uaf.c)
  * Status: PASS - Should NOT trigger MEM30-C violation
  *
  * The textbook way to free a linked list: remember the node, advance the
@@ -10,8 +10,8 @@
  * `current`: the alias `to_free -> current` recorded at the declaration
  * survived the reassignment of `current`, so freeing `to_free` marked the
  * fresh `current` freed too. An alias to a variable is severed when that
- * variable is given a new value (task 1360; the real bug this shape can
- * have is in fail/task_1360_list_traversal_frees_before_advancing.c).
+ * variable is given a new value (the real bug this shape can
+ * have is in fail/list_traversal_frees_before_advancing.c).
  */
 
 #include <stdlib.h>

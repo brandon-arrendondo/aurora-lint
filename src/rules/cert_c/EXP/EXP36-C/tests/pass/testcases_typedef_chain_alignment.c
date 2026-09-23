@@ -1,6 +1,6 @@
 /*
  * Rule: EXP36-C
- * Source: task 736 (sqlite delta-adjudication of run 228)
+ * Source: real-world (sqlite delta-adjudication of run 228)
  * Status: PASS - Should NOT trigger EXP36-C violation
  */
 

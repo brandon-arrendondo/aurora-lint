@@ -6,7 +6,7 @@
  * effects (bit helpers, cast helpers, accessors) is not a side-effecting
  * call, so read_reg(x) & MASK(n) has one call, not two. seL4's
  * apic_read_reg(APIC_LOGICAL_DEST) & MASK(XAPIC_LDR_SHIFT), pic_get_isr() &
- * BIT(15), and Lua's cast(OpCode, cast_int(a) - cast_int(b)) (task 1147
+ * BIT(15), and Lua's cast(OpCode, cast_int(a) - cast_int(b)) (an earlier fix
  * mechanism 2).
  */
 

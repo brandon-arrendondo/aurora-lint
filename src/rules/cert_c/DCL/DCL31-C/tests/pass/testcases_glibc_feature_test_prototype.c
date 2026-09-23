@@ -1,6 +1,6 @@
 /*
  * Rule: DCL31-C
- * Source: task 1038 (pure-ftpd src/ftpd.c, src/pure-quotacheck.c)
+ * Source: real-world (pure-ftpd src/ftpd.c, src/pure-quotacheck.c)
  * Status: PASS - a prototype decorated with a trailing attribute macro is
  * still a declaration, so calling the function it declares is not an
  * implicit declaration.

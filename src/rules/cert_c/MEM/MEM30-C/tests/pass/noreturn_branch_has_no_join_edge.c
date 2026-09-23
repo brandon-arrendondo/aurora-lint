@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: task 1360 (sqlite ext/session/changeset.c:247-270, valkey
+ * Source: real-world (sqlite ext/session/changeset.c:247-270, valkey
  *         src/valkey-benchmark.c:351/352/1835 -- adjudicated FP in run 267)
  * Status: PASS - Should NOT trigger MEM30-C violation
  * Reason: A branch that frees and then calls a noreturn function (`exit`,

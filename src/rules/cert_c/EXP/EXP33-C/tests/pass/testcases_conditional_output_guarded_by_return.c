@@ -6,7 +6,7 @@
  * imap call it: the returned mechanism bit is tested first, and short-circuit
  * evaluation means `llen` is only read where the write happened. A caller that
  * tests the result before reading the output is the caller the conditional
- * write was written for (task 1065 bug #3, aurora_lint).
+ * write was written for (real-world bug #3).
  */
 #include <stddef.h>
 

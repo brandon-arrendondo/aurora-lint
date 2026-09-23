@@ -10,7 +10,7 @@
  * token-pasting in the real header to attach a `ul` suffix, which aurora-lint's
  * macro engine deliberately never expands) recognized by name; `BIT`
  * transitively yields unsigned because its own definition invokes
- * `UL_CONST` (task 676; seL4's statedata.c `BIT(PT_INDEX_BITS) - 1`).
+ * `UL_CONST` (seL4's statedata.c `BIT(PT_INDEX_BITS) - 1`).
  */
 #define UL_CONST(x) x
 #define BIT(n) (UL_CONST(1) << (n))

@@ -1,6 +1,6 @@
 /*
  * Rule: DCL06-C
- * Source: task 1153 (fail-twin guard: normalizing hex/octal spellings of
+ * Source: real-world (fail-twin guard: normalizing hex/octal spellings of
  *   in-range values must not also accept out-of-range values written in
  *   hex or octal, e.g. sel4's src/plat/pc99/machine/pic.c:83, 0x0b/decimal
  *   11, confirmed TP in benchmark_adjudication/data/sel4/adjudication.csv)

@@ -10,7 +10,7 @@
  * limit macro (UCHAR_MAX etc.) in the guard condition, not a bare literal.
  * Needs the prescan marker: VRA/CFG setup is normally the CLI driver's job
  * before rule.check() runs, which the bare per-fixture harness doesn't do
- * unless asked (task 674 hit the same thing for INT10-C).
+ * unless asked (an earlier fix hit the same thing for INT10-C).
  */
 
 unsigned char to_byte(float ratio) {

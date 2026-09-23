@@ -12,7 +12,7 @@
  *         program's constants, and replacing it with the constant would make
  *         the assertion `X == X`. sqlite's `assert( sizeof(aSpecial)==32 )`,
  *         `assert( PAGER_JOURNALMODE_WAL==5 )` and `assert( 200==sqlite3LogEst(
- *         1048576) )` shapes (task 1153, mechanism 3). Only the operand of
+ *         1048576) )` shapes (mechanism 3). Only the operand of
  *         the equality is exempt.
  */
 

@@ -1,6 +1,6 @@
 /*
  * Rule: ENV01-C
- * Source: task 1174 -- the misfire shape (570 of 572 real-world labels)
+ * Source: real-world -- the misfire shape (570 of 572 real-world labels)
  * Status: PASS - a PATH_MAX / NI_MAXHOST buffer is not an environment variable
  */
 

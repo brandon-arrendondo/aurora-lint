@@ -4,7 +4,7 @@
  */
 
 /*
- * Reason (task 391, hostap's rfkill.c): `read(fd, buf, count)`'s output
+ * Reason (hostap's rfkill.c): `read(fd, buf, count)`'s output
  * buffer is argument index 1, not 0 -- unlike `fread(ptr, ...)`, whose
  * buffer really is argument 0. `get_output_arg_indices` previously
  * hardcoded index 0 for "read"/"recv" too, so `read(fd, &event,

@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 1021 (NUL-sentinel walk over a fixed-size char array)
+ * Source: real-world (NUL-sentinel walk over a fixed-size char array)
  * Status: FAIL - SHOULD trigger ARR30-C violation
  * Reason: the counterexample that keeps the sentinel-walk proof honest. The
  * walk looks identical to tests/pass/sentinel_walk_zero_initialized.c, but

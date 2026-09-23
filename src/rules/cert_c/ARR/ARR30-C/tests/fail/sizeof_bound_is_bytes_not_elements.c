@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 1278
+ * Source: real-world
  * Status: FAIL - `res < sizeof(arr)` on `int arr[32]` proves `res < 128`,
  *         not `res < 32`; three quarters of that range is out of bounds.
  *

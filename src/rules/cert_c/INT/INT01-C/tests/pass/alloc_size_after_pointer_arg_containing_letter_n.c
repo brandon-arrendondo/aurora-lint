@@ -1,6 +1,6 @@
 /*
  * Rule: INT01-C
- * Source: task 1151 (fail-twin guard for
+ * Source: real-world (fail-twin guard for
  *   alloc_size_after_pointer_arg_containing_letter_n.c: a pointer/handle
  *   argument that merely contains the letter 'n' must not be misattributed
  *   as a size argument when the call has no other, genuinely non-size_t

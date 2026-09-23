@@ -11,8 +11,8 @@
  * (mosquitto's original is `int rc = MOSQ_ERR_UNKNOWN;`. A CONSTANT
  * initializer on a returned variable is the function's default result and
  * is deliberately not reported -- mbedtls initialises every `ret` to
- * MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED as fault-injection hardening, task
- * 1171 -- so this fixture initialises from a value instead, which keeps the
+ * MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED as fault-injection hardening
+ * -- so this fixture initialises from a value instead, which keeps the
  * macro-write question it exists for.)
  *
  * The dead-store pass used to fold every free identifier in a macro body

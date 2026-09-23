@@ -10,7 +10,7 @@
  * branch's condition holds, `pTrigger` is either assigned directly, or
  * `#define`d to a constant the preprocessor substitutes at every later use
  * (including this read) for the rest of the translation unit -- so this
- * "read" is never actually of the variable in that configuration (task 461
+ * "read" is never actually of the variable in that configuration (an earlier fix
  * category 5; sqlite's insert.c/delete.c/update.c pTrigger/tmask/isView).
  */
 struct Trigger;

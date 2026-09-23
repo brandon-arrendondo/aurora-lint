@@ -1,7 +1,7 @@
 /*
  * Rule: DCL05-C
  * Source: real-world (mbedtls library/pk_wrap.h vtable members, valkey
- *         src/valkeymodule.h ValkeyModule_BlockClient, task 1173)
+ *         src/valkeymodule.h ValkeyModule_BlockClient)
  * Status: PASS - Should NOT trigger DCL05-C violation
  *
  * A function pointer whose own parameter list holds another function pointer

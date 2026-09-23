@@ -10,7 +10,7 @@
  * `mbedtls_gcm_free(ctx); free(ctx);` releases contents and then the struct.
  * Two DIFFERENT deallocator names on one pointer is the paired-teardown
  * idiom, so a guessed mark from the first does not make the second a double
- * free. Task 1197.
+ * free. An earlier fix.
  */
 
 #include <stdlib.h>

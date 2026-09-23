@@ -1,6 +1,6 @@
 /*
  * Rule: INT10-C
- * Source: aurora_lint 1284 (hostap hostapd/config_file.c:4252)
+ * Source: real-world (hostap hostapd/config_file.c:4252)
  * Status: PASS - Should NOT trigger INT10-C violation
  *
  * The `%` of a `%d` conversion specifier is inside a string literal. An ERROR

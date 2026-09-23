@@ -1,6 +1,6 @@
 /*
  * Rule: INT10-C
- * Source: task 657 (seL4 delta-adjudication task 631)
+ * Source: real-world (seL4 delta-adjudication)
  * Status: PASS - Should NOT trigger INT10-C violation
  *
  * seL4 typedefs `word_t` to `unsigned long`, then chains further aliases

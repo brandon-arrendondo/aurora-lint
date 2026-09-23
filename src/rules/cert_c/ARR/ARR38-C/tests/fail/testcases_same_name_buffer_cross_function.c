@@ -7,7 +7,7 @@
 /*
  * Rule: ARR38-C - Guarantee that library functions do not form invalid pointers
  * Status: FAIL
- * Reason: task 410 regression — buffer_info was previously a file-wide,
+ * Reason: an earlier fix regression — buffer_info was previously a file-wide,
  * name-keyed map. Two functions each declaring a local buffer named "buf"
  * of a *different* size could conflate each other's size: whichever
  * function's declaration was processed last in the file-wide first pass won

@@ -1,6 +1,6 @@
 /*
  * Rule: INT00-C
- * Source: task 914 (found reproducing the INT30-C/INT31-C pointer instances)
+ * Source: real-world (found reproducing the INT30-C/INT31-C pointer instances)
  * Status: PASS - Should NOT trigger INT00-C violation
  * Reason: `pos - orig_pos` subtracts two POINTERS. Classifying the type by
  *         its specifier made `unsigned char *` start with "unsigned", so a

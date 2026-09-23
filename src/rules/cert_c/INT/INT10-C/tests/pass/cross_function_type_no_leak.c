@@ -1,6 +1,6 @@
 /*
  * Rule: INT10-C
- * Source: task-404 regression
+ * Source: real-world regression
  * Status: PASS - Should NOT trigger INT10-C violation
  *
  * Guards against a same-named-variable-across-functions type leak. The

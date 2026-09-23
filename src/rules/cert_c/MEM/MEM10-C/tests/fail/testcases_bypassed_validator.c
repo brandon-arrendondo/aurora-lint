@@ -1,6 +1,6 @@
 /*
  * Rule: MEM10-C
- * Source: task 595
+ * Source: real-world
  * Status: FAIL - The file already defines a dedicated pointer-validation
  * function ("valid"), so an ad hoc NULL check elsewhere in the same file is
  * a genuine inconsistency: a shared validator was available but bypassed.

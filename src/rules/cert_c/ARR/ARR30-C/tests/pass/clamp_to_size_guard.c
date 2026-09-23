@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 1278 (hostap src/drivers/driver_ndis.c:2072,
+ * Source: real-world (hostap src/drivers/driver_ndis.c:2072,
  *         src/radius/radius_das.c:113, wpa_supplicant/config_winreg.c:345)
  * Status: PASS - Should NOT trigger ARR30-C violation
  * Reason: the clamp idiom. `if (len >= sizeof(name)) len = sizeof(name) - 1;`

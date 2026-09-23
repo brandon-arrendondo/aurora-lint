@@ -9,7 +9,7 @@
  * it searched the body text for one canonical spelling of a validation check
  * ("if (n < ", a comparison against INT_MAX/SIZE_MAX, __builtin_*_overflow).
  * Every function below bounds its parameter with an ordinary comparison, and
- * each is reduced from a real false positive in task 664's integer-overflow
+ * each is reduced from a real false positive in an earlier fix's integer-overflow
  * adjudication sample.
  */
 

@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: task 402
+ * Source: real-world
  * Status: FAIL - Should trigger MEM30-C violation on 'data'
  *
  * Regression: 'data' starts NULL (nullified_vars). One branch of the if

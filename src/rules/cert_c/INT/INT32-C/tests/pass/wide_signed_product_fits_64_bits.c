@@ -1,6 +1,6 @@
 /*
  * Rule: INT32-C
- * Source: task 1323 (valkey src/sds.h:127, src/rdb.c:330)
+ * Source: real-world (valkey src/sds.h:127, src/rdb.c:330)
  * Status: PASS - the `ll` suffix and the `(long long)` cast make this
  *         64-bit arithmetic, and neither shape comes near INT64_MAX.
  *

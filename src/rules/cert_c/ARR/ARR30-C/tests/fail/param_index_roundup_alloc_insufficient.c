@@ -4,7 +4,7 @@
  */
 
 /*
- * Reason: the allocation LOOKS like task 446's round-up-to-a-multiple safe
+ * Reason: the allocation LOOKS like an earlier fix's round-up-to-a-multiple safe
  * idiom, but the padding subtracted at the end is too large -- the
  * inequality (K1 + D*(C-1) + K_OUTER >= K2) does NOT hold here, so the
  * allocated size can be smaller than `dataSize`. Resolving the round-up

@@ -1,6 +1,6 @@
 /*
  * Rule: STR02-C
- * Source: custom (CWE-89, task 469 -- hostap db_table_exists FP class)
+ * Source: custom (CWE-89; hostap db_table_exists FP class)
  * Status: PASS - Should NOT trigger STR02-C violation
  */
 

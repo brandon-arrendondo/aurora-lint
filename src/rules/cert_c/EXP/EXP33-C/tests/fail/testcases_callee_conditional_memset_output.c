@@ -3,7 +3,7 @@
  * Source: testcases
  * Status: FAIL - Should trigger EXP33-C violation. `if (flag) memset(out, ...)`
  * is a MAY-write, so the caller can still read its variable uninitialized. The
- * library-call write credit added in task 1026 therefore routes through the
+ * library-call write credit added in an earlier fix therefore routes through the
  * same MUST/MAY refinement an assignment does; crediting it outright -- or
  * leaving it invisible, which promotes it for having been unseen -- would
  * silence this.

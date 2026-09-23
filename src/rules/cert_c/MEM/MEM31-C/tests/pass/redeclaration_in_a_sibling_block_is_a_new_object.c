@@ -2,7 +2,7 @@
  * Rule: MEM31-C
  * Source: custom
  * Status: PASS - Should NOT trigger MEM31-C violation
- * Description: sqlite mptest.c's runScript, task 1440. Two sibling blocks
+ * Description: sqlite mptest.c's runScript, an earlier fix. Two sibling blocks
  * each declare their own `char *zSql`, allocate into it and release it.
  * This rule's state is keyed by NAME with no scope attached, so the second
  * block's declaration inherited the first block's freed mark and its
@@ -14,7 +14,7 @@
  * whatever it is initialized from, so every fact held about the previous
  * one stops applying to the name.
  *
- * Surfaced by task 1367, which made `sqlite3_free` a name-shaped
+ * Surfaced by an earlier fix, which made `sqlite3_free` a name-shaped
  * deallocator; the weakness itself pre-dates it and reproduces with any
  * such deallocator that has no summary.
  */

@@ -1,7 +1,7 @@
 /*
  * Rule: ARR38-C
  * Source: Juliet flow variant 67 ("struct passed in a struct from one
- *   function to another, often in different source files"), task 304
+ *   function to another, often in different source files"), an earlier fix
  * Status: FAIL - Should trigger ARR38-C violation
  *
  * Mirrors testcases_struct_field_crossfunction_buffer_size.c's PASS case,

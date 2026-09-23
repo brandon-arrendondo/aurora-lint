@@ -1,6 +1,6 @@
 /*
  * Rule: INT08-C
- * Source: task 755 (residual FP classes found re-measuring the promoted-range fix)
+ * Source: real-world (residual FP classes found re-measuring the promoted-range fix)
  * Status: PASS - Should NOT trigger INT08-C violation
  *
  * Each case pairs a narrow (char/short) operand with something whose range

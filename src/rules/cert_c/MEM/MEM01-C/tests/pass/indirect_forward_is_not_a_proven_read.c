@@ -1,11 +1,11 @@
 /*
  * Rule: MEM01-C
- * Source: custom (hostap driver-ops shape, via EXP33-C task 1442)
+ * Source: custom (hostap driver-ops shape, via EXP33-C)
  * Status: PASS - Should NOT trigger MEM01-C violation
  * Description: `reinit` dereferences its `pbuf` parameter and also forwards
  * it to a call through `ctx->driver->refill`, a struct-of-function-pointers
- * dispatch nothing here can resolve to a definition. Before aurora_lint
- * 1459, build_read_only_params tested `dereferences_params -
+ * dispatch nothing here can resolve to a definition. Before an earlier
+ * fix, build_read_only_params tested `dereferences_params -
  * modifies_params` only -- the pre-1437/1442 shape of EXP33-C's own
  * build_read_only_deref_fns -- so `pbuf` came back PROVEN read-only, and
  * `reinit(ctx, &buf)` after the free was read as a genuine use of the freed

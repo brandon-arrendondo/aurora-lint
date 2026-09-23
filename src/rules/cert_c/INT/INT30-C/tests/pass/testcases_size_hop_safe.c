@@ -3,7 +3,7 @@
  * Source: testcases
  * Status: PASS - Should NOT trigger INT30-C violation
  * Description: A size variable computed one statement before malloc()
- * (the one-assignment-hop pattern added for task 604) whose arithmetic
+ * (the one-assignment-hop pattern added for an earlier fix) whose arithmetic
  * provably fits in a 32-bit size_t must stay clean -- the hop
  * resolution must not become a new source of false positives on
  * otherwise-safe code.

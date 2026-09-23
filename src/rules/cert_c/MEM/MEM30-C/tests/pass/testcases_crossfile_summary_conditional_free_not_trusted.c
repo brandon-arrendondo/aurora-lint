@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: hostap ground-truth audit / task 401
+ * Source: hostap ground-truth audit
  * Status: PASS - Should NOT trigger MEM30-C violation on 'ctx'
  *
  * Regression: mirrors hostap's wpas_group_formation_completed, which only

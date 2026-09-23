@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 1022 (whitespace-sensitive bounds recognition)
+ * Source: real-world (whitespace-sensitive bounds recognition)
  * Status: FAIL - SHOULD trigger ARR30-C violation
  * Reason: the companion to tests/pass/unspaced_loop_bound.c. `<=` admits
  * index == n, one past the end, and must stay a violation whether or not the

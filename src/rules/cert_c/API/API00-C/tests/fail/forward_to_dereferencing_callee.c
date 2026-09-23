@@ -4,7 +4,7 @@
  * Status: FAIL - SHOULD trigger API00-C violation
  * Description: The true-positive twin of tests/pass/
  * pointer_stored_or_relayed_is_not_a_dereference.c, and the exact
- * counterexample task 744's adjudication recorded: at the flagged function a
+ * counterexample an earlier fix's adjudication recorded: at the flagged function a
  * safe forwarding wrapper and an unsafe one are structurally IDENTICAL, so
  * only the callee's body separates them.
  *

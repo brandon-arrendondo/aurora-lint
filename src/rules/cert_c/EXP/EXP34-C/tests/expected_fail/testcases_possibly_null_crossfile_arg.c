@@ -1,12 +1,12 @@
 /*
  * Rule: EXP34-C
  * Source: testcases (mosquitto log__printf cohort)
- * Status: EXPECTED_FAIL - Known limitation, tracked by aurora_lint 1427.
+ * Status: EXPECTED_FAIL - Known limitation, tracked by an earlier fix.
  *         `relay` reaches `record` on the branch where the `!text` disjunct
  *         may be what made the condition true, so a null pointer flows into
  *         a callee that dereferences it without checking.
  *
- * HISTORICAL (why the call-site check existed before task 1418): it used to
+ * HISTORICAL (why the call-site check existed before an earlier fix): it used to
  * fire only on a DefinitelyNull argument, which left it asymmetric with the
  * libc-allowlist path (that reports a merely possibly-null one) and blind to
  * every maybe-null flow into a project function. `relay`'s parameter is
@@ -14,8 +14,8 @@
  * disjunct stands and the join to PossiblyNull is correct here -- the
  * contrast with the proven-nonnull pass fixture.
  *
- * REGRESSED by task 1418: `record` takes one ordinary positional parameter,
- * not `...` (unlike the vararg carve-out task 1418 kept the call-site check
+ * REGRESSED by an earlier fix: `record` takes one ordinary positional parameter,
+ * not `...` (unlike the vararg carve-out an earlier fix kept the call-site check
  * for), so EXP34-C now relies entirely on `record`'s own callee-side seed
  * from prescan's `callsite_param_null_states`. Prescan's `infer_call_arg_state`/
  * `guarded_nonnull_in` are flow-insensitive and dominator-based, not a real

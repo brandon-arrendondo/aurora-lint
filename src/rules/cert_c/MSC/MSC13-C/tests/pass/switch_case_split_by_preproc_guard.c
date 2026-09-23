@@ -2,7 +2,7 @@
  * Rule: MSC13-C
  * Status: PASS - a switch's case arms individually wrapped in `#if`/`#endif`
  * guards (raylib's per-codec `UpdateMusicStream` idiom) must still be visited
- * by the CFG. Before task 445's fix, `process_switch` only matched direct
+ * by the CFG. Before an earlier fix's fix, `process_switch` only matched direct
  * `case_statement` children of the switch body -- a case arm wrapped in
  * `#if`/`#endif` was invisible, so writes/reads inside it were never modeled
  * and looked like dead stores.

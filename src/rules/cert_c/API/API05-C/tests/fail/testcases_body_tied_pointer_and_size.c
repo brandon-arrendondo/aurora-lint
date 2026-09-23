@@ -8,7 +8,7 @@
  * Reason: buf and len are genuinely tied together -- the function body
  * passes both to memcpy() as the source pointer and copy length -- so this
  * is a real conformant-array candidate, not just a coincidence of being the
- * only pointer/size_t pair in the signature (task 190; real example: curl's
+ * only pointer/size_t pair in the signature (real example: curl's
  * chunk_append(const uint8_t *buf, size_t len)).
  */
 

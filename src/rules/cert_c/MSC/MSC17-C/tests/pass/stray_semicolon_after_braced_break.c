@@ -1,6 +1,6 @@
 /*
  * Rule: MSC17-C
- * Source: sqlite ext/fts5/fts5_expr.c:2249 (task 634, gpu-node finding)
+ * Source: sqlite ext/fts5/fts5_expr.c:2249 (gpu-node finding)
  * Status: PASS - Should NOT trigger MSC17-C violation
  *
  * `case X: { ...; break; };` -- a stray, pointless trailing semicolon after

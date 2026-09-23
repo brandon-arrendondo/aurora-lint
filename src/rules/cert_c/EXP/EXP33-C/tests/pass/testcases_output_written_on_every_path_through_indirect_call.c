@@ -7,7 +7,7 @@
  * before the final `if` can skip its body. No analysis resolves that call, so
  * the callee never reaches the MUST-write set; withholding the caller's
  * initialization credit on that absence alone reports every caller of curl's
- * `Curl_conn_get_current_host` (task 1065 bug #3, aurora_lint). The conditional
+ * `Curl_conn_get_current_host` (real-world bug #3). The conditional
  * -writer set is proof of an unwritten returning path, and there is none here.
  */
 #include <stddef.h>

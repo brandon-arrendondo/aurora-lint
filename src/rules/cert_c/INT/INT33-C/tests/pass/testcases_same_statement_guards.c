@@ -3,7 +3,7 @@
  * Source: testcases
  * Status: PASS - Divisor proven non-zero by a same-statement or preceding guard
  *
- * Shapes from task 1274 (valkey INT33-C batch): the zero-test is the condition
+ * Shapes from an earlier fix (valkey INT33-C batch): the zero-test is the condition
  * of a ?: whose guarded arm divides, the left operand of a short-circuit && / ||
  * whose right operand divides, an enclosing if whose condition proves non-zero
  * by ordering (n > 0) rather than equality, an exit guard written as a

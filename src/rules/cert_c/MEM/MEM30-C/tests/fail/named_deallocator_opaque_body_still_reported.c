@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: task 1289 (sqlite sqlite3_close(db) -> sqlite3_free(db) via the
+ * Source: real-world (sqlite sqlite3_close(db) -> sqlite3_free(db) via the
  *         xFree function pointer, then `db->x`)
  * Status: FAIL - `handle->id` after `close_handle(handle)` is a
  *         use-after-free.

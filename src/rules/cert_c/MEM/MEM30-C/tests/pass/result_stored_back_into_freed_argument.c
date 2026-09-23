@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: task 1355 (hostap's wpabuf_zeropad / wpabuf_concat / asn1_encaps
+ * Source: real-world (hostap's wpabuf_zeropad / wpabuf_concat / asn1_encaps
  *         call sites, ~52 adjudicated FPs in run 267)
  * Status: PASS - Should NOT trigger MEM30-C violation
  * Reason: `x = f(x)` where f consumes its argument (frees it) and returns a

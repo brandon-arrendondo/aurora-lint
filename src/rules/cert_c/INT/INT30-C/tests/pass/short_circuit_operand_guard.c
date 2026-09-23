@@ -1,6 +1,6 @@
 /*
  * Rule: INT30-C
- * Source: task 1324
+ * Source: real-world
  * Status: PASS - a guard in an earlier operand of the same && / || expression
  *
  * The rule already recognises a guard that is a separate statement (an

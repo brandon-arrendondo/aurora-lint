@@ -1,7 +1,7 @@
 /*
  * Rule: DCL05-C
  * Source: real-world (ventoy process.h PSYSTEM_HANDLE_INFORMATION_EX etc.,
- *         labelled TP; task 1187)
+ *         labelled TP)
  * Status: FAIL - Should trigger DCL05-C violation
  *
  * The Windows idiom of declaring the struct and a pointer alias in one

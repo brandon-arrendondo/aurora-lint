@@ -2,7 +2,7 @@
  * Rule: MEM31-C
  * Source: custom
  * Status: PASS - Should NOT trigger MEM31-C violation
- * Description: curl's Curl_cwriter_free(data, writer) shape, task 1197. The
+ * Description: curl's Curl_cwriter_free(data, writer) shape, an earlier fix. The
  * name-shape tier of a summary's frees_params exists for a callee with no
  * body in the scan, so it is a guess. When SEVERAL arguments name parameters
  * the name says nothing about WHICH one is released; crediting both makes

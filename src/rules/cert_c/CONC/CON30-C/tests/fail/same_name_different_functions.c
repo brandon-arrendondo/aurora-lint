@@ -1,6 +1,6 @@
 /*
  * Rule: CON30-C
- * Source: task 415 regression
+ * Source: real-world regression
  * Status: FAIL - Should trigger CON30-C violation
  *
  * Two functions each declare their own LOCAL `tss_t key;` with the same

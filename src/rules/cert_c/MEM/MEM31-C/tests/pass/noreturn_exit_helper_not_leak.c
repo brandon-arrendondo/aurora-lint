@@ -1,6 +1,6 @@
 /*
  * Rule: MEM31-C
- * Source: task 1089
+ * Source: real-world
  * Status: PASS - Should NOT trigger MEM31-C violation
  *
  * Reason: `check_for_return_macro` treats any callee whose name contains

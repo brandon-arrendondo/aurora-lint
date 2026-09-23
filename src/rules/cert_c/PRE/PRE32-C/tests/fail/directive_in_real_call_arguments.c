@@ -1,6 +1,6 @@
 /*
  * Rule: PRE32-C
- * Source: aurora_lint 1284 (sel4 src/machine/capdl.c:335)
+ * Source: real-world (sel4 src/machine/capdl.c:335)
  * Status: FAIL - SHOULD trigger PRE32-C violation
  *
  * The counterpart to the pass case: here the callee is ordinary code and the

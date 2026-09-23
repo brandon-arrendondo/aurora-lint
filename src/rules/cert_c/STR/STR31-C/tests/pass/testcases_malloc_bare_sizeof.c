@@ -3,7 +3,7 @@
  * Source: testcases
  * Status: PASS - Should NOT trigger STR31-C violation
  * Reason: malloc(sizeof(struct big_record)) resolves to the type's byte
- * size (task 515: bare sizeof(T) allocation size); the short copy fits.
+ * size (an earlier fix: bare sizeof(T) allocation size); the short copy fits.
  */
 
 #include <stdlib.h>

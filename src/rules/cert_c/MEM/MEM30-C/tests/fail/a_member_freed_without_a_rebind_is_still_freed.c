@@ -1,4 +1,4 @@
-/* The other side of aurora_lint 1447: only a rebind of the path the member
+/* The other side of an earlier fix: only a rebind of the path the member
  * hangs off retargets it. Each function below is a real defect. */
 #include <stdlib.h>
 

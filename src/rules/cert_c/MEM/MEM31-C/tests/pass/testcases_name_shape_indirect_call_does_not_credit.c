@@ -2,8 +2,8 @@
  * Rule: MEM31-C
  * Source: custom
  * Status: PASS - Should NOT trigger MEM31-C violation
- * Description: curl sendf.c's `writer->cwt->do_close(data, writer)`, task
- * 1197. The `_close` here belongs to a struct FIELD holding a function
+ * Description: curl sendf.c's `writer->cwt->do_close(data, writer)`.
+ * The `_close` here belongs to a struct FIELD holding a function
  * pointer, not to a function: the spelling says nothing about which callee
  * actually runs, so it is not evidence for crediting either argument as
  * freed. Only a callee spelled as a plain identifier may be guessed at. The

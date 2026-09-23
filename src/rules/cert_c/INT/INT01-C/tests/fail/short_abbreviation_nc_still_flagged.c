@@ -1,6 +1,6 @@
 /*
  * Rule: INT01-C
- * Source: task 1151 (recall-preservation guard: 2-letter Hungarian
+ * Source: real-world (recall-preservation guard: 2-letter Hungarian
  *   abbreviations like nc/nb, as used in sqlite's ext/misc/base64.c, must
  *   still be flagged)
  * Status: FAIL - Should trigger INT01-C violation

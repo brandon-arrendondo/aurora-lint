@@ -2,7 +2,7 @@
  * Rule: INT16-C
  * Source: custom
  * Status: PASS - should NOT trigger INT16-C violation
- * Description: The two real-world shapes behind aurora_lint task 1257, where
+ * Description: The two real-world shapes behind aurora_lint an earlier fix, where
  * 10 of 10 fresh raylib+sqlite findings claimed a signed/unsigned mismatch
  * that the declarations do not contain. Both were produced by the
  * file-wide name map `099e40d5` retired; both are answered here by

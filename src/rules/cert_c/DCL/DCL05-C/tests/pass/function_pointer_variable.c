@@ -1,6 +1,6 @@
 /*
  * Rule: DCL05-C
- * Source: real-world (valkey src/valkeymodule.h API table, task 1173)
+ * Source: real-world (valkey src/valkeymodule.h API table)
  * Status: PASS - Should NOT trigger DCL05-C violation
  *
  * A file-scope function-pointer variable with a single level of function

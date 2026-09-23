@@ -6,7 +6,7 @@
  * back to it. tree-sitter-c still nests those statements under a
  * `case_statement` node, so a scope search that only looked at the
  * compound_statement's literal children found no declaration and reported
- * every such variable unused (task 756, raylib
+ * every such variable unused (raylib
  * src/platforms/rcore_desktop_rgfw.c: `int button` / `int pressed` under
  * `case GAMEPAD_AXIS_LEFT_TRIGGER:`, `int axisCount` under
  * `case MG_EVENT_GAMEPAD_CONNECT:`).

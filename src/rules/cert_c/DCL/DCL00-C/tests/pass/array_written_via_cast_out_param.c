@@ -4,7 +4,7 @@
  */
 
 /*
- * Reason (task 391, hostap's authsrv.c): `username` is genuinely written
+ * Reason (hostap's authsrv.c): `username` is genuinely written
  * via `radius_msg_get_attr(msg, ATTR, (u8 *) username, sizeof(username) -
  * 1)` -- an out-param write through a cast of the bare array (arrays
  * decay to a pointer on their own, no `&` needed), with no other

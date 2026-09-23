@@ -1,6 +1,6 @@
 /*
  * Rule: INT32-C
- * Source: task 1275
+ * Source: real-world
  * Status: FAIL - `1 + rand()` overflows when `rand()` returns `RAND_MAX`,
  *         which glibc defines as `INT_MAX`.
  *

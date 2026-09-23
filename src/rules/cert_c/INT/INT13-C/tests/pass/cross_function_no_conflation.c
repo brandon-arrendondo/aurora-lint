@@ -1,6 +1,6 @@
 /*
  * Rule: INT13-C
- * Source: task 418 (task-389 sweep, whole-file variables conflation)
+ * Source: real-world (whole-file variables conflation)
  * Status: PASS - Should NOT trigger INT13-C violation
  *
  * `variables` was previously built by a single whole-translation-unit

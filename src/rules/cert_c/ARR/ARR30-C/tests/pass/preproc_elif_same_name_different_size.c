@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 1273 (valkey src/server.c checkTcpBacklogSettings, lines
+ * Source: real-world (valkey src/server.c checkTcpBacklogSettings, lines
  *         2643-2659)
  * Status: PASS - Should NOT trigger ARR30-C violation
  * Reason: two mutually exclusive `#elif` branches each declare `mib`, one
@@ -12,7 +12,7 @@
  *         nearest preceding one -- `int somaxconn, mib[3]` -- and the
  *         lookup now resolves to it.
  *
- * Distinct from task 912's same-name-different-size conflict detector,
+ * Distinct from an earlier fix's same-name-different-size conflict detector,
  * which covers `#ifdef`/`#else` pairs: that detector marks the size
  * unknown; here each branch's own declaration is resolvable and correct.
  */

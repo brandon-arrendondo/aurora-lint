@@ -1,4 +1,4 @@
-/* The other side of aurora_lint 1446: a clearing call only forgets the
+/* The other side of an earlier fix: a clearing call only forgets the
  * members it actually overwrites. Each function below is a real defect and
  * must still be reported. */
 #include <stdlib.h>

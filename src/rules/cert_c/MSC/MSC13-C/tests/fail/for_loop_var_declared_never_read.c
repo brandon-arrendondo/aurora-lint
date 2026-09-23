@@ -1,6 +1,6 @@
 /*
  * Rule: MSC13-C
- * Source: task 386 regression fix companion (2026-08-28)
+ * Source: real-world regression fix companion (2026-08-28)
  * Status: FAIL - Should trigger MSC13-C violation
  *
  * Companion to for_loop_var_read_in_body.c (pass): the fix that makes

@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 1278 (hostap src/drivers/linux_ioctl.c:216, src/utils/trace.c:67,
+ * Source: real-world (hostap src/drivers/linux_ioctl.c:216, src/utils/trace.c:67,
  *         curl lib/http1.c:218)
  * Status: PASS - Should NOT trigger ARR30-C violation
  * Reason: each index was range-checked by an early-return guard before the

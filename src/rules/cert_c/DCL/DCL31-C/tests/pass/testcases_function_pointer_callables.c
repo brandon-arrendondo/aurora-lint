@@ -1,9 +1,9 @@
 /*
  * Rule: DCL31-C
- * Source: task 691 (sqlite ext/fts5/fts5_tokenize.c:165 callback style)
+ * Source: real-world (sqlite ext/fts5/fts5_tokenize.c:165 callback style)
  * Status: PASS - Calling a function-pointer-typed parameter or local variable
  * is not a call to an undeclared function; the declarator fully declares it.
- * Regression: task 691 — 32 sqlite findings from this FP class.
+ * Regression: an earlier fix — 32 sqlite findings from this FP class.
  */
 
 /* Function-pointer parameter, called directly by name */

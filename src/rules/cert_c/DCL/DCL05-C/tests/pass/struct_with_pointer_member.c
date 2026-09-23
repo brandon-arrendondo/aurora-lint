@@ -1,7 +1,7 @@
 /*
  * Rule: DCL05-C
  * Source: real-world (mbedtls library/asn1parse.c mbedtls_asn1_sequence,
- *         pure-ftpd puredb_write.h Hash0, seL4 lookupIOPDSlot_ret_t, task 1187)
+ *         pure-ftpd puredb_write.h Hash0, seL4 lookupIOPDSlot_ret_t)
  * Status: PASS - Should NOT trigger DCL05-C violation
  *
  * A typedef of a struct is not a pointer typedef because one of the struct's

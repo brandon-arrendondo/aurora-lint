@@ -7,7 +7,7 @@
 /*
  * Rule: MEM31-C - Free dynamically allocated memory exactly once
  * Status: FAIL
- * Reason: The out-parameter rebind of task 1270 clears a freed mark only
+ * Reason: The out-parameter rebind of an earlier fix clears a freed mark only
  *         where the callee may actually write through the pointer. A
  *         callee whose own body shows it merely READS through it is
  *         positive evidence to the contrary, so the block is still the one

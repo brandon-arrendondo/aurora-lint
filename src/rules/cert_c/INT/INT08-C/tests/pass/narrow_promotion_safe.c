@@ -1,5 +1,5 @@
 /* Rule: INT08-C
- * Source: testcases (moved from tests/fail, task 755)
+ * Source: testcases (moved from tests/fail)
  * Status: PASS - narrow-typed arithmetic that provably cannot exceed a
  * >=32-bit promoted `int`'s range.
  *

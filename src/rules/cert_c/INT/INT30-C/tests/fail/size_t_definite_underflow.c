@@ -1,6 +1,6 @@
 /*
  * Rule: INT30-C
- * Source: task 916
+ * Source: real-world
  * Status: FAIL - a range entirely below zero wraps at any width
  *
  * Guards the definite-underflow channel at 64-bit widths. Answering "does this

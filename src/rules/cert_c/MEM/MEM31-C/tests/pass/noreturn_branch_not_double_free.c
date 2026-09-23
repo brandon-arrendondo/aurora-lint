@@ -1,6 +1,6 @@
 /*
  * Rule: MEM31-C
- * Source: task_1076
+ * Source: real-world regression
  * Status: PASS - Should NOT trigger MEM31-C violation
  */
 

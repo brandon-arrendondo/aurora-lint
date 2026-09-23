@@ -8,8 +8,8 @@
  * through a function the prescan saw free its parameter -- but whose name
  * has no deallocator shape, hostap's crypto_ec_key_deinit()/tls_deinit() --
  * credited nothing, and every `goto fail` read as a leak. The main walk
- * already credited the same call on its summary alone (task 1241; the
- * sibling gap in credit_frees_params was task 1236).
+ * already credited the same call on its summary alone (the
+ * sibling gap in credit_frees_params was an earlier fix).
  */
 #include <stdlib.h>
 

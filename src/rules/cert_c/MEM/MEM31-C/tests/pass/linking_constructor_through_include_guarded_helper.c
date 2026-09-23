@@ -6,7 +6,7 @@
  *
  * The intrusive-list helper lives in an include-guarded header. The
  * cross-file summary gate for a definition inside a preprocessor
- * conditional (task 654: a `#if X ... #else` stub body must not be unioned
+ * conditional (an earlier fix: a `#if X ... #else` stub body must not be unioned
  * as if it always held) treated the guard's `#ifndef LIST_H` as such a
  * branch, so dl_list_add() earned no stores_params, dl_list_add_tail()
  * forwarded a store into nothing, and p2p_create_device()'s returned object

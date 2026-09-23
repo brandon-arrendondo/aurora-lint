@@ -1,6 +1,6 @@
 /*
  * Rule: EXP34-C
- * Source: testcases (task 757 -- macro-forwarding null tolerance)
+ * Source: testcases (macro-forwarding null tolerance)
  * Status: PASS - Should NOT trigger EXP34-C
  *
  * hostap's `#define os_free(p) free((p))` (src/utils/os.h) is a transparent

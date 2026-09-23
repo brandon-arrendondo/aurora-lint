@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: hostap ground-truth audit (task 159 wave 30) / task 400
+ * Source: hostap ground-truth audit (wave 30)
  * Status: PASS - Should NOT trigger MEM30-C violation on 'ctx'
  *
  * Regression: mirrors hostap's bin_clear_free(ctx, sizeof(*ctx)). `sizeof`'s

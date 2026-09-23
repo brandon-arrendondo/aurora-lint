@@ -1,6 +1,6 @@
 /*
  * Rule: POS53-C
- * Source: task 416 regression
+ * Source: real-world regression
  * Status: PASS - Should NOT trigger POS53-C violation
  *
  * Two unrelated functions each declare their own function-local condition

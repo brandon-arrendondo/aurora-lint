@@ -2,14 +2,14 @@
  * Rule: MEM31-C
  * Source: custom
  * Status: FAIL - Should trigger MEM31-C violation
- * Description: The guard on task 1198's ownership-escape credit. Passing a
+ * Description: The guard on an earlier fix's ownership-escape credit. Passing a
  * pointer to a callee is an escape only on POSITIVE evidence from that
  * callee's body that it stores the value somewhere outliving the call.
  * A callee that merely READS the block, one that writes it into a local it
  * does NOT return, and one that stores a DIFFERENT parameter all leave the
  * caller as the sole owner, so the leak must still be reported. Treating any
  * argument pass as an escape would suppress these wholesale, which is the
- * option task 1198 rejected.
+ * option an earlier fix rejected.
  */
 
 #include <stdlib.h>

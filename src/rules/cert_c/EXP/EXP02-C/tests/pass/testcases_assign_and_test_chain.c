@@ -1,6 +1,6 @@
 /*
  * Rule: EXP02-C
- * Source: task 1151/1154, mirroring mbedtls's library/dhm.c
+ * Source: real-world/1154, mirroring mbedtls's library/dhm.c
  *   mbedtls_dhm_read_params (benchmark_adjudication data/mbedtls/
  *   adjudication.csv library/dhm.c:154/155) and the same "assign-and-test
  *   abort chain" reason recorded for curl, hostap, valkey and ventoy

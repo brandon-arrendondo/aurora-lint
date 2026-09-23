@@ -2,7 +2,7 @@
  * Rule: MEM30-C
  * Source: custom
  * Status: FAIL - Should trigger MEM30-C violation
- * Description: guards for the task-1233 changes. An unambiguously defined
+ * Description: guards for an earlier round of changes. An unambiguously defined
  * FREE-named macro still frees; a use of the freed pointer itself (not its
  * address) after the free is still a use-after-free; two frees with no
  * preprocessor split between them are still a double-free.

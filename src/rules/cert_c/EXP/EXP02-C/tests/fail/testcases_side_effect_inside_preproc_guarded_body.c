@@ -1,6 +1,6 @@
 /*
  * Rule: EXP02-C
- * Source: task 1264 -- over-suppression guard for the preprocessor-condition
+ * Source: real-world -- over-suppression guard for the preprocessor-condition
  *   exemption added in the same task
  * Status: FAIL - SHOULD trigger EXP02-C violation
  *

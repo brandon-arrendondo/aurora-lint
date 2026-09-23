@@ -5,7 +5,7 @@
  * macro invocation (ALIGN(...), VISIBLE, SKIM_BSS) must not be flagged as
  * a missing type specifier.
  *
- * Task 650 (seL4 delta-adjudication): tree-sitter-c splits a declaration
+ * An earlier fix (seL4 delta-adjudication): tree-sitter-c splits a declaration
  * like `pml4e_t arr[N] ALIGN(BIT(X)) VISIBLE;` into two `declaration`
  * nodes -- the real one (`pml4e_t arr[N]`) and a spurious second one for
  * the attribute tail (`ALIGN(BIT(X)) VISIBLE;`), parsed with `ALIGN(...)`

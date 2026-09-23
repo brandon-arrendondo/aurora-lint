@@ -1,6 +1,6 @@
 /*
  * Rule: EXP02-C
- * Source: task 1151/1154 (fail-twin guard: an assignment buried inside a
+ * Source: real-world/1154 (fail-twin guard: an assignment buried inside a
  *   call's own argument is not the "assign-and-test" idiom -- the boolean
  *   chain never examines the assigned value, so a skipped occurrence is a
  *   silent miss, not a self-contained test)

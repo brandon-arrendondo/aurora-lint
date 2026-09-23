@@ -1,6 +1,6 @@
 /*
  * Rule: DCL06-C
- * Source: bmdb-757
+ * Source: real-world
  * Status: FAIL - Noncompliant, must not be over-suppressed
  * Description: a comparison against a plain variable (not a version macro)
  * must still be flagged, guarding against the DCL06-C-757 version-macro

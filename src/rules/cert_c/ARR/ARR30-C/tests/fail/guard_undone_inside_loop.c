@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 1278
+ * Source: real-world
  * Status: FAIL - the guard precedes the loop, but the loop body advances
  *         `res` after the access, so the second iteration indexes past what
  *         the guard proved.

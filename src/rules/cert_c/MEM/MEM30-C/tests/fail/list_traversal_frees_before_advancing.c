@@ -5,7 +5,7 @@
  *
  * The bug the old list_uaf fixture meant to show: the node is freed and
  * THEN read. Companion to
- * pass/task_1360_list_traversal_advances_before_freeing.c, which is the
+ * pass/list_traversal_advances_before_freeing.c, which is the
  * same loop with the free after the last read. (The tighter `free(current);
  * current = current->next;` is a recall gap of its own: the assignment
  * clears `current` before its right-hand side is read -- filed separately.)

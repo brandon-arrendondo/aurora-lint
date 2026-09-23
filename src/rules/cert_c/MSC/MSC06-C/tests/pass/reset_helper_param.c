@@ -1,6 +1,6 @@
 /*
  * Rule: MSC06-C
- * Source: task 565 (fts5SegIterClear-style clear/reset helper)
+ * Source: real-world (fts5SegIterClear-style clear/reset helper)
  * Status: PASS - pIter is a caller-owned pointer parameter; the struct it
  * points to persists past this call, so it never goes out of scope here.
  */

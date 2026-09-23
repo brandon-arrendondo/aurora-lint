@@ -1,6 +1,6 @@
 /*
  * Rule: INT32-C
- * Source: task 1276 (valkey src/kvstore.c:503
+ * Source: real-world (valkey src/kvstore.c:503
  *         `(random() % kvstoreSize(kvs)) + 1`)
  * Status: PASS - Should NOT trigger INT32-C violation
  * Reason: `kvstoreSize` is defined in this file as `unsigned long long`, so

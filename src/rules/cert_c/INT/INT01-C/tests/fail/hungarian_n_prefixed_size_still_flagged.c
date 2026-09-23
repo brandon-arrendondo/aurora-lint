@@ -1,6 +1,6 @@
 /*
  * Rule: INT01-C
- * Source: task 1151 (recall-preservation guard: dropping the naive
+ * Source: real-world (recall-preservation guard: dropping the naive
  *   whole-text substring match for bare 'n' must not also drop genuine
  *   Hungarian-notation size locals like nBytes/nNew, ubiquitous in sqlite's
  *   src/malloc.c and src/func.c)

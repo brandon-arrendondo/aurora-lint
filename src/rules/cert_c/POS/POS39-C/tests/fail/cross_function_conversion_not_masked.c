@@ -1,6 +1,6 @@
 /*
  * Rule: POS39-C
- * Source: task 418 (task-389 sweep, whole-file tracking-map conflation)
+ * Source: real-world (whole-file tracking-map conflation)
  * Status: FAIL - Should trigger POS39-C violation
  *
  * `converted_vars` was previously a single whole-translation-unit

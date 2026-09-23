@@ -5,8 +5,8 @@
 
 /*
  * Reason: `*d++ ^= *s++;` dereferences plain `u32 *` pointers -- no struct,
- * let alone one with a flexible array member, is anywhere in sight (task
- * 391, hostap's aes-ccm.c/aes-gcm.c `xor_aes_block`/`xor_block`). Previously
+ * let alone one with a flexible array member, is anywhere in sight
+ * (hostap's aes-ccm.c/aes-gcm.c `xor_aes_block`/`xor_block`). Previously
  * `is_flexible_struct_dereference` treated *any* pointer dereference as a
  * flexible-array-struct instance, misfiring here.
  */

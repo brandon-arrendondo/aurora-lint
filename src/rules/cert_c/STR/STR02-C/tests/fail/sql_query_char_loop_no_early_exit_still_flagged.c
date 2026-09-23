@@ -1,6 +1,6 @@
 /*
  * Rule: STR02-C
- * Source: custom (CWE-89, task 470 -- char-allowlist-loop validation must
+ * Source: custom (CWE-89; char-allowlist-loop validation must
  *   require the loop to actually deny by default; a loop whose body never
  *   exits early is not a validation guard and must stay conservative)
  * Status: FAIL - Should trigger STR02-C violation

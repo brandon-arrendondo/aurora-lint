@@ -2,7 +2,7 @@
  * Rule: MEM31-C
  * Source: custom
  * Status: FAIL - Should trigger MEM31-C violation
- * Description: The guard on task 1279's failure-branch restore. The old block
+ * Description: The guard on an earlier fix's failure-branch restore. The old block
  * is spared only on the path where the realloc-shaped wrapper returned NULL.
  * On the SUCCESS path the wrapper really did take it, so freeing it there is
  * a genuine double free and must still be reported -- otherwise the restore

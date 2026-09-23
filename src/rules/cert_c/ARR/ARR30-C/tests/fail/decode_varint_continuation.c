@@ -3,7 +3,7 @@
  * Status: FAIL
  * Reason: Varint continuation-bit chase over a column-blob pointer with no
  *         `p < end` bound. A corrupt record can set the high bit forever, so
- *         the decode reads past the blob (task 172, sqlite real-world FN family).
+ *         the decode reads past the blob (sqlite real-world FN family).
  */
 
 typedef unsigned char u8;

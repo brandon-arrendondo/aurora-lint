@@ -2,7 +2,7 @@
  * Rule: MEM31-C
  * Source: custom
  * Status: FAIL - Should trigger MEM31-C violation
- * Description: The guard on task 1280's demotion. A name-shape free credit is
+ * Description: The guard on an earlier fix's demotion. A name-shape free credit is
  * withdrawn only on POSITIVE evidence that the callee releases something
  * other than the parameter -- its fields or its pointee. It must still stand
  * when the callee has no body in the scan (the load-bearing sqlite3_free /

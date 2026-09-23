@@ -1,6 +1,6 @@
 /*
  * Rule: EXP36-C
- * Source: hostap ground-truth audit (task 159 adversarial pass) / task 395
+ * Source: hostap ground-truth audit (adversarial pass)
  * Status: PASS - Casting into a packed struct can never increase alignment
  * Regression: hostap-style `struct foo { ... } STRUCT_PACKED;` where
  * STRUCT_PACKED is a `#define`d packed-attribute macro. aurora-lint has no

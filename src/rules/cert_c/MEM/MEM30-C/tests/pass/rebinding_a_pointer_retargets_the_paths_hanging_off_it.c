@@ -24,7 +24,7 @@ void rebound_by_assignment(Writer *w) {
  * Read this one honestly: it does NOT fire on the pre-fix binary with a
  * plain free(), because the declaration already cleared the base name and
  * nothing here reaches the paths under it a second time. It fires on the
- * real corpus only through aurora_lint 1441's guessed-free route, where
+ * real corpus only through an earlier fix's guessed-free route, where
  * sqlite3_free is what does the freeing. It is kept because it is the
  * shape the task was filed from and it pins the loop form against
  * regression -- not because it demonstrates the pre-fix bug. The three

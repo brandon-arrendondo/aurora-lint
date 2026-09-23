@@ -7,7 +7,7 @@
  * malloc() by that variable name. INT32-C already caught this when the
  * arithmetic was written directly inside malloc()'s argument list; this
  * case additionally requires walking back one assignment hop to the
- * statement that actually computed the size (task 604, modeled on a
+ * statement that actually computed the size (modeled on a
  * real false negative in pure-ftpd's SQL-client logging code:
  * `to_len = from_len * 2U + 1U; ...; malloc(to_len);`).
  */

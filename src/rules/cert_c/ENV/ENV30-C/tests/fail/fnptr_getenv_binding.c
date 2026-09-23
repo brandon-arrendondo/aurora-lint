@@ -1,6 +1,6 @@
 /*
  * Rule: ENV30-C
- * Source: aurora_lint 1433
+ * Source: real-world
  * Status: FAIL - Should trigger ENV30-C violation
  */
 

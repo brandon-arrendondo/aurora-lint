@@ -1,6 +1,6 @@
 /*
  * Rule: MSC17-C
- * Source: task_633
+ * Source: real-world regression
  * Status: FAIL - Should trigger MSC17-C violation
  */
 

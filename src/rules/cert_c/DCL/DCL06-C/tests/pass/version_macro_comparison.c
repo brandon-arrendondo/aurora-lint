@@ -1,6 +1,6 @@
 /*
  * Rule: DCL06-C
- * Source: bmdb-757
+ * Source: real-world
  * Status: PASS - comparison against a well-known version macro
  * Description: a literal compared directly against a library/platform
  * version macro (OPENSSL_VERSION_NUMBER, _MSC_VER, etc.) is a version-check

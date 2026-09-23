@@ -3,7 +3,7 @@
  * Status: FAIL - HKLM behind an object-like alias, routed through a
  *         function -> forwarding macro -> function chain into RegOpenKeyExA
  *         (ventoy's REGKEY_HKLM / ReadRegistryKey32 / GetRegistryKey32 /
- *         _GetRegistryKey, task 1167)
+ *         _GetRegistryKey)
  */
 
 typedef void *HKEY;

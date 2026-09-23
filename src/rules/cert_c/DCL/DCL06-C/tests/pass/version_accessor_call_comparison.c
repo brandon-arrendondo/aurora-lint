@@ -10,7 +10,7 @@
  * Reason: A version check spelled as a version-accessor CALL is the same
  *         idiom the version-macro exemption already covers for a bare
  *         identifier: sqlite's `sqlite3_libversion_number() >= 3008002`,
- *         curl's `Curl_conn_http_version(data, conn) != 20`. Task 1153,
+ *         curl's `Curl_conn_http_version(data, conn) != 20`. An earlier fix,
  *         mechanism 4.
  */
 

@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: task 1360 (companion to pass/task_1360_noreturn_branch_has_no_join_edge.c)
+ * Source: real-world (companion to pass/noreturn_branch_has_no_join_edge.c)
  * Status: FAIL - Should trigger MEM30-C violation
  * Reason: Only a call that provably never returns ends a branch. A branch
  *         that frees and then calls an ordinary function -- one that does

@@ -1,6 +1,6 @@
 /*
  * Rule: PRE31-C
- * Source: aurora_lint 1284 (mbedtls library/ssl_ciphersuites.c, 10 sites)
+ * Source: real-world (mbedtls library/ssl_ciphersuites.c, 10 sites)
  * Status: PASS - Should NOT trigger PRE31-C violation
  *
  * `defined(X)` in a directive condition is a preprocessor operator, not an

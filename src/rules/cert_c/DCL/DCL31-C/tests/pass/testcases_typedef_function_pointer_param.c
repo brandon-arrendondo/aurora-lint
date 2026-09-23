@@ -1,6 +1,6 @@
 /*
  * Rule: DCL31-C
- * Source: task 1054 (sqlite delta-adjudication)
+ * Source: real-world (sqlite delta-adjudication)
  * Status: PASS - Should NOT trigger DCL31-C violation
  */
 
@@ -11,7 +11,7 @@
  * inside the function body. Its own declarator subtree carries no
  * function_declarator (it looks like an ordinary `Type name` parameter),
  * so the longhand-only detector (`function_pointer_param_names`) misses
- * it and the call reads as an undeclared function. Task 1054 wires the
+ * it and the call reads as an undeclared function. An earlier fix wires the
  * shared typedef-chain resolver into DCL31-C so this shape,
  * and the one-hop alias case (`typedef RecordCompare AliasedCompare`),
  * both resolve correctly.

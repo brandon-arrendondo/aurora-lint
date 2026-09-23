@@ -9,7 +9,7 @@
  * Status: FAIL
  * Reason: `sizeof buf[0]` and `sizeof *p` measure an ELEMENT, not the
  *         array, so they do not document the array's extent; a struct member
- *         array nobody takes sizeof of is still a magic size. Task 1153.
+ *         array nobody takes sizeof of is still a magic size. An earlier fix.
  */
 
 struct cfg {

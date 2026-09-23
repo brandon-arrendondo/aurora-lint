@@ -1,6 +1,6 @@
 /*
  * Rule: INT30-C
- * Source: task 1325 (dev-180's repro; mosquitto fuzzing/ calloc sites)
+ * Source: real-world (dev-180's repro; mosquitto fuzzing/ calloc sites)
  * Status: PASS - Should NOT trigger INT30-C violation
  * Reason: The calloc() size-calculation check reported every call that had
  *         no SIZE_MAX / size guard, including ones whose product no input

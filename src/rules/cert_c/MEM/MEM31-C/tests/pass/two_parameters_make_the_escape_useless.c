@@ -3,7 +3,7 @@
  * Source: custom
  * Status: PASS - Should NOT trigger MEM31-C violation
  * Description: curl's `Curl_cwriter_free(data, writer)` and
- * `Curl_conn_close(data, sockindex)`, task 1367. Both are name-shaped
+ * `Curl_conn_close(data, sockindex)`, an earlier fix. Both are name-shaped
  * deallocators whose body hands the FIRST parameter to a call through a
  * function pointer, and neither releases it. An escape into an unreadable
  * call is not evidence that a release happened -- a callback reads its

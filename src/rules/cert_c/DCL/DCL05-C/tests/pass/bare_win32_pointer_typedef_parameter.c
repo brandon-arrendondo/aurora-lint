@@ -1,7 +1,7 @@
 /*
  * Rule: DCL05-C
  * Source: real-world (ventoy Ventoy2Disk.c ParseCmdLineOption(LPSTR),
- *         Utility.c LPBYTE, WinDialog.c PTSTR; task 1188)
+ *         Utility.c LPBYTE, WinDialog.c PTSTR)
  * Status: PASS - Should NOT trigger DCL05-C violation
  *
  * Using a pointer typedef the Win32 API defines is not, by itself, what the

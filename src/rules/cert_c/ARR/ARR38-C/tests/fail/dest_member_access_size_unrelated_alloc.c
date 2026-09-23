@@ -1,12 +1,12 @@
 /*
  * Rule: ARR38-C
- * Source: task 746 companion regression
+ * Source: real-world companion regression
  * Status: FAIL - Should trigger ARR38-C violation
  *
  * Companion to dest_sized_by_alloc_mentioning_identifier.c (pass): the
  * destination is member-access shaped (`as->src.host`), but the base `as`
  * is allocated with a FIXED size that never mentions `hlen`, so the copy is
- * not provably bounded. The dest-buffer check added for task 746 must not
+ * not provably bounded. The dest-buffer check added for an earlier fix must not
  * over-suppress just because the destination happens to be a struct field.
  */
 

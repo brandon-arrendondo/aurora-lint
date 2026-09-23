@@ -1,6 +1,6 @@
 /*
  * Rule: INT14-C
- * Source: hostap real-world audit (task 462, batch 16-40_b18)
+ * Source: hostap real-world audit (batch 16-40_b18)
  * Status: PASS - A call_expression's callee identifier must not be
  *   collected as a "variable" for the mixed bitwise/arithmetic check
  *

@@ -1,6 +1,6 @@
 /*
  * Rule: DCL05-C
- * Source: real-world (mbedtls library/ecp.c, pure-ftpd src/bsd-glob.c, mbedtls task 1173)
+ * Source: real-world (mbedtls library/ecp.c, pure-ftpd src/bsd-glob.c)
  * Status: PASS - Should NOT trigger DCL05-C violation
  *
  * A single function-pointer parameter is the universal C callback idiom.

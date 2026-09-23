@@ -11,7 +11,7 @@
  * previously matched by the same code path as a plain pointer *variable*
  * declaration (`const char *p;`), tracking the function's own name as an
  * uninitialized local -- so the later call `zScript = TCLSH_INIT_PROC(interp);`
- * flagged the function name itself as "used uninitialized" (task 461
+ * flagged the function name itself as "used uninitialized" (an earlier fix
  * category 8; sqlite's tclsqlite.c TCLSH_MAIN).
  */
 struct Tcl_Interp;

@@ -1,6 +1,6 @@
 /*
  * Rule: EXP36-C
- * Source: hostap real-world audit (task 462, batch 16-40_b12)
+ * Source: hostap real-world audit (batch 16-40_b12)
  * Status: PASS - Linux/hostap-style fixed-width typedefs must not be
  *   misclassified as 4-byte-aligned pointer types
  *

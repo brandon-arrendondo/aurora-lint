@@ -1,6 +1,6 @@
 /*
  * Rule: FLP05-C
- * Source: task 418 (task-389 sweep, whole-file var_types conflation)
+ * Source: real-world (whole-file var_types conflation)
  * Status: PASS - Should NOT trigger FLP05-C violation
  *
  * `var_types` was previously built by a single whole-translation-unit walk

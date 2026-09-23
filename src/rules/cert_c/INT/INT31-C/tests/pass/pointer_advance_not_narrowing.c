@@ -1,6 +1,6 @@
 /*
  * Rule: INT31-C
- * Source: task 914 (pure-ftpd safe_rw.c:56, puredb_read.c:39, quotas.c:74)
+ * Source: real-world (pure-ftpd safe_rw.c:56, puredb_read.c:39, quotas.c:74)
  * Status: PASS - Should NOT trigger INT31-C violation
  * Reason: `buf += readnb` advances a POINTER by an ssize_t. The type
  *         specifier alone made `unsigned char *buf` look like an 8-bit

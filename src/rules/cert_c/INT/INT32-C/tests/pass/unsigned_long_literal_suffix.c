@@ -1,6 +1,6 @@
 /*
  * Rule: INT32-C
- * Source: task 1276 (valkey src/hashtable.c:889
+ * Source: real-world (valkey src/hashtable.c:889
  *         `(1ul << (ENTRIES_PER_BUCKET << 3)) - 1ul`)
  * Status: PASS - Should NOT trigger INT32-C violation
  * Reason: `1ul` is an unsigned long literal, so the shift and the subtraction

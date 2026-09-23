@@ -1,6 +1,6 @@
 /*
  * Rule: INT30-C
- * Source: task 1358 (companion to pass/task_1358_unresolvable_alias_has_no_width_to_wrap.c)
+ * Source: real-world (companion to pass/unresolvable_alias_has_no_width_to_wrap.c)
  * Status: FAIL - Should trigger INT30-C violation
  * Reason: Declining to call a wrap definite at an UNKNOWN width must not
  *         reach a width that is known: an alias whose chain resolves to

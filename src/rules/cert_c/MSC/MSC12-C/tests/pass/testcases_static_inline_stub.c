@@ -8,7 +8,7 @@
  * not dead code. It is the `#else` arm of a feature `#ifdef` in a header,
  * defined so every call site compiles unchanged when the feature is off --
  * deleting it breaks the build of every translation unit that calls it
- * (task 999; hostap alone carries 226 of these, e.g.
+ * (hostap alone carries 226 of these, e.g.
  * `static inline void wpas_nan_flush(struct wpa_supplicant *wpa_s) {}`).
  *
  * The storage class is the signal, not the file name or the function name.

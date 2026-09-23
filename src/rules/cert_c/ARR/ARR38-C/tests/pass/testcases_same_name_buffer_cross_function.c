@@ -7,7 +7,7 @@
 /*
  * Rule: ARR38-C - Guarantee that library functions do not form invalid pointers
  * Status: PASS
- * Reason: task 410 regression companion — two functions each declare a
+ * Reason: an earlier fix regression companion — two functions each declare a
  * local buffer named "buf" of a *different* size, and each function's use
  * is safe relative to its own buffer. Per-function-scoped buffer tracking
  * must not spuriously flag either function just because a same-named

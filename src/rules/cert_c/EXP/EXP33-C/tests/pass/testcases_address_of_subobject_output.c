@@ -60,10 +60,10 @@ void cast_output(void) {
     use_int(s.arr[0]);
 }
 
-/* &var[i] at a scanf-family output position (task 1029's funnel reaching
-   task 1028's argument shape). scanf's return count gates the read of its
+/* &var[i] at a scanf-family output position (an earlier fix's funnel reaching
+   its argument shape). scanf's return count gates the read of its
    outputs -- the unchecked-return shape from hostap's real eapol_test.c
-   is task 1065's fail fixture, not a pass. */
+   is that fix's own fail fixture, not a pass. */
 void scanf_element_output(const char *s) {
     int a[4];
     if (sscanf(s, "%d.%d.%d.%d", &a[0], &a[1], &a[2], &a[3]) == 4) {

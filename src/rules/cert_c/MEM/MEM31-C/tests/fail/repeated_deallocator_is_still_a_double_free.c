@@ -2,7 +2,7 @@
  * Rule: MEM31-C
  * Source: custom
  * Status: FAIL - Should trigger MEM31-C violation
- * Description: The guard on task 1197's relaxation. Only a SECOND, DIFFERENT
+ * Description: The guard on an earlier fix's relaxation. Only a SECOND, DIFFERENT
  * deallocator name is the teardown-pair idiom; repeating ONE name is the
  * shape the load-bearing single-argument fallback exists to catch, and it
  * still reports. So does a literal `free()` twice, and so does a repeat that

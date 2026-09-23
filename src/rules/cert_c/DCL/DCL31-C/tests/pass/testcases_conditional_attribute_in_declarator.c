@@ -1,6 +1,6 @@
 /*
  * Rule: DCL31-C
- * Source: task 1040 (sqlite src/vdbeapi.c:1285)
+ * Source: real-world (sqlite src/vdbeapi.c:1285)
  * Status: PASS - neither the enclosing function nor the attribute's own
  * argument is an undeclared call.
  *

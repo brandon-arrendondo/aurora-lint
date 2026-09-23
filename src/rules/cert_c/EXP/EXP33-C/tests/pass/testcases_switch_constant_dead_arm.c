@@ -1,6 +1,6 @@
 /*
  * Rule: EXP33-C
- * Source: testcases (task 320 follow-up)
+ * Source: testcases (a follow-up)
  * Status: PASS - Should NOT trigger EXP33-C violation
  * Description: `switch(5)` can never match `case 6:`, so `default:` is the
  * only reachable arm and unconditionally initializes `data` -- the CFG must

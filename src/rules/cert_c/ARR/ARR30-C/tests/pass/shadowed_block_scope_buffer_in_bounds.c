@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 1273 (valkey src/valkey-cli.c clusterManagerCommandReshard,
+ * Source: real-world (valkey src/valkey-cli.c clusterManagerCommandReshard,
  *         lines 7755 / 7768 / 7891)
  * Status: PASS - Should NOT trigger ARR30-C violation
  * Reason: one function declares `buf` three times, in three blocks, at

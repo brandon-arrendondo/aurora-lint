@@ -8,7 +8,7 @@
  * ever reading their content -- GCC/Clang special-case a bare-identifier
  * `(void)` cast to skip the load entirely, which is exactly why this
  * convention exists (to silence "unused variable" warnings without a real
- * read). Task 461 category 10; curl's ldap.c/mbedtls.c.
+ * read). An earlier fix category 10; curl's ldap.c/mbedtls.c.
  */
 int fail(void);
 

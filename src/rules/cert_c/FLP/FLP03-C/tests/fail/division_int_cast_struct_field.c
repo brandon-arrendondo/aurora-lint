@@ -1,15 +1,15 @@
 /*
  * Rule: FLP03-C
- * Source: testcases (relocated from INT33-C, task 228); reshaped for task 517
+ * Source: testcases (relocated from INT33-C; reshaped since)
  * Status: FAIL - Should trigger FLP03-C violation
  * Reason: `(double)f.numerator / denominator` is FLOATING-POINT division (the
  *         dividend is cast to double). `denominator` comes from
- *         `atoi(getenv(...))`, an untrusted full-range source (task 517's
+ *         `atoi(getenv(...))`, an untrusted full-range source (an earlier fix's
  *         opt-in provenance gate), and is never validated before the division —
  *         a floating-point divide-by-zero (inf/nan) that must be detected.
  *         This is FLP03-C's domain, NOT INT33-C (integer divide-by-zero UB
  *         only). Originally divided directly by an unvalidated struct field
- *         (`f.denominator`); task 517 found a bare struct-field/parameter
+ *         (`f.denominator`); an earlier fix found a bare struct-field/parameter
  *         divisor alone isn't enough to flag under the redesigned rule (see
  *         the file header rationale in flp03_c.rs) since almost every
  *         real-world FP division divides by a field or local, and the

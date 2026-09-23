@@ -1,6 +1,6 @@
 /*
  * Rule: STR02-C
- * Source: custom (CWE-89, task 470 -- append-style propagators like
+ * Source: custom (CWE-89; append-style propagators like
  *   strncat must NOT clear dest's taint the way an overwrite like
  *   snprintf does, since they layer onto existing content rather than
  *   replacing it)

@@ -1,6 +1,6 @@
 /*
  * Rule: INT32-C
- * Source: task 914 (pure-ftpd ftpd.c:2824, hostap ctrl_iface.c:8346)
+ * Source: real-world (pure-ftpd ftpd.c:2824, hostap ctrl_iface.c:8346)
  * Status: PASS - Should NOT trigger INT32-C violation
  * Reason: `resolved_path + n` offsets a file-scope pointer and
  *         `head_u8(resp) + start` offsets a pointer-returning call's result.

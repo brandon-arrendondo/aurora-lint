@@ -7,8 +7,7 @@
  * returning path, but one arm covers it only by handing pv to inner(), which
  * a structural walk of outer's own body cannot see through. Without that
  * forwarded leg pv is demoted to a MAY-write and every caller reports `v`
- * uninitialised -- once per caller, not once per callee (task 1011,
- * aurora_lint).
+ * uninitialised -- once per caller, not once per callee.
  *
  * The output parameter is `int *` and not sqlite's `const u8 **` on purpose:
  * EXP33-C does not report an uninitialised POINTER local at all, so a fixture

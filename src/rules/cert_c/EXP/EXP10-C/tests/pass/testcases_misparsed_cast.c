@@ -4,7 +4,7 @@
  * Status: PASS - Should NOT trigger EXP10-C violation
  * Description: (u64)(expr) parses as a call to `u64` (tree-sitter cannot
  * tell a parenthesized typedef name from a callee), which used to count as
- * a second function call. sqlite util.c:706 / vdbemem.c:344 (task 1147
+ * a second function call. sqlite util.c:706 / vdbemem.c:344 (an earlier fix
  * mechanism 4).
  */
 

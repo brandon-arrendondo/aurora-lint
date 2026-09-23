@@ -2,7 +2,7 @@
  * Rule: MEM31-C
  * Source: custom
  * Status: FAIL - Should trigger MEM31-C violation
- * Description: The other half of task 1294's evaluation-order work, and a
+ * Description: The other half of an earlier fix's evaluation-order work, and a
  * recall gap rather than a false positive. A callee that releases its
  * argument only on the path where it SUCCEEDS has not taken the block when it
  * returns NULL -- so the caller still owns it, and a bare `return` on that

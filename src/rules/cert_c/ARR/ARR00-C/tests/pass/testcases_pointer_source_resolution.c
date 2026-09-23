@@ -3,7 +3,7 @@
  * Source: testcases
  * Status: PASS - Should NOT trigger ARR00-C violation
  *
- * Regression test for task 752: two text-scan bugs in
+ * Regression test for an earlier fix: two text-scan bugs in
  * find_pointer_source_array_recursive, both taken from real hostap findings
  * that were adjudicated false positives.
  *

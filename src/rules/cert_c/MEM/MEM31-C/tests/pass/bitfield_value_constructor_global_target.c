@@ -1,9 +1,9 @@
 /*
  * Rule: MEM31-C
- * Source: task_652
+ * Source: real-world regression
  * Status: PASS - Should NOT trigger MEM31-C violation
  *
- * Same bitfield-generator value-constructor pattern as task 580/651, but the
+ * Same bitfield-generator value-constructor pattern as elsewhere, but the
  * name-heuristic allocation is assigned straight into a genuine global
  * variable with NO local declaration in the assigning function at all --
  * seL4's `current_lookup_fault`/`current_fault` shape (extern-declared in a

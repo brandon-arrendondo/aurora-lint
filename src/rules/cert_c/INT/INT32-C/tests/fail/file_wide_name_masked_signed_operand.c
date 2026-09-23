@@ -1,6 +1,6 @@
 /*
  * Rule: INT32-C
- * Source: task 1276 (hostapd/config_file.c:2598 `val * 8` with `int val =
+ * Source: real-world (hostapd/config_file.c:2598 `val * 8` with `int val =
  *         atoi(pos)`, masked by another function's `unsigned long val`;
  *         valkey cluster_legacy.c:736 `j + 1` masked by `unsigned int j`)
  * Status: FAIL - `val * 8` on an unbounded `int val = atoi(pos)` is a signed

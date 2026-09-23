@@ -7,7 +7,7 @@
  * so a wrapper of a wrapper was dark: hostap's `scard = os_zalloc(n); ...
  * return scard;` names no allocator, and no caller of scard_init() ever
  * tracked its result. The flag now closes through the callees whose
- * results reach a return (`returned_callees`, task 1227): os_zalloc ->
+ * results reach a return (`returned_callees`): os_zalloc ->
  * scard_init -> the caller, whose dropped result is a leak.
  */
 #include <stdlib.h>

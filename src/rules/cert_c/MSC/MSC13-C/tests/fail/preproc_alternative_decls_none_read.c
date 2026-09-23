@@ -1,6 +1,6 @@
 /*
  * Rule: MSC13-C
- * Source: task 751 companion regression
+ * Source: real-world companion regression
  * Status: FAIL - Should trigger MSC13-C violation
  *
  * Companion to preproc_alternative_decls_one_read.c (pass): grouping

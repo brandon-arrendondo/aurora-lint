@@ -1,6 +1,6 @@
 #include <stdio.h>
 
-/* task 413: open/close tracking must not leak across functions. Both
+/* an earlier fix: open/close tracking must not leak across functions. Both
  * functions use a local FILE* named `fp` and open the same filename;
  * since these are unrelated local variables in separate functions,
  * this must NOT be reported as "file already open". */

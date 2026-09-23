@@ -7,7 +7,7 @@
 /*
  * Rule: MEM31-C - Free dynamically allocated memory when no longer needed
  * Status: FAIL
- * Reason: unlike a local bound to a lookup/registry accessor (task 1200,
+ * Reason: unlike a local bound to a lookup/registry accessor (
  * see the companion PASS case), a struct THIS function directly allocated
  * with malloc() is unambiguously its own -- an allocation into one of its
  * fields is still this function's own responsibility to free.

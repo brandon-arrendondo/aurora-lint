@@ -7,7 +7,7 @@
  * absence of a `*` in the type's spelling. `client` is a typedef that hides
  * the pointer, so the declared type reads `client` with no `*`; treating that
  * as a non-pointer deleted a real use-after-free (valkey-benchmark.c:556,
- * `zfree(c)` then `listSearchKey(config.clients, c)`, task 1348).
+ * `zfree(c)` then `listSearchKey(config.clients, c)`).
  */
 #include <stdlib.h>
 

@@ -1,6 +1,6 @@
 /*
  * Rule: ENV01-C
- * Source: task 1174
+ * Source: real-world
  * Status: PASS - a local getenv() result copied somewhere whose size the
  *         rule cannot see (a pointer parameter, a heap block) is not a
  *         reported assumption; only a fixed-size array carries one

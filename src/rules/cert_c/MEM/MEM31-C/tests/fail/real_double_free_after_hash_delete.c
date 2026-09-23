@@ -1,6 +1,6 @@
 /*
  * Rule: MEM31-C
- * Source: task_426
+ * Source: real-world regression
  * Status: FAIL - Should trigger MEM31-C violation
  */
 

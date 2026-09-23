@@ -1,6 +1,6 @@
 /*
  * Rule: INT10-C
- * Source: task 570 regression
+ * Source: real-world regression
  * Status: PASS - Should NOT trigger INT10-C violation
  *
  * Bare (non-init) comma-separated declarators like `u32 size, hash;` were

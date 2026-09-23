@@ -1,6 +1,6 @@
 /*
  * Rule: CON07-C
- * Source: task 386 (shadow-awareness regression test)
+ * Source: real-world (shadow-awareness regression test)
  * Status: PASS - block-local variables that merely share a name with file-scope
  * statics are not accesses to those statics, and must not be flagged.
  */

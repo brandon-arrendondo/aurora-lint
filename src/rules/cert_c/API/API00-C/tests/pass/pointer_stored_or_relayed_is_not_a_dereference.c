@@ -44,7 +44,7 @@ int p2p_rx_action(const unsigned char *bssid)
     return bssid == 0;
 }
 
-/* Task 744: the guard exists, one frame down. open_dict null-checks its
+/* An earlier fix: the guard exists, one frame down. open_dict null-checks its
    argument before dereferencing it, so the forward is safe. */
 int open_dict(struct conn *c)
 {

@@ -9,7 +9,7 @@
  * curl_addrinfo.c frees the same pointer in each arm of an
  * `#ifdef/#elif/#else` chain; the linear walk saw arm two "use" what arm
  * one freed. Double-free across a preprocessor split has been suppressed
- * since task 251; use-after-free across one now is too.
+ * since an earlier fix; use-after-free across one now is too.
  */
 
 #include <stdlib.h>

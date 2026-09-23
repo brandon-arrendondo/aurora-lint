@@ -8,7 +8,7 @@
  * deliberate case enumeration, not dead code -- it absorbs its condition so
  * the later arms do not run for it. `if (a) { } else if (b) { f(); }` is NOT
  * equivalent to `if (b) { f(); }`: delete the empty arm and f() now runs
- * whenever a && b (task 999; real example: sqlite's vdbeapi.c
+ * whenever a && b (real example: sqlite's vdbeapi.c
  * `if( xDel==0 ){ /* noop *\/ }else if( xDel==SQLITE_TRANSIENT ){ ... }`).
  *
  * Both the braced and the bare-`;` forms of the idiom appear here. A

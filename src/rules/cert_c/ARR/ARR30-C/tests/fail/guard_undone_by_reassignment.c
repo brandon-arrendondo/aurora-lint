@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 1278
+ * Source: real-world
  * Status: FAIL - `a[res]` after `res = other` is unchecked; the guard above
  *         bounded the OLD value of `res`.
  *

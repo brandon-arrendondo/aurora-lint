@@ -5,7 +5,7 @@
  */
 
 /*
- * Reason: the guard for the task-1254 fix. A macro that only READS its
+ * Reason: the guard for an earlier fix. A macro that only READS its
  * parameter (`(x) + 1`, `(x) < (y)`) must not make an element lvalue
  * argument count as a write, and passing `st[0]` to a real function passes
  * a value -- neither modifies `st`, so `st` is still a pointer to values

@@ -11,7 +11,7 @@
  *         the literal to an ARITHMETIC COMBINATION of named quantities
  *         rather than a single one: sqlite's
  *         `assert( 121 == WALINDEX_LOCK_OFFSET + WAL_CKPT_LOCK )` block
- *         (src/wal.c, task 1153). Substituting a symbolic constant for the
+ *         (src/wal.c). Substituting a symbolic constant for the
  *         literal makes the assertion `X == X` exactly as it does for the
  *         bare-identifier rows above it, because every leaf of the other
  *         side is itself a name -- nothing on that side is spelled out.

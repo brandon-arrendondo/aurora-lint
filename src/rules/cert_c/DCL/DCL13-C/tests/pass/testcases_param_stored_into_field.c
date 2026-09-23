@@ -1,6 +1,6 @@
 /*
  * Rule: DCL13-C
- * Source: task 3 (field-sensitive alias/points-to infrastructure)
+ * Source: real-world (field-sensitive alias/points-to infrastructure)
  * Status: PASS - Should NOT trigger DCL13-C violation
  * Reason: `buf` is stored into a struct field (rb->data = buf), and the
  * field is later written through elsewhere. The parameter's identity has

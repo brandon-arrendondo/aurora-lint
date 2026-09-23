@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: task 1289 (curl lib/url.c: url_create_needle(data) ->
+ * Source: real-world (curl lib/url.c: url_create_needle(data) ->
  *         parseurlandfillconn(data, conn) -> up_free(data), then `data->set`
  *         at the caller; hostap wpa_supplicant_cleanup -> free_hw_features)
  * Status: PASS - Should NOT trigger MEM30-C violation

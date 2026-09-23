@@ -1,7 +1,7 @@
 /*
  * Rule: WIN05-C
  * Status: FAIL - HKEY_LOCAL_MACHINE routed into RegOpenKeyExA through a
- *         one-hop wrapper's parameter (ventoy's GetRegDwordValue, task 1167)
+ *         one-hop wrapper's parameter (ventoy's GetRegDwordValue)
  */
 
 typedef void *HKEY;

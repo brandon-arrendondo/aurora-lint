@@ -8,7 +8,7 @@
  * in src/p2p/p2p.c -- that order is the whole answer: the name ends up on a
  * NEW block, so the later free is not a double free. Processing the
  * assignment before the call let the rebind clear the freed mark and the call
- * then re-applied it to the new block. Task 1294; the ordering regressed in
+ * then re-applied it to the new block. An earlier fix; the ordering regressed in
  * 14f1d004 and this pins it.
  */
 

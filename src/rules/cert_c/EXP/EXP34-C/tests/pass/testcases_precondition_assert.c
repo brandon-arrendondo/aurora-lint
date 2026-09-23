@@ -3,7 +3,7 @@
  * Status: PASS - Should NOT trigger EXP34-C violation
  * Reason: A pointer established non-null by a dominating assert() precondition
  *         (the sqlite documented-invariant idiom) is non-null at later derefs.
- *         Task 207, EXP34-C caller-contract / precondition bucket.
+ *         An earlier fix, EXP34-C caller-contract / precondition bucket.
  */
 
 #include <stdlib.h>

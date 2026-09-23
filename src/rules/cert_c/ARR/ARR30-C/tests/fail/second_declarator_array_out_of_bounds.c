@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 1273 (surfaced by the scope-resolution fix; hostap
+ * Source: real-world (surfaced by the scope-resolution fix; hostap
  *         src/drivers/linux_ioctl.c `char path[128], brlink[128], *pos;`
  *         is the corpus shape)
  * Status: FAIL - `b[9]` writes past an eight-element array.

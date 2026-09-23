@@ -1,6 +1,6 @@
 /*
  * Rule: INT10-C
- * Source: task 1275
+ * Source: real-world
  * Status: FAIL - `neg % (rand() % 7 + 1)` takes the sign of `neg`, which can
  *         be negative; a non-negative PRNG DIVISOR proves nothing.
  *

@@ -1,6 +1,6 @@
 /*
  * Rule: INT32-C
- * Source: task 1275 (valkey src/fuzzer_command_generator.c:474 `60 * (1 +
+ * Source: real-world (valkey src/fuzzer_command_generator.c:474 `60 * (1 +
  *         rand() % 60)`, :475 `1 + rand() % 10000`, src/lolwut6.c:104,
  *         src/listpack.c:1325 `(rand() % total_count) * 2`)
  * Status: PASS - Should NOT trigger INT32-C violation

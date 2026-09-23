@@ -5,7 +5,7 @@
  * Description: && and || sequence their operands wherever they appear --
  * inside an argument list or a subscript as much as at the top of an
  * expression. lua_assert(ttisfloat(key) || luaV_rawequalobj(a, b)) and
- * assert(!(irq[cpu()] == invalid && pending(cpu()))) (task 1147 mechanism 3).
+ * assert(!(irq[cpu()] == invalid && pending(cpu()))) (an earlier fix mechanism 3).
  */
 
 extern int check(int cond);

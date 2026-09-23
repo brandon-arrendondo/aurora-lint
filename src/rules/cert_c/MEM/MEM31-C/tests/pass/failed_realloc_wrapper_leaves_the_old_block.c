@@ -9,7 +9,7 @@
  * sits at the body's top level, so frees_params records it (correctly, as a
  * MAY fact), and every caller's `nbuf = os_realloc(p, n); if (!nbuf) free(p);`
  * read as a double free of a block that is still alive. The callee's early
- * return and the caller's null test are the same path. Task 1279.
+ * return and the caller's null test are the same path. An earlier fix.
  */
 
 #include <stdlib.h>

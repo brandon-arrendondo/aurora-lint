@@ -1,6 +1,6 @@
 /*
  * Rule: EXP34-C
- * Source: testcases (macro-expansion Phase 1, task 180)
+ * Source: testcases (macro-expansion Phase 1)
  * Status: PASS - Should NOT trigger EXP34-C
  *
  * An iterator macro's loop variable is guaranteed non-null inside the body by

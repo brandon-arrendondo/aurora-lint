@@ -6,7 +6,7 @@
  * struct-of-function-pointers dispatch this build can never resolve to a
  * concrete definition -- the field name has no relationship to any global
  * function of the same name (same C-semantics test the call graph already
- * uses to avoid fabricating an edge under that name, task 562). `relay`
+ * uses to avoid fabricating an edge under that name). `relay`
  * then forwards its own `data` param to `wrapper` and directly dereferences
  * it, which is what put `relay` in `dereferences_params` and made it look
  * read-only before this fix -- `wrapper` never gets a chance to prove it

@@ -1,6 +1,6 @@
 /*
  * Rule: MSC06-C
- * Source: task 565 (local buffer zeroed then handed out through an
+ * Source: real-world (local buffer zeroed then handed out through an
  * out-parameter)
  * Status: PASS - buf escapes via *out, so it persists past this call and
  * never goes out of scope here.

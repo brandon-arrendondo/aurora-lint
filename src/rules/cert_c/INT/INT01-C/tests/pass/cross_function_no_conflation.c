@@ -1,6 +1,6 @@
 /*
  * Rule: INT01-C
- * Source: task 418 (task-389 sweep, whole-file size_t_vars/int_vars conflation)
+ * Source: real-world (whole-file size_t_vars/int_vars conflation)
  * Status: PASS - Should NOT trigger INT01-C violation
  *
  * `size_t_vars`/`int_vars` were previously built by a single

@@ -1,6 +1,6 @@
 /*
  * Rule: CON30-C
- * Source: task 415 regression
+ * Source: real-world regression
  * Status: PASS - Should NOT trigger CON30-C violation
  *
  * Companion to the fail fixture with the same name: here BOTH functions

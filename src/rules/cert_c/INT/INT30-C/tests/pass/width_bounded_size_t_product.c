@@ -1,6 +1,6 @@
 /*
  * Rule: INT30-C
- * Source: task 916
+ * Source: real-world
  * Status: PASS - a product computed in size_t cannot wrap 64 bits
  *
  * A 32-bit-or-narrower count times a small compile-time sizeof is performed in

@@ -1,6 +1,6 @@
 /*
  * Rule: INT10-C
- * Source: task 674 (seL4 real-world FP,
+ * Source: real-world (seL4 real-world FP,
  *         src/plat/bcm2837/machine/intc.c:125 and :127)
  * Status: PASS - Should NOT trigger INT10-C violation
  *

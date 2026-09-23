@@ -6,7 +6,7 @@
  * before the outer call's body (C11 6.5.2.2p10), so outer(inner(x)) is not
  * a pair of unsequenced side effects, whatever else is in the expression.
  * The sqlite3_errcode(sqlite3_context_db_handle(ctx)) / curlx_ptimediff_ms(
- * Curl_pgrs_now(data), ...) shape (aurora_lint task 1147).
+ * Curl_pgrs_now(data), ...) shape, from a real-world regression.
  */
 
 struct ctx;

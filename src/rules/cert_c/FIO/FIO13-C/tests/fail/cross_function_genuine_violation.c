@@ -1,6 +1,6 @@
 /*
  * Rule: FIO13-C
- * Source: task 408 regression
+ * Source: real-world regression
  * Status: FAIL - Should trigger FIO13-C violation (exactly once)
  *
  * Two functions each use a same-named FILE* parameter ("fp"). The first

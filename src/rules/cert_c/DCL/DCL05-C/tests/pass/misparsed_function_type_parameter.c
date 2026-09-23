@@ -1,7 +1,7 @@
 /*
  * Rule: DCL05-C
  * Source: real-world (valkey src/dict.h `void(callback)(dict *)`,
- *         src/modules/lua/script_lua.c `LUALIB_API int(luaopen_cjson)(lua_State *L)`, task 1173)
+ *         src/modules/lua/script_lua.c `LUALIB_API int(luaopen_cjson)(lua_State *L)`)
  * Status: PASS - Should NOT trigger DCL05-C violation
  *
  * Both parse as a function declarator directly inside another with no

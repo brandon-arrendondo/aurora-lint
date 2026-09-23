@@ -12,7 +12,7 @@
  *         `return`, this covers `goto`, `break`, and `continue`. Error paths in
  *         real C free-then-`goto cleanup` / free-then-`break`; a sibling branch
  *         doing the same is NOT a double-free, and the post-loop / post-if use
- *         is NOT a use-after-free, because only one branch executes (task 181
+ *         is NOT a use-after-free, because only one branch executes (an earlier fix
  *         pattern 2). Previously only `return` was recognized as a terminator.
  */
 

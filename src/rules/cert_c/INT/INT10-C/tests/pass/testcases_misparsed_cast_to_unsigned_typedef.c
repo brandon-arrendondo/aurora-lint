@@ -3,14 +3,14 @@
  * Source: testcases
  * Status: PASS - Should NOT trigger INT10-C violation
  *
- * Regression test for task 675, from seL4 src/smp/lock.c:19:
+ * Regression test for an earlier fix, from seL4 src/smp/lock.c:19:
  *
  *     assert(((seL4_Word)&big_kernel_lock) % EXCL_RES_GRANULE_SIZE == 0);
  *
  * tree-sitter-c cannot tell a cast from a bitwise AND without knowing whether
  * the parenthesized name is a type, and it does not consult a typedef table
  * here -- so `(seL4_Word)&x` comes back as a binary_expression whose left
- * operand is a parenthesized identifier, not a cast_expression. Task 657's
+ * operand is a parenthesized identifier, not a cast_expression. An earlier fix's
  * cast_expression handling therefore could not see this shape at all.
  *
  * The dividend is a cast to an unsigned typedef, so the remainder cannot be

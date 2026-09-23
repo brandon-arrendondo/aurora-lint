@@ -1,6 +1,6 @@
 /*
  * Rule: DCL13-C
- * Source: task 642 (hostap src/utils/edit.c:1113, gt_id 68453)
+ * Source: real-world (hostap src/utils/edit.c:1113, gt_id 68453)
  * Status: PASS - Function-pointer-typed parameters are excluded; DCL13-C is
  * about pointers to data not changed by the function, not pointers to code.
  * const on a function-pointer type would qualify the pointer variable

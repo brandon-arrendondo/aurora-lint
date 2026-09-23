@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 1021 (NUL-sentinel walk over a fixed-size char array)
+ * Source: real-world (NUL-sentinel walk over a fixed-size char array)
  * Status: PASS - Should NOT trigger ARR30-C violation
  * Reason: raylib's ExportXAsCode() idiom. The walk is bounded by the array's
  * own terminator rather than by a relational test, so every comparison-based

@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 1278
+ * Source: real-world
  * Status: PASS - Should NOT trigger ARR30-C violation
  * Reason: the early-return guard precedes a loop that contains the access
  *         but never writes the index, so the bound it proved still holds on

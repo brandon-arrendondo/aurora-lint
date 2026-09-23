@@ -3,7 +3,7 @@
  * Source: testcases
  * Status: FAIL - Should trigger STR31-C violation
  * Reason: malloc(sizeof(char)) allocates exactly 1 byte; the string literal
- * copied in needs far more space (task 515: bare sizeof(T) allocation size).
+ * copied in needs far more space (an earlier fix: bare sizeof(T) allocation size).
  */
 
 #include <stdlib.h>

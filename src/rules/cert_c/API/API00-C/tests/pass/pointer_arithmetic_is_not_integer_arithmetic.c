@@ -5,7 +5,7 @@
  * Description: A length parameter whose only "arithmetic" is forming a
  * pointer bound (`end = ies + ies_len`) is not doing integer arithmetic at
  * all -- a pointer operand cannot produce an integer overflow, so the
- * premise of the finding does not hold (task 738, hostap's
+ * premise of the finding does not hold (hostap's
  * wpa_ft_parse_ies / ieee802_1x_kay_get_status). Any real length check
  * belongs on the pointer difference `end - pos`, which stays in bounds by
  * construction.

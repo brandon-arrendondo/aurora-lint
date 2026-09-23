@@ -1,6 +1,6 @@
 /*
  * Rule: PRE32-C
- * Source: aurora_lint 1284 (sqlite src/vdbeapi.c:1315)
+ * Source: real-world (sqlite src/vdbeapi.c:1315)
  * Status: PASS - Should NOT trigger PRE32-C violation
  *
  * `SQLITE_DEBUG` here is the operand of #ifdef, not a function being called,

@@ -1,9 +1,9 @@
 /*
  * Rule: EXP34-C
- * Source: task 1327
+ * Source: real-world
  * Status: PASS - the && case is legitimate and must stay suppressed
  *
- * The polarity trap for task 1327. Reaching the right operand of `&&` means
+ * The polarity trap for an earlier fix. Reaching the right operand of `&&` means
  * the left really did evaluate true, so `isIndex` IS known true at the
  * dereference and `!(isIndex && (!p || ...))` collapses to `p != NULL`.
  *

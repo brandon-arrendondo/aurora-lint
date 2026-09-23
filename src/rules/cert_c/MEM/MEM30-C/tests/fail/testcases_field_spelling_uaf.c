@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: task 1 (field-sensitive alias/points-to infrastructure)
+ * Source: real-world (field-sensitive alias/points-to infrastructure)
  * Status: FAIL - Should trigger MEM30-C violation
  * Reason: free(p->buf) followed by an access through a DIFFERENT spelling
  * of the same field, (*p).buf, must still be recognized as the same

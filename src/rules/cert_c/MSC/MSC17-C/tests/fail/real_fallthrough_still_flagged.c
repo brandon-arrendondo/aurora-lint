@@ -3,8 +3,8 @@
  * Source: pure-ftpd src/pure-ftpwho.c
  * Status: FAIL - Should trigger MSC17-C violation
  *
- * A real, unmarked fallthrough must still be flagged even after the task
- * 632 fixes for comment-only grouped cases, #endif annotations, and
+ * A real, unmarked fallthrough must still be flagged even after the
+ * fixes for comment-only grouped cases, #endif annotations, and
  * brace-wrapped markers -- those fixes must not blanket-suppress genuine
  * violations.
  */

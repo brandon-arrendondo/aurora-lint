@@ -11,7 +11,7 @@
  * bogus declaration whose declared name is literally `case`, which
  * EXP33-C's init-state analysis then tracks as an uninitialized variable
  * and flags wherever the real `case` keyword reappears later in the same
- * function (task 461 category 8; sqlite's vdbe.c byte-serialization
+ * function (an earlier fix category 8; sqlite's vdbe.c byte-serialization
  * switch).
  */
 void f(int len, unsigned char *z, unsigned long long v) {

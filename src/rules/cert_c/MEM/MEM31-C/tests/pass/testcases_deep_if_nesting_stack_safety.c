@@ -1,13 +1,13 @@
 /*
  * Rule: MEM31-C
- * Source: task 295 (explicit-stack conversion) regression
+ * Source: real-world (explicit-stack conversion) regression
  * Status: PASS - No MEM31-C violation
  * Reason: deep sequential if-nesting (2000 levels), memory
  * allocated and freed in the same (innermost) scope. Exists to prove
  * the frame-stack conversion of MemoryLeakAnalyzer::analyze_node/
  * analyze_if (and the related switch/loop continuation frames) does
  * not recurse per nesting level (would overflow the native call stack
- * well before this depth in the pre-task-295 implementation).
+ * well before this depth in the pre-an earlier fix implementation).
  */
 
 #include <stdlib.h>

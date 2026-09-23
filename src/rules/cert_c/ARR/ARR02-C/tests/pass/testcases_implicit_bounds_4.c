@@ -1,7 +1,7 @@
 /*
  * Rule: ARR02-C
  * Source: testcases
- * Status: PASS - Should NOT trigger ARR02-C violation (brace initializer determines the bound; well-defined per C11 6.7.9p22, task 567)
+ * Status: PASS - Should NOT trigger ARR02-C violation (brace initializer determines the bound; well-defined per C11 6.7.9p22)
  */
 
 #include <stdio.h>

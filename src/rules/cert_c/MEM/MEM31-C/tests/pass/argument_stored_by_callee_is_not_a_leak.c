@@ -10,7 +10,7 @@
  * FILE-SCOPE variable (hostap's eap_peer_method_register `eap_methods =
  * method`), and into a local the callee RETURNS (curl's hash_elem_create
  * `he->ptr = p` under `return he`). The last also arrives through a
- * forwarding wrapper, so the transitive edge carries it. Task 1198.
+ * forwarding wrapper, so the transitive edge carries it. An earlier fix.
  */
 
 #include <stdlib.h>

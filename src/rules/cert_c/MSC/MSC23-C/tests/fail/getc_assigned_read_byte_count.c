@@ -1,6 +1,6 @@
 /*
  * Rule: MSC23-C
- * Source: task 347 (regression test)
+ * Source: real-world (regression test)
  * Status: FAIL - the same byte-counting pattern as the wiki example, but
  * using getc() with an assigned read and an explicit break rather than
  * fgetc() in a feof()/ferror() loop, to check the detection isn't tied to

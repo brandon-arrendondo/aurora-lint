@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 1000 (sqlite vdbe.c:314 real-world FP)
+ * Source: real-world (sqlite vdbe.c:314 real-world FP)
  * Status: PASS - Should NOT trigger ARR30-C violation
  *
  * &pCx->aType[nField] computes the ADDRESS of the nField-th element -- a

@@ -1,6 +1,6 @@
 /*
  * Rule: EXP34-C
- * Source: task 1327
+ * Source: real-world
  * Status: FAIL - a || left operand does not establish its correlated guard
  *
  * is_nonnull_by_correlated_exit_guard collapses an exit guard's negation using

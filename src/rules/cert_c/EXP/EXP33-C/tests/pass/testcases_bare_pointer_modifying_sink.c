@@ -3,8 +3,8 @@
  * Source: testcases
  * Status: PASS - Should NOT trigger EXP33-C violation. `fds` is declared
  * with no initializer and passed BY VALUE (bare, not `&fds`) to set_fds(),
- * which writes through it purely via the POSIX FD_ZERO/FD_SET macros (task
- * 456; hostap's eloop_sock_table_set_fds pattern). Those are opaque system
+ * which writes through it purely via the POSIX FD_ZERO/FD_SET macros
+ * (hostap's eloop_sock_table_set_fds pattern). Those are opaque system
  * macros aurora-lint's macro-expansion engine has no definition for, so the
  * only way to see the write is FunctionSummary's `modifies_params` (from
  * the intra-file prescan here, or a cross-file one via `-d`) recognizing

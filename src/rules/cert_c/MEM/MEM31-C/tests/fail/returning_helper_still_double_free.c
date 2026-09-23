@@ -1,13 +1,13 @@
 /*
  * Rule: MEM31-C
- * Source: task_1076
+ * Source: real-world regression
  * Status: FAIL - Should trigger MEM31-C violation
  */
 
 /*
  * Rule: MEM31-C - Free dynamically allocated memory when no longer needed
  * Status: FAIL
- * Reason: The companion to task_1076's PASS case. A helper that is NOT marked
+ * Reason: The companion to the sibling PASS case. A helper that is NOT marked
  * noreturn returns to its caller, so the branch falls through to the second
  * free() and the double free is real. Guards against the noreturn exemption
  * being applied to any called function rather than a declared-noreturn one.

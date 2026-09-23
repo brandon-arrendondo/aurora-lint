@@ -1,6 +1,6 @@
 /*
  * Rule: EXP13-C
- * Source: aurora_lint 1284 (valkey src/module.c:13497)
+ * Source: real-world (valkey src/module.c:13497)
  * Status: PASS - Should NOT trigger EXP13-C violation
  *
  * The `<` and `>` delimiting a header name in __has_include() are not

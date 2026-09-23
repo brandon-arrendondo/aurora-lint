@@ -8,7 +8,7 @@
  * Reason: `pkt[start]`/`pkt[start + 1]`/`pkt[start + 2]` treats `start` as a
  * write cursor/offset the caller advances between calls, not pkt's total
  * length -- a forward-offset subscript is not evidence that `start` bounds
- * `pkt`'s size (task 190; real example: curl's mqtt.c add_passwd()).
+ * `pkt`'s size (real example: curl's mqtt.c add_passwd()).
  */
 
 #include <stddef.h>

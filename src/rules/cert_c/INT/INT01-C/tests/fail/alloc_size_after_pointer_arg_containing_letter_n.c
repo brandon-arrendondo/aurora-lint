@@ -1,6 +1,6 @@
 /*
  * Rule: INT01-C
- * Source: task 1151, mirroring sqlite's src/func.c upperFunc/lowerFunc
+ * Source: real-world, mirroring sqlite's src/func.c upperFunc/lowerFunc
  *   (benchmark_adjudication data/sqlite/adjudication.csv src/func.c:514/533,
  *   ext/fts5/fts5_index.c:7052 - same "letter-n substring" reason)
  * Status: FAIL - Should trigger INT01-C violation, on the real size

@@ -2,7 +2,7 @@
  * Rule: DCL05-C
  * Source: wiki Exceptions ("Function pointer types are an exception to this
  *         recommendation"); real-world mbedtls bignum_mod.h mbedtls_mpi_modp_fn,
- *         pk_wrap.h mbedtls_pk_rsa_alt_decrypt_func, task 1187
+ *         pk_wrap.h mbedtls_pk_rsa_alt_decrypt_func, an earlier fix
  * Status: PASS - Should NOT trigger DCL05-C violation
  */
 

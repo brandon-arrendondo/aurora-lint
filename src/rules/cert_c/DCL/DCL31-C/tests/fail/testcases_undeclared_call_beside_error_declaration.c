@@ -1,10 +1,10 @@
 /*
  * Rule: DCL31-C
- * Source: task 1038
+ * Source: real-world
  * Status: FAIL - reading a declaration back out of an ERROR node must not
  * make the rule blind to a genuinely undeclared call in the same file.
  *
- * `sigaction` below is declared (in the shape task 1038 taught the collector
+ * `sigaction` below is declared (in the shape an earlier fix taught the collector
  * to read); `never_declared_anywhere` is not, and must still be reported.
  */
 

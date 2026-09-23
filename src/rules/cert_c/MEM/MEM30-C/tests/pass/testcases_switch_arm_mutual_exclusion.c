@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: hostap ground-truth audit (task 159 waves 30/33) / task 398
+ * Source: hostap ground-truth audit (waves 30/33)
  * Status: PASS - Should NOT trigger MEM30-C violation
  *
  * Regression: mirrors hostap's mesh_mpm_fsm switch(event) pattern. A free

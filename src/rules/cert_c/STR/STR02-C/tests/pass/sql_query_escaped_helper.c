@@ -1,6 +1,6 @@
 /*
  * Rule: STR02-C
- * Source: custom (CWE-89, task 8/301)
+ * Source: custom (CWE-89)
  * Status: PASS - Should NOT trigger STR02-C violation
  *
  * Mirrors pure-ftpd's log_mysql.c/log_pgsql.c pattern: the raw

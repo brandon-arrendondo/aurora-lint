@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: task 1355 (companion to pass/task_1355_result_stored_back_into_freed_argument.c)
+ * Source: real-world (companion to pass/result_stored_back_into_freed_argument.c)
  * Status: FAIL - Should trigger MEM30-C violation
  * Reason: Clearing a freed argument's state when the call's result is
  *         stored back into it must not reach an argument the result is NOT

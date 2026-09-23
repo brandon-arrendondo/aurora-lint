@@ -1,6 +1,6 @@
 /*
  * Rule: INT32-C
- * Source: pure-ftpd (real-world FP cohort, task 915)
+ * Source: pure-ftpd (real-world FP cohort)
  * Status: PASS - Should NOT trigger INT32-C violation
  * Description: Allocation arguments that contain no arithmetic operator at
  * all were flagged as "contains arithmetic that may overflow" because the

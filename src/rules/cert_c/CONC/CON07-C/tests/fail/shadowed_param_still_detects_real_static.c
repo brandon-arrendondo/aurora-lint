@@ -1,6 +1,6 @@
 /*
  * Rule: CON07-C
- * Source: task 386 (shadow-awareness regression test)
+ * Source: real-world (shadow-awareness regression test)
  * Status: FAIL - a parameter shadowing a shared static's name in one function
  * must not suppress detection of a genuine unprotected compound operation on
  * that static in another function.

@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 1273 (the mirror image of the valkey-cli shape)
+ * Source: real-world (the mirror image of the valkey-cli shape)
  * Status: FAIL - `buf[5]` indexes the four-byte `buf` declared in its own
  *         block; the 255-byte `buf` declared later in the enclosing block
  *         is a different variable and not yet in scope.

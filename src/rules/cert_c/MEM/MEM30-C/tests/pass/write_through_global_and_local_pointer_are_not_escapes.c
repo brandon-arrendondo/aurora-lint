@@ -1,6 +1,6 @@
 /*
  * Rule: MEM30-C
- * Source: task 1349 (sel4 drivers/timer/*-mct.c, arch/arm/machine/gic_v3.c;
+ * Source: real-world (sel4 drivers/timer/*-mct.c, arch/arm/machine/gic_v3.c;
  *         valkey cluster_legacy.c, evict.c, acl.c, fuzzer_client.c -- 35
  *         adjudicated FPs in run 267)
  * Status: PASS - Should NOT trigger MEM30-C violation

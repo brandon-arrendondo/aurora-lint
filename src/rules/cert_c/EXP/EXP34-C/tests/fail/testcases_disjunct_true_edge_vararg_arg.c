@@ -1,7 +1,7 @@
 /*
  * Rule: EXP34-C
  * Source: testcases (hostap src/crypto/crypto_openssl.c omac1_aes_vector,
- *         task 1253)
+ *         an earlier fix)
  * Status: FAIL - `cipher` is NULL unless one arm of the length if-chain
  *         assigned it, and the TRUE edge of `!ctx || !cipher || ...` is
  *         reached whether or not `!cipher` was the disjunct that made it

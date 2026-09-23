@@ -1,6 +1,6 @@
 /*
  * Rule: MEM01-C
- * Source: testcases (task 320 follow-up)
+ * Source: testcases (a follow-up)
  * Status: PASS - Should NOT trigger MEM01-C violation
  * Description: `value` is freed in one switch-case arm and freed again in a
  * different, mutually-exclusive arm reached on a later loop iteration -- but

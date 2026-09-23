@@ -4,7 +4,7 @@
  *
  * The store, not the arithmetic. `a + b` here is a correct int computation
  * -- both operands promote and 33000 fits `int` comfortably, which is why
- * task 755 moved this shape out of tests/fail -- but 33000 cannot be
+ * an earlier fix moved this shape out of tests/fail -- but 33000 cannot be
  * represented in a `short`, and "verify that all integer values are in
  * range" is this rule's own title.
  *

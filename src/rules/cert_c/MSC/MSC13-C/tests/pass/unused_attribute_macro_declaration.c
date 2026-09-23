@@ -40,7 +40,7 @@ void between_type_and_declarator(void) {
 }
 
 /* Attribute macro AFTER the declarator, the trailing-attribute form
- * (seL4 src/object/objecttype.c:602, task 1019). Here the parser strands the
+ * (seL4 src/object/objecttype.c:602). Here the parser strands the
  * macro rather than the variable, so the parse-repair pass blanks the macro
  * itself and the annotation would be gone before this rule ever runs -- it
  * survives only as the marker the pass leaves in its place. */

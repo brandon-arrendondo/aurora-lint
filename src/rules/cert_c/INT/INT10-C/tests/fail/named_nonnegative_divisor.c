@@ -1,6 +1,6 @@
 /*
  * Rule: INT10-C
- * Source: task 777
+ * Source: real-world
  * Status: FAIL - Should trigger INT10-C violation
  *
  * A non-negative DIVISOR proves nothing about the remainder's sign. C99

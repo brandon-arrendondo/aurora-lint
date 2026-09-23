@@ -1,6 +1,6 @@
 /*
  * Rule: INT32-C
- * Source: task 1276 (valkey src/rio.c:622 `sizeof(int) * numconns`)
+ * Source: real-world (valkey src/rio.c:622 `sizeof(int) * numconns`)
  * Status: PASS - Should NOT trigger INT32-C violation
  * Reason: `sizeof` yields size_t, so the product is performed in size_t
  *         after `numconns` converts -- unsigned arithmetic, INT30-C's

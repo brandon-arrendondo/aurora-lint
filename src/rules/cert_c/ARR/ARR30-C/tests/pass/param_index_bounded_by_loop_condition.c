@@ -5,7 +5,7 @@
 
 /*
  * Reason: the ordinary buffer-plus-its-own-length calling convention, walked
- * backwards (pureftpd's puredbw_hash, task 911). `len` is the length of
+ * backwards (pureftpd's puredbw_hash). `len` is the length of
  * `msg`, and every `msg[len]` read is dominated by the `while (len != 0)`
  * loop condition it is decremented under, so the index range is
  * [0, original len - 1]. The guard is a `while` rather than an `if`, which

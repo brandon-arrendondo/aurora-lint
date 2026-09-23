@@ -1,6 +1,6 @@
 /*
  * Rule: ENV01-C
- * Source: task 1174
+ * Source: real-world
  * Status: PASS - the copy is bounded by the destination, or sized from the value
  */
 

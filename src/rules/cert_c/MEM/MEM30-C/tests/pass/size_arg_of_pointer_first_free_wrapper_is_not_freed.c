@@ -8,7 +8,7 @@
  * for. Inside the wrapper below the buffer is a LOCAL and the length is the
  * only argument naming a parameter, so the one-resolving-argument rule picks
  * the length -- making `len` a freed parameter of the wrapper and every
- * caller's own length a double free (hostap sae.c, 34 findings, task 1348).
+ * caller's own length a double free (hostap sae.c, 34 findings).
  * The callee's own summary says it releases parameter 0, which contradicts
  * the guess about parameter 1.
  */

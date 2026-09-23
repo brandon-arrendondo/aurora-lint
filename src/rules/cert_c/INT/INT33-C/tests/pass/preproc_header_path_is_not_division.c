@@ -1,6 +1,6 @@
 /*
  * Rule: INT33-C
- * Source: aurora_lint 1284 (mbedtls library/x509_crt.c:2708,2711)
+ * Source: real-world (mbedtls library/x509_crt.c:2708,2711)
  * Status: PASS - Should NOT trigger INT33-C violation
  *
  * The `/` in a header path is a path separator, not a division operator, and

@@ -6,7 +6,7 @@
  * initialized and `key` must be a readable buffer -- the published contract
  * places validation on the caller, the "validate on one side of the
  * interface" discipline written down. Only the function's own statement
- * counts (never an inference from its callers, task 644), and only explicit
+ * counts (never an inference from its callers), and only explicit
  * wording: see fail/documented_without_precondition.c.
  */
 

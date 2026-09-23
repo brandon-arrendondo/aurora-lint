@@ -1,6 +1,6 @@
 /*
  * Rule: INT30-C
- * Source: task 1358 (sqlite src/date.c:1665/1699
+ * Source: real-world (sqlite src/date.c:1665/1699
  *         `d1.iJD += (u64)1486995408 * (u64)100000;`)
  * Status: PASS - Should NOT trigger INT30-C violation
  * Reason: The operation's width is decided by its operands' declared types.

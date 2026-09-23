@@ -1,6 +1,6 @@
 /*
  * Rule: INT33-C
- * Source: aurora_lint 1284 (hostap hostapd/config_file.c:4252)
+ * Source: real-world (hostap hostapd/config_file.c:4252)
  * Status: PASS - Should NOT trigger INT33-C violation
  *
  * The `/` and `%` characters inside a format string are text, not operators.

@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 206 (alias-bound CWE-129 subscript FP)
+ * Source: real-world (alias-bound CWE-129 subscript FP)
  * Status: PASS - Should NOT trigger ARR30-C violation
  * Reason: mirrors Juliet CWE121_..._CWE129_large_32's goodG2B(): data is
  * written through one aliased pointer (dataPtr1) in one block, then read

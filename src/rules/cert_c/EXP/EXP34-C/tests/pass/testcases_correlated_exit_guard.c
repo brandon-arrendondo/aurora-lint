@@ -10,7 +10,7 @@
  *   if (isIndex) { ... pSchema->... }
  *
  * Falling past the guard means `!(isIndex && (...))`, which alone says nothing
- * about pSchema -- which is why task 1067's sound join leaves it PossiblyNull.
+ * about pSchema -- which is why an earlier fix's sound join leaves it PossiblyNull.
  * Where `isIndex` is known TRUE the negation collapses to `!(!pSchema || ...)`,
  * i.e. pSchema non-null, with no approximation. sqlite's btree.c and hostap's
  * wpa.c both regressed on this when 1067 landed.

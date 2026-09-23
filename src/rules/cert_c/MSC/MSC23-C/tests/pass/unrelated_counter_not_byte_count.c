@@ -1,6 +1,6 @@
 /*
  * Rule: MSC23-C
- * Source: task 347 (real-world false-positive regression test)
+ * Source: real-world (real-world false-positive regression test)
  * Status: PASS - a text-mode stream read via fgets(), with an unrelated
  * pointer-walk increment in a nested loop and a conditional counter
  * elsewhere in the same outer loop, must not be flagged. Neither increment

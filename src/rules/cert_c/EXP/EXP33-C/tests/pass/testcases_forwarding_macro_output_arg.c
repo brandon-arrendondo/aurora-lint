@@ -3,7 +3,7 @@
  * Source: testcases
  * Status: PASS - Should NOT trigger EXP33-C violation. `rnd` is declared
  * with no initializer and passed BY VALUE (bare, cast to `unsigned char *`)
- * to `MY_RAND()`, a "pure forwarding" macro (task 589; curl's
+ * to `MY_RAND()`, a "pure forwarding" macro (curl's
  * `Curl_rand(a,b,c)` -> `Curl_rand_bytes(a,b,c)` pattern) whose body is just
  * a call to `real_rand_bytes()`, the actual function that writes through
  * its `out` argument. The macro's own body text has no assignment for the

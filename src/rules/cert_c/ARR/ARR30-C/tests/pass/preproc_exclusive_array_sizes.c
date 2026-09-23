@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 912 (sel4 src/machine/profiler.c:63,78,79,81)
+ * Source: real-world (sel4 src/machine/profiler.c:63,78,79,81)
  * Status: PASS - Should NOT trigger ARR30-C violation
  * Reason: `profiler_entries` is declared in BOTH arms of one #ifdef, at two
  *         different sizes. Which arm compiles depends on a macro this

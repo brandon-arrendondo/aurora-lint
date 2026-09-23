@@ -7,7 +7,7 @@
  * Reason: `case WIDTH_160_80PLUS80: break;` is not removable when the switch
  * has a `default:` that does real work. Delete the case and that value stops
  * matching a label, falls to the default handler, and gets masked out -- a
- * behaviour change, so the case is not "code that has no effect" (task 999;
+ * behaviour change, so the case is not "code that has no effect" (
  * real example: hostap's src/ap/ieee802_11_vht.c channel-width masking).
  *
  * The same file's `default:` is exempt for a second, independent reason:

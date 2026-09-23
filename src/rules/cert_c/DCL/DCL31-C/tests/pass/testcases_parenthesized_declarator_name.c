@@ -1,6 +1,6 @@
 /*
  * Rule: DCL31-C
- * Source: task 1040 (lua lua.h:204, lauxlib.h:108)
+ * Source: real-world (lua lua.h:204, lauxlib.h:108)
  * Status: PASS - `LUA_API T (name) (args);` declares `name`, so calling it
  * is not an implicit declaration.
  *

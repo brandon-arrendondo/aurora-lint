@@ -5,7 +5,7 @@
  *
  * Two unrelated functions each open and close a file exactly once using a
  * parameter/variable named "file_name" and "fd". Neither function reopens
- * anything on its own. Before task 407's fix, FIO05-C analyzed the whole
+ * anything on its own. Before an earlier fix's fix, FIO05-C analyzed the whole
  * translation_unit as a single merged timeline keyed by filename text, so
  * these two independent single-open sequences (both keyed under the literal
  * text "file_name") looked like one Open -> Close -> Open reopen sequence

@@ -1,6 +1,6 @@
 /*
  * Rule: INT32-C
- * Source: task 1276 (hostap src/ap/wpa_auth.c:5131 and :5022 -- `size_t
+ * Source: real-world (hostap src/ap/wpa_auth.c:5131 and :5022 -- `size_t
  *         wpa_ie_len` inside `SM_STATE(WPA_PTK, PTKINITNEGOTIATING) { ... }`,
  *         `int wpa_ie_len` in another function)
  * Status: PASS - Should NOT trigger INT32-C violation

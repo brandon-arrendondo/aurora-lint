@@ -1,10 +1,10 @@
 /*
  * Rule: STR02-C
- * Source: custom (CWE-89, task 8/301)
+ * Source: custom (CWE-89)
  * Status: PASS - Should NOT trigger STR02-C violation
  *
  * Mirrors a real pattern found on hostap's src/eap_server/eap_sim_db.c
- * (task 8): the tainted parameter is validated against a character
+ *: the tainted parameter is validated against a character
  * allow-list, with an early exit on failure, before being snprintf'd
  * into the query buffer.
  */

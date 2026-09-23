@@ -1,7 +1,7 @@
 /*
  * Rule: MSC13-C
- * Source: hostap hostapd/ctrl_iface.c (task 386 follow-up regression,
- *         discovered benchmark-validating tasks 386/515, 2026-08-28)
+ * Source: hostap hostapd/ctrl_iface.c (follow-up regression,
+ *         discovered during benchmark validation, 2026-08-28)
  * Status: PASS - Should NOT trigger MSC13-C violation
  *
  * A declaration written inside a #ifdef/#endif block is a direct child of

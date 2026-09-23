@@ -1,6 +1,6 @@
 /*
  * Rule: INT32-C
- * Source: task 1287
+ * Source: real-world
  * Status: FAIL - `val * 8` on an alias for a signed integer type is signed
  *         multiplication, exactly as it is when the type is spelled out.
  *

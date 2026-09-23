@@ -1,7 +1,7 @@
 /*
  * Rule: ARR38-C
  * Source: CWE-131 "Incorrect Calculation of Buffer Size" combined with
- *   Juliet flow variant 67 (struct-by-value cross-function field), task 304
+ *   Juliet flow variant 67 (struct-by-value cross-function field), an earlier fix
  * Status: FAIL - Should trigger ARR38-C violation
  *
  * `ALLOCA(10)` cast to `int *` allocates 10 BYTES, not 10 ints -- a bare

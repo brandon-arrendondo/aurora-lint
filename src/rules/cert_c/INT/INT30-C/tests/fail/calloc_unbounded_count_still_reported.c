@@ -1,6 +1,6 @@
 /*
  * Rule: INT30-C
- * Source: task 1325 (companion to pass/task_1325_calloc_constant_product_cannot_wrap.c)
+ * Source: real-world (companion to pass/calloc_constant_product_cannot_wrap.c)
  * Status: FAIL - Should trigger INT30-C violation
  * Reason: Proving a calloc() product cannot wrap must not reach a count
  *         the analysis cannot bound: a parameter, a global, a value

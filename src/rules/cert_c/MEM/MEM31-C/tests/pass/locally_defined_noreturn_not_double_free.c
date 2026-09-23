@@ -1,9 +1,9 @@
 /*
  * Rule: MEM31-C
- * Source: task 1092
+ * Source: real-world
  * Status: PASS - a locally-defined helper that only exits ends the path
  *
- * Task 1076 taught the tool about a noreturn helper *declared* with an
+ * An earlier fix taught the tool about a noreturn helper *declared* with an
  * attribute. pure-ftpd's pure-pw.c defines its own `no_mem()` with no
  * attribute anywhere, so the free before the call looked like it fell through
  * into the `err:` label's second free.

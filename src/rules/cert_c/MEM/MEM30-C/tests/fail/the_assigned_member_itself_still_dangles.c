@@ -1,4 +1,4 @@
-/* The other side of aurora_lint 1448: narrowing the mark to the assigned
+/* The other side of an earlier fix: narrowing the mark to the assigned
  * path must not stop the assigned path itself from dangling.
  *
  * The raw count here goes 5 (base) -> 4 (fix), which looks like a loss and

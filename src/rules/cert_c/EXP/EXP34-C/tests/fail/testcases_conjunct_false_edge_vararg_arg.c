@@ -1,6 +1,6 @@
 /*
  * Rule: EXP34-C
- * Source: testcases (mosquitto src/conf.c config__plugin_load, task 1253)
+ * Source: testcases (mosquitto src/conf.c config__plugin_load)
  * Status: FAIL - `name` reaches the `report` call on the FALSE edge of
  *         `name && lookup(name)`, which is `!name || !lookup(name)` and so
  *         says nothing about `name`; a NULL `name` flows into a variadic

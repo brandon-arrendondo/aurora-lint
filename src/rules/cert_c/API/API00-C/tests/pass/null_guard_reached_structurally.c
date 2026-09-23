@@ -6,7 +6,7 @@
 
 /*
  * Three ways a pointer parameter's own NULL guard went unseen. All three come
- * from task 664's API00-C POINTER adjudication sample, where the guard sits
+ * from an earlier fix's API00-C POINTER adjudication sample, where the guard sits
  * inside the flagged function -- so this was a detection bug, not a scoping
  * question. The scan used to look at the body's top-level statement list only,
  * and decided guard polarity by matching the condition's TEXT.

@@ -4,7 +4,7 @@
  */
 
 /*
- * Reason (task 391, hostap's rfkill.c): `rfk_phy` genuinely is read (as a
+ * Reason (hostap's rfkill.c): `rfk_phy` genuinely is read (as a
  * call argument to `os_strcmp`) before being freed. The shared
  * reaching-definitions dataflow also emits a synthetic `FreeCall`
  * pseudo-definition at the `free(rfk_phy)` call site for MEM30-C/MEM31-C's

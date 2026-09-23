@@ -1,6 +1,6 @@
 /*
  * Rule: DCL06-C
- * Source: bmdb-757
+ * Source: real-world
  * Status: PASS - literal echoed in a sibling identifier's own name
  * Description: a mechanical table pairing each value with an identifier that
  * already names it (e.g. seL4's x86 IDT vector table, init_idt_entry(idt,

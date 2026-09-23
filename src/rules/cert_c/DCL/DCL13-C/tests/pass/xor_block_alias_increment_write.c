@@ -4,7 +4,7 @@
  */
 
 /*
- * Reason (task 391, hostap's aes-ccm.c/aes-gcm.c `xor_aes_block`/
+ * Reason (hostap's aes-ccm.c/aes-gcm.c `xor_aes_block`/
  * `xor_block`): `dst` is genuinely modified through the cast alias `d` via
  * `*d++ ^= *s++;` -- a pointer-increment-assign write. Previously
  * `is_write_through_param`'s `pointer_expression` case only matched a bare
@@ -27,7 +27,7 @@ static void xor_aes_block(u8 *dst, const u8 *src)
 }
 
 /*
- * Reason (task 391, hostap's aes-gcm.c `inc32`): `block` is genuinely
+ * Reason (hostap's aes-gcm.c `inc32`): `block` is genuinely
  * modified via `WPA_PUT_BE32(block + AES_BLOCK_SIZE - 4, val)` -- an
  * unknown (non-read-only) call receiving a pointer-arithmetic offset
  * (`block + K1 - K2`) from the parameter, which still targets memory
@@ -49,7 +49,7 @@ static void inc32(u8 *block)
 }
 
 /*
- * Reason (task 391, hostap's pasn_common.c `pasn_set_own_addr`): `pasn` is
+ * Reason (hostap's pasn_common.c `pasn_set_own_addr`): `pasn` is
  * genuinely modified via `os_memcpy(pasn->own_addr, addr, ETH_ALEN)` --
  * `own_addr` is a fixed-size array field, so passing it (no `&` needed,
  * arrays decay) as a known write-destination function's first argument

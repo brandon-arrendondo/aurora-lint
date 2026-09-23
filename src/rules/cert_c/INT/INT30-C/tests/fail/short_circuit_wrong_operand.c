@@ -1,9 +1,9 @@
 /*
  * Rule: INT30-C
- * Source: task 1324
+ * Source: real-world
  * Status: FAIL - the short-circuit operand does not guard THIS subtraction
  *
- * The negative control for task 1324's guard. A dominating short-circuit
+ * The negative control for an earlier fix's guard. A dominating short-circuit
  * operand only proves what it actually compares: here the earlier operand
  * bounds an unrelated variable, so `size - offset` is still unguarded and
  * must still be reported. Without this case, widening the guard walk to

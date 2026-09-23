@@ -4,7 +4,7 @@
  * Status: PASS - Should NOT trigger API00-C violation
  * Description: A DBusError *error out-param whose only use is being relayed
  * to dbus_set_error/dbus_set_error_const is safe unvalidated -- both are
- * documented to silently ignore a NULL DBusError* (task 742, hostap's D-Bus
+ * documented to silently ignore a NULL DBusError* (hostap's D-Bus
  * getter family).
  */
 

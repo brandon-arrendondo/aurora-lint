@@ -6,7 +6,7 @@
  * need not be checked, and "we were already on the error path" is not one of
  * its conditions. Both fclose() calls below ignore the result; the one inside
  * the fgets() error branch is the shape an earlier "cleanup context"
- * heuristic used to suppress (task 727: 13 such sites in one real file).
+ * heuristic used to suppress (an earlier fix: 13 such sites in one real file).
  */
 
 #include <stdio.h>

@@ -3,8 +3,8 @@
  * Source: testcases
  * Status: FAIL - Should trigger INT30-C violation
  * Description: A multi-term strlen() sum assigned to a variable, then
- * passed to malloc() by that variable name one statement later (task
- * 604, modeled on pure-ftpd's log_pgsql.c query-buffer sizing).
+ * passed to malloc() by that variable name one statement later,
+ * modeled on pure-ftpd's log_pgsql.c query-buffer sizing.
  */
 
 #include <stdlib.h>

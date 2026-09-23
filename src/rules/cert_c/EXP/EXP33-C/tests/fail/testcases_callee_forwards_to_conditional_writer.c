@@ -7,7 +7,7 @@
  * coverage walk parks is never discharged -- and an undischarged obligation
  * must leave the summary exactly as it found it, or the parameter drops out of
  * the read-only-dereference set and the conservative `&var` fallback credits
- * it anyway. The boundary of the credit added in task 1027.
+ * it anyway. The boundary of the credit added in an earlier fix.
  */
 #include <stdio.h>
 

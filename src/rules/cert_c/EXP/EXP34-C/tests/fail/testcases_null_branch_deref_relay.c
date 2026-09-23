@@ -7,9 +7,9 @@
  * mere presence of a dominating null test, rather than the branch it
  * selects, would invert this answer and mask the defect.
  *
- * Regressed by task 1418 (EXP34-C now reports only at the callee's own
+ * Regressed by an earlier fix (EXP34-C now reports only at the callee's own
  * unguarded dereference, seeded from prescan's cross-file
- * `callsite_param_null_states`) and fixed by task 1426: two flat,
+ * `callsite_param_null_states`) and fixed by an earlier fix: two flat,
  * whole-function `local_states` sites -- `guarded_nonnull_after` (consulted
  * from `extract_init_state` while collecting the declaration's own state)
  * and `collect_early_return_null_guards` -- both credited a guarded

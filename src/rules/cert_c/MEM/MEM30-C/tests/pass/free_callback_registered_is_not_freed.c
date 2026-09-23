@@ -8,7 +8,7 @@
  * through it. The last-argument heuristic read the callback itself as the
  * freed thing, and registering the same one on two lists in a function came
  * back as "aofListFree freed multiple times" (valkey aof.c, sentinel.c,
- * valkey-cli.c; task 1350).
+ * valkey-cli.c).
  */
 #include <stdlib.h>
 

@@ -12,9 +12,9 @@
  * to `st[0] += st[4]; st[12] = ROTL32(...)` and writes `st` on every
  * invocation. The rule now asks macro_expand which parameters the macro
  * body assigns (plain, compound or increment) and treats an element lvalue
- * of the param in such a position as a write (task 1254; real shape from
- * pure-ftpd src/alt_arc4random.c:28, adjudicated as a misfire under task
- * 771 -- ADR-0005: the finding named a "never written" parameter that is
+ * of the param in such a position as a write (real shape from
+ * pure-ftpd src/alt_arc4random.c:28, adjudicated as a misfire per
+ * ADR-0005: the finding named a "never written" parameter that is
  * written eight times per loop iteration).
  */
 

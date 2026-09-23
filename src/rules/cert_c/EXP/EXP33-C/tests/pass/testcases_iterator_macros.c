@@ -1,6 +1,6 @@
 /*
  * Rule: EXP33-C
- * Source: testcases (macro-expansion Phase 1, task 180)
+ * Source: testcases (macro-expansion Phase 1)
  * Status: PASS - Should NOT trigger EXP33-C
  *
  * utlist/uthash/BSD-queue iterator/find/output macros write their

@@ -1,6 +1,6 @@
 /*
  * Rule: EXP02-C
- * Source: task 1264, real shapes from mbedtls library/common.h:236/252/267
+ * Source: real-world, real shapes from mbedtls library/common.h:236/252/267
  *   (MBEDTLS_HAS_BUILTIN) and valkey src/config.h:388 (__has_attribute)
  * Status: PASS - Should NOT trigger EXP02-C violation
  *

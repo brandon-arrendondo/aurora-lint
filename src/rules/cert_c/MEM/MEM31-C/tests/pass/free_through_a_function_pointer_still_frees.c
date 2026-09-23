@@ -2,7 +2,7 @@
  * Rule: MEM31-C
  * Source: custom
  * Status: PASS - Should NOT trigger MEM31-C violation
- * Description: sqlite's `sqlite3_free(void *p)`, task 1367. Its body
+ * Description: sqlite's `sqlite3_free(void *p)`, an earlier fix. Its body
  * releases the block through `sqlite3GlobalConfig.m.xFree(p)` -- a call
  * through a function POINTER, which no summary can follow -- so its
  * `frees_params`, `frees_param_pointees` and `frees_param_fields` are all

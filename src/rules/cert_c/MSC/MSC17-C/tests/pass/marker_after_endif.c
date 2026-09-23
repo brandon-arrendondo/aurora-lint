@@ -6,8 +6,9 @@
  * A genuine fallthrough marker comment can itself sit right after the
  * closing #endif of a preprocessor-guarded case (not just inside it),
  * documenting the fallthrough of the case *before* the #ifdef block. The
- * #endif-annotation-comment fix (task_632_endif_comment_and_noreturn_marker)
- * must only drop a comment in that position when it is NOT itself a marker.
+ * #endif-annotation-comment fix (see the sibling
+ * endif_comment_and_noreturn_marker.c fixture) must only drop a comment in
+ * that position when it is NOT itself a marker.
  */
 
 void f(int t) {

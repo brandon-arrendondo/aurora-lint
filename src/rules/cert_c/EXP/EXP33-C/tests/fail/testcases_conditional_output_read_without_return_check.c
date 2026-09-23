@@ -5,7 +5,7 @@
  * only when a table entry matches and returns 0 otherwise, so its trailing
  * `return 0` is a path that leaves the caller's `llen` unwritten. This caller
  * stores the returned bit but never tests it before comparing `llen`, which is
- * curl's `openldap.c:730` (task 1065 bug #3, aurora_lint). The prescan summary
+ * curl's `openldap.c:730` (real-world bug #3). The prescan summary
  * carries the callee as a proven conditional writer, which is what stops the
  * "assume `&var` initializes" default from crediting the write outright.
  */

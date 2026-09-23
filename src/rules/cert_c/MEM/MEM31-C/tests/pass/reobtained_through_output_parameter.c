@@ -12,7 +12,7 @@
  *         stops applying to the name. `p = alloc()` already cleared the
  *         mark; `f(&p)` did not, because the name only appears as the
  *         operand of an `&` and the rebind is invisible in the tree. Each
- *         release below is of a distinct block (task 1270: hostap's
+ *         release below is of a distinct block (an earlier fix: hostap's
  *         `IEnumWbemClassObject_Next(..., &pObj, ...)` after an earlier
  *         `_Release`, curl's `Curl_cwriter_create(&writer, ...)` after
  *         `Curl_cwriter_free` on the previous arm).

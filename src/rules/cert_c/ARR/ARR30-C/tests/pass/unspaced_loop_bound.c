@@ -1,6 +1,6 @@
 /*
  * Rule: ARR30-C
- * Source: task 1022 (whitespace-sensitive bounds recognition)
+ * Source: real-world (whitespace-sensitive bounds recognition)
  * Status: PASS - Should NOT trigger ARR30-C violation
  * Reason: the loop bounds the index with `<`, written without spaces around
  * the operator. The bounds verdict used to be a text-substring test on the

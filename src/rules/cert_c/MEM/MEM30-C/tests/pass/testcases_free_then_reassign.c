@@ -11,7 +11,7 @@
  *         pointer, so it is no longer freed. Real code reassigns through
  *         allocator WRAPPERS (mosquitto_malloc, curlx_calloc, Curl_strdup),
  *         sometimes cast-wrapped. Flagging the post-reassign NULL-check or use
- *         as use-after-free was the free-then-reassign FP (task 181 pattern 1).
+ *         as use-after-free was the free-then-reassign FP (an earlier fix pattern 1).
  */
 
 #include <stdlib.h>

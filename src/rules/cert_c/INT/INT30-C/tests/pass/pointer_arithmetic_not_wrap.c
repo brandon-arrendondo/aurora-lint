@@ -1,6 +1,6 @@
 /*
  * Rule: INT30-C
- * Source: task 914 (hostap eap_eke_common.c:663, sel4 ieee802_11_eht.c:2040)
+ * Source: real-world (hostap eap_eke_common.c:663, sel4 ieee802_11_eht.c:2040)
  * Status: PASS - Should NOT trigger INT30-C violation
  * Reason: `prot + prot_len - icv_len` is pointer arithmetic and
  *         `pos - orig_pos` a ptrdiff_t computation. Neither is unsigned

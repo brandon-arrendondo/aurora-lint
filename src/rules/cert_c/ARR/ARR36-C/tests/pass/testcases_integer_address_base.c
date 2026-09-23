@@ -12,7 +12,7 @@
  *         base of `a + b` was taken from the left operand's name with no check
  *         that the name is a pointer at all, so 'behind_tag' -- declared
  *         `word_t` -- was recorded as a base; it is neither a declared pointer
- *         (which would make it an untracked pointer, task 962) nor a declared
+ *         (which would make it an untracked pointer) nor a declared
  *         array, so it then read as STORAGE and was compared against a real
  *         object.
  *

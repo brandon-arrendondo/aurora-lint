@@ -1,6 +1,6 @@
 /*
  * Rule: STR02-C
- * Source: custom (CWE-89, task 470 -- hostap eap_user_db.c FP class)
+ * Source: custom (CWE-89; hostap eap_user_db.c FP class)
  * Status: PASS - Should NOT trigger STR02-C violation
  */
 

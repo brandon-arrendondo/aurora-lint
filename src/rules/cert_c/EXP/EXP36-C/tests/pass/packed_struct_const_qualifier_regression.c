@@ -1,6 +1,6 @@
 /*
  * Rule: EXP36-C
- * Source: hostap ground-truth audit (task 159 adversarial pass) / task 395
+ * Source: hostap ground-truth audit (adversarial pass)
  * Status: PASS - Casting into a packed struct can never increase alignment
  * Regression: the cast target type text can carry a `const`/`volatile`
  * qualifier before the struct keyword (e.g. `(const struct foo *)`) --

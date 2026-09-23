@@ -1,6 +1,6 @@
 /*
  * Rule: EXP43-C
- * Source: task 411 regression
+ * Source: real-world regression
  * Status: PASS - Should NOT trigger EXP43-C violation
  *
  * f() assigns its local `q` from its local `w` (q -> w in a whole-file

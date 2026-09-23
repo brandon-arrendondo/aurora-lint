@@ -1,15 +1,15 @@
 /*
  * Rule: FLP03-C
- * Source: testcases (relocated from INT33-C, task 228); reshaped for task 517
+ * Source: testcases (relocated from INT33-C; reshaped since)
  * Status: FAIL - Should trigger FLP03-C violation
  * Reason: `(double)sum / size` is FLOATING-POINT division (the dividend is cast
  *         to double, promoting the int divisor to double). `size` comes from
- *         `atoi(getenv(...))`, an untrusted full-range source (task 517's
+ *         `atoi(getenv(...))`, an untrusted full-range source (an earlier fix's
  *         opt-in provenance gate), and is never validated before the division —
  *         a floating-point divide-by-zero (inf/nan) that must be detected and
  *         handled. This is FLP03-C's domain, NOT INT33-C (which covers only the
  *         integer divide-by-zero undefined behavior). Originally divided by a
- *         plain function parameter; task 517 found an unconstrained parameter
+ *         plain function parameter; an earlier fix found an unconstrained parameter
  *         alone isn't enough to flag under the redesigned rule (see the file
  *         header rationale in flp03_c.rs) since almost every real-world FP
  *         division divides by a parameter or local, and the rule has no

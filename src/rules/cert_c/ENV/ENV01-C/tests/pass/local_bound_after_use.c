@@ -1,6 +1,6 @@
 /*
  * Rule: ENV01-C
- * Source: task 1174
+ * Source: real-world
  * Status: PASS - the name is bound to getenv() only after the copy
  */
 

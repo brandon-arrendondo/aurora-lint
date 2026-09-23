@@ -9,8 +9,8 @@
  *   (T *buf, size_t s1, size_t s2, void *userdata)
  * -- shared by fread/fwrite and libcurl's CURLOPT_{READ,WRITE,HEADER}FUNCTION
  * callbacks -- carries a byte count of s1 * s2, not s1. C99 conformant-array
- * syntax cannot name a product bound, so flagging `buf[s1]` is wrong (task
- * 1007, aurora_lint). Real instances at curl @3e198f75: mime_file_read
+ * syntax cannot name a product bound, so flagging `buf[s1]` is wrong.
+ * Real instances at curl @3e198f75: mime_file_read
  * (lib/mime.c:617), tool_header_cb (src/tool_cb_hdr.c:426), tool_write_cb
  * (src/tool_cb_wrt.c:240), tool_mime_stdin_read (src/tool_formparse.c:195).
  */

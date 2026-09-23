@@ -1,6 +1,6 @@
 /*
  * Rule: DCL06-C
- * Source: task 1153, mirroring sel4's src/plat/pc99/machine/io.c and pic.c,
+ * Source: real-world, mirroring sel4's src/plat/pc99/machine/io.c and pic.c,
  *   raylib's src/rmodels.c, and mosquitto's src/net.c (benchmark_adjudication
  *   data/{sel4,raylib,mosquitto}/adjudication.csv, "hex/octal bug: literal
  *   is decimal N (0-10 range) but its exact spelling is not normalized")

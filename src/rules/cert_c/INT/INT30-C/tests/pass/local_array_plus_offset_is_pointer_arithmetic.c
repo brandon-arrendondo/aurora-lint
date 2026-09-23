@@ -1,6 +1,6 @@
 /*
  * Rule: INT30-C
- * Source: task 1276 (hostap src/crypto/aes-ccm.c:51 `aad_buf + 2 + aad_len`)
+ * Source: real-world (hostap src/crypto/aes-ccm.c:51 `aad_buf + 2 + aad_len`)
  * Status: PASS - Should NOT trigger INT30-C violation
  * Reason: `aad_buf` is a local array, so `aad_buf + 2 + aad_len` is pointer
  *         arithmetic, not an unsigned integer sum that can wrap. Same gap as

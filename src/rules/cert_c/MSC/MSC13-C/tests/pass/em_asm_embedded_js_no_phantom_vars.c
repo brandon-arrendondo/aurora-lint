@@ -1,6 +1,6 @@
 /*
  * Rule: MSC13-C
- * Source: raylib (adapted, task 439 batch d / task 444)
+ * Source: raylib (adapted)
  * Status: PASS - Should NOT trigger MSC13-C violations
  *
  * Emscripten's EM_ASM({ ... }) macro embeds raw JavaScript inside C source

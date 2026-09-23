@@ -1,6 +1,6 @@
 /*
  * Rule: EXP02-C
- * Source: task 1264 site 5 -- real shapes from mbedtls
+ * Source: real-world site 5 -- real shapes from mbedtls
  *   library/constant_time_impl.h:293 and sel4 src/arch/x86/64/c_traps.c:308,
  *   353, 410 (all four the same construct)
  * Status: PASS - Should NOT trigger EXP02-C violation

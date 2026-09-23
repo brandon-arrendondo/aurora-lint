@@ -1,6 +1,6 @@
 /*
  * Rule: POS39-C
- * Source: task 418 (task-389 sweep, whole-file tracking-map conflation)
+ * Source: real-world (whole-file tracking-map conflation)
  * Status: PASS - Should NOT trigger POS39-C violation
  *
  * `multi_byte_vars` was previously built by a single whole-translation-unit

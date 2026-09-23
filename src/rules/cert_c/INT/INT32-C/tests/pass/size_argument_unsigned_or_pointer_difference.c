@@ -1,6 +1,6 @@
 /*
  * Rule: INT32-C
- * Source: task 1276 (valkey src/sds.c:508 `(len - curlen + 1)`,
+ * Source: real-world (valkey src/sds.c:508 `(len - curlen + 1)`,
  *         src/valkey-cli.c:9631 `(n1 - p)`, src/replication.c:3578
  *         `offset - replid - 1`, src/setproctitle.c:296 `SPT.end - SPT.base`,
  *         src/cluster_legacy.c:2150 `(sizeof(*x) * n)`)

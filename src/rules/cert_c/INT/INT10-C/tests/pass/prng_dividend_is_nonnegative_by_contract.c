@@ -1,6 +1,6 @@
 /*
  * Rule: INT10-C
- * Source: task 1275 (valkey src/fuzzer_command_generator.c:437 and 127 more
+ * Source: real-world (valkey src/fuzzer_command_generator.c:437 and 127 more
  *         rows of one batch; src/cluster_legacy.c:5705 `random() % delay`)
  * Status: PASS - Should NOT trigger INT10-C violation
  * Reason: C11 7.22.2.1 confines `rand()` to `[0, RAND_MAX]` and POSIX

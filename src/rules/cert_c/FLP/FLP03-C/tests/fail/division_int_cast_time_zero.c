@@ -1,6 +1,6 @@
 /*
  * Rule: FLP03-C
- * Source: testcases (relocated from INT33-C, task 228)
+ * Source: testcases (relocated from INT33-C)
  * Status: FAIL - Should trigger FLP03-C violation
  * Reason: `(double)distance / time` is FLOATING-POINT division (the dividend is
  *         cast to double). When time == 0 this is a floating-point divide-by-zero

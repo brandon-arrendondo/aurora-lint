@@ -1,6 +1,6 @@
 /*
  * Rule: MSC13-C
- * Source: task 386 follow-up companion (2026-08-28)
+ * Source: real-world follow-up companion (2026-08-28)
  * Status: FAIL - Should trigger MSC13-C violation
  *
  * Companion to var_declared_and_used_inside_ifdef.c (pass): the fix that

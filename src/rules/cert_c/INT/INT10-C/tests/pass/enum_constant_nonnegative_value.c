@@ -1,6 +1,6 @@
 /*
  * Rule: INT10-C
- * Source: task 673 (seL4 real-world FP, x86/kernel/x2apic.c:49, xapic.c:55)
+ * Source: real-world (seL4 real-world FP, x86/kernel/x2apic.c:49, xapic.c:55)
  * Status: PASS - Should NOT trigger INT10-C violation
  *
  * seL4's `interrupt_t` enum has a negative member (`int_invalid = -1`), so

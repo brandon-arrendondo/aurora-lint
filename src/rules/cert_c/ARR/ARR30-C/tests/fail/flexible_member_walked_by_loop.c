@@ -1,8 +1,8 @@
 /*
  * Rule: ARR30-C
- * Source: task 912
+ * Source: real-world
  * Status: FAIL - SHOULD trigger ARR30-C violation
- * Reason: the counterpart to task_912_flexible_member_unrelated_loop.c --
+ * Reason: the counterpart to flexible_member_unrelated_loop.c --
  *         requiring the member name must not switch the check off. Here the
  *         loop really does walk the flexible array member, which is the
  *         pattern the check exists to report.

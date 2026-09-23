@@ -3,7 +3,7 @@
  * Source: run-229 audited-residue adjudication
  * Status: FAIL - Should trigger INT13-C violation
  *
- * Guard rail: task 754 restricted shift checks to the LEFT (value) operand
+ * Guard rail: an earlier fix restricted shift checks to the LEFT (value) operand
  * and made variable-name resolution shift-count-aware. A plain signed
  * operand directly shifted must still be flagged -- "skip shifts entirely"
  * would have been the wrong fix.

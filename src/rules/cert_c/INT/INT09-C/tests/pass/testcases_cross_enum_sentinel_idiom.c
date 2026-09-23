@@ -1,7 +1,7 @@
 /*
  * Rule: INT09-C
  * Status: PASS - cross-enum MAX-sentinel idiom (hostap/QCA netlink-attribute
- * header style, task 453 follow-up): a nested attribute enum's MAX bound
+ * header style, an earlier fix follow-up): a nested attribute enum's MAX bound
  * references a *different* enum's member (the containing attribute's own
  * value) rather than a same-enum sentinel. Just as unambiguously intentional
  * as `violet = indigo` within a single enum.

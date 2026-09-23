@@ -3,7 +3,7 @@
  * Source: wiki (CERT's own noncompliant example)
  * Status: PASS - Should NOT trigger EXP02-C violation
  *
- * Reclassified for task 1151/1154. CERT's wiki labels this noncompliant,
+ * Reclassified after review. CERT's wiki labels this noncompliant,
  * but its own stated reason ("free() might be called with a pointer to
  * local data not allocated by malloc()") is about the *later* unconditional
  * free(p)/p = NULL misusing p's provenance -- something no per-expression

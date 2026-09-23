@@ -6,7 +6,7 @@
  * scanf's return count controls how many fields were actually matched, so
  * a partial match leaves later outputs untouched. The fixture demonstrates
  * the correct pattern: check the return before reading the output. An
- * unchecked scanf followed by a use of its output is task 1065's real bug
+ * unchecked scanf followed by a use of its output is an earlier fix's real bug
  * (see fail/testcases_scanf_unchecked_return.c).
  */
 #include <stdio.h>

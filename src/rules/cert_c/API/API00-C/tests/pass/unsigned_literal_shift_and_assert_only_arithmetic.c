@@ -2,7 +2,7 @@
  * Rule: API00-C
  * Source: custom
  * Status: PASS - Should NOT trigger API00-C violation
- * Description: Two integer-overflow FP classes from task 741.
+ * Description: Two integer-overflow FP classes from an earlier fix.
  *
  * update_crc_64 (libcrc src/crc64.c): `crc << 8` on a uint64_t with a literal
  * shift count below the type's width. Unsigned wraparound is defined

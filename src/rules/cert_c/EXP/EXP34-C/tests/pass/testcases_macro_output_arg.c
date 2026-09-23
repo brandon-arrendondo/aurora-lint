@@ -1,11 +1,11 @@
 /*
  * Rule: EXP34-C
- * Source: testcases (task 195 Part A -- macro write-through-param)
+ * Source: testcases (macro write-through-param)
  * Status: PASS - Should NOT trigger EXP34-C
  *
  * GET_PTR writes through its first argument (a deref write, `*(pp) = val`),
  * mirroring the same idiom `FunctionSummary::modifies_params` recognizes for
- * real functions (task 195 Part B). Calling it with `&p` proves `p` is
+ * real functions (an earlier fix Part B). Calling it with `&p` proves `p` is
  * non-null before the subsequent dereference.
  */
 

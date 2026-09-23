@@ -3,7 +3,7 @@
  * Source: testcases
  * Status: FAIL - Should trigger EXP33-C violation
  *
- * The other direction of task 1011: classify() covers *out on one arm
+ * The other direction of an earlier fix: classify() covers *out on one arm
  * directly and on the other only by forwarding to set_flag(), which writes
  * nothing when number == 0. A forwarded parameter is credited against the
  * callee's MUST set, so this obligation stays undischarged and `sign` is

@@ -10,7 +10,7 @@
  * (`returned_value_escapes`) from the body -- here both routes: a store
  * rooted in a parameter, and a hand-off to a callee whose own summary
  * stores its argument (an interior pointer, the intrusive-list idiom) --
- * and MEM31-C treats the result as borrowed (task 1227, hostap bss_get /
+ * and MEM31-C treats the result as borrowed (hostap bss_get /
  * ap_sta_add, curl curl_slist_append).
  */
 #include <stdlib.h>

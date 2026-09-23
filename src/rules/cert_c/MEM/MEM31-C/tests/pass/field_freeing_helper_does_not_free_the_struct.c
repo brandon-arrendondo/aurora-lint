@@ -9,7 +9,7 @@
  * parameter and propagate_transitive_frees carried that outward to
  * curl_url_set -- making every later curl_url_cleanup(uh) read as a double
  * free of a handle nothing had released. A name is not evidence when the body
- * is right there. Task 1280.
+ * is right there. An earlier fix.
  */
 
 #include <stdlib.h>

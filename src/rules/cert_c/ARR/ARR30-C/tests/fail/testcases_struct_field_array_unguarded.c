@@ -10,7 +10,7 @@
  * `field_declaration` inside a struct body, unlike a top-level
  * `declaration`. An access through it (`S.stack[S.stackCounter]`) had no
  * buffer size to check against, so this was silently missed regardless of
- * whether the index was validated (task 235; real example: raylib's rlgl.h
+ * whether the index was validated (real example: raylib's rlgl.h
  * `RLGL.State.stack[RL_MAX_MATRIX_STACK_SIZE]`, guarded by an `if` whose
  * then-branch only logs and does not return).
  */

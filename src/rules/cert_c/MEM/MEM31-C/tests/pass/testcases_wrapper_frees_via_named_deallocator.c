@@ -7,7 +7,7 @@
  * building a function's own summary - missing a call to another,
  * name-shaped deallocator (`ast_utils::is_deallocation_call_name`), such
  * as an external library's own `*_free` function whose body this checker
- * never sees (task 1236, hostap's crypto_ec_key_deinit() calling OpenSSL's
+ * never sees (hostap's crypto_ec_key_deinit() calling OpenSSL's
  * EVP_PKEY_free() internally). crypto_ec_key_deinit()'s own summary must
  * still show it releases its parameter, or a project-local allocator
  * wrapper handed to it reads as a leak.

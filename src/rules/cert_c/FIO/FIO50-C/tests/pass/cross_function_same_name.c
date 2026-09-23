@@ -1,12 +1,12 @@
 /*
  * Rule: FIO50-C
- * Task: 409
+ * Status: PASS - Should NOT trigger FIO50-C violation
  * Status: PASS - Should NOT trigger FIO50-C violation
  *
  * Two different functions each use a same-named FILE* parameter ("fp").
  * f1 performs a single output; f2 performs a single input. Neither
  * function alone has an alternation to flag (a single operation can't
- * violate FIO50-C). Prior to the task-409 fix, `traverse` matched both
+ * violate FIO50-C). Prior to an earlier fix, `traverse` matched both
  * `function_definition` and `translation_unit` as scope boundaries, and
  * since the root passed to `traverse` is itself a translation_unit,
  * `analyze_scope` also ran once over the *whole file* as one merged

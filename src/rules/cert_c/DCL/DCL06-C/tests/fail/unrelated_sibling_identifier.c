@@ -1,6 +1,6 @@
 /*
  * Rule: DCL06-C
- * Source: bmdb-757
+ * Source: real-world
  * Status: FAIL - Noncompliant, must not be over-suppressed
  * Description: a sibling identifier in the same call that does NOT echo the
  * literal's own value is an ordinary, unrelated argument -- this must still

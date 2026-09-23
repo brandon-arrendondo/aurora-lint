@@ -1,6 +1,6 @@
 /*
  * Rule: MSC13-C
- * Source: task 1151/1193 (fail-twin guard: fixing the parse for the
+ * Source: real-world/1193 (fail-twin guard: fixing the parse for the
  *   comment-before-else-if dangling-else shape must not also stop a
  *   genuine dead store from being caught once the chain parses cleanly)
  * Status: FAIL - Should trigger MSC13-C violation

@@ -4,7 +4,7 @@
  * Status: FAIL - Should trigger EXP33-C violation. Without a `default` label a
  * switch is NOT exhaustive: a value matching no case leaves it having written
  * nothing, so the caller can still read its variable uninitialized. This is the
- * boundary of the exhaustiveness credit added in task 1025 -- the arms here are
+ * boundary of the exhaustiveness credit added in an earlier fix -- the arms here are
  * otherwise identical to the compliant fixture's.
  */
 #include <stdio.h>
