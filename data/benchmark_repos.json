@@ -15,7 +15,7 @@
     "parsing requires all three to match, which is why pure-ftpd is checked out",
     "as 'pureftpd' (no hyphen).",
     "",
-    "'scope_include'/'scope_exclude' (task 636): the machine-readable form of",
+    "'scope_include'/'scope_exclude': the machine-readable form of",
     "each project's precision_audit/<project>/README.md '## Scope' section --",
     "fnmatch glob lists matched against the project-relative path bench/db.py",
     "already normalizes findings to (project_relpath()). No 'scope_include' key",
