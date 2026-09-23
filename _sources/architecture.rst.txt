@@ -119,14 +119,14 @@ Analysis Modules
   database for "what role does this call play" (``is_allocator_call``,
   ``is_heap_allocator``, ``is_printf_family``, ``is_scanf_family``,
   ``is_sizeof_text``), replacing 7+ independently reinvented, disagreeing
-  per-rule lists found by task 481's duplication sweep (task 487).
+  per-rule lists found by task 481's duplication sweep.
 
 **Arithmetic-overflow-detection helpers** (``src/utility/cert_c/overflow_helpers.rs``).
   Shared type-map-building and identifier/operand-extraction primitives for
   ``INT30-C``/``INT32-C`` (and one primitive each for ``INT10-C``),
   replacing ~20 identically-named private helpers duplicated across those
   two ~2800-line files — the largest duplicated surface found by task 481's
-  sweep (task 490). The overflow-*guard-detection* logic itself
+  sweep. The overflow-*guard-detection* logic itself
   (``has_overflow_check_*``) stays rule-local: it only looks duplicated:
   ``INT30-C``'s is unsigned-wraparound-focused and ``INT32-C``'s is
   signed-overflow-focused.

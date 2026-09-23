@@ -442,7 +442,7 @@ exception that ``v0.5.2`` still carries: MSC13-C on mbedtls's
 roughly a third of runs of one binary on one checkout, even single-file at
 ``--jobs 1`` -- a per-process ``HashMap`` order inside the rule, not a
 walk-order effect, fixed in the first commit after the ``v0.5.2``
-baseline (task 1386) and worth one key. Otherwise the variation is
+baseline and worth one key. Otherwise the variation is
 between checkouts, not between runs. So the inputs a SHA does not name are
 the header environment -- :doc:`benchmark-setup` lists the packages the
 benchmark node carries -- and, before ``4ac5710f``, for codebases with

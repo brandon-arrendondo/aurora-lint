@@ -200,13 +200,13 @@ positives on standard library calls (DCL31-C, DCL07-C).</p>
 database for “what role does this call play” (<code class="docutils literal notranslate"><span class="pre">is_allocator_call</span></code>,
 <code class="docutils literal notranslate"><span class="pre">is_heap_allocator</span></code>, <code class="docutils literal notranslate"><span class="pre">is_printf_family</span></code>, <code class="docutils literal notranslate"><span class="pre">is_scanf_family</span></code>,
 <code class="docutils literal notranslate"><span class="pre">is_sizeof_text</span></code>), replacing 7+ independently reinvented, disagreeing
-per-rule lists found by task 481’s duplication sweep (task 487).</p>
+per-rule lists found by task 481’s duplication sweep.</p>
 </dd>
 <dt><strong>Arithmetic-overflow-detection helpers</strong> (<code class="docutils literal notranslate"><span class="pre">src/utility/cert_c/overflow_helpers.rs</span></code>).</dt><dd><p>Shared type-map-building and identifier/operand-extraction primitives for
 <code class="docutils literal notranslate"><span class="pre">INT30-C</span></code>/<code class="docutils literal notranslate"><span class="pre">INT32-C</span></code> (and one primitive each for <code class="docutils literal notranslate"><span class="pre">INT10-C</span></code>),
 replacing ~20 identically-named private helpers duplicated across those
 two ~2800-line files — the largest duplicated surface found by task 481’s
-sweep (task 490). The overflow-<em>guard-detection</em> logic itself
+sweep. The overflow-<em>guard-detection</em> logic itself
 (<code class="docutils literal notranslate"><span class="pre">has_overflow_check_*</span></code>) stays rule-local: it only looks duplicated:
 <code class="docutils literal notranslate"><span class="pre">INT30-C</span></code>’s is unsigned-wraparound-focused and <code class="docutils literal notranslate"><span class="pre">INT32-C</span></code>’s is
 signed-overflow-focused.</p>

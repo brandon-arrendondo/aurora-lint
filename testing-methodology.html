@@ -1023,7 +1023,7 @@ applicability is the user’s lever, by design: manifest scoping and
 suppression exist so the user decides which rules apply to their code,
 rather than detection logic silently deciding for them).</p>
 <p><strong>Worked example of why a per-rule 0.0% is sometimes a corpus artifact, not
-a rule defect</strong> (task 692): <code class="docutils literal notranslate"><span class="pre">DCL31-C</span></code> shows 364 findings, 324 labeled, 0
+a rule defect</strong> : <code class="docutils literal notranslate"><span class="pre">DCL31-C</span></code> shows 364 findings, 324 labeled, 0
 TP — 0.0% precision. That figure measures aurora-lint’s header reachability, not
 the rule’s quality. <code class="docutils literal notranslate"><span class="pre">mosquitto</span></code> alone goes from 1,365 <code class="docutils literal notranslate"><span class="pre">DCL31-C</span></code> findings
 with no <code class="docutils literal notranslate"><span class="pre">-I</span></code> to 0 with <code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include</span></code>. The rule guards a genuine defect —

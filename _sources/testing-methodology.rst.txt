@@ -735,7 +735,7 @@ suppression exist so the user decides which rules apply to their code,
 rather than detection logic silently deciding for them).
 
 **Worked example of why a per-rule 0.0% is sometimes a corpus artifact, not
-a rule defect** (task 692): ``DCL31-C`` shows 364 findings, 324 labeled, 0
+a rule defect** : ``DCL31-C`` shows 364 findings, 324 labeled, 0
 TP — 0.0% precision. That figure measures aurora-lint's header reachability, not
 the rule's quality. ``mosquitto`` alone goes from 1,365 ``DCL31-C`` findings
 with no ``-I`` to 0 with ``-I /usr/include``. The rule guards a genuine defect —
