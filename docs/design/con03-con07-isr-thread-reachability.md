@@ -248,8 +248,8 @@ doesn't need the benchmark node:
 
 1. Implement, build, `cargo test` (add fixtures per the usual
    `tests/pass`/`tests/fail` convention — CON03-C/CON07-C likely already have
-   some; check before assuming none exist, per the STR34-C lesson from task
-   574 where fixtures existed but weren't found by a naive filename grep).
+   some; check before assuming none exist, per an earlier STR34-C lesson
+   where fixtures existed but weren't found by a naive filename grep).
 2. Run `aurora-lint` directly against `~/toolchain/{mosquitto,curl,sqlite,hostap,
    lua,raylib}` with `-d` before/after, diff CON03-C/CON07-C finding counts
    and exact `file:line`s.

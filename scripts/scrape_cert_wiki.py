@@ -430,8 +430,8 @@ def extract_code_examples(
     sibling `["pre", {...}]` node, NOT wrapped in `code-block` -- so it's
     structurally excluded here without needing content heuristics (contrast
     with the old Confluence-HTML scraper, which had no such signal and had
-    to guess via prose cues / "does this look like C" heuristics; see task
-    137). The `quality` flag is also more reliable than the old heading-text
+    to guess via prose cues / "does this look like C" heuristics). The
+    `quality` flag is also more reliable than the old heading-text
     matching for classifying which section a code block belongs to.
 
     Returns: (non_compliant_examples, compliant_examples)

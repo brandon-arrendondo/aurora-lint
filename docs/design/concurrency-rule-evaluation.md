@@ -183,9 +183,10 @@ structural problem that has nothing to do with rule quality:
 
 **Q1 — Is there a concurrency-appropriate ground-truth corpus, vs. the
 current intra-procedural scoring possibly not crediting valid hits?**
-Yes, in practical terms: the real-world `ground_truth` rows from tasks
-546/547/549 (61 adjudicated CON03/07/33/-adjacent findings across 4
-codebases, with per-finding causal attribution already written up) are a
+Yes, in practical terms: the real-world `ground_truth` rows from
+CON07-C/CON03-C/CON33-C's own delta-adjudications (61 adjudicated
+CON03/07/33/-adjacent findings across 4 codebases, with per-finding causal
+attribution already written up) are a
 *better* oracle for these specific rules than Juliet, because they were
 adjudicated against real multi-threaded/signal-driven programs instead of
 Juliet's synthetic, likely-single-execution-path test cases (§2.3, still

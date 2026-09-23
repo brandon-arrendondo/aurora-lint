@@ -220,8 +220,8 @@ is its private header; `ext/misc/windirent.h` is wholly inside
 its own first comment that it is a no-op on every platform except Windows.
 None is in `scope_exclude`, so all four are scored today.
 
-Not expressible: `src/build.c:126`'s `#if SQLITE_MAX_ATTACHED>30` arm (task
-1378) is intra-file and stays in the denominator. It is also not a platform
+Not expressible: `src/build.c:126`'s `#if SQLITE_MAX_ATTACHED>30` arm is
+intra-file and stays in the denominator. It is also not a platform
 axis but a compile-time limit — a third kind of build knob the field does not
 model.
 
