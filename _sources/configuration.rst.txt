@@ -121,8 +121,8 @@ do not inherit from a shared base), so a one-size-fits-all "these rules are
 noisy" list would risk the exact mistake above on whichever project doesn't
 match its assumptions. A data-driven relaxed starter, generated from
 aggregate real-world precision across this project's own benchmark corpus
-rather than hand-picked, is tracked as a follow-up (aurora_lint task 1179's
-companion) rather than shipped speculatively here.
+rather than hand-picked, is tracked as a follow-up rather than shipped
+speculatively here.
 
 Tracked but not implemented
 ----------------------------
