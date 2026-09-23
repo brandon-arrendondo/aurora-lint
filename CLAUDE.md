@@ -219,25 +219,9 @@ prose near it is a judgment call it deliberately leaves alone.
 
 Task tracking is maintainer infrastructure, not part of what a clone needs to
 build, test, or evaluate aurora-lint — same test as everywhere else in this
-file. The backlog lives in a `todo-sqlite-cli` database the maintainer owns
-and syncs across nodes; it is **not git-tracked and not part of this repo** —
-a fresh clone has no task DB, and doesn't need one. (Earlier revisions of
-this repo committed a `todo-sqlite-cli.db` per repo with a git merge driver
-and pack-size tuning; that setup is retired — nothing task-related is
-git-tracked anymore, so there is no DB to pull, merge, or run `doctor` on as
-part of cloning or contributing here.)
-
-If you're contributing without access to that DB, you don't need it: branch,
-commit, and open a PR as normal, same as any other project. If you do have
-access (ask the maintainer), tasks for this repo are tagged so they can be
-told apart from `benchmarking_db`'s and `sqc_paper`'s within the same
-database — rule behaviour, FP/FN work, docs, and packaging belong here;
-ground_truth quality, corpus scope, and Postgres/backup infra belong to
-`benchmarking_db`; paper drafting/figures/submission belong to `sqc_paper`.
-Ask "which repo's files change" to decide, not the tag on the task, which
-lies often enough to be useless alone. Adjudication itself isn't a
-task-tracking concern at all — it's a PR to `benchmark_adjudication` (see
-above).
+file. There is no issue tracker or task database in this repo, and none is
+needed to contribute: branch, commit, and open a PR as normal, same as any
+other project.
 
 **Task titles are internal and never published.** `CHANGELOG.md`'s
 `[Unreleased]` block and the release notes are generated from the task DB,
@@ -261,7 +245,7 @@ release sections are curated by hand and the generator never touches them.
 | `README.md` | Tool overview, installation, usage, CLI reference |
 | `docs/index.rst` | Developer guide: advanced usage, CI/CD, benchmarks, testing, contributing |
 | `docs/adr/*.md` | Architectural Decision Records — settled policy questions, not in the Sphinx toctree. **Read before proposing to change a rule's core behavior, disable/deprioritize a rule off a benchmark result, or otherwise relitigate something already decided.** Unlike `docs/design/`, these don't go stale — read the index at `docs/adr/README.md` first. |
-| `docs/design/*.md` | Scoping docs, not in the Sphinx toctree — read directly. **Their "Status" headers go stale once work ships**; trust `todo-sqlite-cli show <task>` instead, and check whether the feature needs a mention in `docs/cli-usage.rst`/`docs/architecture.rst`. |
+| `docs/design/*.md` | Scoping docs, not in the Sphinx toctree — read directly. **Their "Status" headers go stale once work ships**; ask the maintainer for current status instead, and check whether the feature needs a mention in `docs/cli-usage.rst`/`docs/architecture.rst`. |
 | `docs/design/internal-capability-catalog.md` | Catalog of every reusable primitive in `src/utility/cert_c/*.rs` and `src/analyze/*.rs`. **Read before writing any new AST/text heuristic.** |
 | `docs/design/gate-status-sop.md` | Weekly read on distance to the maintenance-mode gate and a publishable paper. Run it *here* — its table says which check lives in which repo. |
 | `docs/design/realworld-corpus-scope.md` | Per-codebase oracle scope: which trees count as the shipped product and why. **Read its project section before batching a delta-adjudication or changing a runner `--exclude`.** |
