@@ -81,7 +81,7 @@ def project_scope(project):
 
 
 def in_scope(project, relpath):
-    """Task 636: is `relpath` (project-relative, as returned by
+    """An earlier fix: is `relpath` (project-relative, as returned by
     BenchDB.project_relpath) inside this project's oracle scope?
 
     The machine-readable mirror of the project's '## Scope' section in

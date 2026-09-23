@@ -1,11 +1,11 @@
 """Concurrency-context-evidence classifier for CON03/07/33(+34/37)-C findings.
 
-Follow-on from task 151 (docs/design/concurrency-rule-evaluation.md §4 item
+Follow-on from an earlier fix (docs/design/concurrency-rule-evaluation.md §4 item
 B). Those three rules only check for *nearby syntactic protection* (a
 volatile/atomic qualifier, a mutex, membership in a fixed unsafe-function
 list) -- none of them ask whether the flagged code is ever reachable from a
 second thread, a registered signal handler, or an ISR. Full reachability
-analysis is task 608 (deliberately out of scope here); this module is the
+analysis is an earlier fix (deliberately out of scope here); this module is the
 cheap proxy the design doc calls for first: does the finding's *enclosing
 translation unit* contain any textual evidence that a concurrent execution
 path exists at all?

@@ -73,7 +73,7 @@ SRC_ROOT = Path(os.environ.get("AURORA_LINT_SRC_ROOT", str(PROJECT_DIR.parent)))
 # ── Juliet test suite ─────────────────────────────────────────────────────────
 JULIET_BASE = BENCH_ROOT / "benchmarks" / "juliet-test-suite-c" / "testcases"
 
-# ── Compile databases (sqc --compile-commands, task 187/622) ─────────────────
+# ── Compile databases (sqc --compile-commands) ─────────────────
 # Optional. sqc runs fine without one; a compile_commands.json only adds the
 # build's include search paths and -D macro state to the cross-file context.
 #

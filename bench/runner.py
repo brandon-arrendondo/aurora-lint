@@ -27,7 +27,7 @@ from bench.machine import get_machine_metadata
 # CWE-121) isn't worth it, and it keeps the vast majority of CWEs on the
 # simple single-subprocess path. Set comfortably below the smallest of the
 # 3 long-pole CWEs this was scoped for (CWE-190 at 5040 files) while still
-# covering the next tier down (task 388; docs/design/juliet-cwe-sharding.md).
+# covering the next tier down (docs/design/juliet-cwe-sharding.md).
 SHARD_MIN_FILES = 1500
 
 
@@ -193,7 +193,7 @@ def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
     Runs in a worker process. A shard of a split CWE loads the context its
     CWE's `_warm_prescan` saved (`--load-prescan`), so cross-file resolution
     matches the monolithic path exactly while the whole-CWE prescan runs
-    once per CWE rather than once per shard. Task 388 measured that prescan
+    once per CWE rather than once per shard. An earlier fix measured that prescan
     at ~0.8% of a big CWE's time and repeated it per shard to skip this
     warm step; once the per-file scan got an order of magnitude cheaper
     (the Juliet wall-clock regression task and its follow-ups), the repeated

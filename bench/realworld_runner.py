@@ -5,8 +5,8 @@ ground-truth oracle in data/benchmarks.db.
 
 The five tools split into two groups. sqc, cppcheck and clang-tidy read source
 as written and are pointed at a curated -I list. Infer and Frama-C need a real
-build, so they are driven from each checkout's compile_commands.json (task
-767); Frama-C additionally needs an entry point per analysis and so runs
+build, so they are driven from each checkout's compile_commands.json;
+Frama-C additionally needs an entry point per analysis and so runs
 bounded and PARTIAL -- see the Frama-C section below and
 docs/design/framac-realworld.md before quoting one of its numbers.
 
@@ -182,7 +182,7 @@ CODEBASES = {
             # Scope = shipped product (lib/ libcurl + src/ curl CLI), matching
             # the precision oracle (docs/design/realworld-corpus-scope.md, curl section). The
             # oracle explicitly excludes include/ (public API headers aren't
-            # "shipped product" in the lib/+src/ sense) -- task 431 found 218
+            # "shipped product" in the lib/+src/ sense) -- an earlier fix found 218
             # findings coming from include/ alone, none of which are or can be
             # in ground_truth, silently inflating totals outside the audited
             # denominator.
@@ -238,7 +238,7 @@ CODEBASES = {
             ],
             # Scope = shipped hostapd (AP) + wpa_supplicant (station) daemons
             # and their shared library, matching the precision oracle
-            # (docs/design/realworld-corpus-scope.md, hostap section, task 159): src/ +
+            # (docs/design/realworld-corpus-scope.md, hostap section): src/ +
             # wpa_supplicant/ + hostapd/. `-d` doesn't restrict the scan (it
             # only adds cross-file pre-scan context; the primary scan root is
             # still the whole repo when scan_path is None), so out-of-scope
@@ -352,7 +352,7 @@ CODEBASES = {
     "pureftpd": {
         "path": BENCH_ROOT / "pureftpd",
         "sqc": {
-            # Onboarded task 301: the suite's SQL-client-API oracle for
+            # Onboarded an earlier fix: the suite's SQL-client-API oracle for
             # CWE-89 (SQL injection) -- src/log_mysql.c/log_pgsql.c call
             # mysql_real_query/PQexec as a *client*, unlike sqlite (which
             # implements sqlite3_exec) or any other current oracle (none
@@ -379,7 +379,7 @@ CODEBASES = {
             "exclude": ["*/gui/*"],
         },
     },
-    # Onboarded task 381: candidate 8th real-world oracle, formally verified
+    # Onboarded an earlier fix: candidate 8th real-world oracle, formally verified
     # microkernel (https://sel4.systems/Contribute/style.html). A literal
     # `if/for/while (...) {}` grep found zero hits, which looked promising as
     # an MSC12-C (no-effect/empty-body) oracle -- but full sample adjudication
@@ -390,7 +390,7 @@ CODEBASES = {
     # families as every other oracle, at a similar ~2.8% sample precision.
     # MSC12-C stays disabled here too (sel4-rules.toml); this is now onboarded
     # as a general 8th oracle (novel domain: verified microkernel), not the
-    # MSC12-C-specific oracle task 381 originally set out to find.
+    # MSC12-C-specific oracle an earlier fix originally set out to find.
     "sel4": {
         "path": BENCH_ROOT / "sel4",
         "sqc": {
@@ -958,7 +958,7 @@ def _count_sqc_scanned(cfg: dict) -> tuple[int, int]:
 # both need a real preprocess: that is the axis sqc deliberately does not
 # require, and pretending otherwise would compare them at a handicap. The
 # compile databases are provisioned for every pinned checkout by
-# playbooks/setup-compile-commands.yml (task 767 -- sel4, hostap and pureftpd
+# playbooks/setup-compile-commands.yml (an earlier fix -- sel4, hostap and pureftpd
 # included; the belief that three corpora were unbuildable predates that
 # playbook's sel4 Ninja fix).
 #
@@ -1535,7 +1535,7 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False) -> dict:
 
     duration = round(time.time() - start, 1)
 
-    # Task 715: persist the per-project scan facts into the sidecar. These are
+    # An earlier fix: persist the per-project scan facts into the sidecar. These are
     # only true at scan time, and the queue worker cannot recover them -- it
     # shells out to `python -m bench realworld-run` once for every project, so
     # it sees one wall time and no per-project split. The sidecar is the only
@@ -1569,7 +1569,7 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False) -> dict:
         # `find | xargs clang-tidy` exits 1 (xargs turns that into 123) the
         # instant ONE file in the corpus fails to preprocess -- e.g. a
         # build-generated header setup-compile-commands.yml restores away
-        # (task 767's libcrc case: crc32.c/crc64.c lose their .inc tables).
+        # (an earlier fix's libcrc case: crc32.c/crc64.c lose their .inc tables).
         # That is normal partial coverage on real-world code, not a tool
         # failure, and xargs keeps invoking clang-tidy on every other file
         # regardless -- the result file already holds every finding the run

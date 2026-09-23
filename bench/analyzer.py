@@ -296,14 +296,14 @@ def analyze_shard(csv_path: str | Path, search_dir: str | Path, cwe_id: str,
 
     `search_dir` is a single `sNN` subdirectory when the CWE is sharded, or
     the whole CWE dir when it isn't -- either way this is a self-contained
-    unit: `parse_sqc_csv` keys violations by bare filename (task 388 §3a),
+    unit: `parse_sqc_csv` keys violations by bare filename (an earlier fix §3a),
     so a shard analyzing its own directory against its own CSV cannot pick
     up a same-named file from a sibling shard.
 
     File discovery is recursive (`rglob`, not `glob`): a CWE below
     `SHARD_MIN_FILES` still keeps its `sNN` subdirs on disk even though the
     runner treats the whole CWE dir as a single un-split shard, so a
-    top-level-only glob would silently find 0 files for it (task 388 bug --
+    top-level-only glob would silently find 0 files for it (an earlier fix bug --
     CWE-401/369/415/126/457/194 all scored files_analyzed=0 despite sqc
     itself finding real violations, because their .c files live one level
     down in sNN/ with nothing at the top). A leaf `sNN` shard has no further
@@ -352,7 +352,7 @@ def merge_shards(cwe_id: str, cwe_dir_name: str,
     """Sum every shard's raw counters into one CWEAnalysis and finalize the
     derived rates exactly once. Do NOT average per-shard rates -- they are
     ratios of summed counters, and averaging ratios silently skews every
-    metric (task 388 §3).
+    metric (an earlier fix §3).
     """
     merged = CWEAnalysis(cwe_id=cwe_id, cwe_dir_name=cwe_dir_name)
     merged.cwe_rules = partials[0].analysis.cwe_rules if partials else set()

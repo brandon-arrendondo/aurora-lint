@@ -197,7 +197,7 @@ CREATE INDEX IF NOT EXISTS idx_gt_lookup
     ON ground_truth(project, codebase_commit, rule_id);
 CREATE INDEX IF NOT EXISTS idx_gt_verdict ON ground_truth(verdict);
 
--- Task 637: a second, independent verdict on a finding ALREADY labeled in
+-- An earlier fix: a second, independent verdict on a finding ALREADY labeled in
 -- ground_truth, so Claude-vs-human adjudicator agreement can be measured.
 -- Side table rather than relaxing ground_truth's UNIQUE(...) -- the oracle's
 -- one-label-per-finding invariant stays intact for every precision/recall
@@ -914,7 +914,7 @@ class BenchDB:
         # its own prescan+scan). Because CWEs run in parallel, analysis_s
         # normally exceeds wall_s — it is the parallelism-independent measure of
         # total compute, which is the more stable axis for comparing the cost of
-        # analysis-depth changes across versions. See task 202.
+        # analysis-depth changes across versions. See an earlier fix.
         summary["jobs"] = run.get("jobs")
         analysis_s = sum(c["duration_s"] for c in per_cwe if c.get("duration_s"))
         summary["analysis_s"] = round(analysis_s, 1)
@@ -1111,7 +1111,7 @@ class BenchDB:
         # comparison, not just precision/recall. `analysis_s` (summed per-CWE
         # subprocess time) is parallelism-independent and the better axis for the
         # cost of analysis-depth changes; `wall_s` is real elapsed time and may
-        # be absent for older/running runs. See task 202.
+        # be absent for older/running runs. See an earlier fix.
         b_an, t_an = bs.get("analysis_s"), ts.get("analysis_s")
         b_wall, t_wall = bs.get("wall_s"), ts.get("wall_s")
         summary["timing"] = {
@@ -1536,7 +1536,7 @@ class BenchDB:
         # Labeled totals per rule (from ground_truth), so a raw finding-count
         # swing that ISN'T reflected in the labeled/precision numbers is
         # visible without manually cross-referencing ground_truth by hand.
-        # See task 423.
+        # See an earlier fix.
         target_labeled = {r["rule_id"]: r["labeled_total"]
                           for r in self.score_realworld_run(
                               target_run_id, only_project=project)
@@ -2023,7 +2023,7 @@ class BenchDB:
                                  per_stratum_cap: int = 12,
                                  exclude_adjudicators: tuple = ("manual",)
                                  ) -> list[dict]:
-        """Task 637: a stratified, BLIND sample of already-labeled ground_truth
+        """An earlier fix: a stratified, BLIND sample of already-labeled ground_truth
         rows for a second, independent adjudicator to re-verdict.
 
         Strata are (project, rule_id) pairs among non-manual-adjudicated rows
@@ -2149,7 +2149,7 @@ class BenchDB:
         blind re-adjudication) against its snapshotted `original_verdict`
         (what ground_truth said when the row was sampled). Reports raw
         agreement plus a confusion breakdown, per rule and overall -- see
-        task 637: this is the only measurement anywhere of whether the
+        an earlier fix: this is the only measurement anywhere of whether the
         94.6%-Claude-labeled oracle is trustworthy.
         """
         with self._cursor() as cur:
@@ -2301,7 +2301,7 @@ class BenchDB:
         # Findings from projects this run could actually score: a matching
         # codebase_commit AND at least one ground-truth label at it. Always
         # <= the raw total; the gap is findings that had no oracle to be
-        # measured against. Same definition as benchmarking_db's task-708
+        # measured against. Same definition as benchmarking_db's an earlier fix
         # `_scored` keys -- the two must not drift, since bench/render_docs.py
         # consumes whichever dict its caller supplies.
         scored_run_findings = 0
@@ -2468,9 +2468,9 @@ class BenchDB:
         per the run's own codebase_commit, so re-adjudication is only needed
         when the pinned commit changes.
 
-        `enforce_scope` (task 636, default True) drops findings outside each
+        `enforce_scope` (default True) drops findings outside each
         project's data/benchmark_repos.json scope_include/scope_exclude --
-        the single largest source of wasted adjudication effort (task 420
+        the single largest source of wasted adjudication effort (an earlier fix
         measured 63% of a raw pull as out-of-scope noise). Pass False
         (CLI: --no-scope) to see the raw unfiltered set.
         """

@@ -5,7 +5,7 @@ concrete DB class -- same discipline as `bench/render_docs.py`. `scripts/
 generate_juliet_coverage.py` is the only caller inside this repo, and it
 always uses `bench.db.BenchDB` against the local SQLite file.
 
-CROSS-REPO CONTRACT (aurora_lint task 954 / benchmarking_db task 749). The
+CROSS-REPO CONTRACT. The
 other caller is a `benchmarking_db` script that imports `render_juliet_
 coverage` and hands it a Postgres-backed handle, so the same report can be
 regenerated from the shared multi-node database instead of one checkout's
@@ -18,8 +18,8 @@ implicit protocol owned by this module, same reasoning as render_docs.py's
   read-only accessors. Adding a call to anything outside it is a breaking
   change to the other repo's caller and belongs in that list first.
 
-`get_rule_totals` and `get_cwe_detail` are the two accessors task 930/747
-already added to resolve the top-20-truncation and cwe_scan-mis-keying bugs
+`get_rule_totals` and `get_cwe_detail` are the two accessors an earlier
+fix already added to resolve the top-20-truncation and cwe_scan-mis-keying bugs
 that a naive re-query here would otherwise reintroduce -- see their
 docstrings in `bench/db.py`. `get_cwe_detail`'s `rule_count` field (added
 alongside this module) is what lets `_rule_cwe_map` below distinguish "no

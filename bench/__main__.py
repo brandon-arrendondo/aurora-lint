@@ -453,7 +453,7 @@ def _validate_label_rows(rows, args):
     """Reject a label batch that names a rule sqc cannot emit, or a verdict
     outside the vocabulary. Fails the whole import; never a partial one.
 
-    Task 700/721: 25 ground_truth rows named FIO04-C, STR07-C or MSC02-C --
+    Two earlier fixes: 25 ground_truth rows named FIO04-C, STR07-C or MSC02-C --
     real CERT ids that sqc has never implemented in any commit. Thirteen of
     them were adjudicated TRUE POSITIVES, which cannot happen: a TP asserts sqc
     emitted the finding and was right. This function is the missing write-time
@@ -489,7 +489,7 @@ def _validate_label_rows(rows, args):
             print(f"    ... and {len(bad_rule) - 20} more")
         # The one legitimate case, and why it still has to be stated: an FN
         # names a defect class sqc MISSED, which can be a rule it does not
-        # implement at all (a capability gap -- see task 727). That is real
+        # implement at all (a capability gap -- see an earlier fix). That is real
         # evidence, but it also lands in the recall denominator, penalizing
         # the unimplemented rules that happened to get adjudicated and no
         # others. A TP or FP on an unimplemented rule has no such reading:
@@ -515,8 +515,8 @@ def _validate_label_rows(rows, args):
 
 # ground_truth.verdict's full vocabulary. 'FN' is a real bug sqc MISSED (no
 # matching finding, so it scores against recall, not precision); 'uncertain' is
-# an adjudicator declining to call it. Anything else is a typo or, as in task
-# 700, a verdict string that leaked into the wrong column.
+# an adjudicator declining to call it. Anything else is a typo or, as
+# happened once, a verdict string that leaked into the wrong column.
 VALID_VERDICTS = ("TP", "FP", "FN", "uncertain")
 
 
@@ -532,7 +532,7 @@ def cmd_realworld_import_labels(args):
     # used to say so, and a batch imported here simply did not exist anywhere
     # that mattered.
     #
-    # This is not hypothetical: task 671's EXP33-C delta (18 labels, 2026-09-01)
+    # This is not hypothetical: an earlier fix's EXP33-C delta (18 labels, 2026-09-01)
     # was imported here, never reached the shared oracle, and was found only on
     # 2026-09-02 while deciding whether this DB could be deleted. It was 15
     # labels away from being thrown out with the file.
@@ -657,7 +657,7 @@ def _code_excerpt(project, file_path, line):
     line of it). gavel now scrolls, so there's no size reason to trim it.
 
     Bounds the region by the nearest top-level '}' (column 0) before and
-    after `line` -- the same heuristic verified in task 166's context-
+    after `line` -- the same heuristic verified in an earlier fix's context-
     enrichment experiment (see docs/design or that task's notes: an
     earlier signature-regex extractor silently produced SMALLER regions
     on sqlite's multi-line signatures ending '){' on their own line; this
@@ -1069,7 +1069,7 @@ def cmd_render_docs(args):
     # Scored once here and threaded through, rather than re-derived inside
     # each renderer: the guard and the published numbers must describe the
     # same scoring pass, and render_docs no longer asks `db` to compute
-    # metrics at all (task 707 -- see that module's CROSS-REPO CONTRACT).
+    # metrics at all (an earlier fix -- see that module's CROSS-REPO CONTRACT).
     rw_score = db.score_realworld_run(realworld_run_id)
 
     warnings = realworld_citation_warnings(db, realworld_run_id, rw_score)

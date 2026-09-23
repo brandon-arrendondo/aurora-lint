@@ -140,7 +140,7 @@ def collect(results_dir: Path = RESULTS_DIR) -> tuple[list, list, list]:
         run_findings = 0
         # A CWE row with no files was requested but not measurable -- Juliet
         # has nine C++-only directories and this benchmark is C-only, so one
-        # of them (CWE762) sat in the tool lists scoring 0/0 until task 909.
+        # of them (CWE762) sat in the tool lists scoring 0/0 until an earlier fix.
         # `cwe_count` is rows present, `cwes_measured` is rows that measured
         # something; they differ only for runs taken before that fix.
         measured = 0
