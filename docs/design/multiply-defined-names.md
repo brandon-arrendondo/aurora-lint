@@ -1,6 +1,6 @@
 # Multiply-defined names: which file's definition answers for a caller
 
-**Status:** In progress (aurora_lint task 1385). Increments 1 (linkage) and 2
+**Status:** In progress. Increments 1 (linkage) and 2
 (two statics, at the third attempt) have landed with tests; §5 records what
 the first two attempts measured and why they were not landable, because the
 reason is the design. Increment 3 is scoped, not built.
@@ -20,7 +20,7 @@ them are decidable from the source at all:
 | **Two statics** | `static` in two or more files, nowhere external | **Yes** — they are unrelated functions; only a caller in the defining file may use one. Needs a per-file view (§5). |
 | **Two externals** | external in two or more files | **No** — the build configuration links one (hostap's `os_*` layer, the TLS and crypto backends). This is `multi-configuration-scanning.md`'s question, not this one (§6). |
 
-Task 1385's stated options — (a) same-TU wins, (b) resolve to nothing, (c) key
+This plan's stated options — (a) same-TU wins, (b) resolve to nothing, (c) key
 per definition — are each right for a different one of those rows, which is
 why none of them works as a single rule.
 
@@ -42,7 +42,7 @@ direction varies by table:
 | `typedef_types`, `struct_field_types`, `struct_typedef_aliases`, `macro_constants`, `macro_aliases`, `global_constants`, `global_var_null_states` | **last** wins (`HashMap::extend` overwrites) | `prescan.rs` |
 | `known_functions`, `noreturn_functions`, `packed_structs`, … | set unions, order-free | `prescan.rs` |
 
-Two corrections to what task 1385's body and the `4ac5710f` commit message
+Two corrections to what this plan's own body and the `4ac5710f` commit message
 say, both checked rather than reasoned about:
 
 - The non-folded **function-summary** fields are **first**-wins, not
@@ -364,9 +364,9 @@ Two honest routes, both already scaffolded, neither one "pick better":
 
 - **Declare the configuration.** `--compile-commands` already declares the
   macro state and `compile_commands.rs` already parses which
-  files the build compiles (task 1432, `configured_sources`). A definition in
+  files the build compiles (an earlier fix, `configured_sources`). A definition in
   a file the declared build does not compile is the one to drop. This is the
-  per-TU scoping 1432 stopped short of, and it needs a real
+  per-TU scoping that fix stopped short of, and it needs a real
   playbook-generated compile database to be worth anything.
 - **Keep the alternatives.** `collect_function_macro_alternatives` is the
   precedent: hand the consumer every definition and let the rule that can use
