@@ -4280,8 +4280,15 @@ impl MemoryAnalyzer {
             // new variable also dangles. Gated on an identifier RHS:
             // a subscript/field RHS copies a value out of a container,
             // not the dangling pointer itself (task 232).
-            self.freed_vars.insert(left_var.clone());
-            self.aliases.insert(left_var.clone(), right_var.clone());
+            //
+            // What dangles is the ASSIGNED LOCATION, not the object it
+            // sits in. `h->head = p;` after free(p) makes `h->head`
+            // dangle; `h` itself was never freed, and marking the root
+            // reported every unrelated sibling (`h->count`) as a
+            // use-after-free of `h` (task 1448). For a plain identifier
+            // LHS the path IS the root, so that case is unchanged.
+            self.freed_vars.insert(left_lv.clone());
+            self.aliases.insert(left_lv.clone(), right_var.clone());
         } else {
             // Reassigning the pointer to a live value overwrites any
             // prior dangling state: `free(p); p = newbuf;` and the
