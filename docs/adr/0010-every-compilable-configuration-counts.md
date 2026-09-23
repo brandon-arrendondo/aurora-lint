@@ -136,6 +136,24 @@ dozen legacy FP rows whose stated basis is "compiled out in release" or
   resolution only, per Decision 3). Onboarding a second configuration of
   an existing corpus (sel4 arm, raylib's platform backends, 1042) is the
   measurement-side path and needs no new scanner capability.
+- **Why the default answer is a new corpus, not a second scan of an
+  existing one** (Brandon, 2026-09-22): systematically scanning every
+  compilable configuration of every pinned corpus — not just finding a
+  stray off-config violation, but running, adjudicating and maintaining a
+  second oracle for it — multiplies the regular benchmark run by roughly
+  the number of alternate configurations that exist, which for
+  platform-specific code is real and recurring cost, not a one-time setup.
+  ventoy is the concrete instance of the alternative: rather than
+  double-scanning curl or hostap for their Windows arms, the project
+  onboarded a codebase *whose primary configuration already is* the
+  platform it wanted coverage for (`docs/design/realworld-corpus-scope.md`'s
+  ventoy section). A new corpus chosen for the rule/platform coverage it
+  adds is cheaper than a second oracle bolted onto an existing one, and is
+  the default move going forward. This does not change Decision 7's answer
+  for a finding that shows up incidentally outside the primary
+  configuration (still labeled as written, still outside that corpus's
+  denominator) — it is guidance for when a *systematic* second-configuration
+  scan is worth building at all.
 - The ~two dozen legacy FP rows whose basis is release-build or
   default-config reachability (sqlite `sqlite_fts5_index`, `precision_audit_*`,
   `curl_full_audit_0.4.35`, `hostap_full_audit_0.4.169`, lua

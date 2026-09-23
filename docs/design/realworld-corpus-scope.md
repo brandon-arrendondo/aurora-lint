@@ -138,6 +138,13 @@ deliberately as the suite's Win32 oracle — it is *scanned* on the Linux host
 code. The primary configuration is a property of the code being measured, not
 of the host running the scanner.
 
+Why ventoy specifically (Brandon, 2026-09-22): the suite had no other heavy
+Windows-native codebase, so ventoy was brought in *to be* the Windows
+benchmark, not scored as an eleventh POSIX corpus that happens to contain
+some Windows code. That is why its primary configuration is windows-x86
+rather than defaulting to the POSIX/Linux pattern every other corpus gets by
+construction — the choice follows from the reason ventoy is here at all.
+
 ## sqlite
 
 ### Precision scope (what counts as "sqlite")
