@@ -363,12 +363,10 @@ fn classify_stmt_for_ptr(
             }
         }
         "return_statement" => {
-            // return ptr; is a use
+            // return ptr; is a use, but `return fmt(&ptr, ...)` rebinds it
             if node.child_count() > 1 {
                 if let Some(expr) = node.child(1) {
-                    if subtree_contains_identifier(&expr, source, ptr_name) {
-                        return PtrAction::Used;
-                    }
+                    return nested_action_for_ptr(&expr, source, ptr_name, addr_ctx);
                 }
             }
             PtrAction::Irrelevant
@@ -381,11 +379,10 @@ fn classify_stmt_for_ptr(
                     return PtrAction::Reassigned;
                 }
             }
-            // Check if ptr_name appears in the initializer (e.g., int *q = ptr;)
-            if subtree_contains_identifier(node, source, ptr_name) {
-                return PtrAction::Used;
-            }
-            PtrAction::Irrelevant
+            // Check if ptr_name appears in the initializer (e.g., int *q = ptr;),
+            // unless it only appears as `&ptr_name` handed to an output-param
+            // call (`int n = fmt(&ptr, ...)`).
+            nested_action_for_ptr(node, source, ptr_name, addr_ctx)
         }
         // A while/for loop condition is stored as its header block's single
         // statement, wrapped in a parenthesized_expression (see cfg.rs
@@ -415,13 +412,7 @@ fn classify_stmt_for_ptr(
             // (see the "call_expression" arm of classify_expr_for_ptr) --
             // unless the callee is known to only dereference,
             // never write, that parameter.
-            if let Some(action) = subtree_address_of_call_action(node, source, ptr_name, addr_ctx) {
-                action
-            } else if subtree_contains_identifier(node, source, ptr_name) {
-                PtrAction::Used
-            } else {
-                PtrAction::Irrelevant
-            }
+            nested_action_for_ptr(node, source, ptr_name, addr_ctx)
         }
     }
 }
@@ -440,12 +431,14 @@ fn classify_expr_for_ptr(
                 if left_text == ptr_name {
                     return PtrAction::Reassigned;
                 }
+                // `ptr[0] = ...` reads the freed pointer whatever the RHS does
+                if subtree_contains_identifier(&left, source, ptr_name) {
+                    return PtrAction::Used;
+                }
             }
-            // Check if ptr is used on the RHS or LHS (e.g., x = *ptr)
-            if subtree_contains_identifier(expr, source, ptr_name) {
-                return PtrAction::Used;
-            }
-            PtrAction::Irrelevant
+            // Check if ptr is used on the RHS (e.g., x = *ptr). A stored
+            // output-param call (`len = fmt(&ptr, ...)`) rebinds it instead.
+            nested_action_for_ptr(expr, source, ptr_name, addr_ctx)
         }
         "call_expression" => {
             if let Some(func) = expr.child_by_field_name("function") {
@@ -487,13 +480,8 @@ fn classify_expr_for_ptr(
             }
             PtrAction::Irrelevant
         }
-        _ => {
-            if subtree_contains_identifier(expr, source, ptr_name) {
-                PtrAction::Used
-            } else {
-                PtrAction::Irrelevant
-            }
-        }
+        // `(void)fmt(&ptr, ...)`, `fmt(&ptr, ...) < 0` and the like
+        _ => nested_action_for_ptr(expr, source, ptr_name, addr_ctx),
     }
 }
 
@@ -543,6 +531,24 @@ fn subtree_address_of_call_action(
         }
     }
     None
+}
+
+/// Classify a subtree that is not itself a reassignment of `name`: an
+/// output-param call nested anywhere in it (`len = fmt(&name, ...)`) decides
+/// via `call_address_of_action`; otherwise any mention of `name` is a use.
+fn nested_action_for_ptr(
+    node: &Node,
+    source: &str,
+    name: &str,
+    addr_ctx: &AddressOfCallContext,
+) -> PtrAction {
+    if let Some(action) = subtree_address_of_call_action(node, source, name, addr_ctx) {
+        action
+    } else if subtree_contains_identifier(node, source, name) {
+        PtrAction::Used
+    } else {
+        PtrAction::Irrelevant
+    }
 }
 
 /// Given a `call_expression`, if it passes `&name` as a top-level argument,
