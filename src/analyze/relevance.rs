@@ -106,7 +106,7 @@ pub struct ProjectProfile {
     pub max_c_standard: Option<CStandard>,
     /// Any call to a C11 Annex K bounds-checked function --
     /// e.g. `strcpy_s`, `fopen_s`, `memcpy_s`. Matched by exact call-name
-    /// against [`ANNEX_K_FUNCTION_NAMES`], never by a `*_s(` text/substring
+    /// against `ANNEX_K_FUNCTION_NAMES`, never by a `*_s(` text/substring
     /// match, which would false-match a project's own `_s`-suffixed names
     /// (a real risk: `_s` is a common "safe"/"string" suffix convention in
     /// non-Annex-K code).

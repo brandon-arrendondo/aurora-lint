@@ -794,7 +794,7 @@ pub fn is_in_string_or_char_literal(source: &str, offset: usize) -> bool {
 /// Examples:
 /// - int x           -> "x"
 /// - int *ptr        -> "ptr"
-/// - int arr[10]     -> "arr"
+/// - int arr\[10\]     -> "arr"
 /// - int **ptr       -> "ptr"
 /// - int (*fn)(int)  -> "fn"
 pub fn get_identifier_from_declarator(declarator: &Node, source: &str) -> String {
@@ -1669,7 +1669,7 @@ pub fn get_binary_operator<'a>(node: &Node, source: &'a str) -> Option<&'a str> 
 // ============================================================================
 
 /// Find array size from declaration in preceding text
-/// Looks for patterns like: type array_name[size]
+/// Looks for patterns like: type array_name\[size\]
 /// Returns the size if found and it's a constant
 #[allow(dead_code)]
 pub fn find_array_size(array_name: &str, preceding_text: &str) -> Option<usize> {
@@ -1726,7 +1726,7 @@ pub fn get_type_size(type_name: &str) -> usize {
 // ============================================================================
 
 /// Check if a subscript expression is on the left side of an assignment (write context)
-/// Handles nested subscripts like matrix[i][j] = value
+/// Handles nested subscripts like matrix\[i\]\[j\] = value
 pub fn is_write_context(node: &Node) -> bool {
     let mut current = *node;
 

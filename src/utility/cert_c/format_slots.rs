@@ -12,7 +12,7 @@
 //!
 //! The model is deliberately one-directional in what it will assert: it
 //! answers "this slot is dereferenced" only when the whole directive is
-//! recognized, and answers [`SlotUse::Unknown`] for everything else --
+//! recognized, and answers [`format_slots::SlotUse::Unknown`] for everything else --
 //! including for any index past the last conversion. sqlite's
 //! `%T`/`%#T`/`%q`/`%z`/`%w`/`%Q` are the recurring real case:
 //! implementation-private conversions whose argument handling is written in

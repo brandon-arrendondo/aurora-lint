@@ -50,7 +50,7 @@
 //! loop: a lone `{`/`}` ERROR-wrapped inside a `#if defined(__cplusplus)`
 //! (or `#ifdef`/`#elif`) conditional -- the dual-C/C++-header idiom for
 //! guarding an `extern "C"` block's open/close brace. See
-//! [`find_blankable_preproc_brace_error`] for why this one small, locally
+//! `find_blankable_preproc_brace_error` for why this one small, locally
 //! contained defect was observed cascading into a file-spanning ERROR node
 //! on raylib's rlgl.h.
 
@@ -411,7 +411,7 @@ fn lone_brace_guard_ranges(node: &Node, source: &str) -> Option<((usize, usize),
 }
 
 /// Parse `source`, then iteratively blank and re-parse away any single-token
-/// unknown-identifier `ERROR` node found, up to [`MAX_ITERATIONS`] times.
+/// unknown-identifier `ERROR` node found, up to `MAX_ITERATIONS` times.
 /// Returns the final tree and the (possibly blanked) source text paired with
 /// it -- callers should use the returned text as "source" everywhere
 /// downstream, exactly as with `empty_macro_blank`. `None` only if

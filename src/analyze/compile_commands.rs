@@ -54,7 +54,7 @@
 //! gcc internal include dir, …) — those are implicit. Macros from headers that
 //! live only there, `<sys/queue.h>` being the §5(D) motivating example, are
 //! therefore still out of reach. Closing that needs the compiler's default
-//! search list (`cc -E -Wp,-v -`), which is why [`CompileDb::compilers`] is
+//! search list (`cc -E -Wp,-v -`), which is why [`compile_commands::CompileDb::compilers`] is
 //! recorded here. Deliberately left for a follow-up: it reintroduces a
 //! subprocess, and the project-header win is worth measuring on its own first.
 

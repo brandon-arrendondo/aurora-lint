@@ -235,7 +235,7 @@ fn parse_all_null_conditions(node: &Node, source: &str) -> Vec<ConditionInfo> {
 /// ```
 ///
 /// even though `overflow` is null on the branch the condition selects.
-/// [`parse_all_null_conditions`] is what to reach for when the per-branch
+/// `parse_all_null_conditions` is what to reach for when the per-branch
 /// state is what matters.
 ///
 /// Structural, so it is insensitive to how the source is spaced: `if(p && x)`,

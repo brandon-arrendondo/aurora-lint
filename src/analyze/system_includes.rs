@@ -2,7 +2,7 @@
 //!
 //! # Why a compile database is not enough
 //!
-//! [`super::compile_commands`] reads the flags a build **passes**. A build
+//! [`compile_commands`] reads the flags a build **passes**. A build
 //! never passes its compiler's own built-in search directories, because the
 //! compiler already knows them — so `/usr/include`, the Debian multiarch
 //! directory, and the gcc internal include directory are absent from every
@@ -44,7 +44,7 @@
 //!
 //! # Known sharp edge
 //!
-//! [`super::prescan::resolve_includes`] harvests header macros with
+//! [`prescan::resolve_includes`] harvests header macros with
 //! `macro_constants.extend(...)` — **override** semantics, unlike the
 //! carefully gap-filling `or_insert` that `-D` flags get. Pointing the resolver
 //! at the system header tree therefore lets a libc macro win over a project

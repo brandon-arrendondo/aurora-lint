@@ -14,7 +14,7 @@ use tree_sitter::Node;
 /// Summary of a function's behavior relevant to CERT C rules.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct FunctionSummary {
-    /// Parameter indices that this function frees (e.g., free(param[0])).
+    /// Parameter indices that this function frees (e.g., free(param\[0\])).
     /// This is a MAY-free fact: the free can be nested inside a conditional
     /// (if/switch/loop/ternary), so it does not mean every call reaches it.
     pub frees_params: HashSet<usize>,

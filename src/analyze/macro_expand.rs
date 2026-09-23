@@ -1170,7 +1170,7 @@ pub fn macro_nulls_param_indices(table: &HashMap<String, FunctionMacro>, name: &
 /// Parameter indices that a function-like macro **writes through**: either a
 /// whole-object assignment (`(param) = …`, same as
 /// [`macro_output_param_indices`]), a whole-object read-modify-write
-/// (`param += …`, `param ^= …`, `param++` — [`is_compound_assignment_target`];
+/// (`param += …`, `param ^= …`, `param++` — `is_compound_assignment_target`;
 /// pure-ftpd's `CHACHA20_QUARTERROUND(A,B,C,D)` touches `A` and `C` only this
 /// way), or a write through the pointer/array itself
 /// — `param->field = …`, `param[i] = …`, `*param = …`. The latter forms are

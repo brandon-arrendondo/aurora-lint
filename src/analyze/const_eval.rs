@@ -462,7 +462,7 @@ pub fn resolve_macro_alias<'a>(aliases: &'a HashMap<String, String>, name: &'a s
     current
 }
 
-/// Merge cross-file macro aliases (`project`, from [`ProjectContext::macro_aliases`])
+/// Merge cross-file macro aliases (`project`, from [`super::context::ProjectContext::macro_aliases`])
 /// with aliases collected from the current file, with per-file definitions
 /// winning on name collisions. This is the common `set_project_context` +
 /// `check` idiom shared by rules that consume [`collect_macro_aliases`]
@@ -513,7 +513,7 @@ pub fn collect_macro_constants(root: &Node, source: &str) -> MacroConstantMap {
 }
 
 /// Merge cross-file macro constants (`project`, from
-/// [`ProjectContext::macro_constants`]) with constants collected from the
+/// [`super::context::ProjectContext::macro_constants`]) with constants collected from the
 /// current file, with per-file definitions winning on name collisions. This
 /// is the common `set_project_context` + `check` idiom shared by rules that
 /// consume [`collect_macro_constants`] (e.g. INT30-C, INT32-C, INT34-C,

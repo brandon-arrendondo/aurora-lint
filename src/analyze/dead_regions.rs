@@ -26,7 +26,7 @@
 //! oracles are single-platform per codebase, and a platform-visibility gap is
 //! answered by onboarding a codebase for that platform (ventoy is the Win32
 //! one), not by scanning one tree under several assumption tables. The
-//! profile is a single choke point ([`platform_assumptions`]).
+//! profile is a single choke point ([`dead_regions::platform_assumptions`]).
 //! Struct-bodied collectors deliberately do NOT consult this: ventoy's
 //! `process.h` wraps whole struct typedefs in `#if defined(_MSC_VER)`, and
 //! dropping those under the POSIX default would trade a hostap fix for a
@@ -53,10 +53,10 @@
 //! omit-safety-checks constant `(1)`.
 //!
 //! When the caller can say what the build actually defines, guessing is
-//! unnecessary. [`declare_scan_profile`] installs that declaration once per
+//! unnecessary. [`dead_regions::declare_scan_profile`] installs that declaration once per
 //! process, overlaid on the POSIX base so unlisted names keep their default;
 //! `--compile-commands` supplies it from the database's own `-D`/`-U` state
-//! ([`super::compile_commands::CompileDb::declared_macro_state`]). Absent that
+//! ([`compile_commands::CompileDb::declared_macro_state`]). Absent that
 //! flag nothing is declared and the table is exactly the POSIX default it has
 //! always been, so the no-build-system path is unchanged.
 //!

@@ -364,8 +364,8 @@ pub fn enclosing_function_lines(node: &tree_sitter::Node) -> Option<(usize, usiz
 /// suppressing the good-section copy (fill length fits the destination).
 ///
 /// Matches patterns like:
-///   memset(var, 'A', 49);   var[49] = '\0';     → 49
-///   wmemset(var, L'A', 49);  var[49] = L'\0';    → 49
+///   memset(var, 'A', 49);   var\[49\] = '\0';     → 49
+///   wmemset(var, L'A', 49);  var\[49\] = L'\0';    → 49
 ///   memset(var, 'A', 50-1);  var[50-1] = '\0';   → 49
 ///
 /// When several matching fills precede the call (control-flow variants), the

@@ -231,7 +231,7 @@ fn read_source_or_transcode(file_path: &str) -> Result<String> {
     Ok(decode_source_bytes(bytes)?)
 }
 
-/// A file [`read_source_or_transcode`] refused because its bytes contain
+/// A file `read_source_or_transcode` refused because its bytes contain
 /// NULs in no recognisable text layout -- a binary blob carrying a C
 /// extension. Its own type so the scan loop can tell "not text, skipped"
 /// (worth a warning) from an I/O failure. Carries the NUL count so the

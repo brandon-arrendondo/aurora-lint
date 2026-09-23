@@ -30,8 +30,8 @@
 //!    tree-sitter-c's grammar has no production for an unresolvable
 //!    identifier between a return type and a declarator, so
 //!    `unknown_identifier_recovery`'s ERROR-node recovery blanks the token
-//!    -- except for names in [`NORETURN_ATTRIBUTE_MACRO_NAMES`], where it
-//!    leaves [`MARKER`] in its place instead (same length-preserving
+//!    -- except for names in [`noreturn::NORETURN_ATTRIBUTE_MACRO_NAMES`], where it
+//!    leaves `MARKER` in its place instead (same length-preserving
 //!    recoverable-marker idiom an earlier fix used for label-guarded
 //!    preprocessor directives), so this module can still recognize the
 //!    declaration as noreturn post-parse.
@@ -64,7 +64,7 @@ pub const NORETURN_ATTRIBUTE_MACRO_NAMES: &[&str] = &["NORETURN"];
 /// list, padded with spaces to preserve the original byte length.
 const MARKER: &str = "/*R*/";
 
-/// Write [`MARKER`] into `source[start..end]`, right-padded with spaces to
+/// Write `MARKER` into `source[start..end]`, right-padded with spaces to
 /// preserve length. Returns `None` (caller should fall back to a plain
 /// blank) if the marker doesn't fit -- defensive against a future,
 /// shorter-than-`MARKER` addition to [`NORETURN_ATTRIBUTE_MACRO_NAMES`].

@@ -11,19 +11,19 @@
 //! What this module provides instead is the AST relation the text search was
 //! standing in for:
 //!
-//! * [`dominating_conditions`] — every condition expression that has been
+//! * [`guard_dominance::dominating_conditions`] — every condition expression that has been
 //!   evaluated when `site` executes, in two flavours: conditions that
 //!   *enclose* the site (an `if`/`while`/`for`/`switch` whose body it is in, a
 //!   `?:` branch, the left operand of an `&&`/`||` whose right operand it is
 //!   in) and conditions of `if` statements that *precede* it in one of its
 //!   ancestor blocks.
-//! * [`condition_compares_var`] — whether a condition tests `var` at all, in
+//! * [`guard_dominance::condition_compares_var`] — whether a condition tests `var` at all, in
 //!   either operand order, with the variable nested anywhere inside an operand
 //!   (`SIZE_MAX - n < x`, `p->len < n`), and with `!n` read as the `n == 0` it
 //!   is. Which operators count is the caller's choice
-//!   ([`ComparisonKind`]) — the answer differs for a bounds question and an
+//!   ([`guard_dominance::ComparisonKind`]) — the answer differs for a bounds question and an
 //!   overflow question.
-//! * [`has_dominating_comparison`] — the two composed, which is what a rule
+//! * [`guard_dominance::has_dominating_comparison`] — the two composed, which is what a rule
 //!   asking "was this parameter validated before here?" wants.
 //!
 //! **Deliberately not here: `assert(...)`.** An assert compiles out under
@@ -32,7 +32,7 @@
 //! true positives in that rule. A rule for which an assert *is* the right
 //! answer (a bounds precondition inside a codebase that ships with asserts
 //! enabled) should collect those conditions itself and pass them to
-//! [`condition_compares_var`], so that choice stays visible at the call site
+//! [`guard_dominance::condition_compares_var`], so that choice stays visible at the call site
 //! rather than buried in a shared default.
 //!
 //! Dominance here is the AST approximation, not a CFG dominator computation:
@@ -290,7 +290,7 @@ fn enclosing_conditions<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
 /// says which way they went. Only the enclosing ones are facts here.
 ///
 /// Being *evaluated* at `site` and being *true* at `site` are different
-/// questions, and [`enclosing_conditions`] answers the first. Three of its
+/// questions, and `enclosing_conditions` answers the first. Three of its
 /// results are evaluated but NOT true here, so each is filtered out by
 /// resolving [`dominating_condition_branch`] rather than by re-deriving the
 /// position:

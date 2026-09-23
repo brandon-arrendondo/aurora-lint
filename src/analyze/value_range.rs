@@ -1373,7 +1373,7 @@ fn merge_compound_conditions(
 const VRA_BLOCK_LIMIT: usize = 150;
 
 /// Run forward value-range analysis on a function CFG. Returns an empty
-/// result without analyzing when `cfg` exceeds [`VRA_BLOCK_LIMIT`] blocks.
+/// result without analyzing when `cfg` exceeds `VRA_BLOCK_LIMIT` blocks.
 pub fn analyze_value_ranges(
     cfg: &FunctionCfg,
     func_node: &Node,

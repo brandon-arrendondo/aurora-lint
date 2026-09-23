@@ -159,8 +159,8 @@ fn compute_gen_kill(
 /// Run reaching definitions analysis on a function CFG.
 ///
 /// Standard iterative worklist algorithm:
-/// - reaching_out[B] = gen[B] | (reaching_in[B] - kill[B])
-/// - reaching_in[B] = union(reaching_out[P]) for predecessors P
+/// - reaching_out\[B\] = gen\[B\] | (reaching_in\[B\] - kill\[B\])
+/// - reaching_in\[B\] = union(reaching_out\[P\]) for predecessors P
 pub fn compute_reaching_definitions(
     cfg: &FunctionCfg,
     definitions: Vec<Definition>,
