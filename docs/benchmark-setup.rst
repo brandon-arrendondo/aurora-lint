@@ -232,10 +232,35 @@ Third-Party Library Headers
 aurora-lint uses ``-I`` include paths to resolve ``#include`` directives from third-party
 libraries. Without these, functions declared in external headers produce
 DCL31-C/DCL07-C false positives. The installed headers are therefore part
-of what a run measures -- the same binary on two machines with different
-``-dev`` packages or glibc releases differs by a small number of keys (see
-:doc:`reproducing-published-numbers`), so install this list before comparing
-a run against a published one.
+of what a run measures -- once the full list below is installed, the same
+binary on two machines differs by only a small number of keys (see
+:doc:`reproducing-published-numbers`).
+
+**That "small number of keys" figure describes drift after the full list is
+installed.** Installing only part of it is a different, much larger failure
+mode, and an easy one to fall into since the per-project breakdown below is
+split into several blocks: a scan missing even one project's packages
+(easy to do working through them top-to-bottom rather than installing the
+one-liner) has measurably produced several hundred extra
+findings on a several-thousand-finding run (a high-single-digit percentage
+of the total), and a project's precision can sit measurably off a published
+number until every package for it is installed -- with nothing in the tool's
+own output signaling that more packages apply. ``corpus-check`` does not
+catch this either: it checks corpus pin drift and untracked/gitignored
+``.c``/``.h`` files, not installed packages.
+
+Install the full one-liner below rather than reasoning about which
+per-project subset your codebase needs:
+
+.. code-block:: bash
+
+    sudo apt-get install -y libssl-dev libcjson-dev zlib1g-dev libcunit1-dev \
+      libsqlite3-dev libmbedtls-dev libgnutls28-dev libgsasl-dev tcl-dev \
+      libnl-3-dev libnl-genl-3-dev libdbus-1-dev libgcrypt20-dev libpcap-dev \
+      libwolfssl-dev
+
+Per-project breakdown, for reference (installing the one-liner above already
+covers all of these):
 
 .. code-block:: bash
 
@@ -257,15 +282,6 @@ a run against a published one.
     sudo apt-get install -y \
       libnl-3-dev libnl-genl-3-dev libdbus-1-dev \
       libgcrypt20-dev libpcap-dev libwolfssl-dev
-
-One-liner for all hosts:
-
-.. code-block:: bash
-
-    sudo apt-get install -y libssl-dev libcjson-dev zlib1g-dev libcunit1-dev \
-      libsqlite3-dev libmbedtls-dev libgnutls28-dev libgsasl-dev tcl-dev \
-      libnl-3-dev libnl-genl-3-dev libdbus-1-dev libgcrypt20-dev libpcap-dev \
-      libwolfssl-dev
 
 Per-Project Include Paths
 ~~~~~~~~~~~~~~~~~~~~~~~~~
