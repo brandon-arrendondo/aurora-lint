@@ -3395,13 +3395,34 @@ fn collect_buf_calls_in_node_with_bindings(
 /// This pass re-parses source files, seeds each function's parameter names with their
 /// aggregated null states, and re-collects callsite args. Then re-aggregates to propagate
 /// the states one level deeper through the call chain.
-/// Maximum number of propagation passes for relay chain resolution.
-/// Each pass resolves one additional hop in the call chain:
-///   Pass 1: caller → relay (single hop)
-///   Pass 2: caller → relay1 → relay2 (two hops)
-///   Pass 3: caller → relay1 → relay2 → relay3 (three hops)
-/// Most real-world code has at most 2-3 relay hops.
-const MAX_PROPAGATION_PASSES: usize = 3;
+/// Safety bound on propagation passes. **Not** the stopping rule -- the loop
+/// below stops when a pass changes nothing, and this only exists so a future
+/// non-monotonicity cannot spin forever.
+///
+/// It used to be 3, chosen on the reasoning that "most real-world code has at
+/// most 2-3 relay hops". Each pass resolves one more hop, so that silently
+/// truncated every deeper chain: the loop hit the bound with work still
+/// outstanding and the convergence check never got to fire, leaving parameter
+/// states describing where the loop stopped rather than what the analyzer can
+/// prove. Measured passes-to-convergence over the twelve pinned corpora: lua
+/// 19, valkey 13, curl 12, hostap 12, sqlite 10, pureftpd 7, mbedtls 7, raylib
+/// 7, mosquitto 6, ventoy 5 (libcrc and sel4 return earlier still). At 3,
+/// sqlite stopped with 172 functions still changing and 563 parameter states
+/// undiscovered. So 2-3 hops was wrong by a factor of six on real code.
+///
+/// 64 is deliberately far above the worst observed (19) rather than tuned to
+/// it: the cost of a too-generous bound is nothing, because convergence ends
+/// the loop, while the cost of a too-tight one is exactly the silent
+/// truncation above. Reaching it means the loop is no longer monotone, which
+/// is a bug -- see the warning where it is exhausted.
+///
+/// The propagation is monotone today and was measured to be, not assumed:
+/// instrumented over all twelve corpora, no pass ever retracted a parameter
+/// state (`PossiblyNull` -> `NotNull`/absent), and every corpus converged well
+/// inside the bound. That is what distinguishes this from aurora_lint 1439,
+/// where VRA's loop genuinely could not converge and burning its (generous)
+/// cap was the symptom rather than the cause.
+const MAX_PROPAGATION_PASSES: usize = 64;
 
 fn propagate_param_null_states(
     source_files: &[PathBuf],
@@ -3481,10 +3502,22 @@ fn propagate_param_null_states(
             return;
         }
 
-        // Merge new callsite args into the existing ones
-        for (callee, arg_vecs) in new_callsite_args {
-            callsite_args.entry(callee).or_default().extend(arg_vecs);
-        }
+        // REPLACE rather than merge. Each pass re-reads every call site in the
+        // tree with the current parameter seeds, so the new map is a strictly
+        // better reading of exactly the same call sites -- appending kept a
+        // stale copy of each one from every previous pass. That grew
+        // `callsite_args` by a full re-collection per pass (sqlite: +66,759
+        // vectors each, 734,349 by convergence against 66,759 real call sites)
+        // and `aggregate_callsite_null_states` clones the whole map every pass.
+        //
+        // Checked before removing it, because retaining old vectors could have
+        // been what made the aggregate monotone ("any PossiblyNull caller wins"
+        // cannot retract if the old evidence is never dropped): replacing gives
+        // a pass-for-pass identical trajectory -- same state count, same
+        // functions changed, same convergence pass, still zero retractions --
+        // and an identical final finding set. Monotonicity comes from the
+        // seeding being monotone, not from hoarding vectors.
+        *callsite_args = new_callsite_args;
 
         // Clear old aggregated states and re-aggregate with the merged data
         let prev_states: HashMap<String, HashMap<usize, NullState>> = summaries
@@ -3514,6 +3547,18 @@ fn propagate_param_null_states(
             return;
         }
     }
+    // Falling out of the loop means the bound was exhausted with a pass still
+    // changing something, i.e. the propagation stopped short of a fixpoint.
+    // Silence is what made the old bound of 3 hard to notice at all -- the
+    // output looked settled and was not -- so say it out loud.
+    eprintln!(
+        "Warning: null-state propagation did not converge within {} passes. \
+         Parameter null states describe where the loop stopped, not what the \
+         analyzer can prove, so findings that depend on them may be \
+         incomplete or irreproducible. This is a bug in the propagation's \
+         monotonicity; please report it.",
+        MAX_PROPAGATION_PASSES
+    );
 }
 
 /// Like `collect_callsite_args_from_tree`, but also seeds function parameters
@@ -7971,6 +8016,57 @@ void caller(char *other) {
             states(&two),
             "and a_one's `report` does not inherit that proof from b_two's \
              unrelated function of the same name"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A relay chain deeper than the old bound of 3. `entry` hands NULL to
+    /// `r1`, which forwards to `r2` ... through to `sink`, and each propagation
+    /// pass resolves exactly one more hop -- so the state only reaches `sink`
+    /// on pass 6. At the old fixed bound of 3 the loop stopped there with work
+    /// still outstanding, the convergence check never fired, and `sink`'s
+    /// parameter kept a state that described where the loop stopped rather than
+    /// what the chain proves (aurora_lint 1445).
+    ///
+    /// Six hops is chosen to sit just past the old bound while staying far
+    /// inside the new one; real code goes much deeper (measured
+    /// passes-to-convergence: lua 19, valkey 13, curl 12, hostap 12,
+    /// sqlite 10).
+    #[test]
+    fn a_relay_chain_deeper_than_three_hops_still_reaches_the_end() {
+        const HOPS: usize = 6;
+        let mut src = String::from("static void sink(char *p) { emit(p[0]); }\n");
+        // r1 calls sink; r2 calls r1; ... so entry -> rN -> ... -> r1 -> sink.
+        src.push_str("static void r1(char *p) { sink(p); }\n");
+        for i in 2..HOPS {
+            src.push_str(&format!(
+                "static void r{}(char *p) {{ r{}(p); }}\n",
+                i,
+                i - 1
+            ));
+        }
+        src.push_str(&format!(
+            "void entry(void) {{ char *q = NULL; r{}(q); }}\n",
+            HOPS - 1
+        ));
+
+        let dir = std::env::temp_dir().join("aurora-lint-prescan-deep-relay-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("chain.c"), &src).unwrap();
+        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        assert_eq!(
+            ctx.function_summaries
+                .get("sink")
+                .expect("`sink` is defined")
+                .callsite_param_null_states
+                .get(&0)
+                .copied(),
+            Some(NullState::PossiblyNull),
+            "the NULL `entry` creates is {} forwarding hops from `sink`, so the \
+             propagation has to keep going until nothing changes rather than \
+             stopping at a fixed pass count",
+            HOPS
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
