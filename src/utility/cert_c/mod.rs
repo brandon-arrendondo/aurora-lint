@@ -16,6 +16,10 @@ pub mod float_typing;
 /// binding rather than the last, so a rule can ask what a call through the
 /// pointer may reach.
 pub mod fn_ptr_bindings;
+/// Which vararg slot each conversion specification of a format string
+/// consumes, and whether that conversion dereferences the pointer it gets --
+/// so a check on a `...` argument stops treating every tail slot alike.
+pub mod format_slots;
 /// Structural "is this variable guarded here?" queries -- the AST relation
 /// that per-rule text searches for a canonical guard spelling stand in for.
 pub mod guard_dominance;

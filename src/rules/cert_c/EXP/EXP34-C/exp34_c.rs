@@ -6,6 +6,7 @@ use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::null_state::{self, NullAnalysisResult, NullState, StateMap};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::format_slots;
 use crate::utility::cert_c::guard_dominance;
 use lang_parsing_substrate::query;
 use std::borrow::Cow;
@@ -613,6 +614,23 @@ fn check_function_arguments_cfg(
 /// Callers gate this to `param_idx >= callee_summary.variadic_from` already;
 /// this still re-checks per argument since a vararg call can pass several
 /// tail arguments and each needs its own position.
+///
+/// A tail slot is only reported when the conversion that consumes it is one
+/// that dereferences the pointer. Treating every tail slot alike
+/// made the finding's own stated basis false wherever the slot's conversion
+/// never touches the pointee: a `%p` prints the pointer value, a `%d` is a
+/// type mismatch for a pointer rather than a dereference, and an
+/// implementation-private conversion is not modelled at all. A finding whose
+/// message names a dereference a reader cannot find is a misfire, which is a
+/// bug in every codebase (`docs/adr/0005`) -- distinct from a judgment FP,
+/// which is what `docs/adr/0001` protects.
+///
+/// The slot map is used only when the call itself spells its format string:
+/// the last fixed argument is where C's variadic convention puts it, since
+/// `va_start(ap, fmt)` needs it named. Anything else -- a format held in a
+/// variable, a macro-spliced `PRIu64`, or a variadic that is not a format
+/// function at all (`execl`, `mp_clear_multi`) -- leaves the behaviour
+/// exactly as it was, because nothing was resolved to reason from.
 fn check_callsite_null_args(
     callee_name: &str,
     args: &Node,
@@ -630,84 +648,115 @@ fn check_callsite_null_args(
         return;
     };
 
-    let mut param_idx: usize = 0;
-    for i in 0..args.child_count() {
-        if let Some(arg) = args.child(i) {
-            // Skip commas and other non-argument tokens
-            if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
-                continue;
-            }
+    // Same argument-token filter the positional walk used before this became
+    // indexable: only `,` and the parentheses are skipped, so nothing about
+    // which child counts as an argument changes.
+    let arg_nodes: Vec<Node> = (0..args.child_count())
+        .filter_map(|i| args.child(i))
+        .filter(|n| !matches!(n.kind(), "," | "(" | ")"))
+        .collect();
 
-            // Only the vararg tail has no callee-side seed to rely on; a
-            // fixed positional argument is the callee's own dereference to
-            // report, not this call site's.
-            if param_idx < variadic_from {
-                param_idx += 1;
-                continue;
-            }
+    // The format string, when this call spells one: the last fixed argument,
+    // as a literal, carrying at least one conversion that consumes an
+    // argument. A literal with no conversions is evidence the callee is not a
+    // format function rather than evidence that nothing is dereferenced.
+    let format = variadic_from
+        .checked_sub(1)
+        .and_then(|fmt_idx| arg_nodes.get(fmt_idx))
+        .and_then(|node| format_slots::string_literal_text(node, source))
+        .filter(|fmt| format_slots::format_consumes_arguments(fmt));
 
-            if arg.kind() == "identifier" {
-                let var_name = ast_utils::get_node_text_owned(&arg, source);
-                if is_provably_not_a_pointer(&arg, &var_name, source) {
-                    param_idx += 1;
+    for (param_idx, arg) in arg_nodes.iter().enumerate() {
+        // Only the vararg tail has no callee-side seed to rely on; a
+        // fixed positional argument is the callee's own dereference to
+        // report, not this call site's.
+        if param_idx < variadic_from {
+            continue;
+        }
+
+        if arg.kind() != "identifier" {
+            continue;
+        }
+
+        // When the format string resolved, the conversion consuming this
+        // slot decides whether there is a dereference to report at all.
+        let conversion = match &format {
+            Some(fmt) => {
+                let slot = param_idx - variadic_from;
+                if !format_slots::slot_dereferences_either_direction(fmt, slot) {
                     continue;
                 }
-                let state = null_state::get_var_state_at(
-                    analysis,
-                    cfg,
-                    body,
-                    source,
-                    &var_name,
-                    arg.start_byte(),
-                    summaries,
-                );
-
-                // A merely-possibly-null argument that a guard already
-                // evaluated at THIS call site proves non-null is not a
-                // finding: `if (p == NULL || sink(p) < 0)` reaches `sink`
-                // only on the branch where the null test failed. Same
-                // predicate the prescan uses for the same question, so the
-                // two cannot disagree about what counts as guarded.
-                if state == null_state::NullState::PossiblyNull
-                    && crate::analyze::prescan::guarded_nonnull_at(&arg, &var_name, source)
-                {
-                    param_idx += 1;
-                    continue;
-                }
-
-                // Same rc<->out-parameter success correlation as is_unsafe_at:
-                // a pointer set through `&p` by a call whose status is stored
-                // in `rc`, then passed under an `rc == SQLITE_OK` guard, is
-                // non-null at the call. This interprocedural arg check does
-                // not route through is_unsafe_at, so apply the guard here too.
-                if state.is_unsafe() && !is_guarded_by_rc_success(&var_name, &arg, source) {
-                    let start_point = arg.start_position();
-                    violations.push(RuleViolation {
-                        rule_id: "EXP34-C".to_string(),
-                        severity: Severity::High,
-                        message: format!(
-                            "Passing {} '{}' to '{}' which does not check for NULL",
-                            if state == null_state::NullState::DefinitelyNull {
-                                "null pointer"
-                            } else {
-                                "potentially null pointer"
-                            },
-                            var_name,
-                            callee_name
-                        ),
-                        file_path: String::new(),
-                        line: start_point.row + 1,
-                        column: start_point.column + 1,
-                        suggestion: Some(format!(
-                            "Check if '{}' is not NULL before passing to '{}'",
-                            var_name, callee_name
-                        )),
-                        ..Default::default()
-                    });
-                }
+                format_slots::slot_spec(fmt, slot)
             }
+            None => None,
+        };
 
-            param_idx += 1;
+        let var_name = ast_utils::get_node_text_owned(arg, source);
+        if is_provably_not_a_pointer(arg, &var_name, source) {
+            continue;
+        }
+        let state = null_state::get_var_state_at(
+            analysis,
+            cfg,
+            body,
+            source,
+            &var_name,
+            arg.start_byte(),
+            summaries,
+        );
+
+        // A merely-possibly-null argument that a guard already
+        // evaluated at THIS call site proves non-null is not a
+        // finding: `if (p == NULL || sink(p) < 0)` reaches `sink`
+        // only on the branch where the null test failed. Same
+        // predicate the prescan uses for the same question, so the
+        // two cannot disagree about what counts as guarded.
+        if state == null_state::NullState::PossiblyNull
+            && crate::analyze::prescan::guarded_nonnull_at(arg, &var_name, source)
+        {
+            continue;
+        }
+
+        // Same rc<->out-parameter success correlation as is_unsafe_at:
+        // a pointer set through `&p` by a call whose status is stored
+        // in `rc`, then passed under an `rc == SQLITE_OK` guard, is
+        // non-null at the call. This interprocedural arg check does
+        // not route through is_unsafe_at, so apply the guard here too.
+        if state.is_unsafe() && !is_guarded_by_rc_success(&var_name, arg, source) {
+            let start_point = arg.start_position();
+            let severity_text = if state == null_state::NullState::DefinitelyNull {
+                "null pointer"
+            } else {
+                "potentially null pointer"
+            };
+            // Name the conversion when one was resolved: what was established
+            // is that this slot's conversion dereferences the pointer, not
+            // that the callee omits a null check of its own -- a formatter
+            // can substitute for a null argument, which is a separate
+            // question from whether the conversion reads the pointee.
+            let message = match &conversion {
+                Some(spec) => format!(
+                    "Passing {} '{}' to '{}', whose '{}' conversion dereferences it",
+                    severity_text, var_name, callee_name, spec
+                ),
+                None => format!(
+                    "Passing {} '{}' to '{}' which does not check for NULL",
+                    severity_text, var_name, callee_name
+                ),
+            };
+            violations.push(RuleViolation {
+                rule_id: "EXP34-C".to_string(),
+                severity: Severity::High,
+                message,
+                file_path: String::new(),
+                line: start_point.row + 1,
+                column: start_point.column + 1,
+                suggestion: Some(format!(
+                    "Check if '{}' is not NULL before passing to '{}'",
+                    var_name, callee_name
+                )),
+                ..Default::default()
+            });
         }
     }
 }

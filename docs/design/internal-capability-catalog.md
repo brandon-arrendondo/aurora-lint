@@ -384,6 +384,36 @@ family into `is_safe_function` would have newly (and wrongly) treated
 (`tests/fail/testcases_vsprintf_modification.c`) was confirmed to fail
 without that addition before the migration landed.
 
+### `src/utility/cert_c/format_slots.rs`
+**Problem solved:** which vararg slot a conversion specification consumes,
+and whether that conversion dereferences the pointer it gets. `call_roles`
+answers "is this callee a format function"; nothing answered "what happens
+to the third `...` argument". Rules that needed the second question had only
+per-rule specifier scanners (`DCL10-C`, `DCL11-C`, `FIO47-C`, `INT00-C` each
+carry one, all counting or type-matching rather than mapping slots), so
+EXP34-C treated every tail slot alike and reported "passing potentially null
+pointer 'buf' to 'wpa_printf' which does not check for NULL" about a `%p` —
+a dereference that is not on the line, i.e. a misfire (`docs/adr/0005`), not
+a judgment FP.
+
+| Function | Signature | Description |
+|---|---|---|
+| `SlotUse` | enum | `DereferencesPointer` (printf `%s`, printf `%n`, any assigning scanf conversion), `PointerValueOnly` (printf `%p` — prints the value, never the pointee), `NotAPointer` (`%d`, a `*` width/precision), `Unknown`. |
+| `Reading` | enum | `Parsed(Vec<(SlotUse, String)>)` — one entry per vararg slot, in order, each carrying the directive text that consumes it — or `OtherFamily`, meaning the string uses syntax this family does not have. The distinction is load-bearing: `"% *s %s"` has a space flag, scanf has no flags, so the scanf reading must ABSTAIN rather than say "nothing is known", or every flagged/precision-bearing printf format loses its `%s` slots. |
+| `Reading::slot_use` / `spec` / `slot_count` / `abstains` | `(&self, slot: usize) -> …` | An unrecognized conversion (sqlite's `%T`/`%#T`/`%q`/`%z`/`%w`/`%Q`) makes its OWN slot `Unknown` and no more: the parse continues past it counting one consumed argument, because that is what one `va_arg` in a handler does, and `%%`/glibc `%m` are the zero-argument cases, modelled by name. Stopping instead silenced 36 genuine `%s` slots on the pinned corpora — narrowing the rule (`docs/adr/0001`), not fixing a misfire. `slot_use` is still `Unknown` past the last conversion. A `%` where a conversion character belongs opens the next directive rather than ending this one, since `z` is a real length modifier and `"%z%s%s"` would otherwise lose a slot. `spec` is the directive as written (`"%s"`, `"%-20.*ls"`), for a message that names what it read. |
+| `printf_reading` / `scanf_reading` | `(format: &str) -> Reading` | The two readings. `%%` and printf's `%m` consume nothing; a `*` width or precision takes a slot of its own; a `*`-suppressed scanf conversion takes none; a `%n$` positional is refused whole. |
+| `slot_dereferences_either_direction` | `(format: &str, slot: usize) -> bool` | True when the slot is dereferenced under every reading the string's own syntax permits, so a caller need not first establish the callee's family — which for an in-tree wrapper is often unresolvable (`sqlite3ErrorMsg` reaches sqlite's own formatter and calls no libc `v*printf`). Where both readings stand they agree on `%s`/`%ls`/`%n` and nowhere else; where one abstains the other stands alone. The cost is a slot both families could read whose conversion is not `%s`/`%n` — a scanf `%d` — a bounded recall gap a callee-direction test could close later. |
+| `format_consumes_arguments` | `(format: &str) -> bool` | Whether the literal has any argument-consuming conversion. A variadic whose last fixed argument is a string literal need not be a format function (`execl("/bin/sh", "sh", ...)`), so a conversion-free literal means "not a format string", never "nothing is dereferenced". |
+| `slot_spec` | `(format: &str, slot: usize) -> Option<String>` | The consuming directive from whichever reading the string permits. |
+| `string_literal_text` | `(node: &Node, source: &str) -> Option<String>` | The text between the quotes, joining a `concatenated_string` of literals and refusing one that splices anything else (`"got %" PRIu64 " bytes"`) — a slot map built from the visible halves would be wrong, not incomplete. |
+
+**Not answered here:** whether a particular callee's formatter tolerates a
+null argument. sqlite's `%s` handler substitutes `""` for a null pointer and
+its `%T`/`%#T` handlers test before dereferencing, so a `%s` slot being
+dereferenced by *C's* semantics still does not mean that callee will read the
+pointee. That is a per-callee formatter-body question, deliberately out of
+this module.
+
 ### `src/utility/cert_c/clearing_extent.rs`
 **Problem solved:** how far a memory-clearing call's write reaches.
 `call_roles::is_memory_clearing_call`, `FunctionSummary::clears_params` and
