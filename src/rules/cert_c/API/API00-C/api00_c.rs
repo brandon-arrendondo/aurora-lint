@@ -1265,7 +1265,10 @@ impl Api00C {
             }
             match summaries.get(callee_name.as_str()) {
                 Some(callee) => {
-                    callee.dereferences_params.contains(arg_idx)
+                    // `uses_params`, not the read-only `dereferences_params`:
+                    // a callee that only forms `&param->field` still takes the
+                    // pointer on trust.
+                    callee.uses_params.contains(arg_idx)
                         && !callee.checks_null_params_before_deref.contains(arg_idx)
                 }
                 None => true,

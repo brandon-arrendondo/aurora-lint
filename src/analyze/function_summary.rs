@@ -301,6 +301,18 @@ pub struct FunctionSummary {
     /// Parameter indices that this function dereferences in any way (read or write).
     /// Superset of modifies_params — includes `*param`, `param[i]`, `param->field`.
     pub dereferences_params: HashSet<usize>,
+    /// Parameter indices this function uses as a pointer in any way: every
+    /// `dereferences_params` index, plus one reached only by forming a member
+    /// address (`&param->field`), which `dereferences_params` deliberately
+    /// leaves out because it does not READ the parameter.
+    ///
+    /// API00-C asks the wider question. `&param->field` on a null `param` is
+    /// already undefined, and whatever receives that address reads a small
+    /// offset from null, so a forwarder into such a callee hands it an
+    /// unvalidated pointer all the same. EXP33-C and MEM01-C keep
+    /// the read-only test; this set is for callers asking "is it used".
+    #[serde(default)]
+    pub uses_params: HashSet<usize>,
     /// Parameter indices this function null-checks **before** its first
     /// dereference of them. Subset of `checks_null_params`.
     ///
@@ -4189,6 +4201,7 @@ fn analyze_param_usage(
         }
 
         // Check if parameter is dereferenced in any way (read or write)
+        let arrow = format!("{}->", param_name);
         if body_text.contains(&format!("*{}", param_name))
             || has_genuine_arrow_read(body_text, param_name)
             || body_text.contains(&format!("{}[", param_name))
@@ -4198,6 +4211,11 @@ fn analyze_param_usage(
             || cast_then_deref(body_text, param_name)
         {
             summary.dereferences_params.insert(idx);
+            summary.uses_params.insert(idx);
+        } else if body_text.contains(&arrow) {
+            // Every `param->` here is address-of'd: not a read, but still a
+            // use of the pointer (see `uses_params`).
+            summary.uses_params.insert(idx);
         }
     }
 
