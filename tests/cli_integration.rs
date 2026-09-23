@@ -1081,6 +1081,61 @@ fn safe_free_macro_not_flagged_double_free() {
     );
 }
 
+/// A free credited on the deallocator's name alone marks every finding that
+/// rests on it `requires_manual_review` -- a double free where either free is
+/// the guess, and a use reached through a copy of a copy -- while the same
+/// shapes over plain `free` stay unmarked. The generated fixture test only
+/// sees whether MEM30-C fires, so the mark is asserted here, per line, from
+/// the fixture's own MARKED / UNMARKED tags.
+#[test]
+fn guessed_free_mark_reaches_double_free_and_copies() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "src/rules/cert_c/MEM/MEM30-C/tests/fail/\
+         guessed_free_mark_survives_double_free_and_copies.c",
+    );
+
+    let (code, _, _) = run_aurora_lint(&[
+        fixture.to_str().unwrap(),
+        "-m",
+        manifest_mem30().to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let source = std::fs::read_to_string(&fixture).unwrap();
+    let mut tagged = 0;
+    for (idx, text) in source.lines().enumerate() {
+        let want = if text.contains("VIOLATION MARKED") {
+            true
+        } else if text.contains("VIOLATION UNMARKED") {
+            false
+        } else {
+            continue;
+        };
+        tagged += 1;
+        let line = idx as u64 + 1;
+        let here: Vec<_> = violations
+            .iter()
+            .filter(|v| v["line"].as_u64() == Some(line))
+            .collect();
+        assert!(!here.is_empty(), "line {line}: no MEM30-C finding");
+        for v in here {
+            assert_eq!(
+                v["requires_manual_review"].as_bool(),
+                Some(want),
+                "line {line}: {}",
+                v["message"]
+            );
+        }
+    }
+    assert_eq!(tagged, 7, "fixture tags changed; update this count");
+}
+
 // ─── Cross-file frees_params (MEM31-C) ──────────────────────────────────────
 
 fn manifest_mem31() -> PathBuf {

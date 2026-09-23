@@ -3963,7 +3963,7 @@ impl MemoryAnalyzer {
             && !self.nullified_vars.contains(&canonical)
             && !preproc_split
         {
-            violations.push(RuleViolation {
+            let mut violation = RuleViolation {
                 rule_id: "MEM30-C".to_string(),
                 severity: Severity::Critical,
                 message: format!("Double-free: '{}' freed multiple times", display_name),
@@ -3974,7 +3974,26 @@ impl MemoryAnalyzer {
                     "Set pointer to NULL after freeing to prevent double-free.".to_string(),
                 ),
                 ..Default::default()
-            });
+            };
+            // Either free resting on a name guess makes the pair an
+            // inference, so the finding is marked the way `uaf` marks one.
+            let prior = self
+                .guessed_free_of(&canonical)
+                .or_else(|| self.guessed_free_of(&lv))
+                .map(String::as_str);
+            let mut callees: Vec<&str> = prior.into_iter().chain(guessed_by).collect();
+            callees.dedup();
+            if !callees.is_empty() {
+                violation.requires_manual_review = Some(true);
+                if std::env::var_os("AURORA_MEM30_GUESS_DEBUG").is_some() {
+                    violation.message = format!(
+                        "{} [guessed-free via {}]",
+                        violation.message,
+                        callees.join(", ")
+                    );
+                }
+            }
+            violations.push(violation);
         }
 
         // Mark as freed
@@ -4023,6 +4042,14 @@ impl MemoryAnalyzer {
             .map(|(k, _)| k.clone())
             .collect();
         for alias in aliases_to_free {
+            match guessed_by {
+                Some(callee) => {
+                    self.guessed_freed.insert(alias.clone(), callee.to_string());
+                }
+                None => {
+                    self.guessed_freed.remove(&alias);
+                }
+            }
             self.freed_vars.insert(alias);
         }
 
@@ -4530,6 +4557,7 @@ impl MemoryAnalyzer {
             // use-after-free of `h`. For a plain identifier
             // LHS the path IS the root, so that case is unchanged.
             self.freed_vars.insert(left_lv.clone());
+            self.copy_guessed_free(left_lv, right_var);
             self.aliases.insert(left_lv.clone(), right_var.clone());
         } else {
             // Reassigning the pointer to a live value overwrites any
@@ -4690,6 +4718,7 @@ impl MemoryAnalyzer {
                 self.aliases.insert(left_var.clone(), right_var.clone());
                 // If source is freed, the new variable is also freed
                 if self.is_freed(&right_var) {
+                    self.copy_guessed_free(&left_var, &right_var);
                     self.freed_vars.insert(left_var);
                 }
             }
@@ -5128,17 +5157,36 @@ impl MemoryAnalyzer {
                 return None;
             }
         }
-        let guessed = self
-            .guessed_freed
-            .get(lv)
-            .or_else(|| self.aliases.get(lv).and_then(|c| self.guessed_freed.get(c)));
-        if let Some(callee) = guessed {
+        if let Some(callee) = self.guessed_free_of(lv) {
             violation.requires_manual_review = Some(true);
             if std::env::var_os("AURORA_MEM30_GUESS_DEBUG").is_some() {
                 violation.message = format!("{} [guessed-free via {}]", violation.message, callee);
             }
         }
         Some(violation)
+    }
+
+    /// The callee whose name alone credited the free of `lv`, looked up on
+    /// `lv` itself or, one hop, on what it aliases.
+    fn guessed_free_of(&self, lv: &LValue) -> Option<&String> {
+        self.guessed_freed
+            .get(lv)
+            .or_else(|| self.aliases.get(lv).and_then(|c| self.guessed_freed.get(c)))
+    }
+
+    /// `to` just took its freed state from `from` by copy (`q = p;`,
+    /// `h->head = p;`, `T *q = p;`): the guess mark travels with it. The
+    /// one-hop alias lookup in [`Self::guessed_free_of`] does not cover a
+    /// chain, and `r = q;` after `q = p;` links `r` to `q`, not to `p`.
+    fn copy_guessed_free(&mut self, to: &LValue, from: &LValue) {
+        match self.guessed_free_of(from).cloned() {
+            Some(callee) => {
+                self.guessed_freed.insert(to.clone(), callee);
+            }
+            None => {
+                self.guessed_freed.remove(to);
+            }
+        }
     }
 
     /// Check if a variable is in freed state (considering aliases and realloc invalidation)
