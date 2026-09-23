@@ -74,7 +74,7 @@ fn main() {
     // Every other rerun-if-changed below narrows Cargo's default "rerun if
     // any package file changed" to just those paths -- which silently stops
     // covering build.rs's OWN source. A generator-logic change here (e.g.
-    // task 1019/commit 22ea7dcd, which reordered the generated tests' own
+    // an earlier commit reordering the generated tests' own
     // prescan/parse sequence) then never regenerates output on a clone with
     // a pre-existing target/, since none of the narrower paths moved. Watch
     // build.rs itself first so its own edits always trigger a rerun.
@@ -750,7 +750,7 @@ fn generate_test_function(
     //
     // The prescan runs BEFORE the parse for the same reason: the parse-repair
     // pass consults its macro table to decide which token a misparsed
-    // declaration should lose (task 1019), so parsing first would hand the rule
+    // declaration should lose, so parsing first would hand the rule
     // a weaker repair than a real scan performs.
     writeln!(
         f,

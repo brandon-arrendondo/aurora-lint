@@ -70,7 +70,7 @@ git2 = "0.19"
 # aurora-lint is a CERT-C checker). default-features = false keeps discovery
 # scoped to C/.h and avoids pulling in the other 15 grammars. lang-cpp is
 # enabled only for cpp_header::looks_like_cpp (a .h file compiled as C++
-# despite the ambiguous extension, task 571) -- no C++ grammar-based
+# despite the ambiguous extension) -- no C++ grammar-based
 # analysis is otherwise performed; aurora-lint stays CERT-C only.
 lang-parsing-substrate = { version = "0.8.0", default-features = false, features = ["lang-c", "lang-cpp"] }
 tree-sitter = "0.25"

@@ -95,8 +95,8 @@ jobs:
       - name: python3 -m unittest (bench/)
         run: python3 -W error::ResourceWarning -m unittest discover -s . -t . -v
 
-  # macos-latest resolves to an Apple Silicon (arm64) runner. Task 1030
-  # validated a clean build + full test suite on macOS with only Xcode CLT
+  # macos-latest resolves to an Apple Silicon (arm64) runner. An earlier
+  # pass validated a clean build + full test suite on macOS with only Xcode CLT
   # (preinstalled on GitHub-hosted runners), so no extra system-dep step.
   test-macos:
     name: Test (macOS aarch64)
