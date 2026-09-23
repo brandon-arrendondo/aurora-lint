@@ -2484,19 +2484,6 @@ fn case_group_breaks(case: &Node) -> bool {
     })
 }
 
-/// The `(callee, parameter index)` a statement hands `param` to, if any --
-/// the interprocedural leg of the coverage walk.
-///
-/// Argument position is counted exactly as `collect_param_passthroughs`
-/// counts it, since the index is looked up against the callee's own summary
-/// and the two have to agree. Only a bare identifier counts: `&param` and
-/// `param->field` hand the callee something other than the parameter.
-///
-/// The first forwarding call in source order wins. A statement that forwards
-/// `param` to two callees is really a disjunction -- either writing it
-/// suffices -- which a flat obligation set cannot express, so taking one is
-/// an under-approximation. That direction only leaves an existing false
-/// positive standing; the alternative would suppress a real finding.
 /// Every name `body` hands to a callee as a whole argument, casts included.
 ///
 /// Asks the same question as `collect_param_passthroughs`, which strips casts
@@ -2537,6 +2524,20 @@ fn forwarded_argument_names(body: &Node, source: &str) -> HashSet<String> {
     names
 }
 
+/// The `(callee, parameter index)` a statement hands `param` to, if any --
+/// the interprocedural leg of the coverage walk.
+///
+/// Argument position is counted exactly as `collect_param_passthroughs`
+/// counts it, since the index is looked up against the callee's own summary
+/// and the two have to agree. The argument must be the parameter itself,
+/// casts and parentheses aside -- `&param` and `param->field` hand the
+/// callee something else.
+///
+/// The first forwarding call in source order wins. A statement that forwards
+/// `param` to two callees is really a disjunction -- either writing it
+/// suffices -- which a flat obligation set cannot express, so taking one is
+/// an under-approximation. That direction only leaves an existing false
+/// positive standing; the alternative would suppress a real finding.
 fn forwarded_write_obligation(expr: &Node, source: &str, param: &str) -> Option<(String, usize)> {
     use lang_parsing_substrate::query;
 
