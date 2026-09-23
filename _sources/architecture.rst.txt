@@ -119,13 +119,13 @@ Analysis Modules
   database for "what role does this call play" (``is_allocator_call``,
   ``is_heap_allocator``, ``is_printf_family``, ``is_scanf_family``,
   ``is_sizeof_text``), replacing 7+ independently reinvented, disagreeing
-  per-rule lists found by task 481's duplication sweep.
+  per-rule lists found by a ruleset-wide duplication sweep.
 
 **Arithmetic-overflow-detection helpers** (``src/utility/cert_c/overflow_helpers.rs``).
   Shared type-map-building and identifier/operand-extraction primitives for
   ``INT30-C``/``INT32-C`` (and one primitive each for ``INT10-C``),
   replacing ~20 identically-named private helpers duplicated across those
-  two ~2800-line files — the largest duplicated surface found by task 481's
+  two ~2800-line files — the largest duplicated surface found by that same
   sweep. The overflow-*guard-detection* logic itself
   (``has_overflow_check_*``) stays rule-local: it only looks duplicated:
   ``INT30-C``'s is unsigned-wraparound-focused and ``INT32-C``'s is
@@ -134,7 +134,7 @@ Analysis Modules
 **Floating-point type inference** (``src/utility/cert_c/float_typing.rs``).
   Word-boundary-aware float/integer classification (``is_float_type``,
   ``expr_is_float``, ``expr_is_definitely_integer``,
-  ``collect_variable_types``) shared by the FLP rule family. Task 491
+  ``collect_variable_types``) shared by the FLP rule family. A follow-up
   migrated 3 of the 9 flagged rules (FLP02-C, FLP34-C, FLP37-C); the other
   6 turned out to check genuinely different concepts (format specifiers,
   ``long double`` specifically, a more comprehensive extended-float set)
@@ -145,9 +145,8 @@ Analysis Modules
   ``src/utility/cert_c/*.rs`` and ``src/analyze/*.rs`` (macro detection,
   declarator resolution, lvalue/aliasing, constant folding/VRA, CFG,
   function summaries, suppression, cross-file ``ProjectContext``). Skim it
-  before writing any new AST/text heuristic in a rule file — filed as task
-  479 after a near-duplication of DCL40-C's macro-detection helpers in
-  MSC12-C task 475.
+  before writing any new AST/text heuristic in a rule file -- filed after
+  a near-duplication of DCL40-C's macro-detection helpers in MSC12-C.
 
 **Suppression system** (``src/analyze/suppression.rs``).
   Inline ``// AURORA-SUPPRESS`` comments and ``suppress.toml`` files (the
