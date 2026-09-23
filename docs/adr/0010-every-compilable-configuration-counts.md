@@ -143,8 +143,14 @@ dozen legacy FP rows whose stated basis is "compiled out in release" or
   second oracle for it — multiplies the regular benchmark run by roughly
   the number of alternate configurations that exist, which for
   platform-specific code is real and recurring cost, not a one-time setup.
-  ventoy is the concrete instance of the alternative: rather than
-  double-scanning curl or hostap for their Windows arms, the project
+  Bluntly: if a corpus like curl is on the order of 80% shared code, 10%
+  POSIX-specific and 5% Windows-specific, scanning the whole codebase a
+  second time under a Windows configuration re-does that 80% for the sake
+  of the ~5% that's actually config-specific — a lot of rework for little
+  added value, and the project would rather half-support nothing than
+  half-support several configurations across every existing corpus. ventoy
+  is the concrete instance of the alternative: rather than double-scanning
+  curl or hostap for their Windows arms, the project
   onboarded a codebase *whose primary configuration already is* the
   platform it wanted coverage for (`docs/design/realworld-corpus-scope.md`'s
   ventoy section). A new corpus chosen for the rule/platform coverage it
