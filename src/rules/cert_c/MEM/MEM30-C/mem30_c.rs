@@ -1644,6 +1644,21 @@ enum ReallocNullBranch {
     Else, // if (result) or if (result != NULL) — else-branch is the NULL case
 }
 
+/// A literal, or an identifier that reads as a named constant (all-caps,
+/// no lowercase) rather than a variable -- the same "known value, not
+/// something else's current value" test `EqPred`'s condition parsing and
+/// the branch-sibling status-assignment scan both need.
+fn is_all_caps_or_literal_constant(node: &Node, source: &str) -> bool {
+    match node.kind() {
+        "number_literal" | "char_literal" => true,
+        "identifier" => {
+            let t = get_node_text(node, source);
+            t.chars().any(|c| c.is_ascii_uppercase()) && !t.chars().any(|c| c.is_ascii_lowercase())
+        }
+        _ => false,
+    }
+}
+
 /// `lv` is (or, `negated`, is not) one of `constants`: what an `if`
 /// condition of the form `x == A`, `x == A || x == B` or `x != A` asserts on
 /// the arm it guards, with `A`/`B` literals or ALL_CAPS names. Two such
@@ -1978,6 +1993,7 @@ impl MemoryAnalyzer {
                 then_pred: Option<EqPred>,
             },
             AfterElse {
+                consequence: Option<Node<'a>>,
                 alternative: Option<Node<'a>>,
                 pre_state: Box<BranchState>,
                 then_state: Box<BranchState>,
@@ -2317,6 +2333,7 @@ impl MemoryAnalyzer {
                         source,
                     );
                     stack.push(Frame::AfterElse {
+                        consequence,
                         alternative,
                         pre_state,
                         then_state: Box::new(then_state),
@@ -2328,6 +2345,7 @@ impl MemoryAnalyzer {
                     }
                 }
                 Frame::AfterElse {
+                    consequence,
                     alternative,
                     pre_state,
                     then_state,
@@ -2346,9 +2364,15 @@ impl MemoryAnalyzer {
                         &else_state,
                         else_returns,
                     );
-                    if let Some(pred) = then_pred {
-                        self.record_frees_under(&pre_state, &then_state, &else_state, pred);
-                    }
+                    self.record_frees_under(
+                        &pre_state,
+                        &then_state,
+                        &else_state,
+                        then_pred,
+                        consequence,
+                        alternative,
+                        source,
+                    );
                 }
                 Frame::StartSwitchCases { cases } => {
                     handle_start_switch_cases(self, &mut stack, source, cases);
@@ -2504,40 +2528,132 @@ impl MemoryAnalyzer {
         out
     }
 
-    /// After an `if` guarded by `pred`: an object freed in exactly one arm,
-    /// and not before the `if`, was freed only where that arm's predicate
-    /// held. Records nothing for an object already freed on entry (that
-    /// free was unconditional) or freed in both arms.
+    /// After an `if`: an object freed in exactly one arm, and not before the
+    /// `if`, was freed only where that arm held. Two independent sources of
+    /// "where that arm held" are recorded, unioned: `pred`, when the `if`'s
+    /// own condition is an equality test against constants; and, always,
+    /// `branch_sibling_const_facts` on that arm's body -- a status variable
+    /// the arm itself unconditionally sets, sitting beside the free rather
+    /// than gating it (sqlite fts3_write.c: the free and `rc = SQLITE_NOMEM`
+    /// are sibling statements under a *pointer*-comparison `if`, which is no
+    /// `EqPred`, but a later `if (rc == SQLITE_OK)` is -- and disjoint from
+    /// it). Records nothing for an object already freed on entry (that free
+    /// was unconditional) or freed in both arms.
     fn record_frees_under(
         &mut self,
         pre_state: &BranchState,
         then_state: &BranchState,
         else_state: &BranchState,
-        pred: EqPred,
+        pred: Option<EqPred>,
+        consequence: Option<Node>,
+        alternative: Option<Node>,
+        source: &str,
     ) {
+        let then_facts =
+            Self::branch_sibling_const_facts(consequence, source, &self.macro_constants);
         for var in &then_state.freed_vars {
             if !pre_state.freed_vars.contains(var)
                 && !else_state.freed_vars.contains(var)
                 && self.freed_vars.contains(var)
             {
-                let preds = self.freed_under.entry(var.clone()).or_default();
-                if !preds.contains(&pred) {
-                    preds.push(pred.clone());
+                let new: Vec<&EqPred> = pred.iter().chain(then_facts.iter()).collect();
+                if !new.is_empty() {
+                    let preds = self.freed_under.entry(var.clone()).or_default();
+                    for p in new {
+                        if !preds.contains(p) {
+                            preds.push(p.clone());
+                        }
+                    }
                 }
             }
         }
-        let neg = pred.negation();
+        let neg = pred.as_ref().map(EqPred::negation);
+        let else_facts =
+            Self::branch_sibling_const_facts(alternative, source, &self.macro_constants);
         for var in &else_state.freed_vars {
             if !pre_state.freed_vars.contains(var)
                 && !then_state.freed_vars.contains(var)
                 && self.freed_vars.contains(var)
             {
-                let preds = self.freed_under.entry(var.clone()).or_default();
-                if !preds.contains(&neg) {
-                    preds.push(neg.clone());
+                let new: Vec<&EqPred> = neg.iter().chain(else_facts.iter()).collect();
+                if !new.is_empty() {
+                    let preds = self.freed_under.entry(var.clone()).or_default();
+                    for p in new {
+                        if !preds.contains(p) {
+                            preds.push(p.clone());
+                        }
+                    }
                 }
             }
         }
+    }
+
+    /// Constant-equality facts a branch arm's body establishes unconditionally
+    /// through its own direct-child statements: `x = A;` where `A` is a
+    /// literal or ALL_CAPS name, the same shape `equality_predicate` reads out
+    /// of a *condition*, here read out of a *sibling assignment* instead. Only
+    /// direct children of `branch` count -- an assignment inside a further
+    /// nested `if`/`while`/`for`/`switch` is conditional relative to `branch`,
+    /// not a fact true of the whole arm. A later assignment to the same
+    /// variable overrides an earlier one (source order).
+    fn branch_sibling_const_facts(
+        branch: Option<Node>,
+        source: &str,
+        macro_constants: &const_eval::MacroConstantMap,
+    ) -> Vec<EqPred> {
+        let Some(branch) = branch else {
+            return Vec::new();
+        };
+        let stmts: Vec<Node> = if branch.kind() == "compound_statement" {
+            let mut cursor = branch.walk();
+            branch.children(&mut cursor).collect()
+        } else {
+            vec![branch]
+        };
+        let mut facts: Vec<EqPred> = Vec::new();
+        for stmt in stmts {
+            let assignment = if stmt.kind() == "expression_statement" {
+                stmt.child(0)
+            } else {
+                None
+            };
+            let Some(assignment) = assignment else {
+                continue;
+            };
+            if assignment.kind() != "assignment_expression" {
+                continue;
+            }
+            let is_plain_eq = assignment
+                .child_by_field_name("operator")
+                .is_some_and(|op| get_node_text(&op, source) == "=");
+            if !is_plain_eq {
+                continue;
+            }
+            let Some(left) = assignment.child_by_field_name("left") else {
+                continue;
+            };
+            let Some(right) = assignment.child_by_field_name("right") else {
+                continue;
+            };
+            if !is_all_caps_or_literal_constant(&right, source) {
+                continue;
+            }
+            let Some(lv) = lvalue_of(&left, source) else {
+                continue;
+            };
+            let text = get_node_text(&right, source);
+            let key = match const_eval::try_evaluate_text_public(text, macro_constants) {
+                Some(v) => format!("#{v}"),
+                None => text.to_string(),
+            };
+            facts.retain(|f| f.lv != lv);
+            facts.push(EqPred {
+                lv,
+                constants: [key].into_iter().collect(),
+                negated: false,
+            });
+        }
+        facts
     }
 
     /// Entering an arm on which `pred` holds: an object freed only under a
@@ -2604,15 +2720,7 @@ impl MemoryAnalyzer {
     /// (an enumerator without an initializer) is recorded by name.
     fn equality_predicate(&self, condition: &Node, source: &str) -> Option<EqPred> {
         fn is_constant(node: &Node, source: &str) -> bool {
-            match node.kind() {
-                "number_literal" | "char_literal" => true,
-                "identifier" => {
-                    let t = get_node_text(node, source);
-                    t.chars().any(|c| c.is_ascii_uppercase())
-                        && !t.chars().any(|c| c.is_ascii_lowercase())
-                }
-                _ => false,
-            }
+            is_all_caps_or_literal_constant(node, source)
         }
         fn one(node: &Node, source: &str) -> Option<(LValue, String, bool)> {
             let node = unwrap_parens(node);
