@@ -1112,8 +1112,18 @@ fn analyze_function(
         // identifier that aliases a known taint source (e.g.
         // `#define GETENV getenv`) so Juliet macro-wrapped sources still
         // poison the caller's summary.
-        summary.has_env03_taint_source = body_contains_taint_source(body_text)
-            || body_contains_alias(body_text, taint_source_aliases);
+        //
+        // Comments and string literals stripped first (task 1460,
+        // aurora_lint, found by task 1434's rule architecture sweep): this
+        // consumer is MUST-style, not suppression-only (ENV03-C gates "this
+        // caller is clean" on `!has_env03_taint_source`), so a comment
+        // merely mentioning a source (`// TODO: call getenv(x) here`) or a
+        // string literal containing one (`"usage: getenv(VAR)"`) was a real
+        // false-positive path, the same ADR-0005/ADR-0006 misfire shape as
+        // `cast_then_deref` and `has_genuine_arrow_read`.
+        let body_text_for_taint_scan = strip_string_literals(&strip_comments_multiline(body_text));
+        summary.has_env03_taint_source = body_contains_taint_source(&body_text_for_taint_scan)
+            || body_contains_alias(&body_text_for_taint_scan, taint_source_aliases);
 
         // Detect CWE-426-style relative-path command writes: strcpy/strcat
         // with a macro identifier whose value is a known non-absolute path.
@@ -1532,6 +1542,43 @@ fn strip_comments_multiline(s: &str) -> String {
             }
         } else {
             out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Blank out the contents of `"..."` and `'...'` literals (dropped
+/// entirely, not replaced char-for-char, since callers only need a
+/// substring scan over what remains, not aligned positions) so a plain text
+/// scan over a function's body does not treat a string constant that merely
+/// NAMES a function -- `"usage: getenv(VAR)"` -- as a real call to it.
+///
+/// Must run AFTER `strip_comments_multiline`: a stray quote inside a
+/// comment (`// see "getenv(" usage below`) would otherwise make this walk
+/// think it's inside a string literal for the rest of the body, silently
+/// dropping real code that follows.
+fn strip_string_literals(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '"' || c == '\'' {
+            out.push(' ');
+            i += 1;
+            while i < chars.len() && chars[i] != c {
+                if chars[i] == '\\' && i + 1 < chars.len() {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            if i < chars.len() {
+                i += 1; // consume the closing quote
+            }
+        } else {
+            out.push(c);
             i += 1;
         }
     }
