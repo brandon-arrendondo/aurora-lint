@@ -141,11 +141,11 @@ number that would need to flip).
    ORDER BY t.priority;"
    ```
    Baseline as of 2026-08-26: one open item, #378 (P4) — Juliet trend-line
-   caveat for the 21 newly-tracked rules from task 326, itself blocked on
-   those rules actually being implemented (tasks 329–349).
+   caveat for the 21 newly-tracked rules from an earlier re-ingest, itself
+   blocked on those rules actually being implemented.
 3. **Version/number drift check** — the paper's tables are frozen to the
    `run_id` that produced them; catch drift before submission rather than
-   at review time. As of 2026-09-04 (benchmarking_db task 701 item 3) the
+   at review time. As of 2026-09-04 (a benchmarking_db audit, item 3) the
    Juliet and real-world figures the paper cites are no longer hand-typed
    prose to grep and eyeball — they're generated from `sqc_bench` into
    `sqc_paper/figures.json`/`figures.tex`, which a command can verify
@@ -157,12 +157,12 @@ number that would need to flip).
    currently committed in `sqc_paper` no longer match what recomputing
    their own cited run from `sqc_bench` gives right now — this is what
    caught the 2026-09-03 corpus-scope re-pin silently moving run #226's
-   published precision/recall (task 701's own item-3 note has the
+   published precision/recall (that audit's own item-3 note has the
    before/after). It re-verifies whatever run `figures.json` already
    cites; it does not decide whether the paper *should* move to a newer
    run -- that stays this SOP's #1 above (an editorial call, made with
    `--realworld-run`/`--juliet-run` passed explicitly). If it fails on a
-   check that's a known, already-filed data gap (e.g. task 715's missing
+   check that's a known, already-filed data gap (e.g. a missing
    `duration_s`), re-run with the `--waive CHECK=REASON` the failure
    output names rather than treating the whole check as blocked.
 
@@ -173,7 +173,7 @@ number that would need to flip).
    Two figures the generator deliberately does not cover yet, so still
    need the manual form:
    - Cited rule count vs. `grep -c "enabled = true" rules_templates/rules-all.toml`
-     (305 as of 2026-08-26) — blocked on `benchmarking_db` task 742
+     (305 as of 2026-08-26) — blocked on a benchmarking_db follow-up
      (rules-all.toml has no per-run pin in Postgres yet).
    - Table 8's competitor-tool comparison (cppcheck/clang-tidy/Infer/
      Frama-C rule and CWE counts) — not `sqc_bench` data at all; verify
@@ -230,7 +230,7 @@ git log --format="%ad %h" --date=short -- src/rules/cert_c/rules-all.toml | head
 ```
 
 Baseline 2026-08-26: **305 enabled / 311 implemented**, unchanged since
-**2026-07-26** (task 326's re-ingest) — a full month flat. Report both the
+**2026-07-26** (that same re-ingest) — a full month flat. Report both the
 count and how long it's been flat; a flat count for one week is normal
 noise, a flat count for a month is a real signal that coverage work has
 paused in favor of precision/recall work (as it has this cycle).
