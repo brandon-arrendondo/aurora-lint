@@ -143,9 +143,11 @@ dozen legacy FP rows whose stated basis is "compiled out in release" or
   second oracle for it — multiplies the regular benchmark run by roughly
   the number of alternate configurations that exist, which for
   platform-specific code is real and recurring cost, not a one-time setup.
-  Bluntly: if a corpus like curl is on the order of 80% shared code, 10%
-  POSIX-specific and 5% Windows-specific, scanning the whole codebase a
-  second time under a Windows configuration re-does that 80% for the sake
+  Bluntly, illustratively (not a measured split — nobody has counted
+  curl's actual shared/POSIX/Windows lines): if a corpus is on the rough
+  order of 80% shared code, 10% POSIX-specific and 5% Windows-specific,
+  scanning the whole codebase a second time under a Windows configuration
+  re-does that 80% for the sake
   of the ~5% that's actually config-specific — a lot of rework for little
   added value, and the project would rather half-support nothing than
   half-support several configurations across every existing corpus. ventoy
