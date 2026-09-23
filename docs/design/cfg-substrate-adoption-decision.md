@@ -34,8 +34,8 @@ theoretical:
   `build_function_cfg` callers; ~30 call sites total).
 
 Adopting substrate's builder as-is would silently regress all three:
-switch-heavy functions would collapse to a single block (undoing task
-320), `goto`-based control flow would misroute, and macro-constant folding
+switch-heavy functions would collapse to a single block (undoing an
+earlier fix), `goto`-based control flow would misroute, and macro-constant folding
 (a real FP-reduction lever, see `docs/design/macro-expansion.md`) would
 disappear. None of that is caught by a type-signature match — it would
 have to be caught by a full re-run of the Juliet/real-world suites, and

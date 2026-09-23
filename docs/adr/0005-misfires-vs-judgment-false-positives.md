@@ -13,8 +13,8 @@ in a way that protects an actual detection bug from being fixed.
 
 This happened in practice on 2026-09-15: after being corrected on ADR-0002's
 principle (real-world 0% TP isn't a failure signal), a session initially
-started reconsidering whether to reverse two same-day fixes (aurora_lint
-1170, 1186) that had *removed* findings. Both removals were correct and
+started reconsidering whether to reverse two same-day fixes (both
+earlier implementations) that had *removed* findings. Both removals were correct and
 should not have been reconsidered — but the session couldn't tell that from
 ADR-0002's text alone, because ADR-0002 doesn't distinguish two different
 things that both show up as "this rule fires less than it used to":

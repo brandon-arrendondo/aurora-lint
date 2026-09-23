@@ -85,5 +85,5 @@ the same-file path had no cross-file equivalent to draw on.
   still resolves as unbounded/unresolvable) is unchanged; it was already
   flagged as a latent, conservative-direction limitation in
   `str31c-arr00-migration-scoping.md` §6 and is out of scope here.
-- `find_global_buffer_size` (whole-program global-buffer-size join, task
-  507) is a separate Phase 4 item, untouched by this change.
+- `find_global_buffer_size` (whole-program global-buffer-size join) is a
+  separate Phase 4 item, untouched by this change.
