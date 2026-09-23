@@ -1,13 +1,13 @@
-# CON03-C/CON07-C: ISR/thread/signal reachability (task 608 scoping)
+# CON03-C/CON07-C: ISR/thread/signal reachability
 
-**Status:** SCOPED, NOT IMPLEMENTED (2026-08-27). Task 608's own "Option B"
-follow-on of `concurrency-rule-evaluation.md` §4 item 5, gated on task 607
-(done — see that task's precision-split numbers below) and on
+**Status:** SCOPED, NOT IMPLEMENTED (2026-08-27). This plan is the "Option B"
+follow-on of `concurrency-rule-evaluation.md` §4 item 5, gated on Follow-on
+task B (done — see its precision-split numbers below) and on
 `lang-parsing-substrate` shipping real ISR detection (done — v0.7.0, this
 repo's `Cargo.toml` bumped in commit `3ff7320a`; see
 `lang_parsing_substrate/ISR_DETECTION.md` for that primitive's own design
 handoff). This doc is the design; implementation is separate follow-on work,
-consistent with task 151/606/607/608's own established pattern of
+consistent with the evaluation plan's own established pattern of
 scoping-before-building.
 
 ## Goal
@@ -15,7 +15,7 @@ scoping-before-building.
 CON03-C and CON07-C currently fire with **zero check on whether the flagged
 code is ever reachable from a second thread, ISR, or signal handler** —
 confirmed by reading `con03_c.rs`/`con07_c.rs` directly (no `isr`/`thread`/
-`signal_handler` logic exists in either). Task 607's retroactive re-score of
+`signal_handler` logic exists in either). Follow-on task B's retroactive re-score of
 76 real-world-adjudicated CON03/07/33/34/37-C findings, using a crude
 same-file regex proxy for concurrency-context evidence, found:
 
@@ -33,7 +33,7 @@ suppress the bulk of the 56 context-absent FPs while preserving the known TPs
 
 ## Non-goals for v1 — explicit, not oversights
 
-- **CON33-C is out of scope.** Task 608's own title names only
+- **CON33-C is out of scope.** This plan's own scope names only
   CON03-C/CON07-C. CON33-C's problem (fires on a fixed non-reentrant-function
   name list with zero context check) is the same *class* of gap and could
   reuse this same infrastructure later, but extending it is a separate task.
@@ -64,7 +64,7 @@ suppress the bulk of the 56 context-absent FPs while preserving the known TPs
   Simple forward-reachability-from-a-root, which is what's scoped here,
   can't see that main()-vs-thread shape — it only asks "is *this* access ever
   reachable from a concurrent root at all," which is a coarser, cheaper gate.
-  This matches task 151's own original "Option B" framing exactly ("give
+  This matches the evaluation plan's own original "Option B" framing exactly ("give
   CON03-C/CON07-C real reachability analysis so they only fire when the
   flagged variable is actually reachable from a registered ISR or a second
   thread") — not a scope reduction introduced here, just made explicit.
@@ -157,7 +157,7 @@ fn collect_concurrency_roots(root: &Node, source: &str, out: &mut HashSet<String
     // (b) Thread-spawn entry points: pthread_create/thrd_create/CreateThread,
     //     direct or macro-forwarded (see section above) -- extract the
     //     start-routine argument (3rd/2nd/3rd positionally) as an identifier.
-    //     Since task 1094 (aurora_lint) the table also carries Zephyr's
+    //     Zephyr support was added later; the table also carries Zephyr's
     //     k_thread_create (entry 4th of 10) and k_work_init /
     //     k_work_init_delayable (handler 2nd of 2): a work handler runs on a
     //     workqueue thread, never the submitter's. The exact list lives in
@@ -190,7 +190,7 @@ computed once during prescan (`prescan.rs`, alongside `collect_call_graph`):
    `Msc04C::strip_ambiguous_callees`'s exact logic** (`src/rules/cert_c/MSC/
    MSC04-C/msc04_c.rs:41-60`; currently private/rule-local — promote to a
    shared helper, e.g. in `prescan.rs` or a small new module, rather than
-   duplicating the filter). Task 562's MSC04-C fix exists precisely because
+   duplicating the filter). The MSC04-C fix exists precisely because
    name-matched indirect-call edges (`obj->cb(...)`, parameter-shadowed
    identifiers) fabricate call-graph edges that aren't real — the same
    fabrication risk applies to a reachability BFS, not just MSC04-C's cycle
@@ -242,7 +242,7 @@ targets).
 
 ### 4. Validation plan
 
-`~/toolchain` is already provisioned (task 607's ansible run) with all
+`~/toolchain` is already provisioned (Follow-on task B's ansible run) with all
 real-world benchmark checkouts pinned at their oracle commits, so validation
 doesn't need the benchmark node:
 
@@ -257,8 +257,8 @@ doesn't need the benchmark node:
    above are still flagged after the change (this is the real test of the
    macro-forwarding fix above, not the aggregate count).
 4. Confirm the FP mass in context-absent files (mosquitto's broker
-   `src/*.c` — no `pthread_create` anywhere per task-546's existing
-   writeup) drops to near-zero.
+   `src/*.c` — no `pthread_create` anywhere per CON07-C's existing
+   delta-adjudication writeup) drops to near-zero.
 5. Per CLAUDE.md's delta-adjudication protocol: this changes CON03-C/CON07-C's
    detection logic, so any *new* findings this surfaces at previously-silent
    lines land outside the existing `ground_truth` labels and must be
@@ -268,11 +268,11 @@ doesn't need the benchmark node:
    changes what it flags. Still worth an explicit `bench realworld-unlabeled`
    sanity check for zero-new-lines once a real benchmark run exists.
 
-## Rough effort framing (for the task-150 gate)
+## Rough effort framing (for the standing infra-bet gate)
 
 Most of the hard infrastructure already exists and is proven:
 `ProjectContext::call_graph` (already substrate-backed via `call_edges`),
-`ambiguous_call_targets` + its stripping pattern (MSC04-C, task 562, already
+`ambiguous_call_targets` + its stripping pattern (MSC04-C, already
 shipped), the ISR-detection primitive (substrate 0.7.0, already shipped and
 tested). Net-new work is: a thread/signal root collector (with the
 macro-forwarding resolution above — the one genuinely non-trivial piece), a
@@ -281,5 +281,5 @@ plain forward-BFS (much simpler than MSC04-C's cycle-detection DFS), a new
 examples to copy), CON07-C's one-line gate, and CON03-C's new
 accessing-functions collector. This reads as a moderate addition built almost
 entirely from existing, already-validated primitives — not the kind of
-from-scratch infrastructure bet task-150's standing guidance is warning
+from-scratch infrastructure bet a standing policy is warning
 against — but the call is the user's to make.
