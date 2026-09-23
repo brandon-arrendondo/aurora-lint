@@ -27,8 +27,8 @@ struct FilePrescanResult {
     function_summaries: HashMap<String, FunctionSummary>,
     call_graph: HashMap<String, HashSet<String>>,
     ambiguous_call_targets: HashSet<String>,
-    /// Names of `static`-qualified function *definitions* in this file
-    /// (task 299): used at merge time to detect the same bare name defined
+    /// Names of `static`-qualified function *definitions* in this file:
+    /// used at merge time to detect the same bare name defined
     /// as two unrelated internal-linkage functions in different files.
     local_static_functions: HashSet<String>,
     macro_constants: HashMap<String, i64>,
@@ -36,13 +36,13 @@ struct FilePrescanResult {
     function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     /// Function-like `#define`s in this file the collector skipped or had
     /// to arbitrate, and the line of the definition it kept per name — the
-    /// raw material for `--report-macro-gaps` (task 1180).
+    /// raw material for `--report-macro-gaps`.
     macro_definition_audit: crate::analyze::macro_gaps::DefinitionAudit,
     /// `function -> restrict-qualified parameter indices` for the functions
-    /// this file defines or declares with one (task 1171).
+    /// this file defines or declares with one.
     restrict_params: HashMap<String, Vec<usize>>,
     /// `function -> parameter indices with a documented non-NULL
-    /// precondition` for the functions this file documents (task 1171).
+    /// precondition` for the functions this file documents.
     documented_nonnull_params: HashMap<String, Vec<usize>>,
     /// The file this result came from, header or not (`source_path` is
     /// `.c`-only by design), for naming the origin of a macro definition.
@@ -72,7 +72,7 @@ struct FilePrescanResult {
     callsite_taint_args: HashMap<String, Vec<Vec<bool>>>,
     /// Per callee name, the argument-position pairs at which a call site in
     /// this file hands the callee two DIFFERENT named storage objects
-    /// (task 936).
+    /// .
     callsite_distinct_objects: HashMap<String, HashSet<(usize, usize)>>,
     callsite_validated_args: HashMap<String, Vec<Vec<bool>>>,
     source_path: Option<PathBuf>,
@@ -145,7 +145,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
     };
 
     if let Ok((tree, source)) = parser.parse_file(&file_path.to_string_lossy()) {
-        // Skip a header that can only be C++ (task 571) -- its declarations
+        // Skip a header that can only be C++ -- its declarations
         // (default-argument prototypes, namespaced names, ...) are not real
         // C API surface and must not pollute cross-file summaries any more
         // than they should generate direct C-rule findings (the same check
@@ -237,7 +237,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         // Runs for both headers and .c files: an extern forward-declaration
         // (typically in a header) and the real definition (typically in a
         // .c file) both need to be seen to resolve a global's declared
-        // shape (task 652).
+        // shape.
         collect_value_only_global_candidates(
             &root,
             &source,
@@ -309,7 +309,7 @@ pub fn prescan_directories(
     // walk reaches last for every field that is not unioned. An unsorted
     // walk visits siblings in directory-entry order, which is whatever the
     // filesystem happened to allocate — so a `cp`, `rsync` or re-clone of
-    // the same tree changed the finding set (task 1374). Sorting makes the
+    // the same tree changed the finding set. Sorting makes the
     // pick a function of the tree's content; which definition *should* win
     // is a separate question (a conflict marker, as function_macros has).
     let mut all_files: Vec<(PathBuf, bool)> = Vec::new();
@@ -352,7 +352,7 @@ pub fn prescan_single_file(path: &Path, needs_vra: bool) -> Result<ProjectContex
 /// [`sibling_headers`]), so the analysis has seen the definitions in the very
 /// files it is about to check. Before this, a no-`-d` run built no context at
 /// all for its target and flagged constructs that were clean the moment the
-/// same directory was named with `-d` (task 980). `-d` stays what it is: a way
+/// same directory was named with `-d`. `-d` stays what it is: a way
 /// to add context from *outside* the target.
 pub fn prescan_files(
     files: Vec<PathBuf>,
@@ -396,7 +396,7 @@ fn prescan_file_list(
     // Which names are defined `static` in more than one file, known before
     // the fold because the fold needs it: two internal-linkage definitions of
     // one bare name are two unrelated functions, and neither one answers for
-    // a caller outside the file that defines it (task 1385). Cheap -- it
+    // a caller outside the file that defines it. Cheap -- it
     // reads two small sets per file, no summaries.
     let mut static_definers: HashMap<&str, HashSet<&Path>> = HashMap::new();
     for r in &file_results {
@@ -442,7 +442,7 @@ fn prescan_file_list(
         HashMap::new();
     // Which file's definition `function_macros` holds per name, so a later
     // file defining the same name differently is recorded as a conflict
-    // rather than silently losing (task 1180).
+    // rather than silently losing.
     let mut function_macro_origin: HashMap<String, String> = HashMap::new();
     let mut macro_gaps: Vec<crate::analyze::macro_gaps::MacroGap> = Vec::new();
     let mut restrict_params: HashMap<String, Vec<usize>> = HashMap::new();
@@ -493,7 +493,7 @@ fn prescan_file_list(
         // The names this file defines `static` that some other file also
         // defines `static`: two unrelated functions sharing a spelling, so
         // neither this file's definition nor its call sites belong in a
-        // table keyed by the bare name (task 1385).
+        // table keyed by the bare name.
         let file_key: Option<String> = r
             .source_path
             .as_ref()
@@ -524,7 +524,7 @@ fn prescan_file_list(
         // which frees a locally-derived pointer rather than the parameter
         // itself) silently blind every rule that consults frees_params for
         // this function name across the entire codebase — a much larger
-        // regression than the false positive the union avoids (task 401).
+        // regression than the false positive the union avoids.
         // The fields `merge_summary_variant` does NOT merge -- what the body
         // checks, dereferences or returns -- are governed by whichever
         // definition is folded into the other, and that used to be whichever
@@ -859,7 +859,7 @@ fn prescan_file_list(
     function_summary::propagate_transitive_clears(&mut function_summaries, &macro_aliases);
     function_summary::propagate_return_taint(&mut function_summaries);
 
-    // CON03-C/CON07-C reachability gate (task 608): needs the fully merged,
+    // CON03-C/CON07-C reachability gate: needs the fully merged,
     // cross-file `function_macros` table to resolve macro-forwarded
     // thread-spawn calls (e.g. mosquitto's COMPAT_pthread_create ->
     // pthread_create — see docs/design/con03-con07-isr-thread-reachability.md),
@@ -877,7 +877,7 @@ fn prescan_file_list(
     // Resolve trailing-macro packed-struct candidates against the
     // project-wide macro-name set now that every file has been scanned —
     // the struct definition and the macro's #define commonly live in
-    // different headers (task 395).
+    // different headers.
     for (struct_name, macro_name) in packed_struct_candidates {
         if packed_macro_names.contains(&macro_name) {
             packed_structs.insert(struct_name);
@@ -1017,7 +1017,7 @@ fn compute_concurrency_reachable(
 /// helpers; the rest of the header context (typedefs, macros, struct fields)
 /// comes along on the same pipeline a `-d` prescan uses, so the two can never
 /// drift. A header that can only be C++ is dropped later by `process_file`
-/// (task 571).
+/// .
 pub fn sibling_headers(parent_dir: &str) -> Vec<PathBuf> {
     WalkDir::new(parent_dir)
         .sort_by_file_name()
@@ -1048,7 +1048,7 @@ fn collect_header_declarations(node: &Node, source: &str, names: &mut HashSet<St
                 // stopped at the `ERROR` and never saw them, so every
                 // prototype in the file read as undeclared. Read the loose
                 // specifier-run declarations back out, then recurse for the
-                // structured ones (task 1060).
+                // structured ones.
                 "ERROR" => {
                     for decl in ast_utils::error_declarations(&child, source) {
                         names.insert(decl.name);
@@ -1152,7 +1152,7 @@ fn merge_documented_params(
 /// call-site vote. The vote observes the callers in the scan set; the doc
 /// comment is the contract every caller, seen or not, signed up to. Run
 /// after the pre-scan and after `resolve_includes`, since header prototypes
-/// carry most of the documentation (task 1171).
+/// carry most of the documentation.
 pub fn apply_documented_preconditions(context: &mut super::context::ProjectContext) {
     if context.documented_nonnull_params.is_empty() {
         return;
@@ -1190,7 +1190,7 @@ fn has_static_specifier(node: &Node, source: &str) -> bool {
 /// Collect the names of every `static`-qualified function *definition* in
 /// this file (not prototypes) -- used at cross-file merge time to detect the
 /// same bare name defined as two unrelated internal-linkage functions in
-/// different files (task 299).
+/// different files.
 fn collect_static_function_names(node: &Node, source: &str, names: &mut HashSet<String>) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
@@ -1248,7 +1248,7 @@ fn collect_function_names(node: &Node, source: &str, names: &mut HashSet<String>
                     // not finish -- a prototype with a trailing `__THROW`, or a
                     // definition whose declarator is split by an `#if`. Read the
                     // name back out before recursing, since the subtree holds no
-                    // `declaration`/`function_definition` node to find (task 1038).
+                    // `declaration`/`function_definition` node to find.
                     for decl in ast_utils::error_declarations(&child, source) {
                         names.insert(decl.name);
                     }
@@ -1271,7 +1271,7 @@ fn collect_function_names(node: &Node, source: &str, names: &mut HashSet<String>
 /// as `cast_expression` wrapping the identifier, not a bare `identifier`;
 /// without unwrapping, every such registration is invisible to
 /// `dispatch_table_callbacks` and API00-C keeps validating the callback as
-/// if it were a normal, externally-reachable function (task 628).
+/// if it were a normal, externally-reachable function.
 fn unwrap_to_identifier(node: Node<'_>) -> Option<Node<'_>> {
     let mut current = node;
     loop {
@@ -1297,7 +1297,7 @@ fn unwrap_to_identifier(node: Node<'_>) -> Option<Node<'_>> {
 /// This over-collects (a plain identifier constant sitting in a struct
 /// literal isn't necessarily a function), which is fine: the caller
 /// intersects the result against `known_functions` before treating a name
-/// as a registered callback (task 594).
+/// as a registered callback.
 /// Every identifier this file uses as a VALUE -- i.e. every one that is
 /// neither the target of a direct `identifier(...)` call nor the name being
 /// declared in a declarator.
@@ -1472,7 +1472,7 @@ fn extract_func_name_from_nested_declarator(node: &Node, source: &str) -> Option
 /// The tell is that inner parameter list: exactly one `parameter_declaration`
 /// that is a lone type name with no declarator of its own. No valid C
 /// prototype declares a function *returning a function*, so nothing else
-/// produces two directly-nested `function_declarator`s (task 1040).
+/// produces two directly-nested `function_declarator`s.
 fn macro_wrapped_declarator_name(node: &Node, source: &str) -> Option<String> {
     let inner = node.child_by_field_name("declarator")?;
     if inner.kind() != "function_declarator" {
@@ -1549,7 +1549,7 @@ fn extract_identifier_from_declarator(node: &Node, source: &str) -> Option<Strin
 /// Build a call graph by walking function definitions and recording call
 /// expressions. Delegates to `lang_parsing_substrate::calls`, which handles
 /// function-pointer alias resolution (Juliet v65a/b patterns) and the
-/// has_error()-gated corruption guard (task 267/296) generically — see that
+/// has_error()-gated corruption guard generically — see that
 /// crate's `calls` module docs for the full rationale.
 fn collect_call_graph(
     node: &Node,
@@ -1750,7 +1750,7 @@ fn aggregate_callsite_null_states(
 
     // Count-based aggregation per-callee per-param.
     //
-    // Brandon's ruling 2026-09-21 (aurora_lint 1418): a caller passing a
+    // Brandon's ruling 2026-09-21: a caller passing a
     // possibly-null pointer into a callee never violates by itself -- C has
     // no contract semantics, so an unguarded dereference in the CALLEE is
     // the only violation site. That makes this map load-bearing for
@@ -1969,7 +1969,7 @@ pub(crate) fn aggregate_callsite_int_args(
 /// positions at which the CALLER hands the callee two named, DIFFERENT
 /// storage objects.
 ///
-/// The cross-file half of ARR36-C's parameter model (task 936). The rule
+/// The cross-file half of ARR36-C's parameter model. The rule
 /// itself reads only the call sites in the file under check, so a function
 /// whose every caller lives in another translation unit has no proof
 /// available and its parameter pair stays assumed to share an object. This
@@ -1987,7 +1987,7 @@ pub(crate) fn aggregate_callsite_int_args(
 /// project map does not exist yet at this point in the prescan -- so a
 /// member declared in a header this file does not itself declare stays
 /// unresolved and keeps naming storage, exactly as the rule behaves on a run
-/// with no `-d` (task 935).
+/// with no `-d`.
 pub(crate) fn collect_callsite_distinct_objects_from_tree(
     node: &Node,
     source: &str,
@@ -2063,7 +2063,7 @@ pub(crate) fn collect_callsite_distinct_objects_from_tree(
 /// reads a parameter with no call-site entry as `NotNull` ("callers are
 /// responsible"), so a missing caller is silently promoted to a *proof* of
 /// non-nullity rather than left unknown. That is why the gap suppressed
-/// findings in files that parse perfectly (aurora_lint 1451).
+/// findings in files that parse perfectly.
 ///
 /// Consistent with ADR-0008: the test is not "does this node sit under an
 /// `ERROR`", which predicts nothing about correctness, but "is this node a
@@ -2332,7 +2332,7 @@ pub(crate) fn aggregate_callsite_buf_args(
 }
 
 /// Aggregate per-call-site struct-field buffer sizes into
-/// `callsite_param_field_buffer_size` (task 304).
+/// `callsite_param_field_buffer_size`.
 ///
 /// For each parameter index, a field is recorded (with the MINIMUM
 /// element-count size observed) only when *every* call site whose argument
@@ -2922,7 +2922,7 @@ fn propagate_param_buffer_sizes(
                 .filter(|f| {
                     // A file-scoped function is seeded under its own file's
                     // key, so ask for both spellings or the file that forwards
-                    // it never gets re-parsed (task 1385).
+                    // it never gets re-parsed.
                     let file_key = crate::analyze::compile_commands::real_path(f);
                     let scope: FileScope<'_> = scoped_by_file
                         .get(&file_key)
@@ -3022,7 +3022,7 @@ fn collect_callsite_buf_args_with_param_sizes(
                         }
                         // This relay pass only propagates scalar buffer
                         // sizes forwarded through a parameter; field sizes
-                        // (task 304) aren't threaded through it, so the
+                        // aren't threaded through it, so the
                         // collected field data (and its strict input map)
                         // is discarded here.
                         let mut unused_field_buf_args = HashMap::new();
@@ -3103,7 +3103,7 @@ fn collect_local_buffer_sizes(body: &Node, source: &str) -> HashMap<String, usiz
 }
 
 /// Like [`collect_local_buffer_sizes`], but in `strict` mode: rejects an
-/// allocation call whose argument has no `sizeof` in it at all (task 304).
+/// allocation call whose argument has no `sizeof` in it at all.
 /// A bare `ALLOCA(10)`/`malloc(10)` is a byte count; treating it as an
 /// element count (as the default, non-strict mode does, for a destination
 /// this codebase's other consumers already trust) is correct only when the
@@ -3290,7 +3290,7 @@ fn resolve_buffer_size_expr(
                 .strip_prefix('(')
                 .and_then(|s| s.strip_suffix(')'))
                 .unwrap_or(args_text);
-            // (task 304) In strict mode, a bare byte count with no `sizeof`
+            // In strict mode, a bare byte count with no `sizeof`
             // at all is ambiguous for an arbitrary-typed pointee -- see
             // `collect_local_buffer_sizes_strict`.
             if strict && !inner.contains("sizeof") {
@@ -3325,7 +3325,7 @@ fn array_declarator_size(node: &Node, source: &str) -> Option<usize> {
 
 /// Walk call expressions in a function body, recording the element-count buffer
 /// size of each pointer argument (or `None` when it cannot be resolved), plus
-/// (task 304) any struct-field buffer sizes reachable through each identifier
+/// any struct-field buffer sizes reachable through each identifier
 /// argument.
 fn collect_buf_calls_in_node(
     node: &Node,
@@ -3349,7 +3349,7 @@ fn collect_buf_calls_in_node(
 
 /// Collect known struct-field buffer sizes (`arg.field`) for an identifier
 /// argument, keyed by bare field name -- the buffer-size analog of
-/// `collect_arg_field_states` (task 304).
+/// `collect_arg_field_states`.
 fn collect_arg_buf_field_sizes(
     arg: &Node,
     source: &str,
@@ -3572,7 +3572,7 @@ fn propagate_param_null_states(
                 // `static` is not pooled with a same-named static elsewhere --
                 // and so the seeding above, which reads the ENCLOSING
                 // function's states, finds that file's definition rather than
-                // another file's (task 1385).
+                // another file's.
                 let file_key = crate::analyze::compile_commands::real_path(file_path);
                 let scope: FileScope<'_> = scoped_by_file
                     .get(&file_key)
@@ -4795,7 +4795,7 @@ fn collect_global_var_null_states(
 /// lives in a header while the real `TYPE name;` definition lives in a `.c`
 /// file, and either occurrence alone establishes the declared shape. Feeds
 /// `ProjectContext::value_only_globals` after cross-file reconciliation in
-/// `prescan_directories` (task 652).
+/// `prescan_directories`.
 ///
 /// A `typedef`, `struct`/`union`/`enum` tag declaration, or function
 /// prototype has no matching declarator kind here and is silently skipped --
@@ -5437,7 +5437,7 @@ fn collect_from_typedef(
 /// `collect_typedef_aliases` takes only a primitive/sized/named RHS, and
 /// INT33-C's `register_typedef_aliases` is a text scan requiring exactly two
 /// tokens after `typedef` -- `typedef struct sqlite3_value Mem;` is three
-/// (task 963).
+/// .
 ///
 /// Mirrors `collect_struct_definitions`'s traversal so the two run over the
 /// same top-level declaration set.
@@ -5555,7 +5555,7 @@ fn collect_typedef_aliases_rec(
 /// deliberately skips these (they don't participate in a scalar
 /// signedness chain), so DCL31-C's "is this parameter a callable
 /// function pointer?" question cannot be answered from `typedef_types`
-/// alone (task 1054).
+/// alone.
 fn collect_function_pointer_typedef_names(node: &Node, source: &str, names: &mut HashSet<String>) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
@@ -5598,7 +5598,7 @@ fn collect_function_pointer_typedef_names(node: &Node, source: &str, names: &mut
 /// `collect_function_pointer_typedef_names`; the classification is the
 /// rule's own, shared through `declarator_utils::pointer_typedef_names_in`
 /// so the prescan and the in-file check can never disagree about what a
-/// pointer typedef is (task 1188).
+/// pointer typedef is.
 fn collect_pointer_typedef_names(node: &Node, source: &str, names: &mut HashSet<String>) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
@@ -5929,7 +5929,7 @@ pub fn resolve_includes(
     }
 
     // Only search roots inside the project can make an unresolvable include a
-    // *project* header (task 690). Computed once: the check is filesystem-
+    // *project* header. Computed once: the check is filesystem-
     // touching and the answer is the same for every include.
     let project_search_paths = project_local_search_paths(include_paths, project_roots);
 
@@ -6111,7 +6111,7 @@ pub fn resolve_includes(
     // here (`#define mbedtls_free free` is in include/, while the wrapper
     // that calls it is in library/), so the frees fixpoint runs once more
     // over the now-complete alias map. Monotone, so a rerun is harmless
-    // when nothing new resolved (task 1128).
+    // when nothing new resolved.
     function_summary::propagate_transitive_frees(
         Arc::make_mut(&mut context.function_summaries),
         &context.macro_aliases,
@@ -6238,7 +6238,7 @@ pub(crate) fn resolve_header(
 /// `unresolved_project_headers`, which switched DCL31-C's undeclared-call
 /// check off for the *entire* project (see its `set_project_context`) —
 /// silently, and in every benchmark project that passed `-I /usr/include`
-/// (task 690).
+/// .
 ///
 /// A root with no project root to sit under cannot be judged, so when
 /// `project_roots` is empty every path is kept: that preserves the
@@ -6320,7 +6320,7 @@ mod tests {
         // `_MSC_VER`, under `__vxworks`, and in the real `#ifndef
         // WPA_TYPES_DEFINED` arm. First-wins kept `UINT16`, a Windows type
         // nothing in a POSIX corpus defines, so every width-sensitive rule
-        // saw `u16` as unresolvable (task 1142). The `#define
+        // saw `u16` as unresolvable. The `#define
         // WPA_TYPES_DEFINED` inside each dead arm must not count as evidence
         // against the live arm.
         let dir = std::env::temp_dir().join("aurora-lint-prescan-platform-typedef-test");
@@ -6652,7 +6652,7 @@ mod tests {
         assert!(graph.get("b").unwrap().contains("c"));
     }
 
-    // -- collect_ambiguous_call_targets (task 562) --
+    // -- collect_ambiguous_call_targets --
 
     #[test]
     fn test_collect_ambiguous_call_targets_field_expression() {
@@ -6679,7 +6679,7 @@ mod tests {
 
     #[test]
     fn test_collect_ambiguous_call_targets_local_var_loaded_from_field() {
-        // mosquitto's callback__on_publish pattern (task 562): a local
+        // mosquitto's callback__on_publish pattern: a local
         // variable is loaded from a struct field (not a bare identifier, so
         // the substrate's alias resolution can't follow it) and then
         // invoked by the local variable's own name.
@@ -6746,7 +6746,7 @@ mod tests {
     #[test]
     fn test_collect_call_graph_ifdef_spanning_brace_does_not_leak_swallowed_sibling_calls() {
         // Regression for the sqlite3Init/sqlite3InitOne false MSC04-C
-        // indirect-recursion cycle (task 267/296), reproduced with the real
+        // indirect-recursion cycle, reproduced with the real
         // sqlite3/src/prepare.c source (trimmed to the two functions
         // involved): a brace that opens under `#ifndef
         // SQLITE_OMIT_AUTHORIZATION` and closes under a second, identical
@@ -7801,7 +7801,7 @@ void caller(char *other) {
         // The edge recording that run_a calls (some) timer_cb is untouched --
         // consumers that must not chase it filter on ambiguous_call_targets.
         assert!(ctx.call_graph.get("run_a").unwrap().contains("timer_cb"));
-        // The colliding name keeps its merged callee set (task 776): the
+        // The colliding name keeps its merged callee set: the
         // reverse graph ENV33-C/ENV03-C/STR02-C build reads exactly these
         // outgoing edges to answer "who calls helper_a", and deleting the
         // entry made those callees look uncalled rather than ambiguous.
@@ -7876,7 +7876,7 @@ void caller(char *other) {
     fn missing_generated_project_header_is_distinguished_from_a_system_header() {
         // Mirrors seL4's layout: `include/object/` exists, but
         // `structures_gen.h` inside it is emitted by tools/bitfield_gen.py at
-        // build time and is absent from a source checkout (task 580).
+        // build time and is absent from a source checkout.
         let tmp = tempfile::tempdir().unwrap();
         let include = tmp.path().join("include");
         std::fs::create_dir_all(include.join("object")).unwrap();
@@ -7967,7 +7967,7 @@ void caller(char *other) {
         );
     }
 
-    // -- a static definition in another translation unit (task 1385) --
+    // -- a static definition in another translation unit --
 
     /// raylib, reduced: `SaveFileText` is `static` in `raudio.c` (its body
     /// null-checks the text argument) and externally linked in `rcore.c` (it
@@ -8051,7 +8051,7 @@ void caller(char *other) {
     /// mbedtls' two `psa_aead_setup`, reduced: one `static` definition per
     /// file, no external one anywhere. They are unrelated functions, so
     /// neither may answer for a caller in the other's file, and the bare
-    /// name resolves to nothing for a caller in neither (task 1385).
+    /// name resolves to nothing for a caller in neither.
     #[test]
     fn two_statics_in_different_files_resolve_per_file_and_nowhere_else() {
         let dir = std::env::temp_dir().join("aurora-lint-prescan-two-statics-test");
@@ -8177,7 +8177,7 @@ void caller(char *other) {
     /// on pass 6. At the old fixed bound of 3 the loop stopped there with work
     /// still outstanding, the convergence check never fired, and `sink`'s
     /// parameter kept a state that described where the loop stopped rather than
-    /// what the chain proves (aurora_lint 1445).
+    /// what the chain proves.
     ///
     /// Six hops is chosen to sit just past the old bound while staying far
     /// inside the new one; real code goes much deeper (measured
@@ -8240,7 +8240,7 @@ void caller(char *other) {
     /// NotNull ("callers are responsible") -- an absent caller silently
     /// promoted to a proof of non-nullity rather than left unknown -- so every
     /// finding that depended on that seed went quiet, including in files that
-    /// parse perfectly (aurora_lint 1451).
+    /// parse perfectly.
     ///
     /// Two details are load-bearing, not incidental. The case count: recovery
     /// is not monotonic in it (four cases still parse cleanly, five do not, six

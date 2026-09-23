@@ -45,7 +45,7 @@ pub struct ProjectContext {
     /// to these names (recorded by the underlying, name-matching-only call
     /// graph builder), so a consumer doing cycle/reachability analysis
     /// through unresolved indirect calls should treat any callee in this
-    /// set as opaque rather than chase it (task 562).
+    /// set as opaque rather than chase it.
     #[serde(default)]
     pub ambiguous_call_targets: Arc<HashSet<String>>,
     /// Macro constants collected from `#define` directives across all scanned files.
@@ -72,7 +72,7 @@ pub struct ProjectContext {
     /// attribute is routinely in a header the single-file parse never sees
     /// -- pure-ftpd marks its `no_mem()` allocation-failure helper
     /// `__attribute__((noreturn))` in `ftpd.h` while every call site is in
-    /// a `.c` file (task 1076).
+    /// a `.c` file.
     #[serde(default)]
     pub noreturn_functions: Arc<HashSet<String>>,
     /// Global constants: `[const] TYPE NAME = VALUE;` from across all scanned files.
@@ -106,7 +106,7 @@ pub struct ProjectContext {
     /// struct/union/enum body (e.g. hostap's `struct foo { ... }
     /// STRUCT_PACKED;`) as an attribute-position macro invocation rather
     /// than a genuine object declaration — the `#define` commonly lives in a
-    /// different file than the struct (task 432).
+    /// different file than the struct.
     #[serde(default)]
     pub defined_macro_names: Arc<HashSet<String>>,
     /// Names of every object-like `#define` whose replacement text is an
@@ -147,7 +147,7 @@ pub struct ProjectContext {
     /// does *not* land here — its directory prefix doesn't exist under the
     /// project either — so this set means specifically "this project's
     /// declaration set is incomplete because a build step we can't run
-    /// produces part of it" (task 580).
+    /// produces part of it".
     #[serde(default)]
     pub unresolved_project_headers: HashSet<String>,
     /// Every place the macro-expansion engine declined or failed to see a
@@ -155,13 +155,13 @@ pub struct ProjectContext {
     /// macros, platform-dead and ambiguous definitions, cross-file conflicts,
     /// unresolvable `#include`s. Recorded unconditionally (it is a by-product
     /// of scans that already run) and surfaced only by `--report-macro-gaps`;
-    /// nothing in analysis reads it (task 1180).
+    /// nothing in analysis reads it.
     #[serde(default)]
     pub macro_gaps: Vec<super::macro_gaps::MacroGap>,
     /// `function name -> indices of its restrict-qualified parameters`, for
     /// every function any scanned file defines or declares with at least one.
     /// First definition seen wins. Lets EXP43-C confine its aliasing check
-    /// to callees whose contract actually forbids aliasing (task 1171).
+    /// to callees whose contract actually forbids aliasing.
     #[serde(default)]
     pub restrict_params: HashMap<String, Vec<usize>>,
     /// `function name -> indices of the parameters whose doc comment states
@@ -169,7 +169,7 @@ pub struct ProjectContext {
     /// ...), from every definition and prototype any scanned file carries a
     /// Doxygen comment for. The function's own published contract, which is
     /// what lets API00-C and the EXP34-C parameter seeding honour a
-    /// caller-validates discipline the code documents (task 1171).
+    /// caller-validates discipline the code documents.
     #[serde(default)]
     pub documented_nonnull_params: HashMap<String, Vec<usize>>,
     /// Function names reachable (including the root itself) from a real
@@ -203,7 +203,7 @@ pub struct ProjectContext {
     /// several other translation units, with no local declaration in any of
     /// them -- MEM31-C's per-function pointer-evidence guard can't see a
     /// declaration at all in that shape, so it needs this project-wide set
-    /// instead (task 652).
+    /// instead.
     #[serde(default)]
     pub value_only_globals: Arc<HashSet<String>>,
     /// Struct/union typedef aliases: `alias name -> the tag name its fields
@@ -216,7 +216,7 @@ pub struct ProjectContext {
     /// `vdbeInt.h` declares `struct sqlite3_value { ... }`, so the fields are
     /// filed under `sqlite3_value` and nothing maps `Mem` onto them. The
     /// typedef and the use are routinely in different files, so no file-local
-    /// pass can close it (task 963).
+    /// pass can close it.
     ///
     /// Deliberately kept OUT of `struct_field_types` itself. That map is read
     /// by INT30-C, INT32-C, INT33-C and FLP03-C, and filing the alias there
@@ -239,7 +239,7 @@ pub struct ProjectContext {
     /// different from where `word_t` itself is defined), so resolving one
     /// level locally isn't enough -- a consumer must walk this map
     /// recursively (see `overflow_helpers::typedef_chain_is_unsigned`) and
-    /// project-wide (task 657).
+    /// project-wide.
     #[serde(default)]
     pub typedef_types: Arc<HashMap<String, String>>,
     /// Names of typedefs whose declared type is a function pointer -- e.g.
@@ -257,7 +257,7 @@ pub struct ProjectContext {
     /// in the declarator chain, not a function pointer, not a pointer to
     /// const (`declarator_utils::pointer_typedef_names_in`). The typedef is
     /// usually in a header; the `const LPPOINT pt` parameter that the rule
-    /// is about is in a .c file that only names the alias (task 1188).
+    /// is about is in a .c file that only names the alias.
     #[serde(default)]
     pub pointer_typedef_names: Arc<HashSet<String>>,
     /// Definitions only the file that holds them may use: `file -> name ->

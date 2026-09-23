@@ -82,7 +82,7 @@ impl InitState {
 /// PROVEN to line up with the function's own return value on every one of
 /// its simple, literal-constant returning paths -- e.g. lua's
 /// `lua_getstack`, which returns `1` on every path that wrote `*ar` and `0`
-/// on every path that did not (task 1450, aurora_lint).
+/// on every path that did not.
 ///
 /// This is a stronger claim than `conditional_modifies_params` alone: that
 /// field only proves a write is not exhaustive, not that a caller can tell
@@ -232,7 +232,7 @@ pub fn match_initializing_function(func_name: &str) -> Option<&'static str> {
     // suffix wrappers, but NOT for sqlite3_snprintf, whose destination
     // buffer is argument 1 (size is argument 0), unlike libc snprintf's
     // dest-at-0. That's why it's an exact INITIALIZING_FUNCTIONS entry
-    // above (task 458) rather than falling through to this suffix match,
+    // above rather than falling through to this suffix match,
     // which would otherwise resolve it to plain "snprintf" and get its
     // destination argument index wrong.
     INITIALIZER_SUFFIXES
@@ -252,7 +252,7 @@ pub const INITIALIZING_FUNCTIONS: &[&str] = &[
     "snprintf",
     // sqlite3_snprintf(size, dest, fmt, ...) puts its destination buffer at
     // argument 1 (size at 0) -- the reverse of libc snprintf(dest, size,
-    // fmt, ...). Listed here as its own exact entry (task 458) so it never
+    // fmt, ...). Listed here as its own exact entry so it never
     // falls through INITIALIZER_SUFFIXES' generic "ends with snprintf"
     // match, which would canonicalize it to plain "snprintf" and get
     // get_output_arg_indices' answer backwards.
@@ -299,7 +299,7 @@ pub fn get_output_arg_indices(func_name: &str) -> Vec<usize> {
         "memset" | "memcpy" | "memmove" | "strcpy" | "strncpy" | "sprintf" | "snprintf"
         | "strcat" | "strncat" | "bzero" => vec![0],
         // sqlite3_snprintf(size, dest, fmt, ...) — dest is argument 1, not 0
-        // (task 458). Must be its own case: the generic "snprintf" arm above
+        // . Must be its own case: the generic "snprintf" arm above
         // is for libc's dest-at-0 order and would get this backwards.
         "sqlite3_snprintf" => vec![1],
         "fgets" | "gets" => vec![0],
@@ -343,7 +343,7 @@ pub fn get_output_arg_indices(func_name: &str) -> Vec<usize> {
 /// absence: `try_process_known_initializing_function` returned true anyway,
 /// short-circuiting the `&var` credit `process_unknown_function_call` gives
 /// every unlisted name, so `sscanf(s, "%d", &x)` left `x` uninitialised where
-/// an unlisted `getsockopt(..., &x, ...)` did not (task 1029, aurora_lint).
+/// an unlisted `getsockopt(..., &x, ...)` did not.
 ///
 /// Modelling the shape rather than falling through keeps argument 0 of
 /// `fscanf`/`sscanf` an INPUT, which the fallback would have credited: an
@@ -1346,7 +1346,7 @@ fn try_process_macro_output_params(
     };
     // Nothing to credit, so claiming the call was handled would suppress every
     // path below -- including the stdlib table. The same short-circuit
-    // `try_process_known_initializing_function` carried (task 1029, aurora_lint).
+    // `try_process_known_initializing_function` carried.
     if out_indices.is_empty() {
         return false;
     }
@@ -1355,13 +1355,13 @@ fn try_process_macro_output_params(
         if let Some(arg) = args.get(idx) {
             // `extract_var_from_arg` rather than a bare-identifier test: it
             // unwraps the cast curl's `Curl_rand(data, (unsigned char *)rnd,
-            // rnd_size)` needs (task 589) AND roots `&st`, `&s.f`, `&a[i]`.
+            // rnd_size)` needs AND roots `&st`, `&s.f`, `&a[i]`.
             //
             // Crediting only a bare identifier here was harmless only while
             // this map stayed empty for such macros. pure-ftpd's
             // `#define stat(A, B) fakestat(A, B)` is a forwarding macro whose
             // target gained an output parameter once library-call writes
-            // became visible (task 1026), which populated the map, armed the
+            // became visible, which populated the map, armed the
             // `true` below, and dropped the credit `stat` -> arg 1 had always
             // got from the stdlib table -- reporting `st` uninitialised at
             // five pure-ftpd sites (task 1026 follow-up, aurora_lint).
@@ -1482,7 +1482,7 @@ fn try_process_cross_file_output_params(
 /// Is the return value of `call_node` (a `call_expression`) consumed by
 /// its immediate context? Used to decide whether the scanf family's
 /// variadic outputs may be credited as initialized -- an unchecked
-/// partial-match sscanf leaves some outputs untouched (task 1065).
+/// partial-match sscanf leaves some outputs untouched.
 ///
 /// Consumed: comparison, assignment RHS, `if`/`while`/`for` condition,
 /// return statement, function-call argument, initializer of a
@@ -1516,7 +1516,7 @@ fn try_process_known_initializing_function(
     // an unchecked partial match (e.g. `sscanf(s, "%d.%d.%d.%d", &a[0..3])`
     // when `s` only parses 2 fields) leaves some outputs uninitialized. The
     // previous blanket credit missed exactly that bug at hostap
-    // wpa_supplicant/eapol_test.c:1042 (task 1065). Withhold the credit but
+    // wpa_supplicant/eapol_test.c:1042. Withhold the credit but
     // still short-circuit the caller: falling through would re-credit each
     // `&arg` via `process_unknown_function_call`'s permissive fallback --
     // the very hazard that task 1029's note above already warns about.
@@ -1531,7 +1531,7 @@ fn try_process_known_initializing_function(
     // Nothing to credit. Claiming the call was handled anyway suppresses the
     // caller's fallback -- `process_unknown_function_call` credits `&var` for
     // any name this table does not know -- so being listed here with no output
-    // index was strictly worse than not being listed (task 1029, aurora_lint).
+    // index was strictly worse than not being listed.
     // Same "must be additive, not a short-circuit" rule as
     // `try_process_cross_file_output_params`. The mbrlen/regexec group that
     // reaches this line is still denied credit, by
@@ -1616,7 +1616,7 @@ fn process_unknown_function_call(
         // below are on the argument node itself -- so curl's and hostap's
         // `f((unsigned char *)&s.arr[0], n)` was never even offered to
         // `extract_var_from_arg`, which unwraps casts perfectly well once it
-        // is reached (task 1028, aurora_lint).
+        // is reached.
         let arg = strip_arg_casts(&arg);
         // &var pattern — assume function writes to it (unless this param is conditionally-init)
         if !skip_addr_of_arg && arg.kind() == "pointer_expression" {
@@ -2406,7 +2406,7 @@ pub fn strip_arg_casts<'a>(arg: &Node<'a>) -> Node<'a> {
 /// neighbouring question -- WHICH object an `&lvalue` names, as a path string,
 /// so two arguments can be compared for distinctness -- and needs a frame to
 /// answer it. This needs none: a state-map key is a root name, and only the
-/// root is wanted (task 1028, aurora_lint).
+/// root is wanted.
 pub fn addressed_object_root<'a>(lvalue: &Node<'a>) -> Option<Node<'a>> {
     match lvalue.kind() {
         "identifier" => Some(*lvalue),

@@ -41,7 +41,7 @@ impl CParser {
 
     /// Hand the parse-repair pass the prescan's macro table, so it can blank
     /// the macro rather than the real type or declarator tree-sitter
-    /// stranded next to it (task 1019). Call once per parser, after the
+    /// stranded next to it. Call once per parser, after the
     /// prescan has run; without it the pass falls back to blanking the
     /// stranded token.
     pub fn set_repair_macros(&mut self, macros: Arc<RepairMacros>) {
@@ -186,7 +186,7 @@ impl Default for CParser {
 /// The prior `fs::read_to_string`-only path failed silently on any
 /// non-UTF-8 file, so pure-ftpd's 16 ISO-8859-encoded `messages_*.h`
 /// translation headers were never analysed by any rule despite being in
-/// scope per the corpus's README predicate (task 1061). ISO-8859-1 is a
+/// scope per the corpus's README predicate. ISO-8859-1 is a
 /// single-byte encoding whose codepoints 0x00-0xFF map one-to-one onto
 /// Unicode U+0000-U+00FF, so `b as char` for each byte is a lossless
 /// transcode: any byte sequence becomes a valid `String`.
@@ -202,7 +202,7 @@ impl Default for CParser {
 /// otherwise open the file with an ERROR node ahead of the first
 /// declaration.
 ///
-/// Without a BOM, the bytes themselves decide (task 1131). NUL never
+/// Without a BOM, the bytes themselves decide. NUL never
 /// belongs in C source -- a compiler drops it with a warning -- so any NUL
 /// at all means the file is not the text its extension claims, and the
 /// only question is which kind of not-text. A NUL in (nearly) every

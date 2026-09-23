@@ -1,7 +1,7 @@
 //! Shared AST-based array-declaration size resolution.
 //!
-//! Originated in ARR00-C (task 234) to replace a text-scan approach for
-//! out-of-bounds detection; promoted here (task 504) so other rules with the
+//! Originated in ARR00-C to replace a text-scan approach for
+//! out-of-bounds detection; promoted here so other rules with the
 //! same "what size was this fixed array declared with" question — currently
 //! STR31-C — can reuse it instead of re-implementing their own text/regex
 //! scan. See `docs/design/str31c-arr00-migration-scoping.md`.

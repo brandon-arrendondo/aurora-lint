@@ -54,7 +54,7 @@ pub enum CfgEdge {
 /// goto exit; } } while (0)`, `MBEDTLS_ASN1_CHK_ADD` returns the caller's
 /// `ret`). Without this the invocation is an ordinary statement and every
 /// path through it falls through, so a value that only reaches its read via
-/// the macro's jump looks dead (task 1387). The jump is taken to be
+/// the macro's jump looks dead. The jump is taken to be
 /// conditional -- the invocation keeps its fallthrough edge as well.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MacroJump {
@@ -126,7 +126,7 @@ struct CfgBuilder {
     /// Stack of break targets, pushed by both loops and switch statements.
     /// `continue` always targets the innermost *loop* (via `loop_stack`), but
     /// `break` targets the innermost loop-or-switch, whichever is nearer
-    /// lexically -- so it needs its own stack (task 320).
+    /// lexically -- so it needs its own stack.
     break_stack: Vec<BlockId>,
     /// Label name → block ID mapping for goto edge wiring.
     label_blocks: HashMap<String, BlockId>,
@@ -136,14 +136,14 @@ struct CfgBuilder {
     /// e.g. sqlite's vdbe.c `OP_ReopenIdx: { ... case OP_OpenRead: case
     /// OP_OpenWrite: ... }` opcode-dispatch pattern -- be recognized as
     /// physical fallthrough into that label's own block rather than folded
-    /// into the enclosing arm's block as an opaque statement (task 454).
+    /// into the enclosing arm's block as an opaque statement.
     case_block_stack: Vec<HashMap<usize, BlockId>>,
     /// Pending goto edges: (source_block, label_name) to wire after all labels are seen.
     pending_gotos: Vec<(BlockId, String)>,
     function_start_byte: usize,
     /// File-level constants (static const int, #define) for condition evaluation.
     constants: MacroConstantMap,
-    /// Names of functions known not to return to their caller (task 648) --
+    /// Names of functions known not to return to their caller --
     /// a call to one of these terminates the current block exactly like a
     /// `return` statement.
     noreturn_names: HashSet<String>,
@@ -329,7 +329,7 @@ impl CfgBuilder {
             "expression_statement" if self.macro_jump_of(node, source).is_some() => {
                 // `ASSERT_OR_GOTO(cond);` -- the macro body holds the jump.
                 // Conditional by assumption, so the block both jumps and
-                // falls through (task 1387).
+                // falls through.
                 self.add_statement(node.start_byte(), node.end_byte());
                 match self.macro_jump_of(node, source) {
                     Some(MacroJump::Goto(label)) => {
@@ -356,7 +356,7 @@ impl CfgBuilder {
                 if noreturn::is_noreturn_call_statement(node, source, &self.noreturn_names) =>
             {
                 // A call to a known-noreturn function terminates this block
-                // exactly like an explicit `return` (task 648) -- e.g.
+                // exactly like an explicit `return` -- e.g.
                 // `if (!ptr) { slowpath(...); } /* unreachable fallthrough */`
                 // where `slowpath` is declared `NORETURN`.
                 self.add_statement(node.start_byte(), node.end_byte());
@@ -561,7 +561,7 @@ impl CfgBuilder {
     /// statement up to (not including) the next `case_statement` sibling --
     /// so C's physical fallthrough (no `break`) is just "this block's exit
     /// falls through to the next case block". `break` targets the switch's
-    /// join block via `break_stack` (task 320); previously the whole switch
+    /// join block via `break_stack`; previously the whole switch
     /// was a single opaque leaf statement, hiding any `free()`+`return`/`break`
     /// nested in a case arm from CFG-based rules like MEM01-C.
     fn process_switch<'a>(&mut self, node: &Node<'a>, source: &str) {
@@ -579,7 +579,7 @@ impl CfgBuilder {
 
         let body = node.child_by_field_name("body");
         // Descend through any `#if`/`#ifdef`/`#elif`/`#else` wrappers around a
-        // case arm (task 445) -- aurora-lint has no preprocessor, so every branch is
+        // case arm -- aurora-lint has no preprocessor, so every branch is
         // modeled as reachable, same as process_preproc_conditional.
         let case_statement_nodes: Vec<Node> = body
             .map(|b| Self::collect_case_statements_in_switch_body(&b))
@@ -681,7 +681,7 @@ impl CfgBuilder {
 
     /// Walk one case arm's content: process each child statement, skipping
     /// the label tokens (`case`/`default`/`:`) and the case value expression.
-    /// A nested `case_statement` child (task 454) is handled by
+    /// A nested `case_statement` child is handled by
     /// `process_statement`'s dispatch to `process_nested_case_label`, so it
     /// naturally hops this walk to that label's own block rather than being
     /// folded in here as an opaque statement.
@@ -701,7 +701,7 @@ impl CfgBuilder {
     }
 
     /// Reached when a `case`/`default` label appears mid-arm, nested inside
-    /// another arm's `{ }` (task 454) -- physical fallthrough, not a normal
+    /// another arm's `{ }` -- physical fallthrough, not a normal
     /// statement (e.g. sqlite's vdbe.c `OP_ReopenIdx: { ... case OP_OpenRead:
     /// case OP_OpenWrite: ... }`). Jump this walk to the label's own
     /// pre-allocated block (looked up by node id in the innermost active
@@ -728,7 +728,7 @@ impl CfgBuilder {
     /// without descending into another arm's `{ }` -- transparently through
     /// any preprocessor wrapper. Used to pick the entry points for
     /// `process_switch`'s arm-walking loop; a case nested inside a sibling
-    /// arm's braces (task 454) still gets its own dispatch block and edge,
+    /// arm's braces still gets its own dispatch block and edge,
     /// but is walked via `process_nested_case_label`, not as its own loop
     /// iteration.
     fn is_direct_switch_arm(case_node: &Node, body: &Node) -> bool {
@@ -750,7 +750,7 @@ impl CfgBuilder {
 
     /// Flatten every `case_statement`/`default` arm in a switch body into
     /// document order, transparently descending into `#if`/`#ifdef`/`#elif`/
-    /// `#else` wrappers (task 445) and into a case arm's own `{ }` (task 454).
+    /// `#else` wrappers and into a case arm's own `{ }`.
     /// Without the preprocessor descent, a case label split across a
     /// preprocessor guard -- e.g. raylib's per-codec `#if SUPPORT_FILEFORMAT_*`
     /// arms in `UpdateMusicStream` -- was invisible to the CFG: its direct-child
@@ -774,7 +774,7 @@ impl CfgBuilder {
                         // A case arm's own children can include a nested `{ }`
                         // (or, depending on grammar shape, a further label
                         // directly) that a later `case`/`default` physically
-                        // falls through into (task 454) -- recurse into this
+                        // falls through into -- recurse into this
                         // arm too, not just the switch body's direct children.
                         out.extend(Self::collect_case_statements_in_switch_body(&child));
                     }
@@ -1017,7 +1017,7 @@ pub fn build_function_cfg_with_constants(
 
 /// Same as [`build_function_cfg_with_constants`], additionally treating a
 /// call to any function named in `noreturn_names` as terminating its block
-/// like a `return` statement (task 648). `noreturn_names` is normally
+/// like a `return` statement. `noreturn_names` is normally
 /// [`noreturn::collect_noreturn_function_names`] run once per file.
 pub fn build_function_cfg_with_constants_and_noreturn(
     func_node: &Node,
@@ -1037,7 +1037,7 @@ pub fn build_function_cfg_with_constants_and_noreturn(
 /// Same as [`build_function_cfg_with_constants_and_noreturn`], additionally
 /// giving a statement that invokes a macro named in `macro_jumps` the edge
 /// that macro's body takes (a `goto` to its label, or a return), on top of
-/// its fallthrough (task 1387). See [`MacroJump`].
+/// its fallthrough. See [`MacroJump`].
 pub fn build_function_cfg_full(
     func_node: &Node,
     source: &str,
@@ -1300,7 +1300,7 @@ mod tests {
     /// A case arm can wrap its locals in `{ }` while a later `case` label
     /// still falls through into it -- e.g. sqlite's vdbe.c `OP_ReopenIdx: {
     /// Db *pDb; ... case OP_OpenRead: case OP_OpenWrite: pDb = ...; }`
-    /// opcode-dispatch pattern (task 454). Both the nested label's dispatch
+    /// opcode-dispatch pattern. Both the nested label's dispatch
     /// edge from the switch condition and the physical fallthrough edge from
     /// the wrapping arm must be modeled, and its content must land in its
     /// own block rather than being folded into the wrapping arm's block as

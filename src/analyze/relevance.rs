@@ -1,4 +1,4 @@
-//! Project-relevance detection (task 216).
+//! Project-relevance detection.
 //!
 //! Detects whole rule *classes* that are categorically inapplicable to a
 //! codebase (no threading API in sight => CON* concurrency rules cannot
@@ -95,7 +95,7 @@ pub struct ProjectProfile {
     /// includes, or `Win32`/`HANDLE`/`LPCSTR` identifiers).
     pub has_windows: bool,
     /// Highest C standard any scanned file's syntax requires, per
-    /// `lang_parsing_substrate::detect_min_c_standard`, OR (task 300)
+    /// `lang_parsing_substrate::detect_min_c_standard`, OR
     /// `<stdatomic.h>`/`<threads.h>` inclusion alone. A file can `#include
     /// <stdatomic.h>` and only ever use it through its own typedefs/macros
     /// (e.g. `atomic_bool`, which tree-sitter tokenizes as a plain
@@ -104,7 +104,7 @@ pub struct ProjectProfile {
     /// cannot see. `None` means no file in the corpus contained a C99+
     /// marker or one of these headers (consistent with C89).
     pub max_c_standard: Option<CStandard>,
-    /// Any call to a C11 Annex K bounds-checked function (task 300) --
+    /// Any call to a C11 Annex K bounds-checked function --
     /// e.g. `strcpy_s`, `fopen_s`, `memcpy_s`. Matched by exact call-name
     /// against [`ANNEX_K_FUNCTION_NAMES`], never by a `*_s(` text/substring
     /// match, which would false-match a project's own `_s`-suffixed names
@@ -359,16 +359,14 @@ fn gate_rule(
     if base_enabled && CON_RULE_IDS.contains(&rule_id) && !profile.has_threading {
         return (
             false,
-            Some(
-                "auto: no pthread/threads.h/atomic usage detected in corpus (task 216)".to_string(),
-            ),
+            Some("auto: no pthread/threads.h/atomic usage detected in corpus".to_string()),
         );
     }
 
     if base_enabled && WIN_RULE_IDS.contains(&rule_id) && !profile.has_windows {
         return (
             false,
-            Some("auto: no Win32 API usage detected in corpus (task 216)".to_string()),
+            Some("auto: no Win32 API usage detected in corpus".to_string()),
         );
     }
 

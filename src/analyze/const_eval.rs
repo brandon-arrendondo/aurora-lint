@@ -47,7 +47,7 @@ impl ValueRange {
     /// unchanged -- both fall out of the plain min/max arithmetic, so no
     /// caller needs a special case. It exists so a condition that no value
     /// can satisfy (`x > 5 && x < 3`) keeps a range of its own instead of
-    /// collapsing to "no constraint", which is the opposite claim (task 1102).
+    /// collapsing to "no constraint", which is the opposite claim.
     pub fn empty() -> Self {
         Self {
             min: i64::MAX,
@@ -450,7 +450,7 @@ pub fn collect_macro_aliases(root: &Node, source: &str) -> HashMap<String, Strin
 /// callee name (`free`, `calloc`, a summary lookup) should resolve through
 /// this first, or every `mbedtls_calloc(...)` in mbedtls is invisible to it
 /// while `mbedtls_free(...)` is caught only by a `*_free` name guess
-/// (task 1128).
+/// .
 pub fn resolve_macro_alias<'a>(aliases: &'a HashMap<String, String>, name: &'a str) -> &'a str {
     let mut current = name;
     for _ in 0..8 {
@@ -1537,7 +1537,7 @@ fn try_evaluate_range_inner(
 /// `1 + rand() % 60` cannot overflow, yet both were opaque here: INT10-C
 /// reported the modulo's dividend as possibly negative and INT32-C the sum as
 /// unbounded -- 128 of one valkey batch's 158 INT10-C findings were this one
-/// shape (task 1275). `RAND_MAX` itself is implementation-defined, so the
+/// shape. `RAND_MAX` itself is implementation-defined, so the
 /// bound used is `INT_MAX`, the largest it can be; a range must never be
 /// narrower than the truth.
 ///
@@ -3102,8 +3102,8 @@ int f(unsigned long s) { return LINEBITS(s); }
         assert_eq!(merged.get("PROJECT_ONLY"), Some(&"exec".to_string()));
     }
 
-    /// `#define mbedtls_calloc calloc` is the whole mbedtls allocator story
-    /// (task 1128): one hop, a chain, a non-alias, and a cycle must all
+    /// `#define mbedtls_calloc calloc` is the whole mbedtls allocator story:
+    /// one hop, a chain, a non-alias, and a cycle must all
     /// resolve without looping.
     #[test]
     fn test_resolve_macro_alias_follows_chains_and_stops_on_cycles() {

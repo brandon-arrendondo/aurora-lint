@@ -100,7 +100,7 @@ pub fn is_registered(name: &str) -> bool {
 /// hash table or linked list — they never call `free()` on their argument.
 /// Misclassifying one as a deallocator causes a spurious double-free finding
 /// when the real `free()`/`mosquitto_FREE()` call immediately follows, as in
-/// the common `HASH_DELETE(hh, tbl, x); free(x);` idiom (task 426).
+/// the common `HASH_DELETE(hh, tbl, x); free(x);` idiom.
 pub fn is_container_unlink_macro(name: &str) -> bool {
     matches!(
         name,

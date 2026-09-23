@@ -1,5 +1,5 @@
 //! Pre-parse pass: blank a `#if`/`#ifdef`/`#ifndef` + matching `#endif` pair
-//! that opens *inside* an unclosed parenthesized expression (task 1044).
+//! that opens *inside* an unclosed parenthesized expression.
 //!
 //! Real shape (pure-ftpd `ls.c`, `listfile`):
 //! ```c

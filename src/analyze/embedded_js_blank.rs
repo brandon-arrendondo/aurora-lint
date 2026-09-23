@@ -1,5 +1,5 @@
 //! Pre-parse pass: neutralize the embedded-JavaScript bodies of emscripten's
-//! `EM_ASM`/`EM_JS` macros before the file reaches tree-sitter (task 1043).
+//! `EM_ASM`/`EM_JS` macros before the file reaches tree-sitter.
 //!
 //! `EM_ASM(...)` and `EM_JS(...)` take a *JavaScript* body as a macro
 //! argument. aurora-lint has no preprocessor, so that body is handed to the C

@@ -1,7 +1,7 @@
 //! Pre-parse pass: blank a `#if`/`#ifdef`/`#ifndef` + matching `#endif` pair
 //! whose guarded block ends with a control-flow HEADER -- `if (...)`,
 //! `while (...)` or `for (...)` -- leaving the statement that header governs
-//! on the far side of the `#endif` (task 1066).
+//! on the far side of the `#endif`.
 //!
 //! Real shape (sqlite `wherecode.c`, `sqlite3WhereExplainOneScan`):
 //! ```c

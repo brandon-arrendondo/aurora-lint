@@ -286,7 +286,7 @@ fn conditional_regions(chars: &[char]) -> Vec<bool> {
 ///
 /// Two positions are excluded because the token there is not a variable
 /// reference at all and so cannot bind to a same-named local at the call
-/// site (task 966):
+/// site:
 ///
 ///   - after `.` or `->`, where it names a struct member. curl's
 ///     `CONN_IS_PROXIED(x)` → `(x)->bits.proxy` does not touch a caller's
@@ -438,7 +438,7 @@ pub fn macro_references_free_identifier(m: &FunctionMacro, var: &str) -> bool {
 /// *reads*: every one except those appearing only as the left operand of a
 /// simple assignment.
 ///
-/// The distinction matters for liveness (task 965). Only a read makes a
+/// The distinction matters for liveness. Only a read makes a
 /// previously-active definition live, so a macro that assigns to a
 /// caller-scope variable and never reads it must not resurrect a genuinely
 /// dead store — mosquitto's
@@ -580,7 +580,7 @@ fn join_continuation(lines: &[&str], start: usize) -> (String, usize) {
 
 /// Why the collector left a function-like `#define` out of the expansion
 /// table. Every invocation of such a macro stays opaque to dataflow, which
-/// is exactly what `--report-macro-gaps` exists to surface (task 1180); the
+/// is exactly what `--report-macro-gaps` exists to surface; the
 /// variants are the module-doc "out of scope" list, one per reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum DefineSkip {
@@ -1308,7 +1308,7 @@ fn find_genuine_eq_after(chars: &[char], from: usize) -> Option<usize> {
 /// through -- verbatim or wrapped in casts/parens -- as call arguments,
 /// possibly interleaved with extra literal arguments the macro adds itself.
 /// curl's `#define Curl_rand(a, b, c) Curl_rand_bytes(a, TRUE, b, c)` is the
-/// motivating case (task 589): the macro's own body has no assignment for
+/// motivating case: the macro's own body has no assignment for
 /// [`macro_output_param_indices`] to see, but the forwarded function
 /// (`Curl_rand_bytes`) genuinely writes through one of those args, per its
 /// `FunctionSummary::modifies_params`. Callers resolve output-param indices
@@ -1482,7 +1482,7 @@ pub fn macro_frees_param_indices(table: &HashMap<String, FunctionMacro>, name: &
 /// wrapped) parameter as the FIRST argument -- the destination. hostap's
 /// `#define os_memset(s, c, n) memset(s, c, n)` is this shape; MEM03-C
 /// credits its callers with the clear the same way it credits a wrapper
-/// function's (task 1127).
+/// function's.
 pub fn macro_clears_param_indices(
     table: &HashMap<String, FunctionMacro>,
     name: &str,
@@ -1968,7 +1968,7 @@ mod tests {
 
     #[test]
     fn writes_param_indices_sees_compound_assignment_and_increment() {
-        // pure-ftpd alt_arc4random.c (task 1254): A and C are only ever
+        // pure-ftpd alt_arc4random.c: A and C are only ever
         // read-modify-written; B and D get a plain assignment as well.
         let t = table(concat!(
             "#define ROTL32(x, b) (uint32_t)(((x) << (b)) | ((x) >> (32 - (b))))\n",
@@ -2369,7 +2369,7 @@ mod tests {
     /// hostap's `os_memset` shape: the destination parameter, and only it,
     /// is cleared. A parameter that is the fill value or the length, or one
     /// handed to memset as anything but its first argument, is not
-    /// (task 1127).
+    /// .
     #[test]
     fn clears_param_only_the_destination() {
         let t = table("#define os_memset(s, c, n) memset(s, c, n)\n");

@@ -38,7 +38,7 @@
 //! `#ifdef _WIN32` block corpus-wide is a separate policy decision from
 //! which of several typedefs a name resolves to.
 //!
-//! # Declaring the profile instead of assuming it (task 1430)
+//! # Declaring the profile instead of assuming it
 //!
 //! POSIX-by-default is a guess about the *platform*, and a guess is all it can
 //! be with no build system in sight. But the axis that actually decides which

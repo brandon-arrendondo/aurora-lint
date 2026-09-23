@@ -1,4 +1,4 @@
-//! Shared noreturn-function detection (task 648).
+//! Shared noreturn-function detection.
 //!
 //! EXP34-C (and every other CFG-consuming rule -- EXP33-C, MEM01-C, ARR30-C,
 //! INT30/31/32/33/34-C) models a function's control flow via

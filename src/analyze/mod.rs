@@ -1,7 +1,7 @@
 /// Which storage object a call argument names, in the caller's frame
-/// (task 936).
+/// .
 pub mod argument_objects;
-/// Shared AST-based fixed-array-declaration size resolution (task 504).
+/// Shared AST-based fixed-array-declaration size resolution.
 pub mod array_size;
 pub mod buffer_size;
 pub mod cfg;
@@ -20,7 +20,7 @@ pub mod control_header_preproc_guard;
 pub mod dataflow;
 /// Preprocessor-dead line ranges under the assumed platform profile, for
 /// collectors that must keep one of several same-named conditional
-/// definitions (task 1142).
+/// definitions.
 pub mod dead_regions;
 pub mod embedded_js_blank;
 pub mod empty_macro_blank;
@@ -32,7 +32,7 @@ pub mod label_preproc_guard;
 pub mod macro_expand;
 pub mod macro_gaps;
 pub mod macro_semantics;
-/// Noreturn-function detection shared by CFG construction (task 648).
+/// Noreturn-function detection shared by CFG construction.
 pub mod noreturn;
 pub mod null_state;
 pub mod paren_preproc_guard;
@@ -86,7 +86,7 @@ pub struct AnalysisResults {
     /// Violations suppressed by an inline comment or suppression file.
     pub suppressed: Vec<SuppressedViolation>,
     /// Where the macro-expansion engine was blind during this scan; built
-    /// only when `report_macro_gaps` was requested (task 1180).
+    /// only when `report_macro_gaps` was requested.
     pub macro_gaps: Option<macro_gaps::MacroGapReport>,
 }
 
@@ -142,7 +142,7 @@ pub fn analyze_project(
 
     // The parse-repair pass consults the prescan's macro table to blank a
     // stranded declaration's *macro* rather than its real type or declarator
-    // (task 1019). Built once and shared: parallel mode makes one parser per
+    // . Built once and shared: parallel mode makes one parser per
     // file.
     let repair_macros = std::sync::Arc::new(
         unknown_identifier_recovery::RepairMacros::from_context(&context),
@@ -224,7 +224,7 @@ pub fn analyze_project(
                     let file_registry = RuleRegistry::new();
                     // The context this file may use, which is the shared one
                     // unless the file defines a name some other file also
-                    // defines `static` (task 1385).
+                    // defines `static`.
                     let local = context.as_seen_from(std::path::Path::new(file_path));
                     let file_context = local.as_ref().unwrap_or(&context);
                     if has_cross_file_data {
@@ -403,7 +403,7 @@ fn load_project_context(
         };
         // The project is the tree being scanned plus any -d directory: a
         // search root outside it cannot make an unresolvable include a
-        // *project* header (task 690).
+        // *project* header.
         let mut project_roots: Vec<String> = vec![project_source.get_root_path().to_string()];
         project_roots.extend(directories.iter().cloned());
         prescan::resolve_includes(
@@ -615,7 +615,7 @@ fn build_suppression_manager(
 /// not total: a rule that reports two messages at one site, or emits the
 /// same finding twice, leaves those records in whatever order the worker
 /// threads finished, and a `cmp` of two exports fails on every pair of
-/// runs even when nothing changed (task 932). Records equal on every field
+/// runs even when nothing changed. Records equal on every field
 /// here are indistinguishable in any export, so their relative order does
 /// not matter.
 fn violation_order(a: &RuleViolation, b: &RuleViolation) -> std::cmp::Ordering {
@@ -670,7 +670,7 @@ fn analyze_one_file(
         Ok(parsed) => Some(parsed),
         Err(e) => {
             // A file the directory walk listed but the parser would not
-            // take -- a binary blob with a C extension (task 1131), an
+            // take -- a binary blob with a C extension, an
             // unreadable path. Say so once here, at the one place each
             // file is scanned; silently producing nothing for it is how a
             // whole file used to vanish from a run unnoticed.
@@ -685,7 +685,7 @@ fn analyze_one_file(
         // libmosquittopp.h) parses under tree-sitter-c anyway, producing
         // ERROR-node garbage that several independent C-oriented rules
         // (DCL15-C, DCL19-C, DCL20-C, MSC13-C, WIN04-C, API02-C, EXP37-C)
-        // have each misread as real C declarations (task 571). Detect and
+        // have each misread as real C declarations. Detect and
         // skip such files entirely rather than analyzing nonsense --
         // tools_sqc is CERT-C only, so a file that can only be C++ is out
         // of scope, not a source of findings.
@@ -902,7 +902,7 @@ pub(crate) fn build_file_analysis(
 /// `pub(crate)` so the generated rule tests in
 /// `src/rules/cert_c/integration/` can build the same VRA state the real
 /// scan does -- a rule whose FP suppression depends on value ranges is
-/// otherwise untestable from a `.c` fixture (task 674).
+/// otherwise untestable from a `.c` fixture.
 pub(crate) fn compute_vra_if_needed(
     needs_vra: bool,
     function_cfgs: &HashMap<usize, cfg::FunctionCfg>,
@@ -921,7 +921,7 @@ pub(crate) fn compute_vra_if_needed(
     // guard written against a header-defined constant -- `if (irq <
     // NORMAL_IRQ_OFFSET) return;` where that macro lives in a driver header
     // -- refined nothing, so every variable derived from the guarded one
-    // stayed at its full type range for the rest of the function (task 674).
+    // stayed at its full type range for the rest of the function.
     let macros = const_eval::merged_macro_constants(project_macros, root_node, source);
     let mut file_summaries = function_summary::compute_summaries(
         root_node,

@@ -94,7 +94,7 @@ impl RepairMacros {
 /// for label-guarded directives and task 648 for `NORETURN`. Without it the
 /// declaration reaching MSC13-C reads `word_t totalObjectSize       ;` --
 /// correctly parsed, correctly named, and with the annotation that makes it
-/// legitimate silently gone (task 1019). Consumers must accept it both
+/// legitimate silently gone. Consumers must accept it both
 /// inside the declaration's own span and immediately before it, since the
 /// macro can sit on either side of the type.
 pub const UNUSED_ATTRIBUTE_MARKER: &str = "/*U*/";
@@ -134,7 +134,7 @@ fn is_bare_identifier(text: &str) -> bool {
 /// range to blank.
 ///
 /// Walks with a cursor ([`query::find_first_descendant`]), never by
-/// `node.child(i)` in a loop (task 1131). tree-sitter's `child(i)` starts
+/// `node.child(i)` in a loop. tree-sitter's `child(i)` starts
 /// from the first child every call, so an index loop costs O(n²) per node
 /// -- invisible on a normal tree, but a NUL-interleaved (mis-decoded
 /// UTF-16, or binary) file parses to ONE root `ERROR` node with tens of
@@ -320,7 +320,7 @@ fn error_node_count(node: &Node) -> usize {
 /// ```
 /// tree-sitter-c's grammar doesn't accept a lone `}` (or `{`) as valid
 /// preproc-conditional content in this position -- confirmed on raylib's
-/// rlgl.h (task 438): the resulting ERROR, though itself small and locally
+/// rlgl.h: the resulting ERROR, though itself small and locally
 /// contained, made the GLR parser's global cost-based recovery flatten the
 /// ENTIRE enclosing `#ifndef` header guard (differently-parsed and clean in
 /// isolation) into one giant ERROR node spanning almost the whole file.

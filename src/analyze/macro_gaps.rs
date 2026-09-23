@@ -1,4 +1,4 @@
-//! Where the macro-expansion engine is blind, made visible (task 1180).
+//! Where the macro-expansion engine is blind, made visible.
 //!
 //! aurora-lint has no preprocessor. `macro_expand` collects function-like
 //! `#define`s from every scanned file and expands invocations on demand, and

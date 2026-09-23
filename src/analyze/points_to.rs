@@ -105,8 +105,8 @@ pub fn lvalue_of(node: &Node, source: &str) -> Option<LValue> {
 /// purposes) -- but a caller that cares whether the resulting `LValue` is
 /// reached *through* a pointer (e.g. an ownership rule that must not
 /// conflate freeing `p` with freeing `*p`) needs that bit, hence a second
-/// entry point rather than baking it into `LValue`'s own `Eq`/`Hash` shape
-/// (task 584), which every existing `AliasMap`/`HashSet<LValue>` caller
+/// entry point rather than baking it into `LValue`'s own `Eq`/`Hash` shape,
+/// which every existing `AliasMap`/`HashSet<LValue>` caller
 /// relies on to collapse structurally-identical storage locations.
 #[allow(dead_code)]
 pub fn lvalue_of_crossing_deref(node: &Node, source: &str) -> Option<(LValue, bool)> {

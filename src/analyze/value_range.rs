@@ -79,7 +79,7 @@ pub struct RangeAnalysisResult {
     /// state. Lets [`get_all_var_ranges_at`] binary-search for the state at a
     /// given offset instead of replaying the block prefix from scratch on
     /// every query -- the O(n) per-call cost was making any VRA-consuming
-    /// rule O(n^2) in statements-per-block (task 669).
+    /// rule O(n^2) in statements-per-block.
     block_checkpoints: HashMap<BlockId, Vec<(usize, RangeMap)>>,
     /// Every statement's byte range across all blocks, sorted by start byte,
     /// for O(log n) "which block contains this offset" lookup in
@@ -803,7 +803,7 @@ fn process_update_range(node: &Node, source: &str, state: &mut RangeMap) {
 /// &x)`), a condition (`if (sscanf(s, "%d", &x) == 1)`) or a compound
 /// assignment (`i += getVarint(p, &v)`) left its output arguments untouched,
 /// so `x` kept whatever it was initialised to and a consumer proved
-/// arithmetic on a file-derived value safe from `x == 0` (task 1256).
+/// arithmetic on a file-derived value safe from `x == 0`.
 fn widen_address_taken_call_args(node: &Node, source: &str, state: &mut RangeMap) {
     if node.kind() == "call_expression" {
         process_call_arg_widening_range(node, source, state);
@@ -966,7 +966,7 @@ fn apply_range_edge_refinement(
                     // the incoming range in would be worse than knowing
                     // nothing: it hands a definite value to a program point
                     // that never executes, and a definite-claim channel then
-                    // asserts instead of abstaining (task 1014).
+                    // asserts instead of abstaining.
                     None => return None,
                 }
             }
@@ -1151,7 +1151,7 @@ fn make_comparison_info(
     // `>`/`>=`) "for safety", which is only safe for one of them: the true
     // edge of `i < n` with an unconstrained `n` came out as i <= INT_MIN-1,
     // contradicting any loop counter, and once an empty intersection meant
-    // a dead edge (task 1014) the whole loop body vanished (task 1256).
+    // a dead edge the whole loop body vanished.
     let (lo, hi) = (bound.min, bound.max);
 
     match op {
@@ -1258,7 +1258,7 @@ fn make_comparison_info(
 ///
 /// The two behave differently for a variable only ONE side constrains, and
 /// getting that wrong is not merely imprecise once an empty range prunes an
-/// edge (task 1014):
+/// edge:
 ///
 /// * conjunctive -- every operand holds, so a lone constraint still holds
 ///   and is kept.
@@ -1289,7 +1289,7 @@ fn merge_compound_conditions(
                     // that never runs -- and a later conjunct would then
                     // resupply a live range over the top of it. Keep the
                     // empty set as a range so the edge refinement's own
-                    // intersection prunes the edge (task 1102).
+                    // intersection prunes the edge.
                     Some(intersect_range(&a, &b).unwrap_or_else(ValueRange::empty))
                 } else {
                     Some(join_range(&a, &b))
@@ -1341,7 +1341,7 @@ fn merge_compound_conditions(
     // its `seen_both` argument is the other side's membership, which is
     // false for exactly these variables, so the one-sided arm always keeps
     // the range. The correction has to be symmetric: a right-only variable
-    // is the mirror of a left-only one, not a different case (task 1014).
+    // is the mirror of a left-only one, not a different case.
     for (var_name, (in_left, in_right)) in &sides {
         if *in_left != *in_right {
             if let Some(entry) = by_var.get_mut(var_name) {
@@ -1458,7 +1458,7 @@ pub fn analyze_value_ranges(
             // predecessor's ranges sharpen, so drop anything recorded on an
             // earlier iteration -- leaving it would keep serving exactly the
             // stale range this is meant to withdraw -- and revisit the
-            // successors that consumed it (task 1014).
+            // successors that consumed it.
             let had_entry = entry_ranges.remove(&block_id).is_some();
             let had_exit = exit_ranges.remove(&block_id).is_some();
             if had_entry || had_exit {
@@ -1513,7 +1513,7 @@ pub fn analyze_value_ranges(
     // Build per-block replay checkpoints and the cross-block statement index
     // once here (from the now-converged entry ranges), so point queries in
     // `get_all_var_ranges_at` no longer replay each block prefix from
-    // scratch (task 669).
+    // scratch.
     let replay_summaries = build_replay_summaries(&return_ranges);
     let mut block_checkpoints: HashMap<BlockId, Vec<(usize, RangeMap)>> = HashMap::new();
     let mut statement_index: Vec<(usize, usize, BlockId)> = Vec::new();
@@ -1609,14 +1609,14 @@ fn join_predecessor_entry(
         // successor LIVE with no ranges: a dead block's successors then
         // computed real-looking ranges from `{}`, and a `p = 0` on one arm
         // joined with `{}` on the other came out as a definite p = [0, 0] at
-        // a point the analysis had already proved unreachable (task 1256).
+        // a point the analysis had already proved unreachable.
         let Some(pred_exit) = exit_ranges.get(pred_id).cloned() else {
             continue;
         };
 
         // `None` means the edge's condition contradicts the incoming ranges,
         // so this predecessor cannot reach the block -- same treatment as a
-        // constant-false branch above (task 1014).
+        // constant-false branch above.
         let Some(refined) =
             apply_range_edge_refinement(&pred_exit, *pred_id, edge_kind, cfg, body, source, macros)
         else {
@@ -1666,7 +1666,7 @@ fn maybe_widen(
     // supposed to guarantee: the fixed-point check compares by structural
     // equality, so a result that isn't a superset of every prior entry can
     // cycle between the same few states forever instead of converging, and
-    // only the hard `max_iterations` cap ends it (task 1439). Joining first
+    // only the hard `max_iterations` cap ends it. Joining first
     // guarantees the value handed to `widen_typed` is always >= `old_entry`,
     // so the result can only grow or stay put.
     let joined = join_range_maps(old_entry, &new_entry);
@@ -1780,7 +1780,7 @@ pub fn get_all_var_ranges_at(
     // i.e. every statement up to but not including the one containing the
     // offset (its own effects, e.g. `data = data + 1`, must not be applied
     // before evaluation). Precomputed once per block in `analyze_value_ranges`
-    // instead of replayed here on every call (task 669).
+    // instead of replayed here on every call.
     let state = match result.block_checkpoints.get(&block_id) {
         Some(checkpoints) => {
             let idx = checkpoints.partition_point(|&(end, _)| end <= byte_offset);
@@ -1806,7 +1806,7 @@ pub fn get_all_var_ranges_at(
 /// Build the running range-map state after each statement in `block`, keyed
 /// by that statement's end byte, starting from `entry`. One forward pass per
 /// block, done once in `analyze_value_ranges` rather than once per query
-/// (task 669).
+/// .
 fn build_block_checkpoints(
     entry: &RangeMap,
     block: &BasicBlock,
@@ -1903,7 +1903,7 @@ fn resolve_block_statement_nodes<'a>(body: &Node<'a>, block: &BasicBlock) -> Vec
 /// function-wide statement index (binary search) with a fallback linear scan
 /// over block byte ranges for offsets that fall outside any statement (e.g.
 /// an empty block). Semantically equivalent to `find_block_containing` but
-/// O(log n) instead of O(n) in statements-per-function (task 669).
+/// O(log n) instead of O(n) in statements-per-function.
 fn find_block_id_containing(
     result: &RangeAnalysisResult,
     cfg: &FunctionCfg,
@@ -2684,7 +2684,7 @@ int r = 100 / i;
     /// `get_all_var_ranges_at` path `vra_access::var_ranges_replay_at` uses.
     /// Deliberately not `get_range_at_line`: a line-start offset can fall
     /// between statements and read as "no range" for reasons unrelated to
-    /// the branch being tested (task 1014).
+    /// the branch being tested.
     fn range_at_expr(code: &str, var: &str, needle: &str) -> Option<ValueRange> {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&crate::parser::c_language()).unwrap();
@@ -2707,7 +2707,7 @@ int r = 100 / i;
     /// so VRA must abstain there rather than hand out the incoming value.
     /// This is Juliet's standard CWE-190 good-sink shape, so a stale range
     /// makes every value-based rule assert on a point that never runs
-    /// (task 1014).
+    /// .
     #[test]
     fn contradicted_branch_reports_no_range() {
         let code = "
@@ -2724,7 +2724,7 @@ void f(void) {
 
     /// ...but the branch stays live when a second disjunct can reach it.
     /// Only the first disjunct is contradicted; pruning the edge here would
-    /// cost a real finding (task 1014).
+    /// cost a real finding.
     #[test]
     fn disjunct_keeps_a_contradicted_branch_live() {
         let code = "
@@ -2744,7 +2744,7 @@ void f(int flag) {
 
     /// The `&&` mirror: negating `a && b` only requires ONE conjunct to fail,
     /// so the false edge must not carry `!a`'s constraint for a variable the
-    /// other conjunct never mentions (task 1014).
+    /// other conjunct never mentions.
     #[test]
     fn conjunct_keeps_a_contradicted_false_edge_live() {
         let code = "
@@ -2767,7 +2767,7 @@ void f(int flag) {
     /// constrained variable on the RIGHT is the mirror of
     /// `disjunct_keeps_a_contradicted_branch_live`, and regressed once
     /// because the one-sided correction only ran for left-only variables
-    /// (task 1014).
+    /// .
     #[test]
     fn disjunct_keeps_a_contradicted_branch_live_right_operand() {
         let code = "
@@ -2786,7 +2786,7 @@ void f(int flag) {
     }
 
     /// The `&&` false-edge mirror, for the same reason: `!(a && b)` needs only
-    /// one conjunct to fail, whichever side names the variable (task 1014).
+    /// one conjunct to fail, whichever side names the variable.
     #[test]
     fn conjunct_keeps_a_contradicted_false_edge_live_right_operand() {
         let code = "
@@ -2806,7 +2806,7 @@ void f(int flag) {
     }
 
     /// A satisfiable branch keeps narrowing normally -- the dead-edge rule
-    /// must not disturb the ordinary case (task 1014).
+    /// must not disturb the ordinary case.
     #[test]
     fn satisfiable_branch_still_narrows() {
         let code = "
@@ -2828,7 +2828,7 @@ void f(void) {
     /// on the true edge. Reading the bound's LOWER end there claimed
     /// `i <= INT_MIN - 1`, which contradicts any counter and -- once an empty
     /// intersection prunes the edge -- makes the whole loop body dead
-    /// (task 1256).
+    /// .
     #[test]
     fn range_bound_true_edge_keeps_loop_body_live() {
         let code = "
@@ -2850,7 +2850,7 @@ void f(int n) {
     }
 
     /// The mirror: `n > i` with the counter on the right reaches the same
-    /// arm through the reversed operator (task 1256).
+    /// arm through the reversed operator.
     #[test]
     fn range_bound_true_edge_keeps_loop_body_live_reversed() {
         let code = "
@@ -2869,7 +2869,7 @@ void f(int n) {
     /// Every comparison's two edges read opposite ends of a range bound: the
     /// edge that admits MORE values takes the endpoint that keeps them. With
     /// `b` in [10, 20], `x < b` true admits x up to 19 and false admits x
-    /// down to 10 (task 1256).
+    /// down to 10.
     #[test]
     fn range_bound_edges_use_the_admitting_endpoint() {
         let code = "
@@ -2900,7 +2900,7 @@ void f(int b) {
     /// `p = 0` on one arm below an unreachable test used to join with the
     /// other arm's empty state into a definite p = [0, 0] at a point the
     /// analysis had already proved unreachable, and a consumer then proved
-    /// `buf + p` safe on that value (task 1256).
+    /// `buf + p` safe on that value.
     #[test]
     fn dead_block_successors_are_dead() {
         let code = "
@@ -2922,7 +2922,7 @@ void f(int flag) {
     /// A callee writes through `&x` no matter where in the statement the
     /// call sits: an assignment's RHS and an `if` condition are the two
     /// shapes `sscanf`-style parsing takes in real code, and both left `x`
-    /// pinned at its initialiser (task 1256).
+    /// pinned at its initialiser.
     #[test]
     fn address_taken_arg_of_nested_call_is_widened() {
         let code = "
@@ -2952,7 +2952,7 @@ void f(const char *s) {
     /// empty set, and an empty set must not degrade to "no constraint": that
     /// hands the incoming value to a branch that never executes -- the same
     /// failure 1014 fixed for a single contradicted comparison, one merge
-    /// further up (task 1102).
+    /// further up.
     #[test]
     fn self_contradictory_conjunction_reports_no_range() {
         let code = "
@@ -2969,7 +2969,7 @@ void f(void) {
     /// A third conjunct must not resurrect an already-empty intersection.
     /// `(a && b) && c` merges left-to-right, so an empty `a && b` that
     /// collapsed to "unconstrained" would let `c` re-supply a live range
-    /// (task 1102).
+    /// .
     #[test]
     fn later_conjunct_does_not_resurrect_an_empty_intersection() {
         let code = "
@@ -2985,7 +2985,7 @@ void f(void) {
 
     /// The `||` mirror: the false edge of `a || b` is `!a && !b`, so a
     /// tautology's else-branch is the same unsatisfiable intersection
-    /// (task 1102).
+    /// .
     #[test]
     fn tautological_disjunction_false_edge_reports_no_range() {
         let code = "
@@ -3003,7 +3003,7 @@ void f(void) {
     /// An unsatisfiable conjunct disjoined with a live alternative leaves
     /// exactly the alternative: the empty set is the identity of join, so it
     /// must neither kill the edge nor widen the other operand's range
-    /// (task 1102).
+    /// .
     #[test]
     fn empty_conjunct_is_identity_under_disjunction() {
         let code = "
@@ -3022,7 +3022,7 @@ void f(void) {
 
     /// A satisfiable conjunction keeps intersecting normally -- the
     /// empty-set rule must not disturb the ordinary narrowing case
-    /// (task 1102).
+    /// .
     #[test]
     fn satisfiable_conjunction_still_narrows() {
         let code = "

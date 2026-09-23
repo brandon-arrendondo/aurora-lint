@@ -1,7 +1,7 @@
 //! Pre-parse pass: blank out empty (`#define NAME` with no body) object-like
-//! macros throughout a file before it's fed to tree-sitter (task 435), and
+//! macros throughout a file before it's fed to tree-sitter, and
 //! substitute qualifier-alias macros (`#define CONST const`) with the
-//! keyword they expand to (task 758).
+//! keyword they expand to.
 //!
 //! tree-sitter-c's grammar doesn't recognize an unknown bare identifier
 //! immediately preceding a declaration's type -- the WINAPI/RLAPI/APIENTRY
@@ -172,7 +172,7 @@ fn blank_occurrences(source: &str, names: &HashSet<String>) -> String {
 /// statement the programmer never wrote. MSC12-C reported exactly that as
 /// "Stray semicolon has no effect" on sqlite's `wsdStatInit;`,
 /// `wsdAutoextInit;`, `wsdHooksInit;` and `deliberate_fall_through;` --
-/// advice to delete a line that does not exist (task 1006).
+/// advice to delete a line that does not exist.
 ///
 /// Two things have to hold. The macro must be the first token on its line,
 /// which is what separates a statement of its own from a trailing decorator
@@ -335,7 +335,7 @@ fn find_qualifier_alias_macros(source: &str) -> HashMap<String, &'static str> {
 /// enough trailing spaces to preserve the NAME's byte length. This makes
 /// tree-sitter-c parse the qualifier as if it had been spelled literally,
 /// so declarator-reading rules see the real parameter name and the
-/// keyword as a `type_qualifier` node (task 758).
+/// keyword as a `type_qualifier` node.
 fn substitute_qualifier_alias_macros(source: &str) -> String {
     let aliases = find_qualifier_alias_macros(source);
     if aliases.is_empty() {
@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn blanks_the_semicolon_of_a_bare_macro_statement() {
         // `wsdStatInit;` expands to nothing, so leaving the `;` behind hands
-        // every rule a null statement the programmer never wrote (task 1006).
+        // every rule a null statement the programmer never wrote.
         let src = "#define wsdStatInit\nint f(void){\n  wsdStatInit;\n  return 1;\n}\n";
         let out = blank_empty_object_macros(src);
         assert_eq!(out.len(), src.len());
@@ -406,7 +406,7 @@ mod tests {
     fn keeps_the_semicolon_of_a_trailing_decorator_macro() {
         // curl's `} PACK;` closes a struct: that `;` is mandatory, and
         // blanking it broke smb.c's parse badly enough to add 62 findings in
-        // other rules (task 1006).
+        // other rules.
         let src = "#define PACK\nstruct s {\n  int x;\n} PACK;\n";
         let out = blank_empty_object_macros(src);
         assert_eq!(out.len(), src.len());
@@ -518,7 +518,7 @@ mod tests {
         // Tcl's `#define CONST const` (sqlite src/tclsqlite.h:37). Every
         // declarator-reading rule reads `Tcl_Obj *CONST objv[]` as a
         // parameter literally named CONST, since tree-sitter-c cannot know
-        // CONST is a qualifier without a preprocessor (task 758).
+        // CONST is a qualifier without a preprocessor.
         let src = "#define CONST const\nint f(int *CONST p);\n";
         let out = blank_empty_object_macros(src);
         assert_eq!(out.len(), src.len());

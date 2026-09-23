@@ -1,5 +1,5 @@
 //! Pre-parse pass: blank a `#if`/`#ifdef`/`#ifndef` + matching `#endif` pair
-//! when it opens *immediately* after a goto-style label (task 647).
+//! when it opens *immediately* after a goto-style label.
 //!
 //! Real shape (hostap `eloop.c`, `eloop_run`):
 //! ```c
@@ -128,9 +128,9 @@ fn directive_keyword_and_name(trimmed: &str) -> Option<(&'static str, &str)> {
 /// (name kept in sync manually -- see that function's doc comment) when an
 /// `#ifdef`/`#ifndef`-guarded read site's `preproc_ifdef` ancestor was
 /// removed by [`blank_label_guarded_preproc`], so ifdef/write correlation
-/// (task 590) can still recognize the read as sharing the same guard as a
+/// can still recognize the read as sharing the same guard as a
 /// write under a real, unblanked occurrence of the identical macro
-/// elsewhere in the function (task 663).
+/// elsewhere in the function.
 fn open_marker(keyword: &str, name: &str) -> Option<String> {
     let sigil = match keyword {
         "#ifdef" => 'd',

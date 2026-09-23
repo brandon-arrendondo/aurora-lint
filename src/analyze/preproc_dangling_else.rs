@@ -1,6 +1,6 @@
 //! Pre-parse pass: blank the `#if`/`#ifdef`/`#ifndef` and matching `#endif`
 //! directive lines that wrap a *dangling* `else` fragment -- an if/else-if
-//! chain that's split across a build-time feature-toggle guard (task 441).
+//! chain that's split across a build-time feature-toggle guard.
 //!
 //! Two shapes, both seen in raylib (own-code, not external headers):
 //!

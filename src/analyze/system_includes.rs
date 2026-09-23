@@ -1,4 +1,4 @@
-//! Recovering a compiler's *implicit* system header directories (task 623).
+//! Recovering a compiler's *implicit* system header directories.
 //!
 //! # Why a compile database is not enough
 //!

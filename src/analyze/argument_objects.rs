@@ -8,13 +8,13 @@
 //! string or compound literal, or a fresh allocation. A bare pointer variable
 //! and `&ptr` name nothing: `f(&pos, end)` passes a cursor and its bound, and
 //! which buffer they walk is no more knowable in the caller than in the
-//! callee (task 753).
+//! callee.
 //!
 //! Answering that needs the caller's own frame -- which names it declared as
 //! arrays, which as pointers, which of its field paths are pointer-typed --
 //! so the frame and the predicate live here rather than in the rule: the
 //! prescan runs the same code over every translation unit to reach the
-//! callers ARR36-C's own file-local pass cannot see (task 936).
+//! callers ARR36-C's own file-local pass cannot see.
 
 use crate::utility::cert_c::{ast_utils, overflow_helpers};
 use lang_parsing_substrate::query;
@@ -39,7 +39,7 @@ pub struct ObjectFrame {
     /// appear in the source (`pPg->aData`, `cert->tbsCertificate.beg`). Such a
     /// path does not name storage: what a callee compares is the member's
     /// target, which this frame cannot name any better than a pointer
-    /// parameter's (task 935).
+    /// parameter's.
     pub pointer_members: HashSet<String>,
     /// Levels of indirection each declared name carries: `char *s` is 1,
     /// `u8 **pos` is 2, `char buf[N]` is 1, `char *argv[]` is 2.
@@ -47,7 +47,7 @@ pub struct ObjectFrame {
     /// `pointer_vars` answers "can this name hold a pointer at all"; this
     /// answers "how many dereferences until it stops being one". A name the
     /// frame never saw declared is absent rather than 0 -- no depth is not a
-    /// depth of none (task 934).
+    /// depth of none.
     pub pointer_depth: HashMap<String, usize>,
 }
 
@@ -103,7 +103,7 @@ impl ObjectFrame {
     /// keeps naming storage. Absence of type information is not evidence that
     /// a member is a pointer, and treating it as such would switch off
     /// ARR36-C-EX1 detection wholesale on every run without cross-file
-    /// context (task 935).
+    /// context.
     pub fn record_pointer_members(
         &mut self,
         func: &Node,
@@ -219,7 +219,7 @@ impl ObjectFrame {
             }
             // Two members of one struct are two objects -- unless the member
             // is a pointer, in which case what the callee compares is its
-            // target, which this frame cannot name (task 935).
+            // target, which this frame cannot name.
             "field_expression" => {
                 let path = text(node);
                 (!self.pointer_members.contains(&path)).then_some(path)
@@ -293,7 +293,7 @@ pub fn declared_pointers<'tree>(node: &Node<'tree>, source: &str) -> Vec<Declare
 /// A dereference spends one of them, which is the only thing that tells `*s`
 /// (a char) from `*pos` (still a pointer). Both are a `pointer_expression`
 /// over a tracked identifier, so a frame that does not count levels reads
-/// `*s1 - *s2` as pointer subtraction (task 934). Counting is preferred to a
+/// `*s1 - *s2` as pointer subtraction. Counting is preferred to a
 /// predicate over the pointee's spelling because the same counter answers the
 /// `u8 **` case on purpose rather than by accident.
 ///

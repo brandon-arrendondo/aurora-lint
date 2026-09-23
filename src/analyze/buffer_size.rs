@@ -6,7 +6,7 @@
 //! size-expression parsers, while STR31-C re-implemented overlapping
 //! malloc/calloc/alloca arithmetic with its own inline regex blocks. This
 //! module is the single home for that machinery so future false-positive
-//! work (tasks 143/144/145) builds on one API instead of accreting into the
+//! work builds on one API instead of accreting into the
 //! individual rule files.
 //!
 //! The parsers here are pure functions over the textual argument of an
@@ -114,7 +114,7 @@ pub fn extract_numeric_value(s: &str) -> Option<usize> {
 /// ARR38-C's `sizeof_type`, and `size_analysis::find_element_size` — each
 /// with slightly different coverage and, in ARR38-C's case, a benchmark-
 /// specific `"twoIntsStruct" => 8` entry that has no place in a shared
-/// primitive (task 511).
+/// primitive.
 pub fn sizeof_type_bytes(type_name: &str) -> Option<usize> {
     let t = type_name.trim();
     if t.ends_with('*') {
@@ -230,7 +230,7 @@ pub fn calculate_malloc_size(malloc_args: &str) -> Option<BufferSize> {
     // arithmetic expression immediately multiplied by a sizeof, e.g.
     // malloc((N*M) * sizeof(int)) or malloc((N+1) * sizeof(char)). Handled
     // before Pattern 2's naive split-on-first-'*', which mis-splits on the
-    // operator INSIDE the parens when it is itself '*' (task 509) — this
+    // operator INSIDE the parens when it is itself '*' — this
     // pattern only fires where Pattern 2 would otherwise fall through to
     // `Dynamic` (the '+'/'-' cases already succeed via Pattern 2's
     // extract_numeric_value/evaluate_simple_arithmetic fallback), so it is
@@ -709,7 +709,7 @@ mod tests {
     fn sizeof_pointer_types_are_eight_bytes_regardless_of_base_type() {
         // "int*"/"char*"/"wchar_t*" were dead table entries: the bare
         // "int"/"char"/"wchar_t" checks matched first and returned the
-        // base type's size instead of the pointer size (task 516).
+        // base type's size instead of the pointer size.
         assert_eq!(extract_sizeof_value("sizeof(int*)"), Some(8));
         assert_eq!(extract_sizeof_value("sizeof(char*)"), Some(8));
         assert_eq!(extract_sizeof_value("sizeof(wchar_t*)"), Some(8));
@@ -735,7 +735,7 @@ mod tests {
     #[test]
     fn malloc_size_handles_nested_paren_arith_before_sizeof() {
         // (N*M) * sizeof(T): the inner '*' used to break Pattern 2's naive
-        // split-on-first-'*' (task 509) — now resolved via Pattern 1.5.
+        // split-on-first-'*' — now resolved via Pattern 1.5.
         assert!(matches!(
             calculate_malloc_size("(4*3) * sizeof(int)"),
             Some(BufferSize::DynamicCalculated(12))
@@ -755,7 +755,7 @@ mod tests {
 
     #[test]
     fn malloc_size_handles_reversed_sizeof_times_count_order() {
-        // sizeof(T) * COUNT (task 513): calculate_malloc_size only tried
+        // sizeof(T) * COUNT: calculate_malloc_size only tried
         // COUNT * sizeof(T) before; the reversed order used to fall through
         // to Dynamic even though COUNT is a plain number.
         assert!(matches!(

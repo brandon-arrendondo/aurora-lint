@@ -1,6 +1,6 @@
 //! Pre-parse pass: repair a MULTI-ARM `#if`/`#elif`/`#else` chain whose arms
 //! each end with an incomplete statement fragment sharing one brace block
-//! placed after the `#endif` (task 1070).
+//! placed after the `#endif`.
 //!
 //! Same root cause as the single-arm passes this one is the sibling of
 //! (`control_header_preproc_guard` for a trailing `if`/`while`/`for` header,

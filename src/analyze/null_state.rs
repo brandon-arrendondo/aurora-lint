@@ -161,7 +161,7 @@ fn parse_all_null_conditions(node: &Node, source: &str) -> Vec<ConditionInfo> {
                     // verbatim and the caller applied `true_state` on the true
                     // edge regardless, marking BOTH `p` and `q` DefinitelyNull.
                     // `None` is how the edge says it licenses no conclusion
-                    // (task 1067).
+                    // .
                     let mut all = parse_all_null_conditions(&left, source);
                     all.extend(parse_all_null_conditions(&right, source));
                     for info in &mut all {
@@ -178,7 +178,7 @@ fn parse_all_null_conditions(node: &Node, source: &str) -> Vec<ConditionInfo> {
                     // read `!(sta && f(...))` as `!sta` and marked `sta`
                     // DefinitelyNull, which joined back to PossiblyNull and
                     // reported a null dereference 65 lines later in hostap's
-                    // ieee802_1x_encapsulate_radius (tasks 1058, 1067).
+                    // ieee802_1x_encapsulate_radius.
                     let mut all = parse_all_null_conditions(&left, source);
                     all.extend(parse_all_null_conditions(&right, source));
                     for info in &mut all {
@@ -732,7 +732,7 @@ fn apply_cross_file_nulls_params_null(
 /// `&var.field` and `&var[i]` also name storage inside `var`, which
 /// `init_state::addressed_object_root` is what recognises -- and `&var->field`
 /// deliberately does not, because that address lies inside the pointee and so
-/// carries no claim about `var` (task 1028, aurora_lint).
+/// carries no claim about `var`.
 fn extract_output_arg_var(arg: &Node, source: &str) -> String {
     if arg.kind() == "pointer_expression" {
         let text = get_text(arg, source);
@@ -1977,7 +1977,7 @@ pub fn is_cast_to_null(node: &Node, source: &str) -> bool {
 /// Whether `declarator` is, or nests, a pointer or array declarator.
 ///
 /// Not the same predicate as
-/// `declarator_utils::is_pointer_declarator` (task 584): that one asks
+/// `declarator_utils::is_pointer_declarator`: that one asks
 /// "does a `pointer_declarator` occur anywhere in this tree", so a bare
 /// array (`int arr[10];`, no pointer anywhere) is `false`. This one
 /// short-circuits `true` at the first `array_declarator` it sees, so a

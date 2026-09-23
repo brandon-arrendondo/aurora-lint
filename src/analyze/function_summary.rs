@@ -43,14 +43,14 @@ pub struct FunctionSummary {
     /// `Curl_client_cleanup(data)`, and hostap's `wpa_supplicant_cleanup`
     /// because it calls `free_hw_features(wpa_s)` (which frees fields of it),
     /// so the owner's one real free at the end of `Curl_close` /
-    /// `wpa_supplicant_deinit_iface` was a double free (task 1269). MEM31-C
+    /// `wpa_supplicant_deinit_iface` was a double free. MEM31-C
     /// reads this to keep such a credit in `freed_by_guess`, where
     /// `guess_forbids_double_free` already knows what to do with it. MEM30-C
     /// reads it to mark a use-after-free that rests on such a credit
     /// `requires_manual_review`: the finding stands -- for a wrapper whose
     /// body frees through a function pointer the name is the only evidence
     /// there will be -- but the reader is told the free is an inference
-    /// (task 1289). A guess the callee's own body CONTRADICTS never gets
+    /// . A guess the callee's own body CONTRADICTS never gets
     /// here at all; see `resolve_name_shaped_frees`.
     ///
     /// Cleared for an index the moment real evidence arrives -- a literal
@@ -71,7 +71,7 @@ pub struct FunctionSummary {
     /// as definitely freed after a call — trusting the MAY-free set for that
     /// purpose caused cascading false UAF/double-free reports when a helper
     /// only frees its argument on an error path a given caller didn't take
-    /// (task 401).
+    /// .
     #[serde(default)]
     pub unconditional_frees_params: HashSet<usize>,
     /// Subset of `modifies_params` whose write through the parameter is not
@@ -84,7 +84,7 @@ pub struct FunctionSummary {
     /// nothing when `n == 0`, so the caller can still read `sign`
     /// uninitialised — the CERT wiki's own noncompliant example, which
     /// EXP33-C missed for as long as MAY was all the summary offered
-    /// (task 988, aurora_lint).
+    /// .
     ///
     /// Built by DEMOTION rather than by re-derivation: a parameter leaves the
     /// set only when the AST pass found writes through it and every one of
@@ -110,7 +110,7 @@ pub struct FunctionSummary {
     /// sqlite's `fts5CsrPoslist` forwards `pa` from inside an if/else whose
     /// other arm writes it directly, so no single call site is
     /// unconditional and yet no returning path leaves `pa` untouched
-    /// (task 1011, aurora_lint).
+    /// .
     #[serde(default)]
     pub modifies_params_pending: HashMap<usize, Vec<(String, usize)>>,
     /// Parameters PROVEN to have a returning path that writes nothing through
@@ -146,7 +146,7 @@ pub struct FunctionSummary {
     ///
     /// Absent for an index means unproven, not "no correlation" -- a caller
     /// checking the return value gets no extra credit, same as before this
-    /// field existed (task 1450, aurora_lint).
+    /// field existed.
     #[serde(default)]
     pub conditional_write_return_correlation: HashMap<usize, init_state::ReturnCorrelation>,
     /// Indices where two definitions linked under this name proved OPPOSITE
@@ -189,7 +189,7 @@ pub struct FunctionSummary {
     /// `sqlite3_free(void *p)` frees exactly through `xFree`, so its summary
     /// is empty in every free set, which read as a REFUTATION of its
     /// `*_free` name and made every `sqlite3_free(a)` in the corpus count
-    /// for nothing (task 1367). The same "unseen, not nothing" reading
+    /// for nothing. The same "unseen, not nothing" reading
     /// `resolve_name_shaped_frees` already applies to an empty `may_free`.
     ///
     /// ARITY ONE IS THE WHOLE GUARD, and it is the one-nameable-argument
@@ -217,7 +217,7 @@ pub struct FunctionSummary {
     /// hands its allocation to a container, a context or a registry looked
     /// like the block's only owner and every later `return` read as a leak:
     /// curl's `hash_elem_link(h, slot, he)`, `Curl_conn_meta_set(conn, key,
-    /// ps, dtor)`, hostap's `eap_peer_method_register(eap)` (task 1198).
+    /// ps, dtor)`, hostap's `eap_peer_method_register(eap)`.
     ///
     /// A MAY fact, like `frees_params`, and deliberately so. hostap's
     /// register idiom frees the argument on two error paths and links it into
@@ -255,7 +255,7 @@ pub struct FunctionSummary {
     /// `return f(...)` only), which the taint fixpoint keeps as is; this
     /// set closes `returns_allocation` and `returned_value_escapes` through
     /// `scard = os_zalloc(n); ... return scard;`, which names no allocator
-    /// itself (task 1227).
+    /// itself.
     #[serde(default)]
     pub returned_callees: HashSet<String>,
     /// MAY: the object this function returns was, before the return, put
@@ -313,7 +313,7 @@ pub struct FunctionSummary {
     /// assume it is checked" — a shortcut that turns confirmed true positives
     /// into misses, since at the flagged function a safe forwarding wrapper
     /// and an unsafe one are structurally identical and only the callee's
-    /// body tells them apart (task 744, aurora_lint).
+    /// body tells them apart.
     #[serde(default)]
     pub checks_null_params_before_deref: HashSet<usize>,
     /// Whether this function never returns (calls abort/exit/longjmp).
@@ -377,7 +377,7 @@ pub struct FunctionSummary {
     /// The caller-side fact ARR36-C's parameter model needs: two pointer
     /// parameters are taken to share an object unless a caller proves
     /// otherwise, and a callee whose callers all live in other translation
-    /// units has no such proof in its own file (task 936). Distinctness is
+    /// units has no such proof in its own file. Distinctness is
     /// per CALL SITE rather than per position -- one caller passing `a` at
     /// index 0 and a different caller passing `b` at index 1 proves nothing,
     /// because no single path ever holds both. One proving call site IS
@@ -422,8 +422,8 @@ pub struct FunctionSummary {
     /// identifier, into a call this build can never resolve to a specific
     /// function -- a call through a `field_expression` (`obj->cb(...)`,
     /// `obj.cb(...)`), the same C-semantics test
-    /// `prescan::collect_ambiguous_call_targets` uses for the call graph
-    /// (task 562): the field name has no relationship to any global
+    /// `prescan::collect_ambiguous_call_targets` uses for the call graph:
+    /// the field name has no relationship to any global
     /// function of the same name, so nothing this build has can say
     /// whether the runtime-bound callee writes through the parameter.
     ///
@@ -445,7 +445,7 @@ pub struct FunctionSummary {
     /// unconditional (not nested inside an if/switch/loop/ternary). Used to
     /// propagate `unconditional_frees_params` transitively — a passthrough
     /// at a conditional call site can't make the caller's free
-    /// unconditional even if the callee's own free is (task 401).
+    /// unconditional even if the callee's own free is.
     #[serde(default)]
     pub unconditional_param_passthroughs: HashMap<usize, Vec<(String, usize)>>,
     /// Struct field names freed directly off a parameter within this function's
@@ -533,7 +533,7 @@ pub struct FunctionSummary {
     /// Propagated transitively through `param_passthroughs` by
     /// `propagate_transitive_closes`, so a resource opened in one function and
     /// closed by a sink helper it's passed to (directly or through a chain of
-    /// forwarding wrappers) is recognized as closed (task 146).
+    /// forwarding wrappers) is recognized as closed.
     #[serde(default)]
     pub closes_params: HashSet<usize>,
     /// Parameter indices whose pointee this function overwrites: the body
@@ -545,7 +545,7 @@ pub struct FunctionSummary {
     /// (`propagate_transitive_clears`). A project's zeroize wrapper --
     /// mbedtls's `mbedtls_platform_zeroize`, hostap's `forced_memzero` -- is
     /// a clearer by this fact, not by name, and MEM03-C credits its callers
-    /// with clearing the buffer (task 1127).
+    /// with clearing the buffer.
     ///
     /// NOT gated on `function_definition_is_preproc_conditional`, unlike the
     /// free facts: mbedtls's real zeroize is itself under
@@ -565,7 +565,7 @@ pub struct FunctionSummary {
     /// taint fixpoint across files — Juliet's CWE-134 b/c/d/e flow variants
     /// put the sink helper (e.g. `badSink`/`goodG2BSink`) in a different file
     /// than its single caller, so a per-translation-unit analysis can never
-    /// observe whether that caller passed a literal or tainted value (task 201).
+    /// observe whether that caller passed a literal or tainted value.
     #[serde(default)]
     pub callsite_param_tainted: HashSet<usize>,
     /// Parameter indices for which at least one call site within the project
@@ -767,7 +767,7 @@ pub fn compute_summaries(
 /// `static void *(*const volatile memset_func)(void *, int, size_t) = memset;`
 /// idiom (mbedtls `platform_util.c`, hostap `common.c`) that a zeroize
 /// wrapper calls INSTEAD of `memset` precisely so the call cannot be
-/// optimised away. Feeds `credit_clears_params` (task 1127).
+/// optimised away. Feeds `credit_clears_params`.
 fn collect_clearing_names(root: &Node, source: &str) -> HashSet<String> {
     use crate::utility::cert_c::{ast_utils, call_roles};
     use lang_parsing_substrate::query;
@@ -831,7 +831,7 @@ fn collect_function_summaries(
     // holding an `analyze_function` result, so the frame grew with
     // `FunctionSummary` itself: raylib's parse aborted the entire scan the
     // next time the struct gained a field, and would have again on the one
-    // after that (task 1011, aurora_lint). Depth now costs heap.
+    // after that. Depth now costs heap.
     let mut stack = vec![*node];
     while let Some(current) = stack.pop() {
         if current.kind() == "function_definition" && !is_macro_function_definition(&current) {
@@ -852,7 +852,7 @@ fn collect_function_summaries(
                 // preprocess. Folded exactly as two definitions in different
                 // files are: `merge_summary_variant` is the one place that
                 // decides what callers of a multiply-defined name are told
-                // (task 1083, aurora_lint).
+                // .
                 //
                 // The overwrite this replaces was LAST-one-wins, which is
                 // worse than arbitrary here: the `#else` stub is textually
@@ -972,7 +972,7 @@ fn find_nested_function_boundary(node: &Node, source: &str) -> Option<usize> {
 /// *real* `eapol_sm_init` with a phantom already-freed `ctx`, which then
 /// made MEM30-C flag three independent, mutually-exclusive
 /// `if (...) { os_free(ctx); return -1; }` early-return checks in
-/// `wpa_supplicant/eapol_test.c` as double-freeing each other (task 654).
+/// `wpa_supplicant/eapol_test.c` as double-freeing each other.
 /// Excluding a conditional definition's free-crediting facts from the
 /// summary is conservative in the same direction as the rest of MEM30-C:
 /// worst case it silently loses a real MUST-free fact (a false negative),
@@ -984,7 +984,7 @@ fn find_nested_function_boundary(node: &Node, source: &str) -> Option<usize> {
 /// guarded header was gated -- hostap's `dl_list_add` earned no
 /// `stores_params`, so no intrusive-list linker's returned object ever
 /// escaped and `returned_value_escapes` was a no-op on that corpus
-/// (task 1227).
+/// .
 fn function_definition_is_preproc_conditional(func_node: &Node, source: &str) -> bool {
     let mut current = *func_node;
     while let Some(parent) = current.parent() {
@@ -1044,7 +1044,7 @@ fn analyze_function(
         // plain `T foo(const u8 *arg)` declarator's *text* also contains
         // '*' (from the pointer parameter), which previously made every
         // function taking a pointer argument look like it returns a
-        // pointer regardless of its actual return type (task 425).
+        // pointer regardless of its actual return type.
         is_pointer_return = func_node
             .child_by_field_name("declarator")
             .is_some_and(|d| declarator_denotes_pointer_return(&d));
@@ -1096,14 +1096,14 @@ fn analyze_function(
         // (task 425: MEM31-C flagging non-pointer status locals like `enum
         // wpa_validate_result`/`u16`/`int` as leaked/double-freed because
         // the assigning callee's body happened to contain a malloc call).
-        // Comments are stripped first (task 427): a borrowed-accessor
+        // Comments are stripped first: a borrowed-accessor
         // function whose body has no allocator call at all but a doc
         // comment merely *mentioning* one -- e.g. sqlite3_column_blob()'s
         // "might need to call malloc() to expand..." -- must not count.
         //
         // The flag is now derived from what the `return` expressions flow
         // from, not from whether an allocator is spelled anywhere in the
-        // body (task 1217, aurora-lint). hostap's wpa_sm_write_assoc_resp_ies
+        // body. hostap's wpa_sm_write_assoc_resp_ies
         // os_realloc()s a scratch buffer it frees on every path and returns
         // `pos`, a cursor into the caller's buffer; the substring scan
         // called it an allocator, and every caller's `p = ...(...)` cursor
@@ -1251,7 +1251,7 @@ fn compute_produces_param_buffer_size(
 /// a strlen/wcslen-derived allocation. Only one is ever meaningful for a
 /// given relay function in practice, so whichever resolves first is the
 /// answer. Mirrors the resolver chain `Str31C::find_buffer_size` uses for
-/// its own same-file relay lookup (task 506) — kept in lock-step so the
+/// its own same-file relay lookup — kept in lock-step so the
 /// same-file and cross-file relay-resolution paths stay equally capable.
 fn produced_size_for_var(
     var_name: &str,
@@ -1540,7 +1540,7 @@ fn body_returned_callees(body: &Node, source: &str, text_end: usize) -> Option<H
 /// doc comment reading "might need to call malloc() to expand the result of
 /// a zeroblob()" -- makes `returns_allocation`'s substring check below
 /// misfire on a borrowed-accessor function that never allocates anything
-/// (task 427). Unlike `macro_expand::strip_comments` (single-line macro
+/// . Unlike `macro_expand::strip_comments` (single-line macro
 /// replacement lists, where hitting `//` means "rest of the line is gone"),
 /// this must span a whole multi-line function body: a `//` only blanks out
 /// to the next newline, not to the end of the text.
@@ -1777,7 +1777,7 @@ fn body_has_deref_write(body_text: &str, param_name: &str) -> bool {
 /// `modifies_params` and concluded `curlx_inet_pton` reads `dst` without
 /// writing it -- backwards. Confirmed by reproduction, not just reading:
 /// removing the cast, or removing the forward entirely, both removed the
-/// finding (task 1419, aurora_lint).
+/// finding.
 fn cast_then_deref(body_text: &str, param_name: &str) -> bool {
     let needle = format!("*){param_name}");
     let bytes = body_text.as_bytes();
@@ -1895,7 +1895,7 @@ fn line_has_arrow_or_subscript_write(body_text: &str, param_name: &str) -> bool 
 /// arm, a loop body that could run zero times, a ternary branch, or a
 /// preprocessor conditional). Plain nested `{ }` scoping blocks are
 /// transparent (still unconditional). Used to distinguish a MUST-free from
-/// a merely-possible MAY-free (task 401).
+/// a merely-possible MAY-free.
 fn is_unconditionally_reached(node: &Node, body: &Node) -> bool {
     let mut current = *node;
     loop {
@@ -1931,7 +1931,7 @@ fn is_unconditionally_reached(node: &Node, body: &Node) -> bool {
 /// the operands of `&&` and `||`. Here a compound condition must yield
 /// `None`: `if (ptr && ready)` guards its body on something this frame knows
 /// nothing about, and treating it as a bare null check is exactly the
-/// over-trust that made MAY-frees unusable (task 401).
+/// over-trust that made MAY-frees unusable.
 fn null_guard_on(condition: &Node, source: &str, name: &str) -> Option<bool> {
     let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").trim();
     let is_null_literal = |n: &Node| matches!(text(n), "NULL" | "0" | "nullptr");
@@ -1972,7 +1972,7 @@ fn null_guard_on(condition: &Node, source: &str, name: &str) -> Option<bool> {
 /// it there is nothing to free, so nothing survives the call for the caller
 /// to use. Marking the argument freed therefore cannot invent a
 /// use-after-free, which is the failure the MUST set exists to prevent
-/// (task 988, aurora_lint).
+/// .
 ///
 /// The guard must be on the pointer being freed and on nothing else. Any
 /// other condition — a different variable, a flag, a compound test — is a
@@ -2077,7 +2077,7 @@ fn strip_free_argument(arg: Node) -> Option<(Node, bool)> {
 /// unconditional_frees_params` (MUST-free) for every `free(param)` call in
 /// `body` whose sole argument is exactly one of `params` by simple
 /// identifier — AST-based rather than the old text-substring scan so
-/// `is_unconditionally_reached` can be checked per call site (task 401).
+/// `is_unconditionally_reached` can be checked per call site.
 /// The parameter-rooted lvalue an assignment writes THROUGH, if any.
 ///
 /// `*p`, `p->f`, `p[i]`, `(*p).f` and `*p++` all write to storage the caller
@@ -2261,19 +2261,19 @@ type WriteObligations = BTreeSet<(String, usize)>;
 /// in both arms of a trailing `if (rc == SQLITE_OK) ... else ...`: every
 /// write is nested inside a conditional, and yet no returning path leaves the
 /// outputs untouched. Judging such a function by position alone reports its
-/// callers' variables uninitialised (task 988, aurora_lint).
+/// callers' variables uninitialised.
 ///
 /// One arm of that function writes `*pa` only by handing `pa` to
 /// `sqlite3Fts5ExprPoslist`, which a structural walk cannot see through. That
 /// leg returns an obligation rather than a verdict, so the interprocedural
-/// half of the answer is deferred instead of guessed (task 1011, aurora_lint).
+/// half of the answer is deferred instead of guessed.
 ///
 /// Only an if/else with BOTH arms covered counts. A bare `if` without an
 /// `else` and a loop that may run zero times are left as partial -- which is
 /// the honest reading and the one the fixture depends on: `set_flag`'s
 /// `if`/`else if` has no final `else`. A `switch` is partial too UNLESS it
 /// carries a `default`, which makes it exhaustive by construction; see
-/// `switch_writes_on_all_paths` (task 1025, aurora_lint).
+/// `switch_writes_on_all_paths`.
 ///
 /// Early `return`s are not modelled, matching the simplification
 /// `is_unconditionally_reached` already makes.
@@ -2356,7 +2356,7 @@ fn writes_on_all_paths_capped(
                 .and_then(|l| deref_write_root(&l, false))
                 .is_some_and(|root| root.utf8_text(source.as_bytes()).unwrap_or("") == param);
             // `os_memset(out, 0, n);` is a write on this path with no
-            // assignment operator to find (task 1026, aurora_lint). Asked here
+            // assignment operator to find. Asked here
             // rather than credited outright so a call under an `if` stays a
             // MAY-write, exactly as an assignment under one does.
             let library_writes_here = library_written_names(&expr, source).contains(param);
@@ -2382,7 +2382,7 @@ fn writes_on_all_paths_capped(
 /// exhaustive by construction, so if every arm writes then so does every path
 /// out of the statement. curl's `cw_get_writefunc` assigns all four of its
 /// output parameters in each of its three arms and every caller was still
-/// reported uninitialised (task 1025, aurora_lint).
+/// reported uninitialised.
 ///
 /// A conjunction over the groups, so the obligations are the union — the same
 /// shape the `if`/`else` arm has, one level wider.
@@ -2552,7 +2552,7 @@ fn forwarded_write_obligation(expr: &Node, source: &str, param: &str) -> Option<
             }
             // `Curl_ssl_random(data, (unsigned char *)rnd, sizeof(*rnd))`
             // forwards `rnd` as surely as a bare `rnd` would; matching only a
-            // bare identifier is what hid it (task 1027, aurora_lint).
+            // bare identifier is what hid it.
             let stripped = init_state::strip_arg_casts(&arg);
             if stripped.kind() == "identifier"
                 && stripped.utf8_text(source.as_bytes()).unwrap_or("") == param
@@ -2789,7 +2789,7 @@ fn clean_paths(stmt: &Node, source: &str, param: &str, depth: u32) -> (bool, boo
 }
 
 // ---------------------------------------------------------------------------
-// Conditional-write / return-value correlation (task 1450, aurora_lint)
+// Conditional-write / return-value correlation
 // ---------------------------------------------------------------------------
 
 /// A returning path's classification of its return expression's truthiness.
@@ -3203,7 +3203,7 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
     // dropped the guess flag on a name only `summary` guessed at. Order
     // independence is the point — the caller may swap the two variants to
     // pick which definition governs the fields this fold does not merge
-    // (task 1385, aurora_lint).
+    // .
     let backed = &(&existing.frees_params - &existing.frees_params_guessed)
         | &(&summary.frees_params - &summary.frees_params_guessed);
     existing.frees_params.extend(summary.frees_params);
@@ -3379,7 +3379,7 @@ fn credit_modifies_params(
     // position, so it belongs in this list as well as in the MAY set --
     // otherwise `if (x) os_memset(out, 0, n);` reaches the "no write this pass
     // could see" arm below and is promoted to a MUST-write for having been
-    // invisible (task 1026, aurora_lint). `library_written_roots` already
+    // invisible. `library_written_roots` already
     // returns the root, so no `deref_write_root` here: a bare `out` handed to
     // the call is the dereference, and asking again would reject it.
     for &call in &sweep.calls {
@@ -3403,7 +3403,7 @@ fn credit_modifies_params(
         // Counting it conditional makes the standard shape
         // `rc = f(&n, ...); if (rc) return; use(n);` report uninitialised,
         // and sqlite's fts3 alone writes its outputs that way dozens of
-        // times over (task 988, aurora_lint).
+        // times over.
         entry.1 |= is_unconditionally_reached_modulo_null_guard(node, body, source, name);
     }
 
@@ -3439,7 +3439,7 @@ fn credit_modifies_params(
     // it was built for: curl's `my_md5_init(void *ctx) { md5_init(ctx); }`
     // stayed flagged at every call site. That is why the obligation lattice
     // measured -2 across nine corpora while the class it aimed at was still
-    // standing (task 1027, aurora_lint).
+    // standing.
     //
     // Gated on `forwarded_argument_names` so the coverage walk is asked only
     // about parameters the body actually hands to a callee. Without a gate
@@ -3518,7 +3518,7 @@ fn credit_modifies_params(
 /// call under a preprocessor branch inside the body counts: mbedtls's
 /// zeroize reaches `explicit_bzero` / `memset_s` / `SecureZeroMemory` /
 /// `memset_func` through four `#if` arms, every one of which clears
-/// (task 1127).
+/// .
 fn credit_clears_params(
     calls: &[Node],
     source: &str,
@@ -3630,7 +3630,7 @@ fn credit_frees_params(
         // is readable right up to the call and says nothing past it. Record
         // that the sole parameter went in, so a consumer can tell an empty
         // free set that MEANS "releases nothing" from one that means "the
-        // release went somewhere unreadable" (task 1367). Recorded for every
+        // release went somewhere unreadable". Recorded for every
         // such call, not only deallocator-shaped ones -- the callee has no
         // name to be shaped like. One parameter only; see the field's doc
         // for why a second one makes it worthless.
@@ -3682,7 +3682,7 @@ fn credit_frees_params(
             // about which one is released, and crediting them all makes the
             // summary claim the function frees parameters it merely reads --
             // curl's `Curl_cwriter_free(data, writer)` then reports every
-            // caller's `data` as freed (task 1197).
+            // caller's `data` as freed.
             let mut resolving = real.iter().filter(|&&arg| {
                 strip_free_argument(arg)
                     .map(|(t, _)| t.utf8_text(source.as_bytes()).unwrap_or(""))
@@ -3729,7 +3729,7 @@ fn credit_frees_params(
 /// parameter is real. `macro_aliases` are resolved the way the fixpoint
 /// resolves them.
 ///
-/// The contradiction (task 1289): a callee whose body was seen to work
+/// The contradiction: a callee whose body was seen to work
 /// THROUGH that argument -- freeing its fields (`frees_param_fields`) or
 /// writing them (`modifies_params`) -- and not to free the argument itself.
 /// curl's `up_free(data)` releases `data->state.up.scheme` and seven
@@ -3941,7 +3941,7 @@ fn destination_outlives_call(
 /// why MUST cannot express the register-or-free contract this exists for.
 /// The evidence is the callee's own body and nothing else: no name shape
 /// participates, because the wrong default here trades a large false-positive
-/// win for silently dropped leaks (task 1198).
+/// win for silently dropped leaks.
 fn credit_stores_params(
     sweep: &BodySweep,
     body: &Node,
@@ -3992,7 +3992,7 @@ fn credit_stores_params(
         // escaping: hostap's `dl_list_init(list)` writes `list->next = list`,
         // and that pointer dies with the block it points into. Crediting it
         // made every `dl_list_init(&obj->sessions)` in a constructor read as
-        // the object reaching a container (task 1227).
+        // the object reaching a container.
         if deref_write_root(&left, false)
             .is_some_and(|root| root.utf8_text(source.as_bytes()) == Ok(stored_name))
         {
@@ -4114,10 +4114,10 @@ fn analyze_param_usage(
     // conditional (see `function_definition_is_preproc_conditional`) may be
     // a mutually-exclusive alternate body, not a same-behavior variant, so
     // its free-related facts must not be unioned into the cross-file
-    // summary as if they always held (task 654).
+    // summary as if they always held.
     if credit_frees {
         credit_frees_params(&sweep.calls, body, source, params, function_macros, summary);
-        // Gated with the free facts and for the same reason (task 654): a
+        // Gated with the free facts and for the same reason: a
         // definition inside a preprocessor conditional may be a
         // mutually-exclusive alternate body, and an ownership fact taken
         // from one arm must not be unioned in as if it always held.
@@ -4140,7 +4140,7 @@ fn analyze_param_usage(
         // handle, then close *that*, leaking the original) — both bodies
         // contain the literal substring `fclose(data)`. Only the "closes
         // first" ordering is a real, provable close of the value the caller
-        // handed in (task 146).
+        // handed in.
         if closes_param_before_reassignment(sweep, source, param_name) {
             summary.closes_params.insert(idx);
         }
@@ -4182,7 +4182,7 @@ fn analyze_param_usage(
             || line_has_arrow_or_subscript_write(body_text, param_name)
             || is_fd_set_macro_write(&sweep.calls, source, param_name)
             // `os_memset(elems, 0, sizeof(*elems))` writes the output with no
-            // assignment operator anywhere (task 1026, aurora_lint).
+            // assignment operator anywhere.
             || library_written.contains(param_name)
         {
             summary.modifies_params.insert(idx);
@@ -4688,7 +4688,7 @@ fn body_matches_alias_null_check(body_text: &str, param_name: &str) -> bool {
 /// transitive free propagation. `body` is the enclosing function's own
 /// compound_statement, threaded through unchanged across the recursion (distinct from `node`,
 /// the recursive traversal cursor) so `is_unconditionally_reached` can be
-/// checked against it at each call site (task 401).
+/// checked against it at each call site.
 fn collect_param_passthroughs(
     node: &Node,
     body: &Node,
@@ -4715,7 +4715,7 @@ fn collect_param_passthroughs(
                             // `backend_free((unsigned char *)p)` forwards
                             // `p` as surely as a bare `p` would; matching only
                             // a bare identifier left the transitive-free walk
-                            // with no edge to follow (task 1034, aurora_lint).
+                            // with no edge to follow.
                             let stripped = init_state::strip_arg_casts(&arg);
                             if stripped.kind() == "identifier" {
                                 let arg_text = stripped.utf8_text(source.as_bytes()).unwrap_or("");
@@ -4814,7 +4814,7 @@ fn collect_param_forwards_to_indirect_call(
 /// spelling itself. `#define zfree valkey_free` renames a symbol at link
 /// time, but the only body the scan ever saw is `void zfree(void *ptr)`, so
 /// resolving the edge to `valkey_free` reached nothing, and valkey's
-/// `decrRefCount` -> `zfree(o)` freed nothing in any summary (task 1227).
+/// `decrRefCount` -> `zfree(o)` freed nothing in any summary.
 /// `free` itself always wins: an alias onto the literal is the mbedtls case
 /// and needs no body.
 fn edge_target<'a>(
@@ -4845,7 +4845,7 @@ fn edge_target<'a>(
 /// never as a free. Resolving the edge's callee through the aliases here --
 /// the first point where every file's `#define`s are merged -- lets that
 /// edge reach `free` directly, or a real wrapper's summary through a renamed
-/// spelling (task 1128).
+/// spelling.
 pub fn propagate_transitive_frees(
     summaries: &mut HashMap<String, FunctionSummary>,
     macro_aliases: &HashMap<String, String>,
@@ -4906,7 +4906,7 @@ pub fn propagate_transitive_frees(
     // transitive free is only trustworthy for MEM30-C/MEM31-C's "mark as
     // definitely freed" purposes when BOTH the callee's own free and the
     // forwarding call site in each hop of the chain are unconditional
-    // (task 401) — otherwise a helper that only frees its argument on an
+    // — otherwise a helper that only frees its argument on an
     // error path gets treated as always freeing it at every call site.
     for _pass in 0..10 {
         let mut changed = false;
@@ -5230,7 +5230,7 @@ pub fn propagate_transitive_closes(summaries: &mut HashMap<String, FunctionSumma
 /// resolved through `macro_aliases` first, and an edge landing on one of
 /// `call_roles::MEMORY_CLEARING_FUNCS` at argument 0 counts by itself, so
 /// `#define port_memset memset` and a wrapper-of-a-wrapper both reach the
-/// clear (task 1127).
+/// clear.
 pub fn propagate_transitive_clears(
     summaries: &mut HashMap<String, FunctionSummary>,
     macro_aliases: &HashMap<String, String>,
@@ -5394,7 +5394,7 @@ fn unwrap_to_call_node<'a>(mut node: Node<'a>) -> Node<'a> {
 /// wrapper that hands back what an allocating callee produced is an
 /// allocator to ITS caller. `scard = os_zalloc(sizeof(*scard)); ... return
 /// scard;` names no allocator, and before this every os_zalloc-backed
-/// constructor was dark to MEM31-C (task 1227). Bounded like the sibling
+/// constructor was dark to MEM31-C. Bounded like the sibling
 /// fixpoints.
 pub fn propagate_returns_allocation(summaries: &mut HashMap<String, FunctionSummary>) {
     for _pass in 0..10 {
@@ -5430,7 +5430,7 @@ pub fn propagate_returns_allocation(summaries: &mut HashMap<String, FunctionSumm
 /// (a wrapper returning a linking constructor's object). Run AFTER
 /// `propagate_transitive_stores`, which is what makes a forwarding wrapper
 /// like hostap's `dl_list_add_tail` a store at all. Monotone; a rerun after
-/// `resolve_includes` widens the alias map is harmless (task 1227).
+/// `resolve_includes` widens the alias map is harmless.
 pub fn propagate_returned_value_escapes(
     summaries: &mut HashMap<String, FunctionSummary>,
     macro_aliases: &HashMap<String, String>,
@@ -5731,7 +5731,7 @@ mod tests {
         // parsed and both produce a summary for the same name. The `#else`
         // stub is textually last, so a plain insert let the do-nothing variant
         // govern every caller -- `fill` looked like it writes nothing at all
-        // (task 1083, aurora_lint).
+        // .
         //
         // Mirrored the way the cross-file test is, so neither arm alone gives
         // this answer: the real arm alone puts index 1 in MUST, the stub arm
@@ -5888,7 +5888,7 @@ mod tests {
 
     #[test]
     fn test_modifies_params_detects_walking_pointer_deref_write() {
-        // curl's Curl_rand_bytes shape (task 589): `*rnd++ = value;` -- a
+        // curl's Curl_rand_bytes shape: `*rnd++ = value;` -- a
         // bare deref-write with a post-increment interposed between the
         // identifier and `=`, which a literal `"*rnd ="` substring match
         // misses entirely.
@@ -5938,7 +5938,7 @@ mod tests {
         assert!(summary.can_return_null);
     }
 
-    /// hostap's wpa_sm_write_assoc_resp_ies shape (task 1217): a scratch
+    /// hostap's wpa_sm_write_assoc_resp_ies shape: a scratch
     /// buffer is realloc()ed and freed inside, and what comes back is a
     /// cursor into the caller's buffer. The substring scan called this an
     /// allocator and every caller's cursor was then a "leak".
@@ -6040,7 +6040,7 @@ mod tests {
 
     /// The fold must give the same answer whichever variant is folded into
     /// which, because the caller swaps them to choose which definition
-    /// governs the fields the fold does not merge (task 1385). The guess
+    /// governs the fields the fold does not merge. The guess
     /// bookkeeping was the one asymmetric field: evidence in one variant
     /// clears the other's guess, and that must not depend on the side it
     /// sits on.
@@ -6793,7 +6793,7 @@ void *extra_leak_marker(void){
     /// volatile function pointer, under one of several `#if` arms, and is
     /// itself under `#if !defined(..._ALT)`. It clears its first parameter
     /// by every one of those routes, and nothing about its name may be
-    /// needed to know so (task 1127).
+    /// needed to know so.
     #[test]
     fn clears_params_sees_through_volatile_pointer_and_preproc_arms() {
         let code = r#"
@@ -6835,7 +6835,7 @@ void *extra_leak_marker(void){
     /// A wrapper that forwards its buffer to a clearer clears it too, and
     /// an object-like alias of a library clearer counts at the edge: the
     /// alias map is the project's, so the `#define` need not be in this
-    /// file (task 1127).
+    /// file.
     #[test]
     fn clears_params_propagates_through_forwarding_and_aliases() {
         let code = r#"
