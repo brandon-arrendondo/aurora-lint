@@ -1,7 +1,7 @@
 """BenchDB.project_relpath -- absolute scan path to portable, label-keyed path.
 
-Pinned because the defect this function had was SILENT BY CONSTRUCTION
-(task 762): findings and ground-truth labels both normalize through here, so
+Pinned because the defect this function had was SILENT BY CONSTRUCTION:
+findings and ground-truth labels both normalize through here, so
 using the last `/<project>/` segment instead of the first left the two sides
 agreeing and every precision/recall figure intact, while the stored path named
 no file on disk. Nothing downstream errored. What broke was resolving a label

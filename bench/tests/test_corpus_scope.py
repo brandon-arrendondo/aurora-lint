@@ -91,7 +91,7 @@ class TestInScope(unittest.TestCase):
             self.assertFalse(corpus.in_scope("proj", "docs/a.c"))
 
     def test_bare_basename_is_out_of_scope_under_a_directory_include(self):
-        """The downstream symptom of the project_relpath defect (task 762):
+        """The downstream symptom of the project_relpath defect:
         a path wrongly collapsed to its basename matches no directory glob,
         so the finding silently reads as out of scope."""
         with self._with_scope(["include/**"]):
@@ -100,7 +100,7 @@ class TestInScope(unittest.TestCase):
 
 
 class TestScanExcludes(unittest.TestCase):
-    """Task 1218: an untracked/gitignored .c/.h that the real scan already
+    """An untracked/gitignored .c/.h that the real scan already
     drops via --exclude is not contamination, so check_repo() must bucket it
     separately rather than flagging it the same as a file that will actually
     be scanned. This is a different mechanism from in_scope() above --

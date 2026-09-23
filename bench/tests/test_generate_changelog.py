@@ -3,8 +3,8 @@ ADR-0007 / ADR-0009 gate between the task database and the public CHANGELOG.md.
 
 Task titles are internal working notes and routinely locate a defect in a
 real-world corpus ("confirmed OOB write at foo.c:579"); CHANGELOG.md ships in
-every release tarball. Until task 1375 the generator published every done
-task's title verbatim; ADR-0009 (task 1379) then narrowed the changelog to
+every release tarball. The generator used to publish every done task's title
+verbatim; ADR-0009 then narrowed the changelog to
 Added / Fixed / Removed notes written for publication. These tests pin the
 layers, against a real SQLite task table with sensitive titles rather than a
 hand-rolled fixture object, so a schema drift in `load_tasks` (a renamed
