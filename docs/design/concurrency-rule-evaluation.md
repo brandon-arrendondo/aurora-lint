@@ -1,11 +1,11 @@
 # Evaluation methodology for the concurrency rules (CON03-C / CON07-C / CON33-C)
 
-**Status:** PLAN ONLY (2026-08-27, task 151). No rule code, harness code, or
+**Status:** PLAN ONLY (2026-08-27). No rule code, harness code, or
 TOML changed. Deliverable is this document; implementation of anything
 proposed below (ISR/thread reachability analysis, a context-tagging
 pre-filter, doc updates) is explicit follow-on work, filed separately.
 
-**Driver:** Task 151 originally framed CON33-C's 3% and CON07-C's 8% Juliet
+**Driver:** This plan originally framed CON33-C's 3% and CON07-C's 8% Juliet
 TP rates as grounds to demote/disable both rules. That framing was scrapped
 2026-06-21 (Medium severity is CERT's own risk-assessment rating, not ours
 to override, and the rules stay enabled). The re-scoped question: are these
@@ -18,10 +18,10 @@ sinking FP-reduction effort in either direction.
 ## 1. What already exists — CON03/07/33-C have real adjudicated data
 
 This task's discovery questions turn out to already be substantially
-answered by delta-adjudication work done for other reasons (task 532's
-mid-tier/long-tail bundles, tasks 546/547/549). Re-litigating that data
-was most of this task's actual work; nothing below required a new
-benchmark run.
+answered by delta-adjudication work done for other reasons (an earlier
+pass's mid-tier/long-tail bundles, and CON07-C/CON03-C/CON33-C's own
+delta-adjudications). Re-litigating that data was most of this plan's
+actual work; nothing below required a new benchmark run.
 
 ### Per-rule current state
 
@@ -32,23 +32,23 @@ benchmark run.
 | CON33-C | CWE-330, 377, 676 | 3.0% (CWE-377; 1.4% flaw-detection) | 0% (n/a — 0 TP) | 16 in-scope combined w/ CON34-C+CON37-C / 0 TP / 16 FP |
 
 Sources: `docs/juliet-coverage.md` (generated from `data/benchmarks.db`),
-tasks 546/547/549 delta-adjudications (private audit archive).
+CON07-C/CON03-C/CON33-C's delta-adjudications (private audit archive).
 
 ### Root causes, already characterized per-finding
 
-- **CON03-C** (task 547, mosquitto): 6 genuine TP — a real cross-thread
+- **CON03-C** (mosquitto): 6 genuine TP — a real cross-thread
   init-guard race (`net_mosq.c:87`) and 5 signal-handler-flag visibility
   bugs (plain `bool` set in a signal handler, should be
   `volatile sig_atomic_t`). 12 FP — mosquitto's broker event loop is
   single-threaded (`no pthread_create anywhere in src/*.c`) but flagged
   anyway.
-- **CON07-C** (task 546, 45/45 FP across sqlite/curl/lua/mosquitto/raylib):
+- **CON07-C** (45/45 FP across sqlite/curl/lua/mosquitto/raylib):
   three causes — (a) flagged variable is `static const`, never mutated,
   misidentified as a compound-RMW target; (b) call site is genuinely
   single-threaded by design; (c) the signal-handler-flag idiom (set in a
   handler, polled once per main-loop tick) is a standard, correct pattern,
   not an unsynchronized RMW race.
-- **CON33-C** (task 549, 0/16 combined with CON34-C/CON37-C in mosquitto):
+- **CON33-C** (0/16 combined with CON34-C/CON37-C in mosquitto):
   same single-threaded-broker misidentification as CON07-C — the checker
   fires on a fixed list of non-reentrant library function names
   (`strtok`, `asctime`, `rand`, …) with **no check at all** for whether the
@@ -77,7 +77,7 @@ gap, not a rediscovery of something already built.
 
 This directly answers discovery question 2 from the task body ("is the FP
 signal concentrated, or random noise") — **it is concentrated**, and it was
-already concentrated and named before this task started; task 151's own
+already concentrated and named before this plan started; this plan's own
 job was to notice that the existing adjudication data had already answered
 it.
 
@@ -167,7 +167,7 @@ structural problem that has nothing to do with rule quality:
    the thread-creation call is indirected through a wrapper function name
    (`stdThreadCreate`) rather than a literal `pthread_create`/
    `CreateThread` call in the testcase file itself — a literal-name-list
-   reachability check (the shape task 608 would implement) would need to
+   reachability check (the shape Follow-on task C below would implement) would need to
    resolve that wrapper (in a separate TU, `testcasesupport/std_thread.c`)
    back to a real thread-creation primitive to get credit here. Confirmed
    CON07-C's current implementation does no such check at all (`grep` for
@@ -175,7 +175,7 @@ structural problem that has nothing to do with rule quality:
    consistent with §1's "no reachability primitive" finding. Net: even
    the one salvageable case requires cross-TU call resolution that
    doesn't exist yet — not a quick win, and not worth pursuing ahead of
-   task 608 if that ever gets scoped.
+   Follow-on task C if that ever gets scoped.
 
 ---
 
@@ -236,14 +236,14 @@ not built here):
    nothing about that protocol, it just confirms these rules should be
    measured there rather than via Juliet.
 
-3. **Follow-on task A — DONE (task 606, 2026-09-01):** directly inspected
+3. **Follow-on task A — DONE (2026-09-01):** directly inspected
    Juliet's CWE-362/364/366/367/377 test-case source; results folded into
    §2.3 above. Verdict: not salvageable for CON33-C (its CWE-377 mapping
    never constructs a real race in any variant) or CON03-C (no mapping at
    all); theoretically salvageable for CON07-C (its CWE-366 mapping does
    construct real concurrent threads) but only after cross-TU
    wrapper-call resolution that doesn't exist yet — not worth building
-   ahead of task 608.
+   ahead of Follow-on task C.
 
 4. **Follow-on task B (harness change, not a rule change):** add a
    concurrency-context-evidence tag to the bench/adjudication pipeline —
@@ -253,9 +253,9 @@ not built here):
    a `signal()`/`sigaction()` registration, or a function name matching
    the existing ISR heuristic) reachable from the flagged site. This is
    deliberately **not** the full ISR/thread call-graph reachability
-   analysis (that's Option B from the original task-151 body / follow-on
+   analysis (that's Option B from this plan's original body / follow-on
    task C below) — it's a cheap post-hoc classifier over already-collected
-   violations that can retroactively re-score tasks 546/547/549's existing
+   violations that can retroactively re-score CON07-C/CON03-C/CON33-C's existing
    labeled data and quantify the context-present vs. context-absent
    precision split described in §3 Q3, before committing to the more
    expensive fix.
@@ -264,13 +264,13 @@ not built here):
    real ISR/thread-reachability call-graph analysis, so CON03/07-C only
    fire when the flagged variable is actually reachable from a
    registered ISR or a second thread. Only worth scoping once task B
-   quantifies the expected payoff (the original task-151 body's own
+   quantifies the expected payoff (this plan's own original
    estimate — "preserves ~26 CON07-C + ~46 CON03-C genuine hits" on
    Catapult alone — suggests this is real, but should be re-confirmed
    against the broader real-world set from B before committing
-   engineering time, per task 150's standing "no big infra bets until the
+   engineering time, per a standing "no big infra bets until the
    backlog thins" guidance).
 
-None of A/B/C should be started as part of closing this task — file them
-separately per task 151's own instruction that implementation is
+None of A/B/C should be started as part of closing this plan — file them
+separately per this plan's own instruction that implementation is
 follow-on work.
