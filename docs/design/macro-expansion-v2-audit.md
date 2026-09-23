@@ -1,10 +1,11 @@
 # Macro Expansion v2: Full Blast-Radius Audit & Design Recommendation
 
-**Status:** Research complete (task 602, 2026-08-26). This is a **research
+**Status:** Research complete (2026-08-26). This is a **research
 document only** — no rule/engine code was changed to produce it. It
 supersedes/extends `docs/design/macro-expansion.md` (keep that file for
 Phase 0-3 history); read this one for the current-state inventory and the
-go-forward decision on tasks 199, 554, 573, 589.
+go-forward decision on the const_eval DRY, ARR30-C, DCL41-C and
+EXP33-C gaps.
 
 **tl;dr recommendation:** do **not** build a general pre-expansion pass.
 Extend `macro_expand.rs` with three narrow, targeted capabilities (one per
@@ -25,9 +26,9 @@ to the existing per-rule-opt-in engine. See §3 for the full reasoning.
 | `src/rules/cert_c/MEM/MEM31-C/mem31_c.rs` (via `function_summary.rs:1274`, `frees_param_fields`) | `macro_nulls_param_indices` | Same as above, applied to `FunctionSummary` computation instead of a rule directly | Low, same reasoning. |
 | `src/rules/cert_c/MEM/MEM12-C/mem12_c.rs` | `collect_function_macros`, `macro_frees_param_indices` | Structural: does the macro release the param via `free`/`fclose`/`close`? | Low. |
 | `src/rules/cert_c/EXP/EXP36-C/exp36_c.rs` | `collect_function_macros` | Opaque/value-only (inspects macro definitions, not dataflow effect) | Low. |
-| `src/rules/cert_c/EXP/EXP33-C/exp33_c.rs` | `collect_function_macros`, `macro_output_param_indices` | Structural: does the macro assign a param as a whole object (`(param) = …`)? | **Medium** — real expansion would let the *general* init-state CFG walk see the assignment directly, which is strictly more precise (also catches conditional/partial writes the point-function's whole-object-only model misses). Task 589 needs this rule's model extended to *forwarding*-macros too (see §1c). |
+| `src/rules/cert_c/EXP/EXP33-C/exp33_c.rs` | `collect_function_macros`, `macro_output_param_indices` | Structural: does the macro assign a param as a whole object (`(param) = …`)? | **Medium** — real expansion would let the *general* init-state CFG walk see the assignment directly, which is strictly more precise (also catches conditional/partial writes the point-function's whole-object-only model misses). The EXP33-C forwarding-macro item needs this rule's model extended to *forwarding*-macros too (see §1c). |
 | `src/rules/cert_c/EXP/EXP34-C/exp34_c.rs` | `macro_writes_param_indices` | Structural: writes through the pointer itself (`param->f=`, `param[i]=`, `*param=`), superset of output-param | Medium, same reasoning as EXP33. |
-| `src/rules/cert_c/ARR/ARR30-C/arr30_c.rs` | `collect_function_macros` | Opaque/value-only, file-local (already migrated off its private duplicate per macro-expansion.md §10) | Low for this use; ARR30's *other* macro gap (task 554, allocation-size-expression) is a **separate, unaddressed property** — see §1c. |
+| `src/rules/cert_c/ARR/ARR30-C/arr30_c.rs` | `collect_function_macros` | Opaque/value-only, file-local (already migrated off its private duplicate per macro-expansion.md §10) | Low for this use; ARR30's *other* macro gap (allocation-size-expression) is a **separate, unaddressed property** — see §1c. |
 | `src/analyze/prescan.rs` | `collect_function_macros` | Collection-only: builds the cross-file `ProjectContext::function_macros` table consumed by the callers above | N/A — infrastructure. |
 | `src/analyze/function_summary.rs` | `macro_nulls_param_indices` | Structural, feeds `frees_param_fields` | Low. |
 
@@ -40,7 +41,7 @@ source (no hit in the call-site grep) — the doc's row is stale on that
 point (see §1d). MEM12-C is a real consumer not listed in that row at all
 (it's newer than the doc's Phase-3 stock-take).
 
-### 1b. `const_eval` idiom consumers (collect-per-file + merge-cross-file, task 199's target)
+### 1b. `const_eval` idiom consumers (collect-per-file + merge-cross-file, the DRY item's target)
 
 All of these call `src/analyze/const_eval.rs`'s `collect_macro_constants` /
 `collect_macro_aliases` / `try_evaluate_*`, then merge with
@@ -53,7 +54,7 @@ function-like-macro engine above.
 |---|---|---|
 | INT30-C, INT32-C, INT33-C, INT34-C | Object-like constant value (used in overflow-guard/threshold detection) | Low — a real preprocessor would resolve the same values, typically more completely (recursive macro-of-macro, arithmetic on non-literal operands). Recall-neutral to positive. |
 | FIO30-C | Object-like constant value | Low, same. |
-| FLP03-C | Object-like constant (text-based, structurally incompatible per the capability catalog — flagged as its own migration, task 501, unrelated to this audit) | Low for value resolution; the FLP03-specific text-vs-AST mismatch is orthogonal to macro expansion and already tracked. |
+| FLP03-C | Object-like constant (text-based, structurally incompatible per the capability catalog — flagged as its own tracked migration, unrelated to this audit) | Low for value resolution; the FLP03-specific text-vs-AST mismatch is orthogonal to macro expansion and already tracked. |
 | STR02-C | Object-like alias (`#define SYSTEM system`) | Low. |
 | ERR33-C | Object-like constant | Low. |
 | ENV03-C, ENV33-C | Object-like constant/alias, taint-relevant | Low. |
@@ -101,9 +102,9 @@ DRY task (extracting a shared `looks_like_macro_constant_name(&str) -> bool`
 into `src/utility/cert_c/`), but it is a naming heuristic, not a macro-
 expansion-engine gap, and is out of scope for the engine-vs-pass decision
 this task is gating. Recommend filing it as its own low-priority tech-debt
-ticket, not folding it into 199/554/573/589.
+ticket, not folding it into the other tracked gaps.
 
-**RESOLVED (task 603, v0.4.288):** filed and done as its own tech-debt
+**RESOLVED (an earlier pass, v0.4.288):** filed and done as its own tech-debt
 ticket. The shared helper landed as
 `utility::cert_c::ast_utils::is_likely_macro_constant` (named for the
 existing per-rule spelling, not the `looks_like_macro_constant_name`
@@ -112,7 +113,7 @@ EXP08-C's copy turned out to be **unreachable dead code** — the preceding
 `if node.kind() == "identifier"` branch returns unconditionally, and `text`
 is lowercased before the check, so `is_uppercase()` could never hold — and
 was deleted rather than wired to the shared helper; whether that exclusion
-should be made live is a behavior question, tracked as task 618. Gated
+should be made live is a behavior question, left for a follow-up. Gated
 byte-identical over the full Juliet suite (58,784 files, 4,457 findings) and
 **all 9 real-world projects at their pinned commits** (1,345 findings: curl
 100, hostap 447, libcrc 0, lua 16, mosquitto 27, sqlite 506, pureftpd 29,
@@ -152,7 +153,7 @@ Re-verified every row in §10's table against current source:
   calls the shared `collect_function_macros` (verified at
   `arr30_c.rs:226`, with an explicit comment noting the migration from its
   former private extractor). No longer duplicated for *this* property.
-  ARR30-C's task-554 gap is a **different, new** property (size-expression),
+  ARR30-C's allocation-size-expression gap is a **different, new** property (size-expression),
   not a regression of the migrated one.
 - **"const_eval consumers — DRY candidate":** confirmed accurate, 11/11
   match (§1b above).
@@ -160,7 +161,7 @@ Re-verified every row in §10's table against current source:
   KEEP":** spot-checked several from each list; still accurate.
 - **"Local is_likely_macro_constant name heuristic — KEEP" (MEM05, ARR32):**
   undercounted — see §1c drift note (MEM33-C, DCL03-C, EXP08-C also do
-  this). *Fixed in task 603: row now reads MEM05, ARR32, MEM33, DCL03 and
+  this). *Fixed in an earlier pass: row now reads MEM05, ARR32, MEM33, DCL03 and
   all four share one helper; EXP08-C's copy was dead code, deleted.*
 
 ---
@@ -250,12 +251,12 @@ rule needs to keep its *own* raw view alongside the expanded one (all §1c
 scalar resolution becomes redundant (§1b rows — likely yes, but marginal
 benefit as noted).
 
-### 3d. Disposition for tasks 573, 589, 554
+### 3d. Disposition for the DCL41-C, EXP33-C and ARR30-C gaps
 
 All three: **fix now as targeted extensions to `macro_expand.rs`.** None
 should wait for a unifying pass, because no unifying pass is recommended.
 
-- **Task 573 (DCL41-C structural expansion):** Add a narrow, DCL41-C-
+- **DCL41-C structural expansion:** Add a narrow, DCL41-C-
   specific helper — e.g. `macro_case_label_indices(table, name) ->
   Vec<i64>` or a `is_structural_case_macro` predicate — that inspects a
   macro's body for a `case N:`/`default:` label shape (paralleling how
@@ -265,7 +266,7 @@ should wait for a unifying pass, because no unifying pass is recommended.
   the label-detection question only — do not build a general "expand
   control-flow macros into the CFG" mechanism; DCL41-C's structural check
   doesn't need dataflow, just "is this position a case label."
-- **Task 589 (EXP33-C forwarding-macro):** Add a
+- **EXP33-C forwarding-macro:** Add a
   `macro_forwarded_call_name(table, name) -> Option<(String, Vec<usize>)>`-
   style helper: recognize a macro whose entire body is a single
   `call_expression` whose arguments are the macro's own parameters (in
@@ -277,7 +278,7 @@ should wait for a unifying pass, because no unifying pass is recommended.
   `macro_output_param_indices`. Per the task's own precision-risk note,
   gate strictly on *positional identity* (reject reordered/dropped-arg
   forwarding) to avoid introducing false negatives.
-- **Task 554 (ARR30-C allocation-size-expression):** Add a
+- **ARR30-C allocation-size-expression:** Add a
   `macro_expand_size_expression(table, name, args) -> Option<String>` (or
   reuse `expand_invocation`, which the engine already has, then feed the
   *expanded text* into `buffer_size.rs`'s existing
@@ -303,8 +304,8 @@ Re-open this decision only if a **fourth or fifth** distinct macro-property
 gap surfaces that (a) is not a property `macro_expand.rs` can absorb as a
 single new query function, and (b) recurs across multiple rules rather than
 being specific to one. Nothing found in this audit meets that bar today —
-573/589/554 are three independent single-rule gaps, and the const_eval/
-naming-heuristic consumers found in §1b/§1c don't need expansion at all.
-Task 199 (const_eval DRY) remains a separate, low-priority mechanical
+The DCL41-C, EXP33-C and ARR30-C items are three independent single-rule
+gaps, and the const_eval/naming-heuristic consumers found in §1b/§1c
+don't need expansion at all. The const_eval DRY item remains a separate, low-priority mechanical
 refactor, unaffected by this recommendation — it can proceed independently
 once un-gated.
