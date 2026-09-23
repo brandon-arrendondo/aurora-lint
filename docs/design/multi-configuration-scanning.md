@@ -1,6 +1,6 @@
 # Multi-configuration scanning: enumeration vs. a declared configuration
 
-**Status:** Research complete (aurora_lint task 1422, 2026-09-22). **Research
+**Status:** Research complete (2026-09-22). **Research
 document only** — no engine, rule or CLI code was changed to produce it, and
 nothing here is an implementation commitment. Follow-up to ADR-0010's
 Consequences, which names this as research; scoped to **name resolution
@@ -46,8 +46,8 @@ definitions, which one should a collector keep?** Everything below is about
 that and nothing else. The task's framing question — "does aurora-lint ever
 need to scan a corpus's non-primary configurations itself?" — is answered by
 Decision 7 on the measurement side (onboard the configuration as its own
-oracle, no new scanner capability needed, cf. raylib's platform backends,
-aurora_lint 1042) and by §5–§7 here on the resolution side.
+oracle, no new scanner capability needed, cf. raylib's platform backends)
+and by §5–§7 here on the resolution side.
 
 ## 2. What exists today
 
@@ -257,7 +257,7 @@ attributed all of it to the profile. Nothing analysed wrongly because of this �
 the drop is correct either way — but it inflated the apparent reach of the
 platform table, which is the exact quantity this research is about.
 
-**Fixed in task 1429**, with one correction to the premise above: the
+**Fixed in a later pass**, with one correction to the premise above: the
 substrate's reason does *not* by itself distinguish these. `AlwaysDefined` and
 `NeverDefined` are each produced by two causes — a local `#define`/`#undef`, or
 a caller assumption about a macro the file never mentions — so splitting on
@@ -274,9 +274,9 @@ it, and the report now has `assumed-dead-definition` and
 | **A** | cppcheck-style enumeration: k assumption tables per file, k collector+rule passes, union the results | k× the whole pipeline; cap binds above 3 axes on 80–115 files per large corpus | High: cache keyed per context, k-way merge, per-config attribution in findings | Union semantics (forced by Decision 1) grows the finding set into unadjudicated `(file, line, rule)` keys → whole-corpus re-adjudication before the next precision claim | **No** |
 | **B** | `--platform` enum switch (`posix`/`win32`/…) selecting a canned table | ~0 runtime; `platform_assumptions()` is already the one choke point | Low | Default unchanged ⇒ zero delta; a non-default profile changes name resolution only | **Not on its own** — addresses ≤30% of the choices (§6), and its vocabulary can't express `NDEBUG` or `CONFIG_SAE` |
 | **C** | Keep alternatives: generalize `collect_function_macro_alternatives`, let the consumer pick from local context | ~0 runtime (same line scan); memory linear in alternatives, which §6 bounds at hundreds per corpus | Medium, but **per-consumer and opt-in** — MSC13-C is the shipped precedent | Per-rule gated, so measurable one rule at a time, the way every other engine capability was rolled out | **Yes, as the primary line** |
-| **D** | Assumption table as input: seed `PlatformAssumptions` from `--compile-commands`' `-D`/`-U`, or an explicit `-D`/`-U`/profile flag | ~0 runtime; the flags are already parsed and the type is already a `HashMap<String, bool>` | Low — one function plus plumbing that exists | Off by default ⇒ zero delta. With a database, resolution follows the configuration the project actually builds; hits the build-config majority B cannot reach | **Yes, cheapest real win** (shipped, task 1430; see the ceiling below) |
+| **D** | Assumption table as input: seed `PlatformAssumptions` from `--compile-commands`' `-D`/`-U`, or an explicit `-D`/`-U`/profile flag | ~0 runtime; the flags are already parsed and the type is already a `HashMap<String, bool>` | Low — one function plus plumbing that exists | Off by default ⇒ zero delta. With a database, resolution follows the configuration the project actually builds; hits the build-config majority B cannot reach | **Yes, cheapest real win** (shipped; see the ceiling below) |
 
-### D's ceiling: `#elif` is not evaluated (measured while implementing, task 1430)
+### D's ceiling: `#elif` is not evaluated (measured while implementing option D)
 
 `lang_parsing_substrate`'s dead-region scanner classifies `#if`, `#ifdef`,
 `#ifndef` and the matching `#else`; an `#elif` condition is never evaluated —
@@ -299,7 +299,7 @@ follow-up worth its own task; it would widen D's reach by about a quarter.
 ### D's second limit: the declaration is per scan, the database is per file
 
 Measured on hostap with a declaration derived from its own `defconfig`
-(task 1430; the `-D`/`-U` set is the defconfig-enabled `CONFIG_*` names the
+(from option D's implementation; the `-D`/`-U` set is the defconfig-enabled `CONFIG_*` names the
 Makefiles turn into flags, so it is a real hostap configuration, though not
 necessarily the one `make` builds from that file — `make`'s conditional
 side-effects are not followed):
@@ -394,7 +394,7 @@ resolution and nothing else").
 ## 8. Follow-ups worth filing (each small, each independent)
 
 1. ~~**Keep `DeadCodeReason` through `DeadRegions`** and split the gap kind
-   accordingly (`platform-dead` vs `locally-dead`).~~ **Done, task 1429** —
+   accordingly (`platform-dead` vs `locally-dead`).~~ **Done** —
    as `assumed-dead-definition` / `locally-dead-definition`. Note for anyone
    reading the original reasoning: keeping the reason was necessary but not
    sufficient, because two of the four reasons have both a local and an assumed

@@ -7,8 +7,8 @@ This is a documentation-only outcome — no rule code changed.
 
 CWE-123's Juliet manifest (`ARR00-C`, `ARR30-C`, `ARR38-C`, `ENV01-C`,
 `EXP33-C`, `EXP39-C`, `STR31-C`, `STR32-C`) scores 0% flaw-hit detection
-across all 168 CWE-123 test cases, in both base and fixed runs. Task 146
-found EXP33-C's 114 file-level "hits" on this CWE were coincidental
+across all 168 CWE-123 test cases, in both base and fixed runs. An
+earlier audit found EXP33-C's 114 file-level "hits" on this CWE were coincidental
 (a different bug on the same file, not the injected flaw line — see commit
 `e4c31831`).
 

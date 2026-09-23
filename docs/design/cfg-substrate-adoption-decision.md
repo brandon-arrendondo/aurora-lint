@@ -24,7 +24,7 @@ aurora-lint's own `cfg.rs` implements all three, and they are load-bearing, not
 theoretical:
 
 - `process_switch` builds one block per `case`/`default` arm with proper
-  `break`-target stacking (task 320's fix for switch-opaque handling).
+  `break`-target stacking (an earlier fix for switch-opaque handling).
 - `goto`/label wiring (`pending_gotos`) connects real control flow that
   null-state and value-range analysis both depend on.
 - `build_function_cfg_with_constants` folds `switch(CONST) { ... }` and
