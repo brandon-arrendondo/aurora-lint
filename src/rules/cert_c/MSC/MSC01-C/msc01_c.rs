@@ -15,7 +15,7 @@
 //!     unanticipated value falls through with no handling at all
 //!
 //! CERT C reference:
-//! https://wiki.sei.cmu.edu/confluence/display/c/MSC01-C.+Strive+for+logical+completeness
+//! <https://wiki.sei.cmu.edu/confluence/display/c/MSC01-C.+Strive+for+logical+completeness>
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};

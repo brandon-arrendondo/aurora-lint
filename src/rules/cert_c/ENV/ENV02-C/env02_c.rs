@@ -7,7 +7,7 @@
 //! with names that differ only in case, which can cause issues on case-insensitive systems.
 //!
 //! CERT C reference:
-//! https://wiki.sei.cmu.edu/confluence/display/c/ENV02-C.+Beware+of+multiple+environment+variables+with+the+same+effective+name
+//! <https://wiki.sei.cmu.edu/confluence/display/c/ENV02-C.+Beware+of+multiple+environment+variables+with+the+same+effective+name>
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};

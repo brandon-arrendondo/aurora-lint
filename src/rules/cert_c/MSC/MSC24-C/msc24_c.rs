@@ -29,7 +29,7 @@
 //! of hostap's ctrl_iface.c findings alone, per an earlier fix's ground_truth).
 //!
 //! CERT C reference:
-//! https://wiki.sei.cmu.edu/confluence/display/c/MSC24-C.+Do+not+use+deprecated+or+obsolescent+functions
+//! <https://wiki.sei.cmu.edu/confluence/display/c/MSC24-C.+Do+not+use+deprecated+or+obsolescent+functions>
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};

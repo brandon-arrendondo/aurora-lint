@@ -9,7 +9,7 @@
 //! actually occur, leading to logic errors.
 //!
 //! CERT C reference:
-//! https://wiki.sei.cmu.edu/confluence/display/c/EXP44-C.+Do+not+rely+on+side+effects+in+operands+to+sizeof,+_Alignof,+or+_Generic
+//! <https://wiki.sei.cmu.edu/confluence/display/c/EXP44-C.+Do+not+rely+on+side+effects+in+operands+to+sizeof,+_Alignof,+or+_Generic>
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};

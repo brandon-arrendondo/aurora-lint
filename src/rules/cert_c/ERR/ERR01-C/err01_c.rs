@@ -8,7 +8,7 @@
 //! as errno may retain values from earlier operations even if subsequent calls succeed.
 //!
 //! CERT C reference:
-//! https://wiki.sei.cmu.edu/confluence/display/c/ERR01-C.+Use+ferror()+rather+than+errno+to+check+for+FILE+stream+errors
+//! <https://wiki.sei.cmu.edu/confluence/display/c/ERR01-C.+Use+ferror()+rather+than+errno+to+check+for+FILE+stream+errors>
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};

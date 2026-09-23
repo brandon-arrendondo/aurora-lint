@@ -10,7 +10,7 @@
 //! - Implicit return types in function definitions
 //!
 //! CERT C reference:
-//! https://wiki.sei.cmu.edu/confluence/display/c/DCL31-C.+Declare+identifiers+before+using+them
+//! <https://wiki.sei.cmu.edu/confluence/display/c/DCL31-C.+Declare+identifiers+before+using+them>
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;

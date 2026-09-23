@@ -18,7 +18,7 @@
 //! wiki example this does not cover.
 //!
 //! CERT C reference:
-//! https://wiki.sei.cmu.edu/confluence/display/c/MSC09-C.+Character+encoding+Use+subset+of+ASCII+for+safety
+//! <https://wiki.sei.cmu.edu/confluence/display/c/MSC09-C.+Character+encoding+Use+subset+of+ASCII+for+safety>
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};

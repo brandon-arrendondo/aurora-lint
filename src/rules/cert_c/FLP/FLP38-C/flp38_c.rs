@@ -13,7 +13,7 @@
 //! argument to a consistent type resolves it.
 //!
 //! CERT C reference:
-//! https://wiki.sei.cmu.edu/confluence/display/c/FLP38-C.+Avoid+undefined+behavior+while+using+type-generic+macro+functions
+//! <https://wiki.sei.cmu.edu/confluence/display/c/FLP38-C.+Avoid+undefined+behavior+while+using+type-generic+macro+functions>
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};

@@ -8,7 +8,7 @@
 //! - Multiple dereferences of pointer parameters (double-fetch vulnerability)
 //!
 //! References:
-//! - https://wiki.sei.cmu.edu/confluence/display/c/CON43-C.+Do+not+allow+data+races+in+multithreaded+code
+//! - <https://wiki.sei.cmu.edu/confluence/display/c/CON43-C.+Do+not+allow+data+races+in+multithreaded+code>
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};

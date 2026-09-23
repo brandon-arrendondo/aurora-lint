@@ -51,7 +51,7 @@
 //! ```
 //!
 //! CERT C reference:
-//! https://wiki.sei.cmu.edu/confluence/display/c/FIO09-C.+Be+careful+with+binary+data+when+transferring+data+across+systems
+//! <https://wiki.sei.cmu.edu/confluence/display/c/FIO09-C.+Be+careful+with+binary+data+when+transferring+data+across+systems>
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};

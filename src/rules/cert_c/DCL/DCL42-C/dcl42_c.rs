@@ -21,7 +21,7 @@
 //!     the result then depends on external state, violating independence
 //!
 //! CERT C reference:
-//! https://wiki.sei.cmu.edu/confluence/display/c/DCL42-C.+Only+call+functions+with+the+unsequenced+or+reproducible+attributes+if+they+actually+have+the+asserted+property
+//! <https://wiki.sei.cmu.edu/confluence/display/c/DCL42-C.+Only+call+functions+with+the+unsequenced+or+reproducible+attributes+if+they+actually+have+the+asserted+property>
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};

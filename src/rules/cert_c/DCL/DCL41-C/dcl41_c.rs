@@ -9,7 +9,7 @@
 //! control flow jumps directly to a case label, leading to undefined behavior.
 //!
 //! CERT C reference:
-//! https://wiki.sei.cmu.edu/confluence/display/c/DCL41-C.+Do+not+declare+variables+inside+a+switch+statement+before+the+first+case+label
+//! <https://wiki.sei.cmu.edu/confluence/display/c/DCL41-C.+Do+not+declare+variables+inside+a+switch+statement+before+the+first+case+label>
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;

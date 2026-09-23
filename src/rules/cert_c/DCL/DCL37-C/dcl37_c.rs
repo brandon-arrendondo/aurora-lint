@@ -10,7 +10,7 @@
 //! - Reserved standard library names (errno, SIZE_MAX, etc.)
 //!
 //! CERT C reference:
-//! https://wiki.sei.cmu.edu/confluence/display/c/DCL37-C.+Do+not+declare+or+define+a+reserved+identifier
+//! <https://wiki.sei.cmu.edu/confluence/display/c/DCL37-C.+Do+not+declare+or+define+a+reserved+identifier>
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};

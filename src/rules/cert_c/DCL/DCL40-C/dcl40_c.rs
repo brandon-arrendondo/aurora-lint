@@ -7,7 +7,7 @@
 //! times with incompatible types. This causes undefined behavior.
 //!
 //! CERT C reference:
-//! https://wiki.sei.cmu.edu/confluence/display/c/DCL40-C.+Do+not+create+incompatible+declarations+of+the+same+function+or+object
+//! <https://wiki.sei.cmu.edu/confluence/display/c/DCL40-C.+Do+not+create+incompatible+declarations+of+the+same+function+or+object>
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;

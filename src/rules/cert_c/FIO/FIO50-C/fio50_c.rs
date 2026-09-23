@@ -49,7 +49,7 @@
 //! ```
 //!
 //! CERT C reference:
-//! https://wiki.sei.cmu.edu/confluence/display/cplusplus/FIO50-CPP
+//! <https://wiki.sei.cmu.edu/confluence/display/cplusplus/FIO50-CPP>
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};

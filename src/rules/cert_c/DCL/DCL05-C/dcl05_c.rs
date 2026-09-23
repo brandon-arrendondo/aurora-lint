@@ -14,7 +14,7 @@
 //! - Integer *ptr;         // pointer declared explicitly
 //!
 //! References:
-//! - https://wiki.sei.cmu.edu/confluence/display/c/DCL05-C.+Use+typedefs+of+non-pointer+types+only
+//! - <https://wiki.sei.cmu.edu/confluence/display/c/DCL05-C.+Use+typedefs+of+non-pointer+types+only>
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;

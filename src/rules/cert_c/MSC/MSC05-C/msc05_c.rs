@@ -12,7 +12,7 @@
 //! return value and is explicitly compliant.
 //!
 //! CERT C reference:
-//! https://wiki.sei.cmu.edu/confluence/display/c/MSC05-C.+Do+not+manipulate+time_t+typed+values+directly
+//! <https://wiki.sei.cmu.edu/confluence/display/c/MSC05-C.+Do+not+manipulate+time_t+typed+values+directly>
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};

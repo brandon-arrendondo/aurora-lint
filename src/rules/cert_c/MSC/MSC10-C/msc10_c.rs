@@ -37,7 +37,7 @@
 //! false positive on a decoder that is in fact correct.
 //!
 //! CERT C reference:
-//! https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc10-c
+//! <https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc10-c>
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg;
