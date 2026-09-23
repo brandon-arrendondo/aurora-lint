@@ -152,8 +152,26 @@ impl CertRule for Mem31C {
         let macro_aliases =
             const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
 
-        // Analyze each function independently for memory leaks
+        // Analyze each function independently for memory leaks. A real C
+        // file never nests one function_definition inside another, but
+        // Lua's lvm.c writes its opcode dispatch as
+        // `vmdispatch(o) { vmcase(OP_X) { ... } vmcase(OP_Y) { ... } }`
+        // where vmdispatch/vmcase are *unexpanded* macro calls (`#define
+        // vmdispatch(o) switch(o)` / `#define vmcase(l) case l:`) --
+        // tree-sitter, parsing the raw unexpanded text, reads each
+        // `IDENT(args) { ... }` shape as its own nested function_definition.
+        // Without filtering, find_descendants_of_kind returns the real
+        // enclosing function AND every one of these nested pseudo-functions,
+        // and each is analyzed as its own independent top-level unit --
+        // producing the exact-duplicate MEM31-C findings task 1394 named
+        // (lua 35 rows -> 25 unique; hostap 1245 -> 1234). Keeping only
+        // outermost function_definitions (no function_definition ancestor)
+        // is a no-op on every normal file and fixes this at the source
+        // rather than deduping at export.
         for func in query::find_descendants_of_kind(*node, "function_definition") {
+            if overflow_helpers::enclosing_function_definition(&func).is_some() {
+                continue;
+            }
             let mut analyzer = MemoryLeakAnalyzer::new(
                 &summaries,
                 &value_only_globals,
