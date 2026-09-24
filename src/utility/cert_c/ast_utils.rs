@@ -1813,7 +1813,6 @@ pub fn misparsed_cast_type_name<'a>(node: &Node, source: &'a str) -> Option<&'a 
 }
 
 /// Check if a node is part of a sizeof expression
-#[allow(dead_code)]
 pub fn is_in_sizeof(node: &Node) -> bool {
     query::nearest_ancestor_of_kind(*node, "sizeof_expression").is_some()
 }

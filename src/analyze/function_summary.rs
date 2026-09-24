@@ -1861,6 +1861,246 @@ fn has_genuine_arrow_read(body_text: &str, param_name: &str) -> bool {
     false
 }
 
+/// The locals initialised or assigned from a pointer cast of `param_name`
+/// -- `char **p = (char **)param;` or `p = (char **)param;`.
+///
+/// The `void *` hand-off idiom: a callee takes `void *` and casts it back to
+/// its real type in a local before using it (Juliet's `_64` sinks, any
+/// callback taking a `void *` context, curl's hash-context initialisers).
+/// What the callee does through such a local, it does to the caller's
+/// object, so `analyze_param_usage` and `credit_modifies_params` credit the
+/// alias's reads and writes to the parameter. `cast_then_deref` only sees the
+/// cast dereferenced in place; before it was narrowed to that, the bare
+/// substring `*)param` covered the aliased reads by accident (and nothing
+/// covered the writes), and narrowing it silently dropped every such callee
+/// out of `dereferences_params` (task 1502: MEM01-C's double free and
+/// EXP33-C's uninitialised read through a `_64` sink both went dark).
+///
+/// A plain `T *p = param;` alias is deliberately not collected: it was never
+/// credited, and widening to it is a separate measurement.
+fn cast_aliases_of(body: &Node, source: &str, param_name: &str) -> Vec<String> {
+    use crate::utility::cert_c::ast_utils;
+    use lang_parsing_substrate::query;
+
+    // A cast of the parameter, parentheses allowed: `(T *)param`, `((T *)param)`.
+    let is_cast_of_param = |value: &Node| {
+        let mut v = *value;
+        while v.kind() == "parenthesized_expression" {
+            match v.named_child(0) {
+                Some(inner) => v = inner,
+                None => return false,
+            }
+        }
+        if v.kind() != "cast_expression" {
+            return false;
+        }
+        let target = init_state::strip_arg_casts(&v);
+        target.kind() == "identifier" && target.utf8_text(source.as_bytes()) == Ok(param_name)
+    };
+
+    let mut aliases: Vec<String> = Vec::new();
+    for node in
+        query::find_descendants_of_kinds(*body, &["init_declarator", "assignment_expression"])
+    {
+        let (lhs, value) = if node.kind() == "init_declarator" {
+            let (Some(d), Some(v)) = (
+                node.child_by_field_name("declarator"),
+                node.child_by_field_name("value"),
+            ) else {
+                continue;
+            };
+            (ast_utils::get_identifier_from_declarator(&d, source), v)
+        } else {
+            let (Some(l), Some(v)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) else {
+                continue;
+            };
+            let plain_assign = node
+                .child_by_field_name("operator")
+                .and_then(|o| o.utf8_text(source.as_bytes()).ok())
+                == Some("=");
+            if l.kind() != "identifier" || !plain_assign {
+                continue;
+            }
+            (l.utf8_text(source.as_bytes()).unwrap_or("").to_string(), v)
+        };
+        if !lhs.is_empty()
+            && lhs != param_name
+            && is_cast_of_param(&value)
+            && !aliases.contains(&lhs)
+        {
+            aliases.push(lhs);
+        }
+    }
+    aliases
+}
+
+/// The accesses in `body` that dereference the local `alias` -- `*alias`,
+/// `alias->f`, `alias[i]` -- other than to take an address: `&alias->f` and
+/// `&alias[i]` name storage without touching it, the same exclusion
+/// `has_genuine_arrow_read` makes for a parameter (curl's
+/// `sa6 = (void *)ss; curlx_inet_pton(AF_INET6, s, &sa6->sin6_addr)` hands
+/// the field to a writer and reads nothing). Asked of the AST: the body-text
+/// `*name` check would also match the alias's own declarator.
+fn alias_derefs<'a>(body: &Node<'a>, source: &str, alias: &str) -> Vec<Node<'a>> {
+    use lang_parsing_substrate::query;
+
+    query::find_descendants_of_kinds(
+        *body,
+        &[
+            "field_expression",
+            "pointer_expression",
+            "subscript_expression",
+        ],
+    )
+    .into_iter()
+    .filter(|n| {
+        let base = match n.kind() {
+            "field_expression" => {
+                let arrow = n
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "->");
+                if !arrow {
+                    return false;
+                }
+                n.child_by_field_name("argument")
+            }
+            "pointer_expression" => {
+                if n.child(0).map(|c| c.kind()) != Some("*") {
+                    return false;
+                }
+                n.child_by_field_name("argument")
+            }
+            _ => n.child_by_field_name("argument"),
+        };
+        let rooted = base.is_some_and(|b| {
+            b.kind() == "identifier" && b.utf8_text(source.as_bytes()) == Ok(alias)
+        });
+        rooted && !is_address_taken(n) && !is_unevaluated(n)
+    })
+    .collect()
+}
+
+/// Whether `param_name`'s cast aliases are null-checked at all, and whether
+/// one is null-checked before anything dereferences it: `(checked,
+/// checked_before_deref)`, the alias half of `checks_null_params` /
+/// `checks_null_params_before_deref`.
+///
+/// Crediting an alias's dereference to its parameter (`cast_aliases_of`)
+/// without crediting its guard made the guarded wrapper look unguarded:
+/// sqlite's `Vdbe *p = (Vdbe *)pStmt; if( p==0 ) return ...; p->rc` put
+/// `pStmt` in `dereferences_params` with no null check, and API00-C fired on
+/// every public entry point forwarding to it. `body_matches_alias_null_check`
+/// cannot see this alias (it looks for `= param`, not `= (T *)param`), and
+/// `first_deref_offset` counts the cast text `*)param` itself as the first
+/// dereference, which cuts off every guard after it.
+///
+/// "Before" is measured against the alias's own first dereference and the
+/// parameter's own first DIRECT one (`*param`, `param->`, `param[`) -- not
+/// the cast, which is where the alias comes from -- so a raw use of the
+/// parameter ahead of the alias's guard is still an unguarded use.
+fn alias_null_checks(
+    body: &Node,
+    source: &str,
+    body_text: &str,
+    param_name: &str,
+    aliases: &[String],
+) -> (bool, bool) {
+    let direct_param_deref = [
+        format!("*{param_name}"),
+        format!("{param_name}->"),
+        format!("{param_name}["),
+    ]
+    .iter()
+    .filter_map(|pattern| body_text.find(pattern.as_str()))
+    .min();
+
+    let mut checked = false;
+    let mut before = false;
+    for alias in aliases {
+        if !body_matches_null_check(body_text, alias) {
+            continue;
+        }
+        checked = true;
+        let first_alias_deref = alias_derefs(body, source, alias)
+            .iter()
+            .map(|n| n.start_byte().saturating_sub(body.start_byte()))
+            .min();
+        let cut = [first_alias_deref, direct_param_deref]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(body_text.len())
+            .min(body_text.len());
+        if body_matches_null_check(&body_text[..cut], alias) {
+            before = true;
+        }
+    }
+    (checked, before)
+}
+
+/// True when `node` sits in an operand C never evaluates -- `sizeof`,
+/// `_Alignof`, `offsetof` -- so `sizeof(*hdr)` reads nothing. hostap's
+/// `if (len < sizeof(*hdr) + ...)` length checks put exactly that shape
+/// ahead of an alias's real accesses, and before this it was the ONLY
+/// "dereference" of `hdr` in `ieee802_1x_tx_status`.
+fn is_unevaluated(node: &Node) -> bool {
+    use crate::utility::cert_c::ast_utils;
+    use lang_parsing_substrate::query;
+
+    ast_utils::is_in_sizeof(node)
+        || query::find_ancestor(*node, |a| {
+            matches!(a.kind(), "alignof_expression" | "offsetof_expression")
+        })
+        .is_some()
+}
+
+/// True when `access` (`p->f`, `p[i]`) is only the operand of an
+/// address-of, possibly through further `.field` selections, subscripts and
+/// parentheses: `&p->f`, `&p->f.g`, `&p->buf[0]`, `&(p[i])`. The same
+/// reach as `has_genuine_arrow_read`'s text test for a parameter, which
+/// treats any `&` directly before `param->` as address-of.
+fn is_address_taken(access: &Node) -> bool {
+    let mut cur = *access;
+    while let Some(parent) = cur.parent() {
+        match parent.kind() {
+            "parenthesized_expression" => cur = parent,
+            "subscript_expression" if parent.child_by_field_name("argument") == Some(cur) => {
+                cur = parent
+            }
+            "field_expression"
+                if parent.child_by_field_name("argument") == Some(cur)
+                    && parent
+                        .child_by_field_name("operator")
+                        .is_some_and(|op| op.kind() == ".") =>
+            {
+                cur = parent
+            }
+            "pointer_expression" => return parent.child(0).map(|c| c.kind()) == Some("&"),
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// True when an assignment or `++`/`--` in `sweep` writes THROUGH the local
+/// `alias` (`alias->f = v`, `*alias = v`, `alias[i]++`), by the same
+/// `deref_write_root` test `credit_modifies_params` applies to a parameter.
+fn alias_written_through(sweep: &BodySweep, source: &str, alias: &str) -> bool {
+    let root_is_alias = |root: Node| root.utf8_text(source.as_bytes()) == Ok(alias);
+    sweep.assignments.iter().any(|node| {
+        node.child_by_field_name("left")
+            .and_then(|left| deref_write_root(&left, false))
+            .is_some_and(root_is_alias)
+    }) || sweep.updates.iter().any(|node| {
+        node.child_by_field_name("argument")
+            .and_then(|argument| deref_write_root(&argument, false))
+            .is_some_and(root_is_alias)
+    })
+}
+
 /// Analyze how parameters are used in the function body. `body_text` may be
 /// a boundary-truncated slice of `body`'s source (see `analyze_function`);
 /// `collect_param_passthroughs` walks `body` itself and applies its own
@@ -3364,6 +3604,7 @@ fn credit_modifies_params(
     sweep: &BodySweep,
     source: &str,
     params: &[String],
+    cast_aliases: &[Vec<String>],
     summary: &mut FunctionSummary,
 ) {
     // Every write through a parameter this pass can see, as (the node whose
@@ -3403,7 +3644,17 @@ fn credit_modifies_params(
     let mut seen: HashMap<usize, (bool, bool)> = HashMap::new();
     for (node, root) in &writes {
         let name = root.utf8_text(source.as_bytes()).unwrap_or("");
-        let Some(idx) = params.iter().position(|p| !p.is_empty() && p == name) else {
+        // A write through a cast alias (`cast_aliases_of`) is a write
+        // through its parameter, conditional or not by its own position.
+        let Some(idx) = params
+            .iter()
+            .position(|p| !p.is_empty() && p == name)
+            .or_else(|| {
+                cast_aliases
+                    .iter()
+                    .position(|a| a.iter().any(|x| x == name))
+            })
+        else {
             continue;
         };
         let entry = seen.entry(idx).or_insert((false, false));
@@ -4138,6 +4389,16 @@ fn analyze_param_usage(
 
     // One walk for the whole body, not one per parameter.
     let library_written = library_written_names_in(&sweep.calls, source);
+    let cast_aliases: Vec<Vec<String>> = params
+        .iter()
+        .map(|p| {
+            if p.is_empty() {
+                Vec::new()
+            } else {
+                cast_aliases_of(body, source, p)
+            }
+        })
+        .collect();
 
     for (idx, param_name) in params.iter().enumerate() {
         if param_name.is_empty() {
@@ -4163,8 +4424,12 @@ fn analyze_param_usage(
         // Also recognizes alias null-checks: `TYPE *alias = param;` followed
         // by a null check on `alias` logically null-checks `param` too.
         // Common in libcurl/sqlite wrappers that cast-copy the param first.
+        // A cast alias's guard guards the parameter too (`alias_null_checks`).
+        let (alias_checked, alias_checked_before_deref) =
+            alias_null_checks(body, source, body_text, param_name, &cast_aliases[idx]);
         if body_matches_null_check(body_text, param_name)
             || body_matches_alias_null_check(body_text, param_name)
+            || alias_checked
         {
             summary.checks_null_params.insert(idx);
             // ... and, separately, whether that check happens before the
@@ -4177,6 +4442,7 @@ fn analyze_param_usage(
             };
             if body_matches_null_check(before_deref, param_name)
                 || body_matches_alias_null_check(before_deref, param_name)
+                || alias_checked_before_deref
             {
                 summary.checks_null_params_before_deref.insert(idx);
             }
@@ -4195,6 +4461,11 @@ fn analyze_param_usage(
             // `os_memset(elems, 0, sizeof(*elems))` writes the output with no
             // assignment operator anywhere.
             || library_written.contains(param_name)
+            // A write through a local cast from the parameter writes the
+            // caller's object (see `cast_aliases_of`).
+            || cast_aliases[idx].iter().any(|alias| {
+                alias_written_through(sweep, source, alias) || library_written.contains(alias)
+            })
         {
             summary.modifies_params.insert(idx);
         }
@@ -4208,6 +4479,9 @@ fn analyze_param_usage(
             // `((type *)param)->field`/`[i]` -- a genuine dereference of a
             // cast, not merely a cast used as a value (see `cast_then_deref`).
             || cast_then_deref(body_text, param_name)
+            || cast_aliases[idx]
+                .iter()
+                .any(|alias| !alias_derefs(body, source, alias).is_empty())
         {
             summary.dereferences_params.insert(idx);
             summary.uses_params.insert(idx);
@@ -4220,7 +4494,7 @@ fn analyze_param_usage(
 
     // Must run after the loop above: it refines `modifies_params` rather
     // than deriving its own write set.
-    credit_modifies_params(body, sweep, source, params, summary);
+    credit_modifies_params(body, sweep, source, params, &cast_aliases, summary);
 
     // Detect param pass-through: when a parameter is forwarded to a callee
     collect_param_passthroughs(body, body, source, params, summary);
