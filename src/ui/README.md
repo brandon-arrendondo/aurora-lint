@@ -35,7 +35,7 @@ The UI module implements a modern, responsive terminal interface that allows use
 
 ### Actions
 - **Scan** - Trigger analysis of the codebase
-- **Export** - Save violations to CSV or Excel
+- **Export** - Save the checked violations as a SARIF report
 - **Suppress** - Mark violations as false positives
 - **Details** - View expanded violation information with code context
 
@@ -61,8 +61,7 @@ The UI module implements a modern, responsive terminal interface that allows use
 | Key | Action |
 |-----|--------|
 | `s` | Scan for violations |
-| `e` | Export to CSV |
-| `E` | Export to Excel |
+| `e` | Export checked violations to SARIF |
 | `x` | Suppress violation |
 | `X` | Generate suppression file |
 | `f` | Toggle file filter |

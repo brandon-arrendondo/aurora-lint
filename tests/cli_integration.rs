@@ -102,6 +102,7 @@ fn export_json_structure() {
     assert_eq!(violations.len(), 1);
 
     let v = &violations[0];
+    assert_eq!(v["tool"], "aurora-lint");
     assert_eq!(v["rule_id"], "MSC04-C");
     assert_eq!(v["line"], 1);
     assert_eq!(v["severity"], "Medium");
@@ -127,23 +128,22 @@ fn export_json_empty_for_clean_file() {
 }
 
 #[test]
-fn export_csv_has_header_and_row() {
+fn export_rejects_spreadsheet_formats() {
+    // CSV/XLSX are derived from SARIF by scripts/sarif_convert.py, not
+    // written by the tool; the error has to say so rather than silently
+    // falling back to some other format.
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.csv");
-    let (code, _, _) = run_aurora_lint(&[
+    let (code, _, stderr) = run_aurora_lint(&[
         fixtures().join("violation.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
         "-e",
         out.to_str().unwrap(),
     ]);
-    assert_eq!(code, 0);
-
-    let content = std::fs::read_to_string(&out).unwrap();
-    let lines: Vec<&str> = content.lines().collect();
-    assert!(lines.len() >= 2, "CSV should have header + at least 1 row");
-    assert!(lines[0].contains("Title"));
-    assert!(lines[1].contains("MSC04-C"));
+    assert_ne!(code, 0);
+    assert!(stderr.contains("sarif_convert.py"), "stderr: {stderr}");
+    assert!(!out.exists());
 }
 
 #[test]
@@ -165,9 +165,33 @@ fn export_sarif_structure() {
     assert_eq!(sarif["version"], "2.1.0");
     assert!(sarif["$schema"].as_str().unwrap().contains("sarif"));
 
-    let results = &sarif["runs"][0]["results"];
+    let run = &sarif["runs"][0];
+    assert_eq!(run["tool"]["driver"]["name"], "aurora-lint");
+
+    let results = &run["results"];
     assert_eq!(results.as_array().unwrap().len(), 1);
     assert_eq!(results[0]["ruleId"], "MSC04-C");
+
+    // The report stands alone: the rule's own description (not a finding's
+    // message), the flagged source line, and a content hash of its file.
+    let rule = &run["tool"]["driver"]["rules"][0];
+    assert_ne!(
+        rule["shortDescription"]["text"],
+        results[0]["message"]["text"]
+    );
+    assert_ne!(rule["shortDescription"]["text"], "Unknown rule");
+
+    let location = &results[0]["locations"][0]["physicalLocation"];
+    let source = std::fs::read_to_string(fixtures().join("violation.c")).unwrap();
+    assert_eq!(
+        location["region"]["snippet"]["text"],
+        source.lines().next().unwrap().trim()
+    );
+    let index = location["artifactLocation"]["index"].as_u64().unwrap() as usize;
+    let sha = run["artifacts"][index]["hashes"]["sha-256"]
+        .as_str()
+        .unwrap();
+    assert_eq!(sha.len(), 64);
 }
 
 // ─── Exit codes ──────────────────────────────────────────────────────────────

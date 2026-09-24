@@ -18,11 +18,10 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame, Terminal,
 };
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tree_sitter::Node;
 
 use crate::analyze::suppression::SuppressionManager;
@@ -213,7 +212,7 @@ impl TerminalUI {
             selected_violation,
             checked_violations: HashSet::new(),
             show_save_dialog: false,
-            save_filename: String::from("violations.xlsx"),
+            save_filename: String::from("violations.sarif"),
             show_file_preview: false, // Default to not showing preview
             preview_focused: false,   // Default focus on violations list
             preview_scroll_offset: 0,
@@ -398,7 +397,7 @@ impl TerminalUI {
     fn handle_save_dialog_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Enter => {
-                // Save the file (CSV or Excel based on extension)
+                // Save the checked violations as SARIF
                 let path = PathBuf::from(&self.save_filename);
                 let _ = self.export_violations(&path); // Ignore errors for now
                 self.show_save_dialog = false;
@@ -1204,7 +1203,7 @@ impl TerminalUI {
         };
 
         let dialog_text = vec![
-            Line::from("Enter filename (.csv or .xlsx):"),
+            Line::from("Enter filename (saved as SARIF):"),
             Line::from(vec![
                 Span::styled(&self.save_filename, Style::default().fg(Color::Yellow)),
                 Span::styled("_", Style::default().fg(Color::Green)), // cursor
@@ -2330,158 +2329,16 @@ impl TerminalUI {
         has_violations
     }
 
-    fn export_violations(&self, path: &PathBuf) -> Result<()> {
-        if let Some(extension) = path.extension() {
-            match extension.to_str() {
-                Some("xlsx") => self.write_violations_to_excel(path),
-                Some("csv") => self.write_violations_to_csv(path),
-                _ => {
-                    // Default to Excel for unknown extensions
-                    self.write_violations_to_excel(path)
-                }
-            }
-        } else {
-            // No extension, default to Excel
-            self.write_violations_to_excel(path)
-        }
-    }
-
-    fn write_violations_to_csv(&self, path: &PathBuf) -> Result<()> {
-        use csv::Writer;
-
-        let mut writer = Writer::from_path(path)?;
-
-        // Write CSV headers
-        writer.write_record([
-            "Title",
-            "Description",
-            "Work Item Type",
-            "State",
-            "Severity",
-            "Priority",
-        ])?;
-
-        // Write selected violations only
-        for &index in &self.checked_violations {
-            if let Some(violation) = self.violations.get(index) {
-                let file_hash = self.calculate_file_hash(&violation.file_path)?;
-                let relative_path = self.get_relative_path(&violation.file_path);
-
-                let title = format!(
-                    "{}:{}:{} version:{}",
-                    violation.rule_id, relative_path, violation.line, file_hash
-                );
-
-                let code_snippet = self.get_code_snippet(&violation.file_path, violation.line)?;
-                let rule_description = self.get_rule_description(&violation.rule_id);
-                let description = format!(
-                    "{} - {}: {}",
-                    violation.rule_id, rule_description, code_snippet
-                );
-
-                writer.write_record([
-                    &title,
-                    &description,
-                    "Bug",
-                    "Proposed",
-                    "1 - Critical",
-                    "1",
-                ])?;
-            }
-        }
-
-        writer.flush()?;
-        Ok(())
-    }
-
-    fn write_violations_to_excel(&self, path: &PathBuf) -> Result<()> {
-        use rust_xlsxwriter::{Color as XlsxColor, Format, Workbook};
-
-        let mut workbook = Workbook::new();
-        let worksheet = workbook.add_worksheet();
-
-        // Create header format
-        let header_format = Format::new()
-            .set_bold()
-            .set_background_color(XlsxColor::RGB(0xD9D9D9));
-
-        // Write headers
-        let headers = [
-            "Title",
-            "Description",
-            "Work Item Type",
-            "State",
-            "Severity",
-            "Priority",
-        ];
-
-        for (col, header) in headers.iter().enumerate() {
-            worksheet.write_string_with_format(0, col as u16, *header, &header_format)?;
-        }
-
-        // Write selected violations
-        let mut row = 1;
-        for &index in &self.checked_violations {
-            if let Some(violation) = self.violations.get(index) {
-                let file_hash = self.calculate_file_hash(&violation.file_path)?;
-                let relative_path = self.get_relative_path(&violation.file_path);
-
-                let title = format!(
-                    "{}:{}:{} version:{}",
-                    violation.rule_id, relative_path, violation.line, file_hash
-                );
-
-                let code_snippet = self.get_code_snippet(&violation.file_path, violation.line)?;
-                let rule_description = self.get_rule_description(&violation.rule_id);
-                let description = format!(
-                    "{} - {}: {}",
-                    violation.rule_id, rule_description, code_snippet
-                );
-
-                worksheet.write_string(row, 0, &title)?;
-                worksheet.write_string(row, 1, &description)?;
-                worksheet.write_string(row, 2, "Bug")?;
-                worksheet.write_string(row, 3, "Proposed")?;
-                worksheet.write_string(row, 4, "1 - Critical")?;
-                worksheet.write_string(row, 5, "1")?;
-
-                row += 1;
-            }
-        }
-
-        // Auto-fit columns
-        worksheet.autofit();
-
-        workbook.save(path)?;
-        Ok(())
-    }
-
-    fn calculate_file_hash(&self, file_path: &str) -> Result<String> {
-        let content = fs::read(file_path)?;
-        let mut hasher = Sha256::new();
-        hasher.update(&content);
-        let result = hasher.finalize();
-        Ok(format!("{:x}", result)[..8].to_string())
-    }
-
-    fn get_code_snippet(&self, file_path: &str, line_number: usize) -> Result<String> {
-        let content = fs::read_to_string(file_path)?;
-        let lines: Vec<&str> = content.lines().collect();
-
-        if line_number > 0 && line_number <= lines.len() {
-            let line = lines[line_number - 1].trim();
-            Ok(line.to_string())
-        } else {
-            Ok("(line not found)".to_string())
-        }
-    }
-
-    fn get_rule_description(&self, rule_id: &str) -> String {
-        if let Some(rule) = self.registry.get_rule(rule_id) {
-            rule.description().to_string()
-        } else {
-            "Unknown rule".to_string()
-        }
+    /// Write the checked violations as SARIF, whatever the filename says:
+    /// SARIF is the tool's one report format (spreadsheets are derived from
+    /// it by `scripts/sarif_convert.py`).
+    fn export_violations(&self, path: &Path) -> Result<()> {
+        let selected: Vec<RuleViolation> = self
+            .checked_violations
+            .iter()
+            .filter_map(|&index| self.violations.get(index).cloned())
+            .collect();
+        crate::export::export_all_violations_to_sarif(&selected, &[], &path.to_string_lossy())
     }
 
     fn get_relative_path(&self, file_path: &str) -> String {
