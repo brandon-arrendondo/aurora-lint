@@ -1721,7 +1721,7 @@ class BenchDB:
             # both that run and its "-cdb" sibling, and ORDER BY id DESC then
             # silently returns the sibling. That defeats the whole point of
             # the compile-database run suffix (bench/config.py's
-            # apply_run_suffix), which exists so a with/without pair on one
+            # COMPILE_DB_RUN_SUFFIX), which exists so a with/without pair on one
             # sqc build stays two addressable runs.
             cur.execute("""
                 SELECT id FROM realworld_runs
@@ -2771,9 +2771,12 @@ class BenchDB:
         if self.get_run(ident):
             return ident
 
-        # SHA suffix match
+        # Commit SHA match. One build can have a fast, full and compile-db run,
+        # so prefer the plain fast run (the published default); the others are
+        # reachable by their own run_id.
         with self._cursor() as cur:
-            cur.execute("SELECT run_id FROM runs WHERE commit_sha = ? ORDER BY started_at DESC LIMIT 1",
+            cur.execute("SELECT run_id FROM runs WHERE commit_sha = ? "
+                        "ORDER BY mode <> 'fast', started_at DESC LIMIT 1",
                         (ident,))
             row = cur.fetchone()
             if row:

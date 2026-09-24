@@ -17,7 +17,7 @@ from bench.analyzer import analyze_shard, merge_shards
 from bench.config import (
     DEFAULT_JOBS, GENERATE_MAP_SCRIPT, JULIET_BASE, MANIFEST_JULIET_FULL,
     MANIFEST_CWE_DIR, RULE_CWE_MAP, SQC_BIN,
-    JULIET_COMPILE_DB, apply_run_suffix,
+    JULIET_COMPILE_DB, juliet_run_id,
 )
 from bench.db import BenchDB
 from bench.machine import get_machine_metadata
@@ -516,7 +516,7 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
 
     version = _get_sqc_version()
     sha = _get_git_sha()
-    run_id = apply_run_suffix(f"sqc-{version}-{sha}", compile_commands)
+    run_id = juliet_run_id(version, sha, fast=fast, compile_commands=compile_commands)
     mode = "fast" if fast else "full"
     if compile_commands:
         mode += " +compile-db"

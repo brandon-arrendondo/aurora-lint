@@ -91,6 +91,11 @@ JULIET_COMPILE_DB = JULIET_BASE.parent / COMPILE_DB_NAME
 # its results directory.
 COMPILE_DB_RUN_SUFFIX = "cdb"
 
+# Appended to a Juliet run_id for a full-mode run, for the same collision
+# reason. Fast mode keeps the bare id: it is the published default, so every
+# historical fast run keeps its id and the trend history is unbroken.
+FULL_MODE_RUN_SUFFIX = "full"
+
 
 def load_rule_ids() -> set[str]:
     """Every CERT-C rule id sqc can emit, from rules-all.toml's section keys.
@@ -132,10 +137,20 @@ def compile_db_for(path) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def apply_run_suffix(run_id: str, compile_commands: bool) -> str:
-    """Tag a run_id as a compile-database run so it cannot collide with the
-    plain run of the same sqc build."""
-    return f"{run_id}-{COMPILE_DB_RUN_SUFFIX}" if compile_commands else run_id
+def juliet_run_id(version: str, sha: str, *, fast: bool,
+                  compile_commands: bool) -> str:
+    """The run_id for a Juliet run, distinct per (mode, compile-db) so every
+    configuration of one sqc build is its own run.
+
+    benchmarking_db's queue_worker.py builds the same name to find the run it
+    ingests; change the two together.
+    """
+    run_id = f"sqc-{version}-{sha}"
+    if not fast:
+        run_id += f"-{FULL_MODE_RUN_SUFFIX}"
+    if compile_commands:
+        run_id += f"-{COMPILE_DB_RUN_SUFFIX}"
+    return run_id
 
 # ── Database ──────────────────────────────────────────────────────────────────
 # BENCH_DB overrides the default path (handy for tests/alternate corpora).
