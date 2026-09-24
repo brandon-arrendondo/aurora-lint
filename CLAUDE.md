@@ -110,7 +110,8 @@ consults git, so a build run inside a checkout (e.g. sqlite's generated
    through `benchmarking_db`'s queue, which fetches from origin and never from
    your working tree.
 
-   Why no bump: `run_id` is `sqc-{version}-{sha}`, so the **SHA** is what
+   Why no bump: `run_id` is `sqc-{version}-{sha}` (full mode appends `-full`,
+   compile-db `-cdb`; fast is the bare id), so the **SHA** is what
    discriminates runs; the version added readability only. With several nodes
    committing in parallel a per-task bump collides constantly and **silently** —
    both sides write the same string, so git reports no conflict and `doctor`
@@ -133,8 +134,8 @@ consults git, so a build run inside a checkout (e.g. sqlite's generated
    `target/release/aurora-lint`; rebuilding mid-run corrupts results. Make all
    changes and commits first.
 
-3. **Wait for completion.** Fast-mode Juliet ~32-40 min, full Juliet ~40-50 min,
-   real-world sqc-only ~10-15 min. Check `python -m bench status` at most every
+3. **Wait for completion.** Fast-mode Juliet ~7-15 min and full Juliet ~20-30
+   min, depending on the node; real-world sqc-only ~10-15 min. Check `python -m bench status` at most every
    5 minutes, or just watch it.
 
 4. **Compare runs** with `python -m bench compare`; `status RUN_ID` for a
