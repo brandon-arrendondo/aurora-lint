@@ -12,6 +12,7 @@ from pathlib import Path
 
 from bench.config import juliet_run_id
 from bench.db import BenchDB
+from bench.runner import _select_cwes
 
 
 class TestJulietRunId(unittest.TestCase):
@@ -30,6 +31,26 @@ class TestJulietRunId(unittest.TestCase):
             "sqc-0.5.3-2db3d605-cdb",
             "sqc-0.5.3-2db3d605-full-cdb",
         })
+
+    def test_a_cwe_subset_gets_its_own_id(self):
+        self.assertEqual(
+            juliet_run_id("0.5.3", "2db3d605", fast=True, compile_commands=False,
+                          cwes=("CWE-476", "CWE-78")),
+            "sqc-0.5.3-2db3d605-cwe78_476")
+
+
+class TestSelectCwes(unittest.TestCase):
+    ALL = ["CWE476_NULL_Pointer_Dereference", "CWE78_OS_Command_Injection",
+           "CWE789_Uncontrolled_Mem_Alloc"]
+
+    def test_accepts_every_spelling_and_does_not_prefix_match(self):
+        for spelling in ("78", "CWE78", "cwe-78"):
+            self.assertEqual(_select_cwes(self.ALL, [spelling]),
+                             ["CWE78_OS_Command_Injection"])
+
+    def test_unknown_cwe_is_an_error_not_an_empty_or_full_run(self):
+        with self.assertRaises(ValueError):
+            _select_cwes(self.ALL, ["78", "99999"])
 
 
 class TestResolveRunPrefersFast(unittest.TestCase):
@@ -59,6 +80,11 @@ class TestResolveRunPrefersFast(unittest.TestCase):
     def test_a_full_only_sha_still_resolves(self):
         self._add("sqc-0.5.3-2db3d605-full", "full", "2026-01-02T00:00:00Z")
         self.assertEqual(self.db.resolve_run(self.SHA), "sqc-0.5.3-2db3d605-full")
+
+    def test_sha_skips_a_cwe_subset_run(self):
+        self._add("sqc-0.5.3-2db3d605", "fast", "2026-01-01T00:00:00Z")
+        self._add("sqc-0.5.3-2db3d605-cwe78", "fast +cwe=CWE-78", "2026-01-02T00:00:00Z")
+        self.assertEqual(self.db.resolve_run(self.SHA), "sqc-0.5.3-2db3d605")
 
 
 if __name__ == "__main__":
