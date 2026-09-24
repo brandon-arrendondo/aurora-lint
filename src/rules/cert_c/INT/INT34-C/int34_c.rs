@@ -5,6 +5,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
 use crate::analyze::context::ProjectContext;
+use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::value_range::{self, RangeAnalysisResult};
@@ -46,7 +47,7 @@ pub struct Int34C {
     current_function_macros: RefCell<HashMap<String, FunctionMacro>>,
     /// Pre-scanned callee summaries, consulted for shift amounts written as a
     /// call: `return_range` bounds the amount when the returns fold.
-    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// The subset of `function_summaries` whose every return expression is a
     /// compile-time constant, pre-projected into the name set
     /// `const_eval::ConstantNameSets` wants.
@@ -69,7 +70,7 @@ impl Int34C {
             project_function_macro_names: RefCell::new(HashSet::new()),
             project_function_macros: RefCell::new(Arc::new(HashMap::new())),
             current_function_macros: RefCell::new(HashMap::new()),
-            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            function_summaries: RefCell::default(),
             constant_returning_functions: RefCell::new(HashSet::new()),
             typedef_types: RefCell::new(Arc::new(HashMap::new())),
         }

@@ -289,7 +289,8 @@ at them:
 
 - `call_graph` edges. `ambiguous_call_targets` already marks these names
   opaque to the reachability consumers, and a second representation of the
-  same fact looked worse than none.
+  same fact looked worse than none. The *reverse* graph, `callers`, turned
+  out not to be optional; see the next section.
 - the callee names stored *inside* a summary — `returned_callees`,
   `returns_from_callees`, `param_passthroughs`,
   `unconditional_param_passthroughs`, `returned_value_passthroughs`,
@@ -349,6 +350,57 @@ sqlite pooled 79 unrelated `usage` functions' arguments into one answer. That
 moves keys whether or not any rule was reading the wrong body, which is why
 it belongs in the commit message as its own line rather than as a side
 effect.
+
+### What the per-file view missed: a walk that leaves the file
+
+Increment 2 as first landed had two defects that none of the twelve corpora
+showed and Juliet showed at once. Juliet defines `static void goodG2B()`, and
+its siblings, in nearly every file of a CWE directory, so almost every name
+scoping could touch was touched.
+
+**A callers walk could not read the caller it reached.** ENV33-C, ENV03-C,
+STR02-C and the INT30/31/32-C parameter arm (`int_provenance`) suppress a
+finding only when every transitive caller is proven clean. They climb
+`callers`, which was still bare, and read each caller's summary by name. In a
+multi-file variant the sink is in file `e` and the chain climbs through
+`d`, `c`, `b` to `goodG2B` in `a`. That summary lived only in `a`'s
+per-file view, so from `e` the lookup missed, "unknown caller" meant "unsafe",
+and every good-path sink in a 51/52/53/54/63–68/22/65 variant flagged. It
+is the same failure the ambiguity comment in `prescan.rs` records for a
+deleted edge, arriving from the summary side.
+
+`callers` is now built from the edges keyed the way the fold keys
+definitions: a caller or callee a file scopes is that file's own function,
+under its (file, name) key. The qualified summaries stay in the one shared
+table instead of being drained into per-file copies. So a walk that reaches
+`goodG2B`-in-`a` holds a key that reads `a`'s summary, and climbs on to
+`a`'s own callers, from any file.
+
+A scoped *callee* is filed under its key and under the bare name too. The
+bare entry is still the union over every same-named static, and it is what a
+rule reads for the function it is checking. A first cut scoped that side as
+well, and Juliet lost about 400 INT3x TPs in the single-file variants whose
+bad sink is `static void badSink()`. Those sinks had been flagged because the
+pooled set held another file's `fgets`-reading `bad()`. For "is every caller
+clean", an over-approximate set is the safe error. Narrowing it withdraws
+findings, and that is a precision decision of its own, not something a
+scoping fix should make in passing.
+
+`global_writers` had the same hole. A global's writer is stored by name and
+read as a summary key, so ENV03-C could not clear a global whose only writer
+was a static defined in another file (the `_68` variants). A scoped writer is
+now named by its (file, name) key, as a scoped caller is. This is also more
+exact than before increment 2, when both same-named statics' taint bits were
+OR-merged under one name. `tests/cli_integration.rs` pins both directions:
+a clean caller with a tainted same-named static elsewhere stays silent, and
+the swap flags.
+
+**The view was a copy.** `as_seen_from` cloned the whole summary map for
+every file that defines a scoped name. That was bounded by "~164 files per
+corpus" and fine there, but in Juliet it meant every file, O(files ×
+summaries) per directory. The view is now a scope over the shared tables
+(`ScopedTable`: a file key plus that file's scoped names), and it costs
+nothing to build.
 
 ## 6. What increment 3 cannot decide, and should not pretend to
 

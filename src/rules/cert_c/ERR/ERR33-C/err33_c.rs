@@ -33,6 +33,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval;
 use crate::analyze::context::ProjectContext;
+use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
@@ -58,7 +59,7 @@ enum ErrorReturnKind {
 }
 
 pub struct Err33C {
-    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     project_aliases: RefCell<Arc<HashMap<String, String>>>,
     current_aliases: RefCell<HashMap<String, String>>,
 }
@@ -66,7 +67,7 @@ pub struct Err33C {
 impl Err33C {
     pub fn new() -> Self {
         Self {
-            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            function_summaries: RefCell::default(),
             project_aliases: RefCell::new(Arc::new(HashMap::new())),
             current_aliases: RefCell::new(HashMap::new()),
         }

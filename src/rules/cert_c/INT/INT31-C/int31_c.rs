@@ -13,7 +13,8 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self, FunctionCfg};
 use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
-use crate::analyze::context::ProjectContext;
+use crate::analyze::context::SummaryLookup;
+use crate::analyze::context::{ProjectContext, ScopedTable};
 use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
@@ -35,7 +36,7 @@ pub struct Int31C {
     current_macros: RefCell<MacroConstantMap>,
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
-    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// Reverse call graph: callee_name → set of caller names.
     callers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
     /// Globals written by a tainted function — see the INT32-C provenance gate.
@@ -63,7 +64,7 @@ impl Int31C {
             current_macros: RefCell::new(MacroConstantMap::new()),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
-            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            function_summaries: RefCell::default(),
             callers: RefCell::default(),
             global_writers: RefCell::new(Arc::new(HashMap::new())),
             risky_vars_cache: RefCell::new(HashMap::new()),
@@ -353,7 +354,7 @@ impl Int31C {
 fn body_has_tainted_call_assignment_to(
     body: &Node,
     var_name: &str,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     source: &str,
 ) -> bool {
     query::find_first_descendant(*body, |node| match node.kind() {
@@ -450,7 +451,7 @@ fn body_has_any_call_assignment_to(body: &Node, var_name: &str, source: &str) ->
 /// callee's summary reports a taint source.
 fn call_rhs_has_taint_source(
     rhs: &Node,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     source: &str,
 ) -> bool {
     let call = unwrap_to_call(*rhs);

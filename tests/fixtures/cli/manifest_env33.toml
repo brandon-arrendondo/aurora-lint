@@ -1,0 +1,8 @@
+[metadata]
+name = "CLI Integration Test - ENV33-C only"
+version = "1.0.0"
+description = "Minimal manifest for ENV33-C cross-file caller tests"
+cert_version = "2016"
+
+[rules.cert_c.ENV33-C]
+enabled = true

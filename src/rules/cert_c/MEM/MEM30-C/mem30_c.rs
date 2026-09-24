@@ -4,6 +4,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval;
 use crate::analyze::context::ProjectContext;
+use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::FunctionMacro;
 use crate::analyze::macro_gaps;
@@ -31,7 +32,7 @@ pub struct Mem30C {
     /// heuristic false-positives on functions like hostap's `plink_free_count`
     /// (a pure counter, no free at all) and misattributes multi-arg frees to
     /// the wrong parameter.
-    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// Project-wide `#define ALIAS target` map, merged in `check` with this
     /// file's own, so `mbedtls_free(p)` dispatches as the literal `free` it
     /// expands to rather than through the name-contains-FREE guess
@@ -1831,7 +1832,7 @@ struct MemoryAnalyzer {
     // Cross-file function summaries from prescan. When a callee's real
     // `frees_params` is known, it overrides the name-based free heuristic
     // below — see `process_call_expression`.
-    function_summaries: Arc<HashMap<String, FunctionSummary>>,
+    function_summaries: ScopedTable<FunctionSummary>,
     // `#define ALIAS target` map (project-wide plus this file); a callee is
     // dispatched on the name its alias chain ends at.
     macro_aliases: HashMap<String, String>,
@@ -1881,7 +1882,7 @@ impl MemoryAnalyzer {
         macro_null_params: HashMap<String, Vec<usize>>,
         macro_clear_params: HashMap<String, Vec<usize>>,
         union_typedef_names: HashSet<String>,
-        function_summaries: Arc<HashMap<String, FunctionSummary>>,
+        function_summaries: ScopedTable<FunctionSummary>,
         macro_aliases: HashMap<String, String>,
         ambiguous_macros: HashSet<String>,
         noreturn_names: HashSet<String>,

@@ -20,6 +20,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval;
 use crate::analyze::context::ProjectContext;
+use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::manifest::{RuleCategory, Severity};
@@ -37,7 +38,7 @@ pub struct Mem03C {
     /// Cross-file summaries: a callee whose `clears_params` names an
     /// argument position overwrites that buffer, whatever it is called
     /// .
-    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// Function-like macros, for `macro_clears_param_indices`.
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     /// `#define ALIAS target` map; a callee is classified by the name its

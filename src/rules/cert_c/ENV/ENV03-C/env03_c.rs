@@ -22,7 +22,8 @@
 
 use crate::analyze::cfg;
 use crate::analyze::const_eval;
-use crate::analyze::context::ProjectContext;
+use crate::analyze::context::SummaryLookup;
+use crate::analyze::context::{ProjectContext, ScopedTable};
 use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::{CertRule, RuleViolation};
@@ -92,7 +93,7 @@ const TAINT_SOURCES: &[&str] = &[
 pub struct Env03C {
     project_aliases: RefCell<Arc<HashMap<String, String>>>,
     current_aliases: RefCell<HashMap<String, String>>,
-    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// Reverse call graph: callee_name → set of caller names. Built from
     /// ProjectContext's forward `call_graph`.
     callers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
@@ -112,7 +113,7 @@ impl Env03C {
         Self {
             project_aliases: RefCell::new(Arc::new(HashMap::new())),
             current_aliases: RefCell::new(HashMap::new()),
-            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            function_summaries: RefCell::default(),
             callers: RefCell::default(),
             global_writers: RefCell::new(Arc::new(HashMap::new())),
             file_string_macros: RefCell::new(HashMap::new()),
@@ -621,7 +622,7 @@ fn is_command_var_locally_safe(
     scope: &Node,
     var_name: &str,
     source: &str,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     global_writers: &HashMap<String, HashSet<String>>,
     string_macros: &HashMap<String, String>,
 ) -> bool {
@@ -656,7 +657,7 @@ fn is_command_var_locally_safe(
 fn collect_local_literal_buffers(
     body: &Node,
     source: &str,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     global_writers: &HashMap<String, HashSet<String>>,
 ) -> HashSet<String> {
     let mut buffers = HashSet::new();
@@ -712,7 +713,7 @@ fn walk_buffer_decls(node: &Node, source: &str, out: &mut HashSet<String>) {
 fn walk_pointer_aliases(
     node: &Node,
     source: &str,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     out: &mut HashSet<String>,
 ) {
     let candidates =
@@ -821,7 +822,7 @@ fn check_writes(
     var: &str,
     safe_sources: &HashSet<String>,
     source: &str,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     string_macros: &HashMap<String, String>,
     all_safe: &mut bool,
 ) {
@@ -858,7 +859,7 @@ fn check_init_declarator_write(
     var: &str,
     safe_sources: &HashSet<String>,
     source: &str,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     all_safe: &mut bool,
 ) {
     if let Some(decl) = node.child_by_field_name("declarator") {
@@ -878,7 +879,7 @@ fn check_assignment_write(
     var: &str,
     safe_sources: &HashSet<String>,
     source: &str,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     all_safe: &mut bool,
 ) {
     let Some(lhs) = node.child_by_field_name("left") else {
@@ -981,7 +982,7 @@ fn rhs_is_safe(
     rhs: Option<&Node>,
     safe_sources: &HashSet<String>,
     source: &str,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) -> bool {
     let Some(rhs) = rhs else {
         // No initializer — the declared pointer is null, technically safe
@@ -1025,7 +1026,7 @@ fn rhs_is_safe(
 /// introduce taint into the caller's variable. Requires both a direct
 /// taint-source bit and the transitive `returns_tainted` bit to be false,
 /// plus a known summary (unknown callees remain conservative).
-fn call_is_clean(call: &Node, source: &str, summaries: &HashMap<String, FunctionSummary>) -> bool {
+fn call_is_clean(call: &Node, source: &str, summaries: &(impl SummaryLookup + ?Sized)) -> bool {
     let Some(func) = call.child_by_field_name("function") else {
         return false;
     };

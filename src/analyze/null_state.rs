@@ -6,6 +6,7 @@
 
 use super::cfg::{BasicBlock, BlockId, CfgEdge, FunctionCfg};
 use super::dataflow::find_node_at_range;
+use crate::analyze::context::SummaryLookup;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::init_state;
 use lang_parsing_substrate::query;
@@ -325,7 +326,7 @@ fn apply_transfer(
     body_node: &Node,
     source: &str,
     declared_pointers: &mut HashSet<String>,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) -> StateMap {
     let mut state = entry.clone();
     for &(start, end) in &block.statements {
@@ -348,7 +349,7 @@ fn process_statement_for_null_state(
     source: &str,
     state: &mut StateMap,
     declared_pointers: &mut HashSet<String>,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) {
     // Cross-file output params (a follow-on to the EXP33-C fix):
     // any call anywhere in this statement -- bare statement, assignment RHS,
@@ -416,7 +417,7 @@ fn walk_switch_body_for_null_state(
     source: &str,
     state: &mut StateMap,
     declared_pointers: &mut HashSet<String>,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
@@ -451,7 +452,7 @@ fn process_declaration_null(
     source: &str,
     state: &mut StateMap,
     declared_pointers: &mut HashSet<String>,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) {
     for i in 0..node.child_count() {
         let Some(child) = node.child(i) else { continue };
@@ -483,7 +484,7 @@ fn process_init_declarator_null(
     source: &str,
     state: &mut StateMap,
     declared_pointers: &mut HashSet<String>,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) {
     let Some(declarator) = child.child_by_field_name("declarator") else {
         return;
@@ -517,7 +518,7 @@ fn resolve_pointer_init_state(
     value: &Node,
     source: &str,
     state: &mut StateMap,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) {
     let rval = classify_rvalue_null(value, source, summaries);
     if rval == NullState::NotNull {
@@ -641,7 +642,7 @@ fn apply_cross_file_output_params_null(
     call: &Node,
     source: &str,
     state: &mut StateMap,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) {
     let Some(func) = call.child_by_field_name("function") else {
         return;
@@ -692,7 +693,7 @@ fn apply_cross_file_nulls_params_null(
     call: &Node,
     source: &str,
     state: &mut StateMap,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) {
     let Some(func) = call.child_by_field_name("function") else {
         return;
@@ -754,7 +755,7 @@ fn process_expression_null(
     source: &str,
     state: &mut StateMap,
     declared_pointers: &HashSet<String>,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) {
     if node.kind() != "assignment_expression" {
         return;
@@ -784,7 +785,7 @@ fn resolve_assignment_null_state(
     right: &Node,
     source: &str,
     state: &mut StateMap,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) {
     let new_state = classify_rvalue_null(right, source, summaries);
     if new_state == NullState::NotNull {
@@ -987,7 +988,7 @@ fn extract_deref_pointee_state(node: &Node, source: &str, state: &StateMap) -> O
 fn classify_rvalue_null(
     node: &Node,
     source: &str,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) -> NullState {
     let text = get_text(node, source);
     let trimmed = text.trim();
@@ -1067,7 +1068,7 @@ fn classify_rvalue_null(
 pub fn collect_file_scope_null_states(
     root: &Node,
     source: &str,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) -> StateMap {
     let mut global_vars: HashSet<String> = HashSet::new();
     let mut result: StateMap = StateMap::new();
@@ -1092,7 +1093,7 @@ fn collect_file_scope_pointer_decls(
     source: &str,
     global_vars: &mut HashSet<String>,
     result: &mut StateMap,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) {
     for i in 0..node.child_count() {
         let child = match node.child(i) {
@@ -1159,7 +1160,7 @@ fn collect_global_assignments(
     source: &str,
     global_vars: &HashSet<String>,
     result: &mut StateMap,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) {
     for i in 0..node.child_count() {
         let child = match node.child(i) {
@@ -1187,7 +1188,7 @@ fn scan_body_for_global_assignments(
     source: &str,
     global_vars: &HashSet<String>,
     result: &mut StateMap,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) {
     if node.kind() == "assignment_expression" {
         if let Some(left) = node.child_by_field_name("left") {
@@ -1320,7 +1321,7 @@ pub fn analyze_null_states_with_globals(
     cfg: &FunctionCfg,
     func_node: &Node,
     source: &str,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     global_states: &StateMap,
     func_name: Option<&str>,
 ) -> NullAnalysisResult {
@@ -1387,7 +1388,7 @@ pub fn analyze_null_states_with_globals(
 fn seed_initial_null_state(
     func_node: &Node,
     source: &str,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     global_states: &StateMap,
     func_name: Option<&str>,
 ) -> (StateMap, HashSet<String>) {
@@ -1482,7 +1483,7 @@ fn run_null_state_worklist(
     cfg: &FunctionCfg,
     body: &Node,
     source: &str,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     declared_pointers: &mut HashSet<String>,
     entry_states: &mut HashMap<BlockId, StateMap>,
     exit_states: &mut HashMap<BlockId, StateMap>,
@@ -1587,7 +1588,7 @@ fn run_null_state_worklist(
 fn collect_proven_nonnull_params(
     func_node: &Node,
     source: &str,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     func_name: Option<&str>,
 ) -> HashSet<String> {
     let mut out = HashSet::new();
@@ -1728,7 +1729,7 @@ pub fn is_null_deref_at(
     source: &str,
     var_name: &str,
     deref_byte: usize,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) -> bool {
     // Find which block contains this dereference
     let block = match find_block_containing(cfg, deref_byte) {
@@ -1780,7 +1781,7 @@ pub fn get_var_state_at(
     source: &str,
     var_name: &str,
     byte_offset: usize,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) -> NullState {
     let block = match find_block_containing(cfg, byte_offset) {
         Some(b) => b,
@@ -1917,7 +1918,7 @@ pub fn is_null_value(text: &str) -> bool {
 /// Whether `func_name` may return NULL: either its [`FunctionSummary`] says
 /// so, or it's one of a fixed list of standard-library/POSIX/sqlite
 /// functions known to be nullable.
-pub fn is_nullable_function(func_name: &str, summaries: &HashMap<String, FunctionSummary>) -> bool {
+pub fn is_nullable_function(func_name: &str, summaries: &(impl SummaryLookup + ?Sized)) -> bool {
     if let Some(summary) = summaries.get(func_name) {
         if summary.can_return_null {
             return true;

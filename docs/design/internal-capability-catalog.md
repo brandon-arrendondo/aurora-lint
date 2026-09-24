@@ -1061,13 +1061,30 @@ project table is small (`merged_macro_aliases`), and should hold a handle
 plus a separate file-local map when it is not. `callers` is the inverted
 `call_graph`, computed once — do not re-invert it per file.
 
+**`function_summaries` is a `ScopedTable`, not a bare map.** A name several
+files define `static` is held once per defining file, under a (file, name)
+key, and `ProjectContext::as_seen_from` gives each file an O(1) scope in
+which its own spelling of the name resolves to its own definition. Read it
+through `get`/`contains_key`/`iter` as before, and never rebuild it per file:
+in Juliet that copy cost more than the rules did. A walk that climbs
+`callers` gets back (file, name) keys for scoped static callers, and must
+hand them unchanged to `function_summaries.get` and back to `callers.get`;
+that is how it reads a static caller defined in another file, and that
+caller's own callers. A helper that takes summaries takes
+`&(impl SummaryLookup + ?Sized)`, which both prescan's own map and a
+`ScopedTable` satisfy. `SummaryOverlay { first, then }` reads two lookups as
+one, and is the borrowed replacement for "clone the project table and extend
+it with this file's entries" (VRA's same-file summaries, EXP34-C's
+macro-synthesized ones).
+
 | Field | Type (each wrapped in `Arc` on the struct) | Description |
 |---|---|---|
 | `known_functions` | `HashSet<String>` | Every function name found in pre-scanned `.c`/`.h` files. |
 | `header_declared_functions` | `HashSet<String>` | Functions prototyped in `.h` files — public API, shouldn't be flagged as needing `static` (DCL15-C/DCL19-C). |
-| `function_summaries` | `HashMap<String, FunctionSummary>` | Cross-file function summaries (see above) — access via `context.get_function_summary(name)`. |
+| `function_summaries` | `ScopedTable<FunctionSummary>` | Cross-file function summaries (see above) — access via `context.get_function_summary(name)`. Scoped per file for names several files define `static` (see above). |
 | `call_graph` | `HashMap<String, HashSet<String>>` | Function name → set of functions it calls. |
-| `callers` | `HashMap<String, HashSet<String>>` | The inverse: function name → set of functions that call it. Computed once at prescan; INT30/31/32-C, STR02-C, ENV03-C and ENV33-C read it. |
+| `callers` | `HashMap<String, HashSet<String>>` | The inverse: function name → set of functions that call it. A scoped static caller is named by its (file, name) key; a scoped static callee is filed under its key (its own file's callers) and under the bare name (the union over every same-named static — deliberately over-approximate). Computed once at prescan; INT30/31/32-C, STR02-C, ENV03-C and ENV33-C read it. |
+| `scoped_names_by_file` | `HashMap<String, Arc<HashSet<String>>>` | Canonical file path → the names that file defines `static` while another scanned file does too. It is what `as_seen_from` scopes by; empty when no name is multiply defined. |
 | `macro_constants` | `HashMap<String, i64>` | `#define` constants collected across all scanned files. |
 | `macro_aliases` | `HashMap<String, String>` | `#define ALIAS identifier` function-name aliases (e.g. `SYSTEM` → `system`). |
 | `struct_field_types` | `HashMap<String, HashMap<String, String>>` | `struct_name -> field_name -> type_text`, for resolving `field_expression` types cross-file. |
@@ -1077,7 +1094,7 @@ plus a separate file-local map when it is not. `callers` is the inverted
 | `pointer_typedef_names` | `HashSet<String>` | Typedef names that hide a pointer in DCL05-C's sense (`declarator_utils::pointer_typedef_names_in`), collected cross-file because the typedef is usually in a header while the `const LPPOINT pt` parameter the rule is about is in a .c file that only names the alias. Replaced a `P`/`LP`/`*PTR` name guess that was 113 FP : 7 TP. |
 | `global_constants` | `HashMap<String, i64>` | File-scope `[const] TYPE NAME = VALUE;` across all scanned files. |
 | `global_var_null_states` | `HashMap<String, NullState>` | Global pointer variables' joined null state across all assignment sites (resolves `extern` pointer globals declared elsewhere). |
-| `global_writers` | `HashMap<String, HashSet<String>>` | Static-variable name → set of functions that assign to it (used by taint-aware rules like ENV03-C to decide if a global read brings in taint). |
+| `global_writers` | `HashMap<String, HashSet<String>>` | Static-variable name → set of functions that assign to it (used by taint-aware rules like ENV03-C to decide if a global read brings in taint). A writer that is a scoped static is named by its (file, name) key; hand it to `function_summaries.get` unchanged. |
 | `function_macros` | `HashMap<String, FunctionMacro>` | Cross-file function-like macro definitions — feeds `macro_expand.rs`. |
 | `defined_macro_names` | `HashSet<String>` | Every `#define NAME ...` object-like macro name across all scanned files, regardless of expansion — feeds DCL40-C and MSC12-C's `is_known_macro`. **This is a field that was once almost duplicated.** |
 | `unresolved_project_headers` | `HashSet<String>` | `#include` paths naming a **project** header that isn't on disk — the directory prefix resolves under a search root but the file doesn't (seL4's `<object/structures_gen.h>`, emitted at build time from an `.bf` spec; also `*.pb-c.h`, `*.tab.h`). Populated by `resolve_includes`, so it needs `-I`, not just `-d`. A system header merely off the `-I` path (`<sys/socket.h>`) does **not** land here. Non-empty means "part of this project's declarations are generated by a build step we can't run", which is what switches off DCL31-C's undeclared-call check. |

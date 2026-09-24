@@ -24,6 +24,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
+use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::{const_eval, init_state};
 use crate::manifest::{RuleCategory, Severity};
@@ -46,7 +47,7 @@ pub struct Fio30C {
     /// flow variants put a sink helper (`badSink`/`goodG2BSink`) in a
     /// different file than its single caller, so this is the only way to
     /// know whether that caller passed tainted or literal data.
-    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// Project-wide macro aliases from prescan (e.g. `#define LOG_FMT printf`
     /// defined in a header), merged with per-file aliases in `check` so a
     /// format-string wrapper alias defined outside the file under scan is
@@ -170,7 +171,7 @@ struct FormatStringAnalyzer {
     // `callsite_param_tainted`/`callsite_param_taint_observed` let this
     // analyzer resolve whether ANY caller anywhere in the project (not just
     // this translation unit) passes tainted data to a given parameter.
-    function_summaries: Arc<HashMap<String, FunctionSummary>>,
+    function_summaries: ScopedTable<FunctionSummary>,
 }
 
 impl FormatStringAnalyzer {
@@ -187,7 +188,7 @@ impl FormatStringAnalyzer {
             tainted_globals: HashSet::new(),
             file_scope_constants: HashMap::new(),
             called_function_names: HashSet::new(),
-            function_summaries: Arc::default(),
+            function_summaries: ScopedTable::default(),
         }
     }
 

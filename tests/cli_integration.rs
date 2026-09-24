@@ -1653,3 +1653,81 @@ fn arr36_cross_file_caller_passing_one_buffer_proves_nothing() {
         content
     );
 }
+
+// ─── Cross-file static caller (ENV33-C callers walk) ────────────────────────
+
+fn manifest_env33() -> PathBuf {
+    fixtures().join("manifest_env33.toml")
+}
+
+/// ENV33-C lines reported in `sink.c` when the whole project is prescanned.
+fn env33_sink_lines(project: &str) -> Vec<u64> {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let (code, _, _) = run_aurora_lint(&[
+        fixtures().join(project).join("sink.c").to_str().unwrap(),
+        "-m",
+        manifest_env33().to_str().unwrap(),
+        "-d",
+        fixtures().join(project).to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    violations
+        .iter()
+        .filter(|v| v["rule_id"] == "ENV33-C")
+        .map(|v| v["line"].as_u64().unwrap())
+        .collect()
+}
+
+/// A callers walk that climbs from sink() to a `static` caller in another
+/// file reads that caller's own summary, even though a third file defines an
+/// unrelated static of the same name. Its caller is clean, so sink() is not
+/// flagged -- and the other file's `getenv` does not count against it.
+#[test]
+fn callers_walk_reads_the_static_caller_it_reached() {
+    assert_eq!(
+        env33_sink_lines("crossfile_static_caller_clean"),
+        Vec::<u64>::new()
+    );
+}
+
+/// The same shape with the taint on the caller the walk reaches and none on
+/// the unrelated same-named static: flagged. A walk that read the wrong
+/// definition, or pooled both, could not tell these two projects apart.
+#[test]
+fn callers_walk_does_not_borrow_a_same_named_static() {
+    assert_eq!(env33_sink_lines("crossfile_static_caller_tainted"), vec![7]);
+}
+
+/// A global's only writer is a `static` in another file whose name a third
+/// file also defines static. ENV03-C reads the writer's summary to decide
+/// whether the global brings in taint; it must reach that writer from the
+/// file that reads the global, and here it writes a fixed command.
+#[test]
+fn global_writer_resolves_to_the_static_that_wrote_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let (code, _, _) = run_aurora_lint(&[
+        fixtures()
+            .join("crossfile_static_writer/sink.c")
+            .to_str()
+            .unwrap(),
+        "-m",
+        fixtures().join("manifest_env03.toml").to_str().unwrap(),
+        "-d",
+        fixtures().join("crossfile_static_writer").to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    assert!(
+        violations.iter().all(|v| v["rule_id"] != "ENV03-C"),
+        "the writer is clean, so the global is not tainted: {violations:?}"
+    );
+}

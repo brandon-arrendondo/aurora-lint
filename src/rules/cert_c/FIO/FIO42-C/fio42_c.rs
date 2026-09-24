@@ -37,18 +37,19 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
+use crate::analyze::context::ScopedTable;
+use crate::analyze::context::SummaryLookup;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use tree_sitter::Node;
 
 #[derive(Default)]
 pub struct Fio42C {
-    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
 }
 
 impl Fio42C {
@@ -136,7 +137,7 @@ impl FileResourceTracker {
         &mut self,
         node: &Node,
         source: &str,
-        summaries: &HashMap<String, FunctionSummary>,
+        summaries: &(impl SummaryLookup + ?Sized),
         violations: &mut Vec<RuleViolation>,
     ) {
         // Find all function definitions to analyze
@@ -149,7 +150,7 @@ impl FileResourceTracker {
         &mut self,
         func_node: &Node,
         source: &str,
-        summaries: &HashMap<String, FunctionSummary>,
+        summaries: &(impl SummaryLookup + ?Sized),
         violations: &mut Vec<RuleViolation>,
     ) {
         // Reset tracking for this function scope
@@ -192,7 +193,7 @@ impl FileResourceTracker {
         &mut self,
         body: &Node,
         source: &str,
-        summaries: &HashMap<String, FunctionSummary>,
+        summaries: &(impl SummaryLookup + ?Sized),
     ) {
         if summaries.is_empty() {
             return;

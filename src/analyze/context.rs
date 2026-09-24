@@ -27,7 +27,7 @@ pub struct ProjectContext {
     /// flagged by DCL15-C/DCL19-C as needing `static`.
     pub header_declared_functions: Arc<HashSet<String>>,
     /// Function summaries computed during prescan for inter-procedural analysis.
-    pub function_summaries: Arc<HashMap<String, FunctionSummary>>,
+    pub function_summaries: ScopedTable<FunctionSummary>,
     /// Call graph: maps function name to the set of functions it calls.
     pub call_graph: Arc<HashMap<String, HashSet<String>>>,
     /// The inverse of `call_graph`: maps a function name to the set of
@@ -260,26 +260,26 @@ pub struct ProjectContext {
     /// is about is in a .c file that only names the alias.
     #[serde(default)]
     pub pointer_typedef_names: Arc<HashSet<String>>,
-    /// Definitions only the file that holds them may use: `file -> name ->
-    /// summary`, filled for names defined `static` in more than one scanned
-    /// file and for nothing else.
+    /// `file -> the names that file defines `static` while some other
+    /// scanned file does too`: the files whose view of
+    /// `function_summaries` is not the shared one.
     ///
     /// Two `static` definitions of one bare name are two unrelated
     /// functions (mbedtls' two `psa_aead_setup`, sqlite's three
-    /// `SHA3Update`), so neither belongs in `function_summaries`, which is
-    /// keyed by the name alone: whichever the fold reached first used to
-    /// answer for every caller in the project, including the files that
-    /// define the other one. They are kept here instead, and
-    /// [`Self::as_seen_from`] puts a file's own back in front of the rules
-    /// that check it. A name with no external definition anywhere therefore
-    /// has no project-wide entry at all, which is the sound answer for a
-    /// caller in neither file -- it cannot legally call either definition
+    /// `SHA3Update`), so neither may answer under the bare name: whichever
+    /// the fold reached first used to answer for every caller in the
+    /// project, including the files that define the other one. Each is
+    /// kept under its (file, name) key instead, and [`Self::as_seen_from`]
+    /// resolves a file's own spelling of the name to its own definition. A
+    /// name with no external definition anywhere has no bare entry at all,
+    /// which is the sound answer for a caller in neither file -- it cannot
+    /// legally call either definition
     /// (`docs/design/multiply-defined-names.md`).
     ///
     /// Keys are canonicalized, because the walk that fills this and the walk
     /// that looks it up need not spell a path the same way.
     #[serde(default)]
-    pub file_local_summaries: Arc<HashMap<String, HashMap<String, FunctionSummary>>>,
+    pub scoped_names_by_file: Arc<HashMap<String, Arc<HashSet<String>>>>,
 }
 
 impl ProjectContext {
@@ -331,23 +331,24 @@ impl ProjectContext {
     /// this context unchanged -- which is every file but the handful that
     /// define a name some other file also defines `static`.
     ///
-    /// The returned view differs in one table: `function_summaries` gains
-    /// this file's own definitions of those names. Copying that map is the
-    /// cost, and it is bounded by how many files hold such a definition
-    /// (~164 in the largest benchmark corpus, ~11 ms each), not by how many
-    /// files are scanned. Every other table is an `Arc` handle, as ever.
+    /// The returned view differs in one table, `function_summaries`: this
+    /// file's spelling of such a name resolves to its own definition. The
+    /// view is a scope over the shared table, not a copy of it. It used to be a copy of the summary map, which was
+    /// cheap only while few files needed one; in Juliet nearly every file
+    /// defines a `static void goodG2B()`, and the copy per file cost more
+    /// than the rules did.
     pub fn as_seen_from(&self, path: &Path) -> Option<Self> {
-        if self.file_local_summaries.is_empty() {
+        if self.scoped_names_by_file.is_empty() {
             return None;
         }
         let key = crate::analyze::compile_commands::real_path(path);
-        let locals = self.file_local_summaries.get(&key)?;
-        let mut summaries = (*self.function_summaries).clone();
-        for (name, summary) in locals {
-            summaries.insert(name.clone(), summary.clone());
-        }
+        let names = self.scoped_names_by_file.get(&key)?;
+        let scope = FileScope {
+            file: Arc::from(key.as_str()),
+            names: Arc::clone(names),
+        };
         Some(Self {
-            function_summaries: Arc::new(summaries),
+            function_summaries: self.function_summaries.scoped(scope),
             ..self.clone()
         })
     }
@@ -364,5 +365,241 @@ impl ProjectContext {
         let data = std::fs::read(path)?;
         let context: Self = bincode::deserialize(&data)?;
         Ok(context)
+    }
+}
+
+/// The key a (file, name) pair is stored under in a [`ScopedTable`]: a name
+/// defined `static` in several scanned files, qualified by the one file whose
+/// definition it is. The NUL cannot occur in a C identifier or in a path, so
+/// no bare lookup ever lands on one.
+pub fn qualified_key(file: &str, name: &str) -> String {
+    format!("{file}\0{name}")
+}
+
+/// Which file a [`ScopedTable`] is being read from, and the names that file
+/// resolves to its own definitions.
+#[derive(Debug, Clone)]
+pub struct FileScope {
+    file: Arc<str>,
+    names: Arc<HashSet<String>>,
+}
+
+/// A name-keyed project table in which a name several files define `static`
+/// is held once per defining file, and read through a file's scope.
+///
+/// Unscoped, a bare name reads the bare entry and no file's own entries are
+/// visible to iteration. Scoped to a file, a bare name that file defines
+/// `static` reads that file's own entry instead. A [`qualified_key`] read
+/// directly reaches its entry from any scope: that is how a walk that has
+/// already resolved a caller to its defining file -- `callers` hands out
+/// qualified keys for exactly those callers -- reads that caller's summary
+/// from a file that is not its own.
+///
+/// The per-file entries are held apart from the bare ones, so iterating a
+/// scope costs what iterating the old per-file copy did: the bare entries
+/// plus this file's own, not every file's.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(bound(
+    serialize = "V: serde::Serialize",
+    deserialize = "V: serde::Deserialize<'de>"
+))]
+pub struct ScopedTable<V> {
+    entries: Arc<HashMap<String, V>>,
+    by_file: Arc<HashMap<String, HashMap<String, V>>>,
+    #[serde(skip)]
+    scope: Option<FileScope>,
+}
+
+impl<V> Default for ScopedTable<V> {
+    fn default() -> Self {
+        Self {
+            entries: Arc::new(HashMap::new()),
+            by_file: Arc::new(HashMap::new()),
+            scope: None,
+        }
+    }
+}
+
+impl<V> From<HashMap<String, V>> for ScopedTable<V> {
+    /// Splits `entries` on [`qualified_key`]: a qualified key goes to its
+    /// file's own entries, every other key stays bare.
+    fn from(entries: HashMap<String, V>) -> Self {
+        let mut bare = HashMap::with_capacity(entries.len());
+        let mut by_file: HashMap<String, HashMap<String, V>> = HashMap::new();
+        for (key, value) in entries {
+            match key.split_once('\0') {
+                Some((file, name)) => {
+                    by_file
+                        .entry(file.to_string())
+                        .or_default()
+                        .insert(name.to_string(), value);
+                }
+                None => {
+                    bare.insert(key, value);
+                }
+            }
+        }
+        Self {
+            entries: Arc::new(bare),
+            by_file: Arc::new(by_file),
+            scope: None,
+        }
+    }
+}
+
+impl<V> ScopedTable<V> {
+    /// The shared bare entries, for prescan's own passes that finish a
+    /// context before any rule reads it. Copy-on-write, like every other
+    /// table.
+    pub fn make_mut(&mut self) -> &mut HashMap<String, V>
+    where
+        V: Clone,
+    {
+        Arc::make_mut(&mut self.entries)
+    }
+
+    /// This table as `scope`'s file reads it. A handle, not a copy.
+    pub fn scoped(&self, scope: FileScope) -> Self {
+        Self {
+            entries: Arc::clone(&self.entries),
+            by_file: Arc::clone(&self.by_file),
+            scope: Some(scope),
+        }
+    }
+
+    /// The entry `name` resolves to from this scope.
+    pub fn get(&self, name: &str) -> Option<&V> {
+        if let Some((file, bare)) = name.split_once('\0') {
+            return self.by_file.get(file)?.get(bare);
+        }
+        match &self.scope {
+            Some(scope) if scope.names.contains(name) => self.by_file.get(&*scope.file)?.get(name),
+            _ => self.entries.get(name),
+        }
+    }
+
+    /// Whether `name` resolves to an entry from this scope.
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.get(name).is_some()
+    }
+
+    /// Whether the prescan produced no entries at all.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty() && self.by_file.is_empty()
+    }
+
+    /// Every entry this scope can name, under the name it would use: the
+    /// bare entries it does not shadow and its own file's.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &V)> + '_ {
+        let own = self
+            .scope
+            .as_ref()
+            .and_then(|scope| self.by_file.get(&*scope.file));
+        self.entries
+            .iter()
+            .filter(move |(key, _)| {
+                self.scope
+                    .as_ref()
+                    .is_none_or(|scope| !scope.names.contains(key.as_str()))
+            })
+            .chain(own.into_iter().flatten())
+    }
+
+    /// How many entries [`Self::iter`] yields.
+    pub fn len(&self) -> usize {
+        self.iter().count()
+    }
+}
+
+/// A function-summary lookup by name, whichever table answers it: prescan's
+/// own map while it is still building one, or a [`ScopedTable`] as a file's
+/// rules see it.
+pub trait SummaryLookup {
+    /// The summary `name` resolves to.
+    fn get(&self, name: &str) -> Option<&FunctionSummary>;
+
+    /// Whether `name` resolves to a summary.
+    fn contains_key(&self, name: &str) -> bool {
+        self.get(name).is_some()
+    }
+
+    /// Whether there is no summary at all.
+    fn is_empty(&self) -> bool;
+
+    /// Every (name, summary) this lookup answers, each name once.
+    fn entries(&self) -> Box<dyn Iterator<Item = (&String, &FunctionSummary)> + '_>;
+}
+
+impl SummaryLookup for HashMap<String, FunctionSummary> {
+    fn get(&self, name: &str) -> Option<&FunctionSummary> {
+        HashMap::get(self, name)
+    }
+
+    fn is_empty(&self) -> bool {
+        HashMap::is_empty(self)
+    }
+
+    fn entries(&self) -> Box<dyn Iterator<Item = (&String, &FunctionSummary)> + '_> {
+        Box::new(self.iter())
+    }
+}
+
+impl SummaryLookup for ScopedTable<FunctionSummary> {
+    fn get(&self, name: &str) -> Option<&FunctionSummary> {
+        ScopedTable::get(self, name)
+    }
+
+    fn is_empty(&self) -> bool {
+        ScopedTable::is_empty(self)
+    }
+
+    fn entries(&self) -> Box<dyn Iterator<Item = (&String, &FunctionSummary)> + '_> {
+        Box::new(self.iter())
+    }
+}
+
+impl<T: SummaryLookup + ?Sized> SummaryLookup for std::cell::Ref<'_, T> {
+    fn get(&self, name: &str) -> Option<&FunctionSummary> {
+        (**self).get(name)
+    }
+
+    fn is_empty(&self) -> bool {
+        (**self).is_empty()
+    }
+
+    fn entries(&self) -> Box<dyn Iterator<Item = (&String, &FunctionSummary)> + '_> {
+        (**self).entries()
+    }
+}
+
+/// Two summary lookups read as one: `first` answers a name it holds, and
+/// `then` answers the rest. The borrowed form of cloning `then` and
+/// extending it with `first`.
+pub struct SummaryOverlay<'a, A: ?Sized, B: ?Sized> {
+    /// Answers every name it holds.
+    pub first: &'a A,
+    /// Answers the names `first` does not.
+    pub then: &'a B,
+}
+
+impl<A: SummaryLookup + ?Sized, B: SummaryLookup + ?Sized> SummaryLookup
+    for SummaryOverlay<'_, A, B>
+{
+    fn get(&self, name: &str) -> Option<&FunctionSummary> {
+        self.first.get(name).or_else(|| self.then.get(name))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.first.is_empty() && self.then.is_empty()
+    }
+
+    fn entries(&self) -> Box<dyn Iterator<Item = (&String, &FunctionSummary)> + '_> {
+        Box::new(
+            self.first.entries().chain(
+                self.then
+                    .entries()
+                    .filter(|(name, _)| !self.first.contains_key(name)),
+            ),
+        )
     }
 }

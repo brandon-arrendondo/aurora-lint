@@ -22,6 +22,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval::{merged_macro_aliases, resolve_macro_alias};
 use crate::analyze::context::ProjectContext;
+use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::{macro_forwarding_target, FunctionMacro};
 use crate::manifest::{RuleCategory, Severity};
@@ -69,7 +70,7 @@ pub struct Win05C {
     /// Prescan function summaries: `param_passthroughs` is the edge a wrapper
     /// hop follows (handle from `set_project_context`, see the catalog's
     /// "Cross-file project context" section).
-    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// Project function-like macros, for a forwarding-macro hop.
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     /// Project object-like aliases (`#define REGKEY_HKLM HKEY_LOCAL_MACHINE`);
@@ -86,7 +87,7 @@ impl Default for Win05C {
 impl Win05C {
     pub fn new() -> Self {
         Self {
-            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            function_summaries: RefCell::default(),
             function_macros: RefCell::new(Arc::new(HashMap::new())),
             macro_aliases: RefCell::new(Arc::new(HashMap::new())),
         }

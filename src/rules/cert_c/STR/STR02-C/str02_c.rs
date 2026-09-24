@@ -99,6 +99,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg;
 use crate::analyze::const_eval;
 use crate::analyze::context::ProjectContext;
+use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
@@ -142,7 +143,7 @@ const TAINT_OVERWRITE_PROPAGATORS: &[&str] = &[
 pub struct Str02C {
     project_aliases: RefCell<Arc<HashMap<String, String>>>,
     current_aliases: RefCell<HashMap<String, String>>,
-    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// Reverse call graph: callee_name → set of caller names. Built from
     /// ProjectContext's forward `call_graph` in `set_project_context`.
     callers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
@@ -158,7 +159,7 @@ impl Str02C {
         Self {
             project_aliases: RefCell::new(Arc::new(HashMap::new())),
             current_aliases: RefCell::new(HashMap::new()),
-            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            function_summaries: RefCell::default(),
             callers: RefCell::default(),
             literal_only_params: RefCell::new(HashMap::new()),
         }
