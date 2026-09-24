@@ -61,6 +61,7 @@
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Contributing</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#adding-a-new-cert-c-rule">Adding a New CERT C Rule</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#build-requirements">Build Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#invoke-tasks">Invoke Tasks</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#development-node-setup">Development Node Setup</a></li>
 </ul>
 </li>
@@ -157,6 +158,39 @@ and <code class="docutils literal notranslate"><span class="pre">tests/pass/</sp
 <span class="n">cargo</span> <span class="n">fmt</span>               <span class="c1"># Format code</span>
 </pre></div>
 </div>
+</section>
+<section id="invoke-tasks">
+<h2>Invoke Tasks<a class="headerlink" href="#invoke-tasks" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">tasks.py</span></code> holds a few developer tasks, run with
+<a class="reference external" href="https://www.pyinvoke.org/">invoke</a> (<code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">invoke</span></code>):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">invoke</span> <span class="n">check</span>            <span class="c1"># Run pre-commit hooks on all files</span>
+<span class="n">invoke</span> <span class="n">build</span>            <span class="c1"># Build (add --release for release mode)</span>
+<span class="n">invoke</span> <span class="n">test</span>             <span class="c1"># Run all tests</span>
+<span class="n">invoke</span> <span class="n">bump</span><span class="o">-</span><span class="n">version</span>     <span class="c1"># Bump version across all files (reads Cargo.toml)</span>
+<span class="n">invoke</span> <span class="n">lint</span><span class="o">-</span><span class="n">docs</span>        <span class="c1"># Advisory prose lint of README.md, docs/*.rst, man page</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">invoke</span> <span class="pre">lint-docs</span></code> runs <a class="reference external" href="https://vale.sh">Vale</a> with the Aurora house
+style (American spelling, settled terms such as “pre-scan”, no contractions,
+and a flag on patterns typical of machine-written prose). The style is a
+Vale package in a sibling <code class="docutils literal notranslate"><span class="pre">../style_package</span></code> checkout, named in
+<code class="docutils literal notranslate"><span class="pre">.vale.ini</span></code>; the task builds its zip there when missing and reruns
+<code class="docutils literal notranslate"><span class="pre">vale</span> <span class="pre">sync</span></code> when <code class="docutils literal notranslate"><span class="pre">.vale.ini</span></code> or the zip changes. A checkout without
+<code class="docutils literal notranslate"><span class="pre">../style_package</span></code> cannot run it, and nothing else depends on it.</p>
+<p>By default it lints the user-facing docs: <code class="docutils literal notranslate"><span class="pre">README.md</span></code>, this guide
+(<code class="docutils literal notranslate"><span class="pre">docs/*.rst</span></code>) and the man page, which pandoc first converts to Markdown
+under <code class="docutils literal notranslate"><span class="pre">target/vale/</span></code> (findings name that file). Pass <code class="docutils literal notranslate"><span class="pre">--path</span></code> for any
+other tracked <code class="docutils literal notranslate"><span class="pre">.md</span></code> or <code class="docutils literal notranslate"><span class="pre">.rst</span></code> file or directory, such as the internal
+design docs, and <code class="docutils literal notranslate"><span class="pre">--level</span> <span class="pre">suggestion</span></code> to see suggestion-level rules too:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">invoke</span> <span class="n">lint</span><span class="o">-</span><span class="n">docs</span> <span class="o">--</span><span class="n">path</span> <span class="n">docs</span><span class="o">/</span><span class="n">cli</span><span class="o">-</span><span class="n">usage</span><span class="o">.</span><span class="n">rst</span>
+<span class="n">invoke</span> <span class="n">lint</span><span class="o">-</span><span class="n">docs</span> <span class="o">--</span><span class="n">path</span> <span class="n">docs</span><span class="o">/</span><span class="n">design</span>
+</pre></div>
+</div>
+<p>The lint is advisory: findings never fail the task, and it is not part of
+pre-commit or CI. Reading <code class="docutils literal notranslate"><span class="pre">.rst</span></code> needs docutils’ <code class="docutils literal notranslate"><span class="pre">rst2html</span></code> on
+<code class="docutils literal notranslate"><span class="pre">PATH</span></code>; the development venv below has it (Sphinx depends on docutils).
+Without it the task skips <code class="docutils literal notranslate"><span class="pre">.rst</span></code> files and says so. Rule changes belong in
+<code class="docutils literal notranslate"><span class="pre">style_package</span></code>, not in a local override here.</p>
 </section>
 <section id="development-node-setup">
 <h2>Development Node Setup<a class="headerlink" href="#development-node-setup" title="Link to this heading"></a></h2>
