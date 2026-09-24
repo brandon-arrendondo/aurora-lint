@@ -1,0 +1,8 @@
+[metadata]
+name = "CLI Integration Test - ENV03-C only"
+version = "1.0.0"
+description = "Minimal manifest for ENV03-C cross-file global-writer tests"
+cert_version = "2016"
+
+[rules.cert_c.ENV03-C]
+enabled = true

@@ -4,7 +4,8 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self, FunctionCfg};
 use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
-use crate::analyze::context::ProjectContext;
+use crate::analyze::context::SummaryLookup;
+use crate::analyze::context::{ProjectContext, ScopedTable};
 use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
@@ -36,7 +37,7 @@ pub struct Int30C {
     struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
-    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// Globals written by a tainted function — see the INT32-C provenance gate.
     global_writers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
     /// Per-function memo of risky variable names, keyed by function node id;
@@ -79,7 +80,7 @@ impl Int30C {
             struct_field_types: RefCell::new(Arc::new(HashMap::new())),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
-            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            function_summaries: RefCell::default(),
             global_writers: RefCell::new(Arc::new(HashMap::new())),
             risky_vars_cache: RefCell::new(HashMap::new()),
             callers: RefCell::default(),
@@ -1863,7 +1864,7 @@ impl Int30C {
     fn is_small_increment_of_opaque(
         node: &Node,
         source: &str,
-        summaries: &HashMap<String, FunctionSummary>,
+        summaries: &(impl SummaryLookup + ?Sized),
     ) -> bool {
         if node.kind() != "binary_expression" {
             return false;

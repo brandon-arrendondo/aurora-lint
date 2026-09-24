@@ -13,6 +13,7 @@ use super::cfg::{BasicBlock, BlockId, CfgEdge, FunctionCfg};
 use super::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
 use super::dataflow::find_node_at_range;
 use super::function_summary::FunctionSummary;
+use crate::analyze::context::SummaryLookup;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tree_sitter::Node;
 
@@ -292,7 +293,7 @@ fn apply_range_transfer(
     body: &Node,
     source: &str,
     macros: &MacroConstantMap,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     local_types: &HashMap<String, VarType>,
 ) -> RangeMap {
     let mut state = entry.clone();
@@ -321,7 +322,7 @@ fn process_statement_for_ranges(
     node: &Node,
     source: &str,
     macros: &MacroConstantMap,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     state: &mut RangeMap,
     local_types: &HashMap<String, VarType>,
 ) {
@@ -389,7 +390,7 @@ fn process_opaque_region(
     node: &Node,
     source: &str,
     macros: &MacroConstantMap,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     state: &mut RangeMap,
     local_types: &HashMap<String, VarType>,
 ) {
@@ -523,7 +524,7 @@ fn process_declaration_range(
     node: &Node,
     source: &str,
     macros: &MacroConstantMap,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     state: &mut RangeMap,
 ) {
     let var_type = extract_var_type_from_declaration(node, source);
@@ -636,7 +637,7 @@ fn process_expression_range(
     node: &Node,
     source: &str,
     macros: &MacroConstantMap,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     state: &mut RangeMap,
     local_types: &HashMap<String, VarType>,
 ) {
@@ -657,7 +658,7 @@ fn process_assignment_range(
     node: &Node,
     source: &str,
     macros: &MacroConstantMap,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     state: &mut RangeMap,
     local_types: &HashMap<String, VarType>,
 ) {
@@ -706,7 +707,7 @@ fn process_simple_assignment_range(
     right: &Node,
     source: &str,
     macros: &MacroConstantMap,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     state: &mut RangeMap,
     local_types: &HashMap<String, VarType>,
     var_ranges: &VarRangeMap,
@@ -1379,7 +1380,7 @@ pub fn analyze_value_ranges(
     func_node: &Node,
     source: &str,
     macros: &MacroConstantMap,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) -> RangeAnalysisResult {
     // Skip VRA for very large functions to bound worst-case runtime.
     if cfg.blocks.len() > VRA_BLOCK_LIMIT {
@@ -1506,7 +1507,7 @@ pub fn analyze_value_ranges(
 
     // Extract callee return ranges for intra-block replay
     let return_ranges: HashMap<String, ValueRange> = summaries
-        .iter()
+        .entries()
         .filter_map(|(name, s)| s.return_range.map(|r| (name.clone(), r)))
         .collect();
 
@@ -1553,7 +1554,7 @@ fn empty_range_result() -> RangeAnalysisResult {
 fn build_initial_state(
     func_node: &Node,
     source: &str,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) -> RangeMap {
     // Build initial state from function parameters
     let mut initial_state = RangeMap::new();
@@ -1984,7 +1985,7 @@ fn build_replay_summaries(
 fn resolve_call_return_range(
     node: &Node,
     source: &str,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) -> Option<ValueRange> {
     if node.kind() != "call_expression" {
         return None;

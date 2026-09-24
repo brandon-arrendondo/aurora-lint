@@ -47,6 +47,8 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
+use crate::analyze::context::ScopedTable;
+use crate::analyze::context::SummaryLookup;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::null_state::condition_tests_null;
 use crate::manifest::{RuleCategory, Severity};
@@ -85,7 +87,7 @@ struct PointerTypes<'a> {
 }
 
 pub struct Api00C {
-    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     struct_field_types: RefCell<Arc<StructFieldTypes>>,
     pointer_facts: RefCell<PointerFacts>,
     /// Cross-file typedef alias map, reached through the shared
@@ -105,7 +107,7 @@ pub struct Api00C {
 impl Api00C {
     pub fn new() -> Self {
         Self {
-            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            function_summaries: RefCell::default(),
             struct_field_types: RefCell::new(Arc::new(StructFieldTypes::new())),
             pointer_facts: RefCell::new(PointerFacts::default()),
             typedef_types: RefCell::new(Arc::new(HashMap::new())),
@@ -1478,7 +1480,7 @@ impl Api00C {
         body: &Node,
         param_name: &str,
         source: &str,
-        summaries: &HashMap<String, FunctionSummary>,
+        summaries: &(impl SummaryLookup + ?Sized),
     ) -> bool {
         let mut saw_any_use = false;
         let mut safe = true;
@@ -1500,7 +1502,7 @@ impl Api00C {
         node: &Node,
         param_name: &str,
         source: &str,
-        summaries: &HashMap<String, FunctionSummary>,
+        summaries: &(impl SummaryLookup + ?Sized),
         safe: &mut bool,
         saw_any_use: &mut bool,
     ) {

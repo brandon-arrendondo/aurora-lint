@@ -4,7 +4,8 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self, FunctionCfg};
 use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
-use crate::analyze::context::ProjectContext;
+use crate::analyze::context::SummaryLookup;
+use crate::analyze::context::{ProjectContext, ScopedTable};
 use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::macro_expand::FunctionMacro;
 use crate::analyze::value_range::RangeAnalysisResult;
@@ -69,7 +70,7 @@ pub struct Int32C {
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
-    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// Globals known to be written by a tainted function (file → function name
     /// set). Used by the provenance gate to treat a global operand fed from an
     /// untrusted source as risky.
@@ -114,7 +115,7 @@ impl Int32C {
             function_macros: RefCell::new(Arc::new(HashMap::new())),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
-            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            function_summaries: RefCell::default(),
             global_writers: RefCell::new(Arc::new(HashMap::new())),
             risky_vars_cache: RefCell::new(HashMap::new()),
             callers: RefCell::default(),
@@ -3011,7 +3012,7 @@ impl Int32C {
     fn is_small_increment_of_opaque(
         node: &Node,
         source: &str,
-        summaries: &HashMap<String, FunctionSummary>,
+        summaries: &(impl SummaryLookup + ?Sized),
     ) -> bool {
         if node.kind() != "binary_expression" {
             return false;

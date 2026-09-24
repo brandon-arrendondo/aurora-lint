@@ -15,7 +15,7 @@
 //! module holds only the provenance classification, which is identical across
 //! the signed and unsigned rules.
 
-use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::context::SummaryLookup;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
@@ -46,7 +46,7 @@ pub struct ParamContext<'a> {
 /// taint source (`scanf`/`recv`/`fgets`/...), or a project-local function whose
 /// prescan summary carries taint (`has_env03_taint_source` directly or
 /// `returns_tainted` transitively).
-pub fn callee_is_risky_source(callee: &str, summaries: &HashMap<String, FunctionSummary>) -> bool {
+pub fn callee_is_risky_source(callee: &str, summaries: &(impl SummaryLookup + ?Sized)) -> bool {
     let ident = callee
         .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
         .next()
@@ -80,7 +80,7 @@ pub fn callee_is_risky_source(callee: &str, summaries: &HashMap<String, Function
 pub fn parameter_is_risky(
     func_name: &str,
     callers: &HashMap<String, HashSet<String>>,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) -> bool {
     match callers.get(func_name) {
         Some(cs) if !cs.is_empty() => cs.iter().any(|c| match summaries.get(c) {
@@ -100,7 +100,7 @@ pub fn parameter_is_risky(
 /// once per function rather than once per arithmetic operand.
 pub fn collect_risky_vars(
     body: &Node,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     source: &str,
 ) -> HashSet<String> {
     let mut set = HashSet::new();
@@ -116,7 +116,7 @@ pub fn collect_risky_vars(
 pub fn operand_is_risky(
     op: &Node,
     risky_vars: &HashSet<String>,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     global_writers: &HashMap<String, HashSet<String>>,
     params: Option<&ParamContext>,
     source: &str,
@@ -185,7 +185,7 @@ pub fn operand_is_risky(
 fn global_is_tainted(
     name: &str,
     global_writers: &HashMap<String, HashSet<String>>,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
 ) -> bool {
     match global_writers.get(name) {
         Some(ws) => ws.iter().any(|w| {
@@ -197,7 +197,7 @@ fn global_is_tainted(
 
 fn collect_risky_vars_walk(
     node: &Node,
-    summaries: &HashMap<String, FunctionSummary>,
+    summaries: &(impl SummaryLookup + ?Sized),
     source: &str,
     set: &mut HashSet<String>,
 ) {
@@ -275,11 +275,7 @@ fn init_declarator_name(decl: &Node, source: &str) -> Option<String> {
 }
 
 /// True when `rhs`, after stripping casts/parens, is a call to a risky source.
-fn rhs_is_risky_call(
-    rhs: &Node,
-    summaries: &HashMap<String, FunctionSummary>,
-    source: &str,
-) -> bool {
+fn rhs_is_risky_call(rhs: &Node, summaries: &(impl SummaryLookup + ?Sized), source: &str) -> bool {
     let mut node = *rhs;
     loop {
         match node.kind() {

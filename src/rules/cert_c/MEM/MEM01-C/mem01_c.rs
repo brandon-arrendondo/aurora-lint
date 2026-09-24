@@ -13,6 +13,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self as cfg_mod, FunctionCfg};
 use crate::analyze::context::ProjectContext;
+use crate::analyze::context::ScopedTable;
 use crate::analyze::dataflow::find_node_at_range;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::{RuleCategory, Severity};
@@ -20,13 +21,12 @@ use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Mem01C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     /// Cross-file function summaries from prescan (an earlier fix follow-on to 320/321).
-    cross_file_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    cross_file_summaries: RefCell<ScopedTable<FunctionSummary>>,
 }
 
 /// Per-callee parameter indices confirmed to be read-only-dereferenced,
@@ -44,7 +44,7 @@ impl Mem01C {
     pub fn new() -> Self {
         Self {
             function_cfgs: RefCell::new(HashMap::new()),
-            cross_file_summaries: RefCell::new(Arc::new(HashMap::new())),
+            cross_file_summaries: RefCell::default(),
         }
     }
 

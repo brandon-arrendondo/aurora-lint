@@ -908,7 +908,7 @@ pub(crate) fn compute_vra_if_needed(
     function_cfgs: &HashMap<usize, cfg::FunctionCfg>,
     root_node: &tree_sitter::Node,
     source: &str,
-    prescan_summaries: &HashMap<String, function_summary::FunctionSummary>,
+    prescan_summaries: &(impl crate::analyze::context::SummaryLookup + ?Sized),
     project_macros: &const_eval::MacroConstantMap,
 ) -> HashMap<usize, value_range::RangeAnalysisResult> {
     if !needs_vra || function_cfgs.is_empty() {
@@ -945,29 +945,21 @@ pub(crate) fn compute_vra_if_needed(
         );
     }
 
-    // Merge prescan (cross-file) summaries with same-file summaries by reference.
-    // Only clone+extend if both sides are non-empty; otherwise use whichever is available.
-    let merged;
-    let summaries: &HashMap<String, function_summary::FunctionSummary> =
-        if prescan_summaries.is_empty() {
-            &file_summaries
-        } else if file_summaries.is_empty() {
-            prescan_summaries
-        } else {
-            merged = {
-                let mut m = prescan_summaries.clone();
-                m.extend(file_summaries);
-                m
-            };
-            &merged
-        };
+    // Same-file summaries in front of the prescan's (cross-file) ones, by
+    // reference: a same-file definition answers for its own name.
+    let summaries = crate::analyze::context::SummaryOverlay {
+        first: &file_summaries,
+        then: prescan_summaries,
+    };
 
     let mut results = HashMap::new();
     for (&start_byte, func_cfg) in function_cfgs {
         if let Some(func_node) = find_function_at_byte(root_node, start_byte) {
             results.insert(
                 start_byte,
-                value_range::analyze_value_ranges(func_cfg, &func_node, source, &macros, summaries),
+                value_range::analyze_value_ranges(
+                    func_cfg, &func_node, source, &macros, &summaries,
+                ),
             );
         }
     }

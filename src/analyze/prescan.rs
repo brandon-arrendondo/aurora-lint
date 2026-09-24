@@ -417,8 +417,6 @@ fn prescan_file_list(
     drop(static_definers);
     // `file -> name -> that file's own definition`, for those names only,
     // drained out of `function_summaries` once phase 4 has run.
-    let mut file_local_summaries: HashMap<String, HashMap<String, FunctionSummary>> =
-        HashMap::new();
     // Ambiguous-static names that some file also defines with external
     // linkage. One that no file does has no legal caller outside the files
     // that define it, so its bare-name entry is dropped after phase 4 rather
@@ -434,6 +432,7 @@ fn prescan_file_list(
     let mut header_declared_functions: HashSet<String> = HashSet::new();
     let mut function_summaries: HashMap<String, FunctionSummary> = HashMap::new();
     let mut call_graph: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut scoped_call_graph: HashMap<String, HashSet<String>> = HashMap::new();
     let mut ambiguous_call_targets: HashSet<String> = HashSet::new();
     let mut static_defining_files: HashMap<String, HashSet<PathBuf>> = HashMap::new();
     let mut macro_constants: HashMap<String, i64> = HashMap::new();
@@ -557,9 +556,9 @@ fn prescan_file_list(
             if scoped_names.contains(&name) {
                 // Keyed by file for the length of the fold, so phase 4 below
                 // aggregates this definition from its OWN file's call sites
-                // rather than from every same-named static's. Drained back
-                // out into `file_local_summaries` once phase 4 has run, so
-                // no consumer ever sees a qualified key.
+                // rather than from every same-named static's. The key stays:
+                // a consumer reads it through `ProjectContext::as_seen_from`,
+                // which resolves the defining file's own spelling to it.
                 function_summaries.insert(qualified_key(file_key.as_deref(), &name), summary);
                 continue;
             }
@@ -579,6 +578,25 @@ fn prescan_file_list(
             }
         }
 
+        // The same edges again, with each end keyed the way the fold keyed
+        // the definitions: a caller or callee this file scopes is this
+        // file's own function. Only the reverse graph is built from these.
+        // `call_graph` itself stays bare, for the reachability consumers
+        // that `ambiguous_call_targets` already guards.
+        for (caller, callees) in &r.call_graph {
+            scoped_call_graph
+                .entry(scoped_callee(
+                    &scoped_names,
+                    file_key.as_deref(),
+                    caller.clone(),
+                ))
+                .or_default()
+                .extend(
+                    callees
+                        .iter()
+                        .map(|c| scoped_callee(&scoped_names, file_key.as_deref(), c.clone())),
+                );
+        }
         for (caller, callees) in r.call_graph {
             call_graph.entry(caller).or_default().extend(callees);
         }
@@ -642,8 +660,16 @@ fn prescan_file_list(
         global_constants.extend(r.global_constants);
         global_var_null_states.extend(r.global_var_null_states);
 
+        // A writer this file scopes is named by its (file, name) key, as a
+        // caller is in `callers`: ENV03-C and the INT3x taint check read each
+        // writer's summary, and from the file that reads the global a bare
+        // name would not reach a static writer defined elsewhere.
         for (var, writers) in r.global_writers {
-            global_writers.entry(var).or_default().extend(writers);
+            global_writers.entry(var).or_default().extend(
+                writers
+                    .into_iter()
+                    .map(|w| scoped_callee(&scoped_names, file_key.as_deref(), w)),
+            );
         }
         for (callee, args) in r.callsite_args {
             callsite_args
@@ -902,12 +928,12 @@ fn prescan_file_list(
         .filter(|name| known_functions.contains(name) && !directly_called.contains(name.as_str()))
         .collect();
 
-    // Phase 5: take the file-scoped definitions back out, now that phase 4
-    // has aggregated each from its own file's call sites, and drop the
-    // bare-name shell of any ambiguous static no file defines externally --
-    // nothing outside the defining files can legally call one, so an entry
-    // under the bare name would answer a question no caller may ask.
-    drain_file_scoped(&mut function_summaries, &mut file_local_summaries);
+    // Phase 5: drop the bare-name shell of any ambiguous static no file
+    // defines externally -- nothing outside the defining files can legally
+    // call one, so an entry under the bare name would answer a question no
+    // caller may ask. The file-scoped definitions stay under their
+    // qualified keys, which only a scoped view or a scoped caller edge
+    // resolves to.
     for name in &ambiguous_statics {
         if !defined_bare.contains(name) {
             function_summaries.remove(name);
@@ -918,13 +944,23 @@ fn prescan_file_list(
         reporter.report_prescan_complete(known_functions.len());
     }
 
-    let callers = invert_call_graph(&call_graph);
+    // Built from the scoped edges, unlike `call_graph`: a callers walk that
+    // climbs from a sink to a `static` caller in another file must be able
+    // to read THAT definition's summary, and a bare name no longer finds
+    // it. Absence is "unknown callers" to ENV33-C, ENV03-C, STR02-C and the
+    // INT3x parameter arm, which then flag -- the same failure the
+    // ambiguity comment above records for a deleted edge.
+    let callers = invert_call_graph(&scoped_call_graph);
+    let scoped_names_by_file: HashMap<String, Arc<HashSet<String>>> = scoped_by_file
+        .into_iter()
+        .map(|(file, names)| (file, Arc::new(names)))
+        .collect();
 
     Ok(ProjectContext {
         known_functions: Arc::new(known_functions),
         header_declared_functions: Arc::new(header_declared_functions),
-        function_summaries: Arc::new(function_summaries),
-        file_local_summaries: Arc::new(file_local_summaries),
+        function_summaries: function_summaries.into(),
+        scoped_names_by_file: Arc::new(scoped_names_by_file),
         call_graph: Arc::new(call_graph),
         callers: Arc::new(callers),
         ambiguous_call_targets: Arc::new(ambiguous_call_targets),
@@ -955,7 +991,18 @@ fn prescan_file_list(
     })
 }
 
-/// `callee -> {callers}` for every edge in `call_graph`.
+/// `callee -> {callers}` for every edge in `call_graph`, whose ends are keyed
+/// as the fold keys definitions.
+///
+/// A caller keeps its key: a scoped static caller is named by its (file,
+/// name) key, which is what lets a walk read that definition's summary and
+/// climb on to ITS callers from any file. A scoped callee is filed under its
+/// key AND under the bare name. The bare entry is the union over every
+/// same-named static, as it was before statics were scoped, and it is what
+/// a rule asking about the function it is checking reads. For "is every
+/// caller clean", an over-approximate caller set is the safe error; a
+/// narrower one withdraws findings, which a scoping change should not do on
+/// its own.
 fn invert_call_graph(
     call_graph: &HashMap<String, HashSet<String>>,
 ) -> HashMap<String, HashSet<String>> {
@@ -966,6 +1013,12 @@ fn invert_call_graph(
                 .entry(callee.clone())
                 .or_default()
                 .insert(caller.clone());
+            if let Some((_, bare)) = callee.split_once('\0') {
+                callers
+                    .entry(bare.to_string())
+                    .or_default()
+                    .insert(caller.clone());
+            }
         }
     }
     callers
@@ -1070,11 +1123,10 @@ fn collect_header_declarations(node: &Node, source: &str, names: &mut HashSet<St
 /// Union `more` into `into`: a parameter documented as non-NULL on either the
 /// prototype or the definition is documented.
 /// The key a definition or call site scoped to one file is folded under, so
-/// phase 4 aggregates it from that file alone. The separator cannot occur in
-/// a path or a C identifier, and no key in this shape survives the fold:
-/// [`drain_file_scoped`] takes them all back out again.
+/// phase 4 aggregates it from that file alone. It is the key the finished
+/// context keeps it under too ([`crate::analyze::context::qualified_key`]).
 fn qualified_key(file: Option<&str>, name: &str) -> String {
-    format!("{}\0{}", file.unwrap_or(""), name)
+    crate::analyze::context::qualified_key(file.unwrap_or(""), name)
 }
 
 /// How one file's scoped names are addressed during the fold and the phase 4
@@ -1108,31 +1160,6 @@ fn scoped_callee(scoped: &HashSet<String>, file: Option<&str>, callee: String) -
     }
 }
 
-/// Move every file-scoped entry out of the merged summaries and into
-/// `file -> name -> summary`, after the phase 4 passes have aggregated each
-/// one from its own file's call sites.
-fn drain_file_scoped(
-    summaries: &mut HashMap<String, FunctionSummary>,
-    out: &mut HashMap<String, HashMap<String, FunctionSummary>>,
-) {
-    let scoped: Vec<String> = summaries
-        .keys()
-        .filter(|k| k.contains('\0'))
-        .cloned()
-        .collect();
-    for key in scoped {
-        let Some(summary) = summaries.remove(&key) else {
-            continue;
-        };
-        let Some((file, name)) = key.split_once('\0') else {
-            continue;
-        };
-        out.entry(file.to_string())
-            .or_default()
-            .insert(name.to_string(), summary);
-    }
-}
-
 fn merge_documented_params(
     into: &mut HashMap<String, Vec<usize>>,
     more: HashMap<String, Vec<usize>>,
@@ -1159,7 +1186,7 @@ pub fn apply_documented_preconditions(context: &mut super::context::ProjectConte
     }
     // Runs before any rule holds a handle on the table, so this copies
     // nothing (`Arc::make_mut` on a refcount of one mutates in place).
-    let summaries = Arc::make_mut(&mut context.function_summaries);
+    let summaries = context.function_summaries.make_mut();
     for (name, indices) in &context.documented_nonnull_params {
         if let Some(summary) = summaries.get_mut(name) {
             for &idx in indices {
@@ -6050,7 +6077,7 @@ pub fn resolve_includes(
                     &header_function_macros,
                 );
                 for (name, summary) in file_summaries {
-                    Arc::make_mut(&mut context.function_summaries).insert(name, summary);
+                    context.function_summaries.make_mut().insert(name, summary);
                 }
                 Arc::make_mut(&mut context.macro_aliases).extend(header_aliases);
                 let header_audit =
@@ -6152,11 +6179,11 @@ pub fn resolve_includes(
     // over the now-complete alias map. Monotone, so a rerun is harmless
     // when nothing new resolved.
     function_summary::propagate_transitive_frees(
-        Arc::make_mut(&mut context.function_summaries),
+        context.function_summaries.make_mut(),
         &context.macro_aliases,
     );
     function_summary::propagate_transitive_stores(
-        Arc::make_mut(&mut context.function_summaries),
+        context.function_summaries.make_mut(),
         &context.macro_aliases,
     );
     // A pointer-returning wrapper's allocating callee may only resolve once a
@@ -6164,13 +6191,13 @@ pub fn resolve_includes(
     // constructor in a header), so this closure needs the same rerun as its
     // siblings above (propagate_returns_allocation is otherwise
     // dark for header-defined constructors here).
-    function_summary::propagate_returns_allocation(Arc::make_mut(&mut context.function_summaries));
+    function_summary::propagate_returns_allocation(context.function_summaries.make_mut());
     function_summary::propagate_returned_value_escapes(
-        Arc::make_mut(&mut context.function_summaries),
+        context.function_summaries.make_mut(),
         &context.macro_aliases,
     );
     function_summary::propagate_transitive_clears(
-        Arc::make_mut(&mut context.function_summaries),
+        context.function_summaries.make_mut(),
         &context.macro_aliases,
     );
 
@@ -8154,7 +8181,7 @@ void caller(char *other) {
         .unwrap();
         let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
         assert!(ctx.function_summaries.contains_key("helper"));
-        assert!(ctx.file_local_summaries.is_empty());
+        assert!(ctx.scoped_names_by_file.is_empty());
         assert!(ctx.as_seen_from(&dir.join("only.c")).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }

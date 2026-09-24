@@ -3,7 +3,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval;
-use crate::analyze::context::ProjectContext;
+use crate::analyze::context::{ProjectContext, ScopedTable};
 use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::init_state;
 use crate::analyze::macro_expand::{self, FunctionMacro};
@@ -73,7 +73,7 @@ fn is_plain_assignment(node: &Node, source: &str) -> bool {
 }
 
 pub struct Mem31C {
-    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     value_only_globals: RefCell<Arc<HashSet<String>>>,
     struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
     struct_typedef_aliases: RefCell<Arc<HashMap<String, String>>>,
@@ -92,7 +92,7 @@ pub struct Mem31C {
 impl Mem31C {
     pub fn new() -> Self {
         Self {
-            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            function_summaries: RefCell::default(),
             value_only_globals: RefCell::new(Arc::new(HashSet::new())),
             struct_field_types: RefCell::new(Arc::new(HashMap::new())),
             struct_typedef_aliases: RefCell::new(Arc::new(HashMap::new())),
@@ -288,7 +288,7 @@ struct MemoryLeakAnalyzer<'a> {
     // Track loop allocation/free patterns: array_base -> (alloc_condition, free_condition)
     loop_array_patterns: HashMap<String, LoopArrayEvidence>,
     // Function summaries from prescan for inter-procedural analysis
-    function_summaries: &'a HashMap<String, FunctionSummary>,
+    function_summaries: &'a ScopedTable<FunctionSummary>,
     // Names of this function's own parameters (an earlier fix: a struct reached
     // through a bare parameter is caller-owned/borrowed — this function
     // populating one of its fields doesn't make this function responsible
@@ -692,7 +692,7 @@ fn push_children<'a>(stack: &mut Vec<Frame<'a>>, node: &Node<'a>) {
 
 impl<'a> MemoryLeakAnalyzer<'a> {
     fn new(
-        function_summaries: &'a HashMap<String, FunctionSummary>,
+        function_summaries: &'a ScopedTable<FunctionSummary>,
         value_only_globals: &'a HashSet<String>,
         struct_field_types: &'a HashMap<String, HashMap<String, String>>,
         struct_typedef_aliases: &'a HashMap<String, String>,

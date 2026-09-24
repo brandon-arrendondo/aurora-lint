@@ -10,6 +10,8 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self as cfg_mod, FunctionCfg};
 use crate::analyze::context::ProjectContext;
+use crate::analyze::context::ScopedTable;
+use crate::analyze::context::SummaryLookup;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::init_state::{self, InitAnalysisResult, InitState, InitStateMap};
 use crate::manifest::{RuleCategory, Severity};
@@ -31,7 +33,7 @@ pub struct Exp33C {
     /// Maps function name → set of pointer parameter indices that are conditional.
     conditionally_init_fns: RefCell<HashMap<String, HashSet<usize>>>,
     /// Cross-file function summaries from prescan (for inter-procedural init tracking).
-    cross_file_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    cross_file_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// File-scope constants for dead-branch elimination in init-state analysis.
     file_scope_constants: RefCell<HashMap<String, i64>>,
     /// Cross-file function-like macro definitions (from the prescan / macro
@@ -50,7 +52,7 @@ impl Exp33C {
             file_scope_statics: RefCell::new(InitStateMap::new()),
             realloc_wrapper_fns: RefCell::new(HashSet::new()),
             conditionally_init_fns: RefCell::new(HashMap::new()),
-            cross_file_summaries: RefCell::new(Arc::new(HashMap::new())),
+            cross_file_summaries: RefCell::default(),
             file_scope_constants: RefCell::new(HashMap::new()),
             function_macros: RefCell::new(Arc::new(HashMap::new())),
             macro_output_params: RefCell::new(HashMap::new()),
@@ -2101,7 +2103,7 @@ fn scan_realloc_wrappers(node: &Node, source: &str, wrappers: &mut HashSet<Strin
 fn scan_conditionally_init_functions(
     node: &Node,
     source: &str,
-    summarised: &HashMap<String, FunctionSummary>,
+    summarised: &(impl SummaryLookup + ?Sized),
     result: &mut HashMap<String, HashSet<usize>>,
 ) {
     for func_def in query::find_descendants_of_kind(*node, "function_definition") {
