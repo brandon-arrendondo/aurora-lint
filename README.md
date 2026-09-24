@@ -214,7 +214,7 @@ cd aurora-lint
 cargo build --release
 ```
 
-The binary is at `target/release/aurora-lint`. Requires Rust 2021 edition (stable toolchain).
+The binary is at `target/release/aurora-lint`. Requires Rust 2021 edition (stable toolchain) and a C compiler and linker, which some dependencies (e.g. `libgit2-sys`) build with. On a bare Debian/Ubuntu image, install `build-essential`.
 
 > **Formerly `sqc`.** This tool was published on crates.io as `sqc` up to
 > 0.4.123. That crate is abandoned and will not be updated — crates.io names
