@@ -14,7 +14,8 @@
 //       file: `cargo run -- --rules <RULE-ID> <path>`.
 //     - `about:` — the fixture's wiki-derived Description/Source, linking it back to
 //       the CERT C example it was scraped from.
-//   Do NOT add `println!`/`dbg!` debugging into the generated test bodies under
+//   Every generated test is a one-line call to `run_fixture` below, which holds
+//   the pipeline and these messages. Do NOT edit the generated files under
 //   OUT_DIR — they are overwritten on every `cargo build`. Instead use the
 //   `reproduce:` command above and add instrumentation in the rule implementation.
 //
@@ -500,6 +501,129 @@ struct RuleInfo {
     is_enabled: bool,
     fail_tests: Vec<TestCaseInfo>,
     pass_tests: Vec<TestCaseInfo>,
+}
+
+/// What a generated fixture test asserts about the rule's findings.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Expect {
+    /// `fail/` and `expected_fail/`: at least one violation.
+    Violation,
+    /// `pass/`: no violations.
+    Clean,
+}
+
+/// The body of every generated fixture test. build.rs emits one `#[test]` per
+/// `.c` fixture that only calls this, rather than inlining the pipeline into
+/// each of several thousand functions: the inlined form was ~170K lines of
+/// generated code, and compiling it dominated the test build's time and peak
+/// memory.
+///
+/// Every fixture is analysed with the context the shipped scan builds for it:
+/// a prescan of the file itself (what `-d` gives a real run -- see
+/// `prescan_single_file`), then CFGs and VRA through the same
+/// `build_file_analysis` the scan calls. Both come from the scan's own code
+/// rather than a test-only reimplementation of it. There is no opt-in: a
+/// fixture checked without context exercises an analysis strictly weaker than
+/// anything the tool ships, and a green result under it says nothing about
+/// what a real scan does.
+///
+/// The prescan runs BEFORE the parse for the same reason: the parse-repair
+/// pass consults its macro table to decide which token a misparsed
+/// declaration should lose, so parsing first would hand the rule a weaker
+/// repair than a real scan performs.
+#[cfg(test)]
+fn run_fixture(test_name: &str, rule_id: &str, relative_path: &str, expect: Expect) {
+    use crate::parser::CParser;
+    use crate::rules::RuleRegistry;
+
+    let registry = RuleRegistry::new();
+    let rule = registry
+        .get_rule(rule_id)
+        .unwrap_or_else(|| panic!("Rule {} not found in registry", rule_id));
+
+    let test_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative_path);
+    let raw = fs::read_to_string(&test_path)
+        .unwrap_or_else(|e| panic!("Failed to read {:?}: {}", test_path, e));
+
+    let context = crate::analyze::prescan::prescan_single_file(&test_path, rule.needs_vra())
+        .unwrap_or_else(|e| panic!("Failed to prescan {:?}: {}", test_path, e));
+    rule.set_project_context(&context);
+
+    let mut parser = CParser::new().expect("Failed to create parser");
+    parser.set_repair_macros_from_context(&context);
+    let (tree, source) = parser
+        .parse_source(&raw)
+        .unwrap_or_else(|e| panic!("Failed to parse {:?}: {}", test_path, e));
+    let analysis =
+        crate::analyze::build_file_analysis(&tree.root_node(), &source, &context, rule.needs_vra());
+    analysis.apply_to(rule);
+
+    let violations = rule.check(&tree.root_node(), &source);
+
+    // The failure message prints a clickable `<path>:<line>`, a copy-paste
+    // command re-running the rule on just this file, and the fixture's
+    // wiki-derived description.
+    let about = fixture_description(&raw)
+        .map(|d| format!("\n  about:     {}", d))
+        .unwrap_or_default();
+    let reproduce = format!("cargo run -- --rules {} {}", rule_id, relative_path);
+
+    match expect {
+        Expect::Violation => {
+            let detected = !violations.is_empty();
+            record_test_result(test_name, detected, true);
+            assert!(
+                detected,
+                "\n[{}] expected a violation in this FAIL test, but none was detected.\n  \
+                 source:    {}:1\n  reproduce: {}{}\n",
+                rule_id,
+                test_path.display(),
+                reproduce,
+                about
+            );
+        }
+        Expect::Clean => {
+            let clean = violations.is_empty();
+            record_test_result(test_name, clean, false);
+            let fp = violations.first();
+            assert!(
+                clean,
+                "\n[{}] FALSE POSITIVE in this PASS test ({} finding(s)).\n  \
+                 at:        {}:{}\n  message:   {}\n  reproduce: {}{}\n",
+                rule_id,
+                violations.len(),
+                test_path.display(),
+                fp.map(|v| v.line).unwrap_or(0),
+                fp.map(|v| v.message.as_str()).unwrap_or("unknown"),
+                reproduce,
+                about
+            );
+        }
+    }
+}
+
+/// A fixture's `Description:` (else `Source:`) banner line, which links a
+/// failing test back to the CERT wiki example it was scraped from. Only the
+/// leading banner comment is read.
+#[cfg(test)]
+fn fixture_description(source: &str) -> Option<String> {
+    let mut origin: Option<String> = None;
+    for line in source.lines().take(20) {
+        let l = line.trim().trim_start_matches(['*', '/', ' ']).trim();
+        if let Some(rest) = l.strip_prefix("Description:") {
+            let d = rest.trim();
+            if !d.is_empty() {
+                return Some(d.to_string());
+            }
+        } else if let Some(rest) = l.strip_prefix("Source:") {
+            let s = rest.trim();
+            if !s.is_empty() {
+                origin = Some(s.to_string());
+            }
+        }
+    }
+    origin.map(|s| format!("{} example", s))
 }
 
 // Include the auto-generated test functions from build.rs
