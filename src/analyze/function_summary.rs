@@ -1937,14 +1937,14 @@ fn cast_aliases_of(body: &Node, source: &str, param_name: &str) -> Vec<String> {
     aliases
 }
 
-/// True when `body` dereferences the local `alias` -- `*alias`,
+/// The accesses in `body` that dereference the local `alias` -- `*alias`,
 /// `alias->f`, `alias[i]` -- other than to take an address: `&alias->f` and
 /// `&alias[i]` name storage without touching it, the same exclusion
 /// `has_genuine_arrow_read` makes for a parameter (curl's
 /// `sa6 = (void *)ss; curlx_inet_pton(AF_INET6, s, &sa6->sin6_addr)` hands
 /// the field to a writer and reads nothing). Asked of the AST: the body-text
 /// `*name` check would also match the alias's own declarator.
-fn alias_read_through(body: &Node, source: &str, alias: &str) -> bool {
+fn alias_derefs<'a>(body: &Node<'a>, source: &str, alias: &str) -> Vec<Node<'a>> {
     use lang_parsing_substrate::query;
 
     query::find_descendants_of_kinds(
@@ -1956,7 +1956,7 @@ fn alias_read_through(body: &Node, source: &str, alias: &str) -> bool {
         ],
     )
     .into_iter()
-    .any(|n| {
+    .filter(|n| {
         let base = match n.kind() {
             "field_expression" => {
                 let arrow = n
@@ -1978,8 +1978,67 @@ fn alias_read_through(body: &Node, source: &str, alias: &str) -> bool {
         let rooted = base.is_some_and(|b| {
             b.kind() == "identifier" && b.utf8_text(source.as_bytes()) == Ok(alias)
         });
-        rooted && !is_address_taken(&n)
+        rooted && !is_address_taken(n)
     })
+    .collect()
+}
+
+/// Whether `param_name`'s cast aliases are null-checked at all, and whether
+/// one is null-checked before anything dereferences it: `(checked,
+/// checked_before_deref)`, the alias half of `checks_null_params` /
+/// `checks_null_params_before_deref`.
+///
+/// Crediting an alias's dereference to its parameter (`cast_aliases_of`)
+/// without crediting its guard made the guarded wrapper look unguarded:
+/// sqlite's `Vdbe *p = (Vdbe *)pStmt; if( p==0 ) return ...; p->rc` put
+/// `pStmt` in `dereferences_params` with no null check, and API00-C fired on
+/// every public entry point forwarding to it. `body_matches_alias_null_check`
+/// cannot see this alias (it looks for `= param`, not `= (T *)param`), and
+/// `first_deref_offset` counts the cast text `*)param` itself as the first
+/// dereference, which cuts off every guard after it.
+///
+/// "Before" is measured against the alias's own first dereference and the
+/// parameter's own first DIRECT one (`*param`, `param->`, `param[`) -- not
+/// the cast, which is where the alias comes from -- so a raw use of the
+/// parameter ahead of the alias's guard is still an unguarded use.
+fn alias_null_checks(
+    body: &Node,
+    source: &str,
+    body_text: &str,
+    param_name: &str,
+    aliases: &[String],
+) -> (bool, bool) {
+    let direct_param_deref = [
+        format!("*{param_name}"),
+        format!("{param_name}->"),
+        format!("{param_name}["),
+    ]
+    .iter()
+    .filter_map(|pattern| body_text.find(pattern.as_str()))
+    .min();
+
+    let mut checked = false;
+    let mut before = false;
+    for alias in aliases {
+        if !body_matches_null_check(body_text, alias) {
+            continue;
+        }
+        checked = true;
+        let first_alias_deref = alias_derefs(body, source, alias)
+            .iter()
+            .map(|n| n.start_byte().saturating_sub(body.start_byte()))
+            .min();
+        let cut = [first_alias_deref, direct_param_deref]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(body_text.len())
+            .min(body_text.len());
+        if body_matches_null_check(&body_text[..cut], alias) {
+            before = true;
+        }
+    }
+    (checked, before)
 }
 
 /// True when `access` (`p->f`, `p[i]`) is only the operand of an
@@ -4349,8 +4408,12 @@ fn analyze_param_usage(
         // Also recognizes alias null-checks: `TYPE *alias = param;` followed
         // by a null check on `alias` logically null-checks `param` too.
         // Common in libcurl/sqlite wrappers that cast-copy the param first.
+        // A cast alias's guard guards the parameter too (`alias_null_checks`).
+        let (alias_checked, alias_checked_before_deref) =
+            alias_null_checks(body, source, body_text, param_name, &cast_aliases[idx]);
         if body_matches_null_check(body_text, param_name)
             || body_matches_alias_null_check(body_text, param_name)
+            || alias_checked
         {
             summary.checks_null_params.insert(idx);
             // ... and, separately, whether that check happens before the
@@ -4363,6 +4426,7 @@ fn analyze_param_usage(
             };
             if body_matches_null_check(before_deref, param_name)
                 || body_matches_alias_null_check(before_deref, param_name)
+                || alias_checked_before_deref
             {
                 summary.checks_null_params_before_deref.insert(idx);
             }
@@ -4401,7 +4465,7 @@ fn analyze_param_usage(
             || cast_then_deref(body_text, param_name)
             || cast_aliases[idx]
                 .iter()
-                .any(|alias| alias_read_through(body, source, alias))
+                .any(|alias| !alias_derefs(body, source, alias).is_empty())
         {
             summary.dereferences_params.insert(idx);
             summary.uses_params.insert(idx);
