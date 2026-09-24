@@ -36,6 +36,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::call_roles;
+use crate::utility::cert_c::format_slots;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -68,13 +69,16 @@ impl Fio47C {
     }
 
     /// Extract format string from a call expression
-    /// Returns the format string if it's a string literal, None otherwise
-    fn extract_format_string<'a>(
+    /// Returns the format string if it's a string literal, None otherwise.
+    /// A `concatenated_string` is joined into the text the compiler sees; one
+    /// that splices a macro (`"%" PRIu16 "\n"`) is not validated, since the
+    /// macro's expansion carries part of the conversion.
+    fn extract_format_string(
         &self,
         call_node: &Node,
-        source: &'a str,
+        source: &str,
         function_name: &str,
-    ) -> Option<&'a str> {
+    ) -> Option<String> {
         if let Some(args) = call_node.child_by_field_name("arguments") {
             // Determine format string argument index based on function
             let format_arg_index = match function_name {
@@ -102,20 +106,8 @@ impl Fio47C {
                     }
 
                     if arg_count == format_arg_index {
-                        // Check if this is a string literal
-                        if child.kind() == "string_literal" {
-                            let text = get_node_text(&child, source);
-                            // Remove quotes
-                            if text.len() >= 2 {
-                                return Some(&text[1..text.len() - 1]);
-                            }
-                        } else if child.kind() == "concatenated_string" {
-                            // Handle concatenated string literals
-                            let text = get_node_text(&child, source);
-                            return Some(text);
-                        }
                         // If format string is not a literal, we can't validate it
-                        return None;
+                        return format_slots::string_literal_text(&child, source);
                     }
                     arg_count += 1;
                 }
@@ -734,7 +726,7 @@ impl Fio47C {
         // Extract format string if it's a literal
         if let Some(format_string) = self.extract_format_string(call_node, source, function_name) {
             // Count format specifiers and validate format string
-            let (specifier_count, format_errors) = self.count_format_specifiers(format_string);
+            let (specifier_count, format_errors) = self.count_format_specifiers(&format_string);
             let has_format_errors = !format_errors.is_empty();
 
             // Report format string syntax errors
@@ -778,7 +770,7 @@ impl Fio47C {
             }
 
             // Check argument types against format specifiers
-            let specifiers = self.extract_format_specifiers(format_string);
+            let specifiers = self.extract_format_specifiers(&format_string);
             let data_args = self.get_data_arguments(call_node, function_name);
             let is_scanf = self.is_scanf_family(function_name);
 
