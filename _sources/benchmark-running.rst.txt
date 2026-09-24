@@ -89,7 +89,7 @@ Juliet Benchmark
 
 .. code-block:: bash
 
-    python -m bench juliet [--full] [--jobs N] [--keep-csv] [--compile-commands]
+    python -m bench juliet [--full] [--jobs N] [--keep-csv] [--compile-commands] [--cwe CWE[,CWE]]
     python -m bench status [RUN_ID]
     python -m bench compare BASE TARGET
     python -m bench runs
@@ -110,6 +110,10 @@ Run identifiers accepted by ``status``/``compare``:
 - **Fast mode** (default): per-CWE manifests, CWE-matched rules only. ~10x faster
 - **Full mode**: all |rules_enabled| enabled rules against every CWE. Higher noise ratio
 - Resume: interrupted runs skip already-completed CWEs on re-run
+- ``--cwe 78`` (or ``CWE78,CWE476``) scans only those CWEs: a quick check
+  that a Juliet install and the build work end to end, not a benchmark. The
+  run gets its own run_id (``...-cwe78``) and mode (``fast +cwe=CWE-78``), so
+  it never stands in for the build's full run, and an unknown CWE is an error
 - Per-CWE/per-rule detail beyond what ``status``/``compare`` print is a direct
   ``sqlite3 data/benchmarks.db`` query away (``cwe_scans``, ``violations``,
   ``rule_cwe_breakdown``) -- there's no separate CLI subcommand for it

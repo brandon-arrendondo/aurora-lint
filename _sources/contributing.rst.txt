@@ -57,6 +57,8 @@ Build Requirements
 ------------------
 
 - **Rust**: 2021 edition (stable toolchain)
+- **C toolchain**: a C compiler and linker for dependencies with native code
+  (e.g. ``libgit2-sys``); ``build-essential`` on Debian/Ubuntu
 - **Platform**: Linux, macOS, Windows (cross-platform via crossterm)
 - **Dependencies**: See ``Cargo.toml`` for the full list
 

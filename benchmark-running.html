@@ -225,7 +225,7 @@ depending on the machine. Check status no more than once every 5 minutes.</p></l
 </section>
 <section id="juliet-benchmark">
 <h2>Juliet Benchmark<a class="headerlink" href="#juliet-benchmark" title="Link to this heading"></a></h2>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>juliet<span class="w"> </span><span class="o">[</span>--full<span class="o">]</span><span class="w"> </span><span class="o">[</span>--jobs<span class="w"> </span>N<span class="o">]</span><span class="w"> </span><span class="o">[</span>--keep-csv<span class="o">]</span><span class="w"> </span><span class="o">[</span>--compile-commands<span class="o">]</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>juliet<span class="w"> </span><span class="o">[</span>--full<span class="o">]</span><span class="w"> </span><span class="o">[</span>--jobs<span class="w"> </span>N<span class="o">]</span><span class="w"> </span><span class="o">[</span>--keep-csv<span class="o">]</span><span class="w"> </span><span class="o">[</span>--compile-commands<span class="o">]</span><span class="w"> </span><span class="o">[</span>--cwe<span class="w"> </span>CWE<span class="o">[</span>,CWE<span class="o">]]</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>status<span class="w"> </span><span class="o">[</span>RUN_ID<span class="o">]</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>compare<span class="w"> </span>BASE<span class="w"> </span>TARGET
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>runs
@@ -247,6 +247,10 @@ while it runs</p></li>
 <li><p><strong>Fast mode</strong> (default): per-CWE manifests, CWE-matched rules only. ~10x faster</p></li>
 <li><p><strong>Full mode</strong>: all 307 enabled rules against every CWE. Higher noise ratio</p></li>
 <li><p>Resume: interrupted runs skip already-completed CWEs on re-run</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--cwe</span> <span class="pre">78</span></code> (or <code class="docutils literal notranslate"><span class="pre">CWE78,CWE476</span></code>) scans only those CWEs: a quick check
+that a Juliet install and the build work end to end, not a benchmark. The
+run gets its own run_id (<code class="docutils literal notranslate"><span class="pre">...-cwe78</span></code>) and mode (<code class="docutils literal notranslate"><span class="pre">fast</span> <span class="pre">+cwe=CWE-78</span></code>), so
+it never stands in for the build’s full run, and an unknown CWE is an error</p></li>
 <li><p>Per-CWE/per-rule detail beyond what <code class="docutils literal notranslate"><span class="pre">status</span></code>/<code class="docutils literal notranslate"><span class="pre">compare</span></code> print is a direct
 <code class="docutils literal notranslate"><span class="pre">sqlite3</span> <span class="pre">data/benchmarks.db</span></code> query away (<code class="docutils literal notranslate"><span class="pre">cwe_scans</span></code>, <code class="docutils literal notranslate"><span class="pre">violations</span></code>,
 <code class="docutils literal notranslate"><span class="pre">rule_cwe_breakdown</span></code>) – there’s no separate CLI subcommand for it</p></li>
