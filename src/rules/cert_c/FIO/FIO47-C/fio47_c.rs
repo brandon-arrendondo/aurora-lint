@@ -34,11 +34,10 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declared_type};
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::format_slots;
 use lang_parsing_substrate::query;
-use std::collections::HashMap;
 use tree_sitter::Node;
 
 pub struct Fio47C;
@@ -50,6 +49,61 @@ enum TypeCategory {
     Pointer, // Includes char* and const char*
     Float,
     Unknown,
+}
+
+/// Category of a resolved declared type (`resolve_identifier_declared_type`'s
+/// spelling: the declaration's type field, ` *` appended for a pointer or
+/// array). Read by whole token, so a typedef such as `pointer_t` is not an
+/// integer because it contains "int"; an alias this cannot name is Unknown.
+fn classify_declared_type(ty: &str) -> TypeCategory {
+    if ty.ends_with('*') {
+        return TypeCategory::Pointer;
+    }
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let tokens: Vec<&str> = ty
+        .split(|c: char| !is_ident(c))
+        .filter(|t| !t.is_empty())
+        .collect();
+    if tokens.iter().any(|t| matches!(*t, "float" | "double")) {
+        return TypeCategory::Float;
+    }
+    let is_integer = |t: &str| {
+        matches!(
+            t,
+            "int"
+                | "char"
+                | "short"
+                | "long"
+                | "signed"
+                | "unsigned"
+                | "_Bool"
+                | "bool"
+                | "size_t"
+                | "ssize_t"
+                | "ptrdiff_t"
+                | "wchar_t"
+                | "intptr_t"
+                | "uintptr_t"
+                | "intmax_t"
+                | "uintmax_t"
+        ) || {
+            // <stdint.h> exact/least/fast-width names: int32_t, uint_least8_t, ...
+            let rest = t.strip_prefix('u').unwrap_or(t);
+            rest.strip_prefix("int")
+                .and_then(|r| r.strip_suffix("_t"))
+                .map(|r| {
+                    r.strip_prefix("_least")
+                        .or(r.strip_prefix("_fast"))
+                        .unwrap_or(r)
+                })
+                .is_some_and(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_digit()))
+        }
+    };
+    if tokens.iter().any(|t| is_integer(t)) {
+        TypeCategory::Integer
+    } else {
+        TypeCategory::Unknown
+    }
 }
 
 impl Fio47C {
@@ -417,161 +471,19 @@ impl Fio47C {
         }
     }
 
-    /// Collect variable types from the function body
-    fn collect_variable_types(
-        &self,
-        func_node: &Node,
-        source: &str,
-    ) -> HashMap<String, TypeCategory> {
-        let mut types = HashMap::new();
-        self.collect_types_recursive(func_node, source, &mut types);
-        types
-    }
-
-    fn collect_types_recursive(
-        &self,
-        node: &Node,
-        source: &str,
-        types: &mut HashMap<String, TypeCategory>,
-    ) {
-        for decl in query::find_descendants_of_kind(*node, "declaration") {
-            self.process_declaration(&decl, source, types);
-        }
-    }
-
-    fn process_declaration(
-        &self,
-        node: &Node,
-        source: &str,
-        types: &mut HashMap<String, TypeCategory>,
-    ) {
-        // Simplified approach: analyze the full declaration text to determine types
-        let decl_text = get_node_text(node, source);
-
-        // Check if this is a pointer type declaration (contains *)
-        let is_pointer = decl_text.contains('*');
-
-        // Extract base type category
-        let type_category = if decl_text.contains("float") || decl_text.contains("double") {
-            TypeCategory::Float
-        } else if decl_text.contains("int")
-            || decl_text.contains("char")
-            || decl_text.contains("short")
-            || decl_text.contains("long")
-            || decl_text.contains("size_t")
-        {
-            TypeCategory::Integer
-        } else {
-            TypeCategory::Unknown
-        };
-
-        // The final type depends on whether it's a pointer
-        let final_type = if is_pointer {
-            TypeCategory::Pointer
-        } else {
-            type_category
-        };
-
-        // Find all identifier names in this declaration
-        self.find_and_register_identifiers(node, source, types, &final_type);
-    }
-
-    fn find_and_register_identifiers(
-        &self,
-        node: &Node,
-        source: &str,
-        types: &mut HashMap<String, TypeCategory>,
-        var_type: &TypeCategory,
-    ) {
-        // Check if this node is an identifier that's part of a declarator
-        for id in query::find_descendants_of_kind(*node, "identifier") {
-            // Make sure it's a variable declaration, not a type name or function name
-            if let Some(parent) = id.parent() {
-                let parent_kind = parent.kind();
-                if parent_kind == "array_declarator" {
-                    // `char buf[N]` decays to a pointer wherever it's used
-                    // as a call argument, regardless of the base type's own
-                    // pointer-ness (the decl-wide `is_pointer` check above
-                    // only looks for a literal `*` and never sees this).
-                    let var_name = get_node_text(&id, source).to_string();
-                    types.insert(var_name, TypeCategory::Pointer);
-                } else if parent_kind == "pointer_declarator"
-                    || parent_kind == "init_declarator"
-                    || parent_kind == "declarator"
-                {
-                    let var_name = get_node_text(&id, source).to_string();
-                    types.insert(var_name, var_type.clone());
-                }
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    fn process_init_declarator(
-        &self,
-        node: &Node,
-        source: &str,
-        types: &mut HashMap<String, TypeCategory>,
-        base_type: &TypeCategory,
-        is_pointer: bool,
-    ) {
-        if let Some(declarator) = node.child_by_field_name("declarator") {
-            let (var_name, decl_is_pointer) = self.extract_declarator_info(&declarator, source);
-
-            let final_type = if is_pointer || decl_is_pointer {
-                TypeCategory::Pointer
-            } else {
-                base_type.clone()
-            };
-
-            if !var_name.is_empty() {
-                types.insert(var_name, final_type);
-            }
-        }
-    }
-
-    fn extract_declarator_info(&self, node: &Node, source: &str) -> (String, bool) {
-        match node.kind() {
-            "identifier" => (get_node_text(node, source).to_string(), false),
-            "pointer_declarator" => {
-                // Get the identifier inside the pointer declarator
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "identifier" {
-                            return (get_node_text(&child, source).to_string(), true);
-                        }
-                    }
-                }
-                (String::new(), true)
-            }
-            _ => {
-                // Try to find an identifier child
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        let (name, is_ptr) = self.extract_declarator_info(&child, source);
-                        if !name.is_empty() {
-                            return (name, is_ptr);
-                        }
-                    }
-                }
-                (String::new(), false)
-            }
-        }
-    }
-
     /// Infer type from an expression node
-    fn infer_expression_type(
-        &self,
-        node: &Node,
-        source: &str,
-        var_types: &HashMap<String, TypeCategory>,
-    ) -> TypeCategory {
+    ///
+    /// An identifier is typed from the declaration it resolves to at this
+    /// occurrence (ADR-0006), never from a name-keyed map or a declaration's
+    /// raw text: the text can carry a comment (parse recovery writes one in
+    /// place of an attribute macro such as `UNUSED`) whose `*` is not a
+    /// pointer. An occurrence that resolves to nothing stays Unknown.
+    fn infer_expression_type(&self, node: &Node, source: &str) -> TypeCategory {
         match node.kind() {
             "identifier" => {
                 let name = get_node_text(node, source);
-                var_types
-                    .get(name)
-                    .cloned()
+                resolve_identifier_declared_type(node, name, source)
+                    .map(|ty| classify_declared_type(&ty))
                     .unwrap_or(TypeCategory::Unknown)
             }
             "number_literal" => {
@@ -707,44 +619,20 @@ impl CertRule for Fio47C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-
-        // Each function gets its own `var_types` scope: a same-named
-        // variable in a different function is a different object. Scoping
-        // `collect_variable_types` to the whole translation unit let a
-        // stale entry from one function (e.g. `float x`) leak into an
-        // unrelated same-named variable in another function (e.g. an
-        // `int x` parameter), producing a bogus format-specifier type
-        // mismatch there. Scope per `function_definition`,
-        // mirroring EXP39-C/STR32-C's per-function reset pattern.
-        let functions = query::find_descendants_of_kind(*node, "function_definition");
-        if functions.is_empty() {
-            let var_types = self.collect_variable_types(node, source);
-            self.check_node(node, source, &mut violations, &var_types);
-        } else {
-            for func in functions {
-                let var_types = self.collect_variable_types(&func, source);
-                self.check_node(&func, source, &mut violations, &var_types);
-            }
-        }
+        self.check_node(node, source, &mut violations);
         violations
     }
 }
 
 impl Fio47C {
-    fn check_node(
-        &self,
-        node: &Node,
-        source: &str,
-        violations: &mut Vec<RuleViolation>,
-        var_types: &HashMap<String, TypeCategory>,
-    ) {
+    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check for call expressions
         for call in query::find_descendants_of_kind(*node, "call_expression") {
             if let Some(function) = call.child_by_field_name("function") {
                 let function_name = get_node_text(&function, source);
 
                 if self.is_format_function(function_name) {
-                    self.check_format_call(&call, source, function_name, violations, var_types);
+                    self.check_format_call(&call, source, function_name, violations);
                 }
             }
         }
@@ -756,7 +644,6 @@ impl Fio47C {
         source: &str,
         function_name: &str,
         violations: &mut Vec<RuleViolation>,
-        var_types: &HashMap<String, TypeCategory>,
     ) {
         // Extract format string if it's a literal
         if let Some(format_string) = self.extract_format_string(call_node, source, function_name) {
@@ -812,7 +699,7 @@ impl Fio47C {
 
             for (i, (specifier, arg)) in specifiers.iter().zip(data_args.iter()).enumerate() {
                 let expected_type = self.get_expected_type(*specifier, is_scanf);
-                let actual_type = self.infer_expression_type(arg, source, var_types);
+                let actual_type = self.infer_expression_type(arg, source);
 
                 // Only flag clear mismatches (not Unknown types)
                 if expected_type != TypeCategory::Unknown
