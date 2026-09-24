@@ -4,8 +4,8 @@ This directory contains the core implementation of the aurora-lint CERT C compli
 
 ## Module Structure
 
-- **`main.rs`** - Application entry point, CLI argument parsing, and execution orchestration
-- **`prelude.rs`** - Common imports, type aliases, and shared definitions used throughout the codebase
+- **`lib.rs`** - The `aurora_lint` library crate: declares every module below and the `prelude` of common imports
+- **`main.rs`** - The `aurora-lint` binary: CLI argument parsing and execution orchestration, built on the library crate
 - **`analyze/`** - Core analysis engine for processing C code and managing violations
 - **`export/`** - Export functionality for generating reports in CSV and Excel formats
 - **`files/`** - File system operations and Git repository integration

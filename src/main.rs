@@ -3,24 +3,17 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::collapsible_if)]
 
-pub mod prelude;
-
-mod analyze;
-mod export;
-mod files;
-mod manifest;
-mod parser;
-mod progress;
-mod rules;
-mod toolchain;
+// The CLI is a thin wrapper over the `aurora_lint` library crate. Declaring
+// the modules here again (`mod rules;` etc.) would compile the whole engine a
+// second time, and `cargo test` would build and run every test twice.
 #[cfg(feature = "tui")]
-mod ui;
-mod utility;
+use aurora_lint::ui;
+use aurora_lint::{analyze, export, files, manifest, progress};
 
-use crate::manifest::Severity;
-use crate::prelude::*;
 use anyhow::Context;
+use aurora_lint::prelude::*;
 use clap::{Arg, Command};
+use manifest::Severity;
 
 use analyze::{analyze_project, handle_generate_suppression};
 use export::export_all_violations;
