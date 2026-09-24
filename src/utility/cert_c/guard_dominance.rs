@@ -603,8 +603,11 @@ fn preceding_statement_dereferences_var(stmt: &Node, var: &str, source: &str) ->
 }
 
 /// Whether `node`'s subtree contains a dereference of `var` — `var->f`, `*var`
-/// or `var[i]`. `var.f` is not one: it needs no valid pointer.
-fn subtree_dereferences_var(node: &Node, var: &str, source: &str) -> bool {
+/// or `var[i]`. `var.f` is not one: it needs no valid pointer. A declarator
+/// (`char **var = ...`) is not one either: it is a `pointer_declarator`, not
+/// an expression, which is why a caller should ask this rather than
+/// substring-match `*var` in the body text.
+pub fn subtree_dereferences_var(node: &Node, var: &str, source: &str) -> bool {
     query::find_descendants_of_kinds(
         *node,
         &[

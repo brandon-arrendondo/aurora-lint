@@ -1861,6 +1861,82 @@ fn has_genuine_arrow_read(body_text: &str, param_name: &str) -> bool {
     false
 }
 
+/// True when a local initialised or assigned from a pointer cast of
+/// `param_name` -- `char **p = (char **)param;` or `p = (char **)param;` --
+/// is itself dereferenced (`*p`, `p->f`, `p[i]`) anywhere in `body`.
+///
+/// The `void *` hand-off idiom: a callee takes `void *` and casts it back to
+/// its real type in a local before using it (Juliet's `_64` sinks, and any
+/// callback taking a `void *` context). `cast_then_deref` only sees the cast
+/// dereferenced in place; before it was narrowed to that, the bare substring
+/// `*)param` covered this shape by accident, and narrowing it silently
+/// dropped every such callee out of `dereferences_params` (task 1502:
+/// MEM01-C's double free and EXP33-C's uninitialised read through a `_64`
+/// sink both went dark). Only the alias's OWN dereference counts, so a cast
+/// that merely forwards the parameter -- through a local or not -- still
+/// does not, which is the distinction `cast_then_deref` exists to keep.
+fn cast_alias_dereferenced(body: &Node, source: &str, param_name: &str) -> bool {
+    use crate::utility::cert_c::ast_utils;
+    use lang_parsing_substrate::query;
+
+    // A cast of the parameter, parentheses allowed: `(T *)param`, `((T *)param)`.
+    let is_cast_of_param = |value: &Node| {
+        let mut v = *value;
+        while v.kind() == "parenthesized_expression" {
+            match v.named_child(0) {
+                Some(inner) => v = inner,
+                None => return false,
+            }
+        }
+        if v.kind() != "cast_expression" {
+            return false;
+        }
+        let target = init_state::strip_arg_casts(&v);
+        target.kind() == "identifier" && target.utf8_text(source.as_bytes()) == Ok(param_name)
+    };
+
+    let mut aliases: Vec<String> = Vec::new();
+    for node in
+        query::find_descendants_of_kinds(*body, &["init_declarator", "assignment_expression"])
+    {
+        let (lhs, value) = if node.kind() == "init_declarator" {
+            let (Some(d), Some(v)) = (
+                node.child_by_field_name("declarator"),
+                node.child_by_field_name("value"),
+            ) else {
+                continue;
+            };
+            (ast_utils::get_identifier_from_declarator(&d, source), v)
+        } else {
+            let (Some(l), Some(v)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) else {
+                continue;
+            };
+            if l.kind() != "identifier"
+                || node
+                    .child_by_field_name("operator")
+                    .and_then(|o| o.utf8_text(source.as_bytes()).ok())
+                    != Some("=")
+            {
+                continue;
+            }
+            (l.utf8_text(source.as_bytes()).unwrap_or("").to_string(), v)
+        };
+        if !lhs.is_empty()
+            && lhs != param_name
+            && is_cast_of_param(&value)
+            && !aliases.contains(&lhs)
+        {
+            aliases.push(lhs);
+        }
+    }
+    aliases
+        .iter()
+        .any(|alias| guard_dominance::subtree_dereferences_var(body, alias, source))
+}
+
 /// Analyze how parameters are used in the function body. `body_text` may be
 /// a boundary-truncated slice of `body`'s source (see `analyze_function`);
 /// `collect_param_passthroughs` walks `body` itself and applies its own
@@ -4208,6 +4284,7 @@ fn analyze_param_usage(
             // `((type *)param)->field`/`[i]` -- a genuine dereference of a
             // cast, not merely a cast used as a value (see `cast_then_deref`).
             || cast_then_deref(body_text, param_name)
+            || cast_alias_dereferenced(body, source, param_name)
         {
             summary.dereferences_params.insert(idx);
             summary.uses_params.insert(idx);
