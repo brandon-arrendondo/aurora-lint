@@ -859,7 +859,7 @@ Fast re-benchmark workflow:
     # 4. Run in parallel across nodes
     parallel --sshloginfile $NODES_FILE -a /tmp/cwe_dirs.txt \
       "$SQC_BIN {} -d $JULIET_DIR -d $JULIET_SUPPORT \
-        --export $RESULTS_DIR/aurora-lint/juliet/{/.}.csv"
+        --export $RESULTS_DIR/aurora-lint/juliet/{/.}.json"
 
 Exporting competitor results for ingest
 ---------------------------------------

@@ -173,7 +173,7 @@ CI/CD Readiness
      - Status
      - Readiness
    * - Output Formats
-     - CSV, XLSX, JSON, SARIF 2.1.0
+     - SARIF 2.1.0, JSON
      - 100%
    * - Exit Codes
      - ``--fail-on-violation``, ``--fail-on-severity``

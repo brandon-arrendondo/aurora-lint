@@ -99,7 +99,7 @@ nonsense on a C++ header it encounters.
 
 - **307 CERT C rules** implemented and enabled by default (311 tracked; see [Configuration](docs/configuration.rst) for the 4 tracked but not yet implemented) across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
 - **Optional interactive terminal UI** for browsing and managing violations (build with `--features tui`)
-- **Multiple export formats**: CSV, XLSX, JSON, SARIF 2.1.0
+- **SARIF 2.1.0 export** (plus a plain JSON array); `scripts/sarif_convert.py` turns a report into CSV/XLSX
 - **CI/CD ready**: exit codes, severity thresholds, diff-only mode, SARIF output
 - **Cross-file analysis**: pre-scans directories for function definitions to reduce false positives
 - **Fast**: tree-sitter based parsing with control-flow graphs and inter-procedural reasoning
@@ -252,7 +252,9 @@ aurora-lint /path/to/project --interactive
 ```bash
 aurora-lint /path/to/project --export results.json
 aurora-lint /path/to/project --export results.sarif
-aurora-lint /path/to/project --export results.csv
+
+# Need a spreadsheet? Convert the SARIF report (.xlsx needs openpyxl)
+python scripts/sarif_convert.py results.sarif findings.csv
 ```
 
 ### Filter by severity

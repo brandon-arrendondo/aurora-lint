@@ -17,7 +17,7 @@ Full Command Reference
       -i, --interactive                Run in interactive terminal UI mode
                                        (requires building with `--features tui`)
       -e, --export <FILE>              Export violations to file (format by extension:
-                                       .csv, .xlsx, .json, .sarif, .sarif.json)
+                                       .sarif, .sarif.json, .json)
           --generate-suppression <FILE:LINE:RULE>
                                        Generate suppression entry for a specific violation
       -d, --directories <DIR>          Additional directories to pre-scan for function
@@ -333,24 +333,37 @@ aurora-lint determines the export format from the file extension:
 =========== ===============================================================
 Extension   Format
 =========== ===============================================================
-``.csv``    Comma-separated values (file, line, column, rule, severity, message)
-``.xlsx``   Excel workbook with formatted columns and severity coloring
 ``.json``   JSON array of violation objects
 ``.sarif``  `SARIF 2.1.0 <https://sarifweb.azurewebsites.net/>`_ for IDE and CI integration
 =========== ===============================================================
 
 ::
 
-    aurora-lint /path/to/repo --export results.csv
-    aurora-lint /path/to/repo --export results.xlsx
     aurora-lint /path/to/repo --export results.json
     aurora-lint /path/to/repo --export results.sarif
+
+SARIF is the full report. Each result carries its source line
+(``region.snippet``), each rule its CERT description, and each scanned file its
+SHA-256 (``artifacts[].hashes``), so the report stands on its own without the
+scanned tree. Both formats name aurora-lint as their producer: SARIF in
+``tool.driver``, JSON in a ``tool`` key on each object.
+
+For a spreadsheet, convert the SARIF report (``.xlsx`` needs ``openpyxl``)::
+
+    python scripts/sarif_convert.py results.sarif findings.csv
+    python scripts/sarif_convert.py results.sarif findings.xlsx
+
+Each row is one active finding (add ``--include-suppressed`` for the rest),
+laid out as Title, Description, Work Item Type, State, Severity, Priority and
+Tags, the layout aurora-lint's built-in CSV/XLSX export used before it was
+removed.
 
 JSON export produces an array of violation objects, each containing:
 
 .. code-block:: json
 
     {
+        "tool": "aurora-lint",
         "file": "src/main.c",
         "line": 42,
         "column": 5,

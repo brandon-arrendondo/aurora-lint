@@ -4,7 +4,6 @@ Extracted from scripts/analyze_juliet_results.py. Returns structured data
 instead of printing text, suitable for direct insertion into SQLite.
 """
 
-import csv
 import json
 import os
 import re
@@ -206,26 +205,18 @@ def _reclassify_helpers(lines: list[str], result: dict) -> None:
                 good_lines.add(line_num)
 
 
-def parse_sqc_csv(csv_path: str | Path) -> dict:
-    """Parse SqC CSV output to violations by file and line.
+def parse_sqc_report(report_path: str | Path) -> dict:
+    """Parse sqc's JSON export (`--export X.json`) to violations by file and line.
 
     Returns: {filename: {line_num: [(rule_id, filepath)]}}
     """
     violations = defaultdict(lambda: defaultdict(list))
 
-    with open(csv_path, 'r') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            title = row['Title']
-            # Strip " version:HASH" suffix added by sqc export
-            title = re.sub(r'\s+version:\S+$', '', title)
-            match = re.match(r'([A-Z0-9-]+):(.+):(\d+)', title)
-            if match:
-                rule_id = match.group(1)
-                filepath = match.group(2)
-                line_num = int(match.group(3))
-                filename = os.path.basename(filepath)
-                violations[filename][line_num].append((rule_id, filepath))
+    with open(report_path) as f:
+        for v in json.load(f):
+            filepath = v["file"]
+            violations[os.path.basename(filepath)][int(v["line"])].append(
+                (v["rule_id"], filepath))
 
     return violations
 
@@ -290,14 +281,14 @@ class ShardPartial:
     total_flaw_lines_for_hit: int = 0
 
 
-def analyze_shard(csv_path: str | Path, search_dir: str | Path, cwe_id: str,
+def analyze_shard(report_path: str | Path, search_dir: str | Path, cwe_id: str,
                   cwe_dir_name: str, cwe_scan_id: int | None = None) -> ShardPartial:
-    """Analyze one shard's files against its own CSV of sqc violations.
+    """Analyze one shard's files against its own JSON report of sqc violations.
 
     `search_dir` is a single `sNN` subdirectory when the CWE is sharded, or
     the whole CWE dir when it isn't -- either way this is a self-contained
-    unit: `parse_sqc_csv` keys violations by bare filename (an earlier fix §3a),
-    so a shard analyzing its own directory against its own CSV cannot pick
+    unit: `parse_sqc_report` keys violations by bare filename (an earlier fix §3a),
+    so a shard analyzing its own directory against its own report cannot pick
     up a same-named file from a sibling shard.
 
     File discovery is recursive (`rglob`, not `glob`): a CWE below
@@ -311,13 +302,13 @@ def analyze_shard(csv_path: str | Path, search_dir: str | Path, cwe_id: str,
     for the already-correct sharded case.
     """
     search_dir = Path(search_dir)
-    csv_path = Path(csv_path)
+    report_path = Path(report_path)
     cwe_rules = _load_cwe_rules(cwe_id)
 
     analysis = CWEAnalysis(cwe_id=cwe_id, cwe_dir_name=cwe_dir_name)
     analysis.cwe_rules = cwe_rules
 
-    violations_dict = parse_sqc_csv(csv_path)
+    violations_dict = parse_sqc_report(report_path)
 
     rule_tp = defaultdict(int)
     rule_fp = defaultdict(int)
@@ -393,12 +384,12 @@ def merge_shards(cwe_id: str, cwe_dir_name: str,
     return merged
 
 
-def analyze_cwe(csv_path: str | Path, cwe_dir: str | Path,
+def analyze_cwe(report_path: str | Path, cwe_dir: str | Path,
                 cwe_scan_id: int | None = None) -> CWEAnalysis:
     """Analyze a single CWE scan result.
 
     Args:
-        csv_path: Path to sqc CSV output for this CWE.
+        report_path: Path to sqc's JSON export for this CWE.
         cwe_dir: Path to the Juliet CWE test directory.
         cwe_scan_id: Optional DB foreign key for violation records.
 
@@ -417,7 +408,7 @@ def analyze_cwe(csv_path: str | Path, cwe_dir: str | Path,
         search_dirs = [cwe_dir]
 
     partials = [
-        analyze_shard(csv_path, search_dir, cwe_id, cwe_dir_name, cwe_scan_id)
+        analyze_shard(report_path, search_dir, cwe_id, cwe_dir_name, cwe_scan_id)
         for search_dir in search_dirs
     ]
     return merge_shards(cwe_id, cwe_dir_name, partials)

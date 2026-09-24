@@ -4,7 +4,9 @@ Replaces scripts/run_juliet_parallel.sh with structured error handling,
 direct DB writes, and resume support.
 """
 
+import json
 import os
+import shutil
 import re
 import subprocess
 import tempfile
@@ -173,13 +175,16 @@ def _warm_prescan(cwe_dir_name: str, cwe_dir_str: str, manifest: str,
     """
     start_time = time.monotonic()
     empty_dir = tempfile.mkdtemp(prefix=f"{cwe_dir_name}_warm_")
+    report_dir = tempfile.mkdtemp(prefix=f"{cwe_dir_name}_warm_report_")
     try:
         cmd = [
             str(SQC_BIN), empty_dir,
             "-m", manifest,
             *_prescan_args(cwe_dir_str, compile_db),
             "--save-prescan", cache_path,
-            "-e", os.devnull,
+            # A throwaway report: the warm pass exists for its prescan
+            # cache, and the export needs a real extension to pick a format.
+            "-e", os.path.join(report_dir, "warm.json"),
             "-j", "1",
         ]
         proc = subprocess.run(cmd, capture_output=True, timeout=3600)
@@ -206,13 +211,14 @@ def _warm_prescan(cwe_dir_name: str, cwe_dir_str: str, manifest: str,
             os.rmdir(empty_dir)
         except OSError:
             pass
+        shutil.rmtree(report_dir, ignore_errors=True)
 
 
 def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
                     shard_dir_str: str, manifest: str, scan_id: int,
-                    keep_csv: bool = False, compile_db: str | None = None,
+                    keep_reports: bool = False, compile_db: str | None = None,
                     prescan_cache: str | None = None) -> dict:
-    """Scan one shard: run sqc, parse its own CSV into a raw ShardPartial.
+    """Scan one shard: run sqc, parse its own JSON report into a raw ShardPartial.
 
     Runs in a worker process. A shard of a split CWE loads the context its
     CWE's `_warm_prescan` saved (`--load-prescan`), so cross-file resolution
@@ -226,8 +232,8 @@ def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
     """
     cwe_dir = Path(cwe_dir_str)
     shard_dir = Path(shard_dir_str)
-    csv_fd, csv_path = tempfile.mkstemp(suffix=".csv", prefix=f"{cwe_dir_name}_{shard_dir.name}_")
-    os.close(csv_fd)
+    report_fd, report_path = tempfile.mkstemp(suffix=".json", prefix=f"{cwe_dir_name}_{shard_dir.name}_")
+    os.close(report_fd)
 
     start_time = time.monotonic()
     try:
@@ -239,7 +245,7 @@ def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
             cmd.extend(["--load-prescan", prescan_cache])
         else:
             cmd.extend(_prescan_args(str(cwe_dir), compile_db))
-        cmd.extend(["-e", csv_path, "-j", "1"])
+        cmd.extend(["-e", report_path, "-j", "1"])
         proc = subprocess.run(cmd, capture_output=True, timeout=3600)
         duration_s = round(time.monotonic() - start_time, 1)
 
@@ -252,12 +258,12 @@ def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
 
         violation_count = 0
         try:
-            with open(csv_path) as f:
-                violation_count = max(0, sum(1 for _ in f) - 1)
+            with open(report_path) as f:
+                violation_count = len(json.load(f))
         except Exception:
             pass
 
-        partial = analyze_shard(csv_path, shard_dir, cwe_id, cwe_dir_name, scan_id)
+        partial = analyze_shard(report_path, shard_dir, cwe_id, cwe_dir_name, scan_id)
 
         return {
             "cwe_dir_name": cwe_dir_name, "shard_name": shard_dir.name,
@@ -277,9 +283,9 @@ def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
             "error": str(e)[:500],
         }
     finally:
-        if not keep_csv:
+        if not keep_reports:
             try:
-                os.unlink(csv_path)
+                os.unlink(report_path)
             except OSError:
                 pass
 
@@ -386,7 +392,7 @@ def _build_submissions(work_items: list[tuple]) -> tuple[list[dict], dict]:
 
 def _run_submissions(db: BenchDB, run_id: str, scan_map: dict, work_items: list[tuple],
                      submissions: list[dict], shard_counts: dict, jobs: int,
-                     keep_csv: bool, compile_db: str | None,
+                     keep_reports: bool, compile_db: str | None,
                      already_done: int, total_cwes: int) -> tuple[int, int]:
     """Drive the worker pool until every submission has landed and every
     CWE's rows are written. Returns (completed, failed) CWE counts."""
@@ -437,7 +443,7 @@ def _run_submissions(db: BenchDB, run_id: str, scan_map: dict, work_items: list[
             future = executor.submit(
                 _scan_one_shard, sub["cwe_dir_name"], sub["cwe_id"],
                 str(sub["cwe_dir"]), str(sub["shard_dir"]), sub["manifest"],
-                scan_id, keep_csv, compile_db,
+                scan_id, keep_reports, compile_db,
                 prescan_caches.get(sub["cwe_dir_name"]),
             )
             futures[future] = ("shard", sub["cwe_dir_name"])
@@ -504,14 +510,14 @@ def _run_submissions(db: BenchDB, run_id: str, scan_map: dict, work_items: list[
 # ── Main runner ───────────────────────────────────────────────────────────────
 
 def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
-                  keep_csv: bool = False, compile_commands: bool = False,
+                  keep_reports: bool = False, compile_commands: bool = False,
                   cwes: list[str] | None = None) -> str:
     """Run a full Juliet benchmark.
 
     Args:
         fast: Use per-CWE manifests (default True).
         jobs: Number of parallel workers.
-        keep_csv: Retain temp CSV files after analysis.
+        keep_reports: Retain each shard's temp JSON report after analysis.
         compile_commands: Pass ``--compile-commands`` to sqc, using the
             synthesized Juliet compile database. Off by default, so a plain
             run is unchanged. When on, the run_id is suffixed so a with/without
@@ -615,7 +621,7 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     submissions, shard_counts = _build_submissions(work_items)
     completed, failed = _run_submissions(
         db, run_id, scan_map, work_items, submissions, shard_counts,
-        jobs, keep_csv, compile_db, len(completed_cwes), total_cwes,
+        jobs, keep_reports, compile_db, len(completed_cwes), total_cwes,
     )
 
     # Finalize

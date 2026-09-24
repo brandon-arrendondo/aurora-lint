@@ -79,7 +79,7 @@ fn run() -> Result<i32> {
             Arg::new("export")
                 .long("export")
                 .short('e')
-                .help("Export violations to file (CSV, Excel, JSON, or SARIF based on extension)")
+                .help("Export violations to file: .sarif (SARIF 2.1.0) or .json")
                 .value_name("FILE"),
         )
         .arg(
@@ -453,7 +453,7 @@ fn run() -> Result<i32> {
 
     // Export to file if requested (includes both active and suppressed violations)
     if let Some(export_path) = export_file {
-        export_all_violations(&violations, &suppressed, export_path, &manifest)?;
+        export_all_violations(&violations, &suppressed, export_path)?;
         println!(
             "Exported {} violations ({} suppressed) to: {}",
             violations.len(),

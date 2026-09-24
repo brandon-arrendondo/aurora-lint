@@ -1,7 +1,7 @@
 """CLI entry point: python -m bench <command> [options]
 
 Commands:
-  juliet [--full] [--jobs N] [--keep-csv] [--compile-commands] [--cwe CWE[,CWE]]
+  juliet [--full] [--jobs N] [--keep-reports] [--compile-commands] [--cwe CWE[,CWE]]
                                            Run Juliet benchmark
   status [RUN_ID]                          Show benchmark progress/results
   compare BASE TARGET                      Compare two runs
@@ -47,7 +47,7 @@ def cmd_juliet(args):
     from bench.runner import run_benchmark
     cwes = [c for c in args.cwe.split(",") if c.strip()] if args.cwe else None
     try:
-        run_benchmark(fast=not args.full, jobs=args.jobs, keep_csv=args.keep_csv,
+        run_benchmark(fast=not args.full, jobs=args.jobs, keep_reports=args.keep_reports,
                       compile_commands=args.compile_commands, cwes=cwes)
     except ValueError as e:
         print(e)
@@ -1124,8 +1124,9 @@ def main():
                           help="Use all rules (default: fast/CWE-matched only)")
     p_juliet.add_argument("--jobs", "-j", type=int, default=DEFAULT_JOBS,
                           help=f"Parallel workers (default: {DEFAULT_JOBS})")
-    p_juliet.add_argument("--keep-csv", action="store_true",
-                          help="Keep intermediate CSV files")
+    p_juliet.add_argument("--keep-reports", "--keep-csv", action="store_true",
+                          dest="keep_reports",
+                          help="Keep each shard's intermediate JSON report")
     p_juliet.add_argument("--compile-commands", action="store_true",
                           help="Pass --compile-commands to sqc using the synthesized "
                                "Juliet compile database. Suffixes the run_id with "
