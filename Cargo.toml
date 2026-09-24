@@ -1,6 +1,6 @@
 [package]
 name = "aurora-lint"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 description = "aurora-lint - a fast CERT C static analyzer"
 authors = ["Eric Buehler <eric.buehler@bissell.com>", "Brandon Arrendondo <brandon.arrendondo@bissell.com>"]

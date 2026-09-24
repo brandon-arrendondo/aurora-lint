@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "aurora-lint"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "bincode",

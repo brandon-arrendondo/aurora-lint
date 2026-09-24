@@ -23,6 +23,47 @@ are curated by hand. See `docs/adr/0009` for what belongs here and
 
 _No release notes recorded for this release; see the commit log._
 
+## [0.5.3] - 2026-09-24
+
+### Added
+
+- `--compile-commands` now also reads the build's `-D`/`-U` state as a configuration declaration: a macro defined in several mutually exclusive `#if` arms resolves to the definition that build actually compiles, instead of a POSIX platform guess plus first-definition-wins. A `#define` in real source still overrides a build flag, and findings are never suppressed by configuration.
+- `--compile-commands` warns when the compile database does not cover every file being scanned, so a partial declaration is visible instead of silently falling back to the default platform profile for the uncovered files.
+
+### Fixed
+
+- MSC13-C no longer reports a variable declared in both arms of an #if in some runs and not others: findings are now identical from run to run.
+- ENV30-C no longer treats a mention of getenv() in a comment, or a longer name that merely contains a protected function's name such as curl_getenv(), as the source of a protected pointer, removing false reports about modifying an environment string.
+- ENV30-C now reports a struct tm from gmtime()/localtime() passed to mktime() as a definite modification rather than a possible one, so the finding no longer asks for manual review.
+- A null check whose early-return branch itself uses the variable (`if (!p) return f(p);`) no longer proves the variable non-null for the rest of the function, so the null dereference inside that branch is reported.
+- ENV30-C now recognises an environment string reached through a function pointer bound to getenv(), no longer reads a mention of strchr() in a comment as a real call when tracking pointers derived from protected data, and no longer reports dlopen() as possibly modifying the path string it is given.
+- EXP33-C no longer reports a variable passed to a callee as uninitialized when the callee writes it through a call the analysis cannot follow, or hands it on to another function that has not been resolved yet. Such a parameter is treated as unknown, not as read-only.
+- EXP34-C reports a possibly-null parameter at the callee's unguarded dereference instead of at each call that passes it. Passing a possibly-null pointer is no longer a finding by itself. A variadic argument, which has no callee-side site, is still reported at the call.
+- Value-range analysis no longer oscillates until its iteration cap on some functions. Scans that spent minutes on a single file now finish normally. This affects ARR30-C, INT08-C, INT10-C, INT16-C and INT30-C to INT34-C.
+- EXP33-C no longer counts taking a field's address (`&p->field`), or forwarding a cast of the pointer to another call, as a read of the pointer.
+- EXP33-C no longer reports an output variable as possibly uninitialized after the caller has checked the return value of a function that writes it on every successful path.
+- Calls inside code the C parser recovers only partially (for example, after a macro that expands to a `case` label) now count as callers.
+- MEM30-C no longer reports a double free or use-after-free of a struct member that an intervening memset() set back to NULL.
+- A pointer passed by address to a function that writes it on only some paths is no longer assumed non-null after the call.
+- MEM30-C no longer reports a double free or use-after-free of a struct member after the pointer it hangs off has been pointed at a different object.
+- ENV03-C, ENV33-C, INT30-C to INT32-C, STR02-C and FIO30-C no longer treat a comment or string literal that mentions `getenv()` as a source of tainted data.
+- A `static` function whose address is taken is no longer treated as though every caller were visible, so a call through a function pointer can no longer be overlooked when proving a parameter non-null.
+- MEM30-C no longer reports a double free or use-after-free on a path that a status variable, set alongside the free and tested later, rules out.
+- API00-C again reports a function that passes an unvalidated pointer parameter to a helper whose only use of it is taking a member's address (&p->field), a case missed since 0.5.2.
+- MEM30-C now recognizes a single-argument deallocator that releases memory through a function pointer, so a use-after-free or double free after calling it is reported instead of silently missed.
+- EXP34-C no longer reports a variadic argument as dereferenced when its format conversion only uses the pointer's value (such as `%p`).
+- MEM30-C no longer reports a pointer as freed after a loop that frees it on each iteration and exits because the pointer became NULL; a loop left by `break` still keeps the pointer freed.
+- MEM31-C no longer reports a finding twice when unexpanded macros make one function appear nested inside another.
+- MSC13-C now reports a constant initializer that every path overwrites before reading it. It no longer exempts one because it is a named constant or a literal on the returned variable.
+- MEM01-C no longer reports a use after free when the freed pointer is rebound by an output-parameter call whose return value is stored, declared, returned or cast (e.g. `len = format(&buf, ...)`).
+- MEM30-C now marks a double free for manual review when either free was inferred from the deallocator's name alone, and keeps that mark on a use-after-free reached through a chain of pointer copies.
+- A parameter forwarded through a relay function is no longer proven non-null just because most of the observed callers pass a non-null value.
+- DCL18-C now states the correct decimal value for an octal constant with an integer suffix (017L is 15, not 0), and no value for a literal whose digits are not octal.
+- MEM31-C's "allocated in loop but not freed" findings now point at the allocation instead of line 1 of the file. Distinct findings in one file are therefore no longer merged into one.
+- FIO50-C no longer treats integers shifted with `<<` or `>>` as stream input and output, and reads the stream from the correct argument of `fread()` and `fputs()`.
+- A `static` function defined under the same name in several files now resolves to the definition in the calling file, and an externally linked definition takes precedence over a `static` one in another file. A `void *` parameter cast to a local pointer is still the parameter: writes through the local and null checks on it count, and `sizeof(*local)` is not a dereference.
+- Cross-function null-state propagation now runs until it converges, instead of stopping after three passes. Findings that depend on a chain of forwarding calls no longer depend on where the analysis happened to stop.
+
 ## [0.5.2] - 2026-09-20
 
 ### Fixed
@@ -196,7 +237,8 @@ shipped with:
 - Suppression by inline comment (`// SQC-SUPPRESS: RULE ... JUSTIFICATION: "..."`, generated for a `file:line:rule` by `--generate-suppression`) or by a `.sqc-suppress.toml` file, and an interactive terminal UI (`--interactive`).
 - Prebuilt Linux and Windows binaries, `.deb`, `.rpm` and AppImage packages.
 
-[Unreleased]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.4.336...v0.5.0
