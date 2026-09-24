@@ -116,9 +116,11 @@ impl Fio47C {
         None
     }
 
-    /// Count the number of format specifiers in a format string
-    /// Returns (specifier_count, errors)
-    fn count_format_specifiers(&self, format_string: &str) -> (usize, Vec<String>) {
+    /// Count the arguments a format string consumes
+    /// Returns (argument_count, errors). A printf `*` width or precision
+    /// consumes an `int` of its own before the conversion's argument; a scanf
+    /// `%*` suppresses the assignment, so that conversion consumes none.
+    fn count_format_specifiers(&self, format_string: &str, is_scanf: bool) -> (usize, Vec<String>) {
         let mut count = 0;
         let mut errors = Vec::new();
         let mut chars = format_string.chars().peekable();
@@ -133,10 +135,11 @@ impl Fio47C {
                     }
 
                     // This is a format specifier, parse it
-                    if let Some(error) = self.parse_format_specifier(&mut chars, format_string) {
+                    let (slots, error) = self.parse_format_specifier(&mut chars, is_scanf);
+                    if let Some(error) = error {
                         errors.push(error);
                     }
-                    count += 1;
+                    count += slots;
                 }
             }
         }
@@ -145,14 +148,26 @@ impl Fio47C {
     }
 
     /// Parse a single format specifier and validate it
-    /// Returns Some(error) if the format specifier is invalid
+    /// Returns (arguments consumed, Some(error) if the specifier is invalid)
     fn parse_format_specifier(
         &self,
         chars: &mut std::iter::Peekable<std::str::Chars>,
-        _format_string: &str,
-    ) -> Option<String> {
+        is_scanf: bool,
+    ) -> (usize, Option<String>) {
         let mut flags = String::new();
         let mut length_modifier = String::new();
+        let mut stars = 0usize;
+
+        // scanf's assignment-suppression `*` comes first and consumes nothing
+        let suppressed = is_scanf && chars.peek() == Some(&'*');
+        if suppressed {
+            chars.next();
+        }
+        let slots = |stars: usize| match (suppressed, is_scanf) {
+            (true, _) => 0,
+            (false, true) => 1,
+            (false, false) => stars + 1,
+        };
 
         // Parse flags: -, +, space, #, 0, '
         while let Some(&ch) = chars.peek() {
@@ -168,6 +183,7 @@ impl Fio47C {
         // Parse width
         while let Some(&ch) = chars.peek() {
             if ch.is_ascii_digit() || ch == '*' {
+                stars += usize::from(ch == '*');
                 chars.next();
             } else {
                 break;
@@ -179,6 +195,7 @@ impl Fio47C {
             chars.next();
             while let Some(&ch) = chars.peek() {
                 if ch.is_ascii_digit() || ch == '*' {
+                    stars += usize::from(ch == '*');
                     chars.next();
                 } else {
                     break;
@@ -219,25 +236,31 @@ impl Fio47C {
         if let Some(specifier) = chars.next() {
             // Validate conversion specifier
             if !self.is_valid_conversion_specifier(specifier) {
-                return Some(format!("Invalid conversion specifier: %{}", specifier));
+                return (
+                    slots(stars),
+                    Some(format!("Invalid conversion specifier: %{}", specifier)),
+                );
             }
 
             // Validate flag combinations
             if let Some(error) =
                 self.validate_flag_combinations(&flags, specifier, &length_modifier)
             {
-                return Some(error);
+                return (slots(stars), Some(error));
             }
 
             // Validate length modifier combinations
             if let Some(error) = self.validate_length_modifier(specifier, &length_modifier) {
-                return Some(error);
+                return (slots(stars), Some(error));
             }
         } else {
-            return Some("Incomplete format specifier".to_string());
+            return (
+                slots(stars),
+                Some("Incomplete format specifier".to_string()),
+            );
         }
 
-        None
+        (slots(stars), None)
     }
 
     /// Check if a character is a valid conversion specifier
@@ -386,7 +409,8 @@ impl Fio47C {
         }
 
         match specifier {
-            'd' | 'i' | 'o' | 'u' | 'x' | 'X' | 'c' => TypeCategory::Integer,
+            // A `*` width or precision takes an `int`
+            '*' | 'd' | 'i' | 'o' | 'u' | 'x' | 'X' | 'c' => TypeCategory::Integer,
             'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'a' | 'A' => TypeCategory::Float,
             's' | 'p' => TypeCategory::Pointer,
             _ => TypeCategory::Unknown,
@@ -574,8 +598,11 @@ impl Fio47C {
         }
     }
 
-    /// Extract format specifier characters from format string
-    fn extract_format_specifiers(&self, format_string: &str) -> Vec<char> {
+    /// Extract one character per consumed argument from a format string: the
+    /// conversion specifier, preceded by a `*` for each printf `*` width or
+    /// precision. A suppressed scanf conversion (`%*d`) consumes no argument
+    /// and contributes nothing.
+    fn extract_format_specifiers(&self, format_string: &str, is_scanf: bool) -> Vec<char> {
         let mut specifiers = Vec::new();
         let mut chars = format_string.chars().peekable();
 
@@ -587,11 +614,18 @@ impl Fio47C {
                         continue;
                     }
 
+                    let suppressed = is_scanf && next == '*';
+                    let mut stars = 0usize;
+                    if suppressed {
+                        chars.next();
+                    }
+
                     // Skip flags, width, precision, length modifier
                     while let Some(&c) = chars.peek() {
                         if matches!(c, '-' | '+' | ' ' | '#' | '0' | '\'' | '.' | '*')
                             || c.is_ascii_digit()
                         {
+                            stars += usize::from(c == '*' && !is_scanf);
                             chars.next();
                         } else if matches!(c, 'h' | 'l' | 'j' | 'z' | 't' | 'L') {
                             chars.next();
@@ -608,7 +642,8 @@ impl Fio47C {
 
                     // Get the conversion specifier
                     if let Some(specifier) = chars.next() {
-                        if specifier != '%' {
+                        if specifier != '%' && !suppressed {
+                            specifiers.extend(std::iter::repeat_n('*', stars));
                             specifiers.push(specifier);
                         }
                     }
@@ -726,7 +761,8 @@ impl Fio47C {
         // Extract format string if it's a literal
         if let Some(format_string) = self.extract_format_string(call_node, source, function_name) {
             // Count format specifiers and validate format string
-            let (specifier_count, format_errors) = self.count_format_specifiers(&format_string);
+            let (specifier_count, format_errors) =
+                self.count_format_specifiers(&format_string, self.is_scanf_family(function_name));
             let has_format_errors = !format_errors.is_empty();
 
             // Report format string syntax errors
@@ -770,9 +806,9 @@ impl Fio47C {
             }
 
             // Check argument types against format specifiers
-            let specifiers = self.extract_format_specifiers(&format_string);
-            let data_args = self.get_data_arguments(call_node, function_name);
             let is_scanf = self.is_scanf_family(function_name);
+            let specifiers = self.extract_format_specifiers(&format_string, is_scanf);
+            let data_args = self.get_data_arguments(call_node, function_name);
 
             for (i, (specifier, arg)) in specifiers.iter().zip(data_args.iter()).enumerate() {
                 let expected_type = self.get_expected_type(*specifier, is_scanf);
