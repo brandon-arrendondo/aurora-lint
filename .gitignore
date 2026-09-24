@@ -106,3 +106,6 @@ data/precision_audit/
 # Same reasoning: names disclosed-but-unlanded upstream defects. Purged from
 # history 2026-09-16; kept privately outside the repo.
 docs/upstream-disclosures.rst
+
+# Vale styles, recreated by `vale sync` (see .vale.ini / `invoke lint-docs`)
+styles/

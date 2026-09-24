@@ -69,6 +69,45 @@ Build Requirements
     cargo test              # Run all tests
     cargo fmt               # Format code
 
+Invoke Tasks
+------------
+
+``tasks.py`` holds a few developer tasks, run with
+`invoke <https://www.pyinvoke.org/>`_ (``pip install invoke``):
+
+::
+
+    invoke check            # Run pre-commit hooks on all files
+    invoke build            # Build (add --release for release mode)
+    invoke test             # Run all tests
+    invoke bump-version     # Bump version across all files (reads Cargo.toml)
+    invoke lint-docs        # Advisory prose lint of README.md, docs/*.rst, man page
+
+``invoke lint-docs`` runs `Vale <https://vale.sh>`_ with the Aurora house
+style (American spelling, settled terms such as "pre-scan", no contractions,
+and a flag on patterns typical of machine-written prose). The style is a
+Vale package in a sibling ``../style_package`` checkout, named in
+``.vale.ini``; the task builds its zip there when missing and reruns
+``vale sync`` when ``.vale.ini`` or the zip changes. A checkout without
+``../style_package`` cannot run it, and nothing else depends on it.
+
+By default it lints the user-facing docs: ``README.md``, this guide
+(``docs/*.rst``) and the man page, which pandoc first converts to Markdown
+under ``target/vale/`` (findings name that file). Pass ``--path`` for any
+other tracked ``.md`` or ``.rst`` file or directory, such as the internal
+design docs, and ``--level suggestion`` to see suggestion-level rules too:
+
+::
+
+    invoke lint-docs --path docs/cli-usage.rst
+    invoke lint-docs --path docs/design
+
+The lint is advisory: findings never fail the task, and it is not part of
+pre-commit or CI. Reading ``.rst`` needs docutils' ``rst2html`` on
+``PATH``; the development venv below has it (Sphinx depends on docutils).
+Without it the task skips ``.rst`` files and says so. Rule changes belong in
+``style_package``, not in a local override here.
+
 Development Node Setup
 ----------------------
 
