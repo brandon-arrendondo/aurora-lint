@@ -1,7 +1,7 @@
 """CLI entry point: python -m bench <command> [options]
 
 Commands:
-  juliet [--full] [--jobs N] [--keep-csv] [--compile-commands]
+  juliet [--full] [--jobs N] [--keep-csv] [--compile-commands] [--cwe CWE[,CWE]]
                                            Run Juliet benchmark
   status [RUN_ID]                          Show benchmark progress/results
   compare BASE TARGET                      Compare two runs
@@ -45,8 +45,13 @@ from bench.db import BenchDB
 
 def cmd_juliet(args):
     from bench.runner import run_benchmark
-    run_benchmark(fast=not args.full, jobs=args.jobs, keep_csv=args.keep_csv,
-                  compile_commands=args.compile_commands)
+    cwes = [c for c in args.cwe.split(",") if c.strip()] if args.cwe else None
+    try:
+        run_benchmark(fast=not args.full, jobs=args.jobs, keep_csv=args.keep_csv,
+                      compile_commands=args.compile_commands, cwes=cwes)
+    except ValueError as e:
+        print(e)
+        sys.exit(2)
 
 
 def cmd_realworld_run(args):
@@ -1126,6 +1131,11 @@ def main():
                                "Juliet compile database. Suffixes the run_id with "
                                "'-cdb' so it does not collide with the plain run of "
                                "the same build")
+    p_juliet.add_argument("--cwe", metavar="CWE[,CWE]",
+                          help="Scan only these CWEs (e.g. 78 or CWE78,CWE476), "
+                               "as a smoke test. Suffixes the run_id with "
+                               "'-cwe<N>' and the mode with '+cwe=', so it never "
+                               "stands in for the build's full run")
     p_juliet.set_defaults(func=cmd_juliet)
 
     # status

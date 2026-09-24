@@ -95,6 +95,30 @@ def _enumerate_cwes() -> list[str]:
     )
 
 
+def _select_cwes(all_cwes: list[str], requested: list[str]) -> list[str]:
+    """The CWE directories matching `requested` ("78", "CWE78", "CWE-78").
+
+    Raises ValueError on a value that matches no directory: a typo must not
+    turn into a run of nothing, or of everything.
+    """
+    by_id: dict[str, list[str]] = {}
+    for name in all_cwes:
+        by_id.setdefault(_extract_cwe_id(name), []).append(name)
+    selected = []
+    unknown = []
+    for raw in requested:
+        m = re.fullmatch(r'(?:CWE-?)?(\d+)', raw.strip(), re.IGNORECASE)
+        cwe_id = f"CWE-{int(m.group(1))}" if m else None
+        if cwe_id not in by_id:
+            unknown.append(raw)
+            continue
+        selected.extend(n for n in by_id[cwe_id] if n not in selected)
+    if unknown:
+        raise ValueError(f"No Juliet CWE directory for: {', '.join(unknown)} "
+                         f"(under {JULIET_BASE})")
+    return sorted(selected)
+
+
 def _count_c_files(cwe_dir: Path) -> int:
     """Count .c files in a CWE directory (including subdirectories)."""
     return sum(1 for _ in cwe_dir.rglob("*.c"))
@@ -480,7 +504,8 @@ def _run_submissions(db: BenchDB, run_id: str, scan_map: dict, work_items: list[
 # ── Main runner ───────────────────────────────────────────────────────────────
 
 def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
-                  keep_csv: bool = False, compile_commands: bool = False) -> str:
+                  keep_csv: bool = False, compile_commands: bool = False,
+                  cwes: list[str] | None = None) -> str:
     """Run a full Juliet benchmark.
 
     Args:
@@ -491,6 +516,9 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
             synthesized Juliet compile database. Off by default, so a plain
             run is unchanged. When on, the run_id is suffixed so a with/without
             pair on the same sqc build stays two distinct, comparable runs.
+        cwes: Restrict the run to these CWEs ("78", "CWE78" or "CWE-78").
+            A smoke test, not a benchmark: the run gets its own run_id and
+            mode, so it never stands in for the build's full run.
 
     Returns:
         The run_id for the completed benchmark.
@@ -512,14 +540,24 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
             )
         compile_db = str(JULIET_COMPILE_DB)
 
+    all_cwes = _enumerate_cwes()
+    if not all_cwes:
+        raise RuntimeError(f"No CWE directories found under {JULIET_BASE}")
+    if cwes:
+        all_cwes = _select_cwes(all_cwes, cwes)
+    cwe_ids = tuple(sorted({_extract_cwe_id(n) for n in all_cwes})) if cwes else ()
+
     _ensure_rule_cwe_map()
 
     version = _get_sqc_version()
     sha = _get_git_sha()
-    run_id = juliet_run_id(version, sha, fast=fast, compile_commands=compile_commands)
+    run_id = juliet_run_id(version, sha, fast=fast, compile_commands=compile_commands,
+                           cwes=cwe_ids)
     mode = "fast" if fast else "full"
     if compile_commands:
         mode += " +compile-db"
+    if cwe_ids:
+        mode += f" +cwe={','.join(cwe_ids)}"
     started_at = datetime.now(timezone.utc).isoformat()
     machine = get_machine_metadata()
 
@@ -530,10 +568,6 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     if existing and existing["status"] == "completed":
         print(f"Run {run_id} already completed. Use a new version/commit for a fresh run.")
         return run_id
-
-    all_cwes = _enumerate_cwes()
-    if not all_cwes:
-        raise RuntimeError(f"No CWE directories found under {JULIET_BASE}")
 
     # Build work list: resolve manifests, skip already-completed
     completed_cwes = db.get_completed_cwes(run_id) if existing else set()

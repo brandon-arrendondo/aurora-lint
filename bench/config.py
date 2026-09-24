@@ -96,6 +96,13 @@ COMPILE_DB_RUN_SUFFIX = "cdb"
 # historical fast run keeps its id and the trend history is unbroken.
 FULL_MODE_RUN_SUFFIX = "full"
 
+# Appended to a Juliet run_id when the run is restricted to some CWEs
+# (`bench juliet --cwe`), followed by the CWE numbers ("-cwe78_476"). A subset
+# run is a smoke test, not a benchmark: without its own id it would mark the
+# build's real run_id "completed" after one CWE, and resume would then refuse
+# to scan the rest.
+CWE_SUBSET_RUN_SUFFIX = "cwe"
+
 
 def load_rule_ids() -> set[str]:
     """Every CERT-C rule id sqc can emit, from rules-all.toml's section keys.
@@ -138,18 +145,22 @@ def compile_db_for(path) -> Path | None:
 
 
 def juliet_run_id(version: str, sha: str, *, fast: bool,
-                  compile_commands: bool) -> str:
-    """The run_id for a Juliet run, distinct per (mode, compile-db) so every
-    configuration of one sqc build is its own run.
+                  compile_commands: bool, cwes: tuple[str, ...] = ()) -> str:
+    """The run_id for a Juliet run, distinct per (mode, compile-db, CWE
+    subset) so every configuration of one sqc build is its own run.
 
     benchmarking_db's queue_worker.py builds the same name to find the run it
-    ingests; change the two together.
+    ingests; change the two together. `cwes` defaults to empty, which leaves
+    every id the queue builds unchanged.
     """
     run_id = f"sqc-{version}-{sha}"
     if not fast:
         run_id += f"-{FULL_MODE_RUN_SUFFIX}"
     if compile_commands:
         run_id += f"-{COMPILE_DB_RUN_SUFFIX}"
+    if cwes:
+        numbers = sorted({c.removeprefix("CWE-") for c in cwes}, key=int)
+        run_id += f"-{CWE_SUBSET_RUN_SUFFIX}{'_'.join(numbers)}"
     return run_id
 
 # ── Database ──────────────────────────────────────────────────────────────────
