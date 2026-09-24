@@ -90,8 +90,8 @@
   <section id="project-structure">
 <h1>Project Structure<a class="headerlink" href="#project-structure" title="Link to this heading"></a></h1>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">src</span><span class="o">/</span>
-<span class="o">+--</span> <span class="n">main</span><span class="o">.</span><span class="n">rs</span>              <span class="c1"># CLI entry point and argument parsing</span>
-<span class="o">+--</span> <span class="n">prelude</span><span class="o">.</span><span class="n">rs</span>           <span class="c1"># Common imports and type definitions</span>
+<span class="o">+--</span> <span class="n">lib</span><span class="o">.</span><span class="n">rs</span>               <span class="c1"># Library crate: module tree and prelude</span>
+<span class="o">+--</span> <span class="n">main</span><span class="o">.</span><span class="n">rs</span>              <span class="c1"># CLI entry point, built on the library crate</span>
 <span class="o">+--</span> <span class="n">analyze</span><span class="o">/</span>             <span class="c1"># Core analysis engine</span>
 <span class="o">|</span>   <span class="o">+--</span> <span class="n">mod</span><span class="o">.</span><span class="n">rs</span>           <span class="c1"># Project analysis orchestration</span>
 <span class="o">|</span>   <span class="o">+--</span> <span class="n">cfg</span><span class="o">.</span><span class="n">rs</span>           <span class="c1"># Control-flow graph construction</span>
