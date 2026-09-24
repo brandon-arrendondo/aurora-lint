@@ -135,8 +135,9 @@ consults git, so a build run inside a checkout (e.g. sqlite's generated
    changes and commits first.
 
 3. **Wait for completion.** Fast-mode Juliet ~7-15 min and full Juliet ~20-30
-   min, depending on the node; real-world sqc-only ~10-15 min. Check `python -m bench status` at most every
-   5 minutes, or just watch it.
+   min, depending on the node. Real-world sqc-only ~20-25 min across the
+   current corpora, and it grows with each corpus added to the suite. Check
+   `python -m bench status` at most every 5 minutes, or just watch it.
 
 4. **Compare runs** with `python -m bench compare`; `status RUN_ID` for a
    per-run summary. Historical runs carry a `-historical` suffix.
