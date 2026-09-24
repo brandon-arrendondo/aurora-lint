@@ -4,8 +4,8 @@ Project Structure
 ::
 
     src/
-    +-- main.rs              # CLI entry point and argument parsing
-    +-- prelude.rs           # Common imports and type definitions
+    +-- lib.rs               # Library crate: module tree and prelude
+    +-- main.rs              # CLI entry point, built on the library crate
     +-- analyze/             # Core analysis engine
     |   +-- mod.rs           # Project analysis orchestration
     |   +-- cfg.rs           # Control-flow graph construction

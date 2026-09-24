@@ -199,13 +199,14 @@ Postgres) has been backfilled into the database.</p>
 <ol class="arabic simple">
 <li><p><strong>Commit BEFORE benchmark, do not bump the version</strong>: rebuild
 (<code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">build</span> <span class="pre">--release</span></code>) and commit before starting. The run_id is
-<code class="docutils literal notranslate"><span class="pre">sqc-{version}-{sha}</span></code>, and the <strong>SHA</strong> is what discriminates runs;
+<code class="docutils literal notranslate"><span class="pre">sqc-{version}-{sha}</span></code> (full mode appends <code class="docutils literal notranslate"><span class="pre">-full</span></code>, compile-db
+<code class="docutils literal notranslate"><span class="pre">-cdb</span></code>), and the <strong>SHA</strong> is what discriminates runs;
 the version string is a release artifact, bumped only when a release
 is cut (see <code class="docutils literal notranslate"><span class="pre">CLAUDE.md</span></code>).</p></li>
 <li><p><strong>NEVER modify code while a benchmark is running</strong>: The benchmark uses
 <code class="docutils literal notranslate"><span class="pre">target/release/aurora-lint</span></code>. Rebuilding while running corrupts results.</p></li>
-<li><p><strong>Wait for completion</strong>: Fast-mode ~8-10 min (4-core), ~3-5 min (24-core).
-Full-suite ~40-50 min. Check status no more than once every 5 minutes.</p></li>
+<li><p><strong>Wait for completion</strong>: Fast-mode ~7-15 min and full-suite ~20-30 min,
+depending on the machine. Check status no more than once every 5 minutes.</p></li>
 <li><p><strong>Compare runs after completion</strong>.</p></li>
 <li><p><strong>Sequence</strong>: <code class="docutils literal notranslate"><span class="pre">implement</span> <span class="pre">-&gt;</span> <span class="pre">commit</span> <span class="pre">-&gt;</span> <span class="pre">build</span> <span class="pre">release</span> <span class="pre">-&gt;</span> <span class="pre">run</span> <span class="pre">benchmark</span>
 <span class="pre">-&gt;</span> <span class="pre">wait</span> <span class="pre">-&gt;</span> <span class="pre">analyze</span></code></p></li>

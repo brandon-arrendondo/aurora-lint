@@ -59,15 +59,16 @@ Benchmark Workflow Protocol
 
     1. **Commit BEFORE benchmark, do not bump the version**: rebuild
        (``cargo build --release``) and commit before starting. The run_id is
-       ``sqc-{version}-{sha}``, and the **SHA** is what discriminates runs;
+       ``sqc-{version}-{sha}`` (full mode appends ``-full``, compile-db
+       ``-cdb``), and the **SHA** is what discriminates runs;
        the version string is a release artifact, bumped only when a release
        is cut (see ``CLAUDE.md``).
 
     2. **NEVER modify code while a benchmark is running**: The benchmark uses
        ``target/release/aurora-lint``. Rebuilding while running corrupts results.
 
-    3. **Wait for completion**: Fast-mode ~8-10 min (4-core), ~3-5 min (24-core).
-       Full-suite ~40-50 min. Check status no more than once every 5 minutes.
+    3. **Wait for completion**: Fast-mode ~7-15 min and full-suite ~20-30 min,
+       depending on the machine. Check status no more than once every 5 minutes.
 
     4. **Compare runs after completion**.
 
