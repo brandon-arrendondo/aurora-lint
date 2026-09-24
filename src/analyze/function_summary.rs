@@ -1978,7 +1978,7 @@ fn alias_derefs<'a>(body: &Node<'a>, source: &str, alias: &str) -> Vec<Node<'a>>
         let rooted = base.is_some_and(|b| {
             b.kind() == "identifier" && b.utf8_text(source.as_bytes()) == Ok(alias)
         });
-        rooted && !is_address_taken(n)
+        rooted && !is_address_taken(n) && !is_unevaluated(n)
     })
     .collect()
 }
@@ -2039,6 +2039,22 @@ fn alias_null_checks(
         }
     }
     (checked, before)
+}
+
+/// True when `node` sits in an operand C never evaluates -- `sizeof`,
+/// `_Alignof`, `offsetof` -- so `sizeof(*hdr)` reads nothing. hostap's
+/// `if (len < sizeof(*hdr) + ...)` length checks put exactly that shape
+/// ahead of an alias's real accesses, and before this it was the ONLY
+/// "dereference" of `hdr` in `ieee802_1x_tx_status`.
+fn is_unevaluated(node: &Node) -> bool {
+    use crate::utility::cert_c::ast_utils;
+    use lang_parsing_substrate::query;
+
+    ast_utils::is_in_sizeof(node)
+        || query::find_ancestor(*node, |a| {
+            matches!(a.kind(), "alignof_expression" | "offsetof_expression")
+        })
+        .is_some()
 }
 
 /// True when `access` (`p->f`, `p[i]`) is only the operand of an
