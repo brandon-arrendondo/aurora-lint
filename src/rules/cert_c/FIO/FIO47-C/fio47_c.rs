@@ -510,17 +510,23 @@ impl Fio47C {
         }
     }
 
-    /// Extract one character per consumed argument from a format string: the
+    /// Extract one entry per consumed argument from a format string: the
     /// conversion specifier, preceded by a `*` for each printf `*` width or
-    /// precision. A suppressed scanf conversion (`%*d`) consumes no argument
-    /// and contributes nothing.
-    fn extract_format_specifiers(&self, format_string: &str, is_scanf: bool) -> Vec<char> {
+    /// precision, each paired with its directive exactly as written (`%lx`,
+    /// `%-*s`), so a message quotes what the source says. A `*` slot shares
+    /// its directive's text. A suppressed scanf conversion (`%*d`) consumes
+    /// no argument and contributes nothing.
+    fn extract_format_specifiers(
+        &self,
+        format_string: &str,
+        is_scanf: bool,
+    ) -> Vec<(char, String)> {
         let mut specifiers = Vec::new();
-        let mut chars = format_string.chars().peekable();
+        let mut chars = format_string.char_indices().peekable();
 
-        while let Some(ch) = chars.next() {
+        while let Some((start, ch)) = chars.next() {
             if ch == '%' {
-                if let Some(&next) = chars.peek() {
+                if let Some(&(_, next)) = chars.peek() {
                     if next == '%' {
                         chars.next();
                         continue;
@@ -533,7 +539,7 @@ impl Fio47C {
                     }
 
                     // Skip flags, width, precision, length modifier
-                    while let Some(&c) = chars.peek() {
+                    while let Some(&(_, c)) = chars.peek() {
                         if matches!(c, '-' | '+' | ' ' | '#' | '0' | '\'' | '.' | '*')
                             || c.is_ascii_digit()
                         {
@@ -542,7 +548,7 @@ impl Fio47C {
                         } else if matches!(c, 'h' | 'l' | 'j' | 'z' | 't' | 'L') {
                             chars.next();
                             // Handle hh and ll
-                            if let Some(&next) = chars.peek() {
+                            if let Some(&(_, next)) = chars.peek() {
                                 if (c == 'h' && next == 'h') || (c == 'l' && next == 'l') {
                                     chars.next();
                                 }
@@ -553,10 +559,12 @@ impl Fio47C {
                     }
 
                     // Get the conversion specifier
-                    if let Some(specifier) = chars.next() {
+                    if let Some((at, specifier)) = chars.next() {
                         if specifier != '%' && !suppressed {
-                            specifiers.extend(std::iter::repeat_n('*', stars));
-                            specifiers.push(specifier);
+                            let end = at + specifier.len_utf8();
+                            let directive = format_string[start..end].to_string();
+                            specifiers.extend(std::iter::repeat_n(('*', directive.clone()), stars));
+                            specifiers.push((specifier, directive));
                         }
                     }
                 }
@@ -697,7 +705,9 @@ impl Fio47C {
             let specifiers = self.extract_format_specifiers(&format_string, is_scanf);
             let data_args = self.get_data_arguments(call_node, function_name);
 
-            for (i, (specifier, arg)) in specifiers.iter().zip(data_args.iter()).enumerate() {
+            for (i, ((specifier, directive), arg)) in
+                specifiers.iter().zip(data_args.iter()).enumerate()
+            {
                 let expected_type = self.get_expected_type(*specifier, is_scanf);
                 let actual_type = self.infer_expression_type(arg, source);
 
@@ -711,8 +721,14 @@ impl Fio47C {
                         rule_id: self.rule_id().to_string(),
                         severity: self.severity(),
                         message: format!(
-                            "Type mismatch in {}(): format specifier '%{}' expects {:?} but argument {} ('{}') is {:?}",
-                            function_name, specifier, expected_type, i + 1, arg_text, actual_type
+                            "Type mismatch in {}(): format specifier '{}'{} expects {:?} but argument {} ('{}') is {:?}",
+                            function_name,
+                            directive,
+                            if *specifier == '*' { " (its '*')" } else { "" },
+                            expected_type,
+                            i + 1,
+                            arg_text,
+                            actual_type
                         ),
                         file_path: String::new(),
                         line: call_node.start_position().row + 1,
