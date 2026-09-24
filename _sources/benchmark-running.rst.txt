@@ -13,7 +13,7 @@ Benchmark Infrastructure
     bench/
       __init__.py      Package marker
       __main__.py      CLI: python -m bench juliet [--full] [--jobs N]
-                            [--keep-csv] [--compile-commands]
+                            [--keep-reports] [--compile-commands]
       config.py        Paths, constants, defaults
       db.py            SQLite schema, WAL mode, CRUD + query API
       analyzer.py      TP/FP classifier (Juliet ground truth)
@@ -89,7 +89,7 @@ Juliet Benchmark
 
 .. code-block:: bash
 
-    python -m bench juliet [--full] [--jobs N] [--keep-csv] [--compile-commands] [--cwe CWE[,CWE]]
+    python -m bench juliet [--full] [--jobs N] [--keep-reports] [--compile-commands] [--cwe CWE[,CWE]]
     python -m bench status [RUN_ID]
     python -m bench compare BASE TARGET
     python -m bench runs
@@ -557,4 +557,4 @@ Resolved Issues
 - **Output Buffer Saturation**: aurora-lint emits one status line per rule per file
   (~100 rules × N files). Always suppress or redirect output during scans::
 
-      ./target/release/aurora-lint directory/ --export results.csv 2>/dev/null
+      ./target/release/aurora-lint directory/ --export results.sarif 2>/dev/null

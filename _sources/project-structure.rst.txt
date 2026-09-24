@@ -16,7 +16,7 @@ Project Structure
     |   +-- prescan.rs       # Directory pre-scanning for cross-file context
     |   +-- suppression.rs   # Violation suppression system
     +-- export/              # Export functionality
-    |   +-- mod.rs           # CSV, XLSX, JSON, and SARIF export
+    |   +-- mod.rs           # SARIF and JSON export
     +-- files/               # File and repository handling
     |   +-- mod.rs           # Git integration and file discovery
     +-- manifest/            # Rule configuration system

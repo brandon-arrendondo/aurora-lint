@@ -995,7 +995,7 @@ find<span class="w"> </span><span class="nv">$JULIET_DIR</span><span class="w"> 
 <span class="c1"># 4. Run in parallel across nodes</span>
 parallel<span class="w"> </span>--sshloginfile<span class="w"> </span><span class="nv">$NODES_FILE</span><span class="w"> </span>-a<span class="w"> </span>/tmp/cwe_dirs.txt<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span><span class="s2">&quot;</span><span class="nv">$SQC_BIN</span><span class="s2"> {} -d </span><span class="nv">$JULIET_DIR</span><span class="s2"> -d </span><span class="nv">$JULIET_SUPPORT</span><span class="s2"> \</span>
-<span class="s2">    --export </span><span class="nv">$RESULTS_DIR</span><span class="s2">/aurora-lint/juliet/{/.}.csv&quot;</span>
+<span class="s2">    --export </span><span class="nv">$RESULTS_DIR</span><span class="s2">/aurora-lint/juliet/{/.}.json&quot;</span>
 </pre></div>
 </div>
 </section>

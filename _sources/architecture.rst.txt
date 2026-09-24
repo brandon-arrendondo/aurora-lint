@@ -26,7 +26,7 @@ aurora-lint uses a multi-pass analysis architecture:
     [Suppression Filter] --> Hash-based + wildcard (glob/prefix) suppression
         |
         v
-    [Export] --> CSV, XLSX, JSON, SARIF
+    [Export] --> SARIF, JSON
 
 Analysis Modules
 ----------------

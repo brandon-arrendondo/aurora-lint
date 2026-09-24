@@ -116,7 +116,7 @@ Options:
   -i, --interactive                Run in interactive terminal UI mode
                                    (requires building with `--features tui`)
   -e, --export &lt;FILE&gt;              Export violations to file (format by extension:
-                                   .csv, .xlsx, .json, .sarif, .sarif.json)
+                                   .sarif, .sarif.json, .json)
       --generate-suppression &lt;FILE:LINE:RULE&gt;
                                    Generate suppression entry for a specific violation
   -d, --directories &lt;DIR&gt;          Additional directories to pre-scan for function
@@ -428,12 +428,6 @@ with <code class="docutils literal notranslate"><span class="pre">--exclude</spa
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">.csv</span></code></p></td>
-<td><p>Comma-separated values (file, line, column, rule, severity, message)</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">.xlsx</span></code></p></td>
-<td><p>Excel workbook with formatted columns and severity coloring</p></td>
-</tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">.json</span></code></p></td>
 <td><p>JSON array of violation objects</p></td>
 </tr>
@@ -442,14 +436,27 @@ with <code class="docutils literal notranslate"><span class="pre">--exclude</spa
 </tr>
 </tbody>
 </table>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">csv</span>
-<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">xlsx</span>
-<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">json</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">json</span>
 <span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span>
 </pre></div>
 </div>
+<p>SARIF is the full report. Each result carries its source line
+(<code class="docutils literal notranslate"><span class="pre">region.snippet</span></code>), each rule its CERT description, and each scanned file its
+SHA-256 (<code class="docutils literal notranslate"><span class="pre">artifacts[].hashes</span></code>), so the report stands on its own without the
+scanned tree. Both formats name aurora-lint as their producer: SARIF in
+<code class="docutils literal notranslate"><span class="pre">tool.driver</span></code>, JSON in a <code class="docutils literal notranslate"><span class="pre">tool</span></code> key on each object.</p>
+<p>For a spreadsheet, convert the SARIF report (<code class="docutils literal notranslate"><span class="pre">.xlsx</span></code> needs <code class="docutils literal notranslate"><span class="pre">openpyxl</span></code>):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">python</span> <span class="n">scripts</span><span class="o">/</span><span class="n">sarif_convert</span><span class="o">.</span><span class="n">py</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span> <span class="n">findings</span><span class="o">.</span><span class="n">csv</span>
+<span class="n">python</span> <span class="n">scripts</span><span class="o">/</span><span class="n">sarif_convert</span><span class="o">.</span><span class="n">py</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span> <span class="n">findings</span><span class="o">.</span><span class="n">xlsx</span>
+</pre></div>
+</div>
+<p>Each row is one active finding (add <code class="docutils literal notranslate"><span class="pre">--include-suppressed</span></code> for the rest),
+laid out as Title, Description, Work Item Type, State, Severity, Priority and
+Tags, the layout aurora-lint’s built-in CSV/XLSX export used before it was
+removed.</p>
 <p>JSON export produces an array of violation objects, each containing:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;tool&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aurora-lint&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;src/main.c&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;line&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">42</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;column&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span>
