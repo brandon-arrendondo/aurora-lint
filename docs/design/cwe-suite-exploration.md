@@ -222,10 +222,10 @@ CERT id in `rule_cwe_map`. Of the other 40:
 This is a CERT-side finding. It affects Juliet CWE-matched scoring, which
 uses this map to decide which rules count for a Juliet directory.
 
-- **Missing references.** About 45 honest (CWE, CERT id) pairs are absent
+- **Missing references.** Honest CERT ids for 40 distinct CWEs are absent
   from the rules' TOML `[references].cwe`:
   - the 17 Juliet pairs above;
-  - the ~31 CWE-658 pairs, which overlap with them;
+  - the 31 CWE-658 members (8 of them overlap with the Juliet 17);
   - notably CWE-787 on ARR30-C, ARR38-C and STR31-C.
 - **Boilerplate entries that inflate coverage.** ERR07-C, MEM10-C and MSC24-C
   carry CWE-20/79/89/91/94/114/601. The references were copied faithfully:
