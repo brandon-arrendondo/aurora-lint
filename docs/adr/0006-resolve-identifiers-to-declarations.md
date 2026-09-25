@@ -96,6 +96,22 @@ text/name heuristic, per the existing rule-implementation instruction —
 this ADR is the *why* behind that instruction's insistence, backed by
 three independent, costly instances of skipping it.
 
+### Two kinds of uncertainty, two defaults
+
+The silence above is about **identity**: the tool cannot tell what construct
+is on the line (which declaration a name refers to, what type an operand
+has, whether a token is an expression or preprocessor text). A guess there
+produces a finding about code that isn't there, so the rule stays silent.
+
+It is not about **safety**. Once the tool knows what the construct is, not
+being able to prove it safe is a reason to report it, never to stay silent:
+only a proof removes a finding (ADR-0001, ADR-0011). "I can resolve the
+pointer and its dereference, but I cannot see the callee's body or every
+caller" is safety uncertainty, and the construct is reported. "I cannot tell
+which `len` this is" is identity uncertainty, and nothing is reported.
+Apply the identity test first. Only a construct the tool has identified
+reaches the question of proof (Brandon, 2026-09-25).
+
 ## Consequences
 
 - A code review or rule-bug report that finds `.contains(name)`,
