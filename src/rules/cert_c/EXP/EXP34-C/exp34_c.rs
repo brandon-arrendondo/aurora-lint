@@ -1026,10 +1026,11 @@ fn is_unsafe_at(
 ) -> bool {
     let deref_byte = deref_node.start_byte();
 
-    // A dereference inside `sizeof(...)` is never evaluated (unevaluated operand),
-    // and one inside an `assert(...)` argument is a debug-only precondition check —
-    // neither is a runtime null dereference. Suppress before consulting dataflow.
-    if is_in_unevaluated_or_assert_context(deref_node, source) {
+    // A dereference in an operand C never evaluates (`sizeof`, `_Alignof`,
+    // `typeof`) is not a runtime null dereference. Suppress before consulting
+    // dataflow. One inside an `assert(...)` argument IS evaluated, in the
+    // debug configuration, so it is checked like any other (ADR-0010 D5).
+    if is_in_unevaluated_context(deref_node, source) {
         return false;
     }
 
@@ -1185,22 +1186,31 @@ fn is_in_expression_guard(var_name: &str, node: &Node, source: &str) -> bool {
     false
 }
 
-/// True when the node is in an unevaluated `sizeof(...)` operand or syntactically
-/// inside an `assert(...)` argument. `sizeof` never evaluates its operand, and an
-/// `assert(p->x)` is itself the precondition check (and is compiled out under
-/// NDEBUG) — flagging a dereference in either context is a false positive.
-fn is_in_unevaluated_or_assert_context(node: &Node, source: &str) -> bool {
+/// True when the node sits in an operand C never evaluates: `sizeof`,
+/// `_Alignof` / `__alignof__`, `offsetof`, or GNU `typeof` / `__typeof__`
+/// (which the grammar has no node for, so it arrives as a macro type
+/// specifier or a call of that name).
+///
+/// An `assert(...)` argument is deliberately not one of them. In the debug
+/// configuration it is compiled and evaluated, so a null dereference inside
+/// it is a null dereference (ADR-0010 D5).
+fn is_in_unevaluated_context(node: &Node, source: &str) -> bool {
+    const TYPEOF: &[&str] = &["typeof", "__typeof__", "__typeof"];
     let mut current = node.parent();
     while let Some(parent) = current {
         match parent.kind() {
-            "sizeof_expression" => return true,
-            "call_expression"
-                if parent
-                    .child_by_field_name("function")
-                    .map(|f| ast_utils::get_node_text_owned(&f, source) == "assert")
-                    .unwrap_or(false) =>
-            {
-                return true;
+            "sizeof_expression" | "alignof_expression" | "offsetof_expression" => return true,
+            "macro_type_specifier" | "call_expression" => {
+                let callee = parent
+                    .child_by_field_name(if parent.kind() == "call_expression" {
+                        "function"
+                    } else {
+                        "name"
+                    })
+                    .map(|f| ast_utils::get_node_text_owned(&f, source));
+                if callee.is_some_and(|name| TYPEOF.contains(&name.as_str())) {
+                    return true;
+                }
             }
             "function_definition" => break,
             _ => {}
