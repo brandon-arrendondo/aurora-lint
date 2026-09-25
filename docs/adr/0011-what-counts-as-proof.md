@@ -90,6 +90,17 @@ TP. That holds even when it is almost certainly harmless in practice.
   external linkage may also have callers outside the corpus. A `static`
   function with no caller in its file is unreachable as written, but it is
   still compiled, so it is reported like any other code.
+- **Checks made by every caller count.** Take a function that nothing
+  outside the corpus can call, whose every call site provably tests the
+  value before passing it: `if (x) f(x);` at each one. The value reaching
+  the function is checked, so the dereference inside is not a finding. This
+  is the input-boundary pattern: one validating layer in front of an
+  internal layer that doesn't re-check. It is fragile, because new code
+  that calls without checking brings the problem back. But that is a
+  question about code growth, and a scan of the new code reports the new
+  call. It is not a reason to flag the fixed commit being measured. The bar
+  is high: *every* call site, provably, with no function-pointer or
+  external route in. Most code won't clear it (Brandon, 2026-09-24).
 - Where the standard leaves something implementation-defined, as it does
   with integer widths, basis 1 does not cover it and basis 4 applies.
 - This ADR does not change ADR-0010's rule that every compilable
