@@ -2,7 +2,7 @@
 [metadata]
 name = "lua CERT C Rules Configuration"
 version = "1.0.0"
-description = "Project rules manifest for Lua 5.5 (pinned to commit 40b76de2d77e66b70a9d4bf989c3f5340919973f, git describe v5.5.0-34-g40b76de2), based on the shared base rules_templates/rules-all.toml. Lua is a small (~19K SLOC), permissively-licensed (MIT) bytecode VM / interpreter — a new domain for the suite alongside the crypto/DB/MQTT/HTTP/wifi codebases. NOTE: adopted as a general-purpose oracle, NOT to validate structural-C99 conformance rules; Lua is portability-C99 (long long / snprintf / strtod / %a gated behind !LUA_USE_C89) but uses NONE of the structural C99 idioms (designated initializers, compound literals, _Bool/stdbool, restrict, flexible array members, conformant array parameters) — so API05-C and the other C99-conformance checks still lack a positive-validation target here. Precision SCOPE for the ground-truth oracle is the shipped library + the lua.c interpreter main, EXCLUDING the checked-in amalgamation (onelua.c), the internal test/debug harness (ltests.c) and the C test fixtures (testes/) — these are dropped from aurora-lint via --exclude and from cppcheck/clang-tidy via -i/find-prune so all three tools scan the same fileset. Same 14-rule advisory disable baseline as sqlite-rules.toml; categorical disables grow as adjudication finds whole rules that do not apply; per-finding false positives among enabled rules are recorded in the ground_truth oracle (data/benchmarks.db), not suppressed here."
+description = "Project rules manifest for Lua 5.5 (pinned to commit 40b76de2d77e66b70a9d4bf989c3f5340919973f, git describe v5.5.0-34-g40b76de2), based on the shared base rules_templates/rules-all.toml. Lua is a small (~19K SLOC), permissively-licensed (MIT) bytecode VM / interpreter — a new domain for the suite alongside the crypto/DB/MQTT/HTTP/wifi codebases. NOTE: adopted as a general-purpose oracle, NOT to validate structural-C99 conformance rules; Lua is portability-C99 (long long / snprintf / strtod / %a gated behind !LUA_USE_C89) but uses NONE of the structural C99 idioms (designated initializers, compound literals, _Bool/stdbool, restrict, flexible array members, conformant array parameters) — so API05-C and the other C99-conformance checks still lack a positive-validation target here. Precision SCOPE for the ground-truth oracle is the shipped library + the lua.c interpreter main, EXCLUDING the checked-in amalgamation (onelua.c), the internal test/debug harness (ltests.c) and the C test fixtures (testes/) — these are dropped from aurora-lint via --exclude and from cppcheck/clang-tidy via -i/find-prune so all three tools scan the same fileset. No categorical disable beyond dead config; categorical disables grow as adjudication finds whole rules that do not apply; per-finding false positives among enabled rules are recorded in the ground_truth oracle (data/benchmarks.db), not suppressed here."
 cert_version = "2016"
 
 [rules.cert_c.API00-C]
@@ -190,7 +190,7 @@ enabled = true
 
 
 [rules.cert_c.DCL05-C]
-enabled = false  # "complex function pointer declaration should use typedef" — advisory; sqlite deliberately uses inline fn-ptr decls (VFS xRead/xWrite, vtab methods). 495 findings, categorical noise.
+enabled = true  # RE-ENABLED: was disabled as advisory/style or a typedef convention the project does not adopt, which is not a disable reason under conf/realworld/README.md -- typedefs are present in every C codebase, so the rule's scope is never absent; disagreement with it is what the oracle records
 
 
 [rules.cert_c.DCL06-C]
@@ -1148,7 +1148,7 @@ enabled = true
 enabled = true
 
 [rules.cert_c.ENV04-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/ENV/ENV04-C) and CERT has published no ENV04-C content to implement against; dead config, not a suppression
+enabled = false  # category 2 (dead config): not implemented -- src/rules/cert_c/ENV/ENV04-C holds CERT metadata only, no rule module, and CERT has published no ENV04-C content to implement against; records a decision, suppresses nothing
 
 [rules.cert_c.FLP38-C]
 enabled = true
@@ -1190,10 +1190,10 @@ enabled = true
 enabled = true
 
 [rules.cert_c.MSC18-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC18-C); dead config, not a suppression
+enabled = false  # category 2 (dead config): not implemented -- src/rules/cert_c/MSC/MSC18-C holds CERT metadata only, no rule module; records a decision, suppresses nothing
 
 [rules.cert_c.MSC19-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC19-C); dead config, not a suppression
+enabled = false  # category 2 (dead config): not implemented -- src/rules/cert_c/MSC/MSC19-C holds CERT metadata only, no rule module; records a decision, suppresses nothing
 
 [rules.cert_c.MSC20-C]
 enabled = true
@@ -1211,7 +1211,7 @@ enabled = true
 enabled = true
 
 [rules.cert_c.MSC25-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC25-C) and CERT has published no MSC25-C content to implement against; dead config, not a suppression
+enabled = false  # category 2 (dead config): not implemented -- src/rules/cert_c/MSC/MSC25-C holds CERT metadata only, no rule module, and CERT has published no MSC25-C content to implement against; records a decision, suppresses nothing
 
 [rules.cert_c.MSC42-C]
 enabled = true

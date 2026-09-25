@@ -19,8 +19,8 @@ wrote for it.
    `enabled = false` line:
 
    1. **Categorically inapplicable** to the codebase — Windows-only rules on a
-      POSIX target, `POS55-C` on a single-threaded library, the `FIO*` family on
-      code with no file I/O. The defect the rule describes cannot occur here.
+      POSIX target, `POS55-C` (socket operation ordering) on code that makes no socket
+      call, the `FIO*` family on code with no file I/O. The defect the rule describes cannot occur here.
    2. **Dead config** — the rule has no implementation yet, so the line records
       a decision rather than suppressing anything. Cite the implementation task
       (`ENV04-C`, `MSC18-C`, `MSC19-C`, `MSC25-C`).
@@ -138,8 +138,8 @@ labelled.
 
 | Codebase  | Config                    | Adjudicated? |
 |-----------|---------------------------|--------------|
-| libcrc    | `libcrc-rules.toml`       | Was **full** — every enabled-rule finding labelled (422; 13 TP / 409 FP). `PRE00-C` and `DCL08-C` newly enabled here; `MSC04-C`/`MSC07-C` stay excluded, now explicitly. See `data/precision_audit/libcrc/`. |
-| sqlite    | `sqlite-rules.toml`       | Incremental — scoped to shipped `src/`+`ext/`; DCL05 disabled; INT32-C increment 1 done (47 labels). See `data/precision_audit/sqlite/`. |
+| libcrc    | `libcrc-rules.toml`       | Was **full** — every enabled-rule finding labelled (422; 13 TP / 409 FP). `PRE00-C` and `DCL08-C` newly enabled here, and later the `WIN*`/`FIO*`/`DCL05`/`DCL18`/`MEM10`/`MSC04`/`MSC07` disables whose stated facts did not hold. See `data/precision_audit/libcrc/`. |
+| sqlite    | `sqlite-rules.toml`       | Incremental — scoped to shipped `src/`+`ext/`; DCL05 re-enabled (was disabled as advisory); INT32-C increment 1 done (47 labels). See `data/precision_audit/sqlite/`. |
 | mosquitto | `mosquitto-rules.toml`    | Incremental — ~3.9k labels. |
 | curl      | `curl-rules.toml`         | Incremental — ~12.1k labels. |
 | hostap    | `hostap-rules.toml`       | Incremental — ~34.2k labels. |
@@ -153,9 +153,17 @@ labelled.
 
 Every registered codebase has its own manifest; the shared base only applies to
 a codebase not yet registered here. libcrc is the worked template (small enough
-to read and label exhaustively) and its remaining 29 disables are the reference
-example of category 1 done right: all seven `WIN*` rules, `POS55-C`, and the
-`FIO*` family on a pure CRC library with no file I/O in scope. pureftpd is
+to read and label exhaustively). Its disables are also the cautionary example
+for category 1: most were inherited from an embedded-C policy written for a
+different codebase, and a re-check against the tree found the stated facts
+false — libcrc builds on Windows (`Windows_NT` in its Makefile, `_MSC_VER`
+paths in `precalc/` and `examples/`) and does file I/O in those same files —
+so the `WIN*`, `FIO*`, `DCL18-C`, `MEM10-C`, `MSC04-C` and `MSC07-C` disables
+were re-enabled. What remains names a construct that is absent from the
+scanned tree: no socket call (`POS55-C`), no heap allocation (`MEM00/01/03/06-C`),
+no privileged process (`POS05-C`). **State the absent construct, check it
+against the tree, and check that the rule does not already fire on that
+construct.** "The rule finds nothing here" is a result, not a scope. pureftpd is
 scoped-full: exhaustively labelled within its onboarding purpose (the
 SQL-client files), partial on the rest of the daemon by design, not by
 oversight.

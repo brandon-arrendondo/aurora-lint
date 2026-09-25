@@ -2,7 +2,7 @@
 [metadata]
 name = "libcrc CERT C Rules Configuration"
 version = "1.0.0"
-description = "Project rules manifest for libcrc (CRC computation library + demo CLI + tests), pinned to commit 7719e21. Based on the d_lib_common embedded-C policy: disables rules that are categorically inapplicable (Windows-only on a POSIX target, advisory-style the project rejects, FIO50 separate-function FP). Per-finding false positives among ENABLED rules are not suppressed here; they are recorded in the ground_truth oracle (data/benchmarks.db) so precision is measured, not hidden. See data/precision_audit/libcrc/README.md."
+description = "Project rules manifest for libcrc (CRC computation library + demo CLI + tests), pinned to commit 7719e21. Derived from the d_lib_common embedded-C policy, whose inherited disables were re-checked against this tree: libcrc builds on Windows and does file I/O in precalc/ and examples/, so WIN* and FIO* run here. The remaining disables are category 1 (no socket call, no heap allocation, no privileged process) or category 2 (dead config); see each line. Per-finding false positives among ENABLED rules are not suppressed here; they are recorded in the ground_truth oracle (data/benchmarks.db) so precision is measured, not hidden. See data/precision_audit/libcrc/README.md."
 cert_version = "2016"
 
 [rules.cert_c.API00-C]
@@ -190,7 +190,7 @@ enabled = true
 
 
 [rules.cert_c.DCL05-C]
-enabled = false  # Pointer typedefs; standard C callback/struct patterns
+enabled = true  # RE-ENABLED: was disabled as advisory/style or a typedef convention the project does not adopt, which is not a disable reason under conf/realworld/README.md -- typedefs are present in every C codebase, so the rule's scope is never absent; disagreement with it is what the oracle records
 
 
 [rules.cert_c.DCL06-C]
@@ -238,7 +238,7 @@ enabled = true
 
 
 [rules.cert_c.DCL18-C]
-enabled = false  # "0L is octal"; 0 in any base is 0
+enabled = true  # RE-ENABLED: disabled for a '0L is octal' misfire the rule no longer produces (it does not flag 0L/0UL); integer constants occur everywhere, so the scope is present
 
 
 [rules.cert_c.DCL19-C]
@@ -502,15 +502,15 @@ enabled = true
 
 
 [rules.cert_c.FIO03-C]
-enabled = false  # "Exclusive create"; intentional overwrite
+enabled = true  # RE-ENABLED: the old disable assumed no file I/O in scope, but precalc/precalc.c and examples/tstcrc.c open and read/write FILE streams (fopen/fopen_s), so the rule's scope is present
 
 
 [rules.cert_c.FIO05-C]
-enabled = false  # TOCTOU file checks; not applicable to this library
+enabled = true  # RE-ENABLED: the old disable assumed no file I/O in scope, but precalc/precalc.c and examples/tstcrc.c open and read/write FILE streams (fopen/fopen_s), so the rule's scope is present
 
 
 [rules.cert_c.FIO06-C]
-enabled = false  # "Use open()"; cross-platform fopen needed
+enabled = true  # RE-ENABLED: the old disable assumed no file I/O in scope, but precalc/precalc.c and examples/tstcrc.c open and read/write FILE streams (fopen/fopen_s), so the rule's scope is present
 
 
 [rules.cert_c.FIO08-C]
@@ -542,11 +542,11 @@ enabled = true
 
 
 [rules.cert_c.FIO17-C]
-enabled = false  # "fread null terminator"; binary data
+enabled = true  # RE-ENABLED: the old disable assumed no file I/O in scope, but precalc/precalc.c and examples/tstcrc.c open and read/write FILE streams (fopen/fopen_s), so the rule's scope is present
 
 
 [rules.cert_c.FIO18-C]
-enabled = false  # "fwrite strlen"; binary data
+enabled = true  # RE-ENABLED: the old disable assumed no file I/O in scope, but precalc/precalc.c and examples/tstcrc.c open and read/write FILE streams (fopen/fopen_s), so the rule's scope is present
 
 
 [rules.cert_c.FIO19-C]
@@ -626,7 +626,7 @@ enabled = true
 
 
 [rules.cert_c.FIO50-C]
-enabled = false  # "Output after input"; separate functions, FP
+enabled = true  # RE-ENABLED: the old disable assumed no file I/O in scope, but precalc/precalc.c and examples/tstcrc.c open and read/write FILE streams (fopen/fopen_s), so the rule's scope is present
 
 
 [rules.cert_c.FIO51-C]
@@ -778,11 +778,11 @@ enabled = true
 
 
 [rules.cert_c.MEM00-C]
-enabled = false  # "Free at same level"; Memory_Free IS the level
+enabled = false  # category 1 (categorically inapplicable): MEM00-C pairs allocation and release across modules; no call to malloc/calloc/realloc/free (or any allocator wrapper) in any scanned file: the library is table-driven over caller-owned buffers, and the demo CLI, precalc codegen and tests use only automatic and static storage
 
 
 [rules.cert_c.MEM01-C]
-enabled = false  # "Set NULL after free"; wrapper function, caller's responsibility
+enabled = false  # category 1 (categorically inapplicable): MEM01-C resets a pointer after free(); no call to malloc/calloc/realloc/free (or any allocator wrapper) in any scanned file: the library is table-driven over caller-owned buffers, and the demo CLI, precalc codegen and tests use only automatic and static storage
 
 
 [rules.cert_c.MEM02-C]
@@ -790,7 +790,7 @@ enabled = true
 
 
 [rules.cert_c.MEM03-C]
-enabled = false  # "Clear before free"; not applicable (no sensitive data)
+enabled = false  # category 1 (categorically inapplicable): MEM03-C clears sensitive data before a reusable resource is released; no call to malloc/calloc/realloc/free (or any allocator wrapper) in any scanned file: the library is table-driven over caller-owned buffers, and the demo CLI, precalc codegen and tests use only automatic and static storage, and libcrc holds no secret of its own (checksum inputs belong to the caller)
 
 
 [rules.cert_c.MEM04-C]
@@ -802,7 +802,7 @@ enabled = true
 
 
 [rules.cert_c.MEM06-C]
-enabled = false  # "Sensitive data"; not applicable
+enabled = false  # category 1 (categorically inapplicable): MEM06-C keeps sensitive data out of swap and core dumps; no call to malloc/calloc/realloc/free (or any allocator wrapper) in any scanned file: the library is table-driven over caller-owned buffers, and the demo CLI, precalc codegen and tests use only automatic and static storage, and libcrc holds no secret of its own (checksum inputs belong to the caller)
 
 
 [rules.cert_c.MEM07-C]
@@ -810,7 +810,7 @@ enabled = true
 
 
 [rules.cert_c.MEM10-C]
-enabled = false  # "Use dedicated validation function"; stylistic preference
+enabled = true  # RE-ENABLED: disabled as a stylistic preference, which is not a disable reason under conf/realworld/README.md; libcrc takes pointer parameters throughout, so the rule's scope is present
 
 
 [rules.cert_c.MEM11-C]
@@ -890,7 +890,7 @@ enabled = true
 
 
 [rules.cert_c.POS05-C]
-enabled = false  # chroot jail; a CRC library, its codegen tool (precalc) and demo CLI never run as a privileged daemon
+enabled = false  # category 1 (categorically inapplicable): POS05-C's jail is for a process that holds elevated privileges while touching attacker-chosen paths; the CRC library, its precalc codegen tool and the tstcrc demo CLI run as the invoking user and never acquire or drop privileges (no setuid/seteuid/setgid/chroot call in the tree)
 
 
 [rules.cert_c.POS30-C]
@@ -1114,33 +1114,33 @@ enabled = true
 
 
 [rules.cert_c.WIN00-C]
-enabled = false  # Windows-only; targets POSIX
+enabled = true  # RE-ENABLED: the old disable said libcrc targets POSIX only, but its Makefile builds on Windows_NT (.exe) and precalc/precalc.c and examples/tstcrc.c carry _MSC_VER code paths, so the Windows platform is in scope
 
 
 [rules.cert_c.WIN01-C]
-enabled = false  # Windows-only; targets POSIX
+enabled = true  # RE-ENABLED: the old disable said libcrc targets POSIX only, but its Makefile builds on Windows_NT (.exe) and precalc/precalc.c and examples/tstcrc.c carry _MSC_VER code paths, so the Windows platform is in scope
 
 
 [rules.cert_c.WIN02-C]
-enabled = false  # Windows-only; targets POSIX
+enabled = true  # RE-ENABLED: the old disable said libcrc targets POSIX only, but its Makefile builds on Windows_NT (.exe) and precalc/precalc.c and examples/tstcrc.c carry _MSC_VER code paths, so the Windows platform is in scope
 
 
 [rules.cert_c.WIN03-C]
-enabled = false  # Windows-only; targets POSIX
+enabled = true  # RE-ENABLED: the old disable said libcrc targets POSIX only, but its Makefile builds on Windows_NT (.exe) and precalc/precalc.c and examples/tstcrc.c carry _MSC_VER code paths, so the Windows platform is in scope
 
 
 [rules.cert_c.WIN04-C]
-enabled = false  # Windows-only; targets POSIX
+enabled = true  # RE-ENABLED: the old disable said libcrc targets POSIX only, but its Makefile builds on Windows_NT (.exe) and precalc/precalc.c and examples/tstcrc.c carry _MSC_VER code paths, so the Windows platform is in scope
 
 
 [rules.cert_c.WIN30-C]
-enabled = false  # Windows-only; targets POSIX
+enabled = true  # RE-ENABLED: the old disable said libcrc targets POSIX only, but its Makefile builds on Windows_NT (.exe) and precalc/precalc.c and examples/tstcrc.c carry _MSC_VER code paths, so the Windows platform is in scope
 
 [rules.cert_c.DCL42-C]
 enabled = true
 
 [rules.cert_c.ENV04-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/ENV/ENV04-C) and CERT has published no ENV04-C content to implement against; dead config, not a suppression
+enabled = false  # category 2 (dead config): not implemented -- src/rules/cert_c/ENV/ENV04-C holds CERT metadata only, no rule module, and CERT has published no ENV04-C content to implement against; records a decision, suppresses nothing
 
 [rules.cert_c.FLP38-C]
 enabled = true
@@ -1152,7 +1152,7 @@ enabled = true
 enabled = true
 
 [rules.cert_c.MSC04-C]
-enabled = false  # no recursion in a table-driven CRC library -- categorically inapplicable, inherited from the d_lib_common embedded-C policy this config derives from (data/precision_audit/libcrc/README.md). Was expressed by OMITTING the entry, which a scan cannot distinguish from an oversight (enabled_rules() just never yields it); restated as an explicit disable so the decision is visible and survives. Measured 2026-09-06 at pinned commit 7719e2112a9a: 0 findings, so the exclusion costs no measurement. NOTE the rule is caller-agnostic -- it flags self-calls and call-graph CYCLES (find_cycle), never 'nothing calls this' -- so a library's uncalled public API cannot trigger it.
+enabled = true  # RE-ENABLED: 'no recursion here' is a claim about the rule's result, not its scope -- any function can recurse, and an embedded-C library is exactly where a recursion ban is enforced; the inherited d_lib_common disable had no stated reason
 
 [rules.cert_c.MSC05-C]
 enabled = true
@@ -1161,7 +1161,7 @@ enabled = true
 enabled = true
 
 [rules.cert_c.MSC07-C]
-enabled = false  # categorically inapplicable, inherited with MSC04-C from the d_lib_common embedded-C policy this config derives from (data/precision_audit/libcrc/README.md); the per-rule rationale was never written down here. Same omitted-entry mechanism as MSC04-C above; restated as an explicit disable. Measured 2026-09-06 at pinned commit 7719e2112a9a: 0 findings, so the exclusion costs no measurement. NOTE the rule is intra-block only -- statements after an unconditional return/break/continue/goto or a noreturn call in the SAME compound_statement -- with no call graph and no entry-point reachability, so a library's uncalled public API cannot trigger it either. If it ever grows a reachability channel, revisit.
+enabled = true  # RE-ENABLED: code that is never executed can occur in any C codebase; the inherited d_lib_common disable had no stated reason
 
 [rules.cert_c.MSC09-C]
 enabled = true
@@ -1188,10 +1188,10 @@ enabled = true
 enabled = true
 
 [rules.cert_c.MSC18-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC18-C); dead config, not a suppression
+enabled = false  # category 2 (dead config): not implemented -- src/rules/cert_c/MSC/MSC18-C holds CERT metadata only, no rule module; records a decision, suppresses nothing
 
 [rules.cert_c.MSC19-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC19-C); dead config, not a suppression
+enabled = false  # category 2 (dead config): not implemented -- src/rules/cert_c/MSC/MSC19-C holds CERT metadata only, no rule module; records a decision, suppresses nothing
 
 [rules.cert_c.MSC20-C]
 enabled = true
@@ -1209,14 +1209,14 @@ enabled = true
 enabled = true
 
 [rules.cert_c.MSC25-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC25-C) and CERT has published no MSC25-C content to implement against; dead config, not a suppression
+enabled = false  # category 2 (dead config): not implemented -- src/rules/cert_c/MSC/MSC25-C holds CERT metadata only, no rule module, and CERT has published no MSC25-C content to implement against; records a decision, suppresses nothing
 
 [rules.cert_c.MSC42-C]
 enabled = true
 
 [rules.cert_c.POS55-C]
-enabled = false  # condition-variable/mutex pairing; libcrc is a single-threaded CRC library with no pthreads -- categorically inapplicable
+enabled = false  # category 1 (categorically inapplicable): POS55-C orders socket operations; libcrc makes no socket call and includes no socket header anywhere in the tree
 
 [rules.cert_c.WIN05-C]
-enabled = false  # Windows-only; targets POSIX
+enabled = true  # RE-ENABLED: the old disable said libcrc targets POSIX only, but its Makefile builds on Windows_NT (.exe) and precalc/precalc.c and examples/tstcrc.c carry _MSC_VER code paths, so the Windows platform is in scope
 
