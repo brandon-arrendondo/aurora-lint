@@ -138,6 +138,39 @@ struct FileOperation {
     column: usize,
     node_id: usize,
     is_read_mode: bool, // True if opening in read mode (needs ownership check)
+    /// Byte offset of the call, for "most recent" in source order
+    start_byte: usize,
+    /// The `if` arms enclosing the call, see `enclosing_if_arms`
+    arms: Vec<(usize, bool)>,
+}
+
+/// Every `if_statement` enclosing `node` as `(if id, in consequence)`. The
+/// condition is not an arm, so a call there records nothing for that `if`.
+fn enclosing_if_arms(node: &Node) -> Vec<(usize, bool)> {
+    let mut arms = Vec::new();
+    let mut child = *node;
+    while let Some(parent) = child.parent() {
+        if parent.kind() == "if_statement" {
+            let field = |f: &str| parent.child_by_field_name(f).map(|n| n.id());
+            if field("consequence") == Some(child.id()) {
+                arms.push((parent.id(), true));
+            } else if field("alternative") == Some(child.id()) {
+                arms.push((parent.id(), false));
+            }
+        }
+        child = parent;
+    }
+    arms
+}
+
+impl FileOperation {
+    /// Whether no single execution reaches both calls: they sit in opposite
+    /// arms of one `if`.
+    fn exclusive_with(&self, other: &FileOperation) -> bool {
+        self.arms
+            .iter()
+            .any(|(id, arm)| other.arms.iter().any(|(o, a)| o == id && a != arm))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -328,6 +361,8 @@ impl FileReopenAnalyzer {
                     column: node.start_position().column + 1,
                     node_id: node.id(),
                     is_read_mode,
+                    start_byte: node.start_byte(),
+                    arms: enclosing_if_arms(node),
                 };
 
                 self.file_operations.entry(filename).or_default().push(op);
@@ -366,28 +401,7 @@ impl FileReopenAnalyzer {
             // Get the file descriptor/FILE* being closed
             if let Some(fd_node) = self.get_first_argument(&arguments) {
                 let fd_var = ast_utils::get_node_text_owned(&fd_node, source);
-
-                // Try to match this close with a previous open by fd_var
-                // We'll mark this as a close operation for the associated filename
-                for (filename, ops) in &mut self.file_operations {
-                    // Find the most recent open with matching fd_var
-                    if let Some(_last_open) = ops.iter().rev().find(|op| {
-                        op.op_type == OpType::Open
-                            && op.fd_var.as_ref().map(|v| v == &fd_var).unwrap_or(false)
-                    }) {
-                        let close_op = FileOperation {
-                            op_type: OpType::Close,
-                            filename: filename.clone(),
-                            fd_var: Some(fd_var.clone()),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
-                            node_id: node.id(),
-                            is_read_mode: false,
-                        };
-                        ops.push(close_op);
-                        break;
-                    }
-                }
+                self.attach_to_reaching_open(node, fd_var, OpType::Close);
             }
         }
     }
@@ -398,26 +412,46 @@ impl FileReopenAnalyzer {
             if let Some(fd_node) = self.get_first_argument(&arguments) {
                 let fd_var = ast_utils::get_node_text_owned(&fd_node, source);
                 self.fstat_calls.insert(fd_var.clone());
+                self.attach_to_reaching_open(node, fd_var, OpType::Fstat);
+            }
+        }
+    }
 
-                // Also track as an fstat operation for analysis
-                for (filename, ops) in &mut self.file_operations {
-                    if let Some(_last_open) = ops.iter().rev().find(|op| {
-                        op.op_type == OpType::Open
-                            && op.fd_var.as_ref().map(|v| v == &fd_var).unwrap_or(false)
-                    }) {
-                        let fstat_op = FileOperation {
-                            op_type: OpType::Fstat,
-                            filename: filename.clone(),
-                            fd_var: Some(fd_var),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
-                            node_id: node.id(),
-                            is_read_mode: false,
-                        };
-                        ops.push(fstat_op);
-                        break;
-                    }
-                }
+    /// Record a close/fstat of `fd_var` against the file of the open it acts
+    /// on: the latest open of `fd_var` before `node` in source order that is
+    /// not in the opposite arm of an `if`. When one variable holds several
+    /// files over the function (`data = fopen("a", ...)`, `fclose(data)`,
+    /// `data = fopen("b", ...)`), picking any other open files the operation
+    /// under the wrong name -- and picking by `HashMap` order made the pick,
+    /// and so the finding, differ from run to run.
+    fn attach_to_reaching_open(&mut self, node: &Node, fd_var: String, op_type: OpType) {
+        let mut op = FileOperation {
+            op_type,
+            filename: String::new(),
+            fd_var: Some(fd_var),
+            line: node.start_position().row + 1,
+            column: node.start_position().column + 1,
+            node_id: node.id(),
+            is_read_mode: false,
+            start_byte: node.start_byte(),
+            arms: enclosing_if_arms(node),
+        };
+        let reaching = self
+            .file_operations
+            .values()
+            .flatten()
+            .filter(|o| {
+                o.op_type == OpType::Open
+                    && o.fd_var == op.fd_var
+                    && o.start_byte < op.start_byte
+                    && !o.exclusive_with(&op)
+            })
+            .max_by_key(|o| o.start_byte)
+            .map(|o| o.filename.clone());
+        if let Some(filename) = reaching {
+            op.filename = filename.clone();
+            if let Some(ops) = self.file_operations.get_mut(&filename) {
+                ops.push(op);
             }
         }
     }
@@ -449,7 +483,10 @@ impl FileReopenAnalyzer {
 
     fn detect_reopen_violations(&self, violations: &mut Vec<RuleViolation>) {
         // Check each filename for reopen patterns
-        for (filename, ops) in &self.file_operations {
+        // Sorted, so findings come out in the same order on every run
+        let mut files: Vec<_> = self.file_operations.iter().collect();
+        files.sort_by(|a, b| a.0.cmp(b.0));
+        for (filename, ops) in files {
             // Check 1: Open -> Close -> Open (without proper fstat checks)
             self.check_reopen_pattern(filename, ops, violations);
 
@@ -532,7 +569,10 @@ impl FileReopenAnalyzer {
                             // Look for a subsequent reopen of the same file
                             let mut k = j + 1;
                             while k < ops.len() {
-                                if ops[k].op_type == OpType::Open && ops[k].filename == *filename {
+                                if ops[k].op_type == OpType::Open
+                                    && ops[k].filename == *filename
+                                    && !ops[k].exclusive_with(first_open)
+                                {
                                     // Found a reopen! Check if there's proper validation
                                     let has_fstat_between = self.has_fstat_between(i, k, ops);
 
