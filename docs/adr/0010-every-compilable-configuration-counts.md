@@ -126,6 +126,18 @@ dozen legacy FP rows whose stated basis is "compiled out in release" or
    oracles, the way ventoy was onboarded as the Win32 oracle rather than
    Windows code being scored under the Linux one. Whether the host compiles
    a file or an arm is therefore a corpus-*scope* question, never a row's verdict.
+8. **The primary configuration guides the benchmark; it never proves
+   anything.** It decides what an oracle scores (Decisions 6-7), and it
+   picks among platform-specific definitions so a rule can understand the
+   construct in front of it: a typedef, an enum, a macro defined
+   differently per platform (Decision 3). A fact that follows only from
+   that choice is not proof of safety: a width, a signedness, or a
+   library's behavior beyond ISO C. That is ADR-0011 basis 4. Questions of
+   reach look at every compilable configuration, not only the primary one:
+   "can this be called from outside the scanned source" and "are all paths
+   to it checked". The project doesn't scan every configuration, for the
+   reasons above, but that doesn't exclude the others from those questions
+   (Brandon, 2026-09-25).
 
 ## Consequences
 
