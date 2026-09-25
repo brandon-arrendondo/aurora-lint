@@ -10,13 +10,18 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# Linux jobs pin ubuntu-24.04 rather than ubuntu-latest: the build image sets
+# the glibc floor of every prebuilt Linux artifact (tarball, deb, rpm,
+# AppImage), so moving it is a release decision to make here on purpose, not
+# something a runner-label migration should do between two tags.
+
 jobs:
   # ── Linux x86_64 binary ─────────────────────────────────────────────
   linux:
     name: Linux x86_64
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -49,7 +54,7 @@ jobs:
           cp aurora-lint.cdx.json dist/
           tar -czf aurora-lint-linux-x86_64.tar.gz -C dist .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: aurora-lint-linux-x86_64
           path: aurora-lint-linux-x86_64.tar.gz
@@ -65,7 +70,7 @@ jobs:
     name: macOS aarch64
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -95,7 +100,7 @@ jobs:
           cp aurora-lint.cdx.json dist/
           tar -czf aurora-lint-macos-aarch64.tar.gz -C dist .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: aurora-lint-macos-aarch64
           path: aurora-lint-macos-aarch64.tar.gz
@@ -105,9 +110,9 @@ jobs:
   # Windows runners cannot check out the repo. Cross-compile instead.
   windows:
     name: Windows x86_64
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -141,7 +146,7 @@ jobs:
           cp aurora-lint.cdx.json dist/
           cd dist && zip -r ../aurora-lint-windows-x86_64.zip .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: aurora-lint-windows-x86_64
           path: aurora-lint-windows-x86_64.zip
@@ -149,12 +154,12 @@ jobs:
   # ── Debian package ──────────────────────────────────────────────────
   deb:
     name: Debian package
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: linux
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: aurora-lint-linux-x86_64
           path: .
@@ -204,7 +209,7 @@ jobs:
 
           dpkg-deb --build --root-owner-group "${PKG_DIR}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: aurora-lint-deb
           path: aurora-lint_*.deb
@@ -212,15 +217,15 @@ jobs:
   # ── RPM package ─────────────────────────────────────────────────────
   rpm:
     name: RPM package
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: linux
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install rpm tools
         run: sudo apt-get update && sudo apt-get install -y rpm
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: aurora-lint-linux-x86_64
           path: .
@@ -300,7 +305,7 @@ jobs:
           rpmbuild --define "_topdir $(pwd)/rpmbuild" -bb rpmbuild/SPECS/aurora-lint.spec
           cp rpmbuild/RPMS/x86_64/aurora-lint-*.rpm .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: aurora-lint-rpm
           path: aurora-lint-*.rpm
@@ -308,15 +313,15 @@ jobs:
   # ── AppImage ────────────────────────────────────────────────────────
   appimage:
     name: AppImage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: linux
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install FUSE
         run: sudo apt-get update && sudo apt-get install -y libfuse2
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: aurora-lint-linux-x86_64
           path: .
@@ -379,7 +384,7 @@ jobs:
           VERSION="${{ steps.version.outputs.VERSION }}"
           ARCH=x86_64 ./appimagetool aurora-lint.AppDir "aurora-lint-${VERSION}-x86_64.AppImage"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: aurora-lint-appimage
           path: aurora-lint-*.AppImage
@@ -387,16 +392,16 @@ jobs:
   # ── GitHub Release ──────────────────────────────────────────────────
   release:
     name: GitHub Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [linux, macos, windows, deb, rpm, appimage]
     steps:
       # fetch-depth 0: the notes are cut between this tag and the previous
       # one, so the generator needs the full tag list, not a shallow clone.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: artifacts
 
@@ -419,7 +424,7 @@ jobs:
       - name: Screen release notes and CHANGELOG.md (ADR-0007)
         run: python3 scripts/check_changelog_safety.py RELEASE_NOTES.md CHANGELOG.md
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           body_path: RELEASE_NOTES.md
           append_body: true
