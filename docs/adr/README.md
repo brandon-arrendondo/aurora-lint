@@ -55,3 +55,5 @@ outlive any one task.
   unless the file itself proves it dead](0010-every-compilable-configuration-counts.md)
 - [0011 — What counts as proof: language guarantees and code as written, not
   compilers or inference](0011-what-counts-as-proof.md)
+- [0013 — Which rules aurora-lint ships: decided by the rule's nature, not by
+  benchmark counts](0013-which-rules-aurora-lint-ships.md) (PROPOSED)
