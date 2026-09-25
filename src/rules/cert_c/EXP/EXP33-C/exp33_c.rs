@@ -1008,12 +1008,7 @@ fn check_identifier_read(
 
     reported.insert(var_name.clone());
 
-    let message = if info.is_static {
-        format!(
-            "Static variable '{}' used without explicit initialization",
-            var_name
-        )
-    } else if matches!(info.state, InitState::MaybeUninitialized) {
+    let message = if matches!(info.state, InitState::MaybeUninitialized) {
         format!(
             "Variable '{}' may be used uninitialized (not assigned on all paths)",
             var_name
@@ -1237,11 +1232,9 @@ fn check_deref_read(
 
     // A static/thread-local pointer with no explicit initializer is
     // zero-initialized (NULL) per C11 6.7.9p10 -- its value is determinate,
-    // just not what the programmer probably intended (the identifier-level
-    // check above already surfaces that as a softer "used without explicit
-    // initialization" note). Dereferencing it is a null-pointer-deref
-    // concern, not "uninitialized/indeterminate content" -- EXP33-C's own
-    // domain.
+    // just not what the programmer probably intended. Dereferencing it is a
+    // null-pointer-deref concern, not "uninitialized/indeterminate content"
+    // -- EXP33-C's own domain.
     if info.is_static {
         return;
     }

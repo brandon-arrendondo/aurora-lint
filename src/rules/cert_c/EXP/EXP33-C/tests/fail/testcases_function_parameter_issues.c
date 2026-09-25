@@ -61,14 +61,14 @@ void test_uninitialized_parameters(void) {
     process_coordinates(x, y, z);  /* Passing uninitialized y, z */
 }
 
-/* NON-COMPLIANT: Function uses uninitialized global/static variables */
-static int global_counter;  /* Static variable - zero-initialized by default */
-static int global_sum;      /* But this example shows the pattern */
+/* Not a violation: static storage is zero-initialized (C11 6.7.9p10), so
+ * these reads are determinate. Kept as a guard against reporting them. */
+static int global_counter;
+static int global_sum;
 
 void unsafe_accumulator(int value) {
-    /* In this contrived example, assume these were not zero-initialized */
-    global_counter++;  /* If global_counter was uninitialized, this would be UB */
-    global_sum += value;  /* If global_sum was uninitialized, this would be UB */
+    global_counter++;
+    global_sum += value;
 
     printf("Count: %d, Sum: %d\n", global_counter, global_sum);
 }

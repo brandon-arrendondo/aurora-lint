@@ -541,6 +541,20 @@ fn process_statement(
     }
 }
 
+/// The state of a declaration with no initializer. An object with static or
+/// thread storage duration (`static`, `_Thread_local`) is zero-initialized
+/// when it has none (C11 6.7.9p10), so its value is determinate from the
+/// start. Seeding it Uninitialized reported every read of an unwritten
+/// `static` counter or buffer as "used without explicit initialization",
+/// which EXP33-C, a rule about indeterminate values, never covers.
+fn uninitialized_unless_static(is_static: bool) -> InitState {
+    if is_static {
+        InitState::Initialized
+    } else {
+        InitState::Uninitialized
+    }
+}
+
 /// Process a declaration for initialization tracking.
 fn process_declaration(
     node: &Node,
@@ -599,14 +613,7 @@ fn process_declaration(
                     let var_name = get_text(node, &child, source);
                     if !var_name.is_empty() && !is_type_keyword(&var_name) {
                         tracked_vars.insert(var_name.clone());
-                        let init_state = if is_static {
-                            // Static/thread-local vars are zero-initialized by the C standard,
-                            // but EXP33-C recommends explicit initialization. Track as
-                            // Uninitialized with is_static=true for softer reporting.
-                            InitState::Uninitialized
-                        } else {
-                            InitState::Uninitialized
-                        };
+                        let init_state = uninitialized_unless_static(is_static);
                         let is_array = false;
                         let mut info = VarInfo::new(init_state);
                         info.is_unsigned_char = is_unsigned_char;
@@ -629,7 +636,7 @@ fn process_declaration(
                     let var_name = get_declarator_name(&child, source);
                     if !var_name.is_empty() {
                         tracked_vars.insert(var_name.clone());
-                        let init_state = InitState::Uninitialized;
+                        let init_state = uninitialized_unless_static(is_static);
                         let is_array = child.kind() == "array_declarator";
                         let mut info = VarInfo::new(init_state);
                         info.is_unsigned_char = is_unsigned_char;
