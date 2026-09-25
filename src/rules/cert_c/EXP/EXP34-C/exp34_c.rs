@@ -43,6 +43,11 @@ pub struct Exp34C {
     /// `apply_cross_file_nulls_params_null` mark `auth_method` `DefinitelyNull`
     /// afterward the same way real `free(p); p = NULL;` already is.
     macro_null_params: RefCell<HashMap<String, Vec<usize>>>,
+    /// Assert-style macros no configuration compiles out, with the index of
+    /// the parameter each checks (`ProjectContext::abort_check_macros`).
+    /// Synthesized into `FunctionSummary::returns_only_if_param_true` so the
+    /// dataflow reads `serverAssert(p != NULL);` as a dominating check.
+    abort_check_macros: RefCell<Arc<HashMap<String, usize>>>,
 }
 
 impl Exp34C {
@@ -55,6 +60,82 @@ impl Exp34C {
             function_macros: RefCell::new(Arc::new(HashMap::new())),
             macro_write_params: RefCell::new(HashMap::new()),
             macro_null_params: RefCell::new(HashMap::new()),
+            abort_check_macros: RefCell::new(Arc::new(HashMap::new())),
+        }
+    }
+}
+
+impl Exp34C {
+    /// Synthesized `FunctionSummary` entries for the macros invoked in the
+    /// current file (see the comment at the call site in `check`). Only the
+    /// macro names are added, beside the shared table rather than into a
+    /// copy of it; a name that is already a real function summary is left
+    /// alone.
+    fn synthesized_macro_summaries(
+        &self,
+        summaries: &(impl crate::analyze::context::SummaryLookup + ?Sized),
+    ) -> HashMap<String, FunctionSummary> {
+        let macro_write_params = self.macro_write_params.borrow();
+        let macro_null_params = self.macro_null_params.borrow();
+        let abort_check_macros = self.abort_check_macros.borrow();
+        // Only the macro names are added, beside the shared table
+        // rather than into a copy of it.
+        if macro_write_params.is_empty()
+            && macro_null_params.is_empty()
+            && abort_check_macros.is_empty()
+        {
+            HashMap::new()
+        } else {
+            let mut merged: HashMap<String, FunctionSummary> = HashMap::new();
+            for (name, idx) in macro_write_params.iter() {
+                // Skip a name that is already a real function
+                // summary (checked against the pre-merge map,
+                // not `merged`, so it also isn't clobbered by
+                // the null_params loop below inserting first).
+                if summaries.contains_key(name) {
+                    continue;
+                }
+                let entry = merged.entry(name.clone()).or_default();
+                entry.modifies_params.extend(idx.iter().copied());
+                // Also MUST-strength:
+                // `apply_cross_file_output_params_null` reads
+                // `unconditional_modifies_params`, not the MAY
+                // set, to assert NotNull. `macro_writes_param_indices`
+                // has no conditional-write concept at all --
+                // it is a flat "is the sentinel written
+                // anywhere in the expanded body" check with no
+                // if/else coverage walk -- so every index it
+                // finds is unconditional by construction (a
+                // `do { *(pp) = (val); } while (0)`-shaped
+                // macro writes every time it's invoked, never
+                // some of the time). Leaving this MUST set
+                // empty for macros would have silently undone
+                // this task's own real-function fix for every
+                // macro-based output param.
+                entry
+                    .unconditional_modifies_params
+                    .extend(idx.iter().copied());
+            }
+            for (name, idx) in macro_null_params.iter() {
+                if summaries.contains_key(name) {
+                    continue;
+                }
+                merged
+                    .entry(name.clone())
+                    .or_default()
+                    .nulls_params
+                    .extend(idx.iter().copied());
+            }
+            for (name, &idx) in abort_check_macros.iter() {
+                if summaries.contains_key(name) {
+                    continue;
+                }
+                merged
+                    .entry(name.clone())
+                    .or_default()
+                    .returns_only_if_param_true = Some(idx);
+            }
+            merged
         }
     }
 }
@@ -84,6 +165,7 @@ impl CertRule for Exp34C {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.prescan_global_var_states.borrow_mut() = context.global_var_null_states.clone();
         *self.function_macros.borrow_mut() = context.function_macros.clone();
+        *self.abort_check_macros.borrow_mut() = context.abort_check_macros.clone();
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -173,56 +255,7 @@ impl CertRule for Exp34C {
                     // function name, but if it were, `.entry().or_insert_with`
                     // below leaves the real summary alone either way since
                     // both loops key off the same synthesized entry).
-                    let macro_write_params = self.macro_write_params.borrow();
-                    let macro_null_params = self.macro_null_params.borrow();
-                    // Only the macro names are added, beside the shared table
-                    // rather than into a copy of it.
-                    let macro_summaries =
-                        if macro_write_params.is_empty() && macro_null_params.is_empty() {
-                            HashMap::new()
-                        } else {
-                            let mut merged: HashMap<String, FunctionSummary> = HashMap::new();
-                            for (name, idx) in macro_write_params.iter() {
-                                // Skip a name that is already a real function
-                                // summary (checked against the pre-merge map,
-                                // not `merged`, so it also isn't clobbered by
-                                // the null_params loop below inserting first).
-                                if summaries.contains_key(name) {
-                                    continue;
-                                }
-                                let entry = merged.entry(name.clone()).or_default();
-                                entry.modifies_params.extend(idx.iter().copied());
-                                // Also MUST-strength:
-                                // `apply_cross_file_output_params_null` reads
-                                // `unconditional_modifies_params`, not the MAY
-                                // set, to assert NotNull. `macro_writes_param_indices`
-                                // has no conditional-write concept at all --
-                                // it is a flat "is the sentinel written
-                                // anywhere in the expanded body" check with no
-                                // if/else coverage walk -- so every index it
-                                // finds is unconditional by construction (a
-                                // `do { *(pp) = (val); } while (0)`-shaped
-                                // macro writes every time it's invoked, never
-                                // some of the time). Leaving this MUST set
-                                // empty for macros would have silently undone
-                                // this task's own real-function fix for every
-                                // macro-based output param.
-                                entry
-                                    .unconditional_modifies_params
-                                    .extend(idx.iter().copied());
-                            }
-                            for (name, idx) in macro_null_params.iter() {
-                                if summaries.contains_key(name) {
-                                    continue;
-                                }
-                                merged
-                                    .entry(name.clone())
-                                    .or_default()
-                                    .nulls_params
-                                    .extend(idx.iter().copied());
-                            }
-                            merged
-                        };
+                    let macro_summaries = self.synthesized_macro_summaries(&*summaries);
                     let effective_summaries = crate::analyze::context::SummaryOverlay {
                         first: &*summaries,
                         then: &macro_summaries,

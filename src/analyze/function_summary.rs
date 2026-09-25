@@ -298,6 +298,14 @@ pub struct FunctionSummary {
     /// written `free(auth_method); auth_method = NULL;` by hand.
     #[serde(default)]
     pub nulls_params: HashSet<usize>,
+    /// The parameter this callee returns only when true: a call with a false
+    /// argument there never returns. Real functions never set this; it is
+    /// synthesized per file for the assert-style macros no configuration
+    /// compiles out (`check_macros::abort_check_macros`, valkey's
+    /// `serverAssert`), so `null_state.rs` reads `M(p != NULL);` the way it
+    /// reads `if (!p) abort();`.
+    #[serde(default)]
+    pub returns_only_if_param_true: Option<usize>,
     /// Parameter indices that this function dereferences in any way (read or write).
     /// Superset of modifies_params — includes `*param`, `param[i]`, `param->field`.
     pub dereferences_params: HashSet<usize>,

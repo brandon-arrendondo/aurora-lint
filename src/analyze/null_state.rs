@@ -398,7 +398,7 @@ fn process_statement_for_null_state(
         }
         "expression_statement" => {
             // Handle assert(var) before other expression processing
-            process_assert_for_null_state(node, source, state);
+            process_assert_for_null_state(node, source, state, summaries);
             if let Some(expr) = node.child(0) {
                 process_expression_null(&expr, source, state, declared_pointers, summaries);
             }
@@ -418,7 +418,7 @@ fn process_statement_for_null_state(
         // from conditions — that's handled by edge refinement.
         _ => {
             // Recognize assert(var) / assert(var != NULL) as making var NotNull
-            process_assert_for_null_state(node, source, state);
+            process_assert_for_null_state(node, source, state, summaries);
             // Recurse into compound expressions to find nested assignments
             for i in 0..node.child_count() {
                 if let Some(child) = node.child(i) {
@@ -844,7 +844,17 @@ fn resolve_assignment_null_state(
 /// Conservative: `||`, `!`, and `== NULL` do not establish non-null and are not
 /// propagated (SQLite uses these idioms pervasively, so this is the dominant
 /// EXP34-C false-positive source on real-world C).
-fn process_assert_for_null_state(node: &Node, source: &str, state: &mut StateMap) {
+///
+/// The same holds for a call whose summary says it returns only when one
+/// argument is true (`FunctionSummary::returns_only_if_param_true`, set for
+/// an assert-style macro no configuration compiles out): that argument is
+/// read as the asserted condition.
+fn process_assert_for_null_state(
+    node: &Node,
+    source: &str,
+    state: &mut StateMap,
+    summaries: &(impl SummaryLookup + ?Sized),
+) {
     // Look for expression_statement -> call_expression -> assert
     let call_node = if node.kind() == "expression_statement" {
         node.child(0)
@@ -861,21 +871,36 @@ fn process_assert_for_null_state(node: &Node, source: &str, state: &mut StateMap
     let Some(function) = call.child_by_field_name("function") else {
         return;
     };
-    if get_text(&function, source) != "assert" {
+    let name = get_text(&function, source);
+    let (cond_index, strict) = if name == "assert" {
+        (0, false)
+    } else if let Some(i) = summaries
+        .get(&name)
+        .and_then(|s| s.returns_only_if_param_true)
+    {
+        (i, true)
+    } else {
         return;
-    }
+    };
     let Some(args) = call.child_by_field_name("arguments") else {
         return;
     };
 
-    // assert() takes a single condition argument.
+    let mut arg_idx = 0usize;
     for i in 0..args.child_count() {
         if let Some(arg) = args.child(i) {
             if arg.kind() == "(" || arg.kind() == ")" || arg.kind() == "," {
                 continue;
             }
-            collect_assert_nonnull(&arg, source, true, state);
-            return;
+            if arg_idx == cond_index {
+                if strict {
+                    collect_checked_nonnull(&arg, source, state);
+                } else {
+                    collect_assert_nonnull(&arg, source, true, state);
+                }
+                return;
+            }
+            arg_idx += 1;
         }
     }
 }
@@ -967,6 +992,78 @@ fn collect_assert_nonnull(node: &Node, source: &str, bool_pos: bool, state: &mut
             }
         }
         _ => {}
+    }
+}
+
+/// Collect the pointers a *checked* condition proves non-null when it holds:
+/// `p`, `p != NULL` / `NULL != p`, and each operand of `&&`. Nothing else.
+///
+/// Stricter than [`collect_assert_nonnull`] on purpose. A dereference inside
+/// the condition (`M(p->n > 0)`) runs before the check, so it proves nothing
+/// (ADR-0011: a prior dereference is not a check), and an operand of `||`
+/// need not hold at all (`M(p != NULL || err)`).
+fn collect_checked_nonnull(node: &Node, source: &str, state: &mut StateMap) {
+    match node.kind() {
+        "parenthesized_expression" => {
+            if let Some(inner) = node.child(1) {
+                collect_checked_nonnull(&inner, source, state);
+            }
+        }
+        "identifier" | "field_expression" => {
+            if let Some(key) = checked_value_key(node, source) {
+                state.insert(key, NullState::NotNull);
+            }
+        }
+        "binary_expression" => {
+            let op = node
+                .child_by_field_name("operator")
+                .map(|o| get_text(&o, source))
+                .unwrap_or_default();
+            let (Some(l), Some(r)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) else {
+                return;
+            };
+            match op.as_str() {
+                "&&" => {
+                    collect_checked_nonnull(&l, source, state);
+                    collect_checked_nonnull(&r, source, state);
+                }
+                "!=" => {
+                    let (l, r) = (unwrap_parens(&l), unwrap_parens(&r));
+                    let key = if is_null_value(get_text(&r, source).trim()) {
+                        checked_value_key(&l, source)
+                    } else if is_null_value(get_text(&l, source).trim()) {
+                        checked_value_key(&r, source)
+                    } else {
+                        None
+                    };
+                    if let Some(key) = key {
+                        state.insert(key, NullState::NotNull);
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The state key a checked value is tracked under: the variable itself, or
+/// the dotted `base.field` key for `base->field` / `base.field` on a plain
+/// variable (the key `try_propagate_notnull_source_state` reads, so
+/// `M(s->next); p = s->next;` carries the proof over to `p`).
+fn checked_value_key(node: &Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "identifier" => Some(get_text(node, source)),
+        "field_expression" => {
+            let base = node.child_by_field_name("argument")?;
+            let field = node.child_by_field_name("field")?;
+            (base.kind() == "identifier")
+                .then(|| format!("{}.{}", get_text(&base, source), get_text(&field, source)))
+        }
+        _ => None,
     }
 }
 
@@ -1782,6 +1879,9 @@ pub fn is_null_deref_at(
             break;
         }
         if let Some(stmt_node) = find_node_at_range(body, start, end) {
+            if end > deref_byte && is_abort_check_statement(&stmt_node, source, summaries) {
+                break;
+            }
             process_statement_for_null_state(
                 &stmt_node,
                 source,
@@ -1830,6 +1930,9 @@ pub fn get_var_state_at(
             break;
         }
         if let Some(stmt_node) = find_node_at_range(body, start, end) {
+            if end > byte_offset && is_abort_check_statement(&stmt_node, source, summaries) {
+                break;
+            }
             process_statement_for_null_state(
                 &stmt_node,
                 source,
@@ -1841,6 +1944,28 @@ pub fn get_var_state_at(
     }
 
     state.get(var_name).copied().unwrap_or(NullState::Unknown)
+}
+
+/// True when `stmt` is a call to a callee that returns only when one argument
+/// is true (`FunctionSummary::returns_only_if_param_true`). A position inside
+/// such a statement is evaluated *before* the check, so the check proves
+/// nothing there: `serverAssert(c->bufpos == 0)` dereferences `c` unguarded.
+/// The statement-replay loops stop in front of it rather than apply its
+/// refinement to its own argument.
+fn is_abort_check_statement(
+    stmt: &Node,
+    source: &str,
+    summaries: &(impl SummaryLookup + ?Sized),
+) -> bool {
+    let call = if stmt.kind() == "expression_statement" {
+        stmt.child(0)
+    } else {
+        Some(*stmt)
+    };
+    call.filter(|c| c.kind() == "call_expression")
+        .and_then(|c| c.child_by_field_name("function"))
+        .and_then(|f| summaries.get(&get_text(&f, source)))
+        .is_some_and(|s| s.returns_only_if_param_true.is_some())
 }
 
 /// Find the basic block whose byte range contains the given offset.

@@ -100,6 +100,19 @@ pub struct ProjectContext {
     /// variadics are intentionally excluded (see `macro_expand`).
     #[serde(default)]
     pub function_macros: Arc<HashMap<String, FunctionMacro>>,
+    /// Every `#define` of every name across all scanned files (incl.
+    /// headers), in every preprocessor arm the file does not itself prove
+    /// dead, each distinct definition kept. Raw material for
+    /// [`abort_check_macros`](Self::abort_check_macros), which must see every
+    /// alternative, not the one `function_macros` keeps.
+    #[serde(default)]
+    pub macro_definitions: Arc<HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>>>,
+    /// `macro name -> index of the parameter it checks`, for the assert-style
+    /// macros no configuration compiles out (valkey's `serverAssert`), per
+    /// [`crate::analyze::check_macros::abort_check_macros`]. Recomputed
+    /// whenever `macro_definitions` or `noreturn_functions` grows.
+    #[serde(default)]
+    pub abort_check_macros: Arc<HashMap<String, usize>>,
     /// Names of every `#define NAME ...` object-like macro collected across
     /// all scanned files (incl. headers), regardless of what they expand to.
     /// Used by DCL40-C to recognize a trailing bare identifier after a

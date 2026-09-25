@@ -34,6 +34,9 @@ struct FilePrescanResult {
     macro_constants: HashMap<String, i64>,
     macro_aliases: HashMap<String, String>,
     function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    /// Every `#define` in this file, all arms (see
+    /// `ProjectContext::macro_definitions`).
+    macro_definitions: HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>>,
     /// Function-like `#define`s in this file the collector skipped or had
     /// to arbitrate, and the line of the definition it kept per name — the
     /// raw material for `--report-macro-gaps`.
@@ -99,6 +102,7 @@ impl FilePrescanResult {
             macro_constants: HashMap::new(),
             macro_aliases: HashMap::new(),
             function_macros: HashMap::new(),
+            macro_definitions: HashMap::new(),
             macro_definition_audit: Default::default(),
             restrict_params: HashMap::new(),
             documented_nonnull_params: HashMap::new(),
@@ -180,6 +184,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
 
         result.function_macros =
             crate::analyze::macro_expand::collect_function_macros(&root, &source);
+        result.macro_definitions = crate::analyze::check_macros::collect_macro_definitions(&source);
         result.macro_definition_audit =
             crate::analyze::macro_gaps::audit_definitions(&source, &file_path.to_string_lossy());
         result.restrict_params = ast_utils::restrict_parameter_indices(&root, &source);
@@ -439,6 +444,8 @@ fn prescan_file_list(
     let mut macro_aliases: HashMap<String, String> = HashMap::new();
     let mut function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro> =
         HashMap::new();
+    let mut macro_definitions: HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>> =
+        HashMap::new();
     // Which file's definition `function_macros` holds per name, so a later
     // file defining the same name differently is recorded as a conflict
     // rather than silently losing.
@@ -643,6 +650,10 @@ fn prescan_file_list(
             }
         }
         macro_gaps.extend(r.macro_definition_audit.gaps);
+        crate::analyze::check_macros::merge_macro_definitions(
+            &mut macro_definitions,
+            r.macro_definitions,
+        );
         for (name, indices) in r.restrict_params {
             restrict_params.entry(name).or_insert(indices);
         }
@@ -959,6 +970,9 @@ fn prescan_file_list(
         .map(|(file, names)| (file, Arc::new(names)))
         .collect();
 
+    let abort_check_macros =
+        crate::analyze::check_macros::abort_check_macros(&macro_definitions, &noreturn_functions);
+
     Ok(ProjectContext {
         known_functions: Arc::new(known_functions),
         header_declared_functions: Arc::new(header_declared_functions),
@@ -970,6 +984,8 @@ fn prescan_file_list(
         macro_constants: Arc::new(macro_constants),
         macro_aliases: Arc::new(macro_aliases),
         function_macros: Arc::new(function_macros),
+        macro_definitions: Arc::new(macro_definitions),
+        abort_check_macros: Arc::new(abort_check_macros),
         struct_field_types: Arc::new(struct_field_types),
         struct_typedef_aliases: Arc::new(struct_typedef_aliases),
         typedef_types: Arc::new(typedef_types),
@@ -6179,6 +6195,10 @@ pub fn resolve_includes(
                     }
                 }
                 context.macro_gaps.extend(header_audit.gaps);
+                crate::analyze::check_macros::merge_macro_definitions(
+                    Arc::make_mut(&mut context.macro_definitions),
+                    crate::analyze::check_macros::collect_macro_definitions(&hsource),
+                );
 
                 // Collect struct field types from resolved headers
                 collect_struct_definitions(
@@ -6268,6 +6288,12 @@ pub fn resolve_includes(
         context.function_summaries.make_mut(),
         &context.macro_aliases,
     );
+    // Headers resolved here may add a definition of a name, including the
+    // `NDEBUG` arm that disqualifies it, so the check table is rebuilt.
+    context.abort_check_macros = Arc::new(crate::analyze::check_macros::abort_check_macros(
+        &context.macro_definitions,
+        &context.noreturn_functions,
+    ));
 
     if let Some(reporter) = progress {
         reporter.report_include_resolve_complete(resolved_set.len());

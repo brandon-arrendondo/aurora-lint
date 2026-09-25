@@ -5,6 +5,9 @@ pub mod argument_objects;
 pub mod array_size;
 pub mod buffer_size;
 pub mod cfg;
+/// Assert-style macros that cannot be compiled out (ADR-0011 basis 3), found
+/// by what every definition expands to.
+pub mod check_macros;
 /// Optional `compile_commands.json` ingestion: feeds a build's include search
 /// paths and `-D` macro state into the existing prescan/expansion pipeline.
 pub mod compile_commands;
