@@ -110,6 +110,21 @@ TP. That holds even when it is almost certainly harmless in practice.
   corpus. Treating a library's own in-tree callers as its full caller set is
   a common trap for analysis tools. It is part of why libcrc, which is only
   a library, is in the corpus. Static functions stay closed.
+- **An executable that exports its symbols to plugins is a library too.**
+  A link with `-rdynamic` puts every non-static symbol of the executable
+  into its dynamic symbol table, where code it loads with `dlopen` can call
+  it. hostap's `CONFIG_DYNAMIC_EAP_METHODS` does exactly this for
+  `wpa_supplicant`: the build adds `-ldl -rdynamic`, and EAP method plugins
+  outside the tree then load into it and call into the binary. The option
+  is commented out in `defconfig`, but it compiles, so under ADR-0010 it
+  counts. Every non-static function linked into `wpa_supplicant` in that
+  build therefore has an open caller set, as a library's does
+  (Brandon, 2026-09-25). A plugin interface turns code written as internal
+  into a public entry point, so this is where validating input matters most:
+  a malformed call from a plugin is an injection or crash route like any
+  other. "Then that is a bad plugin" does not close it. Plugins and
+  extensions that ship with a codebase are relied on by others whatever
+  their quality, and the host is what they run inside.
 - **A proof chain has to end in a real proof.** If a caller dereferences a
   pointer before passing it on (`p->x = 1; f(p);`), that dereference is not
   a check. When `p` is unchecked in the caller, the dereference there is its
