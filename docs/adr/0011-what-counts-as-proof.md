@@ -101,6 +101,15 @@ TP. That holds even when it is almost certainly harmless in practice.
   call. It is not a reason to flag the fixed commit being measured. The bar
   is high: *every* call site, provably, with no function-pointer or
   external route in. Most code won't clear it (Brandon, 2026-09-24).
+- **Libraries count as external.** A library that the tree builds or
+  installs for outside use has an open caller set for every non-static
+  function in its source files: a `.so` or `.a` that is documented,
+  installed, or linked by an example program. hostap's `libradius`,
+  `libpasn.so`, `libwpa_client.so` and `libeap` are examples. In-tree call
+  sites prove nothing there, because the callers that matter are outside the
+  corpus. Treating a library's own in-tree callers as its full caller set is
+  a common trap for analysis tools. It is part of why libcrc, which is only
+  a library, is in the corpus. Static functions stay closed.
 - **A proof chain has to end in a real proof.** If a caller dereferences a
   pointer before passing it on (`p->x = 1; f(p);`), that dereference is not
   a check. When `p` is unchecked in the caller, the dereference there is its
