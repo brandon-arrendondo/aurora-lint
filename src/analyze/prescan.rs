@@ -4536,22 +4536,23 @@ fn infer_rhs_null_state(node: &Node, source: &str) -> NullState {
         return literal_state;
     }
 
-    // A call to a function that may return NULL (`malloc`, `fopen`,
-    // `getenv`, ...), seen through the casts and parentheses around it:
-    // `(char *)calloc(n, 1)` is still `calloc`'s result.
-    let call = guard_dominance::strip_arg_wrappers(node);
-    if call.kind() == "call_expression" {
-        if let Some(func) = call.child_by_field_name("function") {
-            let func_name = func.utf8_text(source.as_bytes()).unwrap_or("");
-            let no_summaries: HashMap<String, FunctionSummary> = HashMap::new();
-            if func_name == "aligned_alloc"
-                || crate::analyze::null_state::is_nullable_function(func_name, &no_summaries)
-            {
-                return NullState::PossiblyNull;
+    // Additional patterns for RHS:
+    match node.kind() {
+        "call_expression" => {
+            // malloc/calloc/realloc can return NULL → PossiblyNull
+            if let Some(func) = node.child_by_field_name("function") {
+                let func_name = func.utf8_text(source.as_bytes()).unwrap_or("");
+                if matches!(
+                    func_name,
+                    "malloc" | "calloc" | "realloc" | "aligned_alloc" | "strdup" | "strndup"
+                ) {
+                    return NullState::PossiblyNull;
+                }
             }
+            NullState::Unknown
         }
+        _ => NullState::Unknown,
     }
-    NullState::Unknown
 }
 
 /// Walk call expressions within a function body, using local variable states
@@ -4728,7 +4729,29 @@ fn dominating_assignment_state(
     if guarded_nonnull_after(&write.statement, var, source) {
         return NullState::NotNull;
     }
-    infer_rhs_null_state(&write.value, source)
+    let state = infer_rhs_null_state(&write.value, source);
+    if state != NullState::Unknown {
+        return state;
+    }
+    // A call that may return NULL (`fopen`, `getenv`, `strchr`, ...), seen
+    // through the casts and parentheses around it: `(char *)calloc(n, 1)` is
+    // still `calloc`'s result. Asked only of the write that reaches this call.
+    // The whole-function table keeps its narrower allocator list, since a
+    // PossiblyNull there is applied to every call in the function, including
+    // ones this write never reaches.
+    let call = guard_dominance::strip_arg_wrappers(&write.value);
+    let nullable = call.kind() == "call_expression"
+        && call.child_by_field_name("function").is_some_and(|func| {
+            let name = func.utf8_text(source.as_bytes()).unwrap_or("");
+            let no_summaries: HashMap<String, FunctionSummary> = HashMap::new();
+            name == "aligned_alloc"
+                || crate::analyze::null_state::is_nullable_function(name, &no_summaries)
+        });
+    if nullable {
+        NullState::PossiblyNull
+    } else {
+        NullState::Unknown
+    }
 }
 
 /// Collect known struct-field null states (`arg.field`) for an identifier
