@@ -58,3 +58,6 @@ re-deriving every time a rule looks noisy on one project.
   fixing it belongs in the rule. See ADR-0002 for the related question of
   when a rule's poor real-world hit rate is itself evidence of exactly this
   kind of bug versus evidence of nothing.
+- What may prove a flagged construct safe, in a rule or in a label (language
+  guarantees and the scanned source yes, compiler behavior and inference no),
+  is set out in ADR-0011.

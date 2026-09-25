@@ -53,3 +53,5 @@ outlive any one task.
   git log or a task list](0009-changelog-is-for-users-not-a-git-log.md)
 - [0010 — Every compilable configuration counts; a preprocessor arm is live
   unless the file itself proves it dead](0010-every-compilable-configuration-counts.md)
+- [0011 — What counts as proof: language guarantees and code as written, not
+  compilers or inference](0011-what-counts-as-proof.md)
