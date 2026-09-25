@@ -199,9 +199,9 @@ fn parse_all_null_conditions(node: &Node, source: &str) -> Vec<ConditionInfo> {
                 let Some(arg) = node.child_by_field_name("argument") else {
                     return Vec::new();
                 };
-                if arg.kind() == "identifier" {
+                if let Some(var) = tested_pointer(&arg, source) {
                     return vec![ConditionInfo::exact(
-                        get_text(&arg, source),
+                        var,
                         NullState::DefinitelyNull,
                         NullState::NotNull,
                     )];
@@ -209,15 +209,46 @@ fn parse_all_null_conditions(node: &Node, source: &str) -> Vec<ConditionInfo> {
             }
             Vec::new()
         }
-        "identifier" => {
-            // if (ptr) => true: NotNull, false: DefinitelyNull
-            vec![ConditionInfo::exact(
-                get_text(node, source),
-                NullState::NotNull,
-                NullState::DefinitelyNull,
-            )]
+        "identifier" | "assignment_expression" => {
+            // if (ptr) / if ((ptr = f())) => true: NotNull, false: DefinitelyNull
+            tested_pointer(node, source)
+                .map(|var| {
+                    vec![ConditionInfo::exact(
+                        var,
+                        NullState::NotNull,
+                        NullState::DefinitelyNull,
+                    )]
+                })
+                .unwrap_or_default()
         }
         _ => Vec::new(),
+    }
+}
+
+/// The pointer whose value `node` yields when it is tested: a bare
+/// identifier, or a plain assignment to one, `(p = malloc(n))`, whose value
+/// IS the new `p`. So `if ((p = malloc(n)) == NULL) return;` and
+/// `if (!(p = get()))` test `p` exactly as the two-statement spelling does.
+/// Without this every such guard refined nothing and the dereference after it
+/// read as unchecked -- setproctitle.c's `if (!(base = argv[0])) return;`
+/// and every `(p = malloc(...)) == NULL` idiom. A compound assignment
+/// (`p += n`) is not this idiom and is left unrefined.
+fn tested_pointer(node: &Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "identifier" => Some(get_text(node, source)),
+        "parenthesized_expression" => node
+            .named_child(0)
+            .filter(|_| node.named_child_count() == 1)
+            .and_then(|inner| tested_pointer(&inner, source)),
+        "assignment_expression" => {
+            let op = node.child_by_field_name("operator")?;
+            if get_text(&op, source) != "=" {
+                return None;
+            }
+            let left = node.child_by_field_name("left")?;
+            (left.kind() == "identifier").then(|| get_text(&left, source))
+        }
+        _ => None,
     }
 }
 
@@ -303,12 +334,10 @@ pub fn condition_tests_null(condition: &Node, var: &str, source: &str) -> bool {
 /// Given left and right operands of == or !=, extract the variable name
 /// if one side is NULL and the other is an identifier.
 fn extract_null_check_var(left: &Node, right: &Node, source: &str) -> Option<String> {
-    let lt = get_text(left, source);
-    let rt = get_text(right, source);
-    if is_null_value(&rt) && left.kind() == "identifier" {
-        Some(lt)
-    } else if is_null_value(&lt) && right.kind() == "identifier" {
-        Some(rt)
+    if is_null_value(&get_text(right, source)) {
+        tested_pointer(left, source)
+    } else if is_null_value(&get_text(left, source)) {
+        tested_pointer(right, source)
     } else {
         None
     }
