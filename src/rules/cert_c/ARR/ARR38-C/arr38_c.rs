@@ -3,6 +3,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::buffer_size;
+use crate::analyze::check_macros;
 use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{self, find_containing_function, get_node_text};
@@ -12,6 +13,7 @@ use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// function name → parameter index → field name → minimum element-count
@@ -29,6 +31,9 @@ pub struct Arr38C {
     /// source files"), where the sink function's own body only sees
     /// `data = myStruct.field;` with no idea what the caller set `field` to.
     callsite_param_field_buffer_size: RefCell<FieldBufferSizeMap>,
+    /// Assert-style macros no configuration compiles out, with the index of
+    /// the parameter each checks (`ProjectContext::abort_check_macros`).
+    abort_check_macros: RefCell<Arc<HashMap<String, usize>>>,
 }
 
 /// Information about a buffer size from allocation or declaration
@@ -77,6 +82,7 @@ impl CertRule for Arr38C {
     }
 
     fn set_project_context(&self, context: &ProjectContext) {
+        *self.abort_check_macros.borrow_mut() = context.abort_check_macros.clone();
         let mut map = self.callsite_param_field_buffer_size.borrow_mut();
         map.clear();
         for (name, summary) in context.function_summaries.iter() {
@@ -2592,27 +2598,26 @@ impl Arr38C {
             node,
             source,
             guard_dominance::ComparisonKind::Any,
-        ) || Self::asserted_size_bound(size_arg, node, source)
+        ) || self.checked_size_bound(size_arg, node, source)
     }
 
-    /// True when an `assert`-shaped call preceding `site` in one of its
-    /// ancestor blocks tests `size_arg`.
+    /// True when a check macro no configuration compiles out, preceding
+    /// `site` in one of its ancestor blocks, tests `size_arg`
+    /// (`check_macros::abort_checked_argument`).
     ///
-    /// `guard_dominance` excludes asserts deliberately, and ARR38-C opts back
-    /// in here so the choice stays visible at the call site. The question
-    /// differs: for API00-C's *overflow* question, an earlier fix found crediting an
-    /// assert hid real defects that ship the moment `NDEBUG` is set, whereas
-    /// an `assert(len <= sizeof(buf))` before a copy is the author writing
-    /// down the capacity contract this rule is asking about -- an earlier fix's
-    /// adjudication found six such rows, every one a false positive.
+    /// `guard_dominance` does not look at statements like these at all, so
+    /// ARR38-C asks here. An `NDEBUG`-strippable `assert(len <= sizeof(buf))`
+    /// does not count, whatever the macro is called (`assert`, curl's
+    /// `DEBUGASSERT`, hostap's `WPA_ASSERT`): in the release configuration it
+    /// is gone and the copy is unchecked (ADR-0010 D5). One that aborts in
+    /// every configuration, such as valkey's `serverAssert`, is a check like
+    /// any other.
     ///
-    /// Only preceding statements are scanned: an assert is a statement, so it
-    /// never encloses the copy site the way an `if` does. Preprocessor
-    /// wrappers count as blocks for the same reason `guard_dominance` treats
-    /// them so -- aurora-lint does not preprocess, and `assert()` under an explicit
-    /// `#ifndef NDEBUG` is a common enough spelling that ignoring it would
-    /// leave the gap this task is about.
-    fn asserted_size_bound(size_arg: &str, site: &Node, source: &str) -> bool {
+    /// Only preceding statements are scanned: a check macro is a statement, so
+    /// it never encloses the copy site the way an `if` does. An enclosing
+    /// preprocessor arm counts as a block, because the check and the copy are
+    /// then compiled together.
+    fn checked_size_bound(&self, size_arg: &str, site: &Node, source: &str) -> bool {
         const BLOCK_LIKE_KINDS: &[&str] = &[
             "compound_statement",
             "preproc_if",
@@ -2621,6 +2626,10 @@ impl Arr38C {
             "preproc_elif",
         ];
 
+        let checks = self.abort_check_macros.borrow();
+        if checks.is_empty() {
+            return false;
+        }
         let mut current = *site;
         while let Some(parent) = current.parent() {
             if BLOCK_LIKE_KINDS.contains(&parent.kind()) {
@@ -2629,7 +2638,16 @@ impl Arr38C {
                     .named_children(&mut cursor)
                     .take_while(|stmt| stmt.start_byte() < current.start_byte());
                 for stmt in preceding {
-                    if Self::asserts_bound_on(&stmt, size_arg, source) {
+                    let tests_size = check_macros::abort_checked_argument(&stmt, source, &checks)
+                        .is_some_and(|cond| {
+                            guard_dominance::condition_compares_var(
+                                &cond,
+                                size_arg,
+                                source,
+                                guard_dominance::ComparisonKind::Any,
+                            )
+                        });
+                    if tests_size {
                         return true;
                     }
                 }
@@ -2640,48 +2658,6 @@ impl Arr38C {
             current = parent;
         }
         false
-    }
-
-    /// Whether `stmt` -- or, when it is a preprocessor wrapper, any statement
-    /// inside it -- is an assert testing `size_arg`.
-    fn asserts_bound_on(stmt: &Node, size_arg: &str, source: &str) -> bool {
-        if stmt.kind().starts_with("preproc_") {
-            let mut cursor = stmt.walk();
-            let mut inner = stmt.named_children(&mut cursor);
-            return inner.any(|s| Self::asserts_bound_on(&s, size_arg, source));
-        }
-        Self::assert_condition(stmt, source).is_some_and(|cond| {
-            guard_dominance::condition_compares_var(
-                &cond,
-                size_arg,
-                source,
-                guard_dominance::ComparisonKind::Any,
-            )
-        })
-    }
-
-    /// The asserted condition of `stmt`, when `stmt` is an `assert`-shaped
-    /// call statement.
-    ///
-    /// Name-shape matched rather than a fixed list, because every project
-    /// spells it its own way (`assert`, curl's `DEBUGASSERT`, hostap's
-    /// `WPA_ASSERT`). A call that merely contains "assert" and compares the
-    /// size variable is still an author asserting something about that size,
-    /// so the generous match errs in the FP-reducing direction on purpose.
-    fn assert_condition<'a>(stmt: &Node<'a>, source: &str) -> Option<Node<'a>> {
-        let call = if stmt.kind() == "expression_statement" {
-            stmt.named_child(0)?
-        } else {
-            *stmt
-        };
-        if call.kind() != "call_expression" {
-            return None;
-        }
-        let name = get_node_text(&call.child_by_field_name("function")?, source);
-        if !name.to_ascii_lowercase().contains("assert") {
-            return None;
-        }
-        call.child_by_field_name("arguments")?.named_child(0)
     }
 
     /// Check if a variable is a function parameter used without validation.
