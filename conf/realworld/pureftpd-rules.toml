@@ -233,7 +233,7 @@ enabled = true
 enabled = true
 
 [rules.cert_c.ENV04-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/ENV/ENV04-C) and CERT has published no ENV04-C content to implement against; dead config, not a suppression
+enabled = false  # category 2 (dead config): not implemented -- src/rules/cert_c/ENV/ENV04-C holds CERT metadata only, no rule module, and CERT has published no ENV04-C content to implement against; records a decision, suppresses nothing
 
 [rules.cert_c.ENV30-C]
 enabled = true
@@ -686,10 +686,10 @@ enabled = true
 enabled = true
 
 [rules.cert_c.MSC18-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC18-C); dead config, not a suppression
+enabled = false  # category 2 (dead config): not implemented -- src/rules/cert_c/MSC/MSC18-C holds CERT metadata only, no rule module; records a decision, suppresses nothing
 
 [rules.cert_c.MSC19-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC19-C); dead config, not a suppression
+enabled = false  # category 2 (dead config): not implemented -- src/rules/cert_c/MSC/MSC19-C holds CERT metadata only, no rule module; records a decision, suppresses nothing
 
 [rules.cert_c.MSC20-C]
 enabled = true
@@ -707,7 +707,7 @@ enabled = true
 enabled = true
 
 [rules.cert_c.MSC25-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC25-C) and CERT has published no MSC25-C content to implement against; dead config, not a suppression
+enabled = false  # category 2 (dead config): not implemented -- src/rules/cert_c/MSC/MSC25-C holds CERT metadata only, no rule module, and CERT has published no MSC25-C content to implement against; records a decision, suppresses nothing
 
 [rules.cert_c.MSC30-C]
 enabled = true

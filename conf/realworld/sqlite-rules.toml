@@ -190,7 +190,7 @@ enabled = true
 
 
 [rules.cert_c.DCL05-C]
-enabled = false  # "complex function pointer declaration should use typedef" — advisory; sqlite deliberately uses inline fn-ptr decls (VFS xRead/xWrite, vtab methods). 495 findings, categorical noise.
+enabled = true  # RE-ENABLED: was disabled as advisory/style or a typedef convention the project does not adopt, which is not a disable reason under conf/realworld/README.md -- typedefs are present in every C codebase, so the rule's scope is never absent; disagreement with it is what the oracle records
 
 
 [rules.cert_c.DCL06-C]
@@ -1148,7 +1148,7 @@ enabled = true
 enabled = true
 
 [rules.cert_c.ENV04-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/ENV/ENV04-C) and CERT has published no ENV04-C content to implement against; dead config, not a suppression
+enabled = false  # category 2 (dead config): not implemented -- src/rules/cert_c/ENV/ENV04-C holds CERT metadata only, no rule module, and CERT has published no ENV04-C content to implement against; records a decision, suppresses nothing
 
 [rules.cert_c.FLP38-C]
 enabled = true
@@ -1190,10 +1190,10 @@ enabled = true
 enabled = true
 
 [rules.cert_c.MSC18-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC18-C); dead config, not a suppression
+enabled = false  # category 2 (dead config): not implemented -- src/rules/cert_c/MSC/MSC18-C holds CERT metadata only, no rule module; records a decision, suppresses nothing
 
 [rules.cert_c.MSC19-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC19-C); dead config, not a suppression
+enabled = false  # category 2 (dead config): not implemented -- src/rules/cert_c/MSC/MSC19-C holds CERT metadata only, no rule module; records a decision, suppresses nothing
 
 [rules.cert_c.MSC20-C]
 enabled = true
@@ -1211,7 +1211,7 @@ enabled = true
 enabled = true
 
 [rules.cert_c.MSC25-C]
-enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC25-C) and CERT has published no MSC25-C content to implement against; dead config, not a suppression
+enabled = false  # category 2 (dead config): not implemented -- src/rules/cert_c/MSC/MSC25-C holds CERT metadata only, no rule module, and CERT has published no MSC25-C content to implement against; records a decision, suppresses nothing
 
 [rules.cert_c.MSC42-C]
 enabled = true
