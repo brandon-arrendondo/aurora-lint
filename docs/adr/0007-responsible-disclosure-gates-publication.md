@@ -88,9 +88,10 @@ data is, because an outside review read a TP/FN row as a vulnerability claim.
 **A label is a statement about the code and the rule, not about exploitability.**
 It is keyed `(project, codebase_commit, file_path, line, rule)`, and it says
 only whether the code at that place departs from the rule as written (a
-violation) or not. TP, FP and FN are what you get by overlaying one run of the
-tool on the labels: a violation the run reports is a TP, a non-violation it
-reports is an FP, and a violation it doesn't report is an FN. The stored
+violation) or not. TP, FP, FN and TN are what you get by pairing one run of
+the tool with the labels: a violation the run reports is a TP, a non-violation
+it reports is an FP, a violation it doesn't report is an FN, and a
+non-violation it doesn't report is a TN (ADR-0014). The stored
 TP/FP vocabulary is kept for continuity, but it means violation / not a
 violation of the code. A label on a key that no current run reports is kept as
 a regression safety net and is re-examined if the finding reappears (amended

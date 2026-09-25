@@ -57,3 +57,5 @@ outlive any one task.
   compilers or inference](0011-what-counts-as-proof.md)
 - [0013 — Which rules aurora-lint ships: decided by the rule's nature, not by
   benchmark counts](0013-which-rules-aurora-lint-ships.md) (PROPOSED)
+- [0014 — The oracle is independent of the tool; TP, FP, FN and TN come from
+  pairing it with a run](0014-the-oracle-is-independent-of-the-tool.md) (PROPOSED)

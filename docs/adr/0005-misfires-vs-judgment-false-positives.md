@@ -59,6 +59,19 @@ fires too much" — but only a misfire's *fix* is unconditionally correct
 regardless of corpus. A judgment-FP "fix" (narrowing what the rule reports)
 is exactly the thing ADR-0001 says not to do.
 
+### Right for the wrong reason
+
+A finding must rest on sound evidence about the line it names. Sometimes
+the tool reaches a real violation through evidence that is wrong: a
+pointer judged NULL from a stale assignment the call never sees, or a file
+chosen by hash order. Removing such a finding is a correctness fix, the
+same as removing a misfire, even though the oracle records a violation on
+that line. The oracle doesn't change; the run now misses the violation, so
+it moves from TP to FN. That is a real loss of capability the tool only
+appeared to have, and it is reported as lost recall, not avoided by
+keeping the unsound path (Brandon, 2026-09-25). How the oracle and a run
+combine into TP, FP, FN and TN is set out in ADR-0014.
+
 ## Consequences
 
 - When reviewing a same-session correction like the one that prompted this
