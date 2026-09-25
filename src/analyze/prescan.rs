@@ -4518,23 +4518,22 @@ fn infer_rhs_null_state(node: &Node, source: &str) -> NullState {
         return literal_state;
     }
 
-    // Additional patterns for RHS:
-    match node.kind() {
-        "call_expression" => {
-            // malloc/calloc/realloc can return NULL → PossiblyNull
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = func.utf8_text(source.as_bytes()).unwrap_or("");
-                if matches!(
-                    func_name,
-                    "malloc" | "calloc" | "realloc" | "aligned_alloc" | "strdup" | "strndup"
-                ) {
-                    return NullState::PossiblyNull;
-                }
+    // A call to a function that may return NULL (`malloc`, `fopen`,
+    // `getenv`, ...), seen through the casts and parentheses around it:
+    // `(char *)calloc(n, 1)` is still `calloc`'s result.
+    let call = guard_dominance::strip_arg_wrappers(node);
+    if call.kind() == "call_expression" {
+        if let Some(func) = call.child_by_field_name("function") {
+            let func_name = func.utf8_text(source.as_bytes()).unwrap_or("");
+            let no_summaries: HashMap<String, FunctionSummary> = HashMap::new();
+            if func_name == "aligned_alloc"
+                || crate::analyze::null_state::is_nullable_function(func_name, &no_summaries)
+            {
+                return NullState::PossiblyNull;
             }
-            NullState::Unknown
         }
-        _ => NullState::Unknown,
     }
+    NullState::Unknown
 }
 
 /// Walk call expressions within a function body, using local variable states

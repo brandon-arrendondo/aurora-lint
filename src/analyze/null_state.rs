@@ -2095,6 +2095,8 @@ pub fn is_nullable_function(func_name: &str, summaries: &(impl SummaryLookup + ?
             | "strchr"
             | "strrchr"
             | "fopen"
+            // The Windows CRT's wide-path fopen, NULL on failure the same way.
+            | "_wfopen"
             | "fdopen"
             | "freopen"
             | "tmpfile"
