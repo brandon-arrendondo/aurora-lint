@@ -828,9 +828,12 @@ costs much less than answering them in review.
     ground truth (E2).
   - State which rules Juliet covers at all. API00-C and CWE-20 have no Juliet
     ground truth, so for them "Juliet is primary" is empty.
-  - State aurora-lint's Juliet matching unit (function, file or line) and how
-    it treats incidental flaws. Numbers under a different unit are not
-    comparable with published Juliet results.
+  - State aurora-lint's Juliet matching unit and how it treats incidental
+    flaws. Today `bench/analyzer.py` (`_hits_flaw_line`) counts a hit at a
+    FLAW line ±1. That is finer than the guide's bad-function unit
+    [Juliet-UG §8.1] and coarser than the exact-line real-world key (E2), so
+    say which unit each published figure uses. Numbers under a different
+    unit are not comparable with published Juliet results.
 
 ---
 
