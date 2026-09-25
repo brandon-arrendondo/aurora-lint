@@ -151,9 +151,8 @@ impl Flp36C {
             return true;
         }
 
-        if body_text.contains("assert") && body_text.contains("LONG_MAX") {
-            return true;
-        }
+        // An `assert(x <= LONG_MAX ...)` is not among them: NDEBUG strips it,
+        // so it checks nothing in the release configuration (ADR-0010 D5).
 
         // Using double instead of float is compliant
         if body_text.contains("double") && !body_text.contains("float") {
