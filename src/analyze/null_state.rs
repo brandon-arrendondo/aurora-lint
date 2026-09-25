@@ -397,7 +397,8 @@ fn process_statement_for_null_state(
             process_declaration_null(node, source, state, declared_pointers, summaries);
         }
         "expression_statement" => {
-            // Handle assert(var) before other expression processing
+            // An assert macro no configuration compiles out, before other
+            // expression processing
             process_assert_for_null_state(node, source, state, summaries);
             if let Some(expr) = node.child(0) {
                 process_expression_null(&expr, source, state, declared_pointers, summaries);
@@ -417,7 +418,8 @@ fn process_statement_for_null_state(
         // are added as statements in the condition block. We don't mutate null state
         // from conditions — that's handled by edge refinement.
         _ => {
-            // Recognize assert(var) / assert(var != NULL) as making var NotNull
+            // An assert macro no configuration compiles out makes its
+            // checked pointers NotNull
             process_assert_for_null_state(node, source, state, summaries);
             // Recurse into compound expressions to find nested assignments
             for i in 0..node.child_count() {
@@ -835,20 +837,14 @@ fn resolve_assignment_null_state(
     state.insert(left_name, new_state);
 }
 
-/// Recognize an `assert(...)` precondition and mark every pointer the asserted
-/// condition proves non-null. Because `assert` evaluates its condition (and the
-/// program continues only if it holds), this covers `assert(p)` (truthiness),
-/// `assert(p != NULL)`, `assert(p && p->x)` (both `&&` operands hold), and
-/// `assert(p->n <= p->m)` (operands are dereferenced, so the base is non-null).
+/// Recognize a call that returns only when one argument is true
+/// (`FunctionSummary::returns_only_if_param_true`, set for an assert-style
+/// macro no configuration compiles out) and mark every pointer that argument
+/// proves non-null, read strictly by [`collect_checked_nonnull`].
 ///
-/// Conservative: `||`, `!`, and `== NULL` do not establish non-null and are not
-/// propagated (SQLite uses these idioms pervasively, so this is the dominant
-/// EXP34-C false-positive source on real-world C).
-///
-/// The same holds for a call whose summary says it returns only when one
-/// argument is true (`FunctionSummary::returns_only_if_param_true`, set for
-/// an assert-style macro no configuration compiles out): that argument is
-/// read as the asserted condition.
+/// A plain `assert(...)` is deliberately not one of them. `NDEBUG` strips
+/// it, and in that configuration it guards nothing (ADR-0010 D5), so it
+/// leaves null state as it found it.
 fn process_assert_for_null_state(
     node: &Node,
     source: &str,
@@ -872,14 +868,10 @@ fn process_assert_for_null_state(
         return;
     };
     let name = get_text(&function, source);
-    let (cond_index, strict) = if name == "assert" {
-        (0, false)
-    } else if let Some(i) = summaries
+    let Some(cond_index) = summaries
         .get(&name)
         .and_then(|s| s.returns_only_if_param_true)
-    {
-        (i, true)
-    } else {
+    else {
         return;
     };
     let Some(args) = call.child_by_field_name("arguments") else {
@@ -893,11 +885,7 @@ fn process_assert_for_null_state(
                 continue;
             }
             if arg_idx == cond_index {
-                if strict {
-                    collect_checked_nonnull(&arg, source, state);
-                } else {
-                    collect_assert_nonnull(&arg, source, true, state);
-                }
+                collect_checked_nonnull(&arg, source, state);
                 return;
             }
             arg_idx += 1;
@@ -905,100 +893,10 @@ fn process_assert_for_null_state(
     }
 }
 
-/// Collect pointers proven non-null by an asserted condition.
-///
-/// `bool_pos` is true when `node` sits in a boolean/truthiness position
-/// (the whole condition, or an operand of `&&`); a bare identifier there is a
-/// non-null test. In value position (operands of a comparison such as `<=`) a
-/// bare identifier proves nothing, but a dereference of it still does.
-fn collect_assert_nonnull(node: &Node, source: &str, bool_pos: bool, state: &mut StateMap) {
-    match node.kind() {
-        "parenthesized_expression" => {
-            if let Some(inner) = node.child(1) {
-                collect_assert_nonnull(&inner, source, bool_pos, state);
-            }
-        }
-        "identifier" if bool_pos => {
-            state.insert(get_text(node, source), NullState::NotNull);
-        }
-        // Any dereference proves its base pointer is non-null.
-        "field_expression" => {
-            if let Some(arg) = node.child_by_field_name("argument") {
-                mark_deref_base_nonnull(&arg, source, state);
-            }
-        }
-        "subscript_expression" => {
-            if let Some(arg) = node.child(0) {
-                mark_deref_base_nonnull(&arg, source, state);
-            }
-        }
-        "pointer_expression" => {
-            let is_deref = node
-                .child_by_field_name("operator")
-                .map(|o| get_text(&o, source) == "*")
-                .unwrap_or(false);
-            if is_deref {
-                if let Some(arg) = node.child_by_field_name("argument") {
-                    mark_deref_base_nonnull(&arg, source, state);
-                }
-            }
-        }
-        "binary_expression" => {
-            let op = node
-                .child_by_field_name("operator")
-                .map(|o| get_text(&o, source))
-                .unwrap_or_default();
-            let left = node.child_by_field_name("left");
-            let right = node.child_by_field_name("right");
-            match op.as_str() {
-                "&&" => {
-                    if let Some(l) = left {
-                        collect_assert_nonnull(&l, source, true, state);
-                    }
-                    if let Some(r) = right {
-                        collect_assert_nonnull(&r, source, true, state);
-                    }
-                }
-                "!=" => {
-                    if let (Some(l), Some(r)) = (left, right) {
-                        let lt = get_text(&l, source);
-                        let rt = get_text(&r, source);
-                        if is_null_value(rt.trim()) && l.kind() == "identifier" {
-                            state.insert(lt, NullState::NotNull);
-                        } else if is_null_value(lt.trim()) && r.kind() == "identifier" {
-                            state.insert(rt, NullState::NotNull);
-                        } else {
-                            collect_assert_nonnull(&l, source, false, state);
-                            collect_assert_nonnull(&r, source, false, state);
-                        }
-                    }
-                }
-                // `||` only guarantees the left operand evaluates; `!` negates.
-                "||" => {
-                    if let Some(l) = left {
-                        collect_assert_nonnull(&l, source, false, state);
-                    }
-                }
-                // Comparisons/arithmetic (`<=`, `==`, `+`, ...): both operands are
-                // evaluated in value position, so derefs within them prove non-null.
-                _ => {
-                    if let Some(l) = left {
-                        collect_assert_nonnull(&l, source, false, state);
-                    }
-                    if let Some(r) = right {
-                        collect_assert_nonnull(&r, source, false, state);
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
 /// Collect the pointers a *checked* condition proves non-null when it holds:
 /// `p`, `p != NULL` / `NULL != p`, and each operand of `&&`. Nothing else.
 ///
-/// Stricter than [`collect_assert_nonnull`] on purpose. A dereference inside
+/// Strict on purpose. A dereference inside
 /// the condition (`M(p->n > 0)`) runs before the check, so it proves nothing
 /// (ADR-0011: a prior dereference is not a check), and an operand of `||`
 /// need not hold at all (`M(p != NULL || err)`).
@@ -1064,16 +962,6 @@ fn checked_value_key(node: &Node, source: &str) -> Option<String> {
                 .then(|| format!("{}.{}", get_text(&base, source), get_text(&field, source)))
         }
         _ => None,
-    }
-}
-
-/// Mark the base identifier of a dereferenced expression as NotNull.
-fn mark_deref_base_nonnull(node: &Node, source: &str, state: &mut StateMap) {
-    if node.kind() == "identifier" {
-        state.insert(get_text(node, source), NullState::NotNull);
-    } else {
-        // Nested deref (e.g. p->a->b): recurse so the outermost base is marked too.
-        collect_assert_nonnull(node, source, false, state);
     }
 }
 
