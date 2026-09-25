@@ -85,15 +85,25 @@ something to undersell out of excess caution.
 This does not soften the decision above. It says what the public labelled
 data is, because an outside review read a TP/FN row as a vulnerability claim.
 
-**A TP, FP or FN row is a statement about the analysis, not about exploitability.**
+**A label is a statement about the code and the rule, not about exploitability.**
 It is keyed `(project, codebase_commit, file_path, line, rule)`, and it says
-only this: at that place, aurora-lint's finding is correct as a statement that
-the code departs from the rule as written (TP), is wrong (FP), or the code
-departs from the rule and the tool did not flag it (FN). It does not say the
-code is a security vulnerability, that input an attacker controls can reach it,
-or that anyone has exercised it. Anyone can regenerate the finding data by
-running aurora-lint at the pinned tag on the pinned commit; the dataset adds a
-verdict, not new information about where to look.
+only whether the code at that place departs from the rule as written (a
+violation) or not. TP, FP and FN are what you get by overlaying one run of the
+tool on the labels: a violation the run reports is a TP, a non-violation it
+reports is an FP, and a violation it doesn't report is an FN. The stored
+TP/FP vocabulary is kept for continuity, but it means violation / not a
+violation of the code. A label on a key that no current run reports is kept as
+a regression safety net and is re-examined if the finding reappears (amended
+2026-09-25, Brandon).
+
+A label does not say the code is a security vulnerability, that input an
+attacker controls can reach it, or that anyone has exercised it. Many
+violations are minor departures from the rule as written, of the kind a
+stricter compiler warning level reports. Labels are also revised: re-review
+has flipped a noticeable share of them over the project's life, so a label is
+our current reading, not a finding of fact. Anyone can regenerate the finding
+data by running aurora-lint at the pinned tag on the pinned commit; the
+dataset adds a verdict, not new information about where to look.
 
 **Calling something a vulnerability takes more evidence, and that evidence is
 what this ADR guards — and that evidence has a real track record of changing
