@@ -1880,6 +1880,39 @@ pub fn is_in_sizeof(node: &Node) -> bool {
     query::nearest_ancestor_of_kind(*node, "sizeof_expression").is_some()
 }
 
+/// True when `node` sits in an operand C never evaluates: `sizeof`,
+/// `_Alignof` / `__alignof__`, `offsetof`, or GNU `typeof` / `__typeof__`
+/// (which the grammar has no node for, so it arrives as a macro type
+/// specifier or a call of that name). Stops at the enclosing function.
+///
+/// An `assert(...)` argument is deliberately not one of them. In the debug
+/// configuration it is compiled and evaluated, so whatever a rule would say
+/// about the expression elsewhere it says there too (ADR-0010 D5).
+pub fn is_in_unevaluated_operand(node: &Node, source: &str) -> bool {
+    const TYPEOF: &[&str] = &["typeof", "__typeof__", "__typeof"];
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        match parent.kind() {
+            "sizeof_expression" | "alignof_expression" | "offsetof_expression" => return true,
+            "macro_type_specifier" | "call_expression" => {
+                let field = if parent.kind() == "call_expression" {
+                    "function"
+                } else {
+                    "name"
+                };
+                let callee = parent.child_by_field_name(field);
+                if callee.is_some_and(|f| TYPEOF.contains(&get_node_text(&f, source))) {
+                    return true;
+                }
+            }
+            "function_definition" => break,
+            _ => {}
+        }
+        current = parent.parent();
+    }
+    false
+}
+
 // ============================================================================
 // Control Flow Navigation Utilities
 // ============================================================================

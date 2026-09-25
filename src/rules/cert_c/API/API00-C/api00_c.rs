@@ -54,7 +54,8 @@ use crate::analyze::null_state::condition_tests_null;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
     documented_nonnull_parameters, get_function_parameters, get_node_text, get_sanitized_node_text,
-    integer_type_width, is_pointer_type, is_unsigned_type, ordered_parameter_names,
+    integer_type_width, is_in_unevaluated_operand, is_pointer_type, is_unsigned_type,
+    ordered_parameter_names,
 };
 use crate::utility::cert_c::float_typing::StructFieldTypes;
 use crate::utility::cert_c::guard_dominance;
@@ -591,7 +592,7 @@ impl Api00C {
                 source,
                 pointer_types.typedef_types,
             )
-            && !Self::is_inside_assert(node, source);
+            && !is_in_unevaluated_operand(node, source);
 
         if is_site {
             sites.push(*node);
@@ -682,38 +683,6 @@ impl Api00C {
             .trim()
             .strip_suffix(param_name)
             .map_or(param_type, str::trim)
-    }
-
-    /// True when `node` sits inside an `assert`-shaped call.
-    ///
-    /// An assert compiles out under `NDEBUG`, so arithmetic that happens only
-    /// there is not a production computation and the rule has nothing to ask
-    /// about it. This is the same direction as
-    /// [`guard_dominance`], which deliberately refuses to credit an assert as
-    /// *validation*: an assert neither validates nor counts as a use.
-    ///
-    /// Name-shape matched rather than a fixed list, because every project
-    /// spells it its own way (`assert`, curl's `DEBUGASSERT`, hostap's
-    /// `WPA_ASSERT`) -- the same match ARR38-C uses.
-    fn is_inside_assert(node: &Node, source: &str) -> bool {
-        let mut current = node.parent();
-        while let Some(ancestor) = current {
-            if ancestor.kind() == "call_expression" {
-                if let Some(func) = ancestor.child_by_field_name("function") {
-                    if get_node_text(&func, source)
-                        .to_ascii_lowercase()
-                        .contains("assert")
-                    {
-                        return true;
-                    }
-                }
-            }
-            if ancestor.kind() == "function_definition" {
-                break;
-            }
-            current = ancestor.parent();
-        }
-        false
     }
 
     /// True when `operand` is the parameter itself, looking through redundant

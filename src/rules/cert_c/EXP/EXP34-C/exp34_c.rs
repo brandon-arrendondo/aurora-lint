@@ -1030,7 +1030,7 @@ fn is_unsafe_at(
     // `typeof`) is not a runtime null dereference. Suppress before consulting
     // dataflow. One inside an `assert(...)` argument IS evaluated, in the
     // debug configuration, so it is checked like any other (ADR-0010 D5).
-    if is_in_unevaluated_context(deref_node, source) {
+    if ast_utils::is_in_unevaluated_operand(deref_node, source) {
         return false;
     }
 
@@ -1183,40 +1183,6 @@ fn is_in_expression_guard(var_name: &str, node: &Node, source: &str) -> bool {
         return true;
     }
 
-    false
-}
-
-/// True when the node sits in an operand C never evaluates: `sizeof`,
-/// `_Alignof` / `__alignof__`, `offsetof`, or GNU `typeof` / `__typeof__`
-/// (which the grammar has no node for, so it arrives as a macro type
-/// specifier or a call of that name).
-///
-/// An `assert(...)` argument is deliberately not one of them. In the debug
-/// configuration it is compiled and evaluated, so a null dereference inside
-/// it is a null dereference (ADR-0010 D5).
-fn is_in_unevaluated_context(node: &Node, source: &str) -> bool {
-    const TYPEOF: &[&str] = &["typeof", "__typeof__", "__typeof"];
-    let mut current = node.parent();
-    while let Some(parent) = current {
-        match parent.kind() {
-            "sizeof_expression" | "alignof_expression" | "offsetof_expression" => return true,
-            "macro_type_specifier" | "call_expression" => {
-                let callee = parent
-                    .child_by_field_name(if parent.kind() == "call_expression" {
-                        "function"
-                    } else {
-                        "name"
-                    })
-                    .map(|f| ast_utils::get_node_text_owned(&f, source));
-                if callee.is_some_and(|name| TYPEOF.contains(&name.as_str())) {
-                    return true;
-                }
-            }
-            "function_definition" => break,
-            _ => {}
-        }
-        current = parent.parent();
-    }
     false
 }
 
