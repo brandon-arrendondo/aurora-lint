@@ -970,7 +970,13 @@ Already covered above under Macro detection: `embedded_js_blank.rs`
 (emscripten `EM_ASM`/`EM_JS` JavaScript bodies), `empty_macro_blank.rs`
 (local `#define`-to-nothing) and `unknown_identifier_recovery.rs`
 (parser-ERROR-signal-driven, for unresolvable external-header
-identifiers). A third family sits alongside them, driven by text shape
+identifiers). `has_include_angle.rs` rewrites `__has_include(<hdr.h>)` (and
+`__has_include_next`) on `#if`/`#elif` lines to the quoted spelling:
+the angle-bracketed header is not a C expression, and the recovery from it
+did not stay on the directive line -- valkey's module.c lost the assignment
+below the `#endif`, which EXP33-C then read as a use. A rule that still
+has to reason about the directive text itself has `is_on_preproc_directive_line`.
+A third family sits alongside them, driven by text shape
 rather than by a macro name or a parser signal, for the preprocessor
 constructs `tree-sitter-c`'s grammar has no production for at all:
 `preproc_dangling_else.rs` (an if/else chain split across a

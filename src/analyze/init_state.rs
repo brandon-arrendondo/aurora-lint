@@ -546,7 +546,10 @@ fn process_statement(
 /// when it has none (C11 6.7.9p10), so its value is determinate from the
 /// start. Seeding it Uninitialized reported every read of an unwritten
 /// `static` counter or buffer as "used without explicit initialization",
-/// which EXP33-C, a rule about indeterminate values, never covers.
+/// which EXP33-C, a rule about indeterminate values, never covers. An
+/// `extern` declaration defines no object at all -- it names one defined
+/// elsewhere (valkey setproctitle.c's block-scope `extern char **environ;`)
+/// -- so it has no indeterminate value either.
 fn uninitialized_unless_static(is_static: bool) -> InitState {
     if is_static {
         InitState::Initialized
@@ -571,6 +574,8 @@ fn process_declaration(
     let is_char_type =
         (type_text.contains("char") || type_text.contains("wchar_t")) && !is_unsigned_char;
     let is_static = type_text.contains("static") || type_text.contains("_Thread_local");
+    let is_extern =
+        crate::utility::cert_c::ast_utils::declaration_has_storage_class(node, "extern", source);
 
     // Process each declarator
     for i in 0..node.child_count() {
@@ -613,7 +618,7 @@ fn process_declaration(
                     let var_name = get_text(node, &child, source);
                     if !var_name.is_empty() && !is_type_keyword(&var_name) {
                         tracked_vars.insert(var_name.clone());
-                        let init_state = uninitialized_unless_static(is_static);
+                        let init_state = uninitialized_unless_static(is_static || is_extern);
                         let is_array = false;
                         let mut info = VarInfo::new(init_state);
                         info.is_unsigned_char = is_unsigned_char;
@@ -636,7 +641,7 @@ fn process_declaration(
                     let var_name = get_declarator_name(&child, source);
                     if !var_name.is_empty() {
                         tracked_vars.insert(var_name.clone());
-                        let init_state = uninitialized_unless_static(is_static);
+                        let init_state = uninitialized_unless_static(is_static || is_extern);
                         let is_array = child.kind() == "array_declarator";
                         let mut info = VarInfo::new(init_state);
                         info.is_unsigned_char = is_unsigned_char;
@@ -1638,10 +1643,19 @@ fn process_unknown_function_call(
         // Array passed by name — assume function writes to it
         if !skip_this_arg && arg.kind() == "identifier" {
             let var_name = arg.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-            if let Some(info) = state.get(&var_name) {
+            if let Some(info) = state.get_mut(&var_name) {
                 if info.is_array {
-                    let info = state.get_mut(&var_name).unwrap();
                     info.state = InitState::Initialized;
+                } else if info.state == InitState::MallocUninitialized {
+                    // A pointer passed by name is the same argument an array
+                    // name decays to, so the callee may fill what it points
+                    // at in exactly the same way. valkey-cli.c reads a byte
+                    // at a time with `p = buf; readConn(c, p, 1); ... *p`,
+                    // and `*p` was reported as uninitialized memory because
+                    // only the array spelling `readConn(c, buf, 1)` counted
+                    // as a write. The pointer itself was already set; only
+                    // its pointee's state changes.
+                    info.state = InitState::MallocInitialized;
                 }
             }
         }

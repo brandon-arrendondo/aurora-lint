@@ -69,6 +69,12 @@ impl CParser {
         // only C. Length- and newline-preserving.
         let source = crate::analyze::embedded_js_blank::blank_embedded_js(&source);
 
+        // `__has_include(<hdr.h>)` in a `#if` is not a C expression, and the
+        // recovery from it swallowed statements below the `#endif` (valkey
+        // module.c). Spell the header quoted. Length-preserving, and a no-op
+        // on a file without the construct.
+        let source = crate::analyze::has_include_angle::quote_has_include_headers(&source);
+
         // An earlier fix: blank empty WINAPI/RLAPI-style export-specifier macros
         // before parsing -- tree-sitter-c's grammar can't parse a bare
         // identifier immediately before a declaration's type, and the
@@ -153,6 +159,7 @@ impl CParser {
     /// correct byte range can silently return stale content.
     pub fn parse_source(&mut self, source: &str) -> Result<(Tree, String)> {
         let source = crate::analyze::embedded_js_blank::blank_embedded_js(source);
+        let source = crate::analyze::has_include_angle::quote_has_include_headers(&source);
         let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(&source);
         let source = crate::analyze::preproc_dangling_else::blank_dangling_else_preproc(&source);
         let source = crate::analyze::label_preproc_guard::blank_label_guarded_preproc(&source);

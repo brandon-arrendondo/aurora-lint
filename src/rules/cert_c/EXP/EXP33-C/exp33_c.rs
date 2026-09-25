@@ -891,6 +891,18 @@ fn check_identifier_read(
         return;
     }
 
+    // The state is tracked per NAME, so a variable declared in an inner block
+    // outlives its scope in the table. An occurrence no declaration in scope
+    // binds is not that variable (ADR-0006): valkey evict.c declares
+    // `serverDb *db` inside its eviction loop, and after the loop
+    // `latencyTraceIfNeeded(db, ...)` passes `db` as a macro's type token,
+    // which read as that variable "maybe uninitialized".
+    if crate::utility::cert_c::ast_utils::resolve_identifier_declarator(node, &var_name, source)
+        .is_none()
+    {
+        return;
+    }
+
     // Skip identifiers that are the iterator/temp/out argument of a known
     // iterator/find macro (utlist/uthash/BSD-queue). The macro *writes* these
     // args, so their appearance in the invocation is not a use of an
@@ -951,6 +963,13 @@ fn check_identifier_read(
                         return;
                     }
                 }
+            }
+            // An array name as an operand of any binary operator has
+            // decayed to its address: `p != buf` and `buf + sizeof(buf) - 1`
+            // compare and offset pointers and read no element (valkey-cli.c's
+            // byte-at-a-time read loop).
+            if parent.kind() == "binary_expression" {
+                return;
             }
             if parent.kind() == "argument_list" {
                 if let Some(call_expr) = parent.parent() {

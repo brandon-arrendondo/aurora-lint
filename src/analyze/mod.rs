@@ -25,6 +25,7 @@ pub mod dead_regions;
 pub mod embedded_js_blank;
 pub mod empty_macro_blank;
 pub mod function_summary;
+pub mod has_include_angle;
 pub mod init_state;
 /// Pre-parse repair for a label immediately followed by an `#ifdef`/`#if`
 /// block -- `tree-sitter-c`'s `labeled_statement` can't parse that shape.
