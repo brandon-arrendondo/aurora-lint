@@ -109,7 +109,21 @@ TP. That holds even when it is almost certainly harmless in practice.
   sites prove nothing there, because the callers that matter are outside the
   corpus. Treating a library's own in-tree callers as its full caller set is
   a common trap for analysis tools. It is part of why libcrc, which is only
-  a library, is in the corpus. Static functions stay closed.
+  a library, is in the corpus.
+- **A static function is closed only while its address stays inside the
+  scanned source.** Internal linkage closes the caller set only if the
+  function's address doesn't escape. A static stored in an ops table,
+  registered as a callback, handed to a plugin interface, or placed in an
+  exported struct is as open as whatever reaches it (Brandon, 2026-09-25).
+- **Closed callers don't mean closed effects, and data has writers too.** A
+  static function regularly reads and writes globals, so its side effects
+  reach beyond its file. An invariant about a global or a struct field (a
+  list that never holds NULL, a field set on every path) is proof only if
+  every writer of that storage is in the scanned source: static storage whose
+  address doesn't escape, or a type whose layout is opaque to outside code.
+  A global with external linkage in a library or an exporting executable can
+  be written from outside, so enumerating the in-tree writes proves nothing
+  there (Brandon, 2026-09-25).
 - **An executable that exports its symbols to plugins is a library too.**
   A link with `-rdynamic` puts every non-static symbol of the executable
   into its dynamic symbol table, where code it loads with `dlopen` can call
