@@ -431,10 +431,22 @@ type LoopArrayPattern = (
 /// The condition and the site are one field because neither is meaningful
 /// without the other -- an allocating loop was seen, or it was not. Keeping
 /// them apart is what let the report fall back to a hardcoded line.
+///
+/// Neither loop says who owns the elements, and a loop-array finding is a
+/// claim that this function drops them. `outlives_function` and
+/// `elements_released` are what the function does with the array besides
+/// looping over it (`loop_array_ownership`).
 #[derive(Default)]
 struct LoopArrayEvidence {
     alloc: Option<(String, (usize, usize))>,
     free_cond: Option<String>,
+    /// The array is not this function's to release: its storage is not a
+    /// local of this function, or the local is returned or stored somewhere
+    /// that outlives the call.
+    outlives_function: bool,
+    /// Some call in the function releases an element (`free(a[i])`,
+    /// `os_free(a[--i])`, `decrRefCount(a[j])`), in whatever loop shape.
+    elements_released: bool,
 }
 
 /// Explicit continuation-stack frames driving `MemoryLeakAnalyzer::
@@ -822,6 +834,167 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
             self.detect_leaks(violations);
         }
+    }
+
+    /// What the function an allocating loop sits in does with the array,
+    /// besides the loop: `(outlives_function, elements_released)` for
+    /// [`LoopArrayEvidence`].
+    ///
+    /// The loop-array check pairs an allocating loop with a freeing loop
+    /// over the same base, and with no ownership model every array whose
+    /// elements someone else releases read as leaking. 1491's relocated
+    /// real-world findings were all of that kind: an array returned to a
+    /// caller that frees it (hostap's completion lists), elements stored
+    /// into a struct or global with its own release path (`iface->bss`,
+    /// `c->argv`, `server.exec_argv`, sel4's kernel page tables), and
+    /// elements released by a loop the pairing does not recognise
+    /// (`os_free(paths[--i])` at an `out:` label, `decrRefCount(objects[i])`).
+    ///
+    /// Storage is this function's own only when the base resolves, through
+    /// `.` fields and subscripts, to a non-`static` local (ADR-0006: by
+    /// declaration, not spelling). A `->` or a call on the way (`G(L)->x`)
+    /// reaches an object someone else holds; a parameter, a global or a
+    /// static outlives the call. A local then escapes the way a tracked
+    /// block does in the main walk: returned, assigned into anything but a
+    /// local, or handed to a callee whose `stores_params` covers it.
+    fn loop_array_ownership(&self, loop_node: &Node, source: &str) -> (bool, bool) {
+        let Some(assign) = query::find_first_descendant(*loop_node, |n| {
+            n.kind() == "assignment_expression"
+                && n.child_by_field_name("left")
+                    .is_some_and(|left| left.kind() == "subscript_expression")
+                && n.child_by_field_name("right")
+                    .is_some_and(|right| self.is_allocation_call(&right, source))
+        }) else {
+            return (false, false);
+        };
+        let Some(base) = assign
+            .child_by_field_name("left")
+            .and_then(|left| left.child_by_field_name("argument"))
+        else {
+            return (false, false);
+        };
+        let Some(func) = ast_utils::find_containing_function(loop_node) else {
+            return (false, false);
+        };
+        let base_text = ast_utils::get_node_text(&peel_casts_and_parens(base), source);
+        let released = self.function_releases_elements_of(&func, base_text, source);
+        let Some(local) = Self::local_array_storage(base, source) else {
+            return (true, released);
+        };
+        let name = ast_utils::get_node_text(&local, source);
+        (self.local_array_escapes(&func, name, source), released)
+    }
+
+    /// The local identifier `base` is storage of, through `.` fields,
+    /// subscripts, casts and parentheses, or `None` when the storage is not
+    /// a non-`static` local of the enclosing function.
+    fn local_array_storage<'t>(base: Node<'t>, source: &str) -> Option<Node<'t>> {
+        let mut n = base;
+        loop {
+            n = peel_casts_and_parens(n);
+            match n.kind() {
+                "identifier" => break,
+                "subscript_expression" => n = n.child_by_field_name("argument")?,
+                "field_expression" => {
+                    let through_pointer = (0..n.child_count())
+                        .filter_map(|i| n.child(i))
+                        .any(|c| c.kind() == "->");
+                    if through_pointer {
+                        return None;
+                    }
+                    n = n.child_by_field_name("argument")?;
+                }
+                _ => return None,
+            }
+        }
+        let name = ast_utils::get_node_text(&n, source);
+        match ast_utils::resolve_identifier_binding(&n, name, source)? {
+            ast_utils::IdentifierBinding::Local(decl)
+                if !ast_utils::declaration_has_storage_class(&decl, "static", source) =>
+            {
+                Some(n)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether the local array `name` leaves `func`: returned, assigned into
+    /// anything but a local, or passed to a callee that stores it.
+    fn local_array_escapes(&self, func: &Node, name: &str, source: &str) -> bool {
+        let is_name = |n: Node| {
+            strip_call_argument(n).is_some_and(|(t, by_address)| {
+                !by_address && ast_utils::get_node_text(&t, source) == name
+            })
+        };
+        query::find_first_descendant(*func, |n| match n.kind() {
+            "return_statement" => n.named_child(0).is_some_and(is_name),
+            "assignment_expression" => {
+                n.child_by_field_name("right").is_some_and(is_name)
+                    && n.child_by_field_name("left").is_some_and(|left| {
+                        let left = peel_casts_and_parens(left);
+                        left.kind() != "identifier"
+                            || !matches!(
+                                ast_utils::resolve_identifier_binding(
+                                    &left,
+                                    ast_utils::get_node_text(&left, source),
+                                    source
+                                ),
+                                Some(ast_utils::IdentifierBinding::Local(_))
+                            )
+                    })
+            }
+            "call_expression" => {
+                let Some(summary) = n
+                    .child_by_field_name("function")
+                    .and_then(|f| self.function_summaries.get(&self.callee_name(&f, source)))
+                else {
+                    return false;
+                };
+                Self::call_args(n)
+                    .enumerate()
+                    .any(|(idx, arg)| summary.stores_params.contains(&idx) && is_name(arg))
+            }
+            _ => false,
+        })
+        .is_some()
+    }
+
+    /// Whether some call in `func` releases an element of the array spelled
+    /// `base_text`: `free`, a recognised deallocator, a macro that frees
+    /// that argument, or a callee whose `frees_params` covers it, handed
+    /// `base_text[...]`.
+    fn function_releases_elements_of(&self, func: &Node, base_text: &str, source: &str) -> bool {
+        query::find_first_descendant(*func, |n| {
+            if n.kind() != "call_expression" {
+                return false;
+            }
+            let Some(function) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let callee = self.callee_name(&function, source);
+            let summary = self.function_summaries.get(&callee);
+            let by_name = callee == "free" || self.is_named_deallocator(&callee);
+            let by_macro = self.macro_freed_param_indices(&callee);
+            Self::call_args(n).enumerate().any(|(idx, arg)| {
+                let arg = peel_casts_and_parens(arg);
+                arg.kind() == "subscript_expression"
+                    && arg.child_by_field_name("argument").is_some_and(|b| {
+                        ast_utils::get_node_text(&peel_casts_and_parens(b), source) == base_text
+                    })
+                    && (by_name
+                        || by_macro.contains(&idx)
+                        || summary.is_some_and(|s| s.frees_params.contains(&idx)))
+            })
+        })
+        .is_some()
+    }
+
+    /// A call's arguments, in order, without the punctuation.
+    fn call_args<'t>(call: Node<'t>) -> impl Iterator<Item = Node<'t>> {
+        let args = call.child_by_field_name("arguments");
+        (0..args.map_or(0, |a| a.child_count()))
+            .filter_map(move |i| args.and_then(|a| a.child(i)))
+            .filter(|n| !matches!(n.kind(), "," | "(" | ")" | "comment"))
     }
 
     /// Find array allocation or free pattern in a for loop.
@@ -2401,8 +2574,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         if let Some((alloc_info, free_info, loop_condition)) = array_pattern {
             if let Some((array_base, site)) = alloc_info {
                 if let Some(cond) = &loop_condition {
+                    let (outlives, released) = self.loop_array_ownership(loop_node, source);
                     let entry = self.loop_array_patterns.entry(array_base).or_default();
                     entry.alloc = Some((cond.clone(), site));
+                    entry.outlives_function |= outlives;
+                    entry.elements_released |= released;
                 }
             }
             if let Some((array_base, _)) = free_info {
@@ -4414,6 +4590,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             let Some((alloc_cond, (line, column))) = &evidence.alloc else {
                 continue;
             };
+            if evidence.outlives_function {
+                continue;
+            }
             match &evidence.free_cond {
                 Some(free_cond) if free_cond != alloc_cond => {
                     // Extract the numeric bounds if possible for a clearer message
@@ -4435,6 +4614,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     });
                 }
                 Some(_) => {}
+                None if evidence.elements_released => {}
                 None => {
                     // Allocated in loop but not freed in any loop
                     violations.push(RuleViolation {

@@ -1220,6 +1220,44 @@ fn manifest_mem31() -> PathBuf {
     fixtures().join("manifest_mem31.toml")
 }
 
+/// The loop-array check reports an array whose elements a loop allocates
+/// only when this function is the one that should release them. Returned to
+/// the caller, kept in a file-scope table, or released by an unwind loop
+/// through a project deallocator: none is a loop-array finding (aurora_lint
+/// 1494, where every relocated real-world one was of these kinds).
+#[test]
+fn loop_array_elements_owned_elsewhere_are_not_reported() {
+    let dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cli/loop_array_ownership");
+    for name in [
+        "returned_to_caller.c",
+        "global_table.c",
+        "released_by_unwind_loop.c",
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("out.json");
+        let (code, _, _) = run_aurora_lint(&[
+            dir.join(name).to_str().unwrap(),
+            "-m",
+            manifest_mem31().to_str().unwrap(),
+            "-e",
+            out.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 0);
+        let violations: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        let loop_findings: Vec<_> = violations
+            .iter()
+            .filter(|v| {
+                v["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("elements allocated in loop"))
+            })
+            .collect();
+        assert!(loop_findings.is_empty(), "{name}: {loop_findings:?}");
+    }
+}
+
 /// An array whose elements are allocated in a loop is reported at the
 /// `array[i] = malloc(...)` that allocates them, not at line 1.
 ///
