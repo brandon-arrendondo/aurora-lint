@@ -103,8 +103,12 @@ impl Exp19C {
                 let mut body = None;
                 let mut cursor = alternative.walk();
                 for child in alternative.children(&mut cursor) {
-                    // Skip the "else" keyword, look for the actual statement
-                    if child.kind() != "else" {
+                    // Skip the "else" keyword and any comment between it and
+                    // the statement (`} else /* why */ {`, or sqlite's
+                    // `}else` / `#endif` / `/*if( !pIncr->bUseThread )*/{`):
+                    // a comment is a node here, and taking it as the body
+                    // reported a braced else as unbraced.
+                    if child.kind() != "else" && child.kind() != "comment" {
                         body = Some(child);
                         break;
                     }

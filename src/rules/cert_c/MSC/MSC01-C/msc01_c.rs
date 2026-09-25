@@ -19,11 +19,40 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use crate::utility::cert_c::ast_utils::next_code_offset;
 use lang_parsing_substrate::query;
+use std::collections::HashSet;
 use tree_sitter::Node;
 
 #[derive(Debug)]
 pub struct Msc01C;
+
+/// `text` begins with `keyword` as a whole word: `else`, not `elsewhere`.
+fn starts_with_keyword(text: &str, keyword: &str) -> bool {
+    text.strip_prefix(keyword).is_some_and(|rest| {
+        rest.chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_')
+    })
+}
+
+/// The `if_statement` that begins at byte `start` in the tree holding `node`.
+fn if_statement_at<'t>(node: &Node<'t>, start: usize) -> Option<Node<'t>> {
+    let mut root = *node;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    let mut candidate = root.descendant_for_byte_range(start, start + "if".len())?;
+    loop {
+        if candidate.start_byte() != start {
+            return None;
+        }
+        if candidate.kind() == "if_statement" {
+            return Some(candidate);
+        }
+        candidate = candidate.parent()?;
+    }
+}
 
 impl Msc01C {
     #[allow(dead_code)]
@@ -36,18 +65,50 @@ impl Msc01C {
     /// none of the conditions hold is unhandled. A standalone `if` with no
     /// else at all (not part of any chain) is an ordinary guard clause and is
     /// never reached here, since callers only recurse into else-if bodies.
+    ///
+    /// `reported` holds the start byte of every tail already flagged: a chain
+    /// split across directives is walked both from its first fragment and from
+    /// each later fragment's own top-level `if`, and must be reported once.
     fn check_missing_final_else(
         &self,
         if_stmt: &Node,
         is_continuation: bool,
+        source: &str,
+        reported: &mut HashSet<usize>,
         violations: &mut Vec<RuleViolation>,
     ) {
         match if_stmt.child_by_field_name("alternative") {
             None => {
+                // The chain can continue in the source but out of the tree:
+                // an `else` cannot begin a block item, so one that follows a
+                // directive (`#endif` / `else {`, an `#ifdef` whose arms each
+                // hold their own `else {`, or `else` / `#endif` / `#ifdef Y` /
+                // `if (...)`) is left unattached. Read past comments and
+                // directive lines for it. A final `else` ends the chain; an
+                // `else if` continues it, and the tail that decides the
+                // finding is wherever the text ends (hostap's `#ifdef`-spliced
+                // key-management chains, curl timeval.c).
+                if let Some(i) = next_code_offset(source, if_stmt.end_byte())
+                    .filter(|&i| starts_with_keyword(&source[i..], "else"))
+                {
+                    match next_code_offset(source, i + "else".len()) {
+                        Some(j) if starts_with_keyword(&source[j..], "if") => {
+                            if let Some(next_if) = if_statement_at(if_stmt, j) {
+                                self.check_missing_final_else(
+                                    &next_if, true, source, reported, violations,
+                                );
+                                return;
+                            }
+                            // The continuing `if` did not parse as one; judge
+                            // this link as the tail, as before.
+                        }
+                        _ => return,
+                    }
+                }
                 // A bare `if` with no `else` is only a violation when it's
                 // the tail of an else-if chain; a standalone guard clause
                 // (is_continuation == false) is not what this rule targets.
-                if !is_continuation {
+                if !is_continuation || !reported.insert(if_stmt.start_byte()) {
                     return;
                 }
                 let pos = if_stmt.start_position();
@@ -63,9 +124,17 @@ impl Msc01C {
                 });
             }
             Some(alternative) => {
-                if let Some(else_body) = alternative.named_child(0) {
+                // Skip a comment between `else` and its statement, or
+                // `else /* ... */ if` ends the walk as if it were a final else.
+                let mut cursor = alternative.walk();
+                let else_body = alternative
+                    .named_children(&mut cursor)
+                    .find(|n| n.kind() != "comment");
+                if let Some(else_body) = else_body {
                     if else_body.kind() == "if_statement" {
-                        self.check_missing_final_else(&else_body, true, violations);
+                        self.check_missing_final_else(
+                            &else_body, true, source, reported, violations,
+                        );
                     }
                 }
             }
@@ -114,6 +183,7 @@ impl Msc01C {
     }
 
     fn traverse(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let mut reported = HashSet::new();
         for if_stmt in query::find_descendants_of_kind(*root, "if_statement") {
             // Only start a chain check from a top-level `if` (not one that is
             // itself the else-if continuation of another if_statement), to
@@ -125,7 +195,7 @@ impl Msc01C {
             if is_else_if {
                 continue;
             }
-            self.check_missing_final_else(&if_stmt, false, violations);
+            self.check_missing_final_else(&if_stmt, false, source, &mut reported, violations);
         }
 
         for switch_stmt in query::find_descendants_of_kind(*root, "switch_statement") {

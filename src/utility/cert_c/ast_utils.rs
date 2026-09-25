@@ -710,6 +710,69 @@ pub fn is_on_preproc_directive_line(source: &str, offset: usize) -> bool {
     source[line_start..line_end].trim_start().starts_with('#')
 }
 
+/// Byte offset of the first code token at or after `from`, skipping
+/// whitespace, `//` and `/* */` comments, and whole preprocessor directive
+/// lines (backslash continuations and a block comment trailing the directive
+/// included). `None` when only those remain.
+///
+/// The question a rule asks when tree-sitter left a construct unattached
+/// across a directive: what does the compiler see next in SOME configuration?
+/// `if (a) { ... }` / `#ifdef X` / `else { ... }` parses with no
+/// `alternative`, because `preproc_ifdef` is a block item and an `else`
+/// cannot begin one, yet the chain does end in an `else`. This reads past the
+/// directive to it. It does not choose an arm: under `#ifdef X` / `#else`
+/// both arms' text is skipped alike and the first code token of the first
+/// arm is what comes back, so a caller testing for a keyword gets "present in
+/// the source", not "present in every build".
+pub fn next_code_offset(source: &str, from: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut i = from.min(bytes.len());
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c.is_ascii_whitespace() {
+            i += 1;
+        } else if source[i..].starts_with("//") {
+            i = source[i..].find('\n').map_or(bytes.len(), |n| i + n);
+        } else if source[i..].starts_with("/*") {
+            i = source[i + 2..]
+                .find("*/")
+                .map_or(bytes.len(), |n| i + 2 + n + 2);
+        } else if c == b'#' && is_on_preproc_directive_line(source, i) {
+            i = end_of_directive(source, i);
+        } else {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Offset just past the directive whose `#` is at `start`: the end of its
+/// logical line, following backslash continuations and any block comment
+/// that opens on it (`#endif /* FOO` / `   BAR */`), since a newline inside
+/// that comment does not end the directive.
+fn end_of_directive(source: &str, start: usize) -> usize {
+    let bytes = source.as_bytes();
+    let mut i = start;
+    while i < bytes.len() {
+        if source[i..].starts_with("/*") {
+            i = source[i + 2..]
+                .find("*/")
+                .map_or(bytes.len(), |n| i + 2 + n + 2);
+        } else if source[i..].starts_with("//") {
+            return source[i..].find('\n').map_or(bytes.len(), |n| i + n);
+        } else if bytes[i] == b'\n' {
+            if source[start..i].trim_end().ends_with('\\') {
+                i += 1;
+            } else {
+                return i;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    bytes.len()
+}
+
 /// Whether the byte at `offset` lies inside a string or character literal in
 /// `source`.
 ///
@@ -2557,7 +2620,7 @@ int g(int *p);
 
 #[cfg(test)]
 mod preproc_and_literal_position_tests {
-    use super::{is_in_string_or_char_literal, is_on_preproc_directive_line};
+    use super::{is_in_string_or_char_literal, is_on_preproc_directive_line, next_code_offset};
 
     fn at(src: &str, needle: &str) -> usize {
         src.find(needle).expect("needle present in fixture")
@@ -2578,6 +2641,22 @@ mod preproc_and_literal_position_tests {
         let src = "#if defined(A) && \\\n    defined(B)\nint x;\n";
         assert!(is_on_preproc_directive_line(src, at(src, "defined(B)")));
         assert!(!is_on_preproc_directive_line(src, at(src, "int x")));
+    }
+
+    #[test]
+    fn next_code_offset_skips_comments_and_directives() {
+        // curl lib/curlx/timeval.c: the final else sits in an #ifdef arm
+        // below a comment.
+        let src = "}\n  /*\n   * fallback\n   */\n#ifdef HAVE_X\n  else {\n";
+        assert_eq!(next_code_offset(src, 1), Some(at(src, "else")));
+        // A continued directive and a comment trailing a directive across a
+        // newline are both part of the directive.
+        let src = "}\n#if defined(A) && \\\n    defined(B)\n#endif /* A\n  B */\nelse x;\n";
+        assert_eq!(next_code_offset(src, 1), Some(at(src, "else")));
+        // A '#' not at the start of a line is code.
+        let src = "} /* c */ # x\n";
+        assert_eq!(next_code_offset(src, 1), Some(at(src, "#")));
+        assert_eq!(next_code_offset("} // only\n#endif\n", 1), None);
     }
 
     #[test]
