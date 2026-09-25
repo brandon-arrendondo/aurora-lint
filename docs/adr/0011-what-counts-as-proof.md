@@ -101,6 +101,16 @@ TP. That holds even when it is almost certainly harmless in practice.
   call. It is not a reason to flag the fixed commit being measured. The bar
   is high: *every* call site, provably, with no function-pointer or
   external route in. Most code won't clear it (Brandon, 2026-09-24).
+- **A proof chain has to end in a real proof.** If a caller dereferences a
+  pointer before passing it on (`p->x = 1; f(p);`), that dereference is not
+  a check. When `p` is unchecked in the caller, the dereference there is its
+  own problem one frame up: it moves the fault, it doesn't prove the value
+  safe. Such a caller counts only if the chain above it ends in a test, a
+  language guarantee, or an address-of or literal argument. The same holds
+  for an array member whose base pointer was dereferenced above the call.
+  Flag the problem where it is. As with compiler errors, the first site of
+  failure goes to the top of the pile. Later sites that depend on it may
+  not show until that one is fixed.
 - Where the standard leaves something implementation-defined, as it does
   with integer widths, basis 1 does not cover it and basis 4 applies.
 - This ADR does not change ADR-0010's rule that every compilable
