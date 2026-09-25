@@ -552,7 +552,10 @@ fn prescan_file_list(
         // caller in neither file: it cannot legally call either definition,
         // and the rules' no-context behaviour is what "unknown callee" means
         // everywhere else.
-        for (name, summary) in r.function_summaries {
+        for (name, mut summary) in r.function_summaries {
+            if !scoped_names.is_empty() {
+                scope_summary_callees(&mut summary, &scoped_names, file_key.as_deref());
+            }
             if scoped_names.contains(&name) {
                 // Keyed by file for the length of the fold, so phase 4 below
                 // aggregates this definition from its OWN file's call sites
@@ -1158,6 +1161,54 @@ fn scoped_callee(scoped: &HashSet<String>, file: Option<&str>, callee: String) -
     } else {
         callee
     }
+}
+
+/// Key the callees a summary names the way the fold keys their definitions,
+/// so the phase 4 passes that follow a summary's own edges to another
+/// summary -- the passthrough chains, the returned-callee and name-shaped
+/// free resolutions -- reach this file's scoped static rather than a bare
+/// entry the fold never made. Without it, a static wrapper forwarding to a
+/// static sink that another file also defines (Juliet's `badSink` ->
+/// `badVaSink`, in every file of a CWE directory) has an edge to nothing,
+/// and whatever the chain carries -- taint, frees, stores -- stops there.
+fn scope_summary_callees(
+    summary: &mut FunctionSummary,
+    scoped: &HashSet<String>,
+    file: Option<&str>,
+) {
+    let key = |callee: &mut String| {
+        if scoped.contains(callee.as_str()) {
+            *callee = qualified_key(file, callee);
+        }
+    };
+    for edges in summary
+        .param_passthroughs
+        .values_mut()
+        .chain(summary.unconditional_param_passthroughs.values_mut())
+        .chain(summary.modifies_params_pending.values_mut())
+    {
+        for (callee, _) in edges.iter_mut() {
+            key(callee);
+        }
+    }
+    for guesses in summary.frees_params_by_name.values_mut() {
+        for (callee, _, _) in guesses.iter_mut() {
+            key(callee);
+        }
+    }
+    for set in [
+        &mut summary.returned_callees,
+        &mut summary.returns_from_callees,
+    ] {
+        *set = std::mem::take(set)
+            .into_iter()
+            .map(|c| scoped_callee(scoped, file, c))
+            .collect();
+    }
+    summary.returned_value_passthroughs = std::mem::take(&mut summary.returned_value_passthroughs)
+        .into_iter()
+        .map(|(c, i)| (scoped_callee(scoped, file, c), i))
+        .collect();
 }
 
 fn merge_documented_params(
@@ -2795,18 +2846,26 @@ fn collect_local_tainted_vars(
 
 /// Walk call expressions in a function body, recording per-argument taint
 /// facts (via `tainted_vars`, already resolved for this function) keyed by
-/// callee name. Mirrors `collect_int_calls_in_node`/`collect_buf_calls_in_node`.
+/// callee name. Mirrors `collect_int_calls_in_node`/`collect_buf_calls_in_node`,
+/// including the call through a local function pointer, recorded under the
+/// function bound to it (`funcptr_bindings`): without it, Juliet's variant-44
+/// sink, reached only as `funcPtr(data)`, has no observed call site at all.
 fn collect_taint_calls_in_node(
     node: &Node,
     source: &str,
     aliases: &HashMap<String, String>,
     tainted_vars: &HashSet<String>,
+    funcptr_bindings: &HashMap<String, String>,
     callsite_taint_args: &mut HashMap<String, Vec<Vec<bool>>>,
 ) {
     if node.kind() == "call_expression" {
         if let Some(function) = node.child_by_field_name("function") {
             if function.kind() == "identifier" {
-                let callee = function.utf8_text(source.as_bytes()).unwrap_or("");
+                let raw_callee = function.utf8_text(source.as_bytes()).unwrap_or("");
+                let callee = funcptr_bindings
+                    .get(raw_callee)
+                    .map(String::as_str)
+                    .unwrap_or(raw_callee);
                 if !callee.is_empty() {
                     if let Some(args_node) = node.child_by_field_name("arguments") {
                         let args = real_call_args(&args_node);
@@ -2827,7 +2886,14 @@ fn collect_taint_calls_in_node(
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            collect_taint_calls_in_node(&child, source, aliases, tainted_vars, callsite_taint_args);
+            collect_taint_calls_in_node(
+                &child,
+                source,
+                aliases,
+                tainted_vars,
+                funcptr_bindings,
+                callsite_taint_args,
+            );
         }
     }
 }
@@ -2851,11 +2917,13 @@ pub(crate) fn collect_callsite_taint_args_from_tree(
                 "function_definition" => {
                     if let Some(body) = child.child_by_field_name("body") {
                         let tainted_vars = collect_local_tainted_vars(&body, source, aliases);
+                        let funcptr_bindings = collect_funcptr_bindings(&body, source);
                         collect_taint_calls_in_node(
                             &body,
                             source,
                             aliases,
                             &tainted_vars,
+                            &funcptr_bindings,
                             callsite_taint_args,
                         );
                     }
@@ -8399,6 +8467,83 @@ void caller(char *other) {
                  reach this file's own definition"
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Juliet CWE-134 variant 41, reduced: in each file a `static` relay
+    /// forwards its parameter to a `static` sink, and both names are defined
+    /// in the other file too. The fold keys both definitions by file, so the
+    /// relay's passthrough edge has to be keyed the same way, or the taint
+    /// the relay receives from a_bad.c's entry stops at an edge to a bare
+    /// `sink` that was never made -- and the sink reads as only ever handed
+    /// clean data.
+    #[test]
+    fn a_passthrough_edge_reaches_the_file_scoped_static_it_names() {
+        let dir = std::env::temp_dir().join("aurora-lint-prescan-scoped-passthrough-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (file, entry, arg) in [
+            (
+                "a_bad.c",
+                "bad_entry(void) { char b[8]; fgets(b, 8, stdin);",
+                "b",
+            ),
+            ("b_good.c", "good_entry(void) {", "\"fixed\""),
+        ] {
+            std::fs::write(
+                dir.join(file),
+                format!(
+                    "static void sink(char *fmt) {{ printf(fmt); }}
+                     static void relay(char *fmt) {{ sink(fmt); }}
+                     void {entry} relay({arg}); }}
+"
+                ),
+            )
+            .unwrap();
+        }
+        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let tainted = |file: &str| {
+            let view = ctx.as_seen_from(&dir.join(file)).expect("a scoped view");
+            let summary = view.function_summaries.get("sink").expect("its own sink");
+            assert!(summary.callsite_param_taint_observed.contains(&0));
+            summary.callsite_param_tainted.contains(&0)
+        };
+        assert!(
+            tainted("a_bad.c"),
+            "a_bad.c's relay forwards the fgets buffer to its sink"
+        );
+        assert!(
+            !tainted("b_good.c"),
+            "b_good.c's sink only ever sees a literal"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Juliet CWE-134 variant 44, reduced: a sink called only through a local
+    /// function pointer. The call is recorded against the function bound to
+    /// the pointer, as the buffer-size collector already does, so the sink
+    /// has observed call sites and each carries its own argument's taint.
+    #[test]
+    fn a_call_through_a_local_function_pointer_records_the_bound_callee_taint() {
+        let dir = std::env::temp_dir().join("aurora-lint-prescan-funcptr-taint-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("one.c"),
+            "static void bad_sink(char *fmt) { printf(fmt); }
+             static void good_sink(char *fmt) { printf(fmt); }
+             void bad(void) { char b[8]; void (*f)(char *) = bad_sink; fgets(b, 8, stdin); f(b); }
+             void good(void) { void (*f)(char *) = good_sink; f(\"fixed\"); }
+",
+        )
+        .unwrap();
+        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let bad = ctx.function_summaries.get("bad_sink").unwrap();
+        assert!(bad.callsite_param_taint_observed.contains(&0));
+        assert!(bad.callsite_param_tainted.contains(&0));
+        let good = ctx.function_summaries.get("good_sink").unwrap();
+        assert!(good.callsite_param_taint_observed.contains(&0));
+        assert!(!good.callsite_param_tainted.contains(&0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

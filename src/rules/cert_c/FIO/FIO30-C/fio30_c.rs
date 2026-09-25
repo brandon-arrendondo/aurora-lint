@@ -1209,22 +1209,35 @@ impl FormatStringAnalyzer {
                 // pattern) — treat it as safe. Cross-TU sinks, whose callers live
                 // in another file and are therefore unobservable, stay conservative.
                 if self.function_parameters.contains(&var_name) {
+                    let has_local_caller =
+                        self.called_function_names.contains(&self.current_function);
                     if let Some(&param_idx) = self.param_positions.get(&var_name) {
                         if let Some(summary) = self.function_summaries.get(&self.current_function) {
                             // Cross-file: the project-wide prescan already
                             // recorded every call site to this function
                             // across every scanned file. When at least one
                             // was observed at this exact parameter position,
-                            // trust that fact outright instead of falling
-                            // back to the intra-TU heuristic below, which can
-                            // only ever see callers in this same file.
+                            // trust that fact instead of falling back to the
+                            // intra-TU heuristic below, which can only ever
+                            // see callers in this same file.
+                            //
+                            // Except a clean verdict for a `static` function
+                            // called here: every caller it has is in this
+                            // file, where the heuristic below sees them all
+                            // and resolves more than prescan's one-body taint
+                            // check does -- a value returned by a local
+                            // source function, a static global written from
+                            // tainted data (Juliet's variants 42 and 45).
                             if summary.callsite_param_taint_observed.contains(&param_idx) {
-                                return summary.callsite_param_tainted.contains(&param_idx);
+                                if summary.callsite_param_tainted.contains(&param_idx) {
+                                    return true;
+                                }
+                                if !(summary.has_internal_linkage && has_local_caller) {
+                                    return false;
+                                }
                             }
                         }
                     }
-                    let has_local_caller =
-                        self.called_function_names.contains(&self.current_function);
                     if has_local_caller && !self.param_is_interproc_tainted(&var_name) {
                         return false;
                     }

@@ -284,18 +284,19 @@ two files each with a scoped `subst`, a same-file relay forwarding its own
 parameter in, an entry point calling the relay with NULL. Each file's `subst`
 gets `{0: NotNull, 1: PossiblyNull}`; with stage 3 disabled param 1 vanishes.
 
-**Two layers are deliberately NOT scoped**, because nothing measured points
-at them:
+**One layer is deliberately NOT scoped**, because nothing measured points
+at it: `call_graph` edges. `ambiguous_call_targets` already marks these names
+opaque to the reachability consumers, and a second representation of the
+same fact looked worse than none. The *reverse* graph, `callers`, turned
+out not to be optional; see the next section.
 
-- `call_graph` edges. `ambiguous_call_targets` already marks these names
-  opaque to the reachability consumers, and a second representation of the
-  same fact looked worse than none. The *reverse* graph, `callers`, turned
-  out not to be optional; see the next section.
-- the callee names stored *inside* a summary — `returned_callees`,
-  `returns_from_callees`, `param_passthroughs`,
-  `unconditional_param_passthroughs`, `returned_value_passthroughs`,
-  `modifies_params_pending`, `frees_params_by_name`. These matter only where
-  a scoped function calls another scoped function in the same file.
+The callee names stored *inside* a summary were left bare the same way at
+first — `returned_callees`, `returns_from_callees`, `param_passthroughs`,
+`unconditional_param_passthroughs`, `returned_value_passthroughs`,
+`modifies_params_pending`, `frees_params_by_name` — on the reasoning that
+they matter only where a scoped function calls another scoped function in
+the same file. Juliet is exactly that, and FIO30-C measured it: see the last
+subsection of this section.
 
 ### What attempt 3 measured, and what the measurement is worth
 
@@ -401,6 +402,39 @@ corpus" and fine there, but in Juliet it meant every file, O(files ×
 summaries) per directory. The view is now a scope over the shared tables
 (`ScopedTable`: a file key plus that file's scoped names), and it costs
 nothing to build.
+
+### An edge inside a summary names a callee too
+
+FIO30-C lost every CWE-134 finding in Juliet's variants 41, 42 and 45 to
+increment 2, and gained false positives in 44. Each variant defines
+`static void badSink()` and `static void badVaSink()` (or their good-path
+siblings) in every file, so both are scoped. Three separate things were
+exposed, and only the first is a scoping defect:
+
+- **The summary's own edges.** `badSink` forwards its parameter to
+  `badVaSink`, and `propagate_transitive_param_taint` follows that
+  `param_passthroughs` edge to the callee's summary by the name the edge
+  holds. The fold keyed `badVaSink` by file and left the edge bare, so it led
+  to no summary and the taint `badSink` received stopped there. Every
+  phase-4 pass that follows one summary's callee names to another reads
+  the same fields, so `scope_summary_callees` now keys all seven in the fold,
+  with `scoped_callee`, as the call-site tables already were.
+- **A prescan verdict FIO30-C trusted too far.** Prescan's call-site taint
+  looks at one function body at a time, so a value returned by a local
+  source function (variant 42) or read from a static global a tainted
+  function wrote (45) reads as clean. FIO30-C took an observed-clean
+  parameter as settled. Pooling had hidden this: some other file's
+  same-named sink was tainted. For a `static` function called in the file,
+  every caller is in that file, and the rule's own whole-file pass models
+  both routes, so a clean prescan verdict now defers to it there.
+- **A call through a function pointer.** Variant 44 reaches its sinks only as
+  `funcPtr(data)`. The buffer-size collector already records such a call
+  against the function bound to the pointer (`collect_funcptr_bindings`);
+  the taint collector did not, so the good-path sink had no observed caller
+  and stayed conservatively flagged once pooling stopped lending it another
+  file's clean one. The taint collector now uses the same bindings.
+  Variant 65's cross-file function pointer was flagged the same way before
+  increment 2 and clears with it.
 
 ## 6. What increment 3 cannot decide, and should not pretend to
 
