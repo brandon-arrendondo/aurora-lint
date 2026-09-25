@@ -55,3 +55,5 @@ outlive any one task.
   unless the file itself proves it dead](0010-every-compilable-configuration-counts.md)
 - [0011 — What counts as proof: language guarantees and code as written, not
   compilers or inference](0011-what-counts-as-proof.md)
+- [0012 — (PROPOSED, not accepted) Where a finding lives: EXP34-C at the
+  dereference, API00-C at the entry point](0012-where-a-finding-lives.md)
