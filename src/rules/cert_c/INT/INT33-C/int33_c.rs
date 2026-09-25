@@ -3,6 +3,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::FunctionCfg;
+use crate::analyze::check_macros;
 use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::value_range::{self, RangeAnalysisResult};
@@ -27,6 +28,9 @@ pub struct Int33C {
     /// Struct name -> field name -> field type (from project context), used to
     /// resolve the type of `obj.field` / `ptr->field` divisor operands.
     struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
+    /// Assert-style macros no configuration compiles out, with the index of
+    /// the parameter each checks (`ProjectContext::abort_check_macros`).
+    abort_check_macros: RefCell<Arc<HashMap<String, usize>>>,
 }
 
 impl Int33C {
@@ -37,6 +41,7 @@ impl Int33C {
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
             struct_field_types: RefCell::new(Arc::new(HashMap::new())),
+            abort_check_macros: RefCell::new(Arc::new(HashMap::new())),
         }
     }
 }
@@ -74,6 +79,7 @@ impl CertRule for Int33C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_macros.borrow_mut() = context.macro_constants.clone();
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
+        *self.abort_check_macros.borrow_mut() = context.abort_check_macros.clone();
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -654,24 +660,30 @@ impl Int33C {
             return true;
         }
 
-        Self::asserted_nonzero_before(div_node, &targets, source, &macros)
+        let checks = self.abort_check_macros.borrow();
+        Self::checked_nonzero_before(div_node, &targets, source, &macros, &checks)
     }
 
-    /// Whether an assert-shaped statement preceding `site` in one of its
-    /// enclosing blocks asserts a condition excluding zero for one of
-    /// `targets`, with no assignment to that target between the two.
+    /// Whether a check macro no configuration compiles out, preceding `site`
+    /// in one of its enclosing blocks, checks a condition excluding zero for
+    /// one of `targets`, with no assignment to that target between the two.
     ///
-    /// Same walk as ARR38-C's `asserted_size_bound`: preceding siblings at each
-    /// block level up to the function, looking through preprocessor wrappers
-    /// because an `assert` under `#ifndef NDEBUG` is a common spelling. The
-    /// assert is name-shape matched (`assert`, `serverAssert`, `DEBUGASSERT`,
-    /// `WPA_ASSERT`) rather than listed.
-    fn asserted_nonzero_before(
+    /// Same walk as ARR38-C's `checked_size_bound`: preceding siblings at each
+    /// block level up to the function. The check is recognized by what the
+    /// macro expands to (`check_macros::abort_checked_argument`), so valkey's
+    /// `serverAssert` counts and an `NDEBUG`-strippable `assert`,
+    /// `DEBUGASSERT` or `WPA_ASSERT` does not: in the release configuration
+    /// it is gone and the division is unchecked (ADR-0010 D5).
+    fn checked_nonzero_before(
         site: &Node,
         targets: &[String],
         source: &str,
         macros: &MacroConstantMap,
+        checks: &HashMap<String, usize>,
     ) -> bool {
+        if checks.is_empty() {
+            return false;
+        }
         const BLOCK_LIKE_KINDS: &[&str] = &[
             "compound_statement",
             "preproc_if",
@@ -689,7 +701,13 @@ impl Int33C {
                     .take_while(|stmt| stmt.start_byte() < current.start_byte())
                     .collect();
                 for (i, stmt) in preceding.iter().enumerate() {
-                    if !Self::asserts_nonzero(stmt, targets, source, macros) {
+                    let excludes_zero = check_macros::abort_checked_argument(stmt, source, checks)
+                        .is_some_and(|cond| {
+                            guard_dominance::condition_excludes_zero(
+                                &cond, targets, true, source, macros,
+                            )
+                        });
+                    if !excludes_zero {
                         continue;
                     }
                     // Anything assigned to the divisor after the assert and
@@ -708,46 +726,6 @@ impl Int33C {
             current = parent;
         }
         false
-    }
-
-    /// Whether `stmt` -- or, when it is a preprocessor wrapper, any statement
-    /// inside it -- is an assert whose condition excludes zero for a target.
-    fn asserts_nonzero(
-        stmt: &Node,
-        targets: &[String],
-        source: &str,
-        macros: &MacroConstantMap,
-    ) -> bool {
-        if stmt.kind().starts_with("preproc_") {
-            let mut cursor = stmt.walk();
-            let mut inner = stmt.named_children(&mut cursor);
-            return inner.any(|s| Self::asserts_nonzero(&s, targets, source, macros));
-        }
-        let call = if stmt.kind() == "expression_statement" {
-            match stmt.named_child(0) {
-                Some(c) => c,
-                None => return false,
-            }
-        } else {
-            *stmt
-        };
-        if call.kind() != "call_expression" {
-            return false;
-        }
-        let Some(function) = call.child_by_field_name("function") else {
-            return false;
-        };
-        if !ast_utils::get_node_text(&function, source)
-            .to_ascii_lowercase()
-            .contains("assert")
-        {
-            return false;
-        }
-        call.child_by_field_name("arguments")
-            .and_then(|args| args.named_child(0))
-            .is_some_and(|cond| {
-                guard_dominance::condition_excludes_zero(&cond, targets, true, source, macros)
-            })
     }
 
     /// Whether any assignment or `++`/`--` anywhere under `node` writes one
