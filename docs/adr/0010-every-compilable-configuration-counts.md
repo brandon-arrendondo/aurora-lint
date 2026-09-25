@@ -101,6 +101,14 @@ dozen legacy FP rows whose stated basis is "compiled out in release" or
    gone, so it guards nothing (the API00-C standard). In the debug
    configuration its argument is compiled and evaluated, so a violation
    inside it is a violation. Neither configuration is the privileged one.
+   Treating a strippable assert as a guard would assume a debug test suite
+   strong enough to reach every assert before release. The oracle cannot
+   assume that for any corpus, so it doesn't, even where it is stricter than
+   a given codebase deserves. The value is that every assert question gets
+   the same answer. The rule is about the stripping, not the spelling: an
+   assert macro with no `NDEBUG` (or other build-flag) arm, such as valkey's
+   `serverAssert`, is compiled in every configuration, and one that dominates
+   the flagged use is a guard like any other check.
 6. **Each oracle describes one stated primary build configuration.** A
    corpus's precision/recall figure is a statement about the code the
    primary configuration compiles; that configuration dominates what the
