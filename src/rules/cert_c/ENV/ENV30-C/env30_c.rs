@@ -5,7 +5,7 @@ use crate::analyze::argument_objects::argument_nodes;
 use crate::manifest::{RuleCategory, Severity};
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declarator};
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::fn_ptr_bindings;
 use lang_parsing_substrate::query;
@@ -89,14 +89,17 @@ impl ENV30C {
                 {
                     // Extract variable name
                     if let Some(var_name) = self.extract_var_name_from_declaration(&n, source) {
-                        protected_vars.insert(var_name, func_name);
+                        protected_vars.insert(declared_key(&var_name, &n), func_name);
                     }
                 }
                 // Also check for derived pointers: char *ptr = strchr(protected_var, '.')
                 else if let Some((derived_var, orig_func)) =
                     self.check_derived_pointer_declaration(&n, source, protected_vars)
                 {
-                    protected_vars.insert(derived_var, format!("{} (derived)", orig_func));
+                    protected_vars.insert(
+                        declared_key(&derived_var, &n),
+                        format!("{} (derived)", orig_func),
+                    );
                 }
             }
 
@@ -109,7 +112,7 @@ impl ENV30C {
                     if let Some(left) = n.child_by_field_name("left") {
                         let var_name = get_node_text(&left, source).trim().to_string();
                         if !var_name.is_empty() {
-                            protected_vars.insert(var_name, func_name);
+                            protected_vars.insert(scoped_key(&left, &var_name, source), func_name);
                         }
                     }
                 }
@@ -161,7 +164,7 @@ impl ENV30C {
         let orig_func = self.derived_pointer_provenance(node, source, protected_vars)?;
         let left = node.child_by_field_name("left")?;
         let var_name = get_node_text(&left, source).trim().to_string();
-        Some((var_name, orig_func))
+        Some((scoped_key(&left, &var_name, source), orig_func))
     }
 
     /// The provenance a derived pointer inherits: `strchr` and its
@@ -209,7 +212,8 @@ impl ENV30C {
             if first.kind() != "identifier" {
                 continue;
             }
-            if let Some(orig_func) = protected_vars.get(get_node_text(&first, source)) {
+            let name = get_node_text(&first, source);
+            if let Some(orig_func) = protected_vars.get(&scoped_key(&first, name, source)) {
                 return Some(orig_func.clone());
             }
         }
@@ -227,10 +231,15 @@ impl ENV30C {
             if let Some(right) = node.child_by_field_name("right") {
                 let right_text = get_node_text(&right, source).trim().to_string();
                 // Check if right side is a protected variable (direct assignment)
-                if let Some(orig_func) = protected_vars.get(&right_text) {
+                if right.kind() != "identifier" {
+                    return None;
+                }
+                if let Some(orig_func) =
+                    protected_vars.get(&scoped_key(&right, &right_text, source))
+                {
                     let alias_name = get_node_text(&left, source).trim().to_string();
                     if !alias_name.is_empty() && alias_name != right_text {
-                        return Some((alias_name, orig_func.clone()));
+                        return Some((scoped_key(&left, &alias_name, source), orig_func.clone()));
                     }
                 }
             }
@@ -249,12 +258,16 @@ impl ENV30C {
         if let Some(value) = node.child_by_field_name("value") {
             let value_text = get_node_text(&value, source).trim().to_string();
             // Check if value is a protected variable
-            if let Some(orig_func) = protected_vars.get(&value_text) {
+            if value.kind() != "identifier" {
+                return None;
+            }
+            if let Some(orig_func) = protected_vars.get(&scoped_key(&value, &value_text, source)) {
                 // Get the variable name being declared
                 if let Some(decl) = node.child_by_field_name("declarator") {
                     let alias_name = self.extract_identifier_from_declarator(&decl, source);
                     if !alias_name.is_empty() && alias_name != value_text {
-                        return Some((alias_name, orig_func.clone()));
+                        let declaration = node.parent().unwrap_or(*node);
+                        return Some((declared_key(&alias_name, &declaration), orig_func.clone()));
                     }
                 }
             }
@@ -285,7 +298,11 @@ impl ENV30C {
         source: &str,
         fn_ptr_bindings: &HashMap<String, Vec<String>>,
     ) -> Option<String> {
-        for call in query::find_descendants_of_kind(*node, "call_expression") {
+        for call in stored_values(node)
+            .into_iter()
+            .flat_map(value_calls)
+            .collect::<Vec<_>>()
+        {
             let func = match call.child_by_field_name("function") {
                 Some(f) => f,
                 None => continue,
@@ -512,7 +529,7 @@ impl ENV30C {
         match node.kind() {
             "identifier" => {
                 let name = get_node_text(node, source);
-                if let Some(func_name) = protected_vars.get(name) {
+                if let Some(func_name) = protected_vars.get(&scoped_key(node, name, source)) {
                     return Some((name.to_string(), func_name.clone()));
                 }
             }
@@ -698,5 +715,65 @@ impl ENV30C {
     fn is_pointer_returning_function(&self, name: &str) -> bool {
         // Functions that return pointers into protected data but are not themselves protected
         matches!(name, "strchr" | "strrchr" | "strstr" | "strpbrk" | "memchr")
+    }
+}
+
+/// The key a protected variable is recorded under: its name plus the start
+/// of the declaration that binds this occurrence. Keyed by name alone, a
+/// variable inherited the origin of every same-named variable in the
+/// function: valkey acl.c's `sds errors = sdsempty();` was reported as
+/// holding strerror()'s result because an unrelated `errors` in an earlier
+/// block did (ADR-0006). A name that resolves to nothing in this file keys
+/// by the name, as before.
+fn scoped_key(ident: &Node, name: &str, source: &str) -> String {
+    if ident.kind() != "identifier" {
+        return name.to_string();
+    }
+    match resolve_identifier_declarator(ident, name, source) {
+        Some((decl, _)) => declared_key(name, &decl),
+        None => name.to_string(),
+    }
+}
+
+/// [`scoped_key`] for a name at the declaration that introduces it.
+fn declared_key(name: &str, declaration: &Node) -> String {
+    format!("{}@{}", name, declaration.start_byte())
+}
+
+/// The values `node` stores: each `init_declarator`'s initializer for a
+/// declaration, the right-hand side for an assignment.
+fn stored_values<'t>(node: &Node<'t>) -> Vec<Node<'t>> {
+    match node.kind() {
+        "assignment_expression" => node.child_by_field_name("right").into_iter().collect(),
+        "declaration" => {
+            let mut cursor = node.walk();
+            node.children(&mut cursor)
+                .filter(|c| c.kind() == "init_declarator")
+                .filter_map(|c| c.child_by_field_name("value"))
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The calls whose RESULT is the stored value: the value itself, through
+/// parentheses and casts, and either branch of a `?:`. Not a call nested in
+/// an argument: `sdscatprintf(sdsempty(), "%s", strerror(errno))` returns a
+/// new buffer that copied the text, and does not hand strerror()'s own
+/// storage to its caller.
+fn value_calls(value: Node) -> Vec<Node> {
+    match value.kind() {
+        "call_expression" => vec![value],
+        "parenthesized_expression" => value.named_child(0).map(value_calls).unwrap_or_default(),
+        "cast_expression" => value
+            .child_by_field_name("value")
+            .map(value_calls)
+            .unwrap_or_default(),
+        "conditional_expression" => ["consequence", "alternative"]
+            .iter()
+            .filter_map(|f| value.child_by_field_name(f))
+            .flat_map(value_calls)
+            .collect(),
+        _ => Vec::new(),
     }
 }
