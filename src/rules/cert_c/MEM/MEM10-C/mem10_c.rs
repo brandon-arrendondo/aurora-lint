@@ -38,12 +38,22 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::dead_regions::DeadRegions;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declarator};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::sync::Arc;
 use tree_sitter::Node;
 
-pub struct Mem10C;
+#[derive(Default)]
+pub struct Mem10C {
+    /// Typedef names that hide a pointer (`typedef char *sds;`), collected
+    /// project-wide because the typedef usually lives in a header.
+    pointer_typedef_names: RefCell<Arc<HashSet<String>>>,
+}
 
 impl CertRule for Mem10C {
     fn rule_id(&self) -> &'static str {
@@ -64,6 +74,10 @@ impl CertRule for Mem10C {
 
     fn cert_id(&self) -> &'static str {
         "MEM10-C"
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.pointer_typedef_names.borrow_mut() = context.pointer_typedef_names.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -278,6 +292,7 @@ impl Mem10C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
+        let mut dead: Option<DeadRegions> = None;
         for call_node in query::find_descendants_of_kind(*node, "call_expression") {
             if let Some(func) = call_node.child_by_field_name("function") {
                 let func_name = get_node_text(&func, source);
@@ -286,8 +301,9 @@ impl Mem10C {
                     "malloc" | "calloc" | "realloc" | "memset" | "memcpy" | "memmove"
                 ) {
                     if let Some(args) = call_node.child_by_field_name("arguments") {
+                        let dead = dead.get_or_insert_with(|| DeadRegions::of(source));
                         self.check_sizeof_args_in_call(
-                            func_name, &args, &call_node, source, violations,
+                            func_name, &args, &call_node, source, dead, violations,
                         );
                     }
                 }
@@ -302,6 +318,7 @@ impl Mem10C {
         args: &Node,
         call_node: &Node,
         source: &str,
+        dead: &DeadRegions,
         violations: &mut Vec<RuleViolation>,
     ) {
         let mut cursor = args.walk();
@@ -310,7 +327,9 @@ impl Mem10C {
                 continue;
             }
             // Check this argument and any nested sizeof within it
-            self.find_sizeof_pointer_in_expr(&child, func_name, call_node, source, violations);
+            self.find_sizeof_pointer_in_expr(
+                &child, func_name, call_node, source, dead, violations,
+            );
         }
     }
 
@@ -321,6 +340,7 @@ impl Mem10C {
         func_name: &str,
         call_node: &Node,
         source: &str,
+        dead: &DeadRegions,
         violations: &mut Vec<RuleViolation>,
     ) {
         if node.kind() == "sizeof_expression" {
@@ -333,7 +353,11 @@ impl Mem10C {
                         if let Some(inner) = child.child(1) {
                             if inner.kind() == "identifier" {
                                 let var_name = get_node_text(&inner, source);
-                                if self.is_pointer_variable(&inner, var_name, source) {
+                                if self.is_pointer_variable(&inner, var_name, source, dead)
+                                    && !call_takes_address_of(call_node, var_name, source)
+                                    && (!sizes_an_element(node, func_name, call_node)
+                                        || allocation_target_is(call_node, var_name, source))
+                                {
                                     violations.push(RuleViolation {
                                         rule_id: self.rule_id().to_string(),
                                         message: format!(
@@ -365,64 +389,51 @@ impl Mem10C {
 
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
-                self.find_sizeof_pointer_in_expr(&child, func_name, call_node, source, violations);
+                self.find_sizeof_pointer_in_expr(
+                    &child, func_name, call_node, source, dead, violations,
+                );
             }
         }
     }
 
-    /// Check if a variable is declared as a pointer type by walking up to the
-    /// enclosing function and scanning declarations and parameters.
-    fn is_pointer_variable(&self, node: &Node, var_name: &str, source: &str) -> bool {
-        // Walk up to enclosing function
-        let mut current = node.parent();
-        while let Some(p) = current {
-            if p.kind() == "function_definition" {
-                // Check parameters
-                if self.is_pointer_param(&p, var_name, source) {
-                    return true;
-                }
-                // Check local declarations in function body
-                if let Some(body) = p.child_by_field_name("body") {
-                    if self.is_pointer_local_var(&body, var_name, source) {
-                        return true;
-                    }
-                }
-                return false;
-            }
-            current = p.parent();
+    /// Whether this occurrence of `var_name` names an object of pointer type,
+    /// so that `sizeof(var_name)` is the size of a pointer. Resolved through
+    /// the declaration that binds THIS occurrence (ADR-0006), never by name:
+    /// the old name scan counted every parameter declared as a plain
+    /// identifier (`uint16_t value`, `unsigned int len`) as a pointer, and
+    /// reported `memcpy(ext, &value, sizeof(value))` as copying a pointer's
+    /// worth of a `uint16_t`. A pointer is a `*` declarator, an array
+    /// declarator on a parameter (which decays), or a name whose type is a
+    /// pointer typedef. A local or global array is not: `sizeof` of it is
+    /// the whole array. A declaration in a dead preprocessor arm is not an
+    /// answer either way.
+    fn is_pointer_variable(
+        &self,
+        node: &Node,
+        var_name: &str,
+        source: &str,
+        dead: &DeadRegions,
+    ) -> bool {
+        let Some((decl, declarator)) = resolve_identifier_declarator(node, var_name, source) else {
+            return false;
+        };
+        // A declaration in a preprocessor arm the file's own configuration
+        // strips says nothing about the live one: valkey's sha1.c `#define`s
+        // SHA1HANDSOFF, so `block` is the `CHAR64LONG16 block[1]` array, not
+        // the `#else` arm's pointer.
+        if dead.contains_node(&decl) {
+            return false;
         }
-        false
-    }
-
-    /// Check if var_name is declared as a pointer parameter
-    fn is_pointer_param(&self, func_node: &Node, var_name: &str, source: &str) -> bool {
-        let params = self.extract_pointer_param_names(func_node, source);
-        params.contains(var_name)
-    }
-
-    /// Check if var_name is a local pointer variable
-    fn is_pointer_local_var(&self, body: &Node, var_name: &str, source: &str) -> bool {
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            if child.kind() == "declaration" {
-                // Check if the declaration has a pointer declarator for this var
-                let mut decl_cursor = child.walk();
-                for decl_child in child.children(&mut decl_cursor) {
-                    if decl_child.kind() == "init_declarator" {
-                        if let Some(declarator) = decl_child.child_by_field_name("declarator") {
-                            if declarator.kind() == "pointer_declarator" {
-                                if let Some(id) = find_identifier_in_node(&declarator, source) {
-                                    if id == var_name {
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        match innermost_declarator(declarator).kind() {
+            "pointer_declarator" => true,
+            "array_declarator" => decl.kind() == "parameter_declaration",
+            "identifier" => decl.child_by_field_name("type").is_some_and(|t| {
+                self.pointer_typedef_names
+                    .borrow()
+                    .contains(get_node_text(&t, source).trim())
+            }),
+            _ => false,
         }
-        false
     }
 }
 
@@ -591,4 +602,118 @@ fn contains_identifier(node: &Node, name: &str, source: &str) -> bool {
         n.kind() == "identifier" && get_node_text(&n, source) == name
     })
     .is_some()
+}
+
+/// Whether `call` passes `&name` as one of its arguments (through casts and
+/// parentheses). `memcpy(&h, src, sizeof(h))` copies exactly the object at
+/// `&h`, so `sizeof(h)` is the right size even when `h` is a pointer: the
+/// call moves the pointer's own bytes, which is what rax.c's child-pointer
+/// fields do.
+fn call_takes_address_of(call: &Node, name: &str, source: &str) -> bool {
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    (0..args.named_child_count())
+        .filter_map(|i| args.named_child(i))
+        .any(|arg| {
+            let mut a = arg;
+            loop {
+                match a.kind() {
+                    "cast_expression" => match a.child_by_field_name("value") {
+                        Some(v) => a = v,
+                        None => return false,
+                    },
+                    "parenthesized_expression" => match a.named_child(0) {
+                        Some(v) => a = v,
+                        None => return false,
+                    },
+                    _ => break,
+                }
+            }
+            a.kind() == "pointer_expression"
+                && a.child_by_field_name("operator")
+                    .is_some_and(|op| get_node_text(&op, source) == "&")
+                && a.child_by_field_name("argument")
+                    .is_some_and(|x| x.kind() == "identifier" && get_node_text(&x, source) == name)
+        })
+}
+
+/// The derived declarator that binds tightest to the name: the one whose own
+/// `declarator` is the identifier, looking through parentheses. That one says
+/// what the object IS. `*htab[64]` nests an array declarator inside a pointer
+/// declarator but declares an array (of pointers), and `(*p)[10]` nests the
+/// other way round and declares a pointer (to an array).
+fn innermost_declarator<'t>(declarator: Node<'t>) -> Node<'t> {
+    let mut d = declarator;
+    while let Some(inner) = d.child_by_field_name("declarator") {
+        let mut next = inner;
+        while next.kind() == "parenthesized_declarator" {
+            match next.named_child(0) {
+                Some(n) => next = n,
+                None => return d,
+            }
+        }
+        if next.kind() == "identifier" {
+            return d;
+        }
+        d = next;
+    }
+    d
+}
+
+/// Whether `sizeof_node` sizes one ELEMENT of a counted array rather than the
+/// whole buffer: it is a factor of a multiplication (`n * sizeof(p)`), or
+/// calloc's element-size argument. `sizeof` of a pointer there sizes an array
+/// of pointers, which is right whenever the buffer holds pointers: sqlite
+/// json.c's `memmove(&p->a[i], &p->a[i+1], n*sizeof(tmp))` over a
+/// `JsonParse **`, loadext.c's `sizeof(handle)*db->nExtension` over a
+/// `void **`.
+fn sizes_an_element(sizeof_node: &Node, func_name: &str, call: &Node) -> bool {
+    let mut n = *sizeof_node;
+    while let Some(parent) = n.parent() {
+        match parent.kind() {
+            "parenthesized_expression" | "cast_expression" => n = parent,
+            "binary_expression" => {
+                return parent
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "*");
+            }
+            "argument_list" => {
+                // calloc(count, size): the second argument is one element.
+                let second = parent.named_child(1);
+                return func_name == "calloc"
+                    && second.is_some_and(|a| a.id() == n.id())
+                    && parent.parent().is_some_and(|c| c.id() == call.id());
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Whether `call` (an allocation) is stored into `name` itself: `name =
+/// malloc(...)` or `T *name = malloc(...)`, through casts and parentheses.
+/// Then an element sized `sizeof(name)` is the classic bug -- the buffer is
+/// for what `name` points to, not for pointers -- whether or not it is
+/// multiplied by a count.
+fn allocation_target_is(call: &Node, name: &str, source: &str) -> bool {
+    let mut n = *call;
+    while let Some(parent) = n.parent() {
+        match parent.kind() {
+            "parenthesized_expression" | "cast_expression" => n = parent,
+            "assignment_expression" => {
+                return parent.child_by_field_name("left").is_some_and(|l| {
+                    l.kind() == "identifier" && get_node_text(&l, source) == name
+                });
+            }
+            "init_declarator" => {
+                return parent
+                    .child_by_field_name("declarator")
+                    .and_then(|d| find_identifier_in_node(&d, source))
+                    .is_some_and(|id| id == name);
+            }
+            _ => return false,
+        }
+    }
+    false
 }
