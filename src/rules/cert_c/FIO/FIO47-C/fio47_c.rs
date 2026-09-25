@@ -51,6 +51,22 @@ enum TypeCategory {
     Unknown,
 }
 
+/// Consume a scanf scanset's body, the `[` already taken, through its closing
+/// `]` (C11 7.21.6.2p12), and return that `]`; None if the set never closes.
+/// A `]` right after `[` or `[^` is a member of the set, not its end.
+fn skip_scanset<I: Iterator>(
+    chars: &mut std::iter::Peekable<I>,
+    ch: impl Fn(&I::Item) -> char,
+) -> Option<I::Item> {
+    if chars.peek().map(&ch) == Some('^') {
+        chars.next();
+    }
+    if chars.peek().map(&ch) == Some(']') {
+        chars.next();
+    }
+    chars.find(|item| ch(item) == ']')
+}
+
 /// Category of a resolved declared type (`resolve_identifier_declared_type`'s
 /// spelling: the declaration's type field, ` *` appended for a pointer or
 /// array). Read by whole token, so a typedef such as `pointer_t` is not an
@@ -288,6 +304,14 @@ impl Fio47C {
 
         // Parse conversion specifier
         if let Some(specifier) = chars.next() {
+            // A scanf scanset's body is its set, not more directive
+            if is_scanf && specifier == '[' {
+                if skip_scanset(chars, |&c| c).is_none() {
+                    return (slots(stars), Some("Unterminated scanset: %[".to_string()));
+                }
+                return (slots(stars), None);
+            }
+
             // Validate conversion specifier
             if !self.is_valid_conversion_specifier(specifier) {
                 return (
@@ -560,8 +584,14 @@ impl Fio47C {
 
                     // Get the conversion specifier
                     if let Some((at, specifier)) = chars.next() {
+                        let mut end = at + specifier.len_utf8();
+                        if is_scanf && specifier == '[' {
+                            match skip_scanset(&mut chars, |&(_, c)| c) {
+                                Some((close, _)) => end = close + 1,
+                                None => end = format_string.len(),
+                            }
+                        }
                         if specifier != '%' && !suppressed {
-                            let end = at + specifier.len_utf8();
                             let directive = format_string[start..end].to_string();
                             specifiers.extend(std::iter::repeat_n(('*', directive.clone()), stars));
                             specifiers.push((specifier, directive));
