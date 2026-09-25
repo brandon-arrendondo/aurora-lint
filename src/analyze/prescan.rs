@@ -4218,6 +4218,24 @@ fn guarded_nonnull_after(stmt: &Node, var: &str, source: &str) -> bool {
         return false;
     }
     guard_dominance::always_diverges(&consequence)
+        || ends_in_stdlib_noreturn_call(&consequence, source)
+}
+
+/// True when `branch` is, or is a block ending in, a call to a standard
+/// noreturn function: `if (!p) { exit(1); }` leaves as surely as a `return`.
+fn ends_in_stdlib_noreturn_call(branch: &Node, source: &str) -> bool {
+    let last = if branch.kind() == "compound_statement" {
+        let mut cursor = branch.walk();
+        branch
+            .named_children(&mut cursor)
+            .filter(|c| c.kind() != "comment")
+            .last()
+    } else {
+        Some(*branch)
+    };
+    last.is_some_and(|stmt| {
+        crate::analyze::noreturn::is_stdlib_noreturn_call_statement(&stmt, source)
+    })
 }
 
 /// True when `condition` evaluating TRUE implies `var` is non-null: a bare

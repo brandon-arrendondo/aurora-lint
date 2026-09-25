@@ -296,6 +296,15 @@ fn terminating_call_name(stmt: &Node, source: &str) -> Option<String> {
     Some(get_node_text(&function, source).trim().to_string())
 }
 
+/// True if `node` is an `expression_statement` calling one of the C standard
+/// library's noreturn functions (`exit`, `abort`, ...). For a caller that has
+/// no per-file [`collect_noreturn_function_names`] set to hand; a project's
+/// own noreturn wrappers are not recognised this way.
+pub fn is_stdlib_noreturn_call_statement(node: &Node, source: &str) -> bool {
+    terminating_call_name(node, source)
+        .is_some_and(|name| STDLIB_NORETURN_FUNCTIONS.contains(&name.as_str()))
+}
+
 /// True if `node` is an `expression_statement` wrapping a direct call to a
 /// function in `noreturn_names`.
 pub fn is_noreturn_call_statement(
