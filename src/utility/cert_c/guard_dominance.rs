@@ -575,6 +575,162 @@ pub fn has_dominating_dereference(var: &str, site: &Node, source: &str) -> bool 
     false
 }
 
+/// The write to `var` that every path to `site` executes last: a plain
+/// `var = value;` statement, or a non-`static` `T *var = value;` declaration.
+#[derive(Debug, Clone, Copy)]
+pub struct DominatingAssignment<'a> {
+    /// The `expression_statement` or `declaration` holding the write.
+    pub statement: Node<'a>,
+    /// The value assigned: the assignment's right operand or the initializer.
+    pub value: Node<'a>,
+}
+
+/// The assignment to `var` that dominates `site` with no other write between
+/// them, i.e. the value `var` holds when `site` executes, if the AST can say.
+///
+/// Walks outward from `site`. In each enclosing block (a `{}` body, a `case`,
+/// or a preprocessor arm) the statements preceding the site are read nearest
+/// first; the first plain `var = value;` statement or initialized declaration
+/// of `var` is the answer. `None`, meaning "not known", when before reaching one:
+///
+/// * a preceding statement writes `var` any other way (inside an `if` or loop
+///   body, `var += n`, `&var` handed to a callee, a condition's `(var = f())`);
+/// * a label is crossed or passed, since a `goto` can enter below the write;
+/// * a loop enclosing `site` but not the write also writes `var`, which
+///   reaches `site` on the back edge;
+/// * `var`'s declaration is reached with no initializer, or is `static`
+///   (its initializer runs once, not on every path to `site`);
+/// * the function's top is reached.
+///
+/// The question a whole-function "last write wins" table cannot answer:
+/// `it = NULL; ... it = iter_init(); release(it);` passes the iterator, not
+/// NULL, whatever order a flat walk visited the two writes in.
+pub fn dominating_assignment<'a>(
+    var: &str,
+    site: &Node<'a>,
+    source: &str,
+) -> Option<DominatingAssignment<'a>> {
+    let mut loops: Vec<Node<'a>> = Vec::new();
+    let mut current = *site;
+    while let Some(parent) = current.parent() {
+        match parent.kind() {
+            "function_definition" | "labeled_statement" => return None,
+            "for_statement" | "while_statement" | "do_statement" => loops.push(parent),
+            _ => {}
+        }
+        // A `#else`/`#elif` arm's preceding siblings are the other arm.
+        let is_alternative = parent.kind().starts_with("preproc_")
+            && parent
+                .child_by_field_name("alternative")
+                .is_some_and(|alt| alt.id() == current.id());
+        let straight_line = !is_alternative
+            && (BLOCK_LIKE_KINDS.contains(&parent.kind()) || parent.kind() == "case_statement");
+        let mut preceding: Vec<Node<'a>> = Vec::new();
+        let mut cursor = parent.walk();
+        for child in parent.named_children(&mut cursor) {
+            if child.start_byte() >= current.start_byte() {
+                break;
+            }
+            preceding.push(child);
+        }
+        for stmt in preceding.into_iter().rev() {
+            if !query::find_descendants_of_kind(stmt, "labeled_statement").is_empty()
+                || stmt.kind() == "labeled_statement"
+            {
+                return None;
+            }
+            if straight_line {
+                match assignment_of(&stmt, var, source) {
+                    Some(Some(found)) => {
+                        return loops
+                            .iter()
+                            .all(|l| !var_written_within(l, var, source))
+                            .then_some(found);
+                    }
+                    Some(None) => return None,
+                    None => {}
+                }
+            }
+            if var_written_within(&stmt, var, source) {
+                return None;
+            }
+        }
+        current = parent;
+    }
+    None
+}
+
+/// How one block-level statement bears on `var`: `Some(Some(_))` when it is a
+/// plain `var = value;` or a non-`static` initialized declaration of `var`,
+/// `Some(None)` when it declares `var` otherwise (no initializer, or
+/// `static`), `None` when it is neither.
+fn assignment_of<'a>(
+    stmt: &Node<'a>,
+    var: &str,
+    source: &str,
+) -> Option<Option<DominatingAssignment<'a>>> {
+    match stmt.kind() {
+        "expression_statement" => {
+            let expr = stmt.named_child(0)?;
+            let is_plain = expr.kind() == "assignment_expression"
+                && expr
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| get_node_text(&op, source) == "=");
+            let left = expr.child_by_field_name("left")?;
+            if !is_plain || left.kind() != "identifier" || get_node_text(&left, source) != var {
+                return None;
+            }
+            Some(Some(DominatingAssignment {
+                statement: *stmt,
+                value: expr.child_by_field_name("right")?,
+            }))
+        }
+        "declaration" => {
+            let mut cursor = stmt.walk();
+            let declarator = stmt
+                .children_by_field_name("declarator", &mut cursor)
+                .find(|d| declared_name(d, source) == Some(var))?;
+            let mut cursor = stmt.walk();
+            let is_static = stmt.named_children(&mut cursor).any(|c| {
+                c.kind() == "storage_class_specifier" && get_node_text(&c, source) == "static"
+            });
+            let value = (declarator.kind() == "init_declarator")
+                .then(|| declarator.child_by_field_name("value"))
+                .flatten();
+            Some(match value {
+                Some(value) if !is_static => Some(DominatingAssignment {
+                    statement: *stmt,
+                    value,
+                }),
+                _ => None,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The identifier a declarator binds, through `init_declarator`, pointer,
+/// array, function and parenthesized wrappers.
+fn declared_name<'s>(declarator: &Node, source: &'s str) -> Option<&'s str> {
+    let mut node = *declarator;
+    loop {
+        if node.kind() == "identifier" {
+            return node.utf8_text(source.as_bytes()).ok();
+        }
+        node = match node.child_by_field_name("declarator") {
+            Some(inner) => inner,
+            None => {
+                let mut cursor = node.walk();
+                let inner = node.named_children(&mut cursor).next()?;
+                if node.kind() != "parenthesized_declarator" {
+                    return None;
+                }
+                inner
+            }
+        };
+    }
+}
+
 /// One preceding block-level statement: does it dereference `var` on every
 /// path through it? Looks through preprocessor wrappers the same way
 /// `collect_block_level_if_conditions` does.

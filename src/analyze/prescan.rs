@@ -4665,24 +4665,53 @@ fn infer_call_arg_state<'a>(
     }
     if arg.kind() == "identifier" {
         let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
-        let tabled = local_states
-            .get(name)
-            .copied()
-            .unwrap_or(NullState::Unknown);
         // `local_states` holds one state per variable for the whole function,
-        // so it cannot distinguish a guarded read from an unguarded one. Ask
-        // at this argument's own position before letting a maybe-null table
-        // entry vote.
+        // and drops a write whose value it cannot classify, so
+        // `it = NULL; ... it = iter_init(); release(it);` reads NULL there.
+        // The assignment dominating this argument, when there is one, is the
+        // value actually passed -- Unknown included.
+        let reaching = guard_dominance::dominating_assignment(name, arg, source);
+        let tabled = match reaching {
+            Some(write) => dominating_assignment_state(&write, name, source),
+            None => local_states
+                .get(name)
+                .copied()
+                .unwrap_or(NullState::Unknown),
+        };
+        // Neither source distinguishes a guarded read from an unguarded one.
+        // Ask at this argument's own position before letting a maybe-null
+        // state vote, counting only guards evaluated after the write.
         if tabled != NullState::NotNull {
             let dominators = dominators
                 .get_or_insert_with(|| guard_dominance::dominating_conditions_with_branches(arg));
-            if guarded_nonnull_in(dominators, name, source) {
+            let after_write = reaching.map_or(0, |w| w.statement.end_byte());
+            let later: Vec<(Node, Option<bool>)> = dominators
+                .iter()
+                .filter(|(cond, _)| cond.start_byte() >= after_write)
+                .copied()
+                .collect();
+            if guarded_nonnull_in(&later, name, source) {
                 return NullState::NotNull;
             }
         }
         return tabled;
     }
     NullState::Unknown
+}
+
+/// The null state `var` leaves `write` with, judged the way the
+/// whole-function table judges one write: a checked allocation
+/// (`p = f(); if (!p) goto err;`) is non-null past its guard, anything else
+/// is what its value says.
+fn dominating_assignment_state(
+    write: &guard_dominance::DominatingAssignment,
+    var: &str,
+    source: &str,
+) -> NullState {
+    if guarded_nonnull_after(&write.statement, var, source) {
+        return NullState::NotNull;
+    }
+    infer_rhs_null_state(&write.value, source)
 }
 
 /// Collect known struct-field null states (`arg.field`) for an identifier
