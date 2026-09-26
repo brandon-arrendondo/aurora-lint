@@ -1,16 +1,20 @@
 # ADR external alignment: what CERT, comparable tools and the literature do on the same questions
 
-**Status:** research input for Brandon (aurora_lint 1574, part c), 2026-09-25.
+**Status:** research input for Brandon (aurora_lint 1574, part c), 2026-09-25; revision 2 against the ADRs accepted at `72b8f734`.
 Nothing here changes an ADR. Every "amend" below is a proposal to rule on.
 Parts (a) internal consistency and (b) clarifications are the coordinator's,
 in `docs/design/adr-review-2026-09.md`. This doc is the external half they
 cite.
 
-**Scope.** ADR-0001..0011 as of `f7b21113`, proposed ADR-0012 (branch
-`docs-finding-location-1572`, whose research in
-`docs/design/finding-location.md` is reused and not repeated), and the labeling
-rulings made since 2026-09-24 that no ADR records yet ("standing calls",
-paraphrased here as S-items).
+**Scope.** The first pass (sections D, P and E) read ADR-0001..0011 as of
+`f7b21113`, proposed ADR-0012 (branch `docs-finding-location-1572`, whose
+research in `docs/design/finding-location.md` is reused and not repeated), and
+the labeling rulings made since 2026-09-24 that no ADR recorded yet
+("standing calls", paraphrased here as S-items). **Revision 2** (after the Summary)
+re-reads the set as accepted at aurora-lint `72b8f734`. That set adds amended
+0005/0006/0007/0010/0011 and the accepted 0012, 0013 and 0014. Revision 2
+says which findings the amendments resolve and assesses the new decisions.
+Where it and sections D/P/E disagree, Revision 2 is current.
 
 **Method.** Three research passes, each over one cluster of decisions. Primary
 sources were fetched and grepped where possible (CERT wiki pages, N1570,
@@ -88,6 +92,176 @@ real-world figure, not one rule:
 
 Both have cheap, standard fixes. Doing them before the paper is submitted
 costs much less than answering them in review.
+
+---
+
+## Revision 2: the ADR set as accepted at `72b8f734`
+
+### What the amendments did to the first-pass findings
+
+| First-pass item | Now | Where |
+|---|---|---|
+| P1: separate "the configuration fixes the denominator" from "its ABI is not proof" | **resolved** | 0010 D8: the primary configuration "guides the benchmark; it never proves anything" |
+| P3: "could be callable" is judged over every compilable config | **resolved** | 0010 D8 (reach uses every configuration); 0011 settled case "anything that could be publicly callable is an API" |
+| P7: `&p->field` | **resolved** (still worth citing EXP34-C-EX1, whose exemption list is exactly `&*x` and `&x[y]`) | 0012 D6 |
+| P11: first site of failure | **resolved** | 0012 D5 |
+| P13, P6, P8, P9, P12: settled cases | **recorded** as written; the P6/P8/P9/P12 clarifications stay open | 0011 "Settled cases" |
+| D4: silence when unresolved as a soundiness choice | **largely resolved**: silence is now scoped to *identity*; safety uncertainty reports | 0006 "Two kinds of uncertainty" |
+| D2: operational shipping criterion; shipped vs on-by-default | **largely resolved** by dispositions (see R1 below); one clarification open | 0013 |
+| E1: ADR-0012 | **accepted as drafted**; the opaque-context consequence (option A/B) is still open | 0012 Consequences |
+| E2: labels describe the code | **vocabulary resolved**, and the incompleteness caveat is now required on every recall figure. The stale-ruling point is **still open, and now sharper** (R2) | 0014, 0007 |
+| E6: Juliet scoring unit | **partly resolved**: 0005 says Juliet is section-scored. `bench/analyzer.py` scores by FLAW line ±1, so say which unit each figure uses | 0005 |
+| P2: the ADR-0010 Context sentence "API00-C's own standard holds that an `assert()` is not a parameter guard" | **still open.** The CERT API00-C page mentions neither `assert` nor `NDEBUG` (re-checked), so the sentence reads as a CERT citation that isn't one. Reword it to "the project's API00-C labeling standard", or cite MSC11-C and C11 7.2p1 | 0010 Context |
+| P2 assert sub-class; P5 double counting; P10 `_Noreturn`; D1 conformance-checker paragraph; D3 rename; D7b; D8a; D8b; E3; E4; E5 | **open**, unchanged by the amendments | — |
+
+### New decisions in the accepted set
+
+#### R1 — ADR-0013: which rules ship (nature, not counts; five dispositions)
+
+- **Theirs:**
+  - ISO/IEC TS 17961 states essentially 0013's criterion: "All rules are
+    meant to be enforceable by static analysis. The criterion for selecting
+    these rules is that analyzers that implement these rules must be able to
+    effectively discover secure coding errors without generating excessive
+    false positives" [CERT-17961] (checked).
+  - MISRA C:2012 classifies every guideline as decidable or undecidable, and
+    as a rule or a directive [MISRA-blog, vendor source]. That is the same
+    idea as 0013's Deterministic / Deterministic-with-review split.
+  - Removing a rule (not disabling it) and publishing why is unusual. Vendors
+    publish which CERT rules they support, not reasons for the ones they
+    don't.
+- **Verdict: aligned** with TS 17961 and MISRA on the criterion. Publishing
+  the unshipped rules with reasons is **novel**, and a strength for a paper.
+- **Clarify:** the "Unenforceable" disposition says "CERT itself says the
+  guideline can't be checked automatically". CERT's per-rule **Detectable**
+  column does *not* mean that. It asks "Can a static analysis tool
+  automatically determine if code violates this guideline **with high
+  accuracy and precision**?" [CERT-org] (checked). Many rules aurora-lint
+  already detects well carry "Detectable: No"; ARR38-C and API00-C are two.
+  If Detectable = No were read as "unenforceable", it would drop working
+  detectors, which 0013 D3 (Juliet-covered ships) and ADR-0002 forbid. State
+  that the disposition rests on CERT's *text* saying the guideline is not
+  automatable, or on a decidability argument, never on the Detectable column
+  alone.
+
+#### R2 — ADR-0014: the oracle is independent of the tool
+
+- **Theirs:**
+  - Tool-independent ground truth is the norm: Juliet's flaw manifests,
+    OWASP's expected-results file, SATE's CVE locations [Juliet-UG;
+    OWASP-BM; SATE-IV]. The *semantic* definition is **aligned**, and the
+    TP/FP/FN/TN-per-pairing framing is standard confusion-matrix practice.
+  - Stating the oracle's incompleteness on every recall figure matches SATE
+    IV's own caveat that it "could not credit tools" with vulnerabilities it
+    did not know about [SATE-IV].
+- **Exposed: independence of meaning is not independence of construction.**
+  0014 says the oracle "covers the lines runs have reported plus the known
+  misses". The lines *chosen* for labeling were chosen by aurora-lint's runs.
+  That costs nothing when scoring aurora-lint against itself over time. It
+  matters for 0014's last consequence, "a second tool's run can be scored
+  against the same oracle".
+  - A competitor's findings on lines aurora-lint never reported are mostly
+    unlabeled, so they fall out of its precision denominator.
+  - Its true detections there cannot count as TPs.
+  - Its recall is measured against violations aurora-lint found.
+
+  This is the classic pooling bias from IR evaluation: judgments built only
+  from some systems' outputs favor those systems (Zobel, SIGIR 1998; Buckley
+  et al., Information Retrieval 2007; **unverified** here, full texts not
+  fetched). A referee of the tool-comparison paper will raise it.
+  - **Shore-up:** before cross-tool figures, adjudicate a random sample of
+    each competitor's *unlabeled* findings (the pool-deepening remedy).
+    Report the labeled fraction of each tool's output next to its precision.
+- **Still open (E2, sharper now):** 0014 D4 says an oracle verdict is revised
+  "for the code's sake (a ruling that changes what counts as a violation…)",
+  and also that entries no run reports are re-examined "when a run reports
+  the line again, not to keep up with new rulings". For recall these pull in
+  opposite directions: a non-emitted *violation* entry whose basis a later
+  ruling overturned stays in the recall denominator unexamined. Proposed
+  reading, for Brandon to rule on:
+  - non-emitted **not-a-violation** entries wait until a run reports them;
+  - non-emitted **violation** entries (which drive recall) are re-examined
+    when a ruling changes their stated basis.
+
+#### R3 — ADR-0011 basis 1 now includes ISO C and POSIX library contracts
+
+- **Theirs:** every surveyed analyzer models libc by its specification:
+  - Frama-C's libc ACSL `requires` clauses [FC-assert];
+  - Clang SA's `unix.StdCLibraryFunctions`;
+  - Polyspace's standard-library stubs.
+
+  CERT itself cites the standard's library clauses in its rules (EXP34-C's
+  `memcpy` case) [EXP34-C].
+- **Verdict: aligned.** The "stricter mode for minimal embedded libcs" note
+  is a sensible, disclosed opt-out.
+- **Clarify:** POSIX is a contract only where the code targets POSIX. Under
+  ADR-0010 every compilable configuration counts, including Win32 arms and
+  Windows-only files, and there a POSIX guarantee (for example about
+  `read()`/`fd` semantics or `strdup`) is not basis 1. Say "ISO C always;
+  POSIX for code in a POSIX configuration".
+
+#### R4 — ADR-0011: a static function is closed only while its address stays in source; data invariants need every writer in source
+
+- **Theirs:** this is the standard escape condition in whole-program
+  analysis. An address-taken function is a call target for any indirect call
+  the analysis cannot resolve (Frama-C `-lib-entry`'s open-world entry
+  pointers are the same assumption) [FC-Eva]. The data-writer condition is
+  the usual requirement for a global invariant to be sound.
+- **Verdict: aligned, and it tightens an earlier gap** (P4's "no
+  function-pointer route in" is now explicit).
+
+#### R5 — ADR-0011: the caller-check proof needs at least one call site
+
+- **Verdict: aligned.** It closes a vacuous-truth hole ("every caller checks"
+  over the empty set), and it is consistent with "unused functions stay in
+  scope". Infer Pulse makes the opposite *reporting* choice: no manifest call
+  site means no report [Pulse]. That difference is already covered by D1's
+  conformance-checker framing.
+
+#### R6 — ADR-0006: identity uncertainty is silence, safety uncertainty is report
+
+- **Verdict: aligned.** This is the soundiness position stated precisely:
+  unsound only in identified, stated places (identity resolution), and sound
+  (report unless proven) for the property checked [Soundiness]. It answers
+  most of D4. What remains is measurement: count per rule how often identity
+  resolution failed, so the recall cost of the silence is reported
+  [Soundiness].
+
+#### R7 — ADR-0005: right for the wrong reason; Juliet section scoring
+
+- **Theirs:** the Juliet guide defines a hit as a report "in a function with
+  the word 'bad' in its name" [Juliet-UG §8.1]. That confirms 0005's reading
+  that a Juliet TP means "fired in the flawed section". Habib & Pradel
+  manually filtered line-window matches because warnings "coincidentally
+  match a faulty line" [H&P], which is the right-for-the-wrong-reason
+  problem in another benchmark.
+- **Verdict: aligned, and a strength:** few evaluations say this out loud.
+- **Clarify:** `bench/analyzer.py` scores Juliet detections at a FLAW line
+  ±1, and tcb's table reports both `in_bad` (section) and `flaw_lines_hit`.
+  0005 says reported Juliet figures state section-level scoring. Name which
+  figure is which unit.
+
+### Amendment list, updated
+
+Status of the 16 proposals at the end of this doc, against `72b8f734`:
+
+- **Resolved or overtaken:**
+  - 2 (by 0013; keep the Detectable clarification from R1);
+  - 4, mostly (by the 0006 identity/safety split);
+  - 13 (standing calls folded into 0011's settled cases and 0012).
+  - Item 10's first bullet (by 0010 D8).
+- **Open, unchanged:** 1, 3, 5, 6, 7, 8 (the miscitation is still there),
+  9, 11, 12, 14, 15, 16.
+- **New, from this revision:**
+  - 17. ADR-0013: the Unenforceable disposition must not rest on CERT's
+    Detectable column (R1).
+  - 18. ADR-0014: cross-tool scoring needs a pool-deepening sample of each
+    competitor's unlabeled findings, and each tool's labeled fraction
+    reported (R2).
+  - 19. ADR-0014 D4: re-examine non-emitted violation entries whose basis a
+    ruling changes (R2 / E2).
+  - 20. ADR-0011 basis 1: POSIX contracts apply to POSIX configurations only
+    (R3).
 
 ---
 
@@ -946,7 +1120,7 @@ Tools
 - [SAL] https://learn.microsoft.com/en-us/cpp/code-quality/annotating-function-parameters-and-return-values
 - [GCC-attr] https://gcc.gnu.org/onlinedocs/gcc/Common-Attributes.html
 - [GCC-link] https://gcc.gnu.org/onlinedocs/gcc/Link-Options.html (checked)
-- [MISRA-blog] https://www.perforce.com/blog/qac/misra-rules-misra-guidelines (vendor blog; MISRA Compliance:2020 PDF returned 403)
+- [MISRA-blog] https://www.perforce.com/blog/qac/misra-rules-misra-guidelines (vendor blog: "while most MISRA rules are decidable, some of them are undecidable"; MISRA Compliance:2020 PDF returned 403)
 
 Literature and practice
 - [Bessey] Bessey et al., "A Few Billion Lines of Code Later", CACM 53(2), 2010. https://web.stanford.edu/~engler/BLOC-coverity.pdf (checked)
