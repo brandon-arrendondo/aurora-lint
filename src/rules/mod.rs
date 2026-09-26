@@ -68,7 +68,8 @@ pub trait CertRule {
     /// or not cross-file context exists. Default is a no-op; a rule that
     /// honors an option in `settings::OPTIONS` overrides this and keeps the
     /// value it reads.
-    fn set_analysis_settings(&self, _settings: &crate::settings::AnalysisSettings) {}
+    fn set_analysis_settings(&self, _settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
+    }
 
     /// Inject per-file function CFGs for flow-sensitive analysis.
     /// Default is a no-op; only rules that need CFG data override this.

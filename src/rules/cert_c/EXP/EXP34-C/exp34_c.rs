@@ -10,6 +10,7 @@ use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::null_state::{self, NullAnalysisResult, NullState, StateMap};
 use crate::manifest::{RuleCategory, Severity};
+use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::format_slots;
 use crate::utility::cert_c::guard_dominance;
@@ -48,6 +49,9 @@ pub struct Exp34C {
     /// Synthesized into `FunctionSummary::returns_only_if_param_true` so the
     /// dataflow reads `serverAssert(p != NULL);` as a dominating check.
     abort_check_macros: RefCell<Arc<HashMap<String, usize>>>,
+    /// The run's policy and environment settings: which library contracts
+    /// a call to a null-accepting function may rely on.
+    settings: RefCell<Arc<AnalysisSettings>>,
 }
 
 impl Exp34C {
@@ -61,6 +65,7 @@ impl Exp34C {
             macro_write_params: RefCell::new(HashMap::new()),
             macro_null_params: RefCell::new(HashMap::new()),
             abort_check_macros: RefCell::new(Arc::new(HashMap::new())),
+            settings: RefCell::default(),
         }
     }
 }
@@ -172,8 +177,13 @@ impl CertRule for Exp34C {
         *self.function_cfgs.borrow_mut() = cfgs.clone();
     }
 
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        *self.settings.borrow_mut() = Arc::clone(settings);
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+        let settings = Arc::clone(&self.settings.borrow());
         let summaries = self.function_summaries.borrow();
         let cfgs = self.function_cfgs.borrow();
         let all_macros = self.function_macros.borrow();
@@ -282,6 +292,7 @@ impl CertRule for Exp34C {
                         &body,
                         &effective_summaries,
                         &all_macros,
+                        &settings,
                         &mut violations,
                         &mut reported_vars,
                     );
@@ -305,6 +316,7 @@ fn check_dereferences_cfg(
     body: &Node,
     summaries: &(impl SummaryLookup + ?Sized),
     macros: &HashMap<String, FunctionMacro>,
+    settings: &AnalysisSettings,
     violations: &mut Vec<RuleViolation>,
     reported_vars: &mut HashSet<String>,
 ) {
@@ -357,6 +369,7 @@ fn check_dereferences_cfg(
                 body,
                 summaries,
                 macros,
+                settings,
                 violations,
                 reported_vars,
             ),
@@ -529,6 +542,7 @@ fn check_call_expression_cfg(
     body: &Node,
     summaries: &(impl SummaryLookup + ?Sized),
     macros: &HashMap<String, FunctionMacro>,
+    settings: &AnalysisSettings,
     violations: &mut Vec<RuleViolation>,
     reported_vars: &mut HashSet<String>,
 ) {
@@ -570,9 +584,10 @@ fn check_call_expression_cfg(
     // interprocedural target to point at instead; these are opaque external
     // functions whose null-argument behavior is fixed by the C standard, not
     // inferred, so the call site is the only, and the correct, place to
-    // report). Skip when the callee is known to accept NULL (free/fclose
-    // no-op on NULL per C standard).
-    if is_deref_function(&func_name) && !is_null_safe_callee(&func_name, macros) {
+    // report). Skip when the callee is known to accept NULL (free is a no-op
+    // on NULL when the declared environment honors the C standard's
+    // contract).
+    if is_deref_function(&func_name) && !is_null_safe_callee(&func_name, macros, settings) {
         if let Some(args) = node.child_by_field_name("arguments") {
             check_function_arguments_cfg(
                 &args,
@@ -596,7 +611,7 @@ fn check_call_expression_cfg(
     // variable reached a given `%s`. The call site is the only place a
     // possibly-null argument flowing into `...` is observable at all.
     if !is_deref_function(&func_name)
-        && !is_null_safe_callee(&func_name, macros)
+        && !is_null_safe_callee(&func_name, macros, settings)
         && summaries
             .get(&func_name)
             .is_some_and(|s| s.variadic_from.is_some())
@@ -818,10 +833,14 @@ fn check_callsite_null_args(
 /// name. Per-name entries in `is_null_safe_function` stay for callees that
 /// are genuinely not in-tree (no macro or function body to expand) or don't
 /// have this pure-forwarding shape.
-fn is_null_safe_callee(name: &str, macros: &HashMap<String, FunctionMacro>) -> bool {
-    is_null_safe_function(name)
+fn is_null_safe_callee(
+    name: &str,
+    macros: &HashMap<String, FunctionMacro>,
+    settings: &AnalysisSettings,
+) -> bool {
+    is_null_safe_function(name, settings)
         || macro_expand::macro_forwarding_target(macros, name)
-            .is_some_and(|(target, _)| is_null_safe_function(&target))
+            .is_some_and(|(target, _)| is_null_safe_function(&target, settings))
         || is_safe_free_macro(name, macros)
 }
 
@@ -843,16 +862,21 @@ fn is_safe_free_macro(name: &str, macros: &HashMap<String, FunctionMacro>) -> bo
 ///
 /// Includes:
 /// - C standard: `free(NULL)` (C11 7.22.3.3) and `realloc(NULL, n)` (C11 7.22.3.5)
-///   are defined as no-op / equivalent-to-malloc.
+///   are defined as no-op / equivalent-to-malloc -- trusted only when the
+///   declared environment honors those contracts (`free_null_is_noop`,
+///   `realloc_null_is_malloc`; see `settings::OPTIONS`).
 /// - Juliet test harness print helpers (null-tolerant stubs).
 /// - SQLite's own documented NULL-safe C-API surface (see
 ///   `is_sqlite_null_safe_api` below for the rationale and citations).
-fn is_null_safe_function(name: &str) -> bool {
+fn is_null_safe_function(name: &str, settings: &AnalysisSettings) -> bool {
+    match name {
+        "free" => return settings.flag("free_null_is_noop"),
+        "realloc" => return settings.flag("realloc_null_is_malloc"),
+        _ => {}
+    }
     matches!(
         name,
-        "free"
-            | "realloc"
-            | "printLine"
+        "printLine"
             | "printWLine"
             | "printIntLine"
             | "printLongLine"

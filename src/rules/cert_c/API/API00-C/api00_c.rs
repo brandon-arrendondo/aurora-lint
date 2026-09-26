@@ -52,6 +52,7 @@ use crate::analyze::context::SummaryLookup;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::null_state::condition_tests_null;
 use crate::manifest::{RuleCategory, Severity};
+use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::{
     documented_nonnull_parameters, get_function_parameters, get_node_text, get_sanitized_node_text,
     integer_type_width, is_pointer_type, is_unsigned_type, ordered_parameter_names,
@@ -102,6 +103,9 @@ pub struct Api00C {
     /// precondition`, from the project pre-scan (header prototypes carry
     /// most of them) merged with the analysed file's own doc comments.
     documented_nonnull_params: RefCell<HashMap<String, Vec<usize>>>,
+    /// The run's policy and environment settings: which library contracts
+    /// let a pointer parameter reach a callee without validation.
+    settings: RefCell<Arc<AnalysisSettings>>,
 }
 
 impl Api00C {
@@ -112,6 +116,7 @@ impl Api00C {
             pointer_facts: RefCell::new(PointerFacts::default()),
             typedef_types: RefCell::new(Arc::new(HashMap::new())),
             documented_nonnull_params: RefCell::new(HashMap::new()),
+            settings: RefCell::default(),
         }
     }
 }
@@ -142,6 +147,10 @@ impl CertRule for Api00C {
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
         *self.documented_nonnull_params.borrow_mut() = context.documented_nonnull_params.clone();
+    }
+
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        *self.settings.borrow_mut() = Arc::clone(settings);
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -1265,7 +1274,7 @@ impl Api00C {
             return true;
         }
         relay_callees.iter().any(|(callee_name, arg_idx)| {
-            if Self::is_null_accepting_stdlib(callee_name, *arg_idx) {
+            if self.is_null_accepting_stdlib(callee_name, *arg_idx) {
                 return false;
             }
             match summaries.get(callee_name.as_str()) {
@@ -1420,11 +1429,13 @@ impl Api00C {
         }
     }
 
-    /// Get the positional index of an argument within an argument_list.
     /// Standard library functions that accept NULL pointer arguments by design.
     /// free(NULL) is a no-op per C11 7.22.3.3. realloc(NULL, size) is equivalent
     /// to malloc(size) per C11 7.22.3.5. These functions do NOT need callers to
-    /// validate pointer arguments before calling.
+    /// validate pointer arguments before calling -- when the declared
+    /// environment honors those contracts (`free_null_is_noop`,
+    /// `realloc_null_is_malloc`; see `settings::OPTIONS`). `cfree` is glibc's
+    /// legacy alias of `free` and follows the same contract.
     ///
     /// `dbus_set_error`/`dbus_set_error_const` (libdbus, `DBusError *error` at
     /// param 0) are documented to silently ignore a NULL `DBusError *` — the
@@ -1433,13 +1444,16 @@ impl Api00C {
     /// nothing"). Not reachable via `checks_null_params`/interprocedural
     /// summaries since libdbus isn't in the scanned tree, so it has to be
     /// declared here rather than inferred.
-    fn is_null_accepting_stdlib(func_name: &str, arg_idx: usize) -> bool {
+    fn is_null_accepting_stdlib(&self, func_name: &str, arg_idx: usize) -> bool {
+        let settings = self.settings.borrow();
+        match (func_name, arg_idx) {
+            ("free", 0) | ("cfree", 0) => return settings.flag("free_null_is_noop"),
+            ("realloc", 0) => return settings.flag("realloc_null_is_malloc"),
+            _ => {}
+        }
         matches!(
             (func_name, arg_idx),
-            ("free", 0)
-                | ("realloc", 0)
-                | ("cfree", 0)
-                | ("Memory_Free", 0)
+            ("Memory_Free", 0)
                 | ("Memory_Realloc", 0)
                 | ("dbus_set_error", 0)
                 | ("dbus_set_error_const", 0)
@@ -1548,7 +1562,7 @@ impl Api00C {
                                 if let Some(func) = call_expr.child_by_field_name("function") {
                                     let callee = get_node_text(&func, source);
                                     let arg_idx = self.get_arg_index(&ident, &parent);
-                                    if Self::is_null_accepting_stdlib(callee, arg_idx) {
+                                    if self.is_null_accepting_stdlib(callee, arg_idx) {
                                         // ok
                                     } else if let Some(s) = summaries.get(callee) {
                                         if !s.checks_null_params.contains(&arg_idx) {

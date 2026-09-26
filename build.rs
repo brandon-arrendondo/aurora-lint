@@ -774,16 +774,20 @@ struct FixtureHeader {
 }
 
 /// Read a fixture's `Expect:` and `Settings:` lines from its leading comment
-/// (the first 20 lines, like the `Description:` banner). A malformed line is
-/// a build error, never a silently ignored expectation.
+/// (everything before the first line of code). A malformed line is a build
+/// error, never a silently ignored expectation.
 fn fixture_header(path: &std::path::Path) -> Result<FixtureHeader> {
     let source = fs::read_to_string(path).with_context(|| format!("read {:?}", path))?;
     let mut header = FixtureHeader {
         expect: Vec::new(),
         settings: String::new(),
     };
-    for line in source.lines().take(20) {
-        let l = line.trim().trim_start_matches(['*', '/', ' ']).trim();
+    for line in source.lines() {
+        let t = line.trim();
+        if !(t.is_empty() || t.starts_with("/*") || t.starts_with('*') || t.starts_with("//")) {
+            break;
+        }
+        let l = t.trim_start_matches(['*', '/', ' ']).trim();
         if let Some(rest) = l.strip_prefix("Expect:") {
             for pair in rest.split_whitespace() {
                 let (preset, outcome) = pair
