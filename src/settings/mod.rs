@@ -219,7 +219,9 @@ pub static OPTIONS: &[OptionSpec] = &[
         oracle_tag: "contract:static_zero_init",
         summary: "Objects with static storage duration and no initializer are zeroed \
                   before main runs.",
-        basis: "C11 6.7.9p10. Startup code that skips clearing .bss breaks it.",
+        basis: "C11 6.7.9p10. Startup code that skips clearing .bss breaks it. Withdrawn, \
+                a block-scope static read before its function writes it is indeterminate; \
+                file-scope objects, which any function may write first, are not tracked.",
     },
 ];
 

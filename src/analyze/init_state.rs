@@ -473,6 +473,15 @@ pub struct InitAnalysisConfig {
     /// `try_process_cross_file_conditional_output_params` put it.
     pub cross_file_conditional_output_return_correlation:
         HashMap<String, HashMap<usize, ReturnCorrelation>>,
+    /// The declared environment does not zero objects of static storage
+    /// duration before `main` (the `static_zero_init` contract is off:
+    /// bare-metal startup that skips clearing `.bss`). A block-scope
+    /// `static` or `_Thread_local` with no initializer then starts
+    /// Uninitialized, so a read before this function writes it is a use of
+    /// an indeterminate value. File-scope objects are not affected: any
+    /// function in the program may write one, and an intraprocedural
+    /// analysis cannot order those writes.
+    pub static_storage_not_zeroed: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -618,7 +627,9 @@ fn process_declaration(
                     let var_name = get_text(node, &child, source);
                     if !var_name.is_empty() && !is_type_keyword(&var_name) {
                         tracked_vars.insert(var_name.clone());
-                        let init_state = uninitialized_unless_static(is_static || is_extern);
+                        let init_state = uninitialized_unless_static(
+                            (is_static && !config.static_storage_not_zeroed) || is_extern,
+                        );
                         let is_array = false;
                         let mut info = VarInfo::new(init_state);
                         info.is_unsigned_char = is_unsigned_char;
@@ -641,7 +652,9 @@ fn process_declaration(
                     let var_name = get_declarator_name(&child, source);
                     if !var_name.is_empty() {
                         tracked_vars.insert(var_name.clone());
-                        let init_state = uninitialized_unless_static(is_static || is_extern);
+                        let init_state = uninitialized_unless_static(
+                            (is_static && !config.static_storage_not_zeroed) || is_extern,
+                        );
                         let is_array = child.kind() == "array_declarator";
                         let mut info = VarInfo::new(init_state);
                         info.is_unsigned_char = is_unsigned_char;
