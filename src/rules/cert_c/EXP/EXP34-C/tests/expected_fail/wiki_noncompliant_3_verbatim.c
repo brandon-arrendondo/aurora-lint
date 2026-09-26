@@ -1,10 +1,11 @@
 /*
  * Rule: EXP34-C
- * Source: wiki, CERT EXP34-C "Noncompliant Code Example", verbatim
+ * Source: wiki, CERT EXP34-C "Noncompliant Code Example" (the third, tun driver), verbatim
  * Status: EXPECTED_FAIL - CERT's own noncompliant example, not detected yet
  *
- * CERT's noncompliant example as written (the Linux tun driver): tun is
- * dereferenced (tun->sk) before the null test that follows it.
+ * tun comes from __tun_get(), which is not proven non-null, and tun->sk is
+ * read before the `if (!tun)` test that follows it. The adapted copy in
+ * tests/fail/ substitutes malloc().
  */
 
 static unsigned int tun_chr_poll(struct file *file, poll_table *wait)  {

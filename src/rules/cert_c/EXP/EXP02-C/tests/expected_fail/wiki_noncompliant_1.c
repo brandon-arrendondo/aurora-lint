@@ -8,6 +8,8 @@
  * evaluation. CERT's stated consequence is the later free(p) of a pointer
  * that may not have come from malloc(). The rule does not report this
  * guard-then-assign shape today. It returns to tests/fail/ when it does.
+ * CERT's fragment is not a complete translation unit: the rule sees it
+ * through a parse error. The same code inside a function is also missed.
  */
 
 char *p = /* Initialize; may or may not be NULL */

@@ -1,6 +1,7 @@
 /*
  * Rule: EXP34-C
  * Source: wiki (adapted — use malloc instead of png_malloc for detectability)
+ * CERT's example as written is expected_fail/wiki_noncompliant_1_verbatim.c.
  * Status: FAIL - Should trigger EXP34-C violation
  */
 

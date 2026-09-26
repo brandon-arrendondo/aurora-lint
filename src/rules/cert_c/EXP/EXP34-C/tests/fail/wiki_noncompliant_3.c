@@ -1,6 +1,7 @@
 /*
  * Rule: EXP34-C
  * Source: wiki (adapted — use malloc for detectability without call-site data)
+ * CERT's example as written is expected_fail/wiki_noncompliant_3_verbatim.c.
  * Status: FAIL - Should trigger EXP34-C violation
  */
 

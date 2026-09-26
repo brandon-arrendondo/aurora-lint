@@ -1,12 +1,11 @@
 /*
  * Rule: EXP34-C
- * Source: wiki, CERT EXP34-C "Noncompliant Code Example", verbatim
+ * Source: wiki, CERT EXP34-C "Noncompliant Code Example" (the first, libpng), verbatim
  * Status: EXPECTED_FAIL - CERT's own noncompliant example, not detected yet
  *
- * CERT's noncompliant example as written: png_malloc() may return a null
- * pointer, and chunkdata is passed to memcpy() without a check. png_malloc
- * is libpng's; whether it can return NULL depends on the library's
- * contract, which this file does not declare.
+ * png_malloc() is not proven to return a non-null pointer, and chunkdata is
+ * passed to memcpy() without a check, so this is in scope. The adapted copy
+ * in tests/fail/ substitutes malloc().
  */
 
 #include <png.h> /* From libpng */
