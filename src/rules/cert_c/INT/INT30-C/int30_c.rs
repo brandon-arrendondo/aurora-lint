@@ -1421,7 +1421,7 @@ impl Int30C {
             if fits_64 && !wraps_32_size_t {
                 continue;
             }
-            if self.has_allocation_size_guard(node, source) {
+            if self.has_allocation_size_guard(node, check_node, source) {
                 continue;
             }
 
@@ -1539,8 +1539,16 @@ impl Int30C {
     /// function-context text reading the calloc check beside this one uses
     /// -- which is what recognises the wiki's own compliant example, whose
     /// guard body only comments "Handle error" and so dominates nothing.
-    fn has_allocation_size_guard(&self, node: &Node, source: &str) -> bool {
+    ///
+    /// `arithmetic` is the expression that can wrap: the argument itself, or
+    /// the right-hand side of the assignment that computed it
+    /// (`total = a + b; malloc(total)`). A guard on its operands counts when
+    /// it dominates that expression, where the operands are read, since a
+    /// guard at the call on `total` alone never names `a` or `b`
+    /// (`if (SIZE_MAX - a < b) return;`).
+    fn has_allocation_size_guard(&self, node: &Node, arithmetic: &Node, source: &str) -> bool {
         guard_dominance::has_dominating_limit_guard(node, node, source)
+            || guard_dominance::has_dominating_limit_guard(arithmetic, arithmetic, source)
             || self.has_function_context_check(node, source, &["SIZE_MAX", " / "])
     }
 
