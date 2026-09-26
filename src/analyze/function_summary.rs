@@ -11,6 +11,11 @@ use crate::utility::cert_c::guard_dominance;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use tree_sitter::Node;
 
+/// Stands for a direct process-wide protection call (zero `RLIMIT_CORE`,
+/// `mlockall`) in `FunctionSummary::main_call_sequence`; not a C identifier,
+/// so no callee can collide with it.
+pub const PROTECTS_PROCESS_MARKER: &str = "<protects-process-memory>";
+
 /// Summary of a function's behavior relevant to CERT C rules.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct FunctionSummary {
@@ -588,17 +593,42 @@ pub struct FunctionSummary {
     /// another function that locks it.
     #[serde(default)]
     pub locks_params: HashSet<usize>,
-    /// Every `return` hands back a bare identifier whose pages the body
-    /// locked -- a source function that allocates a buffer and
-    /// `VirtualLock`s it before returning it.
+    /// Every non-null `return` hands back a variable whose pages a lock in
+    /// the body (`mlock`/`VirtualLock`, or a locked-by-construction
+    /// allocator such as `sodium_malloc`) covers on every path to that
+    /// return -- a source function that allocates a buffer and locks it
+    /// before returning it. `return NULL` on a failure path does not
+    /// withdraw it; at least one non-null return is required.
     #[serde(default)]
     pub returns_locked: bool,
-    /// The body keeps the whole process's memory out of core dumps or swap:
-    /// `setrlimit(RLIMIT_CORE, ...)` with a limit it sets to zero, or
-    /// `mlockall`. MEM06-C credits it when the function is on the startup
-    /// path, i.e. `main` or reachable from it.
+    /// The body protects the whole process's memory unconditionally: a
+    /// `setrlimit(RLIMIT_CORE, &rl)` whose zero limit dominates the call, an
+    /// `mlockall`, or an unconditional call to another function that does
+    /// (`propagate_transitive_credential_facts`, over
+    /// `unconditional_callees`). A protection inside an `if` does not count.
     #[serde(default)]
     pub protects_process_memory: bool,
+    /// Conditional credential-sink rows (`pam_set_item`, `ldap_bind_s`) the
+    /// body hands a parameter to, as `(callee, param index)`. The row
+    /// applies only if the callee is the library's, so the index joins
+    /// `credential_sink_params` during propagation when no project summary
+    /// has the callee's name.
+    #[serde(default)]
+    pub conditional_sink_hits: Vec<(String, usize)>,
+    /// Callees of direct calls that every path through the body reaches.
+    #[serde(default)]
+    pub unconditional_callees: HashSet<String>,
+    /// For a function named `main` only: its direct calls in source order, as
+    /// (callee, reached unconditionally). A direct process-wide protection
+    /// call is recorded as [`PROTECTS_PROCESS_MARKER`]. MEM06-C reads it to
+    /// ask whether protection runs before the call that leads to a secret.
+    #[serde(default)]
+    pub main_call_sequence: Vec<(String, bool)>,
+    /// Several definitions of `main` merged into this summary, so
+    /// `main_call_sequence` cannot say which program it describes and is
+    /// left empty.
+    #[serde(default)]
+    pub main_call_sequence_ambiguous: bool,
     /// Parameter indices where at least one call site within the project
     /// passes an argument recognized as tainted (a known user-input source,
     /// `argv`, or data traced back to one via a direct assignment/string-copy
@@ -1238,7 +1268,14 @@ fn analyze_function(
             &mut summary,
         );
         credit_clears_params(&sweep.calls, source, &params, clearing_names, &mut summary);
-        credit_credential_facts(&body, &sweep.calls, source, &params, &mut summary);
+        credit_credential_facts(
+            func_node,
+            &body,
+            &sweep.calls,
+            source,
+            &params,
+            &mut summary,
+        );
 
         // Compute return value range for integer-returning functions (only when VRA is needed)
         if compute_return_ranges && !is_void_return && !is_pointer_return {
@@ -3605,6 +3642,22 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
     existing.locks_params.extend(summary.locks_params);
     existing.returns_locked |= summary.returns_locked;
     existing.protects_process_memory |= summary.protects_process_memory;
+    existing
+        .conditional_sink_hits
+        .extend(summary.conditional_sink_hits);
+    existing
+        .unconditional_callees
+        .extend(summary.unconditional_callees);
+    // Two `main`s (a tool and a test harness, say) are two programs: their
+    // call orders cannot be merged into one.
+    if !summary.main_call_sequence.is_empty() || summary.main_call_sequence_ambiguous {
+        if existing.main_call_sequence.is_empty() && !existing.main_call_sequence_ambiguous {
+            existing.main_call_sequence = summary.main_call_sequence;
+        } else {
+            existing.main_call_sequence.clear();
+            existing.main_call_sequence_ambiguous = true;
+        }
+    }
     for (idx, fields) in summary.frees_param_fields {
         existing
             .frees_param_fields
@@ -3853,14 +3906,21 @@ fn credit_clears_params(
     }
 }
 
-/// Credit the MEM06-C facts one body establishes on its own:
-/// `credential_sink_params` and `locks_params` for a parameter handed, casts
-/// and parentheses peeled, to a declared credential sink or page-lock call;
-/// `returns_locked` when every `return` names a variable the body locked;
-/// `protects_process_memory` for a zero `RLIMIT_CORE` or an `mlockall`.
-/// Forwarding to another project function is `param_passthroughs`' job and
-/// is carried by `propagate_transitive_credential_facts`.
+/// Credit the MEM06-C facts one body establishes on its own. Unconditional
+/// sink rows and page locks of a PARAMETER are not credited here: they ride
+/// the `param_passthroughs` edge, which `propagate_transitive_credential_facts`
+/// resolves against the project's summaries first, so a project function
+/// that happens to be named `crypt` or `mlock` is never mistaken for the
+/// library's. What is credited:
+/// - `conditional_sink_hits`, for a conditional row the call's arguments
+///   select (`pam_set_item(h, PAM_AUTHTOK, param)`);
+/// - `returns_locked`, when every non-null return names a variable a lock
+///   covers on every path to it;
+/// - `protects_process_memory`, for an unconditionally reached zero
+///   `RLIMIT_CORE` or `mlockall`;
+/// - `unconditional_callees`, and for `main` its `main_call_sequence`.
 fn credit_credential_facts(
+    func_node: &Node,
     body: &Node,
     calls: &[Node],
     source: &str,
@@ -3871,7 +3931,9 @@ fn credit_credential_facts(
     use lang_parsing_substrate::query;
 
     let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-    let mut locked_vars: HashSet<String> = HashSet::new();
+    let is_main = extract_function_name(func_node, source).as_deref() == Some("main");
+    let mut locks: Vec<(String, Node)> = Vec::new();
+    let mut sequence: Vec<(usize, String, bool)> = Vec::new();
     for &call in calls {
         let Some(function) = call.child_by_field_name("function") else {
             continue;
@@ -3880,6 +3942,7 @@ fn credit_credential_facts(
             continue;
         }
         let name = text(&function);
+        let unconditional = guard_dominance::always_executes(&call);
         let Some(arguments) = call.child_by_field_name("arguments") else {
             continue;
         };
@@ -3891,46 +3954,132 @@ fn credit_credential_facts(
             let a = init_state::strip_arg_casts(args.get(i)?);
             (a.kind() == "identifier").then(|| text(&a))
         };
-        let param_idx = |var: &str| params.iter().position(|p| !p.is_empty() && p == var);
 
-        if credential_sinks::is_credential_sink_function(&name) {
+        if credential_sinks::has_conditional_sink_row(&name) {
             let arg_texts: Vec<String> = args.iter().map(|a| text(a).trim().to_string()).collect();
             let arg_refs: Vec<&str> = arg_texts.iter().map(String::as_str).collect();
-            for i in credential_sinks::sink_args_of_call(&name, &arg_refs) {
-                if let Some(idx) = arg_var(i).as_deref().and_then(param_idx) {
-                    summary.credential_sink_params.insert(idx);
+            for row in credential_sinks::sink_rows_of_call(&name, &arg_refs) {
+                if row.when_arg.is_none() {
+                    continue;
+                }
+                if let Some(idx) = arg_var(row.arg)
+                    .and_then(|v| params.iter().position(|p| !p.is_empty() && *p == v))
+                {
+                    summary.conditional_sink_hits.push((name.clone(), idx));
                 }
             }
         }
         if credential_sinks::is_page_lock_call(&name) {
             if let Some(var) = arg_var(0) {
-                if let Some(idx) = param_idx(&var) {
-                    summary.locks_params.insert(idx);
-                }
-                locked_vars.insert(var);
+                locks.push((var, call));
             }
         }
-        if name == "mlockall" || (name == "setrlimit" && sets_zero_core_limit(body, &args, source))
-        {
+        let protects = name == "mlockall"
+            || (name == "setrlimit" && sets_zero_core_limit(&call, &args, source));
+        if protects && unconditional {
             summary.protects_process_memory = true;
+        }
+        if unconditional {
+            summary.unconditional_callees.insert(name.clone());
+        }
+        if is_main {
+            let entry = if protects {
+                credential_sinks_marker()
+            } else {
+                name.clone()
+            };
+            sequence.push((call.start_byte(), entry, unconditional));
+        }
+    }
+    if is_main {
+        sequence.sort_by_key(|(pos, _, _)| *pos);
+        summary.main_call_sequence = sequence.into_iter().map(|(_, n, u)| (n, u)).collect();
+    }
+
+    // A variable assigned from a locked-by-construction allocator is covered
+    // from that assignment on.
+    for (target, value) in plain_assignments(body, source) {
+        let v = init_state::strip_arg_casts(&value);
+        if v.kind() != "call_expression" {
+            continue;
+        }
+        let Some(callee) = v.child_by_field_name("function").map(|f| text(&f)) else {
+            continue;
+        };
+        if credential_sinks::platform_allocation_is_locked(&callee) == Some(true) {
+            locks.push((target, v));
         }
     }
 
     let returns = query::find_descendants_of_kind(*body, "return_statement");
-    summary.returns_locked = !returns.is_empty()
-        && returns.iter().all(|r| {
-            r.named_child(0)
-                .map(|e| init_state::strip_arg_casts(&e))
-                .is_some_and(|e| e.kind() == "identifier" && locked_vars.contains(&text(&e)))
-        });
+    let mut non_null = 0usize;
+    let all_locked = returns.iter().all(|r| {
+        let Some(e) = r.named_child(0).map(|e| init_state::strip_arg_casts(&e)) else {
+            return false;
+        };
+        let t = text(&e);
+        if e.kind() == "null" || t == "NULL" || t == "0" {
+            return true;
+        }
+        non_null += 1;
+        e.kind() == "identifier"
+            && locks
+                .iter()
+                .any(|(var, lock)| *var == t && guard_dominance::runs_before_on_every_path(lock, r))
+    });
+    summary.returns_locked = non_null > 0 && all_locked;
 }
 
-/// Whether a `setrlimit` call's arguments are `RLIMIT_CORE` and the address
-/// of a `struct rlimit` whose soft limit the enclosing body sets to zero,
-/// by an initializer (`= {0, 0}`, `= {0}`) or an assignment
-/// (`limit.rlim_cur = 0`). Raising the core limit is also a
-/// `setrlimit(RLIMIT_CORE, ...)` call, so the resource alone proves nothing.
-fn sets_zero_core_limit(body: &Node, args: &[Node], source: &str) -> bool {
+fn credential_sinks_marker() -> String {
+    PROTECTS_PROCESS_MARKER.to_string()
+}
+
+/// `(target variable, value)` for every plain `x = value` and `T *x = value`
+/// in `body`, the target given by name.
+fn plain_assignments<'a>(body: &Node<'a>, source: &str) -> Vec<(String, Node<'a>)> {
+    use lang_parsing_substrate::query;
+
+    let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+    let mut out = Vec::new();
+    for a in query::find_descendants_of_kind(*body, "assignment_expression") {
+        let plain = a
+            .child_by_field_name("operator")
+            .is_some_and(|op| text(&op) == "=");
+        if let (true, Some(l), Some(r)) = (
+            plain,
+            a.child_by_field_name("left"),
+            a.child_by_field_name("right"),
+        ) {
+            if l.kind() == "identifier" {
+                out.push((text(&l), r));
+            }
+        }
+    }
+    for d in query::find_descendants_of_kind(*body, "init_declarator") {
+        if let (Some(decl), Some(v)) = (
+            d.child_by_field_name("declarator"),
+            d.child_by_field_name("value"),
+        ) {
+            let name =
+                crate::utility::cert_c::ast_utils::get_identifier_from_declarator(&decl, source);
+            if !name.is_empty() {
+                out.push((name.to_string(), v));
+            }
+        }
+    }
+    out
+}
+
+/// Whether a `setrlimit` call sets a zero core limit: its arguments are
+/// `RLIMIT_CORE` and `&rl`, where `rl` (resolved by declaration, ADR-0006)
+/// is a `struct rlimit` whose soft limit is zero when the call runs. That is
+/// a zero initializer (`= {0, 0}`, `= {0}`, `= { .rlim_cur = 0 }`), or a
+/// `memset(&rl, 0, ...)` or `rl.rlim_cur = 0` that runs on every path to the
+/// call with no later assignment of `rl.rlim_cur` before it. Raising the
+/// core limit is also a `setrlimit(RLIMIT_CORE, ...)` call, so the resource
+/// alone proves nothing.
+pub fn sets_zero_core_limit(call: &Node, args: &[Node], source: &str) -> bool {
+    use crate::utility::cert_c::ast_utils::resolve_identifier_declarator;
     use lang_parsing_substrate::query;
 
     let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
@@ -3938,50 +4087,123 @@ fn sets_zero_core_limit(body: &Node, args: &[Node], source: &str) -> bool {
         return false;
     }
     let limit = init_state::strip_arg_casts(&args[1]);
-    let var = match limit.kind() {
-        "pointer_expression" => limit
-            .child_by_field_name("argument")
-            .filter(|a| a.kind() == "identifier")
-            .map(|a| text(&a)),
-        _ => None,
-    };
-    let Some(var) = var else {
+    if limit.kind() != "pointer_expression" {
         return false;
+    }
+    let Some(ident) = limit
+        .child_by_field_name("argument")
+        .filter(|a| a.kind() == "identifier")
+    else {
+        return false;
+    };
+    let var = text(&ident);
+    let Some((decl, declarator)) = resolve_identifier_declarator(&ident, &var, source) else {
+        return false;
+    };
+    let same_object = |n: &Node| {
+        n.kind() == "identifier"
+            && text(n) == var
+            && resolve_identifier_declarator(n, &var, source)
+                .is_some_and(|(_, d)| d.start_byte() == declarator.start_byte())
     };
     let is_zero = |n: &Node| {
         let t = text(n);
-        let t = t.trim();
-        t == "0" || t == "0L" || t == "0UL" || t == "0u" || t == "0U"
+        matches!(t.trim(), "0" | "0L" | "0UL" | "0u" | "0U" | "0ul")
     };
-    let assigned_zero = query::find_descendants_of_kind(*body, "assignment_expression")
+
+    // A zero initializer on the declaration itself.
+    let initialized_zero = query::find_descendants_of_kind(decl, "init_declarator")
         .into_iter()
-        .any(|a| {
-            let (Some(left), Some(right)) = (
-                a.child_by_field_name("left"),
-                a.child_by_field_name("right"),
-            ) else {
-                return false;
-            };
-            left.kind() == "field_expression"
-                && left
-                    .child_by_field_name("argument")
-                    .is_some_and(|b| text(&b) == var)
-                && left
-                    .child_by_field_name("field")
-                    .is_some_and(|f| text(&f) == "rlim_cur")
-                && is_zero(&right)
-        });
-    let initialized_zero = query::find_descendants_of_kind(*body, "init_declarator")
-        .into_iter()
-        .any(|d| {
+        .filter(|d| {
             d.child_by_field_name("declarator")
-                .is_some_and(|n| text(&n) == var)
-                && d.child_by_field_name("value").is_some_and(|v| {
-                    v.kind() == "initializer_list"
-                        && v.named_child(0).is_some_and(|first| is_zero(&first))
-                })
+                .is_some_and(|n| n.start_byte() == declarator.start_byte())
+        })
+        .filter_map(|d| d.child_by_field_name("value"))
+        .any(|v| {
+            if v.kind() != "initializer_list" {
+                return false;
+            }
+            let items: Vec<Node> = (0..v.named_child_count())
+                .filter_map(|i| v.named_child(i))
+                .filter(|c| c.kind() != "comment")
+                .collect();
+            let designated = items.iter().find(|c| {
+                c.kind() == "initializer_pair"
+                    && c.child_by_field_name("designator")
+                        .is_some_and(|d| text(&d).trim_start_matches('.') == "rlim_cur")
+            });
+            match designated {
+                Some(pair) => pair
+                    .child_by_field_name("value")
+                    .is_some_and(|x| is_zero(&x)),
+                None => items
+                    .first()
+                    .is_some_and(|first| first.kind() != "initializer_pair" && is_zero(first)),
+            }
         });
-    assigned_zero || initialized_zero
+
+    // The last write of `rl.rlim_cur` (or `memset(&rl, 0, ...)`) before the
+    // call, which must run on every path to it.
+    let Some(func) = query::find_ancestor(*call, |a| a.kind() == "function_definition") else {
+        return initialized_zero;
+    };
+    let mut writes: Vec<(Node, bool)> = Vec::new();
+    for a in query::find_descendants_of_kind(func, "assignment_expression") {
+        let (Some(left), Some(right)) = (
+            a.child_by_field_name("left"),
+            a.child_by_field_name("right"),
+        ) else {
+            continue;
+        };
+        if left.kind() == "field_expression"
+            && left
+                .child_by_field_name("argument")
+                .is_some_and(|b| same_object(&b))
+            && left
+                .child_by_field_name("field")
+                .is_some_and(|f| text(&f) == "rlim_cur")
+            && a.start_byte() < call.start_byte()
+        {
+            writes.push((a, is_zero(&right)));
+        }
+    }
+    for c in query::find_descendants_of_kind(func, "call_expression") {
+        if c.start_byte() >= call.start_byte()
+            || c.child_by_field_name("function")
+                .map(|f| text(&f))
+                .as_deref()
+                != Some("memset")
+        {
+            continue;
+        }
+        let cargs: Vec<Node> = c
+            .child_by_field_name("arguments")
+            .map(|a| {
+                (0..a.named_child_count())
+                    .filter_map(|i| a.named_child(i))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let dest = cargs.first().map(|d| init_state::strip_arg_casts(d));
+        let targets_rl = dest.is_some_and(|d| {
+            d.kind() == "pointer_expression"
+                && d.child_by_field_name("argument")
+                    .is_some_and(|b| same_object(&b))
+        });
+        if targets_rl {
+            writes.push((c, cargs.get(1).is_some_and(&is_zero)));
+        }
+    }
+    match writes.iter().max_by_key(|(n, _)| n.start_byte()) {
+        Some((last, zero)) => {
+            *zero
+                && guard_dominance::runs_before_on_every_path(last, call)
+                && writes
+                    .iter()
+                    .all(|(n, z)| *z || n.start_byte() < last.start_byte())
+        }
+        None => initialized_zero,
+    }
 }
 
 /// Credit a single call argument as freeing whichever parameter it names
@@ -5724,28 +5946,46 @@ pub fn propagate_transitive_clears(
     }
 }
 
-/// Propagate `credential_sink_params` and `locks_params` through param
-/// pass-through chains, the way `propagate_transitive_clears` carries
-/// `clears_params`: a wrapper that forwards its parameter to a function that
-/// hands it to `LogonUser` (or locks it) does the same to its own parameter.
-/// A callee the project defines answers from its summary, never from the
-/// library table, since a project's own `crypt` is not libc's; an edge
-/// landing on an unconditional row of `credential_sinks` (or on a page-lock
-/// call at argument 0) counts by itself.
+/// Propagate the MEM06-C facts across functions, to a fixpoint.
+///
+/// `credential_sink_params` and `locks_params` ride `param_passthroughs`,
+/// the way `propagate_transitive_clears` carries `clears_params`: a wrapper
+/// that forwards its parameter to a function that hands it to `LogonUser`
+/// (or locks it) does the same to its own parameter. A callee the project
+/// defines answers from its summary, never from the library table, since a
+/// project's own `crypt` is not libc's; an edge landing on an unconditional
+/// row of `credential_sinks` (or on a page-lock call at argument 0) counts by
+/// itself, as does a `conditional_sink_hits` entry whose callee has no
+/// project summary. `protects_process_memory` rides `unconditional_callees`.
 pub fn propagate_transitive_credential_facts(
     summaries: &mut HashMap<String, FunctionSummary>,
     macro_aliases: &HashMap<String, String>,
 ) {
     use crate::utility::cert_c::credential_sinks;
 
+    let defined: HashSet<String> = summaries.keys().cloned().collect();
+    for summary in summaries.values_mut() {
+        let library_hits: Vec<usize> = summary
+            .conditional_sink_hits
+            .iter()
+            .filter(|(callee, _)| !defined.contains(callee))
+            .map(|(_, idx)| *idx)
+            .collect();
+        summary.credential_sink_params.extend(library_hits);
+    }
+
     for _pass in 0..10 {
         let mut changed = false;
-        let snapshot: HashMap<String, (HashSet<usize>, HashSet<usize>)> = summaries
+        let snapshot: HashMap<String, (HashSet<usize>, HashSet<usize>, bool)> = summaries
             .iter()
             .map(|(n, s)| {
                 (
                     n.clone(),
-                    (s.credential_sink_params.clone(), s.locks_params.clone()),
+                    (
+                        s.credential_sink_params.clone(),
+                        s.locks_params.clone(),
+                        s.protects_process_memory,
+                    ),
                 )
             })
             .collect();
@@ -5759,7 +5999,7 @@ pub fn propagate_transitive_credential_facts(
                             || credential_sinks::is_page_lock_call(n)
                     });
                     let (sinks, locks) = match snapshot.get(callee) {
-                        Some((s, l)) => (s.contains(callee_idx), l.contains(callee_idx)),
+                        Some((s, l, _)) => (s.contains(callee_idx), l.contains(callee_idx)),
                         None => (
                             credential_sinks::is_unconditional_sink_arg(callee, *callee_idx),
                             *callee_idx == 0 && credential_sinks::is_page_lock_call(callee),
@@ -5772,6 +6012,15 @@ pub fn propagate_transitive_credential_facts(
                         changed = true;
                     }
                 }
+            }
+            if !summary.protects_process_memory
+                && summary.unconditional_callees.iter().any(|c| {
+                    let c = edge_target(macro_aliases, c, |n| snapshot.contains_key(n));
+                    snapshot.get(c).is_some_and(|(_, _, p)| *p)
+                })
+            {
+                summary.protects_process_memory = true;
+                changed = true;
             }
         }
 

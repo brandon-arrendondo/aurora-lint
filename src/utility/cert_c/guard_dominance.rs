@@ -1875,6 +1875,73 @@ fn nullness_literal(term: &Node, source: &str) -> Option<(String, bool)> {
     None
 }
 
+/// Whether `step` executes, earlier in the same function, on every path that
+/// reaches `target`: `step` starts before `target`, and every conditional
+/// part of the code enclosing `step` also encloses `target`. So a `step`
+/// guarded by `if (p != NULL) { step; ...; target; }` qualifies, as does one
+/// in an `if` or loop CONDITION (`if (0 != mlock(p, n)) return;` always
+/// evaluates the call) or in a `do { } while` body (which always runs once).
+/// It does not qualify when it sits in an `if` / `else` / `case` / loop body,
+/// a `?:` branch, or the right operand of `&&` / `||` that `target` is
+/// outside.
+///
+/// Structured control flow only. A `goto`, or an early `return` between the
+/// two, is not modelled, and neither is a jump into the middle of a
+/// block.
+pub fn runs_before_on_every_path(step: &Node, target: &Node) -> bool {
+    step.start_byte() < target.start_byte()
+        && escapes_no_conditional_part(step, |part| {
+            part.start_byte() <= target.start_byte() && target.end_byte() <= part.end_byte()
+        })
+}
+
+/// Whether `node` executes on every path through its function: no `if` /
+/// `else` / `case` / loop body, `?:` branch, or right operand of `&&` / `||`
+/// encloses it. Conditions, `do { } while` bodies and preprocessor arms (a
+/// build configuration, not a runtime branch) do not make it conditional.
+pub fn always_executes(node: &Node) -> bool {
+    escapes_no_conditional_part(node, |_| false)
+}
+
+/// Walk from `node` to its function, and whenever it sits in a conditional
+/// part of an ancestor, require `allowed(part)`.
+fn escapes_no_conditional_part(node: &Node, allowed: impl Fn(&Node) -> bool) -> bool {
+    let mut cur = *node;
+    while let Some(parent) = cur.parent() {
+        if parent.kind() == "function_definition" || parent.kind() == "translation_unit" {
+            return true;
+        }
+        let is = |field: &str| {
+            parent
+                .child_by_field_name(field)
+                .is_some_and(|c| c.id() == cur.id())
+        };
+        // The conditional part: the child itself for a body or branch, but
+        // the whole `case` for a statement in one, since a case's
+        // statements are its direct children and run as one arm.
+        let part = match parent.kind() {
+            "if_statement" if is("consequence") || is("alternative") => Some(cur),
+            "else_clause" | "case_statement" => Some(parent),
+            "while_statement" | "for_statement" if is("body") => Some(cur),
+            "conditional_expression" if is("consequence") || is("alternative") => Some(cur),
+            "binary_expression"
+                if is("right")
+                    && parent
+                        .child_by_field_name("operator")
+                        .is_some_and(|op| matches!(op.kind(), "&&" | "||")) =>
+            {
+                Some(cur)
+            }
+            _ => None,
+        };
+        if part.is_some_and(|p| !allowed(&p)) {
+            return false;
+        }
+        cur = parent;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

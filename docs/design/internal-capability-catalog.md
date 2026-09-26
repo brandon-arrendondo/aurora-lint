@@ -432,28 +432,41 @@ this module.
 ### `src/utility/cert_c/credential_sinks.rs`
 **Problem solved:** "does this buffer hold a secret?", answered by what the
 buffer reaches instead of what it is called. Each row of
-`CREDENTIAL_SINKS` is a platform contract: one argument of a named Win32 or
-POSIX API that receives a password, passphrase or plaintext to protect
-(`LogonUser*`'s password, `crypt`'s key, `CryptProtectMemory`'s buffer, a
-`PAM_AUTHTOK` item). MEM06-C's old form reported every `malloc` because it
-had no notion of sensitivity at all; a name list (`secret`, `pw`) would have
-been the same misfire in a narrower shape. A project function with the same
-name as a row is not the library call, so consult
+`CREDENTIAL_SINKS` is a platform or library contract: one argument of a
+named API that receives a password, passphrase or plaintext to protect.
+The APIs are Win32 `LogonUser*`/`CreateProcessWithLogonW`/`CryptProtectMemory`,
+POSIX `crypt*`, PAM `pam_set_item`, MySQL/libpq/OpenLDAP logins, libsodium
+`crypto_pwhash*`, OpenSSL `PKCS5_PBKDF2_HMAC*` and Mbed TLS
+`mbedtls_pkcs5_pbkdf2_hmac*`. MEM06-C's old form reported every `malloc`
+because it had no notion of sensitivity at all; a name list (`secret`,
+`pw`) would have been the same misfire in a narrower shape. A project
+function with the same name as a row is not the library call, so consult
 `FunctionSummary::credential_sink_params` first and the table only for a
 callee the project does not define.
 
 | Function | Signature | Description |
 |---|---|---|
-| `CREDENTIAL_SINKS` | `&[CredentialSink]` | The rows: `function`, zero-based `arg`, an optional `when_arg` condition (`pam_set_item`'s item type), and the documented `basis`. |
-| `sink_args_of_call` | `(function: &str, args: &[&str]) -> Vec<usize>` | The argument indices of one call that receive a secret, conditions applied to the call's argument text. |
+| `CREDENTIAL_SINKS` | `&[CredentialSink]` | The rows: `function`, zero-based `arg`, an optional `when_arg` condition on another argument's spelling (`pam_set_item`'s item type), `len_arg` (the secret's length argument, if any), `kind` (`Credential` or `ProtectedPlaintext`, so a hard-coded-credential rule can skip `CryptProtectMemory`'s buffer) and the documented `basis`. |
+| `sink_rows_of_call` / `sink_args_of_call` | `(function: &str, args: &[&str])` | The rows (or argument indices) of one call that apply, conditions checked against the call's argument text. |
 | `is_unconditional_sink_arg` | `(function: &str, arg: usize) -> bool` | A row with no condition: what an edge-only walk (`param_passthroughs`) can check without the call. |
-| `is_credential_sink_function` | `(function: &str) -> bool` | Any row names `function`. |
-| `is_page_lock_call` | `(function: &str) -> bool` | `mlock`/`mlock2`/`VirtualLock`: locks the pages of its first argument. |
+| `has_conditional_sink_row` / `is_credential_sink_function` | `(function: &str) -> bool` | Whether `function` has a conditional row / any row. |
+| `is_page_lock_call` | `(function: &str) -> bool` | `mlock`/`mlock2`/`VirtualLock`/`sodium_mlock`: locks the pages of its first argument. |
+| `platform_allocation_is_locked` | `(function: &str) -> Option<bool>` | `Some(true)` for a locked-by-construction allocator (`sodium_malloc`, `OPENSSL_secure_malloc`, `gcry_malloc_secure`, ...), `Some(false)` for a Win32 allocator of pageable memory (`VirtualAlloc`, `HeapAlloc`, `LocalAlloc`, ...), `None` otherwise. The C library's allocators stay `call_roles`'. |
+| `released_arg` | `(function: &str) -> Option<usize>` | The argument a library deallocator releases (`free`, `sodium_free`, `OPENSSL_*free`, `VirtualFree`, `HeapFree`'s third, ...). |
 
-The summary facts built on it are `credential_sink_params`, `locks_params`
-(both propagated by `propagate_transitive_credential_facts`),
-`returns_locked` and `protects_process_memory` (a zero `RLIMIT_CORE` or
-`mlockall`); see `function_summary.rs` below.
+Credential SOURCES (`getpass`, `pam_get_authtok`, ...) are not rows yet.
+
+The summary facts built on it (see `function_summary.rs` below):
+- `credential_sink_params` and `locks_params`, carried over
+  `param_passthroughs` by `propagate_transitive_credential_facts`, which
+  resolves an edge against the project's summaries before the table;
+- `conditional_sink_hits`, which join `credential_sink_params` only when no
+  project summary has the callee's name;
+- `returns_locked` (every non-null return is covered by a dominating lock);
+- `protects_process_memory` (an always-executed zero `RLIMIT_CORE`, per
+  `sets_zero_core_limit`, or `mlockall`, carried over `unconditional_callees`);
+- `main_call_sequence`, `main`'s calls in order, which is how MEM06-C asks
+  whether protection runs before the call that leads to a secret.
 
 ### `src/utility/cert_c/clearing_extent.rs`
 **Problem solved:** how far a memory-clearing call's write reaches.
@@ -815,6 +828,8 @@ condition rather than a preceding statement.
 | `has_dominating_dereference` | `(var: &str, site: &Node, source: &str) -> bool` | Whether `var` has already been DEREFERENCED (`var->f`, `*var`, `var[i]`) when `site` executes -- so the program either faulted or `var` is non-null here. The dual of `has_dominating_comparison`: that asks whether the code checked a pointer, this asks whether it already committed to it. Counts a deref in an enclosing condition, and in a preceding block-level `declaration`/`expression_statement`/`return_statement` or preceding `if`-chain condition; NOT one in a preceding loop or `if` body. Use it to tell a real guard from dead-defensive code -- do NOT use the `NotNull` lattice value for that, it is also the no-evidence default for a parameter. |
 | `dominating_assignment` | `(var: &str, site: &Node, source: &str) -> Option<DominatingAssignment>` | The write to `var` that every path to `site` executes last — a plain `var = value;` statement or a non-`static` initialized declaration — as the statement plus its value node. Walks the enclosing blocks outward, nearest preceding statement first, and answers `None` rather than guess when anything else writes `var` first (a write inside an `if`/loop body, `var += n`, `&var`, a condition's `(var = f())`), when a label is crossed or passed (a `goto` can enter below the write), when a loop enclosing `site` but not the write also writes `var` (the back edge), or at an uninitialized or `static` declaration. The per-site answer a whole-function last-write table cannot give: `it = NULL; ... it = iter_init(); release(it);` passes the iterator. Prescan's call-argument null states are the reference caller, falling back to the table on `None`. |
 | `dominating_condition_branch` | `(cond: &Node, site: &Node) -> Option<bool>` | Which way one `dominating_conditions` result had to evaluate for control to reach `site` — the missing half of that function. A *bounds* question does not need it (an evaluated comparison bounds the variable whichever way it went); a *null* question does, because `if (!p) { site }` and `if (!p) return; site` say opposite things about the same condition. `None` rather than a guess for an `else if` chain reaching past itself (control can arrive through an earlier branch that fell through, never evaluating this link), after a loop (the body may have reassigned the variable), and for a `switch` (the case label governs, not truthiness). |
+| `runs_before_on_every_path` | `(step: &Node, target: &Node) -> bool` | `step` executes, earlier in the same function, on every path to `target`: every conditional part enclosing `step` (an `if`/`else`/loop body, a whole `case`, a `?:` branch, the right operand of `&&`/`\|\|`) also encloses `target`. A condition, a `do { } while` body and a preprocessor arm are not conditional. Structured control flow only: `goto` and early returns are not modelled. MEM06-C's "lock before the store" and "zero limit before `setrlimit`". |
+| `always_executes` | `(node: &Node) -> bool` | The same walk with no target: nothing conditional encloses `node`. Unlike `function_summary`'s `is_unconditionally_reached`, an `if` or loop CONDITION counts as executed. |
 | `always_diverges` | `(stmt: &Node) -> bool` | Control cannot fall out of the bottom of `stmt`: it is a `goto`/`return`/`break`/`continue`, or a block whose last non-comment statement is one. Exact rather than optimistic for what it accepts — a block that cannot fall off its end cannot be left except by a jump either. A block ending in a preprocessor wrapper is rejected, since what runs there depends on a `-D` this analyzer does not resolve. |
 | `condition_compares_var` | `(condition: &Node, var: &str, source: &str, kind: ComparisonKind) -> bool` | Whether a condition tests `var`: either operand order, the variable nested at any depth in an operand (`x > SIZE_MAX - n`, `p->len < n`), `!var` read as `var == 0`. |
 | `condition_excludes_zero` | `(condition: &Node, exprs: &[String], known_true: bool, source: &str, macros: &MacroConstantMap) -> bool` | What a resolved condition PROVED about zero, where `condition_compares_var` only says a variable was tested: given the branch from `dominating_condition_branch`, whether the condition rules out zero for any of `exprs` (matched on whitespace-stripped text via `squeeze_text`, so `s->n`, `f(x)` and `( a - b )` all work). Decomposes a true `&&` / false `\|\|`, flips through `!`, and reads a leaf `x OP c` against a const-evaluated `c` with the operator normalised (x on the left) and negated on a false branch: `x != 0`, `x == c` (c≠0), `x > c` (c≥0), `x >= c` (c≥1), `x < c` (c≤0), `x <= c` (c≤-1), or bare truthy `x`. A true `\|\|`, a false `&&`, and a non-constant bound prove nothing. INT33-C is the reference caller (`n ? a / n : 0`, `n > 0 && a / n`, `n == 0 \|\| a / n`, `if (n == 0) break;`). |
@@ -956,7 +971,8 @@ fact, it exists only to separate "releases nothing" from "the release, if
 any, is unreadable"),
 `has_env03_taint_source`, `returns_tainted`,
 `closes_params`, `credential_sink_params` / `locks_params` / `returns_locked` /
-`protects_process_memory` (MEM06-C's facts, from `credential_sinks`),
+`protects_process_memory` / `conditional_sink_hits` / `unconditional_callees` /
+`main_call_sequence` (MEM06-C's facts, from `credential_sinks`),
 `clears_params` (the body overwrites the parameter's pointee:
 a `MEMORY_CLEARING_FUNCS` call, a file-scope function pointer initialized
 from one — mbedtls/hostap's `static void *(*const volatile memset_func)(...)
