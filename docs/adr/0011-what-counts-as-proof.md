@@ -41,7 +41,14 @@ accepted or rejected by what it rests on. In order of strength:
    conforming implementation. Examples: `argv[argc] == NULL`; static storage
    is zero-initialized; `free(NULL)` does nothing; `sizeof(char) == 1`. These
    hold on every compiler and in every build, and any reader can check them
-   against the standard.
+   against the standard. **Standard library contracts count here too:** what
+   the ISO C standard library and POSIX specify for their functions (which
+   arguments must be valid, what a function accepts, such as `free(NULL)`,
+   and what it returns). They have decades of precedent and won't shift
+   underneath a codebase the way its own internal conventions can. C has no
+   contract language for a project's own functions, which is why a project
+   API's intended preconditions are not proof, while the standard library's
+   specified ones are (Brandon, 2026-09-25).
 2. **Code that is dead as written: out of scope.** A region the file itself
    proves can never be compiled (`#if 0`, a `defined(MACRO)` arm settled by an
    unconditional `#define`/`#undef` in the same file, `__cplusplus` when
@@ -58,8 +65,8 @@ accepted or rejected by what it rests on. In order of strength:
 4. **Compiler and implementation guarantees: not a basis by default.**
    Behavior that depends on a compiler, its flags, or a platform: `-fwrapv`
    making signed overflow defined, `-fno-strict-aliasing`, `int` being 32
-   bits on the benchmark host, a C library's behavior beyond what ISO C
-   requires, or an attribute such as `nonnull`, which makes a violation
+   bits on the benchmark host, a C library's behavior beyond what ISO C or
+   POSIX specifies (an extension of one implementation), or an attribute such as `nonnull`, which makes a violation
    undefined rather than impossible. None of these travel with the source.
    A label resting on one would change with the machine that built the
    code. The exception is a property the code itself pins down, such as
@@ -159,6 +166,13 @@ TP. That holds even when it is almost certainly harmless in practice.
 - This ADR does not change ADR-0010's rule that every compilable
   configuration counts. A construct that is safe in one build and unsafe in
   another is unsafe, because the unsafe build exists.
+
+- **A stricter mode is a future option, not the default.** Minimal libc
+  implementations for small embedded targets sometimes drop checks the
+  standard requires (for example, `free(NULL)` doing nothing) to save
+  memory. A strict or pedantic mode that trusts no library behavior would
+  cover them. Most scans don't need it, so by default the standard's
+  specified behavior is trusted (Brandon, 2026-09-25).
 
 ## Settled cases
 

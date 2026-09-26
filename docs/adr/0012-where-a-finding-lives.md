@@ -54,9 +54,12 @@ Under a strict dereference-only reading, about 860 current API00-C TP labels
 The two rules keep their different sites, because they ask different
 questions.
 
-1. **EXP34-C lives at the dereference.** That includes a call into a callee
-   whose contract forbids null: a dereferencing libc function, or a
-   `nonnull` parameter. It includes `&p->f` with `p` unproven, by the strict
+1. **EXP34-C lives at the dereference.** That includes a call into a
+   standard library function whose ISO C or POSIX specification requires a
+   valid pointer (`strlen`, `memcpy` with nonzero `n`, and so on). A bare
+   `nonnull` attribute is a compiler annotation, not a standard contract
+   (ADR-0011 basis 4), so it appears only as a trace note, never as the
+   site. It includes `&p->f` with `p` unproven, by the strict
    reading. A plain `f(p)` into a project function is never an EXP34-C site
    (4bbf15d1, unchanged).
 2. **API00-C lives at the receiving function.** It is TP when all three
