@@ -74,6 +74,16 @@ pub struct FunctionSummary {
     /// .
     #[serde(default)]
     pub unconditional_frees_params: HashSet<usize>,
+    /// For each index in `frees_params`, the preprocessor-arm assumptions of
+    /// every definition that frees it
+    /// ([`crate::analyze::dead_regions::arm_assumptions`]); an empty entry is
+    /// a definition no arm constrains. A caller applies a free only when one
+    /// of those definitions can compile together with the call
+    /// ([`Self::frees_at`], [`Self::unconditional_frees_at`]). An index with
+    /// no entry here came from a later pass (name folding, transitive frees)
+    /// and applies everywhere, as before.
+    #[serde(default)]
+    pub free_arms: HashMap<usize, Vec<Vec<(String, bool)>>>,
     /// Subset of `modifies_params` whose write through the parameter is not
     /// known to be conditional — the MUST-write fact, and the output-param
     /// counterpart of `unconditional_frees_params`.
@@ -567,12 +577,9 @@ pub struct FunctionSummary {
     /// a clearer by this fact, not by name, and MEM03-C credits its callers
     /// with clearing the buffer.
     ///
-    /// NOT gated on `function_definition_is_preproc_conditional`, unlike the
-    /// free facts: mbedtls's real zeroize is itself under
-    /// `#if !defined(MBEDTLS_PLATFORM_ZEROIZE_ALT)`, and a wrongly-withheld
-    /// "clears" costs a false finding on every default build, whereas a
-    /// wrongly-credited one costs a recommendation on a build that swapped
-    /// in a non-clearing alternate.
+    /// Credited for a definition inside a preprocessor conditional like any
+    /// other: mbedtls's real zeroize is itself under
+    /// `#if !defined(MBEDTLS_PLATFORM_ZEROIZE_ALT)`.
     #[serde(default)]
     pub clears_params: HashSet<usize>,
     /// Parameter indices where at least one call site within the project
@@ -1006,51 +1013,6 @@ fn find_nested_function_boundary(node: &Node, source: &str) -> Option<usize> {
     None
 }
 
-/// True if `func_node` (a whole `function_definition`) sits inside a
-/// preprocessor conditional branch (`#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`).
-/// aurora-lint has no preprocessor, so when a function has one definition guarded by
-/// such a branch and another unconditional (or differently-guarded)
-/// definition of the same name, only one is ever really compiled in — but
-/// both get parsed and their facts unioned into one cross-file
-/// `FunctionSummary` (needed for cases like hostap's `os_free`, whose
-/// several platform-variant bodies all agree). That union is unsound when a
-/// conditional definition is a semantically different fallback rather than a
-/// same-behavior variant: hostap's `eapol_supp_sm.h` declares the real
-/// `eapol_sm_init` under `#if IEEE8021X_EAPOL` but also provides a
-/// `#else`-guarded stub `eapol_sm_init` that unconditionally
-/// `free(ctx)`s and returns a dummy sentinel. Crediting that stub's
-/// unconditional free into the summary poisoned every call site of the
-/// *real* `eapol_sm_init` with a phantom already-freed `ctx`, which then
-/// made MEM30-C flag three independent, mutually-exclusive
-/// `if (...) { os_free(ctx); return -1; }` early-return checks in
-/// `wpa_supplicant/eapol_test.c` as double-freeing each other.
-/// Excluding a conditional definition's free-crediting facts from the
-/// summary is conservative in the same direction as the rest of MEM30-C:
-/// worst case it silently loses a real MUST-free fact (a false negative),
-/// never gains a phantom one (a false positive).
-///
-/// A file-scope include guard (`#ifndef LIST_H` / `#define LIST_H` / ... /
-/// `#endif`) is NOT such a branch: it wraps a header's only definitions,
-/// never an alternate body. Before it was excepted, every function in every
-/// guarded header was gated -- hostap's `dl_list_add` earned no
-/// `stores_params`, so no intrusive-list linker's returned object ever
-/// escaped and `returned_value_escapes` was a no-op on that corpus
-/// .
-fn function_definition_is_preproc_conditional(func_node: &Node, source: &str) -> bool {
-    let mut current = *func_node;
-    while let Some(parent) = current.parent() {
-        if matches!(
-            parent.kind(),
-            "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_else"
-        ) && !crate::utility::cert_c::ast_utils::is_include_guard(&parent, source)
-        {
-            return true;
-        }
-        current = parent;
-    }
-    false
-}
-
 /// Analyze a single function definition to produce its summary.
 ///
 /// `taint_source_aliases` names any macro identifier whose target resolves to
@@ -1242,9 +1204,12 @@ fn analyze_function(
             body_text,
             &params,
             function_macros,
-            !function_definition_is_preproc_conditional(func_node, source),
             &mut summary,
         );
+        let arms = crate::analyze::dead_regions::arm_assumptions(func_node, source);
+        for &idx in &summary.frees_params {
+            summary.free_arms.entry(idx).or_default().push(arms.clone());
+        }
         credit_clears_params(&sweep.calls, source, &params, clearing_names, &mut summary);
 
         // Compute return value range for integer-returning functions (only when VRA is needed)
@@ -3529,6 +3494,35 @@ fn compute_conditional_write_return_correlation(
 /// project-wide context. `unit_count` is only what the progress reporter is
 /// told it is starting on.
 ///
+impl FunctionSummary {
+    /// `frees_params` as a call on 1-based `line` of `source` sees it: an
+    /// index stays only if some definition that frees it can compile together
+    /// with that line. hostap's `preauth.c` calls `eapol_sm_init(ctx)` inside
+    /// `#if defined(IEEE8021X_EAPOL)`, and the only body that frees `ctx` is
+    /// the header stub in the `#else` of that macro, so for that call nothing
+    /// is freed (ADR-0010 D4).
+    pub fn frees_at(&self, source: &str, line: usize) -> HashSet<usize> {
+        self.reachable_frees(&self.frees_params, source, line)
+    }
+
+    /// [`Self::frees_at`] for the MUST-free set.
+    pub fn unconditional_frees_at(&self, source: &str, line: usize) -> HashSet<usize> {
+        self.reachable_frees(&self.unconditional_frees_params, source, line)
+    }
+
+    fn reachable_frees(&self, set: &HashSet<usize>, source: &str, line: usize) -> HashSet<usize> {
+        set.iter()
+            .copied()
+            .filter(|idx| {
+                self.free_arms.get(idx).is_none_or(|arms| {
+                    arms.iter()
+                        .any(|a| crate::analyze::dead_regions::line_compiles_under(source, line, a))
+                })
+            })
+            .collect()
+    }
+}
+
 /// Fold one definition's summary into the accumulated summary for that
 /// function name.
 ///
@@ -3612,9 +3606,20 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
     // under this name takes ownership of the argument, a caller that reports
     // the block leaked afterwards is wrong on that build.
     existing.stores_params.extend(summary.stores_params);
+    // Unioned although it is a MUST fact, because each definition is its own
+    // configuration: a caller linked against a definition that always frees
+    // the argument is using freed memory in that build, and ADR-0010 reports a
+    // violation any compilable configuration produces. Intersecting instead
+    // lost real use-after-frees: hostap's os_none.c defines an empty os_free,
+    // which would strip "frees" from os_free for every caller.
     existing
         .unconditional_frees_params
         .extend(summary.unconditional_frees_params);
+    // Each definition's arms travel with its free, so a caller can still
+    // tell which definitions it can link against.
+    for (idx, arms) in summary.free_arms {
+        existing.free_arms.entry(idx).or_default().extend(arms);
+    }
     // Union, for the same reason `can_return_null` is unioned:
     // if ANY definition linked under this name can return
     // having left the output parameter unwritten, a caller
@@ -4071,6 +4076,17 @@ fn credit_frees_params(
             if function.kind() != "identifier" {
                 continue;
             }
+            // Nor may the callee be a function-like macro this file defines.
+            // Then there is a body to read: if it frees the argument,
+            // `macro_frees_param_indices` above already said so; if the
+            // expander could not use it (`##`, variadic) the text is still
+            // there, and the name is not evidence about it. mbedtls's
+            // `LOCAL_INPUT_FREE(input_external, input)` frees a local copy
+            // whose name is pasted from the parameter, and guessing from its
+            // `_FREE` made every PSA entry point free its caller's buffers.
+            if crate::analyze::check_macros::defines_function_macro(source, func_name) {
+                continue;
+            }
             // Exactly one argument may name a parameter. The wrappers this
             // tier is for release one object (`EVP_PKEY_free(key)`), and an
             // argument that is not a bare parameter name (`sizeof(*ctx)` in
@@ -4504,23 +4520,15 @@ fn analyze_param_usage(
     body_text: &str,
     params: &[String],
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
-    credit_frees: bool,
     summary: &mut FunctionSummary,
 ) {
-    // Gated on `credit_frees`: a definition inside a preprocessor
-    // conditional (see `function_definition_is_preproc_conditional`) may be
-    // a mutually-exclusive alternate body, not a same-behavior variant, so
-    // its free-related facts must not be unioned into the cross-file
-    // summary as if they always held.
-    if credit_frees {
-        credit_frees_params(&sweep.calls, body, source, params, function_macros, summary);
-        // Gated with the free facts and for the same reason: a
-        // definition inside a preprocessor conditional may be a
-        // mutually-exclusive alternate body, and an ownership fact taken
-        // from one arm must not be unioned in as if it always held.
-        credit_stores_params(sweep, body, source, params, summary);
-        credit_returned_value_escapes(sweep, body, source, params, summary);
-    }
+    // Credited for every definition, including one inside a preprocessor
+    // conditional: that arm compiles in some configuration, so its facts are
+    // facts about the name (ADR-0010), and definitions from different arms
+    // meet in `merge_summary_variant` like any other alternates.
+    credit_frees_params(&sweep.calls, body, source, params, function_macros, summary);
+    credit_stores_params(sweep, body, source, params, summary);
+    credit_returned_value_escapes(sweep, body, source, params, summary);
 
     // One walk for the whole body, not one per parameter.
     let library_written = library_written_names_in(&sweep.calls, source);
@@ -4640,11 +4648,8 @@ fn analyze_param_usage(
 
     // Detect direct field frees off a parameter: free(param->field) or
     // free((*param)->field) (the double-pointer-deref idiom used by
-    // `void destroy(T **param)` style destructors). Gated on `credit_frees`
-    // for the same reason as `credit_frees_params` above.
-    if credit_frees {
-        collect_frees_param_fields(&sweep.calls, source, params, function_macros, summary);
-    }
+    // `void destroy(T **param)` style destructors).
+    collect_frees_param_fields(&sweep.calls, source, params, function_macros, summary);
 }
 
 /// POSIX fd_set macros (`FD_ZERO`, `FD_SET`, `FD_CLR`) write through their

@@ -220,6 +220,29 @@ pub fn collect_conditional_macro_names(source: &str) -> HashSet<String> {
     out
 }
 
+/// Whether `source` `#define`s `name` as a function-like macro in any
+/// preprocessor arm, including a definition the expander cannot use
+/// (`##`, variadic). For a caller asking "is there a body to read for this
+/// name?": mbedtls's `LOCAL_INPUT_FREE(input, input_copy)` is defined twice
+/// in `psa_crypto.c` (once freeing a local copy whose name is `##`-pasted
+/// from the parameter, once only nulling the copy), so what it does to the
+/// argument is written down, and its `_FREE` suffix is not evidence.
+pub fn defines_function_macro(source: &str, name: &str) -> bool {
+    source.lines().any(|line| {
+        let Some(rest) = line.trim_start().strip_prefix('#') else {
+            return false;
+        };
+        let Some(rest) = rest.trim_start().strip_prefix("define") else {
+            return false;
+        };
+        rest.starts_with(|c: char| c.is_whitespace())
+            && rest
+                .trim_start()
+                .strip_prefix(name)
+                .is_some_and(|after| after.starts_with('('))
+    })
+}
+
 /// Whether an invocation of `name` is one `{ ... }` block in every
 /// configuration, reading the union of several tables (the project's and one
 /// file's own): it has at least one definition, no table lists it as
@@ -797,6 +820,17 @@ fn contains_top_level_keyword(s: &str, kw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pasting_macro_is_a_defined_function_macro() {
+        let src = "#define LOCAL_INPUT_FREE(input, input_copy) \\\n    input_copy = NULL; \\\n    psa_free(&COPY_OF_##input);\n";
+        assert!(defines_function_macro(src, "LOCAL_INPUT_FREE"));
+        assert!(!defines_function_macro(src, "LOCAL_INPUT"));
+        assert!(!defines_function_macro(
+            "#define FREE_ALL cleanup()\n",
+            "FREE_ALL"
+        ));
+    }
 
     fn blocks(src: &str, name: &str) -> bool {
         let defs = collect_macro_definitions(src);

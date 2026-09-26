@@ -251,9 +251,166 @@ impl DeadRegions {
     }
 }
 
+/// The macro states the preprocessor arms enclosing `node` fix: `(name,
+/// defined)` for each `#ifdef X` / `#ifndef X` / `defined(X)` /
+/// `!defined(X)` term of an arm's condition (every term of an `&&`
+/// conjunction), and for an `#else`/`#elif` the negation of a single-term
+/// condition it is the alternative to. Anything else (`#if X > 2`, an `||`,
+/// the else of a conjunction) fixes nothing and contributes nothing; a file
+/// include guard is not a configuration and is skipped. Empty means `node`
+/// compiles under every configuration its arms can express.
+///
+/// For pairing a definition with its callers (ADR-0010 D4, arms are
+/// alternatives): hostap's `eapol_supp_sm.h` defines a stub `eapol_sm_init`
+/// that frees its argument in the `#else` of `#ifdef IEEE8021X_EAPOL`, which
+/// fixes `IEEE8021X_EAPOL` undefined; `preauth.c` calls it only inside
+/// `#if defined(IEEE8021X_EAPOL) && ...`, so [`line_compiles_under`] with
+/// that state says the two never meet. Name resolution, like the rest of
+/// this module: it picks which definition a call can link against.
+pub fn arm_assumptions(node: &Node, source: &str) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    let mut child = *node;
+    while let Some(parent) = child.parent() {
+        if matches!(
+            parent.kind(),
+            "preproc_ifdef" | "preproc_if" | "preproc_elif" | "preproc_elifdef"
+        ) && !crate::utility::cert_c::ast_utils::is_include_guard(&parent, source)
+        {
+            let terms = condition_terms(&parent, source);
+            let in_alternative = parent
+                .child_by_field_name("alternative")
+                .is_some_and(|a| a.id() == child.id());
+            match (in_alternative, terms) {
+                (false, Some(terms)) => out.extend(terms),
+                (true, Some(terms)) if terms.len() == 1 => {
+                    let (name, defined) = terms.into_iter().next().unwrap();
+                    out.push((name, !defined));
+                }
+                _ => {}
+            }
+        }
+        child = parent;
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Whether 1-based `line` of `source` survives preprocessing with the macros
+/// in `assumptions` fixed. See [`arm_assumptions`].
+pub fn line_compiles_under(source: &str, line: usize, assumptions: &[(String, bool)]) -> bool {
+    if assumptions.is_empty() {
+        return true;
+    }
+    let table: PlatformAssumptions = assumptions.iter().cloned().collect();
+    !DeadRegions::under(source, &table).contains_line(line)
+}
+
+/// The `(name, defined)` terms a conditional's own condition asserts when
+/// its then-arm is taken, or `None` when it asserts something this cannot
+/// express.
+fn condition_terms(cond_node: &Node, source: &str) -> Option<Vec<(String, bool)>> {
+    let text = |n: Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+    if matches!(cond_node.kind(), "preproc_ifdef" | "preproc_elifdef") {
+        let name = text(cond_node.child_by_field_name("name")?);
+        let directive = text(cond_node.child(0)?);
+        return Some(vec![(name, !directive.ends_with("ndef"))]);
+    }
+    let mut terms = Vec::new();
+    conjunction_terms(
+        cond_node.child_by_field_name("condition")?,
+        source,
+        &mut terms,
+    )?;
+    Some(terms)
+}
+
+fn conjunction_terms(expr: Node, source: &str, out: &mut Vec<(String, bool)>) -> Option<()> {
+    let text = |n: Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+    match expr.kind() {
+        "parenthesized_expression" => conjunction_terms(expr.named_child(0)?, source, out),
+        "binary_expression" if text(expr.child_by_field_name("operator")?) == "&&" => {
+            conjunction_terms(expr.child_by_field_name("left")?, source, out)?;
+            conjunction_terms(expr.child_by_field_name("right")?, source, out)
+        }
+        "preproc_defined" => {
+            out.push((text(expr.named_child(0)?), true));
+            Some(())
+        }
+        "unary_expression" if text(expr.child_by_field_name("operator")?) == "!" => {
+            let arg = expr.child_by_field_name("argument")?;
+            let arg = if arg.kind() == "parenthesized_expression" {
+                arg.named_child(0)?
+            } else {
+                arg
+            };
+            (arg.kind() == "preproc_defined").then_some(())?;
+            out.push((text(arg.named_child(0)?), false));
+            Some(())
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn arms_of_function(src: &str, name: &str) -> Vec<(String, bool)> {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let root = tree.root_node();
+        let f = lang_parsing_substrate::query::find_descendants(root, |n| {
+            n.kind() == "function_definition"
+                && n.utf8_text(src.as_bytes()).unwrap_or("").contains(name)
+        })
+        .into_iter()
+        .next()
+        .expect("function");
+        arm_assumptions(&f, src)
+    }
+
+    #[test]
+    fn else_of_ifdef_fixes_the_macro_undefined() {
+        let src =
+            "#ifdef EAPOL\nint init(int *c);\n#else\nint init_stub(int *c) { return 0; }\n#endif\n";
+        assert_eq!(
+            arms_of_function(src, "init_stub"),
+            vec![("EAPOL".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn conjunction_of_defined_terms_fixes_each() {
+        let src = "#if defined(A) && !defined(B)\nint f(void) { return 0; }\n#endif\n";
+        assert_eq!(
+            arms_of_function(src, "f(void)"),
+            vec![("A".to_string(), true), ("B".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn a_value_test_or_an_include_guard_fixes_nothing() {
+        assert!(arms_of_function(
+            "#if VERSION > 2\nint f(void) { return 0; }\n#endif\n",
+            "f(void)"
+        )
+        .is_empty());
+        assert!(arms_of_function(
+            "#ifndef H_H\n#define H_H\nint f(void) { return 0; }\n#endif\n",
+            "f(void)"
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn a_call_in_the_exclusive_arm_does_not_compile_with_it() {
+        let caller = "#if defined(EAPOL) && !defined(NO_WPA)\nvoid g(int *c) { init(c); }\n#endif\nvoid h(int *c) { init(c); }\n";
+        let stub = vec![("EAPOL".to_string(), false)];
+        assert!(!line_compiles_under(caller, 2, &stub));
+        assert!(line_compiles_under(caller, 4, &stub));
+    }
 
     const HOSTAP_COMMON_H: &str = "\
 #ifdef _MSC_VER

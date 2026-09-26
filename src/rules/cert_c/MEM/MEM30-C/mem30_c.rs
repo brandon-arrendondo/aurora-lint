@@ -3582,12 +3582,16 @@ impl MemoryAnalyzer {
                     // function-pointer call. `None` for every other route.
                     let mut escaped_sole_param: Option<String> = None;
                     if let Some(summary) = self.function_summaries.get(function_name).cloned() {
-                        if !summary.unconditional_frees_params.is_empty() {
+                        // Only the frees of definitions this call can link
+                        // against: one in an exclusive #if arm never meets it.
+                        let must_free =
+                            summary.unconditional_frees_at(source, node.start_position().row + 1);
+                        if !must_free.is_empty() {
                             let callee = function_name.to_string();
                             let freed = self.process_summary_free_call(
                                 node,
                                 source,
-                                &summary.unconditional_frees_params,
+                                &must_free,
                                 &summary.frees_params_guessed,
                                 &callee,
                                 violations,

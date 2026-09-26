@@ -3964,6 +3964,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         let Some(summary) = self.function_summaries.get(func_name) else {
             return;
         };
+        // Only the frees of definitions this call can link against: one in
+        // an exclusive #if arm never meets it.
+        let frees_here = summary.frees_at(source, node.start_position().row + 1);
         let Some(arguments) = node.child_by_field_name("arguments") else {
             return;
         };
@@ -4004,7 +4007,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     let frees = if through_address_of {
                         summary.frees_param_pointees.contains(&param_idx)
                     } else {
-                        summary.frees_params.contains(&param_idx)
+                        frees_here.contains(&param_idx)
                     };
                     let var_name = ast_utils::get_node_text_owned(&target, source);
                     if frees && self.allocated_memory.contains_key(&var_name) {
