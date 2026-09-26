@@ -281,7 +281,10 @@ const PAGE_LOCK_FUNCS: &[&str] = &["mlock", "mlock2", "VirtualLock", "sodium_mlo
 
 /// Allocators whose block is locked (or kept out of swap and core dumps) by
 /// construction: libsodium's guarded allocations are `mlock`ed, OpenSSL's
-/// and libgcrypt's secure heaps are locked pools.
+/// and libgcrypt's secure heaps are locked pools. The secure heaps lock only
+/// once initialized (`CRYPTO_secure_malloc_init`, `GCRYCTL_INIT_SECMEM`);
+/// before that they fall back to ordinary memory. Whether initialization ran
+/// is not checked, so an uninitialized secure heap is a known miss.
 const LOCKED_ALLOCATORS: &[&str] = &[
     "sodium_malloc",
     "sodium_allocarray",

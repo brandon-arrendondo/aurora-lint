@@ -4123,38 +4123,71 @@ fn credit_credential_facts(
         summary.main_call_sequence = sequence.into_iter().map(|(_, n, u)| (n, u)).collect();
     }
 
-    // A variable assigned from a locked-by-construction allocator is covered
-    // from that assignment on.
-    for (target, value) in plain_assignments(body, source) {
-        let v = init_state::strip_arg_casts(&value);
-        if v.kind() != "call_expression" {
-            continue;
-        }
-        let Some(callee) = v.child_by_field_name("function").map(|f| text(&f)) else {
-            continue;
-        };
-        if credential_sinks::platform_allocation_is_locked(&callee) == Some(true) {
-            locks.push((target, v));
-        }
-    }
-
-    let returns = query::find_descendants_of_kind(*body, "return_statement");
-    let mut non_null = 0usize;
-    let all_locked = returns.iter().all(|r| {
+    // `returns_locked`: every block the body allocates and returns is
+    // locked on every path from its allocation to that return. A return of
+    // NULL, or of a variable no allocation in the body reaches (the caller's
+    // own pointer handed back), is neutral; at least one locked block must
+    // be returned. A locked-by-construction allocator needs no lock.
+    let allocations: Vec<(String, Node, bool)> = plain_assignments(body, source)
+        .into_iter()
+        .filter_map(|(target, value)| {
+            let v = init_state::strip_arg_casts(&value);
+            if v.kind() != "call_expression" {
+                return None;
+            }
+            let callee = v.child_by_field_name("function").map(|f| text(&f))?;
+            let locked = credential_sinks::platform_allocation_is_locked(&callee) == Some(true);
+            Some((target, v, locked))
+        })
+        .collect();
+    let mut returned_locked = 0usize;
+    let mut unlocked_return = false;
+    for r in query::find_descendants_of_kind(*body, "return_statement") {
         let Some(e) = r.named_child(0).map(|e| init_state::strip_arg_casts(&e)) else {
-            return false;
+            continue;
         };
         let t = text(&e);
         if e.kind() == "null" || t == "NULL" || t == "0" {
-            return true;
+            continue;
         }
-        non_null += 1;
-        e.kind() == "identifier"
-            && locks
-                .iter()
-                .any(|(var, lock)| *var == t && guard_dominance::runs_before_on_every_path(lock, r))
-    });
-    summary.returns_locked = non_null > 0 && all_locked;
+        match e.kind() {
+            // `return sodium_malloc(n);` hands back a locked block directly.
+            "call_expression" => {
+                let callee = e.child_by_field_name("function").map(|f| text(&f));
+                if callee.is_some_and(|c| {
+                    credential_sinks::platform_allocation_is_locked(&c) == Some(true)
+                }) {
+                    returned_locked += 1;
+                } else {
+                    unlocked_return = true;
+                }
+            }
+            "identifier" => {
+                let reaching: Vec<&(String, Node, bool)> = allocations
+                    .iter()
+                    .filter(|(var, a, _)| *var == t && a.start_byte() < r.start_byte())
+                    .collect();
+                if reaching.is_empty() {
+                    continue;
+                }
+                let all_covered = reaching.iter().all(|(_, a, locked)| {
+                    *locked
+                        || locks.iter().any(|(var, lock)| {
+                            *var == t
+                                && lock.start_byte() < r.start_byte()
+                                && guard_dominance::runs_on_every_path_from(lock, a)
+                        })
+                });
+                if all_covered {
+                    returned_locked += 1;
+                } else {
+                    unlocked_return = true;
+                }
+            }
+            _ => unlocked_return = true,
+        }
+    }
+    summary.returns_locked = returned_locked > 0 && !unlocked_return;
 }
 
 fn credential_sinks_marker() -> String {

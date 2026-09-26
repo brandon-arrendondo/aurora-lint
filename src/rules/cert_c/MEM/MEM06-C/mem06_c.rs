@@ -34,9 +34,18 @@
 //! where it was allocated, not where it is used.
 //!
 //! Not traced (false negatives): a copy through memory (`*pp = p`, a struct
-//! field, a union, an array element), a call through a function pointer, a
-//! global the allocation is handed over in, and protection established
-//! deeper than one call below `main`.
+//! field, a union, an array element), a call through a function pointer, and
+//! a global the allocation is handed over in.
+//!
+//! Not credited (reported although protected): protection that `main`
+//! reaches only inside the same call that leads here
+//! (`main -> run() { setrlimit(...); login(); }`), since only the calls
+//! `main` makes after its own protecting call count.
+//!
+//! "Runs before on every path" is `runs_before_on_every_path` over the AST,
+//! and where that walk says no (a `goto`, a `break` out of a `do` body, a
+//! lock in another arm) the function's CFG answers exactly, so a lock that
+//! Juliet reaches through `goto` still counts.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -45,6 +54,7 @@ use std::sync::Arc;
 use tree_sitter::Node;
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::cfg::{build_function_cfg, FunctionCfg};
 use crate::analyze::const_eval::resolve_macro_alias;
 use crate::analyze::context::{ProjectContext, ScopedTable};
 use crate::analyze::function_summary::{
@@ -165,6 +175,14 @@ impl Mem06C {
         }
 
         let copies = copies_in(&body, source);
+        let cfg: std::cell::OnceCell<Option<FunctionCfg>> = std::cell::OnceCell::new();
+        let precedes = |step: &Node, target: &Node| {
+            runs_before_on_every_path(step, target)
+                || cfg
+                    .get_or_init(|| build_function_cfg(func, source))
+                    .as_ref()
+                    .is_some_and(|g| cfg_dominates(g, step, target))
+        };
         let mut reported: HashSet<usize> = HashSet::new();
         for origin in self.origins(&body, source) {
             let holds =
@@ -187,10 +205,10 @@ impl Mem06C {
             let locked = calls.iter().any(|call| {
                 call.start_byte() > origin.at
                     && self.is_lock_of(call, source, |o| holds(o, call))
-                    && runs_before_on_every_path(call, &bound)
+                    && precedes(call, &bound)
             });
             if locked
-                || self.protected_locally(&calls, &bound, source)
+                || self.protected_locally(&calls, &bound, source, &precedes)
                 || self.protected_by_program(func, source, program)
             {
                 continue;
@@ -368,9 +386,13 @@ impl Mem06C {
     }
 
     /// The first store into the block after its allocation, or the sink when
-    /// nothing is stored first: a call handed a holder (not a lock, a
-    /// zeroing clear or a release), or a write through one (`p[i] = c`,
-    /// `*(p + i) = c`).
+    /// nothing is stored first. A store writes data through a holder: a
+    /// library call that writes through that argument (`strcpy`'s
+    /// destination, `fgets`'s buffer, a non-zero `memset` fill), a project
+    /// function whose summary writes through that parameter, or an
+    /// assignment through one (`p[i] = c`, `*(p + i) = c`). A call that only
+    /// takes the address (`madvise`, a `%p` log line, a validator) stores
+    /// nothing, and neither does a lock or a zeroing clear.
     fn first_store<'a>(
         &self,
         calls: &[Node<'a>],
@@ -381,17 +403,25 @@ impl Mem06C {
         source: &str,
     ) -> Node<'a> {
         let holds = |object: usize, site: &Node| holders_at(origin, copies, site).contains(&object);
+        let summaries = self.function_summaries.borrow();
         let call_store = calls
             .iter()
             .filter(|c| c.start_byte() > origin.at && c.start_byte() < sink.start_byte())
             .filter(|c| {
+                let Some(callee) = self.callee_name(c, source) else {
+                    return false;
+                };
                 let args = call_args(c);
-                !self.is_lock_of(c, source, |o| holds(o, c))
-                    && self.released_object(c, source).is_none()
-                    && !is_zeroing_clear(&args, source, self.callee_name(c, source).as_deref())
-                    && args
-                        .iter()
-                        .any(|a| object_of(a, source).is_some_and(|o| holds(o, c)))
+                let writes = |i: usize| match summaries.get(&callee) {
+                    Some(s) => s.modifies_params.contains(&i),
+                    None => {
+                        call_roles::writes_through_arg(&callee, i)
+                            || (i == 0 && is_data_fill(&args, source, &callee))
+                    }
+                };
+                args.iter()
+                    .enumerate()
+                    .any(|(i, a)| writes(i) && object_of(a, source).is_some_and(|o| holds(o, c)))
             })
             .min_by_key(|c| c.start_byte())
             .copied();
@@ -415,9 +445,15 @@ impl Mem06C {
     /// Process-wide protection in this function on every path to `bound`:
     /// a zero `RLIMIT_CORE`, `mlockall`, or a call to a function whose
     /// summary protects the process.
-    fn protected_locally(&self, calls: &[Node], bound: &Node, source: &str) -> bool {
+    fn protected_locally(
+        &self,
+        calls: &[Node],
+        bound: &Node,
+        source: &str,
+        precedes: &dyn Fn(&Node, &Node) -> bool,
+    ) -> bool {
         calls.iter().any(|call| {
-            if !runs_before_on_every_path(call, bound) {
+            if !precedes(call, bound) {
                 return false;
             }
             let Some(callee) = self.callee_name(call, source) else {
@@ -489,6 +525,45 @@ impl Mem06C {
             unprotected: reach(&sequence[..point]),
         }
     }
+}
+
+/// Whether `step` dominates `target` in the function's CFG: every path from
+/// entry to `target`'s block passes `step`'s block, or both sit in one block
+/// with `step` first. A node outside every block answers `false`.
+fn cfg_dominates(cfg: &FunctionCfg, step: &Node, target: &Node) -> bool {
+    let block_of = |pos: usize| {
+        cfg.blocks
+            .iter()
+            .flat_map(|b| {
+                b.statements
+                    .iter()
+                    .copied()
+                    .chain(b.condition_range)
+                    .filter(move |&(s, e)| s <= pos && pos < e)
+                    .map(move |(s, e)| (e - s, b.id))
+            })
+            .min()
+            .map(|(_, id)| id)
+    };
+    let (Some(from), Some(to)) = (block_of(step.start_byte()), block_of(target.start_byte()))
+    else {
+        return false;
+    };
+    if from == to {
+        return step.start_byte() < target.start_byte();
+    }
+    let mut seen: HashSet<usize> = HashSet::from([from]);
+    let mut queue: VecDeque<usize> = VecDeque::from([cfg.entry]);
+    while let Some(b) = queue.pop_front() {
+        if b == to {
+            return false;
+        }
+        if !seen.insert(b) {
+            continue;
+        }
+        queue.extend(cfg.successors(b).into_iter().map(|(n, _)| n));
+    }
+    true
 }
 
 /// The variables that may hold `origin`'s block when `site` runs: the first
@@ -631,22 +706,15 @@ fn object_name(call: &Node, object: usize, source: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Whether a clearing call only zeroes: `memset(p, 0, n)`, `memset_s(p, m,
-/// 0, n)`, or a call that can only zero (`explicit_bzero`,
-/// `SecureZeroMemory`). A non-zero fill writes data.
-fn is_zeroing_clear(args: &[Node], source: &str, callee: Option<&str>) -> bool {
-    let Some(callee) = callee else {
-        return false;
-    };
-    if !call_roles::is_memory_clearing_call(callee) {
-        return false;
-    }
+/// Whether a `memset`/`memset_s` call fills its destination with data: a
+/// fill argument that is not a literal zero. A zeroing fill is a clear.
+fn is_data_fill(args: &[Node], source: &str, callee: &str) -> bool {
     let fill = match callee {
         "memset" => args.get(1),
         "memset_s" => args.get(2),
-        _ => return true,
+        _ => return false,
     };
-    fill.is_some_and(|f| is_zero_literal(f, source))
+    fill.is_some_and(|f| !is_zero_literal(f, source))
 }
 
 fn is_zero_literal(n: &Node, source: &str) -> bool {

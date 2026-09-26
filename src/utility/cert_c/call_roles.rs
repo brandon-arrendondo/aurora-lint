@@ -114,6 +114,63 @@ pub fn is_memory_clearing_call(name: &str) -> bool {
     MEMORY_CLEARING_FUNCS.contains(&name)
 }
 
+/// Library calls that write data through a pointer argument, as (callee,
+/// first written argument, every later argument written too). The string and
+/// memory copiers, the formatted writers into a buffer, and the readers that
+/// fill a caller's buffer; for the scanf family every argument after the
+/// format is a destination.
+const WRITES_THROUGH: &[(&str, usize, bool)] = &[
+    ("strcpy", 0, false),
+    ("strncpy", 0, false),
+    ("strcat", 0, false),
+    ("strncat", 0, false),
+    ("strlcpy", 0, false),
+    ("strlcat", 0, false),
+    ("stpcpy", 0, false),
+    ("stpncpy", 0, false),
+    ("wcscpy", 0, false),
+    ("wcsncpy", 0, false),
+    ("wcscat", 0, false),
+    ("wcsncat", 0, false),
+    ("memcpy", 0, false),
+    ("memmove", 0, false),
+    ("memccpy", 0, false),
+    ("wmemcpy", 0, false),
+    ("wmemmove", 0, false),
+    ("mbstowcs", 0, false),
+    ("wcstombs", 0, false),
+    ("sprintf", 0, false),
+    ("snprintf", 0, false),
+    ("vsprintf", 0, false),
+    ("vsnprintf", 0, false),
+    ("swprintf", 0, false),
+    ("fgets", 0, false),
+    ("fgetws", 0, false),
+    ("gets", 0, false),
+    ("fread", 0, false),
+    ("read", 1, false),
+    ("pread", 1, false),
+    ("recv", 1, false),
+    ("recvfrom", 1, false),
+    ("readpassphrase", 1, false),
+    ("scanf", 1, true),
+    ("vscanf", 1, true),
+    ("fscanf", 2, true),
+    ("sscanf", 2, true),
+    ("vfscanf", 2, true),
+    ("vsscanf", 2, true),
+];
+
+/// Whether library function `name` writes data through its argument `idx`
+/// (`strcpy`'s destination, `fgets`'s buffer, a `sscanf` output). A fill
+/// with `memset` is not listed: whether it writes data or clears depends on
+/// its fill argument, which the caller must read.
+pub fn writes_through_arg(name: &str, idx: usize) -> bool {
+    WRITES_THROUGH
+        .iter()
+        .any(|&(n, first, rest)| n == name && (idx == first || (rest && idx > first)))
+}
+
 /// A printf-family formatted-output function.
 pub fn is_printf_family(name: &str) -> bool {
     PRINTF_FUNCS.contains(&name)

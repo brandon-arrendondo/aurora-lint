@@ -1882,25 +1882,98 @@ fn nullness_literal(term: &Node, source: &str) -> Option<(String, bool)> {
 /// in an `if` or loop CONDITION (`if (0 != mlock(p, n)) return;` always
 /// evaluates the call) or in a `do { } while` body (which always runs once).
 /// It does not qualify when it sits in an `if` / `else` / `case` / loop body,
-/// a `?:` branch, or the right operand of `&&` / `||` that `target` is
-/// outside.
+/// a `for` update clause, a `?:` branch, or the right operand of `&&` / `||`
+/// that `target` is outside.
 ///
-/// Structured control flow only. A `goto`, or an early `return` between the
-/// two, is not modelled, and neither is a jump into the middle of a
-/// block.
+/// Jumps are answered conservatively, never optimistically: a function with
+/// any `goto` or label answers `false` (the jump may skip `step`), and so
+/// does a `do` body with a `break` or `continue` before `step`. An early
+/// `return` before `step` is harmless here, since a path that returns never
+/// reaches `target`. For exact answers over jumps, use `analyze::cfg`.
 pub fn runs_before_on_every_path(step: &Node, target: &Node) -> bool {
     step.start_byte() < target.start_byte()
+        && !function_has_goto(step)
         && escapes_no_conditional_part(step, |part| {
             part.start_byte() <= target.start_byte() && target.end_byte() <= part.end_byte()
         })
 }
 
+/// Whether `step` executes on every path that continues from `from`:
+/// `step` starts after `from`, and every conditional part enclosing `step`
+/// also encloses `from` (so `p = malloc(n); if (!p) return NULL; lock(p);`
+/// qualifies, while a lock in an `if` body that the allocation is outside
+/// does not). The dual of [`runs_before_on_every_path`], with the same
+/// conservative answer (`false`) for a function with a `goto` or label and
+/// for a `do` body with a `break`/`continue` before `step`.
+pub fn runs_on_every_path_from(step: &Node, from: &Node) -> bool {
+    step.start_byte() > from.start_byte()
+        && !function_has_goto(step)
+        && escapes_no_conditional_part(step, |part| {
+            part.start_byte() <= from.start_byte() && from.end_byte() <= part.end_byte()
+        })
+}
+
 /// Whether `node` executes on every path through its function: no `if` /
-/// `else` / `case` / loop body, `?:` branch, or right operand of `&&` / `||`
-/// encloses it. Conditions, `do { } while` bodies and preprocessor arms (a
-/// build configuration, not a runtime branch) do not make it conditional.
+/// `else` / `case` / loop body, `for` update clause, `?:` branch, or right
+/// operand of `&&` / `||` encloses it, and no `return` before it can leave
+/// the function first. Conditions, `do { } while` bodies without an earlier
+/// `break`/`continue`, and preprocessor arms (a build configuration, not a
+/// runtime branch) do not make it conditional. A function with a `goto` or
+/// label answers `false`.
 pub fn always_executes(node: &Node) -> bool {
+    if function_has_goto(node) {
+        return false;
+    }
+    if let Some(func) = enclosing_function(node) {
+        let returns_first =
+            lang_parsing_substrate::query::find_descendants_of_kind(func, "return_statement")
+                .into_iter()
+                .any(|r| r.end_byte() <= node.start_byte());
+        if returns_first {
+            return false;
+        }
+    }
     escapes_no_conditional_part(node, |_| false)
+}
+
+fn enclosing_function<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+    lang_parsing_substrate::query::find_ancestor(*node, |a| a.kind() == "function_definition")
+}
+
+fn function_has_goto(node: &Node) -> bool {
+    enclosing_function(node).is_some_and(|f| {
+        lang_parsing_substrate::query::find_first_descendant(f, |n| {
+            matches!(n.kind(), "goto_statement" | "labeled_statement")
+        })
+        .is_some()
+    })
+}
+
+/// Whether a `break` or `continue` that leaves `do_body` appears before
+/// `before` (one nested in an inner loop or `switch` leaves that instead;
+/// a `continue` in an inner `switch` still leaves the `do`).
+fn do_body_jumps_before(do_body: &Node, before: usize) -> bool {
+    fn walk(n: &Node, before: usize, in_loop: bool, in_switch: bool) -> bool {
+        if n.start_byte() >= before {
+            return false;
+        }
+        match n.kind() {
+            "break_statement" if !in_loop && !in_switch => return true,
+            "continue_statement" if !in_loop => return true,
+            _ => {}
+        }
+        let (loop_here, switch_here) = match n.kind() {
+            "for_statement" | "while_statement" | "do_statement" => (true, in_switch),
+            "switch_statement" => (in_loop, true),
+            _ => (in_loop, in_switch),
+        };
+        (0..n.child_count())
+            .filter_map(|i| n.child(i))
+            .any(|c| walk(&c, before, loop_here, switch_here))
+    }
+    (0..do_body.child_count())
+        .filter_map(|i| do_body.child(i))
+        .any(|c| walk(&c, before, false, false))
 }
 
 /// Walk from `node` to its function, and whenever it sits in a conditional
@@ -1922,7 +1995,11 @@ fn escapes_no_conditional_part(node: &Node, allowed: impl Fn(&Node) -> bool) -> 
         let part = match parent.kind() {
             "if_statement" if is("consequence") || is("alternative") => Some(cur),
             "else_clause" | "case_statement" => Some(parent),
-            "while_statement" | "for_statement" if is("body") => Some(cur),
+            "while_statement" if is("body") => Some(cur),
+            "for_statement" if is("body") || is("update") => Some(cur),
+            "do_statement" if is("body") && do_body_jumps_before(&cur, node.start_byte()) => {
+                Some(cur)
+            }
             "conditional_expression" if is("consequence") || is("alternative") => Some(cur),
             "binary_expression"
                 if is("right")
@@ -2499,5 +2576,97 @@ mod tests {
             "int f(struct n *a) { if (!a) return 0; return a->num; }",
             "a"
         ));
+    }
+
+    /// The first `call_expression` whose callee is spelled `name`.
+    fn call_named<'a>(root: Node<'a>, src: &str, name: &str) -> Node<'a> {
+        query::find_descendants_of_kind(root, "call_expression")
+            .into_iter()
+            .find(|c| {
+                c.child_by_field_name("function")
+                    .is_some_and(|f| f.utf8_text(src.as_bytes()).unwrap() == name)
+            })
+            .unwrap()
+    }
+
+    fn runs_before(src: &str) -> bool {
+        let tree = parse_c_code(src);
+        let root = tree.root_node();
+        runs_before_on_every_path(
+            &call_named(root, src, "step"),
+            &call_named(root, src, "target"),
+        )
+    }
+
+    fn always(src: &str) -> bool {
+        let tree = parse_c_code(src);
+        always_executes(&call_named(tree.root_node(), src, "step"))
+    }
+
+    #[test]
+    fn runs_before_accepts_guard_condition_and_do_body() {
+        assert!(runs_before(
+            "void f(int p) { if (p) { step(); target(); } }"
+        ));
+        assert!(runs_before(
+            "void f(void) { if (0 != step()) return; target(); }"
+        ));
+        assert!(runs_before(
+            "void f(void) { do { step(); } while (0); target(); }"
+        ));
+        assert!(runs_before(
+            "void f(int m) { switch (m) { default: step(); target(); break; } }"
+        ));
+    }
+
+    #[test]
+    fn runs_before_rejects_branches_and_jumps() {
+        assert!(!runs_before("void f(int p) { if (p) step(); target(); }"));
+        assert!(!runs_before(
+            "void f(int p) { if (p || step()) {} target(); }"
+        ));
+        assert!(!runs_before(
+            "void f(int m) { switch (m) { case 1: step(); case 2: target(); } }"
+        ));
+        assert!(!runs_before(
+            "void f(int n) { int i; for (i = 0; i < n; step()) {} target(); }"
+        ));
+        assert!(!runs_before(
+            "void f(int p) { if (p) goto out; step(); out: target(); }"
+        ));
+        assert!(!runs_before(
+            "void f(int p) { do { if (p) break; step(); } while (0); target(); }"
+        ));
+        assert!(!runs_before("void f(void) { target(); step(); }"));
+    }
+
+    #[test]
+    fn always_executes_respects_early_returns_and_jumps() {
+        assert!(always("void f(void) { step(); }"));
+        assert!(always("void f(void) { if (step()) {} }"));
+        assert!(always("void f(int p) { step(); if (p) return; }"));
+        assert!(!always("void f(int p) { if (p) return; step(); }"));
+        assert!(!always("void f(int p) { if (p) step(); }"));
+        assert!(!always("void f(int p) { if (p) goto out; step(); out: ; }"));
+    }
+
+    fn runs_from(src: &str) -> bool {
+        let tree = parse_c_code(src);
+        let root = tree.root_node();
+        runs_on_every_path_from(
+            &call_named(root, src, "step"),
+            &call_named(root, src, "from"),
+        )
+    }
+
+    #[test]
+    fn runs_from_follows_the_origin_into_its_own_arm() {
+        assert!(runs_from("void f(int c) { if (c) { from(); step(); } }"));
+        assert!(runs_from("void f(void) { from(); if (!step()) return; }"));
+        assert!(!runs_from("void f(int c) { from(); if (c) step(); }"));
+        assert!(!runs_from(
+            "void f(int c) { from(); if (c) goto out; out: step(); }"
+        ));
+        assert!(!runs_from("void f(void) { step(); from(); }"));
     }
 }
