@@ -178,7 +178,9 @@ impl Pos53C {
                 // Found a violation - same condition variable with multiple mutexes
                 if let Some(locations) = cond_var_locations.get(cond_var) {
                     if let Some(&(row, column)) = locations.first() {
-                        let mutex_list: Vec<&String> = mutexes.iter().collect();
+                        // Sorted: the set's iteration order varies run to run.
+                        let mut mutex_list: Vec<&String> = mutexes.iter().collect();
+                        mutex_list.sort();
 
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
