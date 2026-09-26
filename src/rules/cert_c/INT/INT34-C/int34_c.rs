@@ -110,6 +110,10 @@ impl CertRule for Int34C {
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
     }
 
+    fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
+        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
+    }
+
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
         *self.function_cfgs.borrow_mut() = cfgs.clone();
     }

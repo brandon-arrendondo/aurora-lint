@@ -439,6 +439,10 @@ impl CertRule for Dcl31C {
         *self.incomplete_declarations.borrow_mut() = !context.unresolved_project_headers.is_empty();
     }
 
+    fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
+        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
+    }
+
     fn scan(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.traverse(root, source, violations);
     }

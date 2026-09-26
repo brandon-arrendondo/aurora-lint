@@ -476,6 +476,8 @@ fn prescan_file_list(
     let mut pointer_typedef_names: HashSet<String> = HashSet::new();
     let mut packed_structs: HashSet<String> = HashSet::new();
     let mut noreturn_functions = crate::analyze::noreturn::NoreturnNames::default();
+    let mut c_file_static_noreturn: Vec<(String, crate::analyze::noreturn::NoreturnNames)> =
+        Vec::new();
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
     let mut packed_macro_names: HashSet<String> = HashSet::new();
     let mut defined_macro_names: HashSet<String> = HashSet::new();
@@ -683,7 +685,32 @@ fn prescan_file_list(
         function_pointer_typedef_names.extend(r.function_pointer_typedef_names);
         pointer_typedef_names.extend(r.pointer_typedef_names);
         packed_structs.extend(r.packed_structs);
-        noreturn_functions.extend(r.noreturn_functions);
+        // A `static` function defined in a .c file is that file's own: its
+        // name in another file is another function, or nothing. So a .c
+        // file's static noreturn helpers stay out of the project-wide set --
+        // each file adds its own when it is checked -- unless another .c file
+        // #includes this one, which is resolved after the loop. A static in a
+        // header is visible to every file that includes it, and stays.
+        let is_c_file = r
+            .source_path
+            .as_ref()
+            .is_some_and(|path| path.extension().is_some_and(|e| e == "c"));
+        if is_c_file {
+            let statics = &r.local_static_functions;
+            let own = r
+                .noreturn_functions
+                .map(|names| names.intersection(statics).cloned().collect::<HashSet<_>>());
+            let shared = r
+                .noreturn_functions
+                .map(|names| names.difference(statics).cloned().collect::<HashSet<_>>());
+            if let Some(path) = &r.source_path {
+                c_file_static_noreturn
+                    .push((file_name_of(&path.to_string_lossy()).to_string(), own));
+            }
+            noreturn_functions.extend(shared);
+        } else {
+            noreturn_functions.extend(r.noreturn_functions);
+        }
         packed_struct_candidates.extend(r.packed_struct_candidates);
         packed_macro_names.extend(r.packed_macro_names);
         defined_macro_names.extend(r.defined_macro_names);
@@ -698,7 +725,17 @@ fn prescan_file_list(
         value_position_identifiers.extend(r.value_position_identifiers);
         included_c_files.extend(r.included_c_files);
         global_constants.extend(r.global_constants);
-        global_var_null_states.extend(r.global_var_null_states);
+        // One object per name: these are the non-static pointer globals, so
+        // a name defined or assigned in several files is one variable, and
+        // its states are joined as converging paths would be. Keeping the
+        // last file's alone let a file that only ever assigns NULL hide
+        // another file's allocation, or the reverse.
+        for (name, state) in r.global_var_null_states {
+            let entry = global_var_null_states
+                .entry(name)
+                .or_insert(crate::analyze::null_state::NullState::Unknown);
+            *entry = entry.join(state);
+        }
 
         // A writer this file scopes is named by its (file, name) key, as a
         // caller is in `callers`: ENV03-C and the INT3x taint check read each
@@ -999,6 +1036,14 @@ fn prescan_file_list(
         .into_iter()
         .map(|(file, names)| (file, Arc::new(names)))
         .collect();
+
+    // A .c file another .c file #includes is compiled as part of its
+    // includer, so its static noreturn helpers are visible there.
+    for (file_name, names) in c_file_static_noreturn {
+        if included_c_files.contains(&file_name) {
+            noreturn_functions.extend(names);
+        }
+    }
 
     let abort_check_macros = noreturn_functions.map(|names| {
         Arc::new(crate::analyze::check_macros::abort_check_macros(

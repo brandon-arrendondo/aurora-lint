@@ -663,3 +663,50 @@ impl<A: SummaryLookup + ?Sized, B: SummaryLookup + ?Sized> SummaryLookup
         )
     }
 }
+
+/// The struct-field and typedef tables as one file sees them: the project's,
+/// with this file's own definitions on top.
+///
+/// The project tables are keyed by NAME across the whole tree, and a name is
+/// not a type: two files may define the same struct tag or typedef name
+/// differently (curl defines `struct h3_stream_ctx` once per QUIC backend,
+/// with `id` as `uint64_t` in one and `int64_t` in the other), and the merge
+/// keeps whichever file it read last. The definition in scope in a file is
+/// that file's own, so it wins here; the project entry is the fallback for a
+/// name the file only receives through a header, which is not expanded when
+/// the file is parsed. When a file redefines nothing differently, both
+/// fields are the project's own handles, not copies.
+#[derive(Debug, Clone, Default)]
+pub struct VisibleTypes {
+    /// `struct tag -> field -> type text`, this file's definitions winning.
+    pub struct_field_types: Arc<HashMap<String, HashMap<String, String>>>,
+    /// `typedef name -> aliased type text`, this file's definitions winning.
+    pub typedef_types: Arc<HashMap<String, String>>,
+}
+
+impl VisibleTypes {
+    /// `context`'s tables overlaid with the definitions in `root`.
+    pub fn for_file(context: &ProjectContext, root: &tree_sitter::Node, source: &str) -> Self {
+        let mut own_fields = HashMap::new();
+        crate::analyze::prescan::collect_struct_definitions(root, source, &mut own_fields);
+        let mut own_typedefs = HashMap::new();
+        crate::analyze::prescan::collect_typedef_aliases(root, source, &mut own_typedefs);
+        Self {
+            struct_field_types: overlay(&context.struct_field_types, own_fields),
+            typedef_types: overlay(&context.typedef_types, own_typedefs),
+        }
+    }
+}
+
+/// `project` with `own` on top, sharing `project` when `own` changes nothing.
+fn overlay<V: Clone + PartialEq>(
+    project: &Arc<HashMap<String, V>>,
+    own: HashMap<String, V>,
+) -> Arc<HashMap<String, V>> {
+    if own.iter().all(|(k, v)| project.get(k) == Some(v)) {
+        return Arc::clone(project);
+    }
+    let mut merged = (**project).clone();
+    merged.extend(own);
+    Arc::new(merged)
+}

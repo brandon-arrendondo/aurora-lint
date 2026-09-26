@@ -67,6 +67,10 @@ impl CertRule for Exp36C {
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
     }
 
+    fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
+        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
         let macros = collect_function_macros(node, source);

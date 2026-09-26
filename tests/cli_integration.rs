@@ -1979,3 +1979,118 @@ fn global_writer_resolves_to_the_static_that_wrote_it() {
         "the writer is clean, so the global is not tainted: {violations:?}"
     );
 }
+
+/// A struct tag two files define differently resolves to the definition in
+/// the file being checked. The project-wide table is keyed by tag and keeps
+/// one definition; z_wide_field.c's `unsigned int flags` used to answer for
+/// a_narrow_field.c's `unsigned char flags`, hiding its EXP14-C finding.
+#[test]
+fn struct_tag_defined_twice_resolves_to_the_files_own_definition() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/cli/struct_tag_defined_twice");
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("rules_templates/rules-all.toml");
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("out.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        dir.to_str().unwrap(),
+        "-d",
+        dir.to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "--rules",
+        "EXP14-C",
+        "-j",
+        "1",
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let narrow: Vec<_> = violations
+        .iter()
+        .filter(|v| {
+            v["rule_id"] == "EXP14-C"
+                && v["file"]
+                    .as_str()
+                    .is_some_and(|f| f.ends_with("a_narrow_field.c"))
+        })
+        .collect();
+    assert_eq!(narrow.len(), 1, "{violations:?}");
+}
+
+/// A .c file's static noreturn helper is not another file's same-named
+/// static. a_exits.c's die() exits; b_returns.c's returns, so its
+/// use-after-free and double free on the `e` path are reported.
+#[test]
+fn static_noreturn_helper_is_its_own_files() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/cli/static_noreturn_defined_twice");
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("rules_templates/rules-all.toml");
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("out.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        dir.to_str().unwrap(),
+        "-d",
+        dir.to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "--rules",
+        "MEM30-C",
+        "-j",
+        "1",
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let in_b: Vec<_> = violations
+        .iter()
+        .filter(|v| {
+            v["rule_id"] == "MEM30-C"
+                && v["file"]
+                    .as_str()
+                    .is_some_and(|f| f.ends_with("b_returns.c"))
+        })
+        .collect();
+    assert_eq!(in_b.len(), 2, "{violations:?}");
+}
+
+/// A pointer global's null state is joined across the files that define or
+/// assign it. z_assigns_buffer.c's non-null assignment used to replace
+/// a_defines_null.c's NULL, so m_dereferences.c's dereference went unreported.
+#[test]
+fn global_pointer_null_state_is_joined_across_files() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/cli/global_null_state_joined");
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("rules_templates/rules-all.toml");
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("out.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        dir.to_str().unwrap(),
+        "-d",
+        dir.to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "--rules",
+        "EXP34-C",
+        "-j",
+        "1",
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let deref: Vec<_> = violations
+        .iter()
+        .filter(|v| {
+            v["rule_id"] == "EXP34-C"
+                && v["file"]
+                    .as_str()
+                    .is_some_and(|f| f.ends_with("m_dereferences.c"))
+        })
+        .collect();
+    assert_eq!(deref.len(), 1, "{violations:?}");
+}

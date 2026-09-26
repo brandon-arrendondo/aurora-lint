@@ -178,6 +178,10 @@ impl CertRule for Exp10C {
         self.macro_purity.borrow_mut().clear();
     }
 
+    fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
+        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
+    }
+
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         Arc::make_mut(&mut *self.function_macros.borrow_mut())
             .extend(macro_expand::collect_function_macros(node, source));

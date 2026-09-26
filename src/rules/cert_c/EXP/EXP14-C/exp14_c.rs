@@ -84,6 +84,11 @@ impl CertRule for Exp14C {
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
     }
 
+    fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
+        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
+        *self.struct_field_types.borrow_mut() = types.struct_field_types.clone();
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
         self.check_node(node, source, &mut violations);

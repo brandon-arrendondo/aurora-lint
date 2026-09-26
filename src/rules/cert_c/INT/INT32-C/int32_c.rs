@@ -204,6 +204,11 @@ impl CertRule for Int32C {
         *self.callers.borrow_mut() = context.callers.clone();
     }
 
+    fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
+        *self.struct_field_types.borrow_mut() = types.struct_field_types.clone();
+        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
+    }
+
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
         *self.function_cfgs.borrow_mut() = cfgs.clone();
     }

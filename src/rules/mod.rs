@@ -80,6 +80,12 @@ pub trait CertRule {
     /// Default is a no-op; only rules that need CFG data override this.
     fn set_function_cfgs(&self, _cfgs: &HashMap<usize, FunctionCfg>) {}
 
+    /// Inject the struct-field and typedef tables as this file sees them
+    /// (`VisibleTypes`: the project's, with the file's own definitions
+    /// winning). Called after `set_project_context`, so a rule that keeps
+    /// either table replaces its project handle here. Default is a no-op.
+    fn set_visible_types(&self, _types: &crate::analyze::context::VisibleTypes) {}
+
     /// Returns true if this rule applies to the given file path.
     /// Default: applies to all files. Override for rules that are
     /// specific to a file type (e.g. header-only rules like PRE06-C).

@@ -733,6 +733,10 @@ impl CertRule for Int31C {
         *self.callers.borrow_mut() = context.callers.clone();
     }
 
+    fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
+        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
+    }
+
     fn needs_vra(&self) -> bool {
         true
     }

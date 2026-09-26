@@ -150,6 +150,11 @@ impl CertRule for Api00C {
         *self.settings.borrow_mut() = Arc::clone(settings);
     }
 
+    fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
+        *self.struct_field_types.borrow_mut() = types.struct_field_types.clone();
+        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
         *self.pointer_facts.borrow_mut() = PointerFacts::collect(node, source);

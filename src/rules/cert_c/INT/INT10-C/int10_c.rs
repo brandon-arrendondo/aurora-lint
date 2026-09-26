@@ -115,6 +115,10 @@ impl CertRule for Int10C {
         *self.project_macros.borrow_mut() = context.macro_constants.clone();
     }
 
+    fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
+        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
+    }
+
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
         *self.function_cfgs.borrow_mut() = cfgs.clone();
     }

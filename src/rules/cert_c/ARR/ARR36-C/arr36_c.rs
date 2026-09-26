@@ -71,6 +71,10 @@ impl CertRule for Arr36C {
             .collect();
     }
 
+    fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
+        *self.struct_field_types.borrow_mut() = types.struct_field_types.clone();
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 

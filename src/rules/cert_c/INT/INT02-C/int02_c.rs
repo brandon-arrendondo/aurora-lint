@@ -89,6 +89,11 @@ impl CertRule for Int02C {
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
     }
 
+    fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
+        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
+        *self.struct_field_types.borrow_mut() = types.struct_field_types.clone();
+    }
+
     // Every question here is answered from the type the operand's own
     // declaration gives it, resolved at that occurrence
     // (`resolve_identifier_declarator`: nearest enclosing block, else the

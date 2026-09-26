@@ -865,6 +865,7 @@ pub fn handle_generate_suppression(spec: &str) -> Result<()> {
 pub(crate) struct FileAnalysis {
     pub(crate) function_cfgs: HashMap<usize, cfg::FunctionCfg>,
     pub(crate) vra_results: HashMap<usize, value_range::RangeAnalysisResult>,
+    pub(crate) visible_types: context::VisibleTypes,
 }
 
 impl FileAnalysis {
@@ -872,6 +873,7 @@ impl FileAnalysis {
     /// there is any, matching the shipped gate.
     pub(crate) fn apply_to<R: crate::rules::CertRule + ?Sized>(&self, rule: &R) {
         rule.set_function_cfgs(&self.function_cfgs);
+        rule.set_visible_types(&self.visible_types);
         if !self.vra_results.is_empty() {
             rule.set_vra_results(&self.vra_results);
         }
@@ -900,6 +902,7 @@ pub(crate) fn build_file_analysis(
     FileAnalysis {
         function_cfgs,
         vra_results,
+        visible_types: context::VisibleTypes::for_file(context, root_node, source),
     }
 }
 
