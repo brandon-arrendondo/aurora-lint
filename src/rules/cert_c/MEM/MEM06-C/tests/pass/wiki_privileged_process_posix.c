@@ -3,7 +3,11 @@
  * Source: wiki
  * Status: PASS - Should NOT trigger MEM06-C violation
  * Description: CERT's privileged-process compliant solution: core dumps disabled
- * at startup and the page-aligned secret mlock()ed before use.
+ * at startup and the page-aligned secret mlock()ed before use. Note: the rule
+ * does not trace the aligned `secret` back to `secret_buf` (it is derived by
+ * integer arithmetic through intptr_t, not a copy or pointer offset), so this
+ * file would pass even without the protection; wiki_posix.c and
+ * lock_inside_a_null_guard.c carry the protection checks.
  */
 
 #include <sys/resource.h>
