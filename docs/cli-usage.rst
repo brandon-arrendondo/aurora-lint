@@ -60,6 +60,22 @@ Full Command Reference
                                        re-scanning -d directories
       -j, --jobs <N>                   Number of parallel analysis threads
                                        (0 = auto-detect, 1 = sequential; default: 0)
+          --profile <PRESET>           Preset for both settings axes: default (default
+                                       policy, hosted) or strict (strict policy,
+                                       freestanding). Overrides the manifest's `profile`
+          --policy <POLICY>            Policy axis: which findings are reported
+                                       [default, strict] (overrides the preset)
+          --environment <KIND>         Environment axis [hosted, freestanding] (overrides
+                                       the preset). Declared, never inferred from the
+                                       scanning host
+          --libc <MODEL>               C library model whose documented contracts are
+                                       trusted [iso-posix, glibc, musl, newlib,
+                                       picolibc, custom]
+          --set <NAME=VALUE>           Override one named option (repeatable); see
+                                       --list-options
+          --list-options [<FORMAT>]    List every policy and environment option with its
+                                       value under each preset and the current settings,
+                                       then exit [text, json, rst]
           --detect-relevance           Detect categorically-inapplicable rule classes
                                        (CON*/WIN*) in PATH and -d directories, then write
                                        a relevance-gated manifest with --write-manifest.

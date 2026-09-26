@@ -1,6 +1,7 @@
 use crate::analyze::SuppressedViolation;
 use crate::manifest::Severity;
 use crate::rules::{get_rule_description, RuleRegistry, RuleViolation};
+use crate::settings::AnalysisSettings;
 use crate::utility::hash::sha256_hex;
 
 use anyhow::Result;
@@ -118,10 +119,14 @@ fn violation_to_sarif_result(
 /// `suppressed` ones carrying an in-source `suppressions` entry. Each result
 /// holds its source line as `region.snippet`, and each file its SHA-256 in
 /// `artifacts`, so the report stands on its own without the scanned tree.
+/// The run's `properties` record the policy and environment `settings` the
+/// findings were produced under, since the same code yields different
+/// findings under each.
 pub fn export_all_violations_to_sarif(
     violations: &[RuleViolation],
     suppressed: &[SuppressedViolation],
     sarif_path: &str,
+    settings: &AnalysisSettings,
 ) -> Result<()> {
     // Collect unique rules from both active and suppressed violations
     let mut rules_map: BTreeMap<String, &RuleViolation> = BTreeMap::new();
@@ -197,7 +202,10 @@ pub fn export_all_violations_to_sarif(
                 }
             },
             "artifacts": artifacts_array,
-            "results": results_array
+            "results": results_array,
+            "properties": {
+                "aurora-lint/settings": settings.to_json()
+            }
         }]
     });
 

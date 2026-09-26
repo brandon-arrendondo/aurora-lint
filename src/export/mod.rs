@@ -3,6 +3,7 @@ mod sarif;
 
 use super::analyze::SuppressedViolation;
 use super::rules::RuleViolation;
+use super::settings::AnalysisSettings;
 use json::export_all_violations_to_json;
 pub use sarif::export_all_violations_to_sarif;
 
@@ -23,9 +24,10 @@ pub fn export_all_violations(
     violations: &[RuleViolation],
     suppressed: &[SuppressedViolation],
     export_path: &str,
+    settings: &AnalysisSettings,
 ) -> Result<()> {
     if export_path.ends_with(".sarif") || export_path.ends_with(".sarif.json") {
-        return export_all_violations_to_sarif(violations, suppressed, export_path);
+        return export_all_violations_to_sarif(violations, suppressed, export_path, settings);
     }
     if export_path.ends_with(".json") {
         return export_all_violations_to_json(violations, export_path);
