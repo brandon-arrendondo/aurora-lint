@@ -11,12 +11,14 @@ full strictness, some of those answers make a rule noisy enough that a team
 turns it off, and then it catches nothing. Three cases showed it:
 
 - **Asserts.** ADR-0010 treated an `NDEBUG`-strippable `assert` as no guard,
-  because the release build removes it. That's the reading MISRA-style and
-  certified embedded code needs. But every mainstream analyzer surveyed (the
-  Clang Static Analyzer, Polyspace, Coverity's models) treats a live assert as
-  an assumption, CERT's own EXP34-C compliant solution uses one, and the
-  strict reading has been called too harsh every time it came up. It flags a
-  dereference the programmer explicitly asserted non-NULL.
+  because the release build removes it. That's the reading safety-critical
+  coding standards take: a check protects only when its failure leads to an
+  explicit recovery action in the deployed code. But every mainstream
+  analyzer surveyed (the Clang Static Analyzer, Polyspace, Coverity's
+  models) treats a live assert as an assumption, CERT's own EXP34-C
+  compliant solution uses one, and the strict reading has been called too
+  harsh every time it came up. It flags a dereference the programmer
+  explicitly asserted non-NULL.
 - **Dependent sites.** When a caller dereferences a pointer unchecked and a
   callee dereferences it again, both lines violate the rule. Reporting both
   counts one missing check twice.
@@ -125,7 +127,9 @@ safety-critical user unprotected.
 - A team can start with the default preset and tighten either axis without
   the rules meaning something different: the same violations, fewer
   assumptions.
-- MISRA-style and certified users get the reading their standards expect
-  (MISRA C's run-time-failure directive; the defensive-implementation
-  techniques ISO 26262, IEC 61508 and DO-178C recommend). Everyone else gets
-  the reading mainstream tools use.
+- Safety-critical and certified users get the reading safety-critical
+  coding standards take: a check counts as protection only when its failure
+  leads to an explicit recovery action in the deployed code (JPL's Power of
+  Ten, Rule 5; JPL D-60411, Rules 15-16), and C lets `NDEBUG` remove
+  `assert` entirely (C11 7.2p1). Everyone else gets the reading mainstream
+  tools use.

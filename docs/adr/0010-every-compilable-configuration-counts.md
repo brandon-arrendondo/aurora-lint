@@ -107,7 +107,10 @@ dozen legacy FP rows whose stated basis is "compiled out in release" or
    - **Strict policy:** a strippable assert guards nothing, because the release
      build removes it (C11 7.2p1; CERT MSC11-C: assertions are not for
      run-time error checking and are generally turned off before
-     deployment). This is the reading MISRA-style and certified code needs.
+     deployment). Safety-critical coding standards likewise count a check
+     as protection only when its failure leads to an explicit recovery
+     action in the deployed code (JPL's Power of Ten, Rule 5; JPL D-60411,
+     Rules 15-16).
    - **Both policies:** a violation inside an assert's argument is a
      violation, because an active assert evaluates it. An assert macro with
      no build-flag arm, such as valkey's `serverAssert`, is compiled in every
