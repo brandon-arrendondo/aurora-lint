@@ -1,13 +1,13 @@
 # ADR external alignment: what CERT, comparable tools and the literature do on the same questions
 
-**Status:** research input for Brandon (aurora_lint 1574, part c), 2026-09-25; revision 2 against the ADRs accepted at `72b8f734`.
+**Status:** research input for Brandon, 2026-09-25; revision 2 against the ADRs accepted at `72b8f734`.
 Nothing here changes an ADR. Every "amend" below is a proposal to rule on.
 Parts (a) internal consistency and (b) clarifications are the coordinator's,
 in `docs/design/adr-review-2026-09.md`. This doc is the external half they
 cite.
 
 **Scope.** The first pass (sections D, P and E) read ADR-0001..0011 as of
-`f7b21113`, proposed ADR-0012 (branch `docs-finding-location-1572`, whose
+`f7b21113`, proposed ADR-0012 (the finding-location research, whose
 research in `docs/design/finding-location.md` is reused and not repeated), and
 the labeling rulings made since 2026-09-24 that no ADR recorded yet
 ("standing calls", paraphrased here as S-items). **Revision 2** (after the Summary)
@@ -42,7 +42,7 @@ Polyspace quotes come through a summarizing fetch. One of them (the
 | # | Decision | Verdict | Action |
 |---|---|---|---|
 | D1 | ADR-0001 report as written; suppression is configuration; golden rule | stricter-and-defensible | clarify: name the product class; a suppression is a CERT deviation and the row stays TP |
-| D2 | ADR-0002 0% TP ≠ unneeded; 1523 shipping criterion | stricter-and-defensible | amend: make "always FP-dominated" operational; separate "shipped" from "on by default" |
+| D2 | ADR-0002 0% TP ≠ unneeded; the shipping criterion | stricter-and-defensible | amend: make "always FP-dominated" operational; separate "shipped" from "on by default" |
 | D3 | ADR-0005 misfire vs judgment FP | aligned | clarify: rename "judgment FP"; under CERT and SATE it is a TP |
 | D4 | ADR-0006 resolve to declarations; silence if unresolved | aligned | clarify: name the soundiness trade-off; fix the sound/complete terminology |
 | D5 | ADR-0008 no ERROR-ancestry gate | aligned | none (publish the measurement) |
@@ -316,7 +316,7 @@ Status of the 16 proposals at the end of this doc, against `72b8f734`:
   - Say that a suppression records a CERT deviation: the oracle row stays TP.
     Otherwise a reader may assume suppressed instances are labeled FP.
 
-### D2 — 0% real-world TP doesn't make a rule unneeded; the 1523 shipping criterion (ADR-0002)
+### D2 — 0% real-world TP doesn't make a rule unneeded; the shipping criterion (ADR-0002)
 
 - **Ours:** A 0% real-world TP rate is no reason to drop a rule. A rule is
   not shipped only if it could never find a TP or would always be
@@ -341,7 +341,7 @@ Status of the 16 proposals at the end of this doc, against `72b8f734`:
   precision bar), if aurora-lint has or wants such profiles.
 - **Attack:** "Always FP-dominated" has no operational test, so it reads as
   discretionary.
-- **Amend:** write 1523 into ADR-0002 as a numbered criterion with an
+- **Amend:** write the shipping criterion into ADR-0002 as a numbered criterion with an
   operational test. For example: "could never find a TP" means the defining
   construct cannot occur in conforming C, and "always FP-dominated" means the
   construct is always accompanied by a context that makes it conform.
@@ -1018,7 +1018,7 @@ Numbered for reference. None is applied.
 1. **ADR-0001:** one opening paragraph naming aurora-lint a *conformance*
    checker [CERT-conf], and saying a suppression is a CERT deviation, so the
    oracle row stays TP. (D1, D3)
-2. **ADR-0002:** write the 1523 shipping criterion in, with operational tests.
+2. **ADR-0002:** write the shipping criterion in, with operational tests.
    Separate *shipped* from *enabled by default*. Widen "real-world measures
    noise" to include recall. (D2, E6)
 3. **ADR-0005:** rename "judgment FP" to "unwanted true positive (deviation)".

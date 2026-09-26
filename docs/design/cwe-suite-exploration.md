@@ -1,13 +1,13 @@
 # Should aurora-lint grow a non-CERT CWE rule suite? (exploration)
 
-**Status:** recommendation for Brandon (aurora_lint 1529), 2026-09-25.
+**Status:** recommendation for Brandon, 2026-09-25.
 The ADR references are to the set accepted at aurora-lint `72b8f734`.
 Exploration only: no rules, manifests or mappings are changed. If the
 answer is anything but "no", it becomes an ADR on the scope of the rule set,
 followed by individual rule tasks.
 
 **The objection under test:** "cppcheck can detect X, and aurora-lint can't."
-The 1512 cppcheck `-j 1` re-run added mostly `unusedFunction` (CWE-561).
+The cppcheck `-j 1` re-run in the competitor comparison series added mostly `unusedFunction` (CWE-561).
 tcb's mapping marks that check as having no CERT rule, so it counts in
 cppcheck's raw and CWE columns but not in the CERT comparison.
 
@@ -55,7 +55,7 @@ construction. The question is **scope**.
    - **Mapping errors on both sides.** tcb's `nocert` calls are listed below,
      and so are aurora-lint's own `data/rule_cwe_map.json` gaps (§4). These
      change the comparison tables in both directions, so they come before
-     1390's paper numbers.
+     the comparison paper's numbers.
 
 If Brandon wants a door left open, §5 gives admission criteria, so that a
 later proposal for a CWE rule is judged against a written bar rather than
@@ -64,15 +64,15 @@ re-argued.
 ## Inputs
 
 - **Competitor findings:** the latest bundle per (tool, target) in tcb's
-  `runs/`, as of the 1512 series (48 bundles).
+  `runs/`, as of the competitor comparison series (48 bundles).
   - cppcheck 2.10: the `-j 1` re-runs, all 12 real-world corpora plus full
     Juliet.
   - clang-tidy 21.1.8: 12 corpora plus Juliet. Several corpora have large
     per-TU failure counts in `meta.json`, so their clang-tidy counts are
     lower bounds.
-  - Infer 1.2.0 and Frama-C 33.0: the 1524 bundles. Three corpora ran with no
+  - Infer 1.2.0 and Frama-C 33.0: the first Infer/Frama-C bundles. Three corpora ran with no
     compile database (0 TUs), and Frama-C's entry coverage is partial
-    elsewhere. **1524 is stopped for review**, so treat those two tools'
+    elsewhere. **those runs are stopped for review**, so treat those two tools'
     counts as provisional.
   - The six-CWE Juliet subset runs are excluded, since they duplicate the full
     Juliet runs.
@@ -92,7 +92,7 @@ re-argued.
 ## 1. Mapping pass (tcb `nocert` / unmapped → honest CERT id)
 
 These are tcb follow-ups (cert-c-tool-comparison). They change which column
-a finding falls in, so they must land before 1390's tables.
+a finding falls in, so they must land before the comparison paper's tables.
 
 | Check | tcb says | Honest CERT id | Evidence | Real-world / Juliet findings |
 |---|---|---|---|---|
@@ -130,7 +130,7 @@ style checks (`optin.performance.Padding`, `useStandardLibrary`).
 | | CERT ids |
 |---|---|
 | aurora-lint enables | 307 (127 rules, 180 recommendations) |
-| Fired by at least one competitor on the 1512 bundles | 49 (36 rules, 13 recommendations) |
+| Fired by at least one competitor in the comparison bundles | 49 (36 rules, 13 recommendations) |
 | Fired by a competitor but not enabled in aurora-lint | **0** |
 | Enabled in aurora-lint, fired by no competitor | 258 (91 of the 127 rules) |
 
@@ -295,7 +295,7 @@ None of them is worth a suite today.
 ## Follow-ups this exploration proposes (for the coordinator to file or not)
 
 1. **tcb mapping:** apply §1, including the Frama-C clause-keyed patterns and
-   excluding Juliet entry-function `unusedFunction`, before 1390's tables
+   excluding Juliet entry-function `unusedFunction`, before the comparison paper's tables
    (cert-c-tool-comparison).
 2. **tcb Juliet list:** add `CWE561_Dead_Code` and `CWE563_Unused_Variable`.
 3. **aurora-lint MSC07-C:** flag a never-called `static` function (the
