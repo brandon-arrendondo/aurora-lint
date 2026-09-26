@@ -225,6 +225,13 @@ file. There is no issue tracker or task database in this repo, and none is
 needed to contribute: branch, commit, and open a PR as normal, same as any
 other project.
 
+**No task ids in anything public**: docs, ADRs, README, CHANGELOG, source
+comments, test fixtures, the paper. Cloners and contributors can't open the
+task database, so a number there points at nothing; say what changed and why
+in the text itself. Commit messages may keep a project-qualified id
+(`aurora_lint 1234`) for the maintainer's own tracing. Batch directory names
+in the public adjudication dataset are dataset identifiers and may be cited.
+
 **Task titles are internal and never published.** `CHANGELOG.md`'s
 `[Unreleased]` block and the release notes are generated from the task DB,
 but only from tasks tagged `release-note` whose body carries both a
