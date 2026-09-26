@@ -29,7 +29,7 @@ they answer a different question and stay where they are.
 **`CHANGELOG.md` is written for a user of the aurora-lint tool, and lists
 only what that user would notice.** Each release has one dated section
 (newest first, with an `[Unreleased]` section on top), and each section has
-at most these three headings:
+at most these four headings:
 
 1. **Added** — major feature delivery: a new rule, a new CLI option or
    output format, a new capability of the analyzer. Shipped, user-visible
@@ -42,6 +42,11 @@ at most these three headings:
 3. **Removed** — anything a user could have depended on that is gone:
    a rule, a flag, an output field, a supported platform. Removals are
    listed even when small, because they are the entries that break people.
+4. **Changed**: a change in what existing output means or how an existing
+   option behaves, which is neither a new capability nor a bug fix. Examples:
+   a default that now reports differently (a relaxation added to the default
+   preset), or an output moved to a different mechanism. Never a catch-all
+   for internal work (amended 2026-09-25, Brandon).
 
 Everything else does not belong in the changelog, however much work it was:
 
@@ -81,6 +86,6 @@ may *say*.
 - This ADR does not decide whether public git history or already-published
   release tarballs need scrubbing; that is a separate, outward-facing call
   (see the ADR-0007 follow-up in the task database).
-- Keep a Changelog's other headings (Changed, Deprecated, Security) are not
-  used. A user-visible behavior change is a Fix or an Addition; a security
-  issue follows ADR-0007 and is published only once fixed upstream.
+- Keep a Changelog's other headings (Deprecated, Security) are not used. A
+  security issue follows ADR-0007 and is published only once fixed upstream,
+  as a Fix. Nothing is deprecated yet; if something is, add the heading then.

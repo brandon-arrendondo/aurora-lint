@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Maintain CHANGELOG.md's [Unreleased] section, and cut release notes, from
 the task database -- under docs/adr/0009: the changelog is written for a user
-of the tool, has only Added / Fixed / Removed headings, and the generator is
+of the tool, has only Added / Fixed / Removed / Changed headings, and the generator is
 an aid to the author, not the author.
 
 WHAT IS PUBLISHED. A task appears only if it is tagged `release-note` AND its
 body carries two lines:
 
     release-note: <the bullet, written to be published>
-    category: added | fixed | removed
+    category: added | fixed | removed | changed
 
 The bullet goes under that heading. A tagged task missing either line, or
 naming another category, is refused with a stderr warning naming the task id
@@ -77,8 +77,13 @@ RELEASE_NOTE_START = re.compile(r"^[ \t]*release[- ]note:[ \t]*", re.IGNORECASE 
 CATEGORY_LINE = re.compile(r"^\s*category:\s*([A-Za-z]+)\s*$", re.IGNORECASE | re.MULTILINE)
 
 # ADR-0009's headings, in the order they are emitted. Keep a Changelog's other
-# headings (Changed, Deprecated, Security) are deliberately not accepted.
-CATEGORIES = OrderedDict([("added", "Added"), ("fixed", "Fixed"), ("removed", "Removed")])
+# headings (Deprecated, Security) are deliberately not accepted.
+CATEGORIES = OrderedDict([
+    ("added", "Added"),
+    ("changed", "Changed"),
+    ("fixed", "Fixed"),
+    ("removed", "Removed"),
+])
 
 # Tags that mark disclosure work. A task carrying any of these is never
 # published, allow tag or not -- its title and body are the working record
@@ -187,13 +192,13 @@ def publishable(task):
         return None, f"carries never-shipped tag(s) {', '.join(never)}"
     category = CATEGORY_LINE.search(task.details)
     if not category:
-        return None, "has no `category: added|fixed|removed` line"
+        return None, "has no `category: added|fixed|removed|changed` line"
     note_text = extract_release_note(task.details, category)
     if not note_text:
         return None, "has no `release-note: <bullet>` line; the title is never published"
     key = category.group(1).lower()
     if key not in CATEGORIES:
-        return None, f"category {category.group(1)!r} is not one of added|fixed|removed"
+        return None, f"category {category.group(1)!r} is not one of added|fixed|removed|changed"
     text = escape_bullet(note_text)
     if is_sensitive(text):
         return None, "release note matches a content deny pattern (see scripts/check_changelog_safety.py)"

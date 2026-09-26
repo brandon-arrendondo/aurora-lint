@@ -106,7 +106,10 @@ FIXTURE = [
     (13, "drop the --legacy flag", {"release-note"},
      note("The `--legacy` flag is gone.", "Removed"), "aurora_lint", "done", T % 13),
     (14, "Changed-category note", {"release-note"},
-     note("something", "changed"), "aurora_lint", "done", T % 14),
+     note("The default preset treats a dominating assert as a guard.", "changed"),
+     "aurora_lint", "done", T % 14),
+    (97, "Deprecated-category note", {"release-note"},
+     note("something", "deprecated"), "aurora_lint", "done", T % 20),
     (15, "old fix in 0.2.0's window", {"release-note"},
      note("DCL31-C sees macro-wrapped declarators."), "aurora_lint", "done", OLD % 10),
     (16, "API00-C: wrapped release note must not be truncated at the first line break",
@@ -173,7 +176,9 @@ class TestGenerator(unittest.TestCase):
         self.assertFalse(any("task 1:" in w for w in self.warnings))
 
     def test_note_is_published_under_its_category(self):
-        self.assertEqual(list(self.sections), ["Added", "Fixed", "Removed"])
+        self.assertEqual(list(self.sections), ["Added", "Changed", "Fixed", "Removed"])
+        self.assertIn("The default preset treats a dominating assert as a guard.",
+                      self.sections["Changed"])
         self.assertIn("`--system-includes` searches the compiler's own header directories.",
                       self.sections["Added"])
         self.assertIn("INT34-C bounds a shift amount by the operand's width.", self.sections["Fixed"])
@@ -195,7 +200,7 @@ class TestGenerator(unittest.TestCase):
 
     def test_unknown_category_is_refused(self):
         self.assertFalse(any(b == "something" for b in self.bullets))
-        self.assertTrue(any("task 14:" in w and "changed" in w for w in self.warnings), self.warnings)
+        self.assertTrue(any("task 97:" in w and "deprecated" in w for w in self.warnings), self.warnings)
 
     def test_wrapped_release_note_is_joined_not_truncated(self):
         # Regression: RELEASE_NOTE_LINE used to anchor on end-of-line ($), so a
