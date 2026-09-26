@@ -30,12 +30,12 @@ each piece points the same way:
   stays *unseeded*: "silencing every finding inside an `#ifdef _WIN32` block
   corpus-wide is a separate policy decision from which of several typedefs a
   name resolves to." This ADR is that decision, and the answer is no.
-- **Mutually exclusive arms are alternatives, not one flow.** MEM31-C 1199,
-  MEM30-C 1233 and ARR36-C 1048 were all misfires from *conflating* arms —
+- **Mutually exclusive arms are alternatives, not one flow.** MEM31-C,
+  MEM30-C and ARR36-C were all misfires from *conflating* arms —
   a free in the OpenSSL-3 arm and a free in the `#else` arm read as two frees
   on one path. The fix in every case was to analyze each arm as its own
-  flow, not to drop an arm. MSC13-C's preprocessor-alternative groups (751,
-  1386, `bad232a5`) are the same idea for declarations.
+  flow, not to drop an arm. MSC13-C's preprocessor-alternative groups (`bad232a5` and
+  the fixes before it) are the same idea for declarations.
 - **The oracle labels config-disabled arms as violations.** hostap's full
   audit labeled ~195 DCL13-C rows TP in `#else` stubs of `CONFIG_SAE`,
   `CONFIG_GAS`, `CONFIG_PR` and similar — code a default hostap build with
@@ -149,11 +149,11 @@ dozen legacy FP rows whose stated basis is "compiled out in release" or
   debug flag inside the primary configuration's build, the row is labeled
   on the construct alone.
 - Two tasks follow from Decisions 6–7: state the primary build
-  configuration per corpus (benchmarking_db; extends 1378 and 739), and a
+  configuration per corpus (benchmarking_db, extending the existing scope declarations), and a
   research task for multi-configuration scanning in aurora-lint
   (cppcheck-style enumeration or a `--platform` profile per scan — name
   resolution only, per Decision 3). Onboarding a second configuration of
-  an existing corpus (sel4 arm, raylib's platform backends, 1042) is the
+  an existing corpus (sel4 arm, raylib's platform backends) is the
   measurement-side path and needs no new scanner capability.
 - **Why the default answer is a new corpus, not a second scan of an
   existing one** (Brandon, 2026-09-22): systematically scanning every
@@ -191,8 +191,8 @@ dozen legacy FP rows whose stated basis is "compiled out in release" or
 - This does **not** license a rule to report across arms (Decision 4), and
   it does **not** make a preprocessor misread acceptable (ADR-0008): a rule
   that reads `#ifdef SQLITE_DEBUG` as an expression is still wrong.
-- It does **not** decide the 1300 question (a literal inside a `#if`
-  condition) — that is about what the construct *is*, not about which arm
+- It does **not** decide whether a literal inside a `#if`
+  condition is a finding — that is about what the construct *is*, not about which arm
   is live.
 - Tool behaviour does not change: `suppression.rs` and `dead_regions.rs`
   already implement Decisions 2 and 3. Any proposal to add a

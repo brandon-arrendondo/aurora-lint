@@ -89,7 +89,7 @@ TP. That holds even when it is almost certainly harmless in practice.
 - An FP label names its basis concretely: the clause of the standard, the
   guarding line, or the enumerated call sites. "Internal contract",
   "caller always passes valid" and "not attacker-controlled" name no basis.
-  That is why the task-644 API00-C rows were restated.
+  That is why an earlier batch of API00-C rows was restated.
 - Precision and recall figures do not depend on the toolchain of the host
   that ran the scan. That is the property basis 4 would break.
 - **Unused functions stay in scope.** They are compiled, type-checked and

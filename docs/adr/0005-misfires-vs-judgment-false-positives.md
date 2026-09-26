@@ -20,9 +20,9 @@ ADR-0002's text alone, because ADR-0002 doesn't distinguish two different
 things that both show up as "this rule fires less than it used to":
 
 - **A misfire**: the rule names a construct that is not actually present in
-  the code. EXP05-C (1170) reported "cast away const" on a `memset` call
+  the code. EXP05-C reported "cast away const" on a `memset` call
   with no cast anywhere near it, because its substring matching resolved
-  the wrong declaration. INT02-C (1186) reported "multiplication of
+  the wrong declaration. INT02-C reported "multiplication of
   unsigned short" on a plain pointer dereference, because its only real
   check was "does the literal string `unsigned short` appear anywhere
   earlier in the file." Neither of these is a rule correctly detecting a

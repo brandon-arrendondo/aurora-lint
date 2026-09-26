@@ -1,6 +1,6 @@
 # Where does a finding live? Forwarded pointers under API00-C and EXP34-C
 
-**Status:** research for a decision (aurora_lint 1572). Nothing here changes a
+**Status:** research for a decision (2026-09-25). Nothing here changes a
 rule or a label. The companion ADR draft is
 `docs/adr/0012-where-a-finding-lives.md` (Proposed). Brandon decides.
 
@@ -11,7 +11,7 @@ to a callee, into an ops table, or to a callback a plugin can register. Where
 is the violation, if there is one?
 
 - **(a) Only at the dereference, for every rule.** A line that only forwards a
-  pointer is never a site. This would overturn the API00-C task-664 convention
+  pointer is never a site. This would overturn the API00-C forwarding convention
   ("forwarded to a dereferencing callee = TP at the forwarding function") and
   mean a re-pass of every API00-C TP that rests on it.
 - **(b) The dereference-site rule belongs to EXP34-C.** aurora-lint 4bbf15d1
@@ -20,7 +20,7 @@ is the violation, if there is one?
   itself. API00-C asks a different question: does an API function validate
   what it receives? Under (b), an exported function that passes an unchecked
   pointer into a callee it cannot vouch for is an API00-C TP at that function,
-  and task-664 stays. Brandon leans (b).
+  and the forwarding convention stays. Brandon leans (b).
 
 ### Live cases
 
@@ -38,37 +38,37 @@ These stay as labeled until the decision.
 The same function shape has been labeled both ways, depending on which rule
 and which standard a pass applied:
 
-- **task 644 (API00-C re-audit, 2026-08).** Flipped 3,306 of 4,891 reviewed
+- **An API00-C re-audit (2026-08).** Flipped 3,306 of 4,891 reviewed
   API00-C FPs to TP.
-- **bmdb 664 pointer sample (2026-09-03).** Named the convention. A 59-row TP
+- **A pointer-parameter sample (2026-09-03).** Named the convention. A 59-row TP
   class, "param-forwarded-to-dereferencing-callee", was structurally identical
   at the flagged function to a 34-row FP mass: never dereferenced, validated
   in a called helper, callback pointer stored and not invoked, or forwarded to
   a null-tolerant sink. Only the callee's body separated them. That task's
   note: the original labeling "evidently stopped at 'not dereferenced here',
   which is right 22 times and wrong 59 times."
-- **bmdb 769, 793/794/796 (2026-09-07/08).** The confirmed API00-C standard:
+- **The API00-C labeling standard (2026-09-07/08).** The confirmed API00-C standard:
   per flagged parameter, a genuine guard on the parameter, every call site
   passing an address-of or literal, or forwarding only to null-tolerant
   callees. A parameter forwarded to a dereferencing callee is unvalidated.
-- **EXP34-C ruling 1 (2026-09-21), aurora-lint 4bbf15d1, bmdb 1418/1423.**
+- **The EXP34-C site ruling (2026-09-21), aurora-lint 4bbf15d1.**
   EXP34-C was relocated to the callee's own unguarded dereference, and 60 TP
   rows keyed at a caller's positional argument were corrected.
-- **ADR-0011 re-passes (bmdb 1541, 1551, 1553, 1554; 2026-09-24/25).**
+- **The ADR-0011 re-passes (2026-09-24/25).**
   Caller-side checks, proof chains, libraries and exported executables as
-  external. These re-derived API00-C under the 769 standard, forwarding
+  external. These re-derived API00-C under that standard, forwarding
   convention included.
 
 **Prior calls by the author of this document.** The adjudicating node that
-wrote this (dev-180) made several of these calls, and they are flagged so a
+wrote this made several of these calls, and they are flagged so a
 reader can discount for them:
 
-- **bmdb 1541, dev-180's share** (sqlite, curl, mosquitto, lua, raylib, sel4,
-  pureftpd). It applied the 769 standard, including "a parameter forwarded to
-  a dereferencing callee is unvalidated, as task-664 labels it"
+- **Its share of the API00-C rewrite** (sqlite, curl, mosquitto, lua, raylib, sel4,
+  pureftpd). It applied the labeling standard, including "a parameter forwarded to
+  a dereferencing callee is unvalidated"
   (`correction-api00c-644-sqlite-b1-task1541` notes).
-- **bmdb 1551.** The caller-check pass, which kept that convention.
-- **bmdb 1553.** It applied the 4bbf15d1 site rule to EXP34-C keys: a plain
+- **The caller-check pass,** which kept that convention.
+- **The library-ruling pass.** It applied the 4bbf15d1 site rule to EXP34-C keys: a plain
   `f(p)` into a project function stays FP, while `&p->f` is a dereference by
   the strict reading. It left the API00-C forwarding convention in place.
 
@@ -303,9 +303,9 @@ This is a mechanical estimate. A 12-row hand check agreed on 11.
   are forwarding-only would not flip, because another flagged parameter is
   dereferenced unchecked.
 - **By source batch,** the forwarding-only TPs come mostly from
-  task-644-full-reaudit (196), task-794-hostap (82), task-768-sel4 (80),
-  task-767-hostap (68), the 1554 hostap `-rdynamic` corrections (99) and
-  task-769 (46).
+  these batches in the public dataset: `task-644-full-reaudit` (196),
+  `task-794-hostap` (82), `task-768-sel4` (80), `task-767-hostap` (68), the hostap
+  `-rdynamic` corrections (99) and `task-769` (46).
 - **Only 18 of the 859 forward into a function pointer or ops table** (curl
   12, hostap 4, sqlite 1, raylib 1). The ops-table/plugin case the live
   examples turn on is a small subset.
@@ -313,7 +313,7 @@ This is a mechanical estimate. A 12-row hand check agreed on 11.
   `wpa_msg` family (see below).
 - **EXP34-C is not affected by either option.** It already follows the site
   rule (4bbf15d1). No EXP34-C TP rests on a bare forward into a project
-  function after bmdb 1423 and 1553.
+  function after the site-rule corrections.
 
 ## The options, argued straight
 
@@ -331,7 +331,7 @@ This is a mechanical estimate. A 12-row hand check agreed on 11.
   and each wrapper's report names only the parameter, not the callee.
   Bessey and Tricorder both predict developers treat such reports as false.
 - **It removes a judgment call that has churned.** The forwarder's verdict
-  depends on the callee's body, possibly several frames down (bmdb 664:
+  depends on the callee's body, possibly several frames down (the pointer sample's note:
   "every row in this batch required reading the callee"). Under (a) the
   question is local.
 - **Against (a):**

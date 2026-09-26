@@ -30,7 +30,7 @@ example, not resolving types — so its 0% said nothing about how often the
 underlying defect occurs, only that this implementation couldn't see it).
 The first kind is a legitimate invest-vs-deprioritize question. The second
 kind is a correctness bug wearing a precision statistic — a rewrite
-question, not a keep/drop one, and 1186 was decided as rewrite specifically
+question, not a keep/drop one, and INT02-C was decided as a rewrite specifically
 for that reason.
 
 aurora-lint's primary deployment target is CI/CD on codebases under active

@@ -2,8 +2,7 @@
 
 ## Status
 
-**Proposed — draft for Brandon, not accepted** (aurora_lint 1572,
-2026-09-25). No rule or label changes until this is decided. The evidence,
+**Proposed — draft for Brandon, not accepted** (2026-09-25). No rule or label changes until this is decided. The evidence,
 both options argued, and the label counts are in
 `docs/design/finding-location.md`. If accepted, change this line to
 "Accepted (Brandon, <date>)". If (a) is chosen instead, rewrite the Decision
@@ -15,14 +14,15 @@ A function receives a pointer and never dereferences it. It only forwards
 it: to a callee, into an ops table, or to a registered callback. The same
 shape has been labeled TP and FP in different passes:
 
-- **The API00-C task-664 convention.** A parameter forwarded to a
+- **The API00-C forwarding convention.** A parameter forwarded to a
   dereferencing callee is unvalidated, so the function is TP. This comes
-  from the bmdb 664 pointer sample and the 769/793-796 standard.
+  from an early pointer-parameter sample and the API00-C labeling standard
+  that followed it.
 - **The EXP34-C site rule.** aurora-lint 4bbf15d1, Brandon's 2026-09-21
   ruling: a caller passing a possibly-null pointer to a project function
   never violates EXP34-C by itself.
 
-Each ADR-0011 re-pass (bmdb 1541, 1551, 1553, 1554) had to decide which
+Each ADR-0011 consistency re-pass had to decide which
 reading applies. The live cases:
 
 - hostap `autoscan.c:143`, which forwards into the `notify_scan` ops
@@ -97,7 +97,7 @@ questions.
 ## Consequences
 
 - **No existing API00-C TP flips for resting on forwarding alone.** The
-  task-664 convention is the policy, now written down.
+  forwarding convention is the policy, now written down.
 - **Opaque-context callbacks become TP (the `wpa_msg` family).** Item 2 makes
   a registered callback a callee the function cannot vouch for. Treating a
   documented-optional `void *` as "nothing to validate" would rest on the

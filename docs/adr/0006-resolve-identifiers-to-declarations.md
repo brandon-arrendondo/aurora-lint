@@ -134,4 +134,4 @@ reaches the question of proof (Brandon, 2026-09-25).
   occurrence" is silence, not a guess keyed on spelling.
 - Credit: pattern identified by dev-180 across EXP05-C, INT02-C, and
   INT16-C in the same session that produced ADR-0001/0002; the tag-level
-  extension came out of INT02-C's recall work (1213) in the same session.
+  extension came out of INT02-C's recall work in the same session.

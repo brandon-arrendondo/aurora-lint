@@ -113,7 +113,7 @@ repeatedly been downgraded or flipped to FP once someone actually did the
 further work: adversarial re-review, tracing whether the flagged value is
 bounded elsewhere in the codebase, or attempting a reproducer. This isn't
 hypothetical caution — it is this project's own recurring experience (e.g.
-task 1438's adversarial pass downgrading rows a first read called confirmed
+an adversarial re-review pass downgrading rows a first read called confirmed
 defects, and an upstream maintainer characterizing a genuine out-of-bounds
 subscript as a benign consequence once they looked at what was adjacent to
 it). That is a second, independent reason the extended layer stays gated
