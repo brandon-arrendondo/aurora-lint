@@ -5,8 +5,9 @@
 use crate::analyze::const_eval::collect_macro_aliases;
 use crate::analyze::macro_expand::collect_function_macros;
 use crate::utility::cert_c::ast_utils::{
-    declaration_declarator_for, file_scope_descendants_of_kinds, get_identifier_from_declarator,
-    get_node_text, resolve_identifier_binding, IdentifierBinding,
+    declaration_declarator_for, file_scope_descendants_of_kinds,
+    function_names_in_error_declaration, get_identifier_from_declarator, get_node_text,
+    resolve_identifier_binding, IdentifierBinding,
 };
 use crate::utility::cert_c::fn_ptr_bindings::file_scope_function_pointer_bindings;
 use lang_parsing_substrate::query;
@@ -209,6 +210,27 @@ impl<'a, 's> Collector<'a, 's> {
             for d in decl.children_by_field_name("declarator", &mut cursor) {
                 if is_function_declarator(&d) {
                     functions_declared.insert(get_identifier_from_declarator(&d, source));
+                }
+            }
+        }
+        // A declaration tree-sitter couldn't finish is still a declaration
+        // (ADR-0008: diagnose the misread, don't drop the region). hostap's
+        // eloop.c recovers `static void eloop_sigsegv_handler(int sig) {` as
+        // an ERROR whose children are the function_declarator and `{`, the
+        // specifiers stranded outside it -- and, because the recovery still
+        // thinks it is inside the struct that opens earlier, the name is a
+        // field_identifier. A handler identified only there must still count.
+        for err in query::find_descendants_of_kind(*root, "ERROR") {
+            functions_declared.extend(function_names_in_error_declaration(&err, source));
+            let mut cursor = err.walk();
+            for child in err.children(&mut cursor) {
+                if child.kind() != "function_declarator" {
+                    continue;
+                }
+                if let Some(name) = child.child_by_field_name("declarator") {
+                    if matches!(name.kind(), "identifier" | "field_identifier") {
+                        functions_declared.insert(get_node_text(&name, source).to_string());
+                    }
                 }
             }
         }
@@ -970,6 +992,17 @@ mod tests {
         let r = collect(src).registrations;
         assert_eq!(r.len(), 1);
         assert!(!r[0].defined_here);
+    }
+
+    #[test]
+    fn a_handler_defined_inside_parse_error_recovery_still_counts() {
+        // An unclosed struct: tree-sitter recovers the definition as an
+        // ERROR holding a function_declarator named by a field_identifier
+        // (the shape hostap's eloop.c produces). The declarator is still the
+        // function's declaration (ADR-0008).
+        let src = "struct s {\n int a;\nstatic void h(int sig)\n{\n abort();\n}\n\
+                   int f(void) { signal(SIGSEGV, h); return 0; }\n";
+        assert_eq!(handlers(src), vec![("h".into(), Some("SIGSEGV".into()))]);
     }
 
     #[test]
