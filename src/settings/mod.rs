@@ -207,11 +207,14 @@ pub static OPTIONS: &[OptionSpec] = &[
         scope: Scope::Contract,
         source: Source::Library(CONFORMING_LIBCS),
         oracle_tag: "contract:stdlib_noreturn",
-        summary: "abort, exit, _Exit, quick_exit, longjmp and POSIX _exit never return to \
-                  their caller.",
-        basis: "C11 7.22.4.1, 7.22.4.4, 7.22.4.5, 7.22.4.7 and 7.13.2.1; POSIX.1-2024 \
-                _exit(). A freestanding implementation need not provide <stdlib.h> or \
-                <setjmp.h> at all.",
+        summary: "abort, exit, _Exit, quick_exit, longjmp, thrd_exit and POSIX _exit never \
+                  return to their caller.",
+        basis: "C11 7.22.4.1, 7.22.4.4, 7.22.4.5, 7.22.4.7, 7.13.2.1 and 7.26.5.5; \
+                POSIX.1-2024 _exit(). A freestanding implementation need not provide \
+                <stdlib.h>, <setjmp.h> or <threads.h> at all. Known limitation: two \
+                cross-file summaries built by the prescan (a parameter's null state after \
+                `if (!p) exit(1);`, and whether a function never returns) still credit \
+                these calls whatever this option says.",
     },
     OptionSpec {
         name: "main_argv_guarantees",

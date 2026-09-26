@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS runs (
     -- Juliet runner never passes --load-prescan (bench/runner.py), so every
     -- run is a fresh prescan; always 'cold' until a warm path is wired.
     cache_state     TEXT NOT NULL DEFAULT 'cold',
-    -- The policy/environment settings the run scanned under (ADR-0015), as
+    -- The policy/environment settings the run scanned under, per ADR-0015:
     -- canonical JSON from `aurora-lint --list-options json`. NULL for a run
     -- recorded before settings existed.
     settings        TEXT
@@ -180,8 +180,8 @@ CREATE TABLE IF NOT EXISTS realworld_runs (
     cpu_model       TEXT,
     cpu_cores       INTEGER,
     notes           TEXT,
-    -- The policy/environment settings the run scanned under (ADR-0015), as
-    -- canonical JSON; NULL for a run recorded before settings existed.
+    -- The policy/environment settings the run scanned under, per ADR-0015:
+    -- canonical JSON. NULL for a run recorded before settings existed.
     settings        TEXT
 );
 -- The identity indexes are NOT declared here: _SCHEMA runs before

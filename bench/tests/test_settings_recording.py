@@ -84,14 +84,27 @@ class TestSettingsColumn(unittest.TestCase):
         self.assertEqual(row[0], '{"policy": "default"}')
 
     def test_an_older_database_gains_the_column_with_null_for_old_runs(self):
-        db = BenchDB(self.path)
-        db.create_run("sqc-0.5.2-aaaaaaaa", "0.5.2", "aaaaaaaa", "fast",
-                      "2026-01-01T00:00:00Z", 1, 1, 1, {})
+        # A `runs` table as it stood before settings existed, built directly
+        # rather than by dropping the column (DROP COLUMN's schema rewrite is
+        # fragile across SQLite versions).
         with sqlite3.connect(self.path) as conn:
-            conn.execute("ALTER TABLE runs DROP COLUMN settings")
-            conn.execute("ALTER TABLE realworld_runs DROP COLUMN settings")
+            conn.execute("""
+                CREATE TABLE runs (
+                    run_id TEXT PRIMARY KEY, sqc_version TEXT NOT NULL,
+                    commit_sha TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'fast',
+                    status TEXT NOT NULL DEFAULT 'running', started_at TEXT NOT NULL,
+                    finished_at TEXT, pid INTEGER, jobs INTEGER, total_cwes INTEGER,
+                    hostname TEXT, cpu_model TEXT, cpu_cores INTEGER, ram_gb REAL,
+                    os_version TEXT, cache_state TEXT NOT NULL DEFAULT 'cold')
+            """)
+            conn.execute("INSERT INTO runs (run_id, sqc_version, commit_sha, started_at) "
+                         "VALUES ('sqc-0.5.2-aaaaaaaa', '0.5.2', 'aaaaaaaa', "
+                         "'2026-01-01T00:00:00Z')")
         db = BenchDB(self.path)
         self.assertIsNone(db.get_run("sqc-0.5.2-aaaaaaaa")["settings"])
+        with sqlite3.connect(self.path) as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(realworld_runs)")}
+        self.assertIn("settings", cols)
 
 
 class TestDiffSettings(unittest.TestCase):

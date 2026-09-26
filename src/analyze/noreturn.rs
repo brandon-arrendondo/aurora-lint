@@ -110,15 +110,31 @@ impl NoreturnNames {
 /// `siglongjmp` is deliberately absent, so it never ends a path: it is
 /// POSIX-only and, like `longjmp`, resumes the program elsewhere rather than
 /// ending it (see [`NON_TERMINATING_NORETURN_FUNCTIONS`]).
-const STDLIB_NORETURN_FUNCTIONS: &[&str] =
-    &["abort", "exit", "_Exit", "_exit", "quick_exit", "longjmp"];
+const STDLIB_NORETURN_FUNCTIONS: &[&str] = &[
+    "abort",
+    "exit",
+    "_Exit",
+    "_exit",
+    "quick_exit",
+    "longjmp",
+    "thrd_exit",
+];
+
+/// True when `name` is one of the standard library's noreturn functions and
+/// the declared environment honors that contract (`stdlib_noreturn`). For a
+/// rule that recognizes a terminating call by name rather than through a
+/// [`collect_noreturn_function_names`] set; either way the strict preset's
+/// freestanding environment credits none of them.
+pub fn is_stdlib_noreturn_name(name: &str, settings: &AnalysisSettings) -> bool {
+    settings.flag("stdlib_noreturn") && STDLIB_NORETURN_FUNCTIONS.contains(&name.trim())
+}
 
 /// Noreturn functions that do **not** end the process: control resumes
 /// elsewhere in the same program, so anything still allocated when they are
 /// called really is leaked. Callers reasoning about *process termination*
 /// (rather than merely "does not return to my caller") must exclude these --
 /// see [`is_process_terminating_name`].
-const NON_TERMINATING_NORETURN_FUNCTIONS: &[&str] = &["longjmp", "siglongjmp"];
+const NON_TERMINATING_NORETURN_FUNCTIONS: &[&str] = &["longjmp", "siglongjmp", "thrd_exit"];
 
 /// Depth-first search for a `function_declarator`, descending through
 /// `pointer_declarator` wrappers -- mirrors
