@@ -100,7 +100,12 @@ TP. That holds even when it is almost certainly harmless in practice.
   question about code growth, and a scan of the new code reports the new
   call. It is not a reason to flag the fixed commit being measured. The bar
   is high: *every* call site, provably, with no function-pointer or
-  external route in. Most code won't clear it (Brandon, 2026-09-24).
+  external route in. Most code won't clear it (Brandon, 2026-09-24). The
+  proof needs at least one call site: a function with no callers gets no
+  caller-side proof, because "every caller checks" says nothing when there
+  are none, and uncalled functions stay in scope (above). If every caller
+  provably validates the value, the dereference is not flagged; if that
+  can't be established with certainty, it is (Brandon, 2026-09-25).
 - **Libraries count as external.** A library that the tree builds or
   installs for outside use has an open caller set for every non-static
   function in its source files: a `.so` or `.a` that is documented,
