@@ -1,5 +1,5 @@
 /*
- * MEM31-C, aurora_lint 1494: a file-scope table filled once and kept for the
+ * MEM31-C: a file-scope table filled once and kept for the
  * life of the process; the filling function is not its owner. valkey's
  * exec_argv and sel4's kernel tables, reduced.
  *

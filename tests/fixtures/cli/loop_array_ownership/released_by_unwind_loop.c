@@ -1,5 +1,5 @@
 /*
- * MEM31-C, aurora_lint 1494: every element is released on the way out, by a
+ * MEM31-C: every element is released on the way out, by a
  * `while` unwind loop through a project deallocator rather than a `for` loop
  * calling free(). hostap's D-Bus object-path arrays, reduced: the pairing
  * only recognised `free(a[i])` in a `for`, so `os_free(paths[--i])` at the

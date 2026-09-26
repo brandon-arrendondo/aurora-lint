@@ -1,5 +1,5 @@
 /*
- * MEM31-C, aurora_lint 1494: the array whose elements the loop allocates is
+ * MEM31-C: the array whose elements the loop allocates is
  * returned, so its caller owns them and frees them with its own loop.
  * hostap's command-completion builders, reduced.
  *
