@@ -1,0 +1,16 @@
+profile = "strict"
+
+[metadata]
+name = "CLI Integration Test - MSC04-C, strict preset on newlib"
+version = "1.0.0"
+description = "Minimal manifest declaring policy/environment settings"
+cert_version = "2016"
+
+[environment]
+libc = "newlib"
+
+[environment.overrides]
+static_zero_init = false
+
+[rules.cert_c.MSC04-C]
+enabled = true

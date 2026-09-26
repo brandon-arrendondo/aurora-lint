@@ -41,6 +41,63 @@ Custom Manifest Format
     category = "Rule"
     cert_id = "STR31-C"
 
+Policy and Environment Settings
+-------------------------------
+
+Two settings, separate from which rules run, decide what the enabled rules
+assume (ADR-0015):
+
+- **Policy** says what the rules require of the code, and so which findings
+  are reported. ``default`` credits the assumptions mainstream analyzers make
+  (for example, a dominating ``assert`` is a guard even though ``NDEBUG`` can
+  strip it). ``strict`` credits none of them: the reading MISRA-style and
+  certified code needs.
+- **Environment** says what the analyzer may believe about the platform the
+  code runs on. ``hosted`` trusts the ISO C and POSIX library contracts (for
+  example, ``free(NULL)`` does nothing) and ``main``'s ``argv`` guarantees.
+  ``freestanding`` trusts no library semantics beyond the language unless a
+  ``libc`` model is declared. The environment is always declared, never
+  guessed from the machine running the scan.
+
+Two presets set both at once. The **default** preset is the default policy on
+a hosted environment. The **strict** preset is the strict policy on a
+freestanding environment, for teams that trust nothing. Any combination can
+be set explicitly, down to single options:
+
+.. code-block:: toml
+
+    profile = "strict"          # preset: "default" (the default) or "strict"
+
+    [metadata]
+    name = "Firmware rules"
+    version = "1.0.0"
+    cert_version = "2016"
+
+    [policy]
+    level = "strict"            # "default" | "strict"; overrides the preset
+
+    [environment]
+    kind = "freestanding"       # "hosted" | "freestanding"; overrides the preset
+    libc = "newlib"             # iso-posix | glibc | musl | newlib | picolibc | custom
+
+    [environment.overrides]
+    static_zero_init = false    # our startup code does not clear .bss
+
+    [rules.cert_c.EXP34-C]
+    enabled = true
+
+The same settings are available on the command line, where they win over the
+manifest: ``--profile``, ``--policy``, ``--environment``, ``--libc`` and a
+repeatable ``--set NAME=VALUE``. A ``--profile`` given on the command line
+starts again from that preset, discarding the manifest's settings.
+
+``aurora-lint --list-options`` lists every option with its value under each
+preset and under the current settings (``--list-options json`` for tooling).
+:doc:`options` is generated from the same table. An unknown option name, or
+one set on the wrong axis, is an error naming the allowed set. A SARIF
+export records the settings in ``runs[0].properties["aurora-lint/settings"]``,
+so a report always says which reading produced it.
+
 Supported CERT C Rules
 ----------------------
 
@@ -94,7 +151,7 @@ For a coarser starting point than either of those, build your own
 suite builds one per codebase (``conf/realworld/*-rules.toml`` — read
 ``conf/realworld/README.md`` for the full discipline, summarized here):
 
-1. Start from ``rules_templates/rules-all.toml`` (the **strict** default —
+1. Start from ``rules_templates/rules-all.toml`` (the full default rule set —
    this is the same file aurora-lint embeds and ships) and copy it as your
    starting point, rather than writing a manifest from scratch.
 2. Disable a rule wholesale only for one of two reasons, each recorded as a

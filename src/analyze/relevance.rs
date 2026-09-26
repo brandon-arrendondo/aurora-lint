@@ -302,6 +302,14 @@ fn detect_file(path: &Path, profile: &mut ProjectProfile) {
 pub fn generate_manifest_toml(base: &RuleManifest, profile: &ProjectProfile) -> String {
     let mut out = String::new();
 
+    // The base manifest's policy/environment settings carry over verbatim;
+    // `toml` puts the bare `profile` key ahead of the tables, as TOML needs.
+    let settings = base.settings_config();
+    if settings != Default::default() {
+        out.push_str(&toml::to_string(&settings).expect("settings serialize"));
+        out.push('\n');
+    }
+
     out.push_str("[metadata]\n");
     out.push_str(&format!("name = {:?}\n", base.metadata.name));
     out.push_str(&format!("version = {:?}\n", base.metadata.version));
@@ -537,6 +545,25 @@ mod tests {
 
     fn base_manifest() -> RuleManifest {
         RuleManifest::load("rules_templates/rules-all.toml").unwrap()
+    }
+
+    #[test]
+    fn generate_carries_policy_and_environment_settings() {
+        let mut manifest = base_manifest();
+        manifest.profile = Some(crate::settings::Preset::Strict);
+        manifest.environment = Some(crate::settings::EnvironmentConfig {
+            libc: Some(crate::settings::Libc::Newlib),
+            ..Default::default()
+        });
+        let profile = ProjectProfile {
+            has_threading: true,
+            has_windows: true,
+            max_c_standard: None,
+            has_annex_k: false,
+        };
+        let toml = generate_manifest_toml(&manifest, &profile);
+        let reparsed = RuleManifest::from_toml_str(&toml).unwrap();
+        assert_eq!(reparsed.settings_config(), manifest.settings_config());
     }
 
     #[test]

@@ -8,12 +8,13 @@
 // second time, and `cargo test` would build and run every test twice.
 #[cfg(feature = "tui")]
 use aurora_lint::ui;
-use aurora_lint::{analyze, export, files, manifest, progress};
+use aurora_lint::{analyze, export, files, manifest, progress, settings};
 
 use anyhow::Context;
 use aurora_lint::prelude::*;
 use clap::{Arg, Command};
 use manifest::Severity;
+use settings::{AnalysisSettings, SettingsConfig};
 
 use analyze::{analyze_project, handle_generate_suppression};
 use export::export_all_violations;
@@ -37,6 +38,49 @@ fn load_manifest(manifest_path: Option<&String>) -> Result<RuleManifest> {
         None => RuleManifest::from_toml_str(DEFAULT_MANIFEST_TOML)
             .context("Failed to parse built-in default manifest"),
     }
+}
+
+/// The settings the command line states, to layer over the manifest's.
+fn settings_from_cli(matches: &clap::ArgMatches) -> Result<SettingsConfig> {
+    let parse = |id: &str| matches.get_one::<String>(id).map(String::as_str);
+    let mut config = SettingsConfig {
+        profile: parse("profile")
+            .map(|s| s.parse())
+            .transpose()
+            .map_err(anyhow::Error::msg)?,
+        ..Default::default()
+    };
+    if let Some(level) = parse("policy") {
+        config.policy.get_or_insert_with(Default::default).level =
+            Some(level.parse().map_err(anyhow::Error::msg)?);
+    }
+    if let Some(kind) = parse("environment") {
+        config.environment.get_or_insert_with(Default::default).kind =
+            Some(kind.parse().map_err(anyhow::Error::msg)?);
+    }
+    if let Some(libc) = parse("libc") {
+        config.environment.get_or_insert_with(Default::default).libc =
+            Some(libc.parse().map_err(anyhow::Error::msg)?);
+    }
+    for assignment in matches.get_many::<String>("set").into_iter().flatten() {
+        config.set(assignment).context("--set")?;
+    }
+    Ok(config)
+}
+
+/// The manifest's settings with the command line's layered over them.
+///
+/// A `--profile` on the command line restarts from that preset: the
+/// manifest's own axis settings and overrides would otherwise silently
+/// survive a request for the strict preset.
+fn resolve_settings(manifest: &RuleManifest, cli: &SettingsConfig) -> Result<AnalysisSettings> {
+    let mut config = if cli.profile.is_some() {
+        SettingsConfig::default()
+    } else {
+        manifest.settings_config()
+    };
+    config.overlay(cli);
+    AnalysisSettings::resolve(&config).context("invalid policy/environment settings")
 }
 
 fn main() {
@@ -201,6 +245,50 @@ fn run() -> Result<i32> {
                 .value_parser(clap::value_parser!(usize)),
         )
         .arg(
+            Arg::new("profile")
+                .long("profile")
+                .help("Preset for both settings axes: default (default policy, hosted) or strict (strict policy, freestanding). Overrides the manifest's `profile`")
+                .value_name("PRESET")
+                .value_parser(["default", "strict"]),
+        )
+        .arg(
+            Arg::new("policy")
+                .long("policy")
+                .help("Policy axis: which findings are reported (overrides the preset)")
+                .value_name("POLICY")
+                .value_parser(["default", "strict"]),
+        )
+        .arg(
+            Arg::new("environment")
+                .long("environment")
+                .help("Environment axis: the implementation the code runs under (overrides the preset). Declared, never inferred from the scanning host")
+                .value_name("KIND")
+                .value_parser(["hosted", "freestanding"]),
+        )
+        .arg(
+            Arg::new("libc")
+                .long("libc")
+                .help("C library model whose documented contracts are trusted")
+                .value_name("MODEL")
+                .value_parser(["iso-posix", "glibc", "musl", "newlib", "picolibc", "custom"]),
+        )
+        .arg(
+            Arg::new("set")
+                .long("set")
+                .help("Override one named option (repeatable); see --list-options")
+                .value_name("NAME=VALUE")
+                .action(clap::ArgAction::Append),
+        )
+        .arg(
+            Arg::new("list_options")
+                .long("list-options")
+                .help("List every policy and environment option with its value under each preset and the current settings, then exit")
+                .value_name("FORMAT")
+                .num_args(0..=1)
+                .default_missing_value("text")
+                .value_parser(["text", "json", "rst"]),
+        )
+        .arg(
             Arg::new("detect_relevance")
                 .long("detect-relevance")
                 .help("Detect categorically-inapplicable rule classes (CON*/WIN*) in PATH and -d directories, then write a relevance-gated manifest with --write-manifest. Does not run an analysis.")
@@ -337,6 +425,21 @@ fn run() -> Result<i32> {
     let detect_relevance = matches.get_flag("detect_relevance");
     let write_manifest = matches.get_one::<String>("write_manifest");
 
+    let settings_cli = settings_from_cli(&matches)?;
+
+    if let Some(format) = matches.get_one::<String>("list_options") {
+        let settings = resolve_settings(&load_manifest(manifest_path)?, &settings_cli)?;
+        match format.as_str() {
+            "json" => println!(
+                "{}",
+                serde_json::to_string_pretty(&settings::render_json(&settings))?
+            ),
+            "rst" => print!("{}", settings::render_rst()),
+            _ => print!("{}", settings::render_text(&settings)),
+        }
+        return Ok(0);
+    }
+
     if detect_relevance {
         let mut corpus = vec![path.clone()];
         corpus.extend(directories.iter().cloned());
@@ -367,6 +470,7 @@ fn run() -> Result<i32> {
     if let Some(ref rules) = rule_filter {
         manifest.restrict_to(rules);
     }
+    let analysis_settings = resolve_settings(&manifest, &settings_cli)?;
 
     // Handle suppression generation
     if let Some(gen_spec) = generate_suppression {
@@ -395,6 +499,15 @@ fn run() -> Result<i32> {
         manifest_path
             .map(String::as_str)
             .unwrap_or("<built-in default>")
+    );
+
+    println!(
+        "Settings: {} (policy={}, environment={})",
+        analysis_settings
+            .matching_preset()
+            .map_or_else(|| "custom".to_string(), |p| format!("{p} preset")),
+        analysis_settings.policy,
+        analysis_settings.environment,
     );
 
     if diff_only {
@@ -453,7 +566,7 @@ fn run() -> Result<i32> {
 
     // Export to file if requested (includes both active and suppressed violations)
     if let Some(export_path) = export_file {
-        export_all_violations(&violations, &suppressed, export_path)?;
+        export_all_violations(&violations, &suppressed, export_path, &analysis_settings)?;
         println!(
             "Exported {} violations ({} suppressed) to: {}",
             violations.len(),

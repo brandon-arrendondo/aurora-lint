@@ -293,6 +293,24 @@ The default manifest (`rules_templates/rules-all.toml`) enables 307 of the 311 t
 
 First run against an existing codebase surfacing more findings than your team can triage at once? `--min-severity`/`--fail-on-severity` and `--exclude` are the fastest levers; [Configuration's "Strict vs. Relaxed Onboarding"](docs/configuration.rst) has the full discipline for building your own scoped-down manifest, and why this project doesn't ship a one-size-fits-all "relaxed" one.
 
+### Default or strict reading
+
+```bash
+# The default preset credits the assumptions mainstream analyzers make
+# (a dominating assert is a guard; the ISO C/POSIX library contracts hold)
+aurora-lint /path/to/project
+
+# The strict preset credits none of them: for MISRA-style and certified code
+aurora-lint /path/to/project --profile strict
+
+# Every option either preset sets, and its current value
+aurora-lint --list-options
+```
+
+Policy (what is reported) and environment (what the platform guarantees) are
+separate settings; see [Configuration](docs/configuration.rst) and the
+generated [option list](docs/options.rst).
+
 ## Quick CI Example
 
 ```bash

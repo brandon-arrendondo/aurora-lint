@@ -8,6 +8,7 @@
 //! - Suppression (inline comments and TOML file)
 //! - Cross-file analysis (-d flag)
 //! - Diff-only mode (--diff flag)
+//! - Policy and environment settings (--profile, --set, --list-options)
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -192,6 +193,127 @@ fn export_sarif_structure() {
         .as_str()
         .unwrap();
     assert_eq!(sha.len(), 64);
+}
+
+// ─── Policy and environment settings ─────────────────────────────────────────
+
+/// Export `violation.c` as SARIF with `args` appended; return the run's
+/// recorded settings block.
+fn sarif_settings(manifest: &std::path::Path, args: &[&str]) -> serde_json::Value {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.sarif");
+    let mut all = vec![
+        fixtures().join("violation.c").to_str().unwrap().to_string(),
+        "-m".to_string(),
+        manifest.to_str().unwrap().to_string(),
+        "-e".to_string(),
+        out.to_str().unwrap().to_string(),
+    ];
+    all.extend(args.iter().map(|a| a.to_string()));
+    let refs: Vec<&str> = all.iter().map(String::as_str).collect();
+    let (code, _, stderr) = run_aurora_lint(&refs);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let sarif: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    sarif["runs"][0]["properties"]["aurora-lint/settings"].clone()
+}
+
+#[test]
+fn sarif_records_default_settings() {
+    let s = sarif_settings(&manifest_msc04(), &[]);
+    assert_eq!(s["preset"], "default");
+    assert_eq!(s["policy"], "default");
+    assert_eq!(s["environment"], "hosted");
+    assert_eq!(s["libc"], "iso-posix");
+    assert_eq!(s["options"]["assert_is_guard"], true);
+    assert_eq!(s["options"]["free_null_is_noop"], true);
+}
+
+#[test]
+fn sarif_records_strict_preset_from_cli() {
+    let s = sarif_settings(&manifest_msc04(), &["--profile", "strict"]);
+    assert_eq!(s["preset"], "strict");
+    assert_eq!(s["environment"], "freestanding");
+    assert_eq!(s["libc"], serde_json::Value::Null);
+    assert_eq!(s["options"]["assert_is_guard"], false);
+    assert_eq!(s["options"]["free_null_is_noop"], false);
+    assert_eq!(s["options"]["main_argv_guarantees"], false);
+}
+
+#[test]
+fn manifest_settings_apply_and_name_no_preset_when_overridden() {
+    let manifest = fixtures().join("manifest_msc04_strict_newlib.toml");
+    let s = sarif_settings(&manifest, &[]);
+    // Strict policy, but newlib's documented contracts are trusted and one
+    // startup guarantee is withdrawn: neither preset.
+    assert_eq!(s["preset"], serde_json::Value::Null);
+    assert_eq!(s["policy"], "strict");
+    assert_eq!(s["libc"], "newlib");
+    assert_eq!(s["options"]["free_null_is_noop"], true);
+    assert_eq!(s["options"]["main_argv_guarantees"], false);
+    assert_eq!(s["options"]["static_zero_init"], false);
+}
+
+#[test]
+fn cli_profile_restarts_from_the_preset() {
+    let manifest = fixtures().join("manifest_msc04_strict_newlib.toml");
+    let s = sarif_settings(&manifest, &["--profile", "default"]);
+    assert_eq!(s["preset"], "default");
+    let s = sarif_settings(&manifest, &["--set", "static_zero_init=true"]);
+    assert_eq!(s["options"]["static_zero_init"], true);
+    assert_eq!(s["libc"], "newlib");
+}
+
+#[test]
+fn unknown_or_misplaced_option_is_refused() {
+    let (code, _, stderr) = run_aurora_lint(&["--list-options", "--set", "no_such=true"]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("unknown option 'no_such'"),
+        "stderr: {stderr}"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("m.toml");
+    std::fs::write(
+        &manifest,
+        "[metadata]\nname = \"m\"\nversion = \"1\"\ncert_version = \"2016\"\n\
+         [rules.cert_c]\n[environment.overrides]\nassert_is_guard = false\n",
+    )
+    .unwrap();
+    let (code, _, stderr) = run_aurora_lint(&["--list-options", "-m", manifest.to_str().unwrap()]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("does not belong in [environment.overrides]"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn options_doc_matches_the_table() {
+    let (code, stdout, stderr) = run_aurora_lint(&["--list-options", "rst"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let committed =
+        std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/options.rst"))
+            .unwrap();
+    assert_eq!(
+        committed, stdout,
+        "docs/options.rst is stale: regenerate it with \
+         `aurora-lint --list-options rst > docs/options.rst`"
+    );
+}
+
+#[test]
+fn list_options_json_names_every_option_under_both_presets() {
+    let (code, stdout, _) = run_aurora_lint(&["--list-options", "json"]);
+    assert_eq!(code, 0);
+    let listing: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let options = listing["options"].as_array().unwrap();
+    assert!(!options.is_empty());
+    for o in options {
+        assert!(o["default"].is_boolean() && o["strict"].is_boolean(), "{o}");
+        assert!(!o["basis"].as_str().unwrap().is_empty(), "{o}");
+    }
 }
 
 // ─── Exit codes ──────────────────────────────────────────────────────────────

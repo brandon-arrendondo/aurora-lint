@@ -1,3 +1,4 @@
+use crate::settings::{EnvironmentConfig, PolicyConfig, Preset, SettingsConfig};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -5,12 +6,25 @@ use std::fs;
 
 /// The parsed rule manifest (TOML config): which rules run, at what
 /// severity, and with what per-rule overrides.
+///
+/// Unknown top-level keys are refused: a misspelled `[enviroment]` table
+/// must not silently leave the analysis on the default settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuleManifest {
     /// Manifest-level identifying info (name, version, CERT edition).
     pub metadata: ManifestMetadata,
     /// The rule configs themselves, namespaced by rule family.
     pub rules: RuleNamespaces,
+    /// `profile = "default" | "strict"`: the preset both axes start from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<Preset>,
+    /// The `[policy]` table: overrides of the policy axis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<PolicyConfig>,
+    /// The `[environment]` table: overrides of the environment axis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<EnvironmentConfig>,
 }
 
 /// Rule configs grouped by family.
@@ -145,6 +159,16 @@ impl RuleManifest {
         Ok(manifest)
     }
 
+    /// The policy and environment settings this manifest declares, before
+    /// any command-line override.
+    pub fn settings_config(&self) -> SettingsConfig {
+        SettingsConfig {
+            profile: self.profile,
+            policy: self.policy.clone(),
+            environment: self.environment.clone(),
+        }
+    }
+
     /// Every rule ID/config pair across both namespaces with `enabled = true`.
     pub fn enabled_rules(&self) -> impl Iterator<Item = (&String, &RuleConfig)> {
         self.rules
@@ -230,6 +254,9 @@ impl Default for RuleManifest {
                 cert_c: cert_c_rules,
                 brules: HashMap::new(),
             },
+            profile: None,
+            policy: None,
+            environment: None,
         }
     }
 }

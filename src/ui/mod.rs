@@ -2338,7 +2338,14 @@ impl TerminalUI {
             .iter()
             .filter_map(|&index| self.violations.get(index).cloned())
             .collect();
-        crate::export::export_all_violations_to_sarif(&selected, &[], &path.to_string_lossy())
+        let settings =
+            crate::settings::AnalysisSettings::resolve(&self.manifest.settings_config())?;
+        crate::export::export_all_violations_to_sarif(
+            &selected,
+            &[],
+            &path.to_string_lossy(),
+            &settings,
+        )
     }
 
     fn get_relative_path(&self, file_path: &str) -> String {
