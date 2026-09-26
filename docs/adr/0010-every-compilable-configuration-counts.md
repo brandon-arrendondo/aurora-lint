@@ -97,18 +97,25 @@ dozen legacy FP rows whose stated basis is "compiled out in release" or
    exists by combining two arms that never compile together is a misfire
    (ADR-0005) and a bug to fix — that is how "every configuration counts"
    avoids inventing configurations that don't exist.
-5. **Asserts cut both ways.** In the `NDEBUG` configuration an `assert()` is
-   gone, so it guards nothing (the project's API00-C labeling standard). In the debug
-   configuration its argument is compiled and evaluated, so a violation
-   inside it is a violation. Neither configuration is the privileged one.
-   Treating a strippable assert as a guard would assume a debug test suite
-   strong enough to reach every assert before release. The oracle cannot
-   assume that for any corpus, so it doesn't, even where it is stricter than
-   a given codebase deserves. The value is that every assert question gets
-   the same answer. The rule is about the stripping, not the spelling: an
-   assert macro with no `NDEBUG` (or other build-flag) arm, such as valkey's
-   `serverAssert`, is compiled in every configuration, and one that dominates
-   the flagged use is a guard like any other check.
+5. **Asserts depend on the policy setting (ADR-0015).** In the `NDEBUG`
+   configuration a standard `assert()` is gone, and in the debug
+   configuration it is compiled and evaluated.
+   - **Default policy:** a dominating assert whose condition establishes the
+     property is a guard, strippable or not. This is the assumption the Clang
+     Static Analyzer, Polyspace and Coverity's models make, and CERT's own
+     EXP34-C compliant solution relies on it.
+   - **Strict policy:** a strippable assert guards nothing, because the release
+     build removes it (C11 7.2p1; CERT MSC11-C: assertions are not for
+     run-time error checking and are generally turned off before
+     deployment). This is the reading MISRA-style and certified code needs.
+   - **Both policies:** a violation inside an assert's argument is a
+     violation, because an active assert evaluates it. An assert macro with
+     no build-flag arm, such as valkey's `serverAssert`, is compiled in every
+     configuration, and one that dominates the flagged use is a guard under
+     both policies, provided its failure path provably does not return.
+   - **The oracle** records the strict verdict and tags the rows whose only
+     safety basis is a strippable assert, so both policies are scored from
+     it (amended 2026-09-25, Brandon).
 6. **Each oracle describes one stated primary build configuration.** A
    corpus's precision/recall figure is a statement about the code the
    primary configuration compiles; that configuration dominates what the

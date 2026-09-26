@@ -83,10 +83,18 @@ is not proof. Questions of reach, like "can this be called from outside" or
 "are all paths to it checked", look at every compilable configuration.
 (ADR-0010)
 
-**B5. Asserts cut both ways.** A strippable `assert` guards nothing. In the
-debug build its argument is evaluated, so a violation inside it is a
-violation. An assert macro with no build-flag arm that aborts guards like any
-check. (ADR-0010)
+**B5. Asserts depend on the policy setting.** Label the strict verdict: a strippable
+`assert` guards nothing. Tag the row as assert-dominated when a dominating
+assert establishes the property, because the default policy treats that assert
+as a guard. A violation inside an assert's argument is a violation under
+both policies. An assert macro no configuration strips, whose failure path never
+returns, is a guard in both. (ADR-0010, ADR-0015)
+
+**B6. Policy and environment.** The oracle is the strict, freestanding truth,
+plus tags for each relaxation: assert-dominated and dependent site (policy), and
+library-contract trust, naming the contract (environment). Each setting's
+figures are computed from those. Published figures use the ISO C and POSIX
+contract model. (ADR-0015)
 
 ## C. Settled cases (ADR-0011 unless noted)
 
