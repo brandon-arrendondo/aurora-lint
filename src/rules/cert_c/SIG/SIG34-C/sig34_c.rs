@@ -3,7 +3,8 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
+use crate::utility::cert_c::signal_handlers::RegisteredHandlers;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -37,37 +38,38 @@ impl CertRule for Sig34C {
 
 impl Sig34C {
     fn find_signal_handlers(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for function definitions matching the signal-handler signature:
-        // exactly one parameter of type `int` (e.g. `void handler(int sig)`).
+        // A handler is a function this file registers (signal/sigaction,
+        // resolved by declaration), never a function that merely has a
+        // handler-shaped signature: `setup_signals(int verbose)` isn't one.
+        let handlers = RegisteredHandlers::collect(node, source).signal_handler_names();
+        if handlers.is_empty() {
+            return;
+        }
         for func in query::find_descendants_of_kind(*node, "function_definition") {
-            if let Some(param_name) = self.signal_handler_param_name(&func, source) {
-                if let Some(body) = func.child_by_field_name("body") {
-                    self.check_for_signal_calls(&body, source, &param_name, violations);
-                }
+            let Some(declarator) = func.child_by_field_name("declarator") else {
+                continue;
+            };
+            if !handlers.contains(&get_identifier_from_declarator(&declarator, source)) {
+                continue;
+            }
+            let param_name = self
+                .signal_param_name(&declarator, source)
+                .unwrap_or_default();
+            if let Some(body) = func.child_by_field_name("body") {
+                self.check_for_signal_calls(&body, source, &param_name, violations);
             }
         }
     }
 
-    /// If `func` matches the signal-handler signature (exactly one `int`
-    /// parameter, e.g. `void handler(int sig)`), return that parameter's
-    /// name.
-    fn signal_handler_param_name(&self, func: &Node, source: &str) -> Option<String> {
-        let declarator = func.child_by_field_name("declarator")?;
-        let params: Vec<Node> =
-            query::find_descendants_of_kind(declarator, "parameter_declaration");
-        if params.len() != 1 {
-            return None;
-        }
-        let is_int = params[0]
-            .child_by_field_name("type")
-            .map(|ty| get_node_text(&ty, source).trim() == "int")
-            .unwrap_or(false);
-        if !is_int {
-            return None;
-        }
-        params[0]
+    /// The name of a handler's first parameter: the signal number, for both
+    /// `void h(int sig)` and `void h(int sig, siginfo_t *, void *)`.
+    fn signal_param_name(&self, declarator: &Node, source: &str) -> Option<String> {
+        let first = query::find_descendants_of_kind(*declarator, "parameter_declaration")
+            .into_iter()
+            .next()?;
+        first
             .child_by_field_name("declarator")
-            .map(|d| get_node_text(&d, source).trim().to_string())
+            .map(|d| get_identifier_from_declarator(&d, source))
     }
 
     fn check_for_signal_calls(

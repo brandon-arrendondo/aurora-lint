@@ -29,6 +29,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::signal_handlers::RegisteredHandlers;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -70,135 +71,26 @@ impl CertRule for Sig35C {
 }
 
 impl Sig35C {
-    /// Find all handlers registered for computational exception signals
-    /// (SIGFPE, SIGILL, SIGSEGV, SIGBUS)
+    /// Every handler registered for a computational exception signal
+    /// (SIGFPE, SIGILL, SIGSEGV, SIGBUS, SIGTRAP), mapped to that signal.
+    /// Each registration carries its own signal (see [`RegisteredHandlers`]),
+    /// so a `sigaction` for SIGFPE claims only the handler its own
+    /// `struct sigaction` holds, not every handler set in the same block.
     fn find_computational_exception_handlers(
         &self,
         node: &Node,
         source: &str,
     ) -> HashMap<String, String> {
         let mut handlers = HashMap::new();
-        self.collect_computational_handlers(node, source, &mut handlers);
-        handlers
-    }
-
-    fn collect_computational_handlers(
-        &self,
-        node: &Node,
-        source: &str,
-        handlers: &mut HashMap<String, String>,
-    ) {
-        // Look for signal(SIGXXX, handler_func) / sigaction(SIGXXX, &sa, ...) calls
-        for n in query::find_descendants_of_kind(*node, "call_expression") {
-            let Some(function) = n.child_by_field_name("function") else {
+        for r in RegisteredHandlers::collect(node, source).registrations {
+            let Some(signal) = r.signal else {
                 continue;
             };
-            match get_node_text(&function, source) {
-                "signal" => self.collect_signal_call_handler(&n, source, handlers),
-                "sigaction" => self.collect_sigaction_call_handlers(&n, source, handlers),
-                _ => {}
+            if r.kind.is_signal() && self.is_computational_exception_signal(&signal) {
+                handlers.entry(r.handler).or_insert(signal);
             }
         }
-    }
-
-    /// `signal(SIGXXX, handler_func)` case of [`collect_computational_handlers`]:
-    /// map the handler function name to the signal it's registered for,
-    /// skipping `SIG_IGN`/`SIG_DFL`/`SIG_ERR`/`NULL`/`0`.
-    fn collect_signal_call_handler(
-        &self,
-        n: &Node,
-        source: &str,
-        handlers: &mut HashMap<String, String>,
-    ) {
-        let Some(args) = n.child_by_field_name("arguments") else {
-            return;
-        };
-        let arg_list = self.get_arguments(&args, source);
-        if arg_list.len() < 2 {
-            return;
-        }
-        let signal_name = arg_list[0].trim();
-        let handler_name = arg_list[1].trim();
-        if !self.is_computational_exception_signal(signal_name) {
-            return;
-        }
-        // Skip SIG_IGN, SIG_DFL, SIG_ERR, NULL
-        if handler_name.starts_with("SIG_")
-            || handler_name == "NULL"
-            || handler_name == "0"
-            || handler_name.is_empty()
-        {
-            return;
-        }
-        // Map handler name to signal name
-        handlers.insert(handler_name.to_string(), signal_name.to_string());
-    }
-
-    /// `sigaction(SIGXXX, &sa, NULL)` case of [`collect_computational_handlers`]:
-    /// find the `sa_handler`/`sa_sigaction` struct-field assignments in the
-    /// enclosing scope to resolve the actual handler function.
-    fn collect_sigaction_call_handlers(
-        &self,
-        n: &Node,
-        source: &str,
-        handlers: &mut HashMap<String, String>,
-    ) {
-        let Some(args) = n.child_by_field_name("arguments") else {
-            return;
-        };
-        let arg_list = self.get_arguments(&args, source);
-        if arg_list.len() < 2 {
-            return;
-        }
-        let signal_name = arg_list[0].trim();
-        if self.is_computational_exception_signal(signal_name) {
-            self.collect_sigaction_handlers(n, source, signal_name, handlers);
-        }
-    }
-
-    fn collect_sigaction_handlers(
-        &self,
-        sigaction_node: &Node,
-        source: &str,
-        signal_name: &str,
-        handlers: &mut HashMap<String, String>,
-    ) {
-        // Simple heuristic: look in the parent compound statement for sa.sa_handler assignments
-        let mut current = sigaction_node.parent();
-        while let Some(parent) = current {
-            if parent.kind() == "compound_statement" || parent.kind() == "function_definition" {
-                // Search this scope for field assignments
-                self.find_handler_assignments(&parent, source, signal_name, handlers);
-                break;
-            }
-            current = parent.parent();
-        }
-    }
-
-    fn find_handler_assignments(
-        &self,
-        scope: &Node,
-        source: &str,
-        signal_name: &str,
-        handlers: &mut HashMap<String, String>,
-    ) {
-        for assign in query::find_descendants_of_kind(*scope, "assignment_expression") {
-            if let (Some(left), Some(right)) = (
-                assign.child_by_field_name("left"),
-                assign.child_by_field_name("right"),
-            ) {
-                let left_text = get_node_text(&left, source);
-                if left_text.ends_with(".sa_handler") || left_text.ends_with(".sa_sigaction") {
-                    let handler_name = get_node_text(&right, source).trim().to_string();
-                    if !handler_name.starts_with("SIG_")
-                        && handler_name != "NULL"
-                        && !handler_name.is_empty()
-                    {
-                        handlers.insert(handler_name, signal_name.to_string());
-                    }
-                }
-            }
-        }
+        handlers
     }
 
     /// Check if a signal is a computational exception signal
@@ -206,23 +98,6 @@ impl Sig35C {
         const COMPUTATIONAL_SIGNALS: &[&str] =
             &["SIGFPE", "SIGILL", "SIGSEGV", "SIGBUS", "SIGTRAP"];
         COMPUTATIONAL_SIGNALS.contains(&signal_name)
-    }
-
-    /// Get argument strings from an argument_list node
-    fn get_arguments(&self, args_node: &Node, source: &str) -> Vec<String> {
-        let mut arguments = Vec::new();
-
-        for i in 0..args_node.child_count() {
-            if let Some(child) = args_node.child(i) {
-                let kind = child.kind();
-                if kind != "," && kind != "(" && kind != ")" {
-                    let arg_text = get_node_text(&child, source).to_string();
-                    arguments.push(arg_text);
-                }
-            }
-        }
-
-        arguments
     }
 
     fn check_node(

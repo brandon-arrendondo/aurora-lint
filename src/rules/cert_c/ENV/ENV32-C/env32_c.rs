@@ -29,6 +29,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::signal_handlers::RegisteredHandlers;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -60,8 +61,8 @@ impl CertRule for Env32C {
         let mut violations = Vec::new();
 
         // First pass: find exit handler registrations
-        let mut exit_handlers: HashSet<String> = HashSet::new();
-        self.find_exit_handler_registrations(node, source, &mut exit_handlers);
+        let exit_handlers: HashSet<String> =
+            RegisteredHandlers::collect(node, source).exit_handler_names();
 
         // Second pass: check each registered handler for non-returning calls
         if !exit_handlers.is_empty() {
@@ -73,37 +74,6 @@ impl CertRule for Env32C {
 }
 
 impl Env32C {
-    /// Find functions registered as exit handlers
-    fn find_exit_handler_registrations(
-        &self,
-        node: &Node,
-        source: &str,
-        handlers: &mut HashSet<String>,
-    ) {
-        for call in query::find_descendants_of_kind(*node, "call_expression") {
-            if let Some(function) = call.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-
-                // Check for atexit() or at_quick_exit() calls
-                if func_name == "atexit" || func_name == "at_quick_exit" {
-                    if let Some(args) = call.child_by_field_name("arguments") {
-                        // Get the first argument (the handler function)
-                        for i in 0..args.child_count() {
-                            if let Some(child) = args.child(i) {
-                                let kind = child.kind();
-                                if kind != "," && kind != "(" && kind != ")" {
-                                    let handler_name = get_node_text(&child, source).to_string();
-                                    handlers.insert(handler_name);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     /// Check function bodies for non-returning calls
     fn check_handler_bodies(
         &self,

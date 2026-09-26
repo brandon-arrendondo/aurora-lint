@@ -33,6 +33,10 @@ pub mod overflow_helpers;
 /// INT30-C, INT31-C, INT32-C) stop reading pointer arithmetic as integer
 /// arithmetic.
 pub mod pointer_typing;
+/// Which functions a translation unit registers with `signal`, `sigaction`,
+/// `atexit` or `at_quick_exit`, by what the registration is given
+/// (identity by declaration) rather than by what a function is named.
+pub mod signal_handlers;
 pub mod size_analysis;
 /// Lookup of known C standard library / POSIX / Windows socket function names.
 pub mod std_functions;

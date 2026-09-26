@@ -12,6 +12,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{get_node_text, get_sanitized_node_text};
+use crate::utility::cert_c::signal_handlers::RegisteredHandlers;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -22,53 +23,6 @@ pub struct Err32C;
 impl Err32C {
     pub fn new() -> Self {
         Err32C
-    }
-
-    /// First pass: collect function names registered as signal handlers
-    fn collect_signal_handlers(&self, node: &Node, source: &str, handlers: &mut HashSet<String>) {
-        for n in query::find_descendants(*node, |_| true) {
-            // Check for signal(SIG..., handler) pattern
-            if n.kind() == "call_expression" {
-                if let Some(function) = n.child_by_field_name("function") {
-                    let func_name = get_node_text(&function, source);
-                    if func_name == "signal" {
-                        if let Some(args) = n.child_by_field_name("arguments") {
-                            // Second argument is the handler
-                            let mut arg_idx = 0;
-                            let mut cursor = args.walk();
-                            for child in args.children(&mut cursor) {
-                                if child.kind() != "," && child.kind() != "(" && child.kind() != ")"
-                                {
-                                    arg_idx += 1;
-                                    if arg_idx == 2 {
-                                        let handler_name =
-                                            get_node_text(&child, source).trim().to_string();
-                                        if !handler_name.starts_with("SIG_") {
-                                            handlers.insert(handler_name);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Check for sigaction: .sa_handler = func_name or act.sa_handler = func_name
-            if n.kind() == "assignment_expression" {
-                if let Some(left) = n.child_by_field_name("left") {
-                    let left_text = get_node_text(&left, source);
-                    if left_text.contains("sa_handler") || left_text.contains("sa_sigaction") {
-                        if let Some(right) = n.child_by_field_name("right") {
-                            let handler_name = get_node_text(&right, source).trim().to_string();
-                            if !handler_name.is_empty() && !handler_name.starts_with("SIG_") {
-                                handlers.insert(handler_name);
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 
     /// Extract just the function name from a declarator node
@@ -137,12 +91,6 @@ impl Err32C {
 
                     // Check if registered as signal handler
                     if registered_handlers.contains(&func_name) {
-                        return true;
-                    }
-
-                    // Also use heuristic: name contains "handler" or starts with "sig"
-                    let lower_name = func_name.to_lowercase();
-                    if lower_name.contains("handler") || lower_name.starts_with("sig") {
                         return true;
                     }
                 }
@@ -278,9 +226,12 @@ impl CertRule for Err32C {
     fn check(&self, root_node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // First pass: collect signal handler function names
-        let mut registered_handlers = HashSet::new();
-        self.collect_signal_handlers(root_node, source, &mut registered_handlers);
+        // First pass: the functions this file registers as signal handlers,
+        // by declaration. A function's name never makes it one: the old
+        // "contains handler / starts with sig" guess read `sigfig_parse()`
+        // as a handler (ADR-0006).
+        let registered_handlers =
+            RegisteredHandlers::collect(root_node, source).signal_handler_names();
 
         // Second pass: check errno/perror/strerror usage in handlers
         self.check_node(root_node, source, &registered_handlers, &mut violations);

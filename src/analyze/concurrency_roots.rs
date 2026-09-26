@@ -16,13 +16,16 @@
 //!   even a node in `call_graph` (it's excluded the same way
 //!   `lang_parsing_substrate::calls`'s `is_macro_function_definition`
 //!   excludes it).
-//! - No `sigaction()` struct-field registration (`act.sa_handler = fn;`) —
-//!   only `signal(SIG, handler)`'s direct 2-argument form. Verified against
-//!   the one real-world codebase with labeled CON03-C signal-handler TPs
-//!   (mosquitto's `src/signals.c`): it uses `signal()` exclusively.
+//!
+//! Signal handlers come from [`RegisteredHandlers`]: `signal()` and
+//! `sigaction()` (`sa_handler`/`sa_sigaction`, by assignment or designated
+//! initializer), local forwarding wrappers and same-file macros, resolved by
+//! declaration. A `signal`-forwarding macro defined in ANOTHER file is still
+//! resolved here, through the cross-file macro table.
 
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::signal_handlers::RegisteredHandlers;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -55,8 +58,7 @@ const THREAD_SPAWN_APIS: &[(&str, usize, usize)] = &[
 /// Collect every function name that seeds a concurrent-execution root: an
 /// ISR handler (real syntactic evidence, via `lang-parsing-substrate`), a
 /// thread-spawn entry point (direct call or forwarded through a
-/// function-like macro — see module docs), or a signal handler registered
-/// via `signal(SIG, handler)`.
+/// function-like macro — see module docs), or a registered signal handler.
 ///
 /// `function_macros` should be the fully cross-file-merged table (this is
 /// meant to run after prescan's merge phase, not per-file during the
@@ -74,6 +76,7 @@ pub fn collect_concurrency_roots(
             out.insert(name);
         }
     }
+    out.extend(RegisteredHandlers::collect(root, source).signal_handler_names());
 
     for call in query::find_descendants_of_kind(*root, "call_expression") {
         let Some(function) = call.child_by_field_name("function") else {
@@ -89,10 +92,6 @@ pub fn collect_concurrency_roots(
         let arg_texts = call_argument_texts(&args_node, source);
 
         if let Some(name) = thread_entry_from_call(callee, &arg_texts) {
-            out.insert(name);
-            continue;
-        }
-        if let Some(name) = signal_handler_from_call(callee, &arg_texts) {
             out.insert(name);
             continue;
         }
@@ -126,18 +125,6 @@ fn thread_entry_from_call(callee: &str, args: &[String]) -> Option<String> {
         .iter()
         .find(|(name, _, arity)| *name == callee && args.len() == *arity)?;
     extract_identifier(args.get(idx)?)
-}
-
-fn signal_handler_from_call(callee: &str, args: &[String]) -> Option<String> {
-    if callee != "signal" || args.len() != 2 {
-        return None;
-    }
-    let handler = extract_identifier(&args[1])?;
-    // SIG_IGN/SIG_DFL are dispositions, not handler functions to treat as roots.
-    if handler == "SIG_IGN" || handler == "SIG_DFL" {
-        return None;
-    }
-    Some(handler)
 }
 
 /// Scan a fully-expanded macro-invocation text (e.g.
@@ -363,19 +350,32 @@ mod tests {
         assert_eq!(thread_entry_from_call("pthread_create", &args), None);
     }
 
+    fn roots_of(src: &str) -> HashSet<String> {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let mut out = HashSet::new();
+        collect_concurrency_roots(&tree.root_node(), src, &HashMap::new(), &mut out);
+        out
+    }
+
     #[test]
     fn signal_handler_direct() {
-        let args = vec!["SIGHUP".to_string(), "handle_signal".to_string()];
-        assert_eq!(
-            signal_handler_from_call("signal", &args),
-            Some("handle_signal".to_string())
-        );
+        let src = "void handle_signal(int s) {}\nvoid f(void) { signal(SIGHUP, handle_signal); }\n";
+        assert!(roots_of(src).contains("handle_signal"));
     }
 
     #[test]
     fn signal_handler_ignores_sig_ign() {
-        let args = vec!["SIGPIPE".to_string(), "SIG_IGN".to_string()];
-        assert_eq!(signal_handler_from_call("signal", &args), None);
+        let src = "void f(void) { signal(SIGPIPE, SIG_IGN); }\n";
+        assert!(roots_of(src).is_empty());
+    }
+
+    #[test]
+    fn sigaction_handler_is_a_root() {
+        let src = "void on_term(int s) {}\n\
+                   void f(void) { struct sigaction sa; sa.sa_handler = on_term; sigaction(SIGTERM, &sa, 0); }\n";
+        assert!(roots_of(src).contains("on_term"));
     }
 
     #[test]

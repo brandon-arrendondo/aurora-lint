@@ -28,6 +28,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::signal_handlers::RegisteredHandlers;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -93,85 +94,13 @@ impl Sig31C {
         }
     }
 
+    /// Every function this translation unit registers as a signal handler,
+    /// including `sa_sigaction` and `{ .sa_handler = f }` registrations,
+    /// resolved by declaration (see [`RegisteredHandlers`]).
     fn find_signal_handlers(&self, node: &Node, source: &str) -> HashSet<String> {
-        let mut handlers = HashSet::new();
-        self.collect_handlers(node, source, &mut handlers);
-        handlers
+        RegisteredHandlers::collect(node, source).signal_handler_names()
     }
 
-    fn collect_handlers(&self, node: &Node, source: &str, handlers: &mut HashSet<String>) {
-        for n in
-            query::find_descendants_of_kinds(*node, &["call_expression", "assignment_expression"])
-        {
-            if n.kind() == "call_expression" {
-                if let Some(function) = n.child_by_field_name("function") {
-                    let func_name = get_node_text(&function, source);
-
-                    if func_name == "signal" || func_name == "sigaction" {
-                        if let Some(args) = n.child_by_field_name("arguments") {
-                            let arg_list = self.get_arguments(&args, source);
-
-                            if func_name == "signal" && arg_list.len() >= 2 {
-                                let handler_name = arg_list[1].trim();
-                                if !handler_name.starts_with("SIG_")
-                                    && handler_name != "NULL"
-                                    && handler_name != "0"
-                                    && !handler_name.is_empty()
-                                {
-                                    handlers.insert(handler_name.to_string());
-                                }
-                            }
-                            // For sigaction, need to look for struct sigaction with .sa_handler assignment
-                            // The handler is typically assigned via: sa.sa_handler = handler_func;
-                            // We'll detect handlers from sigaction struct initialization elsewhere
-                        }
-                    }
-                }
-            }
-
-            // Also detect signal handlers from struct sigaction assignment
-            // Pattern: sa.sa_handler = unsafe_handler;
-            if n.kind() == "assignment_expression" {
-                if let Some(left) = n.child_by_field_name("left") {
-                    if left.kind() == "field_expression" {
-                        if let Some(field) = left.child_by_field_name("field") {
-                            let field_name = get_node_text(&field, source);
-                            if field_name == "sa_handler" {
-                                if let Some(right) = n.child_by_field_name("right") {
-                                    let handler_name = get_node_text(&right, source);
-                                    if !handler_name.starts_with("SIG_")
-                                        && handler_name != "NULL"
-                                        && handler_name != "0"
-                                        && !handler_name.is_empty()
-                                    {
-                                        handlers.insert(handler_name.to_string());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn get_arguments(&self, args_node: &Node, source: &str) -> Vec<String> {
-        let mut arguments = Vec::new();
-
-        for i in 0..args_node.child_count() {
-            if let Some(child) = args_node.child(i) {
-                let kind = child.kind();
-                if kind != "," && kind != "(" && kind != ")" {
-                    let arg_text = get_node_text(&child, source).to_string();
-                    arguments.push(arg_text);
-                }
-            }
-        }
-
-        arguments
-    }
-
-    /// Find all global/static variables and determine if they're volatile sig_atomic_t
     fn find_global_variables(&self, node: &Node, source: &str) -> HashMap<String, bool> {
         let mut vars = HashMap::new();
 

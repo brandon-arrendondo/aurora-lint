@@ -32,7 +32,9 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::signal_handlers::{RegisteredHandlers, RegistrationKind};
 use lang_parsing_substrate::query;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 pub struct Sig00C;
@@ -69,95 +71,21 @@ impl Sig00C {
         }
     }
 
-    /// Check for sigaction() calls without proper signal masking
-    fn check_sigaction_call(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() != "call_expression" {
-            return;
-        }
-
-        if let Some(function_node) = node.child_by_field_name("function") {
-            let function_name = get_node_text(&function_node, source);
-
-            if function_name == "sigaction" {
-                // Check if there's a preceding sigaddset call in the same scope
-                // This is a heuristic check - full verification would require data flow analysis
-                if !self.has_preceding_sigaddset(node, source) {
-                    violations.push(RuleViolation {
-                        rule_id: self.rule_id().to_string(),
-                        severity: Severity::Medium,
-                        message: "sigaction() call detected without apparent signal masking. Ensure sa_mask is properly configured with sigaddset() before calling sigaction().".to_string(),
-                        file_path: String::new(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
-                        suggestion: Some(
-                            "Use sigemptyset() and sigaddset() to configure sa_mask before calling sigaction() to prevent race conditions in signal handlers."
-                                .to_string(),
-                        ),
-                        ..Default::default()
-                    });
-                }
-            }
-        }
-    }
-
-    /// Heuristic check: look for sigaddset calls before this node
-    fn has_preceding_sigaddset(&self, node: &Node, source: &str) -> bool {
-        // Walk up to find the compound statement containing this call
-        let mut current = node.parent();
-        while let Some(parent) = current {
-            if parent.kind() == "compound_statement" || parent.kind() == "function_definition" {
-                // Search for sigaddset calls before this node
-                return self.contains_sigaddset_before(&parent, node, source);
-            }
-            current = parent.parent();
-        }
-        false
-    }
-
-    /// Search for sigaddset calls before the target node.
-    ///
-    /// Uses an explicit stack instead of recursion: this recurses into
-    /// every child unconditionally (pruned only by byte-offset position
-    /// relative to `target`, not by node kind), so deeply nested code
-    /// before the target would cost one native call frame per level --
-    /// same unbounded-depth risk class as the original ARR00-C/MEM33-C bug
-    /// . Pure existence check, so traversal order doesn't affect
-    /// the result.
-    fn contains_sigaddset_before(&self, scope: &Node, target: &Node, source: &str) -> bool {
-        let target_start = target.start_byte();
-        let mut stack = vec![*scope];
-
-        while let Some(scope) = stack.pop() {
-            for i in 0..scope.child_count() {
-                if let Some(child) = scope.child(i) {
-                    // Stop when we reach the target node
-                    if child.start_byte() >= target_start {
-                        break;
-                    }
-
-                    // Check if this is a sigaddset call
-                    if self.is_sigaddset_call(&child, source) {
-                        return true;
-                    }
-
-                    // Queue child nodes for checking
-                    stack.push(child);
-                }
-            }
-        }
-
-        false
-    }
-
-    /// Check if a node is a call to sigaddset
-    fn is_sigaddset_call(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(function_node) = node.child_by_field_name("function") {
-                let function_name = get_node_text(&function_node, source);
-                return function_name == "sigaddset";
-            }
-        }
-        false
+    /// A sigaction() that installs a handler with nothing added to sa_mask.
+    fn report_unmasked_sigaction(&self, node: &Node, violations: &mut Vec<RuleViolation>) {
+        violations.push(RuleViolation {
+            rule_id: self.rule_id().to_string(),
+            severity: Severity::Medium,
+            message: "sigaction() call detected without apparent signal masking. Ensure sa_mask is properly configured with sigaddset() before calling sigaction().".to_string(),
+            file_path: String::new(),
+            line: node.start_position().row + 1,
+            column: node.start_position().column + 1,
+            suggestion: Some(
+                "Use sigemptyset() and sigaddset() to configure sa_mask before calling sigaction() to prevent race conditions in signal handlers."
+                    .to_string(),
+            ),
+            ..Default::default()
+        });
     }
 }
 
@@ -189,10 +117,36 @@ impl CertRule for Sig00C {
 
 impl Sig00C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check for signal() and sigaction() calls
+        // Only a call that installs a handler is in scope: signal(SIGPIPE,
+        // SIG_IGN) masks nothing because nothing runs. The resolver ties each
+        // registration to the signal()/sigaction() call that performs it, and
+        // knows the mask of the struct sigaction that call is given.
+        let registrations = RegisteredHandlers::collect(node, source).registrations;
+        let mut signal_sites = HashSet::new();
+        let mut sigaction_masked: HashMap<(usize, usize), bool> = HashMap::new();
+        for r in &registrations {
+            let site = (r.api_line, r.api_column);
+            match r.kind {
+                RegistrationKind::Signal => {
+                    signal_sites.insert(site);
+                }
+                RegistrationKind::Sigaction { .. } => {
+                    let masked = sigaction_masked.entry(site).or_insert(true);
+                    *masked &= !r.mask.is_empty();
+                }
+                _ => {}
+            }
+        }
         for call in query::find_descendants_of_kind(*node, "call_expression") {
-            self.check_signal_call(&call, source, violations);
-            self.check_sigaction_call(&call, source, violations);
+            let site = (
+                call.start_position().row + 1,
+                call.start_position().column + 1,
+            );
+            if signal_sites.contains(&site) {
+                self.check_signal_call(&call, source, violations);
+            } else if sigaction_masked.get(&site) == Some(&false) {
+                self.report_unmasked_sigaction(&call, violations);
+            }
         }
     }
 }

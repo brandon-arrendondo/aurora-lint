@@ -30,6 +30,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::signal_handlers::RegisteredHandlers;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -71,67 +72,11 @@ impl CertRule for Sig30C {
 }
 
 impl Sig30C {
-    /// Find all function names registered as signal handlers
+    /// Every function this translation unit registers as a signal handler,
+    /// through `signal()` or `sigaction()` (`sa_handler`/`sa_sigaction`),
+    /// resolved by declaration (see [`RegisteredHandlers`]).
     fn find_signal_handlers(&self, node: &Node, source: &str) -> HashSet<String> {
-        let mut handlers = HashSet::new();
-        self.collect_handlers(node, source, &mut handlers);
-        handlers
-    }
-
-    fn collect_handlers(&self, node: &Node, source: &str, handlers: &mut HashSet<String>) {
-        // Look for signal(SIGXXX, handler_func) calls
-        for call in query::find_descendants_of_kind(*node, "call_expression") {
-            if let Some(function) = call.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-
-                if func_name == "signal" || func_name == "sigaction" {
-                    // Get the handler function name (second argument for signal())
-                    if let Some(args) = call.child_by_field_name("arguments") {
-                        let arg_list = self.get_arguments(&args, source);
-
-                        // For signal(sig, handler), handler is second arg
-                        if func_name == "signal" && arg_list.len() >= 2 {
-                            let handler_name = arg_list[1].trim();
-                            // Skip SIG_IGN, SIG_DFL, SIG_ERR, NULL
-                            if !handler_name.starts_with("SIG_")
-                                && handler_name != "NULL"
-                                && handler_name != "0"
-                                && !handler_name.is_empty()
-                            {
-                                handlers.insert(handler_name.to_string());
-                            }
-                        }
-
-                        // For sigaction, handler is in sa_sigaction field
-                        if func_name == "sigaction" && arg_list.len() >= 2 {
-                            // Extract handler from struct (this is simplified)
-                            let second_arg = arg_list[1].trim();
-                            if second_arg.starts_with("&") {
-                                // Often &sa where sa.sa_handler = handler_func
-                                // We'd need more complex parsing for this
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Get argument strings from an argument_list node
-    fn get_arguments(&self, args_node: &Node, source: &str) -> Vec<String> {
-        let mut arguments = Vec::new();
-
-        for i in 0..args_node.child_count() {
-            if let Some(child) = args_node.child(i) {
-                let kind = child.kind();
-                if kind != "," && kind != "(" && kind != ")" {
-                    let arg_text = get_node_text(&child, source).to_string();
-                    arguments.push(arg_text);
-                }
-            }
-        }
-
-        arguments
+        RegisteredHandlers::collect(node, source).signal_handler_names()
     }
 
     fn check_node(
