@@ -87,7 +87,10 @@ impl Exp30C {
             }
 
             // Find variables that are both modified and read
-            let conflicts: Vec<_> = modified_vars.intersection(&read_vars).collect();
+            // Sorted: the sets' iteration order varies run to run, and the
+            // message names every conflict.
+            let mut conflicts: Vec<_> = modified_vars.intersection(&read_vars).collect();
+            conflicts.sort();
 
             if !conflicts.is_empty() {
                 violations.push(RuleViolation {
