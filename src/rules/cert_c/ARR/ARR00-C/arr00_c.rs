@@ -1228,10 +1228,14 @@ fn check_loop_array_access(node: &Node, source: &str) -> Option<RuleViolation> {
     let preceding_text = &sanitized_function_text
         [..(loop_position - function_start).min(sanitized_function_text.len())];
 
-    // Check if bound_var is a function parameter - if so, it's the caller's responsibility
-    if is_function_parameter(&function_node, &bound_var, source) {
-        return None; // Function parameters are assumed to be valid
-    }
+    // A parameter is not assumed valid: what its callers pass is a proof only
+    // over a closed caller set, and this check does not ask for one
+    // (ADR-0011), so one overwritten by input is judged like any other
+    // variable. It is never uninitialized, though -- each parameter is
+    // initialized to its argument's value on entry (C11 6.9.1p10) -- so the
+    // text heuristic below, which would read its declaration in the
+    // signature as an uninitialized local, is not asked about it.
+    let is_parameter = is_function_parameter(&function_node, &bound_var, source);
 
     // Check for scanf/fscanf reading into the bound variable
     if is_user_input_variable(&bound_var, preceding_text) {
@@ -1257,7 +1261,7 @@ fn check_loop_array_access(node: &Node, source: &str) -> Option<RuleViolation> {
         }
     }
     // Check if the variable is uninitialized
-    else if is_uninitialized_variable(&bound_var, preceding_text) {
+    else if !is_parameter && is_uninitialized_variable(&bound_var, preceding_text) {
         let start_point = node.start_position();
         return Some(RuleViolation {
             rule_id: "ARR00-C".to_string(),
@@ -1371,14 +1375,6 @@ fn check_subscript_bounds(node: &Node, source: &str) -> Option<RuleViolation> {
 
     // Check if this is a function parameter (indicates it comes from caller without validation)
     if is_function_parameter(&function_node, index_var, source) {
-        // Static functions whose index param is a user-defined type (e.g. an enum typedef
-        // like led_id_t) have a closed caller set with enum-constrained index values.
-        // Requiring runtime bounds checks there produces FPs for enum-indexed arrays.
-        if is_static_function(&function_node, source)
-            && is_user_defined_param_type(&function_node, index_var, source)
-        {
-            return None;
-        }
         // Check if there's bounds validation before this subscript
         if !has_bounds_validation(index_var, preceding_text) {
             let start_point = node.start_position();
@@ -1425,101 +1421,6 @@ fn check_subscript_bounds(node: &Node, source: &str) -> Option<RuleViolation> {
     }
 
     None
-}
-
-/// Returns true if the named parameter of `func_node` is declared with a non-primitive
-/// (user-defined) type such as an enum typedef (e.g., `led_id_t`).
-fn is_user_defined_param_type(func_node: &Node, param_name: &str, source: &str) -> bool {
-    let primitive_types = [
-        "int",
-        "long",
-        "short",
-        "char",
-        "float",
-        "double",
-        "void",
-        "signed",
-        "unsigned",
-        "size_t",
-        "ssize_t",
-        "ptrdiff_t",
-        "intptr_t",
-        "uintptr_t",
-        "bool",
-        "_Bool",
-        "int8_t",
-        "int16_t",
-        "int32_t",
-        "int64_t",
-        "uint8_t",
-        "uint16_t",
-        "uint32_t",
-        "uint64_t",
-    ];
-    if let Some(declarator) = func_node.child_by_field_name("declarator") {
-        if let Some(param_list) = find_parameter_list_node(&declarator) {
-            for i in 0..param_list.child_count() {
-                if let Some(param) = param_list.child(i) {
-                    if param.kind() != "parameter_declaration" {
-                        continue;
-                    }
-                    let param_text = &source[param.start_byte()..param.end_byte()];
-                    if !param_text.contains(param_name) {
-                        continue;
-                    }
-                    if let Some(type_node) = param.child_by_field_name("type") {
-                        let type_text = &source[type_node.start_byte()..type_node.end_byte()];
-                        let stripped = type_text
-                            .replace("const", "")
-                            .replace("volatile", "")
-                            .replace("restrict", "")
-                            .replace("struct", "")
-                            .replace("union", "")
-                            .replace("enum", "");
-                        let stripped = stripped.trim();
-                        return !primitive_types.contains(&stripped);
-                    }
-                }
-            }
-        }
-    }
-    false
-}
-
-fn find_parameter_list_node<'a>(node: &Node<'a>) -> Option<Node<'a>> {
-    if node.kind() == "parameter_list" {
-        return Some(*node);
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if let Some(found) = find_parameter_list_node(&child) {
-                return Some(found);
-            }
-        }
-    }
-    None
-}
-
-/// Returns true if `function_node` is declared `static` or uses a STATIC macro prefix.
-fn is_static_function(function_node: &Node, source: &str) -> bool {
-    for i in 0..function_node.child_count() {
-        if let Some(child) = function_node.child(i) {
-            if child.kind() == "storage_class_specifier" {
-                if &source[child.start_byte()..child.end_byte()] == "static" {
-                    return true;
-                }
-            }
-        }
-    }
-    // Also match project-specific STATIC macros (e.g., STATIC, LIN_STATIC_INLINE).
-    // Sanitized so an inline comment in the signature (e.g. `void /* STATIC */ foo(...)`)
-    // can't spoof this into treating a non-static function as static, which
-    // would suppress a real unvalidated-index violation downstream.
-    let sanitized_func_text = get_sanitized_node_text(function_node, source);
-    let before_paren = sanitized_func_text.split('(').next().unwrap_or("");
-    before_paren
-        .split_whitespace()
-        .any(|tok| tok.contains("STATIC"))
 }
 
 fn check_uninitialized_array_read(node: &Node, source: &str) -> Option<RuleViolation> {

@@ -1684,8 +1684,12 @@ impl Arr30C {
 
     /// Returns true if the named parameter of `func_node` is declared with a
     /// non-primitive (user-defined) type such as an enum typedef.
-    /// Used to suppress ARR30-C for static functions whose index parameters are
-    /// enum values — those are controlled by definition (e.g., `led_id_t`).
+    ///
+    /// Used only to route such a parameter of a static function in
+    /// `is_subscript_violation` to the buffer-bound check rather than the
+    /// parameter-guard text match, which accepts any `if` naming the
+    /// parameter. It proves nothing about the value: a C enum constrains
+    /// nothing (ADR-0011).
     fn param_has_user_defined_type(func_node: &Node, param_name: &str, source: &str) -> bool {
         let primitive_types = [
             "int",
@@ -2681,14 +2685,6 @@ impl Arr30C {
         };
         let func_node = find_containing_function(node)?;
         if !self.is_function_parameter_any_return(&func_node, var, source) {
-            return None;
-        }
-        // Static functions whose index param is a user-defined type (e.g. an
-        // enum typedef like led_id_t) have a controlled caller set and
-        // enum-constrained values — suppress to avoid FPs.
-        if Self::is_static_function(&func_node, source)
-            && Self::param_has_user_defined_type(&func_node, var, source)
-        {
             return None;
         }
         if self.has_function_parameter_bounds_check(&func_node, var, source) {
