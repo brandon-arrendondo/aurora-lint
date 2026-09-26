@@ -1,7 +1,6 @@
 /*
- * Header-declared on purpose: the validate-then-act split only needs a
- * cross-file declaration when the two halves live in different translation
- * units, which is exactly the case the project-wide summary exists for.
+ * Header-declared on purpose: a declaration other translation units can see
+ * is what makes `invoke_inject` exported, and its caller set open.
  */
 #ifndef INVOKE_H
 #define INVOKE_H

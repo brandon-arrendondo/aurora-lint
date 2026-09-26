@@ -1,8 +1,20 @@
-/* The command reaches system() as a parameter, so whether it is flagged
- * depends on every caller up the chain. */
+/* The command reaches system() as a parameter of a static function, so
+ * whether it is flagged depends on every caller up the chain. Its only
+ * caller is a static whose name other.c also defines static; this one
+ * passes the environment through. */
 #include <stdlib.h>
 
-void sink(char *cmd)
+static void sink(char *cmd)
 {
     system(cmd);
+}
+
+static void run(void)
+{
+    sink(getenv("CMD"));
+}
+
+void entry(void)
+{
+    run();
 }

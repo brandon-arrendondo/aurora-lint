@@ -1589,8 +1589,12 @@ fn arr30_unvalidated_index_flagged_without_d_flag() {
     );
 }
 
+/// `invoke_inject` is exported (declared in a header, not `static`), so its
+/// caller set is open: a caller outside the project can pass any index. The
+/// range check its one in-tree caller makes is not proof about the parameter
+/// (ADR-0011), and the unchecked index is still reported with `-d`.
 #[test]
-fn arr30_unvalidated_index_suppressed_by_crossfile_caller() {
+fn arr30_exported_callee_is_not_proven_by_a_crossfile_caller() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
     let (code, _, _) = run_aurora_lint(&[
@@ -1612,9 +1616,9 @@ fn arr30_unvalidated_index_suppressed_by_crossfile_caller() {
 
     let findings = unvalidated_index_findings(&out);
     assert!(
-        findings.is_empty(),
-        "decode_inject range-checks index before the call; with -d the \
-         project-wide summary should reach across the file boundary (got: {:?})",
+        findings.iter().any(|m| m.contains("index")),
+        "an exported callee's caller-side range check is not proof: \
+         invoke_inject's index must still be flagged with -d (got: {:?})",
         findings
     );
 }
@@ -1745,10 +1749,13 @@ fn env33_sink_lines(project: &str) -> Vec<u64> {
         .collect()
 }
 
-/// A callers walk that climbs from sink() to a `static` caller in another
-/// file reads that caller's own summary, even though a third file defines an
-/// unrelated static of the same name. Its caller is clean, so sink() is not
-/// flagged -- and the other file's `getenv` does not count against it.
+/// A callers walk that climbs from the static sink() to its `static` caller
+/// reads that caller's own summary, even though another file defines an
+/// unrelated static of the same name. Its caller is clean and the chain is
+/// closed (every function on it is `static` or declares no parameters), so
+/// sink() is not flagged -- and the other file's `getenv` does not count
+/// against it. The chain stays in one file because a cross-file caller has
+/// external linkage, and an open caller set proves nothing (ADR-0011).
 #[test]
 fn callers_walk_reads_the_static_caller_it_reached() {
     assert_eq!(
@@ -1762,7 +1769,7 @@ fn callers_walk_reads_the_static_caller_it_reached() {
 /// definition, or pooled both, could not tell these two projects apart.
 #[test]
 fn callers_walk_does_not_borrow_a_same_named_static() {
-    assert_eq!(env33_sink_lines("crossfile_static_caller_tainted"), vec![7]);
+    assert_eq!(env33_sink_lines("crossfile_static_caller_tainted"), vec![9]);
 }
 
 /// A global's only writer is a `static` in another file whose name a third
