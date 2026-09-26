@@ -62,4 +62,4 @@ outlive any one task.
 - [0014 — The oracle is a CERT C oracle, independent of the tool; TP, FP, FN and TN come from
   pairing it with a run](0014-the-oracle-is-independent-of-the-tool.md)
 - [0015 — Policy and environment are separate settings; `default` and `strict`
-  are presets over them](0015-default-and-strict-profiles.md) (PROPOSED)
+  are presets over them](0015-default-and-strict-profiles.md)
