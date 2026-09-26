@@ -4,8 +4,8 @@
  * Status: PASS - the loop stores its elements into an object reached through
  *         a pointer; that object's own release routine frees them.
  *
- * valkey's client argv and hostap's per-interface bss array, reduced
- * (aurora_lint 1494). The function filling the array is not its owner.
+ * Reduced from a client argv array and a per-interface bss array in two
+ * real-world corpora. The function filling the array is not its owner.
  */
 
 #include <stdlib.h>
