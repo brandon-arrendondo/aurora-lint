@@ -8,18 +8,22 @@ use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct DCL19C {
     header_declared: RefCell<Arc<HashSet<String>>>,
+    /// `ProjectContext::callers`: who calls each function, across every
+    /// scanned file.
+    callers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
 }
 
 impl DCL19C {
     pub fn new() -> Self {
         Self {
             header_declared: RefCell::new(Arc::new(HashSet::new())),
+            callers: RefCell::new(Arc::new(HashMap::new())),
         }
     }
 }
@@ -47,6 +51,7 @@ impl CertRule for DCL19C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.header_declared.borrow_mut() = context.header_declared_functions.clone();
+        *self.callers.borrow_mut() = context.callers.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -82,19 +87,43 @@ impl CertRule for DCL19C {
             }
 
             // Check: if a function is defined (non-static) AND called within same file,
-            // it should be static — UNLESS it's declared in a header (public API)
+            // it should be static — UNLESS it's declared in a header (public API),
+            // or a function defined in another scanned file calls it, which
+            // `static` would break. A caller outside the scanned source
+            // (a library's user, a plugin) is beyond what the scan can see,
+            // so the message says what was checked rather than claiming the
+            // function is used nowhere else.
             let header_funcs = self.header_declared.borrow();
+            let callers = self.callers.borrow();
+            // Every function this file defines, at any depth (inside `#if`
+            // blocks too) and whatever its declarator shape, so a caller is
+            // only taken to be another file's when this file defines no
+            // function of that name.
+            let defined_here: HashSet<&str> =
+                query::find_descendants_of_kind(*node, "function_definition")
+                    .iter()
+                    .filter_map(|f| crate::analyze::cfg::get_function_name(f, source))
+                    .collect();
+            let called_from_another_file = |name: &str| {
+                callers.get(name).is_some_and(|cs| {
+                    cs.iter().any(|c| {
+                        let bare = c.split_once('\0').map_or(c.as_str(), |(_, n)| n);
+                        !defined_here.contains(bare)
+                    })
+                })
+            };
             for (func_name, (func_node, is_static)) in &defined_functions {
                 if !is_static
                     && called_functions.contains(func_name.as_str())
                     && !header_funcs.contains(func_name.as_str())
+                    && !called_from_another_file(func_name)
                 {
                     let start = func_node.start_position();
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
                         file_path: String::new(),
                         message: format!(
-                            "Function '{}' is only used within this file. It should be declared static to minimize scope.",
+                            "Function '{}' is called in this file, and no header declares it and no other scanned file calls it. If nothing outside the scanned source uses it, declare it static to minimize scope.",
                             func_name
                         ),
                         line: start.row + 1,
