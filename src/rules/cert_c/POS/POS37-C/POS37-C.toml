@@ -32,4 +32,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS37-C.+Ensure+that+privilege+relinquishment+is+successful"
-cwe = ["CWE-273"]
+cwe = []
+related_cwe = ["CWE-273"]

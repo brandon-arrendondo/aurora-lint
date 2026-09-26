@@ -22,4 +22,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT33-C.+Ensure+that+division+and+remainder+operations+do+not+result+in+divide-by-zero+errors"
-cwe = ["CWE-369", "CWE-682"]
+cwe = ["CWE-369"]
+related_cwe = ["CWE-682"]

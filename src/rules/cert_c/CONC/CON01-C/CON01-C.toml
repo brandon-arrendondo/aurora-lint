@@ -34,3 +34,4 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/CON01-C.+Acquire+and+release+synchronization+primitives+in+the+same+module%2C+at+the+same+level+of+abstraction"
+cwe = ["CWE-667", "CWE-832"]

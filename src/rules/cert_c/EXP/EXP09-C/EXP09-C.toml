@@ -26,4 +26,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP09-C.+Use+sizeof+to+determine+the+size+of+a+type+or+variable"
-cwe = ["CWE-805"]
+cwe = ["CWE-121", "CWE-122"]
+related_cwe = ["CWE-805"]

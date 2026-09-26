@@ -23,4 +23,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT36-C.+Converting+a+pointer+to+integer+or+integer+to+pointer"
-cwe = ["CWE-587", "CWE-704", "CWE-758", "CWE-119", "CWE-466"]
+cwe = ["CWE-587"]
+related_cwe = ["CWE-119", "CWE-466", "CWE-704", "CWE-758"]

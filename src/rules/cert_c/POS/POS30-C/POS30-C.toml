@@ -23,4 +23,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS30-C.+Use+the+readlink%28%29+function+properly"
-cwe = ["CWE-170"]
+cwe = []
+related_cwe = ["CWE-170"]

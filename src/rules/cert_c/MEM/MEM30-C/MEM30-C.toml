@@ -29,4 +29,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM30-C.+Do+not+access+freed+memory"
-cwe = ["CWE-416", "CWE-672", "CWE-666", "CWE-758", "CWE-415", "CWE-456"]
+cwe = ["CWE-415", "CWE-416"]
+related_cwe = ["CWE-666", "CWE-672", "CWE-758"]

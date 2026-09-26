@@ -28,4 +28,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/STR34-C.+Cast+characters+to+unsigned+char+before+converting+to+larger+integer+sizes"
-cwe = ["CWE-704"]
+cwe = []
+related_cwe = ["CWE-704"]

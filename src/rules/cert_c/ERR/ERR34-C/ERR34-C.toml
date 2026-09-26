@@ -39,5 +39,6 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ERR34-C.+Detect+errors+when+converting+a+string+to+a+number"
-cwe = ["CWE-676", "CWE-758", "CWE-20", "CWE-391"]
+cwe = ["CWE-391", "CWE-464"]
+related_cwe = ["CWE-676", "CWE-758"]
 related = ["ERR07-C"]

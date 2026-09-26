@@ -34,4 +34,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/SIG31-C.+Do+not+access+shared+objects+in+signal+handlers"
-cwe = ["CWE-364", "CWE-662", "CWE-828"]
+cwe = ["CWE-364"]
+related_cwe = ["CWE-662", "CWE-828"]

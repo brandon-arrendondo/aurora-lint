@@ -36,3 +36,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/CON32-C.+Prevent+data+races+when+accessing+bit-fields+from+multiple+threads"
+cwe = []
+related_cwe = ["CWE-366"]

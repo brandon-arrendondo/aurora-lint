@@ -28,4 +28,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP16-C.+Do+not+compare+function+pointers+to+constant+values"
-cwe = ["CWE-480", "CWE-482"]
+cwe = ["CWE-480"]
+related_cwe = ["CWE-482"]

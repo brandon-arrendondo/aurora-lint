@@ -23,4 +23,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP33-C.+Do+not+read+uninitialized+memory"
-cwe = ["CWE-456", "CWE-457", "CWE-758", "CWE-908", "CWE-119", "CWE-676", "CWE-665", "CWE-123", "CWE-824"]
+cwe = ["CWE-457", "CWE-665", "CWE-758"]
+related_cwe = ["CWE-456", "CWE-908"]

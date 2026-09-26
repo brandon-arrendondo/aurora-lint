@@ -28,4 +28,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/WIN04-C.+Consider+encrypting+function+pointers"
-cwe = ["CWE-311", "CWE-319"]
+cwe = []
+related_cwe = ["CWE-311", "CWE-319"]

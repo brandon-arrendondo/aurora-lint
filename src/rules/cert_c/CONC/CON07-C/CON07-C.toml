@@ -120,4 +120,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/CON07-C.+Ensure+that+compound+operations+on+shared+variables+are+atomic"
-cwe = ["CWE-366", "CWE-413", "CWE-567", "CWE-667"]
+cwe = ["CWE-366"]
+related_cwe = ["CWE-667"]

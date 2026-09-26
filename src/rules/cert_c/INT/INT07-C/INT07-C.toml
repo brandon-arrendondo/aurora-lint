@@ -31,4 +31,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT07-C.+Use+only+explicitly+signed+or+unsigned+char+type+for+numeric+values"
-cwe = ["CWE-682"]
+cwe = []
+related_cwe = ["CWE-682"]

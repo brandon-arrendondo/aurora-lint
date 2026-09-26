@@ -34,4 +34,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS48-C.+Do+not+unlock+or+destroy+another+POSIX+thread%27s+mutex"
-cwe = ["CWE-667"]
+cwe = []
+related_cwe = ["CWE-667"]

@@ -25,4 +25,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM31-C.+Free+dynamically+allocated+memory+when+no+longer+needed"
-cwe = ["CWE-401", "CWE-404", "CWE-459", "CWE-771", "CWE-772"]
+cwe = ["CWE-401"]
+related_cwe = ["CWE-404", "CWE-415", "CWE-459", "CWE-771", "CWE-772"]

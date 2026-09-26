@@ -24,4 +24,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP02-C.+Be+aware+of+the+short-circuit+behavior+of+the+logical+AND+and+OR+operators"
-cwe = ["CWE-768"]
+cwe = []
+related_cwe = ["CWE-768"]

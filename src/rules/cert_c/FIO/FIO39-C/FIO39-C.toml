@@ -24,4 +24,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO39-C.+Do+not+alternately+input+and+output+from+a+stream+without+an+intervening+flush+or+positioning+call"
-cwe = ["CWE-664"]
+cwe = []
+related_cwe = ["CWE-664"]

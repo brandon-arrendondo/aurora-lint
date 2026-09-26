@@ -34,4 +34,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM07-C.+Ensure+that+the+arguments+to+calloc%28%29%2C+when+multiplied%2C+do+not+wrap"
-cwe = ["CWE-190", "CWE-128"]
+cwe = []
+related_cwe = ["CWE-128", "CWE-190"]

@@ -27,4 +27,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS52-C.+Do+not+perform+operations+that+can+block+while+holding+a+POSIX+lock"
-cwe = ["CWE-557"]
+cwe = []
+related_cwe = ["CWE-557"]

@@ -157,4 +157,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/CON08-C.+Do+not+assume+that+a+group+of+calls+to+independently+atomic+methods+is+atomic"
-cwe = ["CWE-362", "CWE-366", "CWE-662"]
+cwe = []
+related_cwe = ["CWE-362", "CWE-662"]

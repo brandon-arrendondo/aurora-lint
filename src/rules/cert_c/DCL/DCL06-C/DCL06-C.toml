@@ -36,4 +36,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/DCL06-C.+Use+meaningful+symbolic+constants+to+represent+literal+values"
-cwe = ["CWE-547"]
+cwe = []
+related_cwe = ["CWE-547"]

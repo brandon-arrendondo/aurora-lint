@@ -25,4 +25,4 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/WIN00-C.+Be+specific+when+dynamically+loading+libraries"
-cwe = ["CWE-272", "CWE-428"]
+cwe = ["CWE-272"]

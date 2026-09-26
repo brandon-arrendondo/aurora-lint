@@ -40,4 +40,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO30-C.+Exclude+user+input+from+format+strings"
-cwe = ["CWE-134", "CWE-20"]
+cwe = ["CWE-134"]
+related_cwe = ["CWE-20"]

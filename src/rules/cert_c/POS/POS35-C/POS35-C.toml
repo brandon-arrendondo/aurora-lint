@@ -24,4 +24,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS35-C.+Avoid+race+conditions+while+checking+for+the+existence+of+a+symbolic+link"
-cwe = ["CWE-363", "CWE-764"]
+cwe = []
+related_cwe = ["CWE-363"]

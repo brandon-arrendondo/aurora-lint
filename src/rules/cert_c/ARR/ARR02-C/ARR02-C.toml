@@ -23,4 +23,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ARR02-C.+Explicitly+specify+array+bounds%2C+even+if+implicitly+defined+by+an+initializer"
-cwe = ["CWE-665"]
+cwe = []
+related_cwe = ["CWE-665"]

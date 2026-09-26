@@ -28,4 +28,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO24-C.+Do+not+open+a+file+that+is+already+open"
-cwe = ["CWE-362", "CWE-675"]
+cwe = []
+related_cwe = ["CWE-362", "CWE-675"]

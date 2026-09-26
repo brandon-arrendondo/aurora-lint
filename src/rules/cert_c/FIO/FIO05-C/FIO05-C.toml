@@ -27,4 +27,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO05-C.+Identify+files+using+multiple+file+attributes"
-cwe = ["CWE-37", "CWE-38", "CWE-39", "CWE-62", "CWE-64", "CWE-65"]
+cwe = []
+related_cwe = ["CWE-37", "CWE-38", "CWE-39", "CWE-62", "CWE-64", "CWE-65"]

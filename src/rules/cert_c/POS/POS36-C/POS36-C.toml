@@ -29,4 +29,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS36-C.+Observe+correct+revocation+order+while+relinquishing+privileges"
-cwe = ["CWE-696"]
+cwe = []
+related_cwe = ["CWE-696"]

@@ -26,4 +26,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT30-C.+Ensure+that+unsigned+integer+operations+do+not+wrap"
-cwe = ["CWE-190", "CWE-131", "CWE-191", "CWE-680"]
+cwe = ["CWE-190", "CWE-191", "CWE-680"]
+related_cwe = ["CWE-131"]

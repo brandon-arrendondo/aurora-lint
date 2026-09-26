@@ -24,4 +24,4 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM34-C.+Only+free+memory+allocated+dynamically"
-cwe = ["CWE-590"]
+cwe = ["CWE-590", "CWE-761"]

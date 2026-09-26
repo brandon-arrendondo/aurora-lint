@@ -25,3 +25,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP00-C.+Use+parentheses+for+precedence+of+operation"
+cwe = []
+related_cwe = ["CWE-783"]

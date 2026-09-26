@@ -33,4 +33,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO32-C.+Do+not+perform+operations+on+devices+that+are+only+appropriate+for+files"
-cwe = ["CWE-67"]
+cwe = []
+related_cwe = ["CWE-67"]

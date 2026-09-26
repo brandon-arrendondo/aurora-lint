@@ -31,4 +31,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS34-C.+Do+not+call+putenv%28%29+with+a+pointer+to+an+automatic+variable+as+the+argument"
-cwe = ["CWE-252", "CWE-253", "CWE-391"]
+cwe = []
+related_cwe = ["CWE-562", "CWE-686"]

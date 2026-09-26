@@ -26,4 +26,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO42-C.+Close+files+when+they+are+no+longer+needed"
-cwe = ["CWE-404", "CWE-459", "CWE-772", "CWE-773", "CWE-775", "CWE-403", "CWE-771"]
+cwe = ["CWE-404", "CWE-773", "CWE-775"]
+related_cwe = ["CWE-403", "CWE-459", "CWE-771", "CWE-772"]

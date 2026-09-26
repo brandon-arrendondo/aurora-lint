@@ -27,4 +27,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM06-C.+Ensure+that+sensitive+data+is+not+written+out+to+disk"
-cwe = ["CWE-591", "CWE-528"]
+cwe = ["CWE-591"]
+related_cwe = ["CWE-528"]

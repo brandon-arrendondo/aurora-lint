@@ -33,4 +33,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS01-C.+Check+for+the+existence+of+links+when+dealing+with+files"
-cwe = ["CWE-59", "CWE-362", "CWE-367"]
+cwe = []
+related_cwe = ["CWE-59", "CWE-362", "CWE-367"]

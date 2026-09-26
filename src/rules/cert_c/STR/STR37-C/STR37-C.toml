@@ -22,4 +22,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/STR37-C.+Arguments+to+character-handling+functions+must+be+representable+as+an+unsigned+char"
-cwe = ["CWE-704", "CWE-686", "CWE-683"]
+cwe = []
+related_cwe = ["CWE-686", "CWE-704"]

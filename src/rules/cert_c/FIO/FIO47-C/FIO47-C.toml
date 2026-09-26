@@ -23,4 +23,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO47-C.+Use+valid+format+strings"
-cwe = ["CWE-686", "CWE-685", "CWE-134"]
+cwe = ["CWE-685", "CWE-688"]
+related_cwe = ["CWE-134", "CWE-686"]

@@ -34,4 +34,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS02-C.+Follow+the+principle+of+least+privilege"
-cwe = ["CWE-250", "CWE-272"]
+cwe = []
+related_cwe = ["CWE-250", "CWE-272"]

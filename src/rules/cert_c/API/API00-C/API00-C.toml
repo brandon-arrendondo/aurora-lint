@@ -32,4 +32,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/API00-C.+Functions+should+validate+their+parameters"
-cwe = ["CWE-20", "CWE-476"]
+cwe = []
+related_cwe = ["CWE-20", "CWE-476"]

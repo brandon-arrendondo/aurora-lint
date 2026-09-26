@@ -27,4 +27,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ERR30-C.+Take+care+when+reading+errno"
-cwe = ["CWE-456", "CWE-248"]
+cwe = []
+related_cwe = ["CWE-456"]

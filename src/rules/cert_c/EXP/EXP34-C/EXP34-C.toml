@@ -28,4 +28,4 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP34-C.+Do+not+dereference+null+pointers"
-cwe = ["CWE-476", "CWE-690", "CWE-252"]
+cwe = ["CWE-476", "CWE-690"]

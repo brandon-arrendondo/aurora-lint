@@ -33,4 +33,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM35-C.+Allocate+sufficient+memory+for+an+object"
-cwe = ["CWE-131", "CWE-680", "CWE-789", "CWE-467", "CWE-120"]
+cwe = ["CWE-121", "CWE-122", "CWE-467", "CWE-680"]
+related_cwe = ["CWE-131", "CWE-190", "CWE-789"]

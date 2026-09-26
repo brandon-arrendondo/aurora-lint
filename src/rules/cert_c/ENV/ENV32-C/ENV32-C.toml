@@ -36,4 +36,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ENV32-C.+All+exit+handlers+must+return+normally"
-cwe = ["CWE-705"]
+cwe = []
+related_cwe = ["CWE-705"]

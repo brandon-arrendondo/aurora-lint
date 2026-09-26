@@ -32,4 +32,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/CON06-C.+Ensure+that+every+mutex+outlives+the+data+it+protects"
-cwe = ["CWE-667"]
+cwe = []
+related_cwe = ["CWE-667"]

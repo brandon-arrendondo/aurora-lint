@@ -2,8 +2,16 @@
 """
 Generate a mapping between CERT C rule IDs and CWE IDs from TOML metadata.
 
-Walks src/rules/cert_c/**/*.toml, extracts [metadata].id and [references].cwe,
-and produces data/rule_cwe_map.json with both forward and reverse mappings.
+Walks src/rules/cert_c/**/*.toml, extracts [metadata].id and its two CWE
+lists, and produces data/rule_cwe_map.json with forward and reverse mappings.
+
+- [references].cwe: CWEs whose Juliet test cases exercise what the rule checks
+  (ADR-0013 Decision 3). Only these drive Juliet CWE-matched scoring and the
+  per-CWE fast-mode manifests.
+- [references].related_cwe: CWEs the guideline's CERT page or cwe.mitre.org
+  relates to the rule, not verified against Juliet. Informational only.
+
+A CWE may appear in one list or the other, never both.
 """
 
 import json
@@ -17,10 +25,25 @@ except ModuleNotFoundError:
     import tomli as tomllib  # Python < 3.11
 
 
+def _normalize(cwes: list[str]) -> list[str]:
+    """Normalize CWE IDs to "CWE-NNN" ("CWE190" becomes "CWE-190")."""
+    normalized = []
+    for cwe in cwes:
+        cwe = cwe.strip()
+        if cwe.startswith("CWE-"):
+            normalized.append(cwe)
+        elif cwe.startswith("CWE"):
+            normalized.append("CWE-" + cwe[3:])
+        else:
+            normalized.append(cwe)
+    return normalized
+
+
 def generate_map(project_dir: Path) -> dict:
     toml_dir = project_dir / "src" / "rules" / "cert_c"
     rule_to_cwes: dict[str, list[str]] = {}
     cwe_to_rules: dict[str, list[str]] = defaultdict(list)
+    rule_to_related: dict[str, list[str]] = {}
 
     toml_count = 0
     rules_with_cwe = 0
@@ -38,21 +61,17 @@ def generate_map(project_dir: Path) -> dict:
         if not rule_id:
             continue
 
-        cwes = data.get("references", {}).get("cwe", [])
-        if not cwes:
+        refs = data.get("references", {})
+        related = _normalize(refs.get("related_cwe", []))
+        normalized = _normalize(refs.get("cwe", []))
+        both = sorted(set(normalized) & set(related))
+        if both:
+            raise SystemExit(
+                f"{toml_path}: {', '.join(both)} in both cwe and related_cwe")
+        if related:
+            rule_to_related[rule_id] = related
+        if not normalized:
             continue
-
-        # Normalize CWE IDs: ensure "CWE-NNN" format
-        normalized = []
-        for cwe in cwes:
-            cwe = cwe.strip()
-            if cwe.startswith("CWE-"):
-                normalized.append(cwe)
-            elif cwe.startswith("CWE"):
-                # "CWE190" → "CWE-190"
-                normalized.append("CWE-" + cwe[3:])
-            else:
-                normalized.append(cwe)
 
         rule_to_cwes[rule_id] = normalized
         rules_with_cwe += 1
@@ -66,10 +85,12 @@ def generate_map(project_dir: Path) -> dict:
     return {
         "rule_to_cwes": dict(sorted(rule_to_cwes.items())),
         "cwe_to_rules": dict(sorted(cwe_to_rules.items())),
+        "rule_to_related_cwes": dict(sorted(rule_to_related.items())),
         "stats": {
             "toml_count": toml_count,
             "rules_with_cwe": rules_with_cwe,
             "unique_cwes": len(cwe_to_rules),
+            "rules_with_related_cwe": len(rule_to_related),
         },
     }
 
@@ -82,6 +103,13 @@ def generate_cwe_manifests(project_dir: Path, cwe_to_rules: dict[str, list[str]]
     """
     manifest_dir = project_dir / "rules_templates" / "cwe"
     manifest_dir.mkdir(parents=True, exist_ok=True)
+
+    # A CWE with no mapped rule left must lose its manifest, or fast mode keeps
+    # running the rules it used to map.
+    for stale in manifest_dir.glob("CWE-*.toml"):
+        if stale.stem not in cwe_to_rules and \
+                "CWE-focused manifest for" in stale.read_text():
+            stale.unlink()
 
     count = 0
     for cwe_id, rules in sorted(cwe_to_rules.items()):

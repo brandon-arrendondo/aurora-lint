@@ -35,4 +35,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM11-C.+Do+not+assume+infinite+heap+space"
-cwe = ["CWE-770"]
+cwe = []
+related_cwe = ["CWE-770"]

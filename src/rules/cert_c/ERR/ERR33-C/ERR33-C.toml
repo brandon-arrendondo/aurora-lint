@@ -30,5 +30,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ERR33-C.+Detect+and+handle+standard+library+errors"
-cwe = ["CWE-252", "CWE-253", "CWE-391"]
+cwe = ["CWE-252", "CWE-253", "CWE-390", "CWE-391", "CWE-690"]
 related = ["ERR00-C", "FLP32-C"]

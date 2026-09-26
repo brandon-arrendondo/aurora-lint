@@ -24,4 +24,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/SIG00-C.+Mask+signals+handled+by+noninterruptible+signal+handlers"
-cwe = ["CWE-662"]
+cwe = []
+related_cwe = ["CWE-432", "CWE-662"]

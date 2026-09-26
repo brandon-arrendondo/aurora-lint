@@ -27,4 +27,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT15-C.+Use+intmax_t+or+uintmax_t+for+formatted+IO+on+programmer-defined+integer+types"
-cwe = ["CWE-681"]
+cwe = []
+related_cwe = ["CWE-681"]

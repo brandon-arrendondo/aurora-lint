@@ -32,4 +32,5 @@ enabled = true
 
 [references]
 wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc09-c"
-cwe = ["CWE-116"]
+cwe = []
+related_cwe = ["CWE-116"]

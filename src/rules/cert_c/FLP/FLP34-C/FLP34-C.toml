@@ -24,4 +24,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FLP34-C.+Ensure+that+floating-point+conversions+are+within+range+of+the+new+type"
-cwe = ["CWE-681", "CWE-197", "CWE-195"]
+cwe = ["CWE-681"]
+related_cwe = ["CWE-197"]

@@ -31,4 +31,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/SIG34-C.+Do+not+call+signal%28%29+from+within+interruptible+signal+handlers"
-cwe = ["CWE-364", "CWE-479"]
+cwe = []
+related_cwe = ["CWE-479"]

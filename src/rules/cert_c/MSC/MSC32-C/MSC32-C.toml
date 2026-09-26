@@ -33,4 +33,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MSC32-C.+Properly+seed+pseudorandom+number+generators"
-cwe = ["CWE-327", "CWE-330", "CWE-331"]
+cwe = []
+related_cwe = ["CWE-327", "CWE-330", "CWE-331"]

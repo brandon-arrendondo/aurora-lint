@@ -32,4 +32,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ARR01-C.+Do+not+apply+the+sizeof+operator+to+a+pointer+when+taking+the+size+of+an+array"
-cwe = ["CWE-467", "CWE-569", "CWE-783"]
+cwe = []
+related_cwe = ["CWE-467", "CWE-569", "CWE-783"]

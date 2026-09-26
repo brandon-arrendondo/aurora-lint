@@ -31,4 +31,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MSC41-C.+Never+hard+code+sensitive+information"
-cwe = ["CWE-259", "CWE-798"]
+cwe = ["CWE-259", "CWE-321"]
+related_cwe = ["CWE-798"]

@@ -26,4 +26,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP46-C.+Do+not+use+a+bitwise+operator+with+a+Boolean-like+operand"
-cwe = ["CWE-480", "CWE-569"]
+cwe = ["CWE-476"]
+related_cwe = ["CWE-480", "CWE-569"]

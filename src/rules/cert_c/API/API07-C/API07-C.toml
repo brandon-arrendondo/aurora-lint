@@ -30,4 +30,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/API07-C.+Enforce+type+safety"
-cwe = ["CWE-192", "CWE-227", "CWE-590", "CWE-686", "CWE-704", "CWE-761", "CWE-762", "CWE-843"]
+cwe = ["CWE-843"]
+related_cwe = ["CWE-192", "CWE-227", "CWE-590", "CWE-686", "CWE-704", "CWE-761", "CWE-762"]

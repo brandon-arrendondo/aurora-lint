@@ -27,4 +27,5 @@ enabled = false
 
 [references]
 wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc18-c"
-cwe = ["CWE-259", "CWE-261", "CWE-311", "CWE-319", "CWE-321", "CWE-326", "CWE-798"]
+cwe = []
+related_cwe = ["CWE-259", "CWE-261", "CWE-311", "CWE-319", "CWE-321", "CWE-326", "CWE-798"]

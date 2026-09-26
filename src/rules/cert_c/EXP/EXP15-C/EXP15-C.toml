@@ -22,4 +22,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP15-C.+Do+not+place+a+semicolon+on+the+same+line+as+an+if%2C+for%2C+or+while+statement"
-cwe = ["CWE-480"]
+cwe = ["CWE-483"]
+related_cwe = ["CWE-480"]

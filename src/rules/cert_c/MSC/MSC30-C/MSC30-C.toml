@@ -27,4 +27,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MSC30-C.+Do+not+use+the+rand%28%29+function+for+generating+pseudorandom+numbers"
-cwe = ["CWE-327", "CWE-330", "CWE-338", "CWE-676"]
+cwe = ["CWE-338"]
+related_cwe = ["CWE-327", "CWE-330", "CWE-676"]

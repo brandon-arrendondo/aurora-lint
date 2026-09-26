@@ -29,4 +29,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP12-C.+Do+not+ignore+values+returned+by+functions"
-cwe = ["CWE-754"]
+cwe = ["CWE-252"]
+related_cwe = ["CWE-754"]

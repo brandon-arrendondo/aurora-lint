@@ -35,4 +35,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/CON40-C.+Do+not+refer+to+an+atomic+variable+twice+in+an+expression"
-cwe = ["CWE-366"]
+cwe = []
+related_cwe = ["CWE-366"]

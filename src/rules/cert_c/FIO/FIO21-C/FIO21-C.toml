@@ -30,4 +30,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO21-C.+Do+not+create+temporary+files+in+shared+directories"
-cwe = ["CWE-379"]
+cwe = ["CWE-377"]
+related_cwe = ["CWE-379"]

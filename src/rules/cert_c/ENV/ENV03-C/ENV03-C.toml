@@ -29,4 +29,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ENV03-C.+Sanitize+the+environment+when+invoking+external+programs"
-cwe = ["CWE-78", "CWE-88", "CWE-426", "CWE-471", "CWE-807"]
+cwe = ["CWE-78", "CWE-426"]
+related_cwe = ["CWE-88", "CWE-471", "CWE-807"]

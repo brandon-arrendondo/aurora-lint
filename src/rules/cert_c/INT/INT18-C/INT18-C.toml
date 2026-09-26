@@ -33,4 +33,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT18-C.+Evaluate+integer+expressions+in+a+larger+size+before+comparing+or+assigning+to+that+size"
-cwe = ["CWE-681", "CWE-190"]
+cwe = []
+related_cwe = ["CWE-190", "CWE-681"]

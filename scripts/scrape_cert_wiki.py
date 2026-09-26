@@ -745,12 +745,14 @@ def generate_toml_metadata(item: ItemMetadata, output_path: Path, force: bool = 
     # always preserved.
     existing_meta = {}
     existing_cwe = []
+    existing_related = []
     existing_enabled = False
     if output_path.exists():
         try:
             existing = tomllib.loads(output_path.read_text())
             existing_meta = existing.get("metadata", {})
             existing_cwe = existing.get("references", {}).get("cwe", [])
+            existing_related = existing.get("references", {}).get("related_cwe", [])
             existing_enabled = existing.get("rules", {}).get("cert_c", {}).get(item.id, {}).get("enabled", False)
         except Exception as e:
             print(f"    ⚠ Could not parse existing TOML for field-preservation merge: {e}")
@@ -766,10 +768,14 @@ def generate_toml_metadata(item: ItemMetadata, output_path: Path, force: bool = 
     level = preserved(item.level, "level") or "Unknown"
     cert_version = preserved(item.cert_version, "cert_version") or "Unknown"
     last_modified = preserved(item.last_modified, "last_modified") or "Unknown"
-    # Union rather than replace: CWE mappings drive Juliet CWE-matched rule
-    # selection, so a page's extraction returning a narrower set than a
-    # previous scrape found must never silently drop existing entries.
-    cwe = existing_cwe + [c for c in item.cwe if c not in existing_cwe]
+    # `cwe` holds only mappings verified against the Juliet test cases
+    # (ADR-0013 Decision 3); they drive Juliet CWE-matched scoring, and a
+    # page's CWE list is never evidence for one. So the scrape never writes
+    # `cwe`: the page's CWEs go to `related_cwe`, as a union so a narrower
+    # extraction can't drop an entry, and minus anything already verified.
+    cwe = list(existing_cwe)
+    related_cwe = [c for c in existing_related if c not in cwe]
+    related_cwe += [c for c in item.cwe if c not in cwe and c not in related_cwe]
 
     # Build TOML content manually for better control
     toml_lines = []
@@ -812,6 +818,9 @@ def generate_toml_metadata(item: ItemMetadata, output_path: Path, force: bool = 
         toml_lines.append(f"cwe = [{cwe_list}]")
     else:
         toml_lines.append("cwe = []")
+    if related_cwe:
+        related_list = ", ".join([f'"{c}"' for c in related_cwe])
+        toml_lines.append(f"related_cwe = [{related_list}]")
 
     toml_lines.append("")
 

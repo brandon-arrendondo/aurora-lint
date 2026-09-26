@@ -28,4 +28,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM04-C.+Beware+of+zero-length+allocations"
-cwe = ["CWE-687"]
+cwe = []
+related_cwe = ["CWE-687"]

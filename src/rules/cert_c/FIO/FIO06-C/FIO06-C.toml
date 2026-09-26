@@ -29,4 +29,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO06-C.+Create+files+with+appropriate+access+permissions"
-cwe = ["CWE-276", "CWE-279", "CWE-732"]
+cwe = []
+related_cwe = ["CWE-276", "CWE-279", "CWE-732"]

@@ -30,4 +30,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FLP06-C.+Convert+integers+to+floating+point+for+floating-point+operations"
-cwe = ["CWE-681", "CWE-682"]
+cwe = []
+related_cwe = ["CWE-681", "CWE-682"]

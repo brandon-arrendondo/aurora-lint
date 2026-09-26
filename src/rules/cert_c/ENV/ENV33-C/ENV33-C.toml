@@ -28,4 +28,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/pages/viewpage.action?pageId=87152177"
-cwe = ["CWE-88", "CWE-676", "CWE-78"]
+cwe = ["CWE-78", "CWE-426"]
+related_cwe = ["CWE-88", "CWE-676"]

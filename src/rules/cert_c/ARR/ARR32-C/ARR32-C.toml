@@ -31,4 +31,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ARR32-C.+Ensure+size+arguments+for+variable+length+arrays+are+in+a+valid+range"
-cwe = ["CWE-758", "CWE-129", "CWE-188", "CWE-119"]
+cwe = []
+related_cwe = ["CWE-758"]

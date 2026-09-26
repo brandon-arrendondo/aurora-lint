@@ -30,4 +30,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/DCL10-C.+Maintain+the+contract+between+the+writer+and+caller+of+variadic+functions"
-cwe = ["CWE-628"]
+cwe = ["CWE-685"]
+related_cwe = ["CWE-628"]

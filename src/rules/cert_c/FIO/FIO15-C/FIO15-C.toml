@@ -41,4 +41,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO15-C.+Ensure+that+file+operations+are+performed+in+a+secure+directory"
-cwe = ["CWE-379", "CWE-552"]
+cwe = []
+related_cwe = ["CWE-379", "CWE-552"]

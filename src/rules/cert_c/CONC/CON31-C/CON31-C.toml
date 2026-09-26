@@ -23,4 +23,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/CON31-C.+Do+not+destroy+a+mutex+while+it+is+locked"
-cwe = ["CWE-667"]
+cwe = []
+related_cwe = ["CWE-667"]

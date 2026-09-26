@@ -33,4 +33,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ERR04-C.+Choose+an+appropriate+termination+strategy"
-cwe = ["CWE-705"]
+cwe = []
+related_cwe = ["CWE-705"]

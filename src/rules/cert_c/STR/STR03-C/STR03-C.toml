@@ -26,4 +26,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/STR03-C.+Do+not+inadvertently+truncate+a+string"
-cwe = ["CWE-170", "CWE-464"]
+cwe = []
+related_cwe = ["CWE-170", "CWE-464"]

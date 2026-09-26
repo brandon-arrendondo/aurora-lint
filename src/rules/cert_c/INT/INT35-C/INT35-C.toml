@@ -74,4 +74,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT35-C.+Use+correct+integer+precisions"
-cwe = ["CWE-681", "CWE-190"]
+cwe = []
+related_cwe = ["CWE-190", "CWE-681"]

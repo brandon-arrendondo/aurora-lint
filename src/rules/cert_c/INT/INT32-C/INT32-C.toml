@@ -36,5 +36,6 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT32-C.+Ensure+that+operations+on+signed+integers+do+not+result+in+overflow"
-cwe = ["CWE-190", "CWE-191", "CWE-680", "CWE-20"]
+cwe = ["CWE-190", "CWE-191"]
+related_cwe = ["CWE-129", "CWE-680"]
 related = ["ARR38-C", "INT08-C"]

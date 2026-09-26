@@ -30,4 +30,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO01-C.+Be+careful+using+functions+that+use+file+names+for+identification"
-cwe = ["CWE-73", "CWE-367", "CWE-676"]
+cwe = ["CWE-367"]
+related_cwe = ["CWE-73", "CWE-676"]

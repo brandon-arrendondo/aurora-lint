@@ -36,4 +36,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/PRE09-C.+Do+not+replace+secure+functions+with+deprecated+or+obsolescent+functions"
-cwe = ["CWE-684"]
+cwe = []
+related_cwe = ["CWE-684"]

@@ -26,4 +26,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ENV02-C.+Beware+of+multiple+environment+variables+with+the+same+effective+name"
-cwe = ["CWE-462", "CWE-807"]
+cwe = []
+related_cwe = ["CWE-462", "CWE-807"]

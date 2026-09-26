@@ -23,4 +23,4 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MSC12-C.+Detect+and+remove+code+that+has+no+effect+or+is+never+executed"
-cwe = ["CWE-398", "CWE-561"]
+cwe = ["CWE-398", "CWE-482", "CWE-561", "CWE-570"]

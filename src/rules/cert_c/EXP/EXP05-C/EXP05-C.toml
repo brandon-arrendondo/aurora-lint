@@ -29,4 +29,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP05-C.+Do+not+cast+away+a+const+qualification"
-cwe = ["CWE-704"]
+cwe = []
+related_cwe = ["CWE-704"]

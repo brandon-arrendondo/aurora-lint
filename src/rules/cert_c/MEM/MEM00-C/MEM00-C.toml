@@ -31,4 +31,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM00-C.+Allocate+and+free+memory+in+the+same+module%2C+at+the+same+level+of+abstraction"
-cwe = ["CWE-415", "CWE-416"]
+cwe = []
+related_cwe = ["CWE-415", "CWE-416"]
