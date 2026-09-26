@@ -32,8 +32,15 @@ decided by benchmark counts. If it were, it would contradict 0002.
    the detector's design. Benchmark numbers can illustrate a finding but
    never decide it. A rule that is rare on our corpus but decisive when it
    fires passes (ADR-0002).
-2. **Each implemented rule gets exactly one disposition,** recorded in a
-   per-rule table in `docs/design/`:
+2. **Each checkable form of an implemented rule gets exactly one
+   disposition,** recorded in a per-rule table in `docs/design/`. Most
+   rules have one checkable form. When a rule's detector checks several
+   distinct forms, each gets its own disposition (amended 2026-09-26,
+   Brandon): the rule id carries the disposition of the form it keeps, and
+   a form it drops is recorded in the same row as not shipped, with its
+   reason. For example, a detector may report a construct the guideline
+   names, plus a second construct that belongs to another rule or that only
+   an intent judgment could separate. The dispositions:
    - **Deterministic**: the tool can decide the violation soundly. Ships,
      on by default.
    - **Deterministic with review**: the tool finds every candidate soundly,
@@ -59,6 +66,21 @@ decided by benchmark counts. If it were, it would contradict 0002.
      judgment. Not shipped. The row names the covering rules. This is
      different from overlap between two rules with distinct checkable
      forms, where both keep firing (`docs/design/cross-rule-overlap.md`).
+     **The covering rule has to report the construct already** (amended
+     2026-09-26, Brandon). "Covered" is a claim about the tool, not only
+     about CERT's text: a probe with the guideline's own noncompliant
+     examples must show the covering rule firing on them. When it doesn't,
+     the covering rule's false negative is fixed first, as its own change,
+     and the removal depends on that fix. Otherwise the removal loses
+     findings the tool had.
+   - **Deprecated by CERT** (amended 2026-09-26, Brandon): CERT has
+     deprecated or merged the guideline. The row says so, because that is
+     the reason a reader of the README, the docs or the paper needs, and it
+     names what replaced it: a successor guideline (the check moves into
+     the successor's detector first, as for a covered rule), or a guarantee
+     the standard now makes (the check becomes an environment contract
+     under ADR-0015, reported only where the declared environment doesn't
+     provide the guarantee). Not shipped under the deprecated id.
 3. **Anything the Juliet suite covers ships.** Juliet was built to test
    deterministic static checkers, so a Juliet-mapped rule can never fall
    into "fails the criterion". If its detector is weak, that's a rewrite
@@ -75,7 +97,9 @@ decided by benchmark counts. If it were, it would contradict 0002.
    name stays in the inventory and in the disposition table, with the
    reason.
 5. **Each removal is its own change,** justified by its table row. Never in
-   bulk.
+   bulk. A removal that relies on another rule (covered, deprecated with a
+   successor, re-keyed) lands only after that rule reports the construct
+   (Decision 2).
 6. **What the tool doesn't ship is published, prominently, with the
    reason.** Every rule that isn't shipped, and why, appears in README.md,
    in `docs/`, and in the paper. The naive approach is to ship everything;
@@ -109,6 +133,34 @@ decided by benchmark counts. If it were, it would contradict 0002.
      the tools on CERT's own Automated Detection list report.
    - An exception that holds in every setting belongs in the row. One that
      only the default policy grants is a policy relaxation (ADR-0015).
+   - Confirmed 2026-09-26 (Brandon): a "Detectable: No" recommendation that
+     has such a checkable form ships as deterministic with review.
+9. **The ruleset is CERT C, and each id means its CERT C guideline**
+   (amended 2026-09-26, Brandon).
+   - CERT C++ guidelines are out of scope for the CERT C ruleset. A rule
+     shipped under a C++ id (for example an `FIO50-C` that is really CERT's
+     `FIO50-CPP`) is removed as covered by its CERT C equivalent, after any
+     better logic it has is ported to that rule. aurora-lint may carry a
+     C++ ruleset one day; that would be a separate ruleset (ADR-0001), not
+     C++ ids mixed into this one.
+   - A check that isn't a CERT C guideline doesn't carry a CERT-looking id.
+     It is renamed out of the CERT namespace or dropped.
+   - A detector has to check the guideline its id names. A detector that
+     checks a different guideline's construct is re-keyed to that
+     guideline (its oracle rows move with it and are re-derived), and the
+     id it left gets its own disposition like any other rule.
+10. **A rule isn't dropped because CERT's examples contradict each other
+    without research first** (amended 2026-09-26, Brandon). When CERT's
+    compliant and noncompliant examples share one syntactic shape, any
+    presumption reports one of them, which looks like "fails the
+    criterion". But an example can simply be wrong, and the tools CERT
+    lists or later research may have settled the guideline's checkable
+    form anyway. So before such a rule is dropped, that evidence is
+    gathered: how the listed tools check it, what ISO/IEC TS 17961 and
+    MISRA C carry, and whether the conflict is a known error in CERT's
+    page. If the rule is still dropped, the row records the inconsistency
+    in CERT's own examples as the reason. That reasoning is worth
+    publishing (Decision 6).
 
 ## Consequences
 

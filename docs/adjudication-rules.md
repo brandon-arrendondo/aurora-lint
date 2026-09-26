@@ -200,9 +200,13 @@ contract model. (ADR-0015)
 - **G1.** A rule ships if a sound detector can ever find a true violation, and
   its findings aren't structurally FP-dominated on any codebase. Decided from
   the rule's nature, never from benchmark counts.
-- **G2.** Each rule gets one disposition: deterministic; deterministic with
-  review; environment-gated; unenforceable; fails the criterion; covered by
-  another rule (its only checkable form is a shipped rule's).
+- **G2.** Each checkable form of a rule gets one disposition: deterministic;
+  deterministic with review; environment-gated; unenforceable; fails the
+  criterion; covered by another rule (its only checkable form is a shipped
+  rule's, and a probe shows that rule already reports it, or its fix lands
+  first); deprecated by CERT (named with its successor or the guarantee the
+  standard now makes). A rule id carries its kept form's disposition; a
+  dropped form is recorded with its reason.
 - **G3.** Anything Juliet covers ships, counting only a CWE mapping verified
   against the test cases. A covered rule's Juliet coverage is the covering
   rule's.
@@ -213,3 +217,10 @@ contract model. (ADR-0015)
   doesn't make a rule unenforceable if a decidable checkable form exists.
 - **G5.** A rule not shipped is removed from the tool, one justified change at
   a time. It's published with its reason in README.md, the docs and the paper.
+- **G6.** The ruleset is CERT C. CERT C++ ids are out of scope; a custom check
+  doesn't carry a CERT-looking id; a detector checks the guideline its id
+  names, or it is re-keyed to the one it does check.
+- **G7.** When CERT's compliant and noncompliant examples share one shape,
+  research how the listed tools, TS 17961 and MISRA handle it before dropping
+  the rule. If it's dropped, the row records CERT's inconsistency as the
+  reason.
