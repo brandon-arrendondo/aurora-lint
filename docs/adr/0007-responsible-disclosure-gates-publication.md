@@ -180,3 +180,29 @@ never held back pending a decision on whether or when to report it upstream.
 What stays local until a fix lands is only the extended layer: the
 reachability/severity write-up, reproducer, draft report, and disclosure
 status tracking — never the base verdict.
+
+## Clarification (2026-09-25): why keys and verdicts stay public, and the exception
+
+An external-alignment review found no precedent for publishing TP labels on
+unfixed code that hasn't been reported, and noted that security venues expect
+private notification before public detail. The decision stands, for these
+reasons (Brandon, 2026-09-25):
+
+- **The paper cites no finding** that hasn't been reported to its maintainers
+  and fixed upstream. The disclosure gate above governs everything the paper
+  says about a defect.
+- **Every real-world corpus is pinned at a fixed, historical commit.** Many
+  labeled violations are already fixed upstream by the time a label is
+  published. In practice the ones found still open have been old,
+  low-consequence code: not attacker-reachable, and not a vulnerability.
+- **The oracle is reproducible by design.** Anyone with aurora-lint and the
+  published adjudication rules (`docs/adjudication-rules.md`) can rebuild
+  the same labels with a capable model and modest effort, and probably
+  improve on them. Withholding the verdicts would protect little and cost the
+  dataset's value as a public, checkable measurement.
+
+**The exception.** If a finding turns out to be CVE-worthy (a
+vulnerability, not only a rule violation), its label is withheld from the
+public oracle until the fix has landed upstream, and it goes through the
+disclosure process above. That case hasn't arisen; the policy will be
+revisited when it does.
