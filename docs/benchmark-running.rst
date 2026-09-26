@@ -89,7 +89,7 @@ Juliet Benchmark
 
 .. code-block:: bash
 
-    python -m bench juliet [--full] [--jobs N] [--keep-reports] [--compile-commands] [--cwe CWE[,CWE]]
+    python -m bench juliet [--full] [--jobs N] [--keep-reports] [--compile-commands] [--cwe CWE[,CWE]] [--profile P]
     python -m bench status [RUN_ID]
     python -m bench compare BASE TARGET
     python -m bench runs
@@ -117,6 +117,22 @@ Run identifiers accepted by ``status``/``compare``:
 - Per-CWE/per-rule detail beyond what ``status``/``compare`` print is a direct
   ``sqlite3 data/benchmarks.db`` query away (``cwe_scans``, ``violations``,
   ``rule_cwe_breakdown``) -- there's no separate CLI subcommand for it
+
+Policy and Environment Settings
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Every scan passes aurora-lint's ``--profile`` (``default`` unless
+``--profile`` says otherwise), and each run records the settings it scanned
+under -- the resolved values from ``aurora-lint --list-options json`` -- in
+the ``settings`` column of ``runs`` and ``realworld_runs``, so a figure can
+always name its setting (:doc:`options`). Runs recorded before settings
+existed have ``settings`` NULL: they ran under neither preset exactly.
+
+The default preset keeps the bare run_id. A run under any other profile
+needs a run_id suffix of its own to stay apart from the default run of the
+same build, and that spelling is not settled yet, so ``bench`` refuses to
+record one. Scan with ``aurora-lint --profile strict`` directly for a local
+look.
 
 Compile-Database Runs
 ~~~~~~~~~~~~~~~~~~~~~
@@ -173,7 +189,7 @@ own terminal, against their own SQLite DB. See ``bench/realworld_runner.py``.
 
 .. code-block:: bash
 
-    python -m bench realworld-run [--tool sqc,cppcheck,clang-tidy] [--codebase C,C] [--compile-commands]
+    python -m bench realworld-run [--tool sqc,cppcheck,clang-tidy] [--codebase C,C] [--compile-commands] [--profile P]
     python -m bench realworld [RUN] [--compare BASE]   # FP dashboard
     python -m bench realworld-runs                     # list runs
     python -m bench realworld-score [RUN]               # measured precision/recall

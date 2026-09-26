@@ -34,7 +34,9 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 
-from bench.config import BENCH_ROOT, PROJECT_DIR
+from bench.config import (
+    BENCH_ROOT, DEFAULT_PROFILE, PROJECT_DIR, resolved_settings_json, settings_run_suffix,
+)
 from bench.config import opam_wrap as _opam_wrap
 from bench.db import BenchDB
 
@@ -680,7 +682,8 @@ def _expand(template_list: list[str], path: str) -> list[str]:
 
 
 def _build_sqc_cmd(cfg: dict, results_dir: Path, run_id: str,
-                   compile_db: str | None = None) -> list[str]:
+                   compile_db: str | None = None,
+                   profile: str = DEFAULT_PROFILE) -> list[str]:
     path = str(cfg["path"])
     scan_path = cfg["sqc"].get("scan_path")
     scan_path = _expand([scan_path], path)[0] if scan_path else path
@@ -711,6 +714,7 @@ def _build_sqc_cmd(cfg: dict, results_dir: Path, run_id: str,
         "--manifest", str(manifest),
         "--export", str(output_file),
         "--jobs", str(min(os.cpu_count() or 4, 8)),
+        "--profile", profile,
     ]
     if "-d" not in extra:
         cmd.extend(["-d", path])
@@ -1444,10 +1448,17 @@ def _parse_framac_json(filepath: Path, cfg: dict | None = None) -> dict:
 
 # ── Running one combo ─────────────────────────────────────────────────────────
 
-def run_one(tool: str, codebase: str, compile_commands: bool = False) -> dict:
+def run_one(tool: str, codebase: str, compile_commands: bool = False,
+            profile: str = DEFAULT_PROFILE) -> dict:
     """Run one tool against one codebase, synchronously, blocking until done.
-    Writes result files under RESULTS_BASE. Returns a summary dict."""
+    Writes result files under RESULTS_BASE. Returns a summary dict.
+
+    `profile` is aurora-lint's policy/environment preset (ADR-0015); only the
+    default is recordable until a non-default run_id suffix is ruled on
+    (`config.settings_run_suffix`, which refuses the rest)."""
     tool = tool.strip().lower()
+    if tool == "sqc":
+        settings_run_suffix(profile)
     codebase = codebase.strip().lower()
     if tool not in VALID_TOOLS:
         raise ValueError(f"Unknown tool '{tool}'. Must be one of: {', '.join(VALID_TOOLS)}")
@@ -1515,7 +1526,7 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False) -> dict:
 
     with log_path.open("w") as log_fh:
         if tool == "sqc":
-            cmd = _build_sqc_cmd(cfg, version_dir, run_id, compile_db)
+            cmd = _build_sqc_cmd(cfg, version_dir, run_id, compile_db, profile)
             result_file = version_dir / f"{run_id}.json"
             proc = subprocess.run(cmd, stdout=log_fh, stderr=subprocess.STDOUT)
         elif tool == "cppcheck":
@@ -1600,7 +1611,8 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False) -> dict:
 # ── Orchestration + SQLite ingest ─────────────────────────────────────────────
 
 def run_and_ingest(tools: list[str], codebases: list[str],
-                   compile_commands: bool = False) -> dict:
+                   compile_commands: bool = False,
+                   profile: str = DEFAULT_PROFILE) -> dict:
     """Run every tool x codebase combo sequentially, then ingest sqc results
     (+ attach cppcheck/clang-tidy comparison rows) into SQLite and score
     against the ground-truth oracle. Returns a summary dict."""
@@ -1608,7 +1620,7 @@ def run_and_ingest(tools: list[str], codebases: list[str],
     for tool in tools:
         for codebase in codebases:
             try:
-                results.append(run_one(tool, codebase, compile_commands))
+                results.append(run_one(tool, codebase, compile_commands, profile))
             except Exception as e:
                 print(f"  [{tool}] {codebase} FAILED to start: {e}")
                 results.append({"tool": tool, "codebase": codebase, "ok": False,
@@ -1617,7 +1629,7 @@ def run_and_ingest(tools: list[str], codebases: list[str],
     summary = {"results": results, "run_id": None, "score": None,
                "ingest_error": None}
     try:
-        _ingest(results, summary)
+        _ingest(results, summary, profile)
     except Exception as e:
         # Every scan is already on disk under results/realworld/<version-sha>/,
         # so an ingest failure loses no measurement -- but it is the last thing
@@ -1633,7 +1645,7 @@ def run_and_ingest(tools: list[str], codebases: list[str],
     return summary
 
 
-def _ingest(results: list[dict], summary: dict) -> None:
+def _ingest(results: list[dict], summary: dict, profile: str = DEFAULT_PROFILE) -> None:
     """Write the completed scans into SQLite and score them. Split out of
     `run_and_ingest` so a failure here is reported as its own outcome rather
     than as the failure of the whole run."""
@@ -1668,7 +1680,8 @@ def _ingest(results: list[dict], summary: dict) -> None:
         # Naming the projects is what this invocation actually knows.
         run_id = db.ingest_realworld_run(sqc_dir.name, str(sqc_dir), machine=machine,
                                          durations=durations, metrics=metrics,
-                                         only_projects={r["codebase"] for r in sqc_results})
+                                         only_projects={r["codebase"] for r in sqc_results},
+                                         settings=resolved_settings_json(profile))
         summary["run_id"] = run_id
 
         for r in results:

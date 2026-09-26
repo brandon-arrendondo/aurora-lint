@@ -2,12 +2,13 @@
 
 Commands:
   juliet [--full] [--jobs N] [--keep-reports] [--compile-commands] [--cwe CWE[,CWE]]
+         [--profile P]
                                            Run Juliet benchmark
   status [RUN_ID]                          Show benchmark progress/results
   compare BASE TARGET                      Compare two runs
   runs                                     List all runs
   realworld [RUN] [--compare BASE]         Real-world FP dashboard
-  realworld-run [--tool T,T] [--codebase C,C] [--compile-commands]
+  realworld-run [--tool T,T] [--codebase C,C] [--compile-commands] [--profile P]
                                             Run sqc/cppcheck/clang-tidy/infer/
                                             frama-c against real codebases
                                             (local, sequential), ingest + score
@@ -39,7 +40,7 @@ import argparse
 import json
 import sys
 
-from bench.config import DEFAULT_JOBS
+from bench.config import DEFAULT_JOBS, DEFAULT_PROFILE, PROFILES
 from bench.db import BenchDB
 
 
@@ -48,7 +49,8 @@ def cmd_juliet(args):
     cwes = [c for c in args.cwe.split(",") if c.strip()] if args.cwe else None
     try:
         run_benchmark(fast=not args.full, jobs=args.jobs, keep_reports=args.keep_reports,
-                      compile_commands=args.compile_commands, cwes=cwes)
+                      compile_commands=args.compile_commands, cwes=cwes,
+                      profile=args.profile)
     except ValueError as e:
         print(e)
         sys.exit(2)
@@ -69,9 +71,17 @@ def cmd_realworld_run(args):
             print(f"Unknown codebase '{cb}'. Must be one of: {', '.join(sorted(CODEBASES))}")
             return
 
+    if "sqc" in tools:
+        from bench.config import settings_run_suffix
+        try:
+            settings_run_suffix(args.profile)
+        except ValueError as e:
+            print(e)
+            sys.exit(2)
     print(f"Running {'+'.join(tools)} against {len(codebases)} codebase(s): "
           f"{', '.join(codebases)}\n")
-    summary = run_and_ingest(tools, codebases, compile_commands=args.compile_commands)
+    summary = run_and_ingest(tools, codebases, compile_commands=args.compile_commands,
+                             profile=args.profile)
     # The scans can all succeed and the ingest still fail; exit nonzero so a
     # `tee`d or scripted run does not read as clean.
     if summary.get("ingest_error"):
@@ -1137,6 +1147,9 @@ def main():
                                "as a smoke test. Suffixes the run_id with "
                                "'-cwe<N>' and the mode with '+cwe=', so it never "
                                "stands in for the build's full run")
+    p_juliet.add_argument("--profile", choices=PROFILES, default=DEFAULT_PROFILE,
+                          help="aurora-lint policy/environment preset to scan under, "
+                               "recorded in the run's settings (default: default)")
     p_juliet.set_defaults(func=cmd_juliet)
 
     # status
@@ -1183,6 +1196,9 @@ def main():
                           help="sqc only: pass --compile-commands using the codebase's "
                                "compile_commands.json. infer/frama-c always use it and "
                                "do not take this flag.")
+    p_rw_run.add_argument("--profile", choices=PROFILES, default=DEFAULT_PROFILE,
+                          help="sqc only: aurora-lint policy/environment preset to scan "
+                               "under, recorded in the run's settings (default: default)")
     p_rw_run.set_defaults(func=cmd_realworld_run)
 
     # competitor-export

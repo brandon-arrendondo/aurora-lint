@@ -57,7 +57,11 @@ CREATE TABLE IF NOT EXISTS runs (
     os_version      TEXT,
     -- Juliet runner never passes --load-prescan (bench/runner.py), so every
     -- run is a fresh prescan; always 'cold' until a warm path is wired.
-    cache_state     TEXT NOT NULL DEFAULT 'cold'
+    cache_state     TEXT NOT NULL DEFAULT 'cold',
+    -- The policy/environment settings the run scanned under (ADR-0015), as
+    -- canonical JSON from `aurora-lint --list-options json`. NULL for a run
+    -- recorded before settings existed.
+    settings        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS cwe_scans (
@@ -138,7 +142,10 @@ CREATE TABLE IF NOT EXISTS realworld_runs (
     hostname        TEXT,
     cpu_model       TEXT,
     cpu_cores       INTEGER,
-    notes           TEXT
+    notes           TEXT,
+    -- The policy/environment settings the run scanned under (ADR-0015), as
+    -- canonical JSON; NULL for a run recorded before settings existed.
+    settings        TEXT
 );
 -- The identity indexes are NOT declared here: _SCHEMA runs before
 -- _migrate_realworld_run_identity, so on a pre-migration database they would
@@ -354,6 +361,21 @@ class BenchDB:
         finally:
             conn.close()
         self._migrate_realworld_run_identity()
+        self._migrate_settings_columns()
+
+    def _migrate_settings_columns(self):
+        """Both run tables gained `settings`: the policy/environment settings
+        a run scanned under (ADR-0015), NULL for older runs. After the
+        identity migration, which rebuilds `realworld_runs` from a fixed
+        column list."""
+        conn = self._connect()
+        try:
+            for table in ("runs", "realworld_runs"):
+                if "settings" not in self._table_columns(conn, table):
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN settings TEXT")
+            conn.commit()
+        finally:
+            conn.close()
 
     def _migrate_realworld_run_identity(self):
         """Give `realworld_runs` a first-class identity (run_id + variant).
@@ -521,18 +543,20 @@ class BenchDB:
 
     def create_run(self, run_id: str, sqc_version: str, commit_sha: str,
                    mode: str, started_at: str, pid: int, jobs: int,
-                   total_cwes: int, machine: dict) -> None:
+                   total_cwes: int, machine: dict,
+                   settings: str | None = None) -> None:
         with self._cursor() as cur:
             cur.execute("""
                 INSERT INTO runs (run_id, sqc_version, commit_sha, mode, status,
                                   started_at, pid, jobs, total_cwes,
-                                  hostname, cpu_model, cpu_cores, ram_gb, os_version)
-                VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  hostname, cpu_model, cpu_cores, ram_gb, os_version,
+                                  settings)
+                VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (run_id, sqc_version, commit_sha, mode, started_at,
                   pid, jobs, total_cwes,
                   machine.get("hostname"), machine.get("cpu_model"),
                   machine.get("cpu_cores"), machine.get("ram_gb"),
-                  machine.get("os_version")))
+                  machine.get("os_version"), settings))
 
     def finish_run(self, run_id: str, status: str, finished_at: str) -> None:
         with self._cursor() as cur:
@@ -1237,7 +1261,7 @@ class BenchDB:
                              scanned_at: str = None, hostname: str = None,
                              cpu_model: str = None, cpu_cores: int = None,
                              notes: str = None, run_id: str = None,
-                             variant: str = None) -> int:
+                             variant: str = None, settings: str = None) -> int:
         """Insert a real-world run row and return its numeric id.
 
         `run_id` is the canonical identifier ("sqc-0.4.320-742e92a6-cdb") and
@@ -1250,11 +1274,11 @@ class BenchDB:
             cur.execute("""
                 INSERT INTO realworld_runs
                     (run_id, sqc_version, commit_sha, variant, scanned_at,
-                     hostname, cpu_model, cpu_cores, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     hostname, cpu_model, cpu_cores, notes, settings)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
             """, (run_id, sqc_version, commit_sha, variant, scanned_at,
-                  hostname, cpu_model, cpu_cores, notes))
+                  hostname, cpu_model, cpu_cores, notes, settings))
             return cur.fetchone()["id"]
 
     def find_realworld_run(self, sqc_version: str, commit_sha: str | None,
@@ -1330,7 +1354,8 @@ class BenchDB:
                               durations: dict[str, float] = None,
                               metrics: dict[str, dict] = None,
                               run_id: int = None,
-                              only_projects: set = None) -> int:
+                              only_projects: set = None,
+                              settings: str = None) -> int:
         """Ingest a realworld run from JSON result files.
 
         Args:
@@ -1349,6 +1374,8 @@ class BenchDB:
             only_projects: optional set of project names to restrict ingest to
                 (the rest of the dir is left untouched). Used with run_id to
                 merge just the missing projects.
+            settings: the policy/environment settings the scans ran under
+                (canonical JSON), recorded on a newly created run row.
 
         Per-project sqc rows are idempotent: any prior sqc row + its violations
         for (run_id, project) are dropped before re-insert, so re-ingest never
@@ -1398,6 +1425,7 @@ class BenchDB:
                 # `run_id` becomes.
                 run_id=version_dir,
                 variant=variant,
+                settings=settings,
             )
 
         results_dir = Path(results_path)
