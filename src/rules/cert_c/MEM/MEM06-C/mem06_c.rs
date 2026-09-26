@@ -90,7 +90,6 @@ impl CertRule for Mem06C {
         Severity::Medium
     }
 
-
     fn cert_id(&self) -> &'static str {
         "MEM06-C"
     }
