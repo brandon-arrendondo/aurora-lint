@@ -481,7 +481,13 @@ fn run() -> Result<i32> {
     if interactive {
         #[cfg(feature = "tui")]
         {
-            let mut ui = TerminalUI::new(path, manifest, &directories, &include_paths)?;
+            let mut ui = TerminalUI::new(
+                path,
+                manifest,
+                analysis_settings.clone(),
+                &directories,
+                &include_paths,
+            )?;
             ui.run()?;
             return Ok(0);
         }

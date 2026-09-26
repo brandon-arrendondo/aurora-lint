@@ -109,7 +109,7 @@ fn main() {
 
     // Generate integration tests from C test files
     if let Err(e) = generate_integration_tests() {
-        eprintln!("Error generating integration tests: {}", e);
+        eprintln!("Error generating integration tests: {:#}", e);
         std::process::exit(1);
     }
 }
@@ -774,37 +774,70 @@ struct FixtureHeader {
 }
 
 /// Read a fixture's `Expect:` and `Settings:` lines from its leading comment
-/// (everything before the first line of code). A malformed line is a build
-/// error, never a silently ignored expectation.
+/// (everything before the first line of code). The grammar is strict so a
+/// directive can never be silently ignored:
+/// - a trailing `*/` is dropped, so `/* Expect: ... */` on one line works;
+/// - a second `Expect:` or `Settings:` line is an error;
+/// - a directive spelled in another case (`expect:`, `SETTINGS:`) is an error;
+/// - a comment line carrying a directive after the first line of code is an
+///   error (code such as `printf("Settings: ...")` is not a comment line and
+///   is ignored).
 fn fixture_header(path: &std::path::Path) -> Result<FixtureHeader> {
     let source = fs::read_to_string(path).with_context(|| format!("read {:?}", path))?;
     let mut header = FixtureHeader {
         expect: Vec::new(),
         settings: String::new(),
     };
-    for line in source.lines() {
+    let (mut saw_expect, mut saw_settings, mut in_code) = (false, false, false);
+    for (lineno, line) in source.lines().enumerate() {
         let t = line.trim();
-        if !(t.is_empty() || t.starts_with("/*") || t.starts_with('*') || t.starts_with("//")) {
-            break;
+        let is_comment_line = t.starts_with("/*") || t.starts_with('*') || t.starts_with("//");
+        if !(t.is_empty() || is_comment_line) {
+            in_code = true;
+            continue;
         }
         let l = t.trim_start_matches(['*', '/', ' ']).trim();
-        if let Some(rest) = l.strip_prefix("Expect:") {
+        let l = l.strip_suffix("*/").map_or(l, str::trim_end);
+        let directive = ["Expect:", "Settings:"].into_iter().find(|d| {
+            l.get(..d.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(d))
+        });
+        let Some(directive) = directive else {
+            continue;
+        };
+        let at = format!("{:?}:{}", path, lineno + 1);
+        anyhow::ensure!(
+            l.starts_with(directive),
+            "{}: fixture directive must be spelled `{}`",
+            at,
+            directive
+        );
+        anyhow::ensure!(
+            !in_code,
+            "{}: `{}` must be in the fixture's leading comment, before any code",
+            at,
+            directive
+        );
+        let rest = &l[directive.len()..];
+        if directive == "Expect:" {
+            anyhow::ensure!(!saw_expect, "{}: a second `Expect:` line", at);
+            saw_expect = true;
             for pair in rest.split_whitespace() {
                 let (preset, outcome) = pair
                     .split_once('=')
-                    .with_context(|| format!("{:?}: bad Expect entry '{}'", path, pair))?;
+                    .with_context(|| format!("{}: bad Expect entry '{}'", at, pair))?;
                 anyhow::ensure!(
                     PRESETS.contains(&preset),
-                    "{:?}: Expect names unknown preset '{}'",
-                    path,
+                    "{}: Expect names unknown preset '{}'",
+                    at,
                     preset
                 );
                 let outcome = match outcome {
                     "clean" => "Clean",
                     "violation" => "Violation",
                     _ => anyhow::bail!(
-                        "{:?}: Expect outcome must be clean or violation, got '{}'",
-                        path,
+                        "{}: Expect outcome must be clean or violation, got '{}'",
+                        at,
                         outcome
                     ),
                 };
@@ -812,7 +845,9 @@ fn fixture_header(path: &std::path::Path) -> Result<FixtureHeader> {
                     .expect
                     .push((preset.to_string(), outcome.to_string()));
             }
-        } else if let Some(rest) = l.strip_prefix("Settings:") {
+        } else {
+            anyhow::ensure!(!saw_settings, "{}: a second `Settings:` line", at);
+            saw_settings = true;
             header.settings = rest.trim().to_string();
         }
     }

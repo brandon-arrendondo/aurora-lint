@@ -133,6 +133,9 @@ struct ViolationSuppression {
 pub struct TerminalUI {
     repo_path: String,
     manifest: RuleManifest,
+    /// The policy and environment settings, resolved from the manifest and
+    /// the command line once at startup; every scan and export uses them.
+    settings: std::sync::Arc<crate::settings::AnalysisSettings>,
     registry: RuleRegistry,
     directories: Vec<String>,
     include_paths: Vec<String>,
@@ -180,6 +183,7 @@ impl TerminalUI {
     pub fn new(
         repo_path: &str,
         manifest: RuleManifest,
+        settings: crate::settings::AnalysisSettings,
         directories: &[String],
         include_paths: &[String],
     ) -> Result<Self> {
@@ -197,6 +201,7 @@ impl TerminalUI {
         Ok(Self {
             repo_path: repo_path.to_string(),
             manifest,
+            settings: std::sync::Arc::new(settings),
             registry,
             directories: directories.to_vec(),
             include_paths: include_paths.to_vec(),
@@ -2162,9 +2167,7 @@ impl TerminalUI {
             );
         }
 
-        context.settings = std::sync::Arc::new(crate::settings::AnalysisSettings::resolve(
-            &self.manifest.settings_config(),
-        )?);
+        context.settings = std::sync::Arc::clone(&self.settings);
         for rule in self.registry.all_rules() {
             rule.set_analysis_settings(&context.settings);
         }
@@ -2344,13 +2347,11 @@ impl TerminalUI {
             .iter()
             .filter_map(|&index| self.violations.get(index).cloned())
             .collect();
-        let settings =
-            crate::settings::AnalysisSettings::resolve(&self.manifest.settings_config())?;
         crate::export::export_all_violations_to_sarif(
             &selected,
             &[],
             &path.to_string_lossy(),
-            &settings,
+            &self.settings,
         )
     }
 
