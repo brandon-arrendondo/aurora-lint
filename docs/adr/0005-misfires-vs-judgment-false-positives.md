@@ -83,8 +83,10 @@ works. That illusion held for this project's early rules, which were judged
 on Juliet hits and misses as other tools are. It fails the moment exact
 violation lines have to be adjudicated. So a Juliet "TP" means "fired in the
 flawed section", an approximation of the oracle, not a confirmed violation. A
-misfire fix that removes such hits is still a fix, and reported Juliet
-figures state the section-level scoring. This is separate from what Juliet
+misfire fix that removes such hits is still a fix. aurora-lint's harness
+reports both units: TP/FP and precision by section, and a separate flaw-line
+hit rate (the marked flaw line, ±1). Every reported Juliet figure says which
+unit it uses. This is separate from what Juliet
 misses by design compared with real codebases (Brandon, 2026-09-25).
 
 ## Consequences

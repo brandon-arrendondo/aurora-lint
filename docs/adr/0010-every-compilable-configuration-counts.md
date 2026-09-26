@@ -39,7 +39,7 @@ each piece points the same way:
 - **The oracle labels config-disabled arms as violations.** hostap's full
   audit labeled ~195 DCL13-C rows TP in `#else` stubs of `CONFIG_SAE`,
   `CONFIG_GAS`, `CONFIG_PR` and similar — code a default hostap build with
-  those features enabled never compiles. API00-C's own standard holds
+  those features enabled never compiles. The project's API00-C labeling standard holds
   that an `assert()` is not a parameter guard *because*
   `NDEBUG` strips it: the release configuration exists, so the unguarded
   path exists.
@@ -98,7 +98,7 @@ dozen legacy FP rows whose stated basis is "compiled out in release" or
    (ADR-0005) and a bug to fix — that is how "every configuration counts"
    avoids inventing configurations that don't exist.
 5. **Asserts cut both ways.** In the `NDEBUG` configuration an `assert()` is
-   gone, so it guards nothing (the API00-C standard). In the debug
+   gone, so it guards nothing (the project's API00-C labeling standard). In the debug
    configuration its argument is compiled and evaluated, so a violation
    inside it is a violation. Neither configuration is the privileged one.
    Treating a strippable assert as a guard would assume a debug test suite
