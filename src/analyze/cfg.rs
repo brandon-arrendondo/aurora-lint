@@ -935,7 +935,7 @@ fn evaluate_constant_condition(
         // E.g., `static const int STATIC_CONST_TRUE = 1;` → if(STATIC_CONST_TRUE) is truthy.
         "identifier" => {
             let name = inner.utf8_text(source.as_bytes()).ok()?;
-            constants.get(name).map(|&v| v != 0)
+            file_scope_constant(&inner, name, source, constants).map(|v| v != 0)
         }
         // Handle constant comparisons: 5==5, 5!=5, etc.
         "binary_expression" => {
@@ -965,6 +965,24 @@ fn evaluate_constant_condition(
 }
 
 /// Resolve a single operand node to an i64 value (number literal or constant identifier).
+/// `constants[name]`, unless the identifier binds to a local or a
+/// parameter of that name: then it is another object (ADR-0006), and a
+/// local `flag` shadowing a file-scope `static const int flag = 0;` is not
+/// a constant.
+fn file_scope_constant(
+    ident: &Node,
+    name: &str,
+    source: &str,
+    constants: &MacroConstantMap,
+) -> Option<i64> {
+    use crate::utility::cert_c::ast_utils::{resolve_identifier_binding, IdentifierBinding};
+    let value = *constants.get(name)?;
+    match resolve_identifier_binding(ident, name, source) {
+        Some(IdentifierBinding::Local(_)) | Some(IdentifierBinding::Parameter(_)) => None,
+        _ => Some(value),
+    }
+}
+
 fn resolve_constant_operand(
     node: &Node,
     source: &str,
@@ -977,7 +995,7 @@ fn resolve_constant_operand(
         }
         "identifier" => {
             let name = node.utf8_text(source.as_bytes()).ok()?;
-            constants.get(name).copied()
+            file_scope_constant(node, name, source, constants)
         }
         _ => None,
     }

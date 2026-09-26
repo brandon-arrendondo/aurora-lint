@@ -1022,7 +1022,8 @@ pub fn collect_function_cfgs(
     cfgs: &mut HashMap<usize, cfg::FunctionCfg>,
     settings: &crate::settings::AnalysisSettings,
 ) {
-    let constants = const_eval::collect_macro_constants(node, source);
+    // Only values fixed in every configuration may prove a branch dead.
+    let constants = const_eval::cfg_prunable_constants(node, source);
     let noreturn_names = noreturn::collect_noreturn_function_names(node, source, settings);
     collect_function_cfgs_with_constants(node, source, cfgs, &constants, &noreturn_names);
 }

@@ -536,6 +536,98 @@ pub fn merged_macro_constants(
 /// POSIX build ever has, and whichever of a `#ifdef _WIN32` / `#else` pair
 /// their tie-break favours (aliases: last wins; constants: first wins) is
 /// the Windows value half the time.
+/// [`collect_macro_constants`] less every name whose value is not fixed in
+/// every configuration, for a caller that treats a constant condition as
+/// PROOF a branch never runs (the CFG's dead-branch pruning). Name
+/// resolution may pick among a macro's live definitions (ADR-0010 D3);
+/// pruning a branch on that pick removes code another configuration runs
+/// (D1, D8). Left out:
+/// - a name whose live definitions disagree across `#if` arms
+///   (`#ifdef FAST #define MODE 1 #else #define MODE 0 #endif`);
+/// - an overridable default, defined only under `#ifndef NAME` /
+///   `#if !defined(NAME)`: a build passing `-DNAME=1` gets another value.
+pub fn cfg_prunable_constants(root: &Node, source: &str) -> MacroConstantMap {
+    let mut constants = collect_macro_constants(root, source);
+    for name in config_dependent_constant_names(root, source) {
+        constants.remove(&name);
+    }
+    constants
+}
+
+/// The names [`cfg_prunable_constants`] leaves out of this file's constants:
+/// defined differently across live arms, or only as an overridable default.
+/// The prescan unions them project-wide
+/// (`ProjectContext::config_dependent_constants`) so a rule pruning branches
+/// with the project's macro constants can leave out a header's defaults too.
+pub fn config_dependent_constant_names(root: &Node, source: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut raw: Vec<(String, String)> = Vec::new();
+    collect_preproc_defs(root, source, &mut raw);
+    collect_static_const_defs(root, source, &mut raw);
+    collect_non_const_static_defs(root, source, &mut raw);
+    let mut texts: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for (name, value) in &raw {
+        texts.entry(name.as_str()).or_default().insert(value.trim());
+    }
+    for (name, values) in texts {
+        if values.len() > 1 {
+            out.insert(name.to_string());
+        }
+    }
+    for def in lang_parsing_substrate::query::find_descendants_of_kind(*root, "preproc_def") {
+        let Some(name) = def
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+        else {
+            continue;
+        };
+        if is_default_for_itself(&def, name, source) {
+            out.insert(name.to_string());
+        }
+    }
+    out
+}
+
+/// Whether `def` (a `#define name ...`) sits under `#ifndef name` or
+/// `#if !defined(name)`: a default a build can override with `-Dname=...`.
+/// Asked directly rather than through `dead_regions::arm_assumptions`, which
+/// skips include guards, and `#ifndef TRACE` / `#define TRACE 0` / `#endif`
+/// at file scope has exactly an include guard's shape. A real guard macro
+/// caught here is harmless: no one tests `if (FOO_H)`.
+fn is_default_for_itself(def: &Node, name: &str, source: &str) -> bool {
+    let text = |n: Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+    let mut child = *def;
+    while let Some(parent) = child.parent() {
+        let in_then_arm = parent
+            .child_by_field_name("alternative")
+            .is_none_or(|a| a.id() != child.id());
+        match parent.kind() {
+            "preproc_ifdef" if in_then_arm => {
+                let ifndef = parent.child(0).is_some_and(|d| text(d).ends_with("ndef"));
+                if ifndef
+                    && parent
+                        .child_by_field_name("name")
+                        .is_some_and(|n| text(n) == name)
+                {
+                    return true;
+                }
+            }
+            "preproc_if" if in_then_arm => {
+                let cond = parent
+                    .child_by_field_name("condition")
+                    .map(|c| text(c).split_whitespace().collect::<String>())
+                    .unwrap_or_default();
+                if cond == format!("!defined({name})") || cond == format!("!defined{name}") {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        child = parent;
+    }
+    false
+}
+
 fn collect_preproc_defs(node: &Node, source: &str, defs: &mut Vec<(String, String)>) {
     let dead = DeadRegions::of(source);
     collect_preproc_defs_rec(node, source, &dead, defs);

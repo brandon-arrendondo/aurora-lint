@@ -222,8 +222,13 @@ impl CertRule for Exp33C {
         for (k, v) in &context.global_constants {
             constants.entry(k.clone()).or_insert(*v);
         }
-        // Also include prescan macro constants (from #define directives)
+        // Also include prescan macro constants (from #define directives),
+        // less any whose value some configuration changes: these prune
+        // branches, and pruning is a proof (ADR-0010 D8).
         for (k, v) in context.macro_constants.iter() {
+            if context.config_dependent_constants.contains(k) {
+                continue;
+            }
             constants.entry(k.clone()).or_insert(*v);
         }
         drop(constants);

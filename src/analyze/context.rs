@@ -123,6 +123,15 @@ pub struct ProjectContext {
     /// name expands to is not settled by `macro_definitions` alone.
     #[serde(default)]
     pub conditional_macro_names: Arc<HashSet<String>>,
+    /// Constant names whose value is not fixed in every configuration, from
+    /// every scanned file and header
+    /// ([`crate::analyze::const_eval::config_dependent_constant_names`]):
+    /// defined differently across `#if` arms, or only as an `#ifndef`
+    /// default. `macro_constants` still resolves them (ADR-0010 D3); a rule
+    /// treating a constant condition as proof a branch is dead leaves them
+    /// out (D8).
+    #[serde(default)]
+    pub config_dependent_constants: Arc<HashSet<String>>,
     /// `macro name -> index of the parameter it checks`, for the assert-style
     /// macros no configuration compiles out (valkey's `serverAssert`), per
     /// [`crate::analyze::check_macros::abort_check_macros`], under each

@@ -40,6 +40,8 @@ struct FilePrescanResult {
     /// Names this file `#define`s inside a live conditional arm (see
     /// `ProjectContext::conditional_macro_names`).
     conditional_macro_names: HashSet<String>,
+    /// See `ProjectContext::config_dependent_constants`.
+    config_dependent_constants: HashSet<String>,
     /// Function-like `#define`s in this file the collector skipped or had
     /// to arbitrate, and the line of the definition it kept per name — the
     /// raw material for `--report-macro-gaps`.
@@ -113,6 +115,7 @@ impl FilePrescanResult {
             function_macros: HashMap::new(),
             macro_definitions: HashMap::new(),
             conditional_macro_names: HashSet::new(),
+            config_dependent_constants: HashSet::new(),
             macro_definition_audit: Default::default(),
             restrict_params: HashMap::new(),
             documented_nonnull_params: HashMap::new(),
@@ -206,6 +209,8 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         result.macro_definitions = crate::analyze::check_macros::collect_macro_definitions(&source);
         result.conditional_macro_names =
             crate::analyze::check_macros::collect_conditional_macro_names(&source);
+        result.config_dependent_constants =
+            const_eval::config_dependent_constant_names(&root, &source);
         result.macro_definition_audit =
             crate::analyze::macro_gaps::audit_definitions(&source, &file_path.to_string_lossy());
         result.restrict_params = ast_utils::restrict_parameter_indices(&root, &source);
@@ -480,6 +485,7 @@ fn prescan_file_list(
     let mut macro_definitions: HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>> =
         HashMap::new();
     let mut conditional_macro_names: HashSet<String> = HashSet::new();
+    let mut config_dependent_constants: HashSet<String> = HashSet::new();
     // Which file's definition `function_macros` holds per name, so a later
     // file defining the same name differently is recorded as a conflict
     // rather than silently losing.
@@ -697,6 +703,7 @@ fn prescan_file_list(
             r.macro_definitions,
         );
         conditional_macro_names.extend(r.conditional_macro_names);
+        config_dependent_constants.extend(r.config_dependent_constants);
         for (name, indices) in r.restrict_params {
             restrict_params.entry(name).or_insert(indices);
         }
@@ -1101,6 +1108,7 @@ fn prescan_file_list(
         function_macros: Arc::new(function_macros),
         macro_definitions: Arc::new(macro_definitions),
         conditional_macro_names: Arc::new(conditional_macro_names),
+        config_dependent_constants: Arc::new(config_dependent_constants),
         abort_check_macros,
         struct_field_types: Arc::new(struct_field_types),
         struct_typedef_aliases: Arc::new(struct_typedef_aliases),
@@ -6488,6 +6496,8 @@ pub fn resolve_includes(
                 Arc::make_mut(&mut context.conditional_macro_names).extend(
                     crate::analyze::check_macros::collect_conditional_macro_names(&hsource),
                 );
+                Arc::make_mut(&mut context.config_dependent_constants)
+                    .extend(const_eval::config_dependent_constant_names(&root, &hsource));
 
                 // Collect struct field types from resolved headers
                 collect_struct_definitions(
