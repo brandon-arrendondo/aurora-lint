@@ -33,6 +33,10 @@ pub mod overflow_helpers;
 /// INT30-C, INT31-C, INT32-C) stop reading pointer arithmetic as integer
 /// arithmetic.
 pub mod pointer_typing;
+/// Whether a stored function result is tested against the value that
+/// signals the function's failure, by resolved identity and in a test
+/// context -- the question ERR33-C asks of every assigned result.
+pub mod result_checks;
 pub mod size_analysis;
 /// Lookup of known C standard library / POSIX / Windows socket function names.
 pub mod std_functions;
