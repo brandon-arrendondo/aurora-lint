@@ -83,7 +83,7 @@ pub struct Mem31C {
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     /// Cross-file noreturn function names from the prescan, unioned in
     /// `check` with the ones this file declares for itself. Held under each
-    /// setting of `trust_noreturn_keyword`; `settings` picks one.
+    /// noreturn setting (`ByNoreturnTrust`); `settings` picks one.
     noreturn_functions: RefCell<ByNoreturnTrust<Arc<HashSet<String>>>>,
     /// The run's policy and environment settings.
     settings: RefCell<Arc<AnalysisSettings>>,

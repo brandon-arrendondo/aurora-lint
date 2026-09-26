@@ -202,6 +202,16 @@ pub static OPTIONS: &[OptionSpec] = &[
         basis: "C11 7.22.3.5p3.",
     },
     OptionSpec {
+        name: "stdlib_noreturn",
+        axis: Axis::Environment,
+        scope: Scope::Contract,
+        source: Source::Library(CONFORMING_LIBCS),
+        oracle_tag: "contract:stdlib_noreturn",
+        summary: "abort, exit, _Exit, quick_exit and longjmp never return to their caller.",
+        basis: "C11 7.22.4.1, 7.22.4.4, 7.22.4.5, 7.22.4.7 and 7.13.2.1; a freestanding \
+                implementation need not provide <stdlib.h> or <setjmp.h> at all.",
+    },
+    OptionSpec {
         name: "main_argv_guarantees",
         axis: Axis::Environment,
         scope: Scope::Contract,

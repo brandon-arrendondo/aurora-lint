@@ -47,7 +47,7 @@ pub struct Exp34C {
     macro_null_params: RefCell<HashMap<String, Vec<usize>>>,
     /// Assert-style macros no configuration compiles out, with the index of
     /// the parameter each checks (`ProjectContext::abort_check_macros`),
-    /// under each setting of `trust_noreturn_keyword`.
+    /// under each noreturn setting (`ByNoreturnTrust`).
     /// Synthesized into `FunctionSummary::returns_only_if_param_true` so the
     /// dataflow reads `serverAssert(p != NULL);` as a dominating check.
     abort_check_macros: RefCell<ByNoreturnTrust<Arc<HashMap<String, usize>>>>,

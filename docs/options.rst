@@ -61,6 +61,14 @@ Environment contracts
    - Oracle tag: ``contract:realloc_null_is_malloc``
    - Basis: C11 7.22.3.5p3.
 
+``stdlib_noreturn``
+   abort, exit, _Exit, quick_exit and longjmp never return to their caller.
+
+   - Default preset: ``true``; strict preset: ``false``
+   - Scope: contract
+   - Oracle tag: ``contract:stdlib_noreturn``
+   - Basis: C11 7.22.4.1, 7.22.4.4, 7.22.4.5, 7.22.4.7 and 7.13.2.1; a freestanding implementation need not provide <stdlib.h> or <setjmp.h> at all.
+
 ``main_argv_guarantees``
    main's argc is nonnegative, argv[argc] is a null pointer, and argv[0..argc) point to strings.
 

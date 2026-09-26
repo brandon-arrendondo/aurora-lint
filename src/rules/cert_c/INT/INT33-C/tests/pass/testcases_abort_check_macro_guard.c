@@ -6,6 +6,12 @@
  * serverAssert here has no NDEBUG arm and aborts when its condition is false,
  * so the division after it is guarded in every configuration. It is credited
  * because of what it expands to, not because of its name (check_macros).
+ *
+ * Settings: stdlib_noreturn=true
+ * The library contract that abort/exit never return is held on under every
+ * preset: it is not what this fixture tests (the strict preset's
+ * freestanding environment withdraws it; see
+ * src/rules/cert_c/MEM/MEM30-C/tests/pass/stdlib_exit_branch_needs_stdlib_noreturn.c).
  */
 
 #include <stdlib.h>
