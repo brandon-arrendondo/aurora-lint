@@ -53,8 +53,11 @@ once produced. It has caused confusion as the tool improves:
      capability, or only appeared to have it (ADR-0005, right for the wrong
      reason).
    - Oracle entries on lines no run reports are not stale. They are the
-     regression safety net. They are re-examined when a run reports the line
-     again, not to keep up with new rulings.
+     regression safety net. A **not-a-violation** entry there affects no
+     figure until a run reports the line again, so it is re-examined then,
+     not to keep up with new rulings. A **violation** entry there is an FN:
+     it sits in the recall denominator of every run, so it is re-examined
+     when a ruling changes its basis, like any emitted one.
    - An oracle verdict is revised only for the code's sake (a ruling that
      changes what counts as a violation, or a better reading of the code),
      never because a run changed.

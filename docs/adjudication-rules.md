@@ -28,8 +28,10 @@ what counts as a violation, or a better reading of the code. Never because a
 run changed. A finding that goes away turns a TP into an FN (capability lost)
 or an FP into a TN (the tool improved). The label stays. (ADR-0014)
 
-**A4. Labels on lines no run reports are the regression safety net.** Re-examine
-one when a run reports the line again, not to keep up with a new ruling.
+**A4. Labels on lines no run reports are the regression safety net.** A
+not-a-violation label there is re-examined when a run reports the line again,
+not to keep up with a new ruling. A violation label there is an FN in every
+run's recall, so it is re-examined whenever a ruling changes its basis.
 (ADR-0014)
 
 **A5. The oracle is incomplete by necessity.** It covers what runs have
