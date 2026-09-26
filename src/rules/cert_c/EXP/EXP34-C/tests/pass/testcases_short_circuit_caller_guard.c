@@ -19,6 +19,11 @@
  * NOT followed directly by the guard -- an adjacent diverging null-check is
  * already credited by a separate, narrower path, and crediting it here would
  * make this fixture pass without exercising the per-site query at all.
+ *
+ * Settings: free_null_is_noop=true
+ * The trailing free() of a possibly-null pointer is not what this fixture
+ * tests, so the free(NULL) contract is held on under every preset; the
+ * guard itself must hold under the strict policy too.
  */
 
 #include <stdlib.h>
