@@ -20,6 +20,16 @@ use std::sync::Arc;
 /// context (`resolve_includes`, the compile-database merge).
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProjectContext {
+    /// The policy and environment settings this run analyzes under.
+    ///
+    /// Never serialized: a prescan records facts about the code (which
+    /// functions are declared `_Noreturn`, which are verified never to
+    /// return), and the settings decide what a rule may conclude from them.
+    /// A cache saved under one setting is therefore valid under every other,
+    /// and must stay so -- a table that bakes a setting in would need the
+    /// cache to record it.
+    #[serde(skip)]
+    pub settings: Arc<crate::settings::AnalysisSettings>,
     /// Every function name found in the pre-scanned `.c`/`.h` files.
     pub known_functions: Arc<HashSet<String>>,
     /// Functions declared (prototyped) in `.h` header files.

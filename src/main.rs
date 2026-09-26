@@ -532,6 +532,7 @@ fn run() -> Result<i32> {
         compile_db.as_ref(),
         jobs,
         report_macro_gaps.is_some(),
+        &analysis_settings,
     )?;
 
     let mut violations = results.violations;
