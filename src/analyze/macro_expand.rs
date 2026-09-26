@@ -191,6 +191,172 @@ pub fn collect_function_macro_names(source: &str, out: &mut HashSet<String>) {
     }
 }
 
+/// Which parameters of a function-like macro are operands of `#` or `##`,
+/// and so reach the replacement unexpanded (C11 6.10.3.1): an argument that
+/// is itself a macro name is stringized or pasted as its own spelling.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OperandParams {
+    /// Positions of the parameters that are `#`/`##` operands.
+    pub indices: Vec<usize>,
+    /// Position of the `...` parameter, when the macro is variadic: every
+    /// argument from there on is part of `__VA_ARGS__`.
+    pub variadic_at: Option<usize>,
+}
+
+impl OperandParams {
+    /// Whether the argument at position `arg` lands in an operand parameter.
+    pub fn covers_argument(&self, arg: usize) -> bool {
+        let param = match self.variadic_at {
+            Some(v) if arg >= v => v,
+            _ => arg,
+        };
+        self.indices.contains(&param)
+    }
+}
+
+/// Add to `out`, for every function-like `#define` in `source` that applies
+/// `#` or `##` to a parameter, which parameters those are. Every branch
+/// counts, and a name defined in several branches gets the union: any of
+/// them may be the one compiled. Variadic macros are included
+/// (`#__VA_ARGS__`). Merged project-wide into
+/// `ProjectContext::macro_operand_params`. PRE05-C reads it.
+pub fn collect_macro_operand_params(source: &str, out: &mut HashMap<String, OperandParams>) {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let (logical, next) = join_continuation(&lines, i);
+        i = next;
+        let Some((name, params, body)) = split_function_like_define(&logical) else {
+            continue;
+        };
+        let variadic_at = params.iter().position(|p| p.ends_with("..."));
+        let param_index = |token: &str| -> Option<usize> {
+            if token == "__VA_ARGS__" {
+                return variadic_at;
+            }
+            params
+                .iter()
+                .position(|p| p.trim_end_matches("...").trim() == token)
+        };
+        let indices: Vec<usize> = operand_tokens(&strip_comments(&body))
+            .iter()
+            .filter_map(|token| param_index(token))
+            .collect();
+        if indices.is_empty() {
+            continue;
+        }
+        merge_operand_params(
+            out,
+            name,
+            OperandParams {
+                indices,
+                variadic_at,
+            },
+        );
+    }
+}
+
+/// Merge one file's [`OperandParams`] for `name` into `out`: the union of
+/// operand positions, as [`collect_macro_operand_params`] does across
+/// branches within a file.
+pub fn merge_operand_params(
+    out: &mut HashMap<String, OperandParams>,
+    name: String,
+    params: OperandParams,
+) {
+    let entry = out.entry(name).or_default();
+    entry.variadic_at = entry.variadic_at.or(params.variadic_at);
+    for index in params.indices {
+        if !entry.indices.contains(&index) {
+            entry.indices.push(index);
+        }
+    }
+    entry.indices.sort_unstable();
+}
+
+/// `#define NAME(params) body` split into its name, parameter spellings
+/// (`...` and `name...` kept as written) and body; `None` for anything else.
+fn split_function_like_define(line: &str) -> Option<(String, Vec<String>, String)> {
+    let s = line.trim_start().strip_prefix('#')?;
+    let s = s.trim_start().strip_prefix("define")?;
+    if !s.starts_with(|c: char| c.is_whitespace()) {
+        return None;
+    }
+    let s = s.trim_start();
+    let name_len = s.find(|c: char| !is_ident_char(c)).unwrap_or(s.len());
+    if name_len == 0 || !s.starts_with(is_ident_start) {
+        return None;
+    }
+    let (name, rest) = s.split_at(name_len);
+    let rest = rest.strip_prefix('(')?;
+    let close = rest.find(')')?;
+    let params = rest[..close]
+        .split(',')
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    Some((name.to_string(), params, rest[close + 1..].to_string()))
+}
+
+/// The identifiers in a replacement list that are operands of `#` or `##`,
+/// skipping string and character literals.
+fn operand_tokens(body: &str) -> Vec<String> {
+    #[derive(PartialEq)]
+    enum Tok {
+        Ident(String),
+        Hash,
+        HashHash,
+        Other,
+    }
+    let chars: Vec<char> = body.chars().collect();
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c.is_whitespace() {
+            i += 1;
+        } else if c == '"' || c == '\'' {
+            i += 1;
+            while i < chars.len() && chars[i] != c {
+                if chars[i] == '\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            i += 1;
+            tokens.push(Tok::Other);
+        } else if c == '#' {
+            if chars.get(i + 1) == Some(&'#') {
+                tokens.push(Tok::HashHash);
+                i += 2;
+            } else {
+                tokens.push(Tok::Hash);
+                i += 1;
+            }
+        } else if is_ident_start(c) {
+            let start = i;
+            while i < chars.len() && is_ident_char(chars[i]) {
+                i += 1;
+            }
+            tokens.push(Tok::Ident(chars[start..i].iter().collect()));
+        } else {
+            i += 1;
+            tokens.push(Tok::Other);
+        }
+    }
+    let mut out = Vec::new();
+    for (k, tok) in tokens.iter().enumerate() {
+        let Tok::Ident(name) = tok else { continue };
+        let before = k.checked_sub(1).map(|p| &tokens[p]);
+        let after = tokens.get(k + 1);
+        if matches!(before, Some(Tok::Hash) | Some(Tok::HashHash)) || after == Some(&Tok::HashHash)
+        {
+            out.push(name.clone());
+        }
+    }
+    out
+}
+
 /// The function-like macro names in scope for one file: every scanned
 /// file's (`project`, `ProjectContext::function_macro_names`) plus this
 /// file's own. Build once per file; [`Self::contains`] is then what says a
@@ -2014,6 +2180,35 @@ fn find_assignment_targets(text: &str, ident: &str, rhs_ok: impl Fn(usize) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operand_params_are_the_stringized_and_pasted_ones() {
+        let src = "#define str(s) #s\n\
+                   #define JOIN(x, y) x ## y\n\
+                   #define FIELD(p, n, t) t p##_##n\n\
+                   #define LOG(fmt, ...) log_(#fmt, __VA_ARGS__)\n\
+                   #define ARGS(...) f(#__VA_ARGS__)\n\
+                   #define QUOTED(x) \"#x\" (x)\n\
+                   #define PLAIN(x) (x)\n\
+                   #ifdef A\n\
+                   #define TWO(a, b) a\n\
+                   #else\n\
+                   #define TWO(a, b) #b\n\
+                   #endif\n";
+        let mut out = HashMap::new();
+        collect_macro_operand_params(src, &mut out);
+        let get = |name: &str| out.get(name).map(|p| (p.indices.clone(), p.variadic_at));
+        assert_eq!(get("str"), Some((vec![0], None)));
+        assert_eq!(get("JOIN"), Some((vec![0, 1], None)));
+        assert_eq!(get("FIELD"), Some((vec![0, 1], None)));
+        assert_eq!(get("LOG"), Some((vec![0], Some(1))));
+        assert_eq!(get("ARGS"), Some((vec![0], Some(0))));
+        assert_eq!(get("TWO"), Some((vec![1], None)));
+        assert_eq!(get("QUOTED"), None);
+        assert_eq!(get("PLAIN"), None);
+        let args = out["ARGS"].clone();
+        assert!(args.covers_argument(0) && args.covers_argument(3));
+    }
 
     #[test]
     fn function_macro_names_cover_every_branch_and_shape() {

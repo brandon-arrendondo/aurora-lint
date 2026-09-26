@@ -154,6 +154,12 @@ pub struct ProjectContext {
     /// [`crate::utility::cert_c::ast_utils::collect_static_macro_names`].
     #[serde(default)]
     pub static_macro_names: Arc<HashSet<String>>,
+    /// For every function-like `#define` that applies `#` or `##` to a
+    /// parameter, which parameters those are, across all scanned files
+    /// (incl. headers), all branches. See
+    /// [`crate::analyze::macro_expand::collect_macro_operand_params`].
+    #[serde(default)]
+    pub macro_operand_params: Arc<HashMap<String, crate::analyze::macro_expand::OperandParams>>,
     /// Names of every object-like `#define` whose replacement text is an
     /// unused-attribute annotation — `__attribute__((unused))`,
     /// `[[maybe_unused]]`, and the reserved spellings — collected across all

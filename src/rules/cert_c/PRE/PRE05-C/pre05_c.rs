@@ -38,17 +38,66 @@
 //! xstr(foo)  // Produces "4"
 //! ```
 //!
-//! ## Detection Strategy:
-//! - Find preprocessor function definitions (macros with parameters)
-//! - Check if macro body contains `##` or `#` operators
-//! - If operators are used directly (not via another macro call), report violation
+//! ## Detection strategy
+//!
+//! The defect is at the invocation, not the definition: `#define str(s) #s`
+//! is harmless until something passes it a macro name. So the rule reports
+//! an invocation of a function-like macro that passes, to a parameter the
+//! macro stringizes or pastes, an argument whose first token is a macro
+//! defined at that point (or a predefined one such as `__LINE__`). An
+//! argument that is the enclosing `#define`'s own parameter was already
+//! expanded when it was substituted, which is why the two-level form
+//! (`xstr`, `JOIN_AGAIN`) is compliant. Which parameters are operands comes
+//! from every branch's definition (`macro_expand::collect_macro_operand_params`),
+//! this file's and every scanned file's.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::macro_expand::{
+    collect_macro_operand_params, merge_operand_params, OperandParams,
+};
 use crate::manifest::Severity;
-use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
-pub struct Pre05C;
+/// Macros every translation unit has without a `#define` (C11 6.10.8), plus
+/// the common `__COUNTER__` extension.
+const PREDEFINED_MACROS: &[&str] = &[
+    "__LINE__",
+    "__FILE__",
+    "__DATE__",
+    "__TIME__",
+    "__STDC__",
+    "__STDC_VERSION__",
+    "__STDC_HOSTED__",
+    "__COUNTER__",
+];
+
+pub struct Pre05C {
+    /// `ProjectContext::macro_operand_params`: a stringizing or pasting
+    /// macro is usually defined in a header.
+    project_operand_params: RefCell<Arc<HashMap<String, OperandParams>>>,
+    /// `ProjectContext::defined_macro_names`: every `#define` name in any
+    /// scanned file.
+    project_macro_names: RefCell<Arc<HashSet<String>>>,
+}
+
+impl Pre05C {
+    pub fn new() -> Self {
+        Self {
+            project_operand_params: RefCell::new(Arc::new(HashMap::new())),
+            project_macro_names: RefCell::new(Arc::new(HashSet::new())),
+        }
+    }
+}
+
+impl Default for Pre05C {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CertRule for Pre05C {
     fn rule_id(&self) -> &'static str {
@@ -67,217 +116,311 @@ impl CertRule for Pre05C {
         "PRE05-C"
     }
 
-    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project_operand_params.borrow_mut() = context.macro_operand_params.clone();
+        *self.project_macro_names.borrow_mut() = context.defined_macro_names.clone();
+    }
+
+    fn check(&self, _node: &Node, source: &str) -> Vec<RuleViolation> {
+        let mut operand_params = HashMap::clone(&self.project_operand_params.borrow());
+        let mut local = HashMap::new();
+        collect_macro_operand_params(source, &mut local);
+        for (name, params) in local {
+            merge_operand_params(&mut operand_params, name, params);
+        }
+        if operand_params.is_empty() {
+            return Vec::new();
+        }
+        let directives = Directive::scan(source);
+        let project_names = self.project_macro_names.borrow();
         let mut violations = Vec::new();
-
-        // First pass: collect all macro names that are called by other macros
-        let called_macros = self.find_called_macros(node, source);
-
-        // Second pass: check each macro definition
-        self.check_node(node, source, &mut violations, &called_macros);
+        for call in find_invocations(source, &operand_params, &directives) {
+            let params = &operand_params[&call.name];
+            let enclosing = directives.iter().find(|d| d.range.contains(&call.offset));
+            for (index, arg) in call.args.iter().enumerate() {
+                if !params.covers_argument(index) {
+                    continue;
+                }
+                let Some(first) = first_identifier(arg) else {
+                    continue;
+                };
+                // The enclosing #define's own parameter was fully expanded
+                // before it was substituted: the compliant two-level form.
+                if enclosing.is_some_and(|d| d.params.iter().any(|p| p == first)) {
+                    continue;
+                }
+                let is_macro = PREDEFINED_MACROS.contains(&first)
+                    || project_names.contains(first)
+                    || defined_in_file_at(&directives, first, call.offset, enclosing.is_some());
+                if !is_macro {
+                    continue;
+                }
+                let (line, column) = line_column(source, call.offset);
+                violations.push(RuleViolation {
+                    rule_id: self.rule_id().to_string(),
+                    severity: Severity::Low,
+                    message: format!(
+                        "'{first}' is a macro, but '{}' applies # or ## to the parameter it is \
+                         passed to, so it is stringized or pasted as written instead of being \
+                         expanded first",
+                        call.name
+                    ),
+                    file_path: String::new(),
+                    line,
+                    column,
+                    suggestion: Some(format!(
+                        "Pass it through a second macro level that does not use # or ##, \
+                         e.g. #define x{0}(...) {0}(__VA_ARGS__), so the argument is expanded \
+                         before '{0}' stringizes or pastes it",
+                        call.name
+                    )),
+                    ..Default::default()
+                });
+            }
+        }
         violations
     }
 }
 
-impl Pre05C {
-    fn find_called_macros(&self, node: &Node, source: &str) -> Vec<String> {
-        let mut called = Vec::new();
-        for macro_node in query::find_descendants_of_kind(*node, "preproc_function_def") {
-            // Get the macro body (value field)
-            if let Some(value_node) = macro_node.child_by_field_name("value") {
-                let value_text = &source[value_node.start_byte()..value_node.end_byte()];
-                // Look for potential macro calls (identifier followed by parentheses)
-                // This is a simple heuristic: find words that look like function calls
-                for word in value_text.split(|c: char| !c.is_alphanumeric() && c != '_') {
-                    if !word.is_empty() && !called.contains(&word.to_string()) {
-                        called.push(word.to_string());
+/// One preprocessor directive (continuation lines joined) and, for a
+/// `#define`/`#undef`, the name it defines or removes.
+struct Directive {
+    range: std::ops::Range<usize>,
+    kind: DirectiveKind,
+    name: String,
+    /// The parameters of a function-like `#define`.
+    params: Vec<String>,
+    /// Byte offset of the name in a `#define`/`#undef`.
+    name_offset: usize,
+}
+
+#[derive(PartialEq)]
+enum DirectiveKind {
+    Define,
+    Undef,
+    Other,
+}
+
+impl Directive {
+    fn scan(source: &str) -> Vec<Directive> {
+        let mut out = Vec::new();
+        let mut offset = 0;
+        let mut lines = source.split_inclusive('\n').peekable();
+        while let Some(first) = lines.next() {
+            let start = offset;
+            offset += first.len();
+            let mut text = first.to_string();
+            while text.trim_end_matches(['\n', '\r']).ends_with('\\') {
+                let Some(next) = lines.next() else { break };
+                offset += next.len();
+                text.push_str(next);
+            }
+            let trimmed = text.trim_start();
+            let Some(rest) = trimmed.strip_prefix('#') else {
+                continue;
+            };
+            let rest_trimmed = rest.trim_start();
+            let (kind, after) = if let Some(a) = rest_trimmed.strip_prefix("define") {
+                (DirectiveKind::Define, a)
+            } else if let Some(a) = rest_trimmed.strip_prefix("undef") {
+                (DirectiveKind::Undef, a)
+            } else {
+                (DirectiveKind::Other, "")
+            };
+            let mut name = String::new();
+            let mut params = Vec::new();
+            let mut name_offset = start;
+            if kind != DirectiveKind::Other && after.starts_with(char::is_whitespace) {
+                let after_ws = after.trim_start();
+                name = after_ws
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                name_offset = start + (text.len() - after_ws.len());
+                let tail = &after_ws[name.len()..];
+                if kind == DirectiveKind::Define {
+                    if let Some(list) = tail.strip_prefix('(') {
+                        if let Some(close) = list.find(')') {
+                            params = list[..close]
+                                .split(',')
+                                .map(|p| p.trim().trim_end_matches("...").trim().to_string())
+                                .filter(|p| !p.is_empty())
+                                .collect();
+                        }
                     }
                 }
             }
-        }
-        called
-    }
-
-    fn check_node(
-        &self,
-        node: &Node,
-        source: &str,
-        violations: &mut Vec<RuleViolation>,
-        called_macros: &[String],
-    ) {
-        // Look for preprocessor function definitions (macros with parameters)
-        for macro_node in query::find_descendants_of_kind(*node, "preproc_function_def") {
-            self.check_macro_definition(&macro_node, source, violations, called_macros);
-        }
-    }
-
-    fn check_macro_definition(
-        &self,
-        node: &Node,
-        source: &str,
-        violations: &mut Vec<RuleViolation>,
-        called_macros: &[String],
-    ) {
-        let macro_text = &source[node.start_byte()..node.end_byte()];
-
-        // Check for token concatenation (##) or stringification (#) operators
-        if macro_text.contains("##") || self.contains_stringification(macro_text) {
-            // Get the macro name for better error messages
-            let macro_name = self.extract_macro_name(node, source);
-
-            // Skip inner helper macros (those with naming patterns suggesting they're implementation details)
-            // These are typically the inner level in two-level indirection patterns
-            if self.is_likely_helper_macro(&macro_name) {
-                return;
-            }
-
-            // Check if this macro is called by a wrapper macro that doesn't use ##/#
-            // (proper two-level indirection pattern)
-            if self.has_proper_wrapper(node, source, &macro_name, called_macros) {
-                return;
-            }
-
-            // Determine which operator is present
-            let operator = if macro_text.contains("##") { "##" } else { "#" };
-            let operation = if operator == "##" {
-                "token concatenation"
-            } else {
-                "stringification"
-            };
-
-            violations.push(RuleViolation {
-                rule_id: self.rule_id().to_string(),
-                severity: Severity::Low,
-                message: format!(
-                    "Macro '{}' uses {} operator ({}) which prevents parameter expansion - consider using two-level macro indirection for proper expansion",
-                    macro_name, operation, operator
-                ),
-                file_path: String::new(),
-                line: node.start_position().row + 1,
-                column: node.start_position().column + 1,
-                suggestion: Some(format!(
-                    "Use two-level indirection: define a wrapper macro that calls another macro with {}, allowing parameters to expand first",
-                    operator
-                )),
-                ..Default::default()
+            out.push(Directive {
+                range: start..offset,
+                kind,
+                name,
+                params,
+                name_offset,
             });
         }
+        out
     }
+}
 
-    /// Check if macro contains stringification operator (#)
-    /// We need to distinguish # (stringification) from ## (concatenation) and #include
-    fn contains_stringification(&self, macro_text: &str) -> bool {
-        // Look for # that is not part of ## and not part of #include/#define etc
-        let chars: Vec<char> = macro_text.chars().collect();
-        for i in 0..chars.len() {
-            if chars[i] == '#' {
-                // Skip if it's the # from #define
-                if i == 0 {
-                    continue;
-                }
-                // Skip if it's part of ##
-                if i + 1 < chars.len() && chars[i + 1] == '#' {
-                    continue;
-                }
-                if i > 0 && chars[i - 1] == '#' {
-                    continue;
-                }
-                // Found a standalone # (stringification operator)
+/// Whether this file `#define`s `name` in effect at `offset`: its last
+/// `#define`/`#undef` before `offset` is a `#define`. Inside another
+/// macro's replacement list, "that point" is wherever the enclosing macro is
+/// expanded, which the text cannot say, so any `#define` of `name` counts.
+fn defined_in_file_at(
+    directives: &[Directive],
+    name: &str,
+    offset: usize,
+    in_define: bool,
+) -> bool {
+    let mut defined = false;
+    for d in directives.iter().filter(|d| d.name == name) {
+        if in_define {
+            if d.kind == DirectiveKind::Define {
                 return true;
             }
+            continue;
         }
-        false
+        if d.range.start >= offset {
+            break;
+        }
+        defined = d.kind == DirectiveKind::Define;
     }
+    defined
+}
 
-    /// Extract macro name from the definition node
-    fn extract_macro_name(&self, node: &Node, source: &str) -> String {
-        if let Some(name_node) = node.child_by_field_name("name") {
-            source[name_node.start_byte()..name_node.end_byte()].to_string()
+/// One invocation of a macro in `operand_params`: its name, the byte offset
+/// of that name, and its arguments as written.
+struct Invocation {
+    name: String,
+    offset: usize,
+    args: Vec<String>,
+}
+
+/// Every invocation of a macro in `operand_params`, in code and in other
+/// macros' replacement lists, skipping comments, string and character
+/// literals, and the name in a macro's own `#define`.
+fn find_invocations(
+    source: &str,
+    operand_params: &HashMap<String, OperandParams>,
+    directives: &[Directive],
+) -> Vec<Invocation> {
+    let defining: HashSet<usize> = directives
+        .iter()
+        .filter(|d| d.kind != DirectiveKind::Other)
+        .map(|d| d.name_offset)
+        .collect();
+    let bytes = source.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else if c == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i += 2;
+        } else if c == b'"' || c == b'\'' {
+            i = skip_literal(bytes, i);
+        } else if c.is_ascii_alphabetic() || c == b'_' {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let name = &source[start..i];
+            if !operand_params.contains_key(name) || defining.contains(&start) {
+                continue;
+            }
+            let mut j = i;
+            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                j += 1;
+            }
+            if bytes.get(j) != Some(&b'(') {
+                continue;
+            }
+            // Arguments may hold further invocations, so scanning resumes
+            // inside them rather than past the closing parenthesis.
+            if let Some(args) = split_arguments(source, j) {
+                out.push(Invocation {
+                    name: name.to_string(),
+                    offset: start,
+                    args,
+                });
+            }
         } else {
-            "unknown".to_string()
+            i += 1;
         }
     }
+    out
+}
 
-    /// Check if macro name suggests it's a helper/implementation macro
-    /// Helper macros are the inner level in two-level indirection patterns
-    fn is_likely_helper_macro(&self, name: &str) -> bool {
-        let upper = name.to_uppercase();
-
-        // Common suffixes for helper macros
-        upper.ends_with("_AGAIN")
-            || upper.ends_with("_IMPL")
-            || upper.ends_with("_INTERNAL")
-            || upper.ends_with("_HELPER")
-            || upper.ends_with("_INNER")
-            || upper.ends_with("_")
+/// The index just past the string or character literal starting at `start`.
+fn skip_literal(bytes: &[u8], start: usize) -> usize {
+    let quote = bytes[start];
+    let mut i = start + 1;
+    while i < bytes.len() && bytes[i] != quote && bytes[i] != b'\n' {
+        if bytes[i] == b'\\' {
+            i += 1;
+        }
+        i += 1;
     }
+    i + 1
+}
 
-    /// Check if this macro has a proper wrapper that doesn't use ##/#
-    /// This indicates correct two-level indirection pattern
-    fn has_proper_wrapper(
-        &self,
-        _node: &Node,
-        source: &str,
-        macro_name: &str,
-        _called_macros: &[String],
-    ) -> bool {
-        // Look through all macro definitions in the source
-        // Check if there's a macro that:
-        // 1. Calls this macro
-        // 2. Doesn't use ## or # directly
-        // 3. Has the same or similar name (e.g., JOIN wrapping JOIN_AGAIN)
-
-        // Simple heuristic: look for a wrapper pattern like:
-        // #define WRAPPER(...) INNER_MACRO(...)
-        // where INNER_MACRO uses ## and WRAPPER doesn't
-
-        let lines: Vec<&str> = source.lines().collect();
-        for line in &lines {
-            let trimmed = line.trim();
-            if !trimmed.starts_with("#define") {
+/// The arguments of the parenthesized list opening at `open`, split at
+/// top-level commas. `None` if unclosed.
+fn split_arguments(source: &str, open: usize) -> Option<Vec<String>> {
+    let bytes = source.as_bytes();
+    let mut args = Vec::new();
+    let mut depth = 0;
+    let mut arg_start = open + 1;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' | b'\'' => {
+                i = skip_literal(bytes, i);
                 continue;
             }
-
-            // Skip if this line is the macro itself
-            if trimmed.contains(&format!("#define {}", macro_name))
-                || trimmed.contains(&format!("#define {}(", macro_name))
-            {
-                continue;
-            }
-
-            // Check if this is a macro that calls our target macro
-            if trimmed.contains(macro_name) && trimmed.contains('(') {
-                // This macro references our target - check if it uses ## or #
-                if !trimmed.contains("##") && !self.line_contains_stringification(trimmed) {
-                    // Found a wrapper macro that doesn't use ##/#
-                    // This is proper two-level indirection
-                    return true;
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let last = source[arg_start..i].trim();
+                    if !last.is_empty() || !args.is_empty() {
+                        args.push(last.to_string());
+                    }
+                    return Some(args);
                 }
             }
+            b',' if depth == 1 => {
+                args.push(source[arg_start..i].trim().to_string());
+                arg_start = i + 1;
+            }
+            _ => {}
         }
-
-        false
+        i += 1;
     }
+    None
+}
 
-    /// Check if a line contains stringification operator
-    fn line_contains_stringification(&self, line: &str) -> bool {
-        let chars: Vec<char> = line.chars().collect();
-        for i in 0..chars.len() {
-            if chars[i] == '#' {
-                // Skip if it's the # from #define
-                if i == 0 {
-                    continue;
-                }
-                // Skip if it's part of ##
-                if i + 1 < chars.len() && chars[i + 1] == '#' {
-                    continue;
-                }
-                if i > 0 && chars[i - 1] == '#' {
-                    continue;
-                }
-                return true;
-            }
-        }
-        false
-    }
+/// The argument's first token when it is an identifier.
+fn first_identifier(arg: &str) -> Option<&str> {
+    let arg = arg.trim_start();
+    let len = arg
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(arg.len());
+    let first = &arg[..len];
+    (!first.is_empty() && !first.starts_with(|c: char| c.is_ascii_digit())).then_some(first)
+}
+
+/// 1-based line and column of byte `offset`.
+fn line_column(source: &str, offset: usize) -> (usize, usize) {
+    let before = &source[..offset];
+    let line = before.matches('\n').count() + 1;
+    let column = offset - before.rfind('\n').map_or(0, |n| n + 1) + 1;
+    (line, column)
 }
