@@ -39,7 +39,8 @@ decided by benchmark counts. If it were, it would contradict 0002.
    - **Deterministic with review**: the tool finds every candidate soundly,
      but whether a candidate is a violation needs context a reviewer
      supplies (the existing manual-review marking). Ships; findings are
-     presented as candidates for confirmation.
+     presented as candidates for confirmation. The review is the user's,
+     not the oracle's (Decision 8).
    - **Environment-gated**: deterministic, but only measurable with an
      environment the benchmark doesn't have yet (for example Windows
      headers). Ships; its figures say so.
@@ -70,6 +71,29 @@ decided by benchmark counts. If it were, it would contradict 0002.
    Juliet figures, and the count of rules the paper calls working
    detectors all come from the disposition table, so the paper and the tool
    agree on what "in play" means.
+8. **A finding is labeled against the rule's written scope, never against
+   intent** (amended 2026-09-25, Brandon). This holds for every
+   disposition, including deterministic with review.
+   - The disposition table row states the rule's checkable form: the
+     construct it reports and the exceptions written into it, each with its
+     source (the CERT text or its compliant examples).
+   - A construct inside that scope is a violation, whether or not the author
+     meant it. "Intentional" is not a label basis (ADR-0011). A reviewer
+     who decides a candidate is acceptable suppresses it (ADR-0001). That
+     judgment belongs to the project, and the oracle doesn't record it.
+   - A guideline about understanding or intent gets its checkable form the
+     way ISO/IEC TS 17961 builds one. The form presumes the risky reading
+     and states its exceptions in the syntax of the code. TS 17961's rule
+     against assignment in a controlling expression "makes the presumption
+     that any use of = was intended to be ==", and its exceptions name
+     code shapes, not intentions.
+   - CERT marking a recommendation "Detectable: No" doesn't by itself make
+     it unenforceable. The question is whether a checkable form exists whose
+     violations are decidable. FLP00-C (floating-point limitations) is one:
+     its checkable form is a floating-point `==` or `!=`, which several of
+     the tools on CERT's own Automated Detection list report.
+   - An exception that holds in every setting belongs in the row. One that
+     only the default policy grants is a policy relaxation (ADR-0015).
 
 ## Consequences
 
@@ -85,3 +109,6 @@ decided by benchmark counts. If it were, it would contradict 0002.
   which rules are asked the question at all.
 - The disposition table is the input for the paper's "rules in play" and
   "never fire" accounting, replacing ad hoc counts.
+- Oracle rows labeled FP because the construct was "intentional" or
+  "deliberate" rest on a rejected basis. They are re-derived against the
+  rule's written scope (Decision 8).

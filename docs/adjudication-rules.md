@@ -95,7 +95,8 @@ returns, is a guard in both. (ADR-0010, ADR-0015)
 
 **B6. Policy and environment.** The oracle is the strict, freestanding truth,
 plus tags for each relaxation: assert-dominated and dependent site (policy), and
-library-contract trust, naming the contract (environment). Each setting's
+library-contract trust, naming the contract (environment), and a rule-specific
+relaxation, naming it (for example FLP00-C's exact-zero comparison). Each setting's
 figures are computed from those. Published figures use the ISO C and POSIX
 contract model. (ADR-0015)
 
@@ -202,5 +203,10 @@ contract model. (ADR-0015)
 - **G2.** Each rule gets one disposition: deterministic; deterministic with
   review; environment-gated; unenforceable; fails the criterion.
 - **G3.** Anything Juliet covers ships.
-- **G4.** A rule not shipped is removed from the tool, one justified change at
+- **G4.** Every rule, including one marked for review, is labeled against its
+  written scope: the construct its disposition row names and the exceptions
+  written into it. Whether the author meant it is the user's call, handled by
+  suppression. The oracle doesn't record it. CERT's "Detectable: No" alone
+  doesn't make a rule unenforceable if a decidable checkable form exists.
+- **G5.** A rule not shipped is removed from the tool, one justified change at
   a time. It's published with its reason in README.md, the docs and the paper.

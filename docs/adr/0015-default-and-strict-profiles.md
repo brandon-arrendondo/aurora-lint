@@ -46,7 +46,8 @@ safety-critical user unprotected.
      condition establishes the property is a guard, strippable or not (the
      assumption the analyzers above make); in a proof chain, only the first
      failing site is reported; a function declared `_Noreturn` (ISO C) is
-     trusted not to return.
+     trusted not to return; and the rule-specific relaxations the tool's
+     option list names (Decision 7).
    - **`strict`**, for safety-critical, MISRA-like and certified code: a
      strippable assert guards nothing; every violating line is reported;
      only a body verified never to return proves noreturn.
@@ -83,7 +84,8 @@ safety-critical user unprotected.
    freestanding truth for each line (ADR-0014), plus a tag on every row a
    relaxation affects: assert-dominated, dependent site, or library-contract
    trust (naming the contract). Any setting's figures are computed from the
-   same oracle. **Published benchmark figures use the ISO C and POSIX contract
+   same oracle. A rule-specific relaxation (Decision 7) adds its own tag.
+   **Published benchmark figures use the ISO C and POSIX contract
    model**, never one libc's extensions, so they don't depend on the host
    (ADR-0011).
 6. **Everything else is the same in every setting.** ADR-0011's rejected
@@ -91,11 +93,25 @@ safety-critical user unprotected.
    declared, inference, and in-tree caller sets of anything publicly
    callable. So do ADR-0010 (every configuration counts), ADR-0006 (identify
    before judging) and ADR-0005 (misfires are bugs).
-7. **Adding a policy relaxation requires an ADR amendment,** evidence that
-   mainstream analyzers make the same assumption, and an oracle tag. Adding an
-   environment contract requires a citation to the standard or the library's
-   documentation. Removing noise any other way is suppression or
-   configuration (ADR-0001).
+7. **Every relaxation is a named option, and the tool's list of options is
+   the record** (amended 2026-09-25, Brandon).
+   - **Cross-cutting relaxations** (asserts, dependent sites, `_Noreturn`)
+     apply to many rules. Adding one requires an amendment to this ADR.
+   - **Rule-specific relaxations** apply to one rule's checkable form. For
+     example, FLP00-C's default policy doesn't report a floating-point
+     comparison with exact zero, which Polyspace also exempts unless asked
+     not to. These don't amend this ADR one by one.
+   - **Either kind** needs evidence that mainstream analyzers make the same
+     assumption, an oracle tag, and its own setting with its value under each
+     preset, validated like rule behavior.
+   - **Adding an environment contract** requires a citation to the standard
+     or to the library's documentation.
+   - **The record:** the tool lists every policy and environment option it
+     supports, with each preset's value. The documentation is generated from
+     the same table, so it can't disagree with the tool. That list is the
+     complete record of what the default preset relaxes.
+   - Removing noise any other way is suppression or configuration
+     (ADR-0001).
 8. **Every figure names its setting.** Published results report the default
    preset as the headline, with strict alongside. Juliet is run under both.
 
