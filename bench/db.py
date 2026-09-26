@@ -672,7 +672,12 @@ class BenchDB:
     # ── Metrics CRUD ──────────────────────────────────────────────────────
 
     def insert_cwe_metrics(self, metrics: dict) -> None:
-        """Insert or replace pre-computed CWE metrics."""
+        """Insert or replace pre-computed CWE metrics.
+
+        Every column is required: a missing key raises KeyError rather than
+        storing the column's DEFAULT 0, which is indistinguishable from a
+        measured zero.
+        """
         with self._cursor() as cur:
             cur.execute("""
                 INSERT INTO cwe_metrics
@@ -700,24 +705,25 @@ class BenchDB:
                     flaw_hit_total = excluded.flaw_hit_total,
                     flaw_hit_rate = excluded.flaw_hit_rate
             """, (metrics["cwe_scan_id"],
-                  metrics.get("tp_count", 0), metrics.get("fp_count", 0),
-                  metrics.get("tp_rate_pct", 0),
-                  metrics.get("flaw_lines_total", 0),
-                  metrics.get("flaw_lines_detected", 0),
-                  metrics.get("flaw_detection_rate_pct", 0),
-                  metrics.get("cwe_matched_tp", 0),
-                  metrics.get("cwe_matched_fp", 0),
-                  metrics.get("noise_count", 0),
-                  metrics.get("noise_ratio", 0),
-                  metrics.get("per_file_detected", 0),
-                  metrics.get("per_file_total", 0),
-                  metrics.get("per_file_rate", 0),
-                  metrics.get("flaw_hit_detected", 0),
-                  metrics.get("flaw_hit_total", 0),
-                  metrics.get("flaw_hit_rate", 0)))
+                  metrics["tp_count"], metrics["fp_count"],
+                  metrics["tp_rate_pct"],
+                  metrics["flaw_lines_total"],
+                  metrics["flaw_lines_detected"],
+                  metrics["flaw_detection_rate_pct"],
+                  metrics["cwe_matched_tp"],
+                  metrics["cwe_matched_fp"],
+                  metrics["noise_count"],
+                  metrics["noise_ratio"],
+                  metrics["per_file_detected"],
+                  metrics["per_file_total"],
+                  metrics["per_file_rate"],
+                  metrics["flaw_hit_detected"],
+                  metrics["flaw_hit_total"],
+                  metrics["flaw_hit_rate"]))
 
     def insert_rule_breakdown(self, rows: list[dict]) -> None:
-        """Bulk insert per-rule per-CWE breakdown."""
+        """Bulk insert per-rule per-CWE breakdown. Every column is required
+        (see insert_cwe_metrics)."""
         if not rows:
             return
         with self._cursor() as cur:
@@ -732,8 +738,8 @@ class BenchDB:
                     flaw_line_count = excluded.flaw_line_count,
                     is_cwe_matched = excluded.is_cwe_matched
             """, [(r["cwe_scan_id"], r["rule_id"],
-                   r.get("tp_count", 0), r.get("fp_count", 0),
-                   r.get("flaw_line_count", 0), r.get("is_cwe_matched", 0))
+                   r["tp_count"], r["fp_count"],
+                   r["flaw_line_count"], r["is_cwe_matched"])
                   for r in rows])
 
     # ── Query API ─────────────────────────────────────────────────────────

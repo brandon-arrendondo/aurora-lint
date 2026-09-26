@@ -16,6 +16,24 @@ from pathlib import Path
 from bench.db import BenchDB
 from bench.juliet_coverage import _categorize, _cwe_description, render_juliet_coverage
 
+# insert_cwe_metrics / insert_rule_breakdown require every column; the
+# fixtures below state only the ones each case is about.
+_METRIC_KEYS = (
+    "tp_count", "fp_count", "tp_rate_pct", "flaw_lines_total",
+    "flaw_lines_detected", "flaw_detection_rate_pct", "cwe_matched_tp",
+    "cwe_matched_fp", "noise_count", "noise_ratio", "per_file_detected",
+    "per_file_total", "per_file_rate", "flaw_hit_detected", "flaw_hit_total",
+    "flaw_hit_rate",
+)
+
+
+def _metrics(**given):
+    return {**{k: 0 for k in _METRIC_KEYS}, **given}
+
+
+def _rule_row(**given):
+    return {"flaw_line_count": 0, **given}
+
 
 class TestCweDescription(unittest.TestCase):
     def test_splits_dir_name(self):
@@ -69,35 +87,35 @@ class TestRenderJulietCoverage(unittest.TestCase):
         # CWE-1: perfect precision, one rule.
         scan1 = self.db.create_cwe_scan(self.run_id, "CWE-1", "CWE1_Perfect", 10)
         self.db.update_cwe_scan(scan1, status="completed")
-        self.db.insert_cwe_metrics({
+        self.db.insert_cwe_metrics(_metrics(**{
             "cwe_scan_id": scan1, "tp_count": 5, "fp_count": 0,
             "tp_rate_pct": 100.0, "per_file_rate": 50.0, "per_file_detected": 5,
             "per_file_total": 10, "cwe_matched_tp": 5, "cwe_matched_fp": 0,
-        })
+        }))
         self.db.insert_rule_breakdown([
-            {"cwe_scan_id": scan1, "rule_id": "MEM31-C", "tp_count": 5,
-             "fp_count": 0, "is_cwe_matched": 1},
+            _rule_row(cwe_scan_id=scan1, rule_id="MEM31-C", tp_count=5,
+                      fp_count=0, is_cwe_matched=1),
         ])
 
         # CWE-2: zero detection, but a rule is mapped and found FPs only.
         scan2 = self.db.create_cwe_scan(self.run_id, "CWE-2", "CWE2_Zero", 8)
         self.db.update_cwe_scan(scan2, status="completed")
-        self.db.insert_cwe_metrics({
+        self.db.insert_cwe_metrics(_metrics(**{
             "cwe_scan_id": scan2, "tp_count": 0, "fp_count": 3,
             "tp_rate_pct": 0.0, "per_file_rate": 0.0,
-        })
+        }))
         self.db.insert_rule_breakdown([
-            {"cwe_scan_id": scan2, "rule_id": "MEM31-C", "tp_count": 0,
-             "fp_count": 3, "is_cwe_matched": 1},
+            _rule_row(cwe_scan_id=scan2, rule_id="MEM31-C", tp_count=0,
+                      fp_count=3, is_cwe_matched=1),
         ])
 
         # CWE-3: zero detection, no rule mapped at all.
         scan3 = self.db.create_cwe_scan(self.run_id, "CWE-3", "CWE3_Unmapped", 4)
         self.db.update_cwe_scan(scan3, status="completed")
-        self.db.insert_cwe_metrics({
+        self.db.insert_cwe_metrics(_metrics(**{
             "cwe_scan_id": scan3, "tp_count": 0, "fp_count": 0,
             "tp_rate_pct": 0.0, "per_file_rate": 0.0,
-        })
+        }))
 
     def test_renders_without_crashing_and_includes_source_note(self):
         text = render_juliet_coverage(self.db, self.run_id, "Auto-generated from a test fixture.")

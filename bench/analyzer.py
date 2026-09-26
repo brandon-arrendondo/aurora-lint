@@ -64,9 +64,10 @@ def parse_c_file_sections(filepath: str | Path) -> dict:
     in_bad = False
     in_good = False
 
+    flaw_targets = set()
     for i, line in enumerate(lines, start=1):
-        if 'FLAW:' in line or 'POTENTIAL FLAW:' in line:
-            result['flaw_lines'].add(i)
+        if 'FLAW:' in line:  # also matches "POTENTIAL FLAW:"
+            flaw_targets.add(_flaw_target_line(lines, i))
 
         if '#ifndef OMITBAD' in line:
             in_bad = True
@@ -87,7 +88,49 @@ def parse_c_file_sections(filepath: str | Path) -> dict:
     # Reclassify helper functions defined outside guards based on call sites
     _reclassify_helpers(lines, result)
 
+    # Only a flaw inside a bad section is a flaw. Juliet also writes
+    # "POTENTIAL FLAW:" in good functions, where the other half of the
+    # source/sink pair is fixed (goodG2B, goodB2G).
+    result['flaw_lines'] = {t for t in flaw_targets if t in result['bad_lines']}
+
     return result
+
+
+def _flaw_target_line(lines: list[str], comment_line: int) -> int:
+    """The 1-based line of the code a Juliet `FLAW:` comment annotates.
+
+    The comment sits above the flawed statement, so the target is the first
+    line after the comment closes that holds code. About one FLAW comment in
+    nine spans several lines, which puts that code 2 or more lines down. A
+    comment that trails code on its own line annotates that line.
+    """
+    text = lines[comment_line - 1]
+    start = text.find('/*')
+    if start == -1:
+        start = text.find('//')
+    if start > 0 and text[:start].strip():
+        return comment_line
+
+    # Find the line where the comment ends (a // comment ends on its line).
+    end = comment_line - 1
+    if '/*' in text:
+        while end < len(lines) and '*/' not in lines[end]:
+            end += 1
+        rest = lines[end][lines[end].find('*/') + 2:] if end < len(lines) else ''
+        if rest.strip():
+            return end + 1
+
+    j = end + 1
+    while j < len(lines):
+        stripped = lines[j].strip()
+        if stripped.startswith('/*'):
+            # Skip a following comment block too.
+            while j < len(lines) and '*/' not in lines[j]:
+                j += 1
+        elif stripped and not stripped.startswith('//'):
+            return j + 1
+        j += 1
+    return comment_line
 
 
 # Matches file-scope function definitions (static or non-static, not indented)
@@ -242,11 +285,14 @@ def _extract_cwe_from_dir(dir_path: str) -> str | None:
     return None
 
 
+def _flaw_lines_hit(line_num: int, flaw_lines: set) -> set:
+    """The flaw lines a violation at `line_num` hits, with +/-1 tolerance."""
+    return {line_num - 1, line_num, line_num + 1} & flaw_lines
+
+
 def _hits_flaw_line(line_num: int, flaw_lines: set) -> bool:
     """Check if a violation line hits a FLAW line with +/-1 tolerance."""
-    return (line_num in flaw_lines or
-            line_num - 1 in flaw_lines or
-            line_num + 1 in flaw_lines)
+    return bool(_flaw_lines_hit(line_num, flaw_lines))
 
 
 def _load_cwe_rules(cwe_id: str) -> set:
@@ -432,27 +478,39 @@ def _process_cwe_file(c_file, violations_dict, cwe_rules, analysis, cwe_scan_id,
     analysis.files_analyzed += 1
     analysis.flaw_lines_total += len(sections['flaw_lines'])
 
+    # Flaw lines hit, as sets: each flaw line counts once however many
+    # violations land on it, so a rate can't pass 100%.
+    flaw_hits = {"any": set(), "matched": set(), "by_rule": defaultdict(set)}
     file_has_cwe_tp = False
     for line_num, rule_entries in file_violations.items():
         for rule_id, filepath in rule_entries:
             if _classify_and_record_violation(
                 line_num, rule_id, filepath, sections, cwe_rules, analysis,
-                cwe_scan_id, rule_tp, rule_fp, rule_flaw,
+                cwe_scan_id, rule_tp, rule_fp, flaw_hits,
             ):
                 file_has_cwe_tp = True
+
+    analysis.flaw_lines_detected += len(flaw_hits["any"])
+    analysis.flaw_hit_detected += len(flaw_hits["matched"])
+    for rule_id, hit in flaw_hits["by_rule"].items():
+        rule_flaw[rule_id] += len(hit)
 
     return bool(sections['bad_lines']), file_has_cwe_tp, len(sections['flaw_lines'])
 
 
 def _classify_and_record_violation(line_num, rule_id, filepath, sections, cwe_rules,
-                                   analysis, cwe_scan_id, rule_tp, rule_fp, rule_flaw):
+                                   analysis, cwe_scan_id, rule_tp, rule_fp, flaw_hits):
     """Classify one violation as tp/fp/unknown against a file's labeled
     sections, update the running counters, and optionally append a DB
     violation record. Returns True iff this is a CWE-matched true positive.
+
+    `flaw_hits` collects the flaw lines hit per file ("any" rule, CWE-"matched"
+    rules, and "by_rule"); the caller turns them into counts.
     """
     in_bad = line_num in sections['bad_lines']
     in_good = line_num in sections['good_lines']
-    on_flaw = _hits_flaw_line(line_num, sections['flaw_lines'])
+    hit = _flaw_lines_hit(line_num, sections['flaw_lines'])
+    on_flaw = bool(hit)
     is_matched = rule_id in cwe_rules if cwe_rules else False
     is_cwe_matched_tp = False
 
@@ -460,15 +518,13 @@ def _classify_and_record_violation(line_num, rule_id, filepath, sections, cwe_ru
         classification = "tp"
         analysis.tp_count += 1
         rule_tp[rule_id] += 1
-        if line_num in sections['flaw_lines']:
-            analysis.flaw_lines_detected += 1
-            rule_flaw[rule_id] += 1
+        flaw_hits["any"] |= hit
+        flaw_hits["by_rule"][rule_id] |= hit
 
         if is_matched:
             analysis.cwe_matched_tp += 1
             is_cwe_matched_tp = True
-            if on_flaw:
-                analysis.flaw_hit_detected += 1
+            flaw_hits["matched"] |= hit
         else:
             analysis.noise_count += 1
     elif in_good:
