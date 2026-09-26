@@ -2,9 +2,7 @@
 
 ## Status
 
-**Proposed. Draft for Brandon, not accepted** (2026-09-25). No rule moves
-until this is accepted. If accepted, change this line to "Accepted
-(Brandon, <date>)".
+Accepted (Brandon, 2026-09-25).
 
 ## Context
 

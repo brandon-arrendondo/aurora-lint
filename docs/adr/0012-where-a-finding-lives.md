@@ -2,11 +2,7 @@
 
 ## Status
 
-**Proposed — draft for Brandon, not accepted** (2026-09-25). No rule or label changes until this is decided. The evidence,
-both options argued, and the label counts are in
-`docs/design/finding-location.md`. If accepted, change this line to
-"Accepted (Brandon, <date>)". If (a) is chosen instead, rewrite the Decision
-and keep the record.
+Accepted (Brandon, 2026-09-25).
 
 ## Context
 

@@ -2,9 +2,7 @@
 
 ## Status
 
-**Proposed. Draft for Brandon** (2026-09-25; the substance is his, stated
-that evening). If accepted, change this line to "Accepted (Brandon,
-<date>)".
+Accepted (Brandon, 2026-09-25).
 
 ## Context
 
