@@ -41,6 +41,10 @@ pub mod pointer_typing;
 /// signals the function's failure, by resolved identity and in a test
 /// context -- the question ERR33-C asks of every assigned result.
 pub mod result_checks;
+/// Which functions a translation unit registers with `signal`, `sigaction`,
+/// `atexit` or `at_quick_exit`, by what the registration is given
+/// (identity by declaration) rather than by what a function is named.
+pub mod signal_handlers;
 pub mod size_analysis;
 /// Lookup of known C standard library / POSIX / Windows socket function names.
 pub mod std_functions;
