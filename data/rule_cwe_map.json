@@ -264,10 +264,6 @@
     "STR32-C": [
       "CWE-126"
     ],
-    "STR38-C": [
-      "CWE-121",
-      "CWE-122"
-    ],
     "WIN00-C": [
       "CWE-114"
     ],
@@ -284,16 +280,14 @@
       "ARR38-C",
       "EXP09-C",
       "MEM35-C",
-      "STR31-C",
-      "STR38-C"
+      "STR31-C"
     ],
     "CWE-122": [
       "ARR30-C",
       "ARR38-C",
       "EXP09-C",
       "MEM35-C",
-      "STR31-C",
-      "STR38-C"
+      "STR31-C"
     ],
     "CWE-124": [
       "ARR30-C",
@@ -1052,6 +1046,10 @@
       "CWE-686",
       "CWE-704"
     ],
+    "STR38-C": [
+      "CWE-121",
+      "CWE-122"
+    ],
     "WIN02-C": [
       "CWE-250",
       "CWE-272"
@@ -1067,8 +1065,8 @@
   },
   "stats": {
     "toml_count": 312,
-    "rules_with_cwe": 74,
+    "rules_with_cwe": 73,
     "unique_cwes": 79,
-    "rules_with_related_cwe": 119
+    "rules_with_related_cwe": 120
   }
 }
