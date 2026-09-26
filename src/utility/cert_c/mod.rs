@@ -8,6 +8,10 @@ pub mod call_roles;
 /// How far a memory-clearing call's write reaches, so a rule can tell
 /// whether a pointer stored inside the destination survived it.
 pub mod clearing_extent;
+/// Declared credential sinks (the library arguments that receive a secret)
+/// and the page-locking calls, so a rule asks whether a buffer is sensitive
+/// by what it reaches rather than by its name.
+pub mod credential_sinks;
 /// Reusable functions for analyzing C declarators (arrays, pointers, function pointers).
 pub mod declarator_utils;
 pub mod float_typing;
