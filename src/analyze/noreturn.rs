@@ -102,8 +102,16 @@ impl NoreturnNames {
     }
 }
 
-/// C standard library functions that never return to their caller.
-const STDLIB_NORETURN_FUNCTIONS: &[&str] = &["abort", "exit", "_Exit", "quick_exit", "longjmp"];
+/// Standard library functions that never return to their caller: the ISO C
+/// set, plus POSIX `_exit` (POSIX.1-2024 `_exit()`), which the hosted
+/// ISO C + POSIX library model covers. Trusted only under the
+/// `stdlib_noreturn` contract.
+///
+/// `siglongjmp` is deliberately absent, so it never ends a path: it is
+/// POSIX-only and, like `longjmp`, resumes the program elsewhere rather than
+/// ending it (see [`NON_TERMINATING_NORETURN_FUNCTIONS`]).
+const STDLIB_NORETURN_FUNCTIONS: &[&str] =
+    &["abort", "exit", "_Exit", "_exit", "quick_exit", "longjmp"];
 
 /// Noreturn functions that do **not** end the process: control resumes
 /// elsewhere in the same program, so anything still allocated when they are
@@ -405,6 +413,20 @@ mod tests {
         let src = "_Noreturn void die(void) { exit(1); }\n";
         assert!(default_names(src).contains("die"));
         assert!(strict_names(src).contains("die"));
+    }
+
+    #[test]
+    fn posix_exit_ends_a_path_and_verifies_a_wrapper_but_siglongjmp_does_not() {
+        // pure-ftpd's shape: the wrapper's GNU attribute proves nothing, but
+        // its body ends in POSIX _exit(), which the hosted contract trusts.
+        let src = "void _EXIT(const int status) __attribute__ ((noreturn));\n\
+                   void _EXIT(const int status) { cleanup(); _exit(status); }\n\
+                   static void jump(void) { siglongjmp(env, 1); }\n";
+        let names = default_names(src);
+        assert!(names.contains("_exit"));
+        assert!(names.contains("_EXIT"));
+        assert!(!names.contains("siglongjmp"));
+        assert!(!names.contains("jump"));
     }
 
     #[test]
