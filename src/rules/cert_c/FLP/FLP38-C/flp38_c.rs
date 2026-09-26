@@ -16,7 +16,7 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/FLP38-C.+Avoid+undefined+behavior+while+using+type-generic+macro+functions>
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::{ast_utils, float_typing};
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
@@ -279,10 +279,6 @@ impl CertRule for Flp38C {
 
     fn description(&self) -> &'static str {
         "Avoid undefined behavior while using type-generic macro functions"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn severity(&self) -> Severity {

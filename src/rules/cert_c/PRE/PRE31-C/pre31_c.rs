@@ -4,7 +4,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::{self, FunctionMacro};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -48,10 +48,6 @@ impl CertRule for Pre31C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

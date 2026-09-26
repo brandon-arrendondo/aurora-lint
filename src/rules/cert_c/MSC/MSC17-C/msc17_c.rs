@@ -18,7 +18,7 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/MSC17-C.+Finish+every+set+of+statements+associated+with+a+case+label+with+a+break+statement>
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
@@ -416,10 +416,6 @@ impl CertRule for Msc17C {
 
     fn description(&self) -> &'static str {
         "Finish every set of statements associated with a case label with a break statement"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn severity(&self) -> Severity {

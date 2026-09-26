@@ -18,7 +18,7 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/MSC11-C.+Incorporate+diagnostic+tests+using+assertions>
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
@@ -170,10 +170,6 @@ impl CertRule for Msc11C {
 
     fn description(&self) -> &'static str {
         "Incorporate diagnostic tests using assertions"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn severity(&self) -> Severity {

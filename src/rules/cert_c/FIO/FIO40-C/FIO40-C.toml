@@ -1,6 +1,6 @@
 [metadata]
 id = "FIO40-C"
-type = "recommendation"
+type = "rule"
 category = "FIO"
 number = 40
 title = "Reset strings on fgets() or fgetws() failure"

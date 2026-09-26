@@ -204,7 +204,10 @@ class WikiScraper:
                 item_id = f"{category}{number}-C"
                 if item_id not in seen_ids:
                     seen_ids.add(item_id)
-                    item_type = "rule" if "/rules/" in path else "recommendation"
+                    # From CERT's numbering (00-29 recommendation, 30+ rule),
+                    # not the page path: the numbering is what the rule
+                    # TOMLs' `type` is tested against.
+                    item_type = "rule" if int(number) >= 30 else "recommendation"
                     items.append((item_id, rest.strip(), item_type, category, path))
             for child in node.get("children") or []:
                 walk(child)

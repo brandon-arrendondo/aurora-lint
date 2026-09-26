@@ -1,6 +1,6 @@
 [metadata]
 id = "FIO37-C"
-type = "recommendation"
+type = "rule"
 category = "FIO"
 number = 37
 title = "Do not assume that fgets() or fgetws() returns a nonempty string when successful"

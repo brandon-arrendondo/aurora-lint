@@ -1,6 +1,6 @@
 [metadata]
 id = "FIO38-C"
-type = "recommendation"
+type = "rule"
 category = "FIO"
 number = 38
 title = "Do not copy a FILE object"

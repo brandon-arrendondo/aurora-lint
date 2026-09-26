@@ -50,7 +50,7 @@
 //! - Check if file descriptors are used after fork in both parent/child branches
 //! - Report violations when shared file descriptor usage is detected
 
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
@@ -75,10 +75,6 @@ impl CertRule for Pos38C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {

@@ -7,7 +7,7 @@
 //! 1. Format string/argument count mismatches in printf-family functions
 //! 2. Missing sentinel values in custom variadic functions
 
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::call_roles;
@@ -27,10 +27,6 @@ impl CertRule for Dcl10C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

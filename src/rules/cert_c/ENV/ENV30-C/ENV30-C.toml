@@ -1,6 +1,6 @@
 [metadata]
 id = "ENV30-C"
-type = "recommendation"
+type = "rule"
 category = "ENV"
 number = 30
 title = "Do not modify the object referenced by the return value of certain functions"

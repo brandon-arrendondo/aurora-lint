@@ -72,7 +72,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg;
 use crate::analyze::concurrency_roots;
 use crate::analyze::context::ProjectContext;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
     get_identifier_from_declarator, get_node_text, resolve_identifier_binding, IdentifierBinding,
 };
@@ -143,10 +143,6 @@ impl CertRule for Con07C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

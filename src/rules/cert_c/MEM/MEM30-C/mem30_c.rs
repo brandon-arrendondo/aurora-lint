@@ -9,7 +9,7 @@ use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::FunctionMacro;
 use crate::analyze::macro_gaps;
 use crate::analyze::points_to::{lvalue_of, resolve_canonical, AliasMap, LValue};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::clearing_extent::cleared_extent;
@@ -78,10 +78,6 @@ impl CertRule for Mem30C {
 
     fn severity(&self) -> Severity {
         Severity::Critical
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

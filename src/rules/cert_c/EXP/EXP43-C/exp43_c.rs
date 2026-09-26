@@ -14,7 +14,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{get_node_text, restrict_parameter_indices};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -99,10 +99,6 @@ impl CertRule for Exp43C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

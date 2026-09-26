@@ -6,7 +6,7 @@ use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{get_node_text, integer_type_width, is_unsigned_type};
 use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
 use lang_parsing_substrate::query;
@@ -31,10 +31,6 @@ impl CertRule for Int08C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

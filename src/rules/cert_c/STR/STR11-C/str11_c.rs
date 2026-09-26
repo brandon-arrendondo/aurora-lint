@@ -33,7 +33,7 @@
 //! - Calculate if bound is too small: bound <= string_length (needs bound > string_length)
 //! - Report violation if insufficient space for null terminator
 
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
@@ -57,10 +57,6 @@ impl CertRule for Str11C {
 
     fn severity(&self) -> Severity {
         Severity::Low
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {

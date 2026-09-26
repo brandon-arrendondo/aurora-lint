@@ -23,7 +23,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::{self, FunctionMacro};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
@@ -57,10 +57,6 @@ impl CertRule for Mem03C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

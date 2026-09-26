@@ -54,7 +54,7 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/FIO09-C.+Be+careful+with+binary+data+when+transferring+data+across+systems>
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
@@ -196,10 +196,6 @@ impl CertRule for Fio09C {
 
     fn description(&self) -> &'static str {
         "Be careful with binary data when transferring data across systems"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn severity(&self) -> Severity {

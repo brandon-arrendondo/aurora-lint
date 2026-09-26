@@ -1,6 +1,6 @@
 [metadata]
 id = "ENV34-C"
-type = "recommendation"
+type = "rule"
 category = "ENV"
 number = 34
 title = "Do not store pointers returned by certain functions"

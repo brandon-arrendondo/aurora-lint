@@ -16,7 +16,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::context::ScopedTable;
 use crate::analyze::dataflow::find_node_at_range;
 use crate::analyze::function_summary::FunctionSummary;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -122,10 +122,6 @@ impl CertRule for Mem01C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

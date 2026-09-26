@@ -12,7 +12,7 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/DCL36-C.+Do+not+declare+an+identifier+with+conflicting+linkage+classifications>
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -208,10 +208,6 @@ impl CertRule for Dcl36C {
 
     fn description(&self) -> &'static str {
         "Do not declare an identifier with conflicting linkage classifications"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn severity(&self) -> Severity {

@@ -18,7 +18,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::array_size::resolve_declared_array_size;
 use crate::analyze::const_eval::{collect_macro_constants, MacroConstantMap};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
     find_containing_function, get_function_parameters, get_sanitized_node_text,
     is_array_parameter_type, is_function_parameter, is_inside_loop, is_pointer_type,
@@ -48,10 +48,6 @@ impl CertRule for Arr00C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

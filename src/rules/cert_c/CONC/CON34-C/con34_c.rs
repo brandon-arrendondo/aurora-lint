@@ -68,7 +68,7 @@
 //! - Detect if thread-specific storage is set in a parent thread but accessed by child
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
     self, find_containing_function, get_function_parameters, get_identifier_from_declarator,
     get_node_text, is_function_parameter, is_pointer_type,
@@ -90,10 +90,6 @@ impl CertRule for Con34C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

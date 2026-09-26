@@ -17,7 +17,7 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/MSC20-C.+Do+not+use+a+switch+statement+to+transfer+control+into+a+complex+block>
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -78,10 +78,6 @@ impl CertRule for Msc20C {
 
     fn description(&self) -> &'static str {
         "Do not use a switch statement to transfer control into a complex block"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn severity(&self) -> Severity {

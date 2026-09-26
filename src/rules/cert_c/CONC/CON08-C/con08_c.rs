@@ -59,7 +59,7 @@
 //! - If calling function doesn't wrap the calls in a mutex, flag as violation
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
@@ -79,10 +79,6 @@ impl CertRule for Con08C {
 
     fn severity(&self) -> Severity {
         Severity::Low
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

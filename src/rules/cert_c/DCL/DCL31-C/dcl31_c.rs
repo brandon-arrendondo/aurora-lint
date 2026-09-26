@@ -15,7 +15,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::FunctionMacro;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::declarator_utils;
 use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
@@ -401,10 +401,6 @@ impl CertRule for Dcl31C {
 
     fn description(&self) -> &'static str {
         "Declare identifiers before using them"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn severity(&self) -> Severity {

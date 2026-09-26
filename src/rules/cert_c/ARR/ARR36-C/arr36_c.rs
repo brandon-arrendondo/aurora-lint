@@ -6,7 +6,7 @@ use crate::analyze::argument_objects::{self, ObjectFrame};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::preproc_arms::PreprocArms;
 use crate::analyze::prescan;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::{ast_utils, overflow_helpers};
 use lang_parsing_substrate::query;
 use std::borrow::Cow;
@@ -54,10 +54,6 @@ impl CertRule for Arr36C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

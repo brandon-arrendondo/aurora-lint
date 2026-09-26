@@ -52,7 +52,7 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/cplusplus/FIO50-CPP>
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
@@ -311,10 +311,6 @@ impl CertRule for Fio50C {
 
     fn description(&self) -> &'static str {
         "Do not alternately input and output from a file stream without an intervening positioning call"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn severity(&self) -> Severity {

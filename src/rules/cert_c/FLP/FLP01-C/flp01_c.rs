@@ -36,7 +36,7 @@
 //! particularly in performance-critical sections or when compiler optimizations
 //! (e.g., `-ffast-math`) are enabled.
 
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use tree_sitter::Node;
@@ -58,10 +58,6 @@ impl CertRule for Flp01C {
 
     fn severity(&self) -> Severity {
         Severity::Low
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn check(&self, _node: &Node, _source: &str) -> Vec<RuleViolation> {

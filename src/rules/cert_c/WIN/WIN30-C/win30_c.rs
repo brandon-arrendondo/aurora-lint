@@ -32,7 +32,7 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
@@ -134,10 +134,6 @@ impl CertRule for Win30C {
 
     fn severity(&self) -> Severity {
         Severity::Low
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

@@ -32,7 +32,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval::{
     collect_macro_constants, try_evaluate_text_public, MacroConstantMap,
 };
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -68,10 +68,6 @@ impl CertRule for Int09C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

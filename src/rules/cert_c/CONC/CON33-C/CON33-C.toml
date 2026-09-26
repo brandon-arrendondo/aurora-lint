@@ -1,6 +1,6 @@
 [metadata]
 id = "CON33-C"
-type = "recommendation"
+type = "rule"
 category = "CON"
 number = 33
 title = "Avoid race conditions when using library functions"

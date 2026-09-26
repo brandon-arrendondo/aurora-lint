@@ -15,7 +15,7 @@
 //! - pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE)
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
@@ -36,10 +36,6 @@ impl CertRule for Pos04C {
 
     fn severity(&self) -> Severity {
         Severity::Low
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

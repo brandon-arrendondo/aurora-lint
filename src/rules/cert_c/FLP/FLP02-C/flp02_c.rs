@@ -53,7 +53,7 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/FLP02-C.+Avoid+using+floating-point+numbers+when+precise+computation+is+needed>
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::float_typing;
 use lang_parsing_substrate::query;
@@ -273,10 +273,6 @@ impl CertRule for Flp02C {
 
     fn description(&self) -> &'static str {
         "Avoid using floating-point numbers when precise computation is needed"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn severity(&self) -> Severity {

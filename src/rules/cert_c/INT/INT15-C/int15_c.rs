@@ -15,7 +15,7 @@
 //! - scanf with uintmax_t temporary and bounds checking before assignment
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
@@ -50,10 +50,6 @@ impl CertRule for Int15C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

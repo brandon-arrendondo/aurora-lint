@@ -1,6 +1,6 @@
 [metadata]
 id = "ENV32-C"
-type = "recommendation"
+type = "rule"
 category = "ENV"
 number = 32
 title = "All exit handlers must return normally"

@@ -8,7 +8,7 @@ use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::init_state;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::preproc_arms::PreprocArms;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::declarator_utils;
@@ -115,10 +115,6 @@ impl CertRule for Mem31C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

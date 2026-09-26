@@ -47,7 +47,7 @@
 //! - Build a map: condition_variable → set of mutexes
 //! - Report violation if any condition variable has more than one mutex
 
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
@@ -72,10 +72,6 @@ impl CertRule for Pos53C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {

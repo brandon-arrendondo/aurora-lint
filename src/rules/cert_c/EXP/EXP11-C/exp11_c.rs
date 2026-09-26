@@ -44,7 +44,7 @@
 //! - Pass 3: Detect casts from bit-field struct pointers to char*/unsigned char*
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
@@ -63,10 +63,6 @@ impl CertRule for Exp11C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

@@ -1,6 +1,6 @@
 [metadata]
 id = "FIO44-C"
-type = "recommendation"
+type = "rule"
 category = "FIO"
 number = 44
 title = "Only use values for fsetpos() that are returned from fgetpos()"

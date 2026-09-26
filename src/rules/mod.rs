@@ -20,8 +20,13 @@ pub trait CertRule {
     fn description(&self) -> &'static str;
     /// This rule's default severity, absent a manifest override.
     fn severity(&self) -> crate::manifest::Severity;
-    /// This rule's default category, absent a manifest override.
-    fn category(&self) -> crate::manifest::RuleCategory;
+    /// Whether this is a CERT rule or recommendation, derived from
+    /// [`Self::rule_id`] by CERT's numbering; `None` when the id is not a
+    /// CERT C id. Do not override this for a CERT C rule: the id is the
+    /// only source of truth, and a test asserts no rule disagrees with it.
+    fn category(&self) -> Option<crate::manifest::RuleCategory> {
+        crate::manifest::RuleCategory::from_cert_id(self.rule_id())
+    }
     /// This rule's default CERT identifier, absent a manifest override.
     fn cert_id(&self) -> &'static str;
 
@@ -150,5 +155,78 @@ pub fn get_rule_description(registry: &RuleRegistry, rule_id: &str) -> String {
         rule.description().to_string()
     } else {
         "Unknown rule".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RuleRegistry;
+    use crate::manifest::{RuleCategory, NON_CERT_C_IDS};
+    use std::path::Path;
+
+    #[test]
+    fn every_registered_rule_category_agrees_with_its_cert_id() {
+        let registry = RuleRegistry::new();
+        let disagreeing: Vec<_> = registry
+            .all_rules()
+            .iter()
+            .filter(|rule| rule.category() != RuleCategory::from_cert_id(rule.rule_id()))
+            .map(|rule| rule.rule_id())
+            .collect();
+        assert!(
+            disagreeing.is_empty(),
+            "category() disagrees with CERT numbering (00-29 recommendation, 30+ rule): \
+             {disagreeing:?}"
+        );
+    }
+
+    #[test]
+    fn every_rule_toml_type_agrees_with_its_cert_id() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/rules/cert_c");
+        let mut checked = 0;
+        let mut disagreeing = Vec::new();
+        for entry in walkdir::WalkDir::new(&root).min_depth(3).max_depth(3) {
+            let path = entry.unwrap().into_path();
+            if path.extension().is_none_or(|ext| ext != "toml") {
+                continue;
+            }
+            let doc: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+            let metadata = doc["metadata"].as_table().unwrap();
+            let id = metadata["id"].as_str().unwrap();
+            let Some(expected) = RuleCategory::from_cert_id(id) else {
+                assert!(
+                    NON_CERT_C_IDS.contains(&id),
+                    "{} has an id that is not a CERT C id: {id}",
+                    path.display()
+                );
+                continue;
+            };
+            let expected = match expected {
+                RuleCategory::Rule => "rule",
+                RuleCategory::Recommendation => "recommendation",
+            };
+            checked += 1;
+            if metadata.get("type").and_then(|t| t.as_str()) != Some(expected) {
+                disagreeing.push(id.to_string());
+            }
+        }
+        assert!(checked > 0, "found no rule TOMLs under {}", root.display());
+        assert!(
+            disagreeing.is_empty(),
+            "[metadata] type disagrees with CERT numbering (00-29 recommendation, 30+ rule): \
+             {disagreeing:?}"
+        );
+    }
+
+    #[test]
+    fn non_cert_c_ids_are_still_registered() {
+        // Keeps the exception list from outliving the rules it excuses.
+        let registry = RuleRegistry::new();
+        for id in NON_CERT_C_IDS {
+            assert!(
+                registry.get_rule(id).is_some(),
+                "{id} is no longer registered; remove it from NON_CERT_C_IDS"
+            );
+        }
     }
 }

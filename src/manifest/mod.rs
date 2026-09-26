@@ -121,12 +121,48 @@ impl std::str::FromStr for Severity {
 
 /// Whether a CERT identifier names a mandatory rule or an advisory
 /// recommendation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum RuleCategory {
     /// A mandatory CERT rule.
     Rule,
     /// An advisory CERT recommendation.
     Recommendation,
+}
+
+/// Ids registered under `cert_c` that are not CERT C identifiers, so have no
+/// rule/recommendation standing: `CON50-C`, `FIO50-C` and `FIO51-C` are CERT
+/// C++ ids, and `MSC42-C`, `POS55-C` and `WIN05-C` are not numbers in the
+/// CERT C standard at all.
+pub const NON_CERT_C_IDS: &[&str] = &[
+    "CON50-C", "FIO50-C", "FIO51-C", "MSC42-C", "POS55-C", "WIN05-C",
+];
+
+impl RuleCategory {
+    /// The category CERT C's own numbering assigns `id`: within each
+    /// three-letter category, 00-29 are recommendations and 30 and above are
+    /// rules. This is the single source of truth for the split; a rule's
+    /// [`crate::rules::CertRule::category`] and its TOML `[metadata] type` are
+    /// both checked against it. `None` for anything that is not a CERT C id,
+    /// including [`NON_CERT_C_IDS`].
+    pub fn from_cert_id(id: &str) -> Option<Self> {
+        if NON_CERT_C_IDS.contains(&id) {
+            return None;
+        }
+        let number = id.strip_suffix("-C")?;
+        let (prefix, digits) = number.split_at_checked(3)?;
+        if !prefix.bytes().all(|b| b.is_ascii_uppercase())
+            || digits.len() != 2
+            || !digits.bytes().all(|b| b.is_ascii_digit())
+        {
+            return None;
+        }
+        let n: u32 = digits.parse().ok()?;
+        Some(if n >= 30 {
+            RuleCategory::Rule
+        } else {
+            RuleCategory::Recommendation
+        })
+    }
 }
 
 impl RuleManifest {
@@ -230,6 +266,46 @@ impl Default for RuleManifest {
                 cert_c: cert_c_rules,
                 brules: HashMap::new(),
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RuleCategory;
+
+    #[test]
+    fn from_cert_id_splits_at_30() {
+        assert_eq!(
+            RuleCategory::from_cert_id("PRE00-C"),
+            Some(RuleCategory::Recommendation)
+        );
+        assert_eq!(
+            RuleCategory::from_cert_id("ARR29-C"),
+            Some(RuleCategory::Recommendation)
+        );
+        assert_eq!(
+            RuleCategory::from_cert_id("PRE30-C"),
+            Some(RuleCategory::Rule)
+        );
+        assert_eq!(
+            RuleCategory::from_cert_id("POS54-C"),
+            Some(RuleCategory::Rule)
+        );
+    }
+
+    #[test]
+    fn from_cert_id_rejects_non_cert_ids() {
+        for id in [
+            "FIO50-C",
+            "WIN05-C",
+            "BRULE-065",
+            "ARR30",
+            "ARR3-C",
+            "arr30-C",
+            "ARR30-CPP",
+        ] {
+            assert_eq!(RuleCategory::from_cert_id(id), None, "{id}");
         }
     }
 }

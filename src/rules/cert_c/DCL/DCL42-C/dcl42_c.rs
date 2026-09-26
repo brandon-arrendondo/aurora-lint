@@ -24,7 +24,7 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/DCL42-C.+Only+call+functions+with+the+unsequenced+or+reproducible+attributes+if+they+actually+have+the+asserted+property>
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
@@ -224,10 +224,6 @@ impl CertRule for Dcl42C {
 
     fn description(&self) -> &'static str {
         "Only call functions with the unsequenced or reproducible attributes if they actually have the asserted property"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn severity(&self) -> Severity {

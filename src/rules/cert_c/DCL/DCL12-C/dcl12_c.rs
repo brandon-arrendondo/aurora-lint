@@ -25,7 +25,7 @@
 //!   struct string_mx;  // Forward declaration only
 //!   extern errno_t strcpy_m(string_mx *s1, const string_mx *s2);
 
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
@@ -45,10 +45,6 @@ impl CertRule for Dcl12C {
 
     fn severity(&self) -> Severity {
         Severity::Low
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

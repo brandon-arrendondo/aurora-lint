@@ -29,7 +29,7 @@
 //! - m ↔ rn (lowercase m vs r+n sequence)
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -47,10 +47,6 @@ impl CertRule for Dcl02C {
 
     fn severity(&self) -> Severity {
         Severity::Low
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

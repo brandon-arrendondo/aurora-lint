@@ -27,7 +27,7 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/MSC22-C.+Use+the+setjmp%28%29%2C+longjmp%28%29+facility+securely>
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
@@ -250,10 +250,6 @@ impl CertRule for Msc22C {
 
     fn description(&self) -> &'static str {
         "Use the setjmp(), longjmp() facility securely"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn severity(&self) -> Severity {

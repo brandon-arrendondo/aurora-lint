@@ -1,6 +1,6 @@
 [metadata]
 id = "CON30-C"
-type = "recommendation"
+type = "rule"
 category = "CON"
 number = 30
 title = "Clean up thread-specific storage"

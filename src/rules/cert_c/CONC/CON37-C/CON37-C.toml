@@ -1,6 +1,6 @@
 [metadata]
 id = "CON37-C"
-type = "recommendation"
+type = "rule"
 category = "CON"
 number = 37
 title = "Do not call signal() in a multithreaded program"

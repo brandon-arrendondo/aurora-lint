@@ -33,7 +33,7 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/FLP04-C.+Check+floating-point+inputs+for+exceptional+values>
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
@@ -251,10 +251,6 @@ impl CertRule for Flp04C {
 
     fn description(&self) -> &'static str {
         "Check floating-point inputs for exceptional values"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn severity(&self) -> Severity {

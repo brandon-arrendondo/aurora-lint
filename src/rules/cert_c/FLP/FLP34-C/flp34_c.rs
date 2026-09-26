@@ -16,7 +16,7 @@
 //! - if (isnan(d_a) || isgreater(fabs(d_a), FLT_MAX)) { /* handle */ } f_a = (float)d_a;
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::float_typing;
 use lang_parsing_substrate::query;
@@ -36,10 +36,6 @@ impl CertRule for Flp34C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

@@ -1,6 +1,6 @@
 [metadata]
 id = "FIO42-C"
-type = "recommendation"
+type = "rule"
 category = "FIO"
 number = 42
 title = "Close files when they are no longer needed"

@@ -1,6 +1,6 @@
 [metadata]
 id = "ENV31-C"
-type = "recommendation"
+type = "rule"
 category = "ENV"
 number = 31
 title = "Do not rely on an environment pointer following an operation that may invalidate it"

@@ -14,7 +14,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::{macro_expands_to_case_label, FunctionMacro};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -171,10 +171,6 @@ impl CertRule for Dcl41C {
 
     fn description(&self) -> &'static str {
         "Do not declare variables inside a switch statement before the first case label"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn severity(&self) -> Severity {

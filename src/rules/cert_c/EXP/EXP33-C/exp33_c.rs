@@ -14,7 +14,7 @@ use crate::analyze::context::ScopedTable;
 use crate::analyze::context::SummaryLookup;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::init_state::{self, InitAnalysisResult, InitState, InitStateMap};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
 use crate::utility::cert_c::guard_dominance;
 use lang_parsing_substrate::query;
@@ -199,10 +199,6 @@ impl CertRule for Exp33C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

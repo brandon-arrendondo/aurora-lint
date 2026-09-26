@@ -35,7 +35,7 @@ use crate::analyze::macro_expand::{
     macro_references_free_identifier, macro_writes_before_jump, FunctionMacro,
 };
 use crate::analyze::unknown_identifier_recovery::UNUSED_ATTRIBUTE_MARKER;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
     self, collect_unused_attribute_macro_names, find_enclosing_declaration_for_identifier,
     get_identifier_from_declarator, get_node_text, has_unused_attribute, is_c_keyword,
@@ -643,10 +643,6 @@ impl CertRule for Msc13C {
 
     fn severity(&self) -> Severity {
         Severity::Low
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

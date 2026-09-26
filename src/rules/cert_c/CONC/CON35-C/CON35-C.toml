@@ -1,6 +1,6 @@
 [metadata]
 id = "CON35-C"
-type = "recommendation"
+type = "rule"
 category = "CON"
 number = 35
 title = "Avoid deadlock by locking in a predefined order"

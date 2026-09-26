@@ -1,6 +1,6 @@
 [metadata]
 id = "FIO32-C"
-type = "recommendation"
+type = "rule"
 category = "FIO"
 number = 32
 title = "Do not perform operations on devices that are only appropriate for files"

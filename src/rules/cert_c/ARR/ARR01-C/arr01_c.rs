@@ -37,7 +37,7 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
     extract_struct_name_from_type, find_containing_function, get_node_text,
     resolve_identifier_declarator,
@@ -59,10 +59,6 @@ impl CertRule for Arr01C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

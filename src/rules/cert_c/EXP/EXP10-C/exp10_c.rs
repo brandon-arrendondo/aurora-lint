@@ -75,7 +75,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::{self, FunctionMacro};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{get_node_text, misparsed_cast_type_name};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -164,10 +164,6 @@ impl CertRule for Exp10C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

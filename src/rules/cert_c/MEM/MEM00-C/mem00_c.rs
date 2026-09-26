@@ -31,7 +31,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::function_summary::extract_function_name;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
@@ -50,10 +50,6 @@ impl CertRule for Mem00C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

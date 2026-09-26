@@ -24,7 +24,7 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/MSC06-C.+Beware+of+compiler+optimizations>
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
@@ -297,10 +297,6 @@ impl CertRule for Msc06C {
 
     fn description(&self) -> &'static str {
         "Beware of compiler optimizations"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn severity(&self) -> Severity {

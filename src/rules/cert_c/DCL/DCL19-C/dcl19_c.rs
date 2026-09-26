@@ -2,7 +2,7 @@
 // Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 use crate::analyze::context::ProjectContext;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
@@ -43,10 +43,6 @@ impl CertRule for DCL19C {
 
     fn severity(&self) -> Severity {
         Severity::Low
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn set_project_context(&self, context: &ProjectContext) {

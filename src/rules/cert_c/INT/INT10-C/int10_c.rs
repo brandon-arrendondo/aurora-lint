@@ -46,7 +46,7 @@ use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, misparsed_cast_type_name};
 use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
@@ -104,10 +104,6 @@ impl CertRule for Int10C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

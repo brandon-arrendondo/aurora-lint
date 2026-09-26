@@ -1,6 +1,6 @@
 [metadata]
 id = "CON32-C"
-type = "recommendation"
+type = "rule"
 category = "CON"
 number = 32
 title = "Prevent data races when accessing bit-fields from multiple threads"

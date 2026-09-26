@@ -1,6 +1,6 @@
 [metadata]
 id = "CON43-C"
-type = "recommendation"
+type = "rule"
 category = "CON"
 number = 43
 title = "Do not allow data races in multithreaded code"

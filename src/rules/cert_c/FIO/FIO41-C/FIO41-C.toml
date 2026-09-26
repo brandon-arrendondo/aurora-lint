@@ -1,6 +1,6 @@
 [metadata]
 id = "FIO41-C"
-type = "recommendation"
+type = "rule"
 category = "FIO"
 number = 41
 title = "Do not call getc(), putc(), getwc(), or putwc() with a stream argument that has side effects"

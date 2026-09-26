@@ -51,7 +51,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval::{self, MacroConstantMap};
 use crate::analyze::context::ProjectContext;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
@@ -1104,10 +1104,6 @@ impl CertRule for Flp03C {
 
     fn severity(&self) -> Severity {
         Severity::Low
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

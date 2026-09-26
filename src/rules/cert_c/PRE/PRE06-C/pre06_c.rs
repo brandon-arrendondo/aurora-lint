@@ -2,7 +2,7 @@
 // Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use tree_sitter::Node;
 
 pub struct Pre06C;
@@ -16,9 +16,6 @@ impl CertRule for Pre06C {
     }
     fn severity(&self) -> Severity {
         Severity::Low
-    }
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
     fn cert_id(&self) -> &'static str {
         "PRE06-C"

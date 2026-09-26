@@ -13,7 +13,7 @@
 // 4. Flag violations when types don't match (e.g., %s with int, %d with long long)
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::call_roles;
 use tree_sitter::Node;
@@ -558,10 +558,6 @@ impl CertRule for Dcl11C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

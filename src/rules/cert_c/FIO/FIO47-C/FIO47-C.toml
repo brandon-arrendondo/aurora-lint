@@ -1,6 +1,6 @@
 [metadata]
 id = "FIO47-C"
-type = "recommendation"
+type = "rule"
 category = "FIO"
 number = 47
 title = "Use valid format strings"

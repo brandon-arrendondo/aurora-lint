@@ -44,7 +44,7 @@
 //! - If operators are used directly (not via another macro call), report violation
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -61,10 +61,6 @@ impl CertRule for Pre05C {
 
     fn severity(&self) -> Severity {
         Severity::Low
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

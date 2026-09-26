@@ -1,6 +1,6 @@
 [metadata]
 id = "MSC04-C"
-type = "rule"
+type = "recommendation"
 category = "MSC"
 number = 4
 title = "Do not use recursive function calls"

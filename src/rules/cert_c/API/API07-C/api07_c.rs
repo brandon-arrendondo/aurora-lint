@@ -10,7 +10,7 @@
 //!    was modified by pointer arithmetic after allocation. The pointer must
 //!    point to the start of the allocated block when passed to `free()`.
 
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
@@ -30,10 +30,6 @@ impl CertRule for Api07C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

@@ -16,7 +16,7 @@
 //! - Only realloc() memory that was previously dynamically allocated
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
@@ -36,10 +36,6 @@ impl CertRule for Mem34C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

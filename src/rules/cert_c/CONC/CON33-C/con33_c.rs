@@ -10,7 +10,7 @@
 //! to static/function-allocated memory or maintain per-process state, making them
 //! unsafe for use across multiple threads without synchronization.
 
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
@@ -30,10 +30,6 @@ impl CertRule for Con33C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

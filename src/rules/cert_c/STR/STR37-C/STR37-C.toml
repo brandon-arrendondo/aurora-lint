@@ -1,6 +1,6 @@
 [metadata]
 id = "STR37-C"
-type = "recommendation"
+type = "rule"
 category = "STR"
 number = 37
 title = "Arguments to character-handling functions must be representable as an unsigned char"

@@ -1,6 +1,6 @@
 [metadata]
 id = "FIO46-C"
-type = "recommendation"
+type = "rule"
 category = "FIO"
 number = 46
 title = "Do not access a closed file"

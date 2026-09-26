@@ -1,6 +1,6 @@
 [metadata]
 id = "FIO39-C"
-type = "recommendation"
+type = "rule"
 category = "FIO"
 number = 39
 title = "Do not alternately input and output from a stream without an intervening flush or positioning call"

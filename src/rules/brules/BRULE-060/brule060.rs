@@ -1,5 +1,5 @@
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use tree_sitter::Node;
 
@@ -34,9 +34,6 @@ impl CertRule for Brule060 {
     }
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
     fn cert_id(&self) -> &'static str {
         "BRULE-060"

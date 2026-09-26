@@ -16,7 +16,7 @@
 //!   - TLS_DISABLE_HOST_VALIDATION  (must disable validation, secure by default)
 //!   - TLS_ENABLE_V1_0              (must enable old protocol, secure by default)
 
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
@@ -35,10 +35,6 @@ impl CertRule for Api10C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

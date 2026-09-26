@@ -39,7 +39,7 @@
 //! - Detect uses of these arrays with string functions requiring null termination
 //! - Report violations when potentially non-null-terminated arrays are used unsafely
 
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
@@ -64,10 +64,6 @@ impl CertRule for Str32C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {

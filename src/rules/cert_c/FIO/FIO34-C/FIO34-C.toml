@@ -1,6 +1,6 @@
 [metadata]
 id = "FIO34-C"
-type = "recommendation"
+type = "rule"
 category = "FIO"
 number = 34
 title = "Distinguish between characters read from a file and EOF or WEOF"

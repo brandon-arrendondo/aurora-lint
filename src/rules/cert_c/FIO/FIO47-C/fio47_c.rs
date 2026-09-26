@@ -33,7 +33,7 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declared_type};
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::format_slots;
@@ -645,10 +645,6 @@ impl CertRule for Fio47C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

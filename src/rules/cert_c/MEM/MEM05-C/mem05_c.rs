@@ -2,7 +2,7 @@
 // Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::is_likely_macro_constant;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
@@ -18,9 +18,6 @@ impl CertRule for Mem05C {
     }
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
     fn cert_id(&self) -> &'static str {
         "MEM05-C"

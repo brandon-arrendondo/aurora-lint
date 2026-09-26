@@ -33,7 +33,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::ast_utils::resolve_field_expression_type;
 use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
@@ -73,10 +73,6 @@ impl CertRule for Exp14C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

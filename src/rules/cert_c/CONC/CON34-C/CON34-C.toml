@@ -1,6 +1,6 @@
 [metadata]
 id = "CON34-C"
-type = "recommendation"
+type = "rule"
 category = "CON"
 number = 34
 title = "Declare objects shared between threads with appropriate storage durations"

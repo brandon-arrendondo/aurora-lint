@@ -40,7 +40,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::dead_regions::DeadRegions;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declarator};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -66,10 +66,6 @@ impl CertRule for Mem10C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

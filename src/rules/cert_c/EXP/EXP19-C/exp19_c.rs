@@ -5,7 +5,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::check_macros::{self, MacroDefinition};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::control_header_preproc_guard::strip_comments;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::preproc_directive_start;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -151,10 +151,6 @@ impl CertRule for Exp19C {
 
     fn severity(&self) -> Severity {
         Severity::Low
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

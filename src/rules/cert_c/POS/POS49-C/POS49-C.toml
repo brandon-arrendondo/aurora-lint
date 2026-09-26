@@ -1,6 +1,6 @@
 [metadata]
 id = "POS49-C"
-type = "recommendation"
+type = "rule"
 category = "POS"
 number = 49
 title = "When data must be accessed by multiple threads, provide a mutex and guarantee no adjacent data is also accessed"

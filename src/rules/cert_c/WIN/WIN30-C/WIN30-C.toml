@@ -1,6 +1,6 @@
 [metadata]
 id = "WIN30-C"
-type = "recommendation"
+type = "rule"
 category = "WIN"
 number = 30
 title = "Properly pair allocation and deallocation functions"

@@ -12,7 +12,7 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/EXP44-C.+Do+not+rely+on+side+effects+in+operands+to+sizeof,+_Alignof,+or+_Generic>
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
@@ -247,10 +247,6 @@ impl CertRule for Exp44C {
 
     fn description(&self) -> &'static str {
         "Do not rely on side effects in operands to sizeof, _Alignof, or _Generic"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn severity(&self) -> Severity {

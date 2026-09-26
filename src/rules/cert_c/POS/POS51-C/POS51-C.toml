@@ -1,6 +1,6 @@
 [metadata]
 id = "POS51-C"
-type = "recommendation"
+type = "rule"
 category = "POS"
 number = 51
 title = "Avoid deadlock with POSIX threads by locking in predefined order"

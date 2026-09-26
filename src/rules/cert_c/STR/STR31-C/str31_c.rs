@@ -6,7 +6,7 @@ use crate::analyze::array_size::resolve_declared_array_size;
 use crate::analyze::buffer_size;
 use crate::analyze::const_eval::{collect_macro_constants, MacroConstantMap};
 use crate::analyze::context::ProjectContext;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -2268,10 +2268,6 @@ impl CertRule for Str31C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

@@ -18,7 +18,7 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/MSC01-C.+Strive+for+logical+completeness>
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::next_code_offset;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
@@ -211,10 +211,6 @@ impl CertRule for Msc01C {
 
     fn description(&self) -> &'static str {
         "Strive for logical completeness"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn severity(&self) -> Severity {

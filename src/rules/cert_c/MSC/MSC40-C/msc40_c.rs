@@ -39,7 +39,7 @@
 //! - Check if they reference static (internally-linked) identifiers
 //! - Check if they contain static variable declarations
 
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::{get_node_text, get_sanitized_node_text};
@@ -64,10 +64,6 @@ impl CertRule for Msc40C {
 
     fn severity(&self) -> Severity {
         Severity::Low
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {

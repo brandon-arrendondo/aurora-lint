@@ -4,7 +4,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::buffer_size;
 use crate::analyze::context::ProjectContext;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{self, find_containing_function, get_node_text};
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::guard_dominance;
@@ -66,10 +66,6 @@ impl CertRule for Arr38C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

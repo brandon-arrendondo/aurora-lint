@@ -11,7 +11,7 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/ERR01-C.+Use+ferror()+rather+than+errno+to+check+for+FILE+stream+errors>
 
 use super::super::{CertRule, RuleViolation};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -248,10 +248,6 @@ impl CertRule for Err01C {
 
     fn description(&self) -> &'static str {
         "Use ferror() rather than errno to check for FILE stream errors"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn severity(&self) -> Severity {

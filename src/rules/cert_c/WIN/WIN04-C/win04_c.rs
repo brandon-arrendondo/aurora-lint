@@ -28,7 +28,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::init_state::strip_arg_casts;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::overflow_helpers::enclosing_function_definition;
 use lang_parsing_substrate::query;
@@ -56,10 +56,6 @@ impl CertRule for Win04C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

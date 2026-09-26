@@ -9,7 +9,7 @@ use crate::analyze::context::SummaryLookup;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::null_state::{self, NullAnalysisResult, NullState, StateMap};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::format_slots;
 use crate::utility::cert_c::guard_dominance;
@@ -151,10 +151,6 @@ impl CertRule for Exp34C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

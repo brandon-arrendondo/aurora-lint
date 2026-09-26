@@ -42,7 +42,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg;
 use crate::analyze::const_eval::{self, MacroConstantMap};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
@@ -189,10 +189,6 @@ impl CertRule for Msc10C {
 
     fn description(&self) -> &'static str {
         "Character encoding: UTF8-related issues"
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn severity(&self) -> Severity {

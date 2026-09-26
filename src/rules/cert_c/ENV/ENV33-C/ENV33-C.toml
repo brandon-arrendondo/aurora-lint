@@ -1,6 +1,6 @@
 [metadata]
 id = "ENV33-C"
-type = "recommendation"
+type = "rule"
 category = "ENV"
 number = 33
 title = "Do not call system()"

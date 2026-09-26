@@ -5,7 +5,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::points_to::lvalue_of;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::{ast_utils, declarator_utils};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -49,10 +49,6 @@ impl CertRule for Dcl13C {
 
     fn severity(&self) -> Severity {
         Severity::Low
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

@@ -25,7 +25,7 @@ use crate::analyze::const_eval;
 use crate::analyze::context::SummaryLookup;
 use crate::analyze::context::{ProjectContext, ScopedTable};
 use crate::analyze::function_summary::{self, FunctionSummary};
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::{get_node_text, is_function_parameter};
 use lang_parsing_substrate::query;
@@ -138,10 +138,6 @@ impl CertRule for Env03C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

@@ -50,7 +50,7 @@ use crate::analyze::function_summary::{collect_param_names, extract_function_nam
 use crate::analyze::macro_expand::{collect_function_macros, FunctionMacro};
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -227,10 +227,6 @@ impl CertRule for Arr30C {
 
     fn severity(&self) -> Severity {
         Severity::High
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Rule
     }
 
     fn cert_id(&self) -> &'static str {

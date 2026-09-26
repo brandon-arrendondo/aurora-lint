@@ -41,7 +41,7 @@ use crate::analyze::const_eval::MacroConstantMap;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
     get_node_text, resolve_field_expression_type, resolve_identifier_declarator,
 };
@@ -85,10 +85,6 @@ impl CertRule for Int16C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {

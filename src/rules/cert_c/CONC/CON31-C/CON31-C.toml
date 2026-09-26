@@ -1,6 +1,6 @@
 [metadata]
 id = "CON31-C"
-type = "recommendation"
+type = "rule"
 category = "CON"
 number = 31
 title = "Do not destroy a mutex while it is locked"

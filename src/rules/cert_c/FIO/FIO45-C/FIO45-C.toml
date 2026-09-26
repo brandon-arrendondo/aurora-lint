@@ -1,6 +1,6 @@
 [metadata]
 id = "FIO45-C"
-type = "recommendation"
+type = "rule"
 category = "FIO"
 number = 45
 title = "Avoid TOCTOU race conditions while accessing files"

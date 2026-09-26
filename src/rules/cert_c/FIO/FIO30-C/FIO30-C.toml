@@ -1,6 +1,6 @@
 [metadata]
 id = "FIO30-C"
-type = "recommendation"
+type = "rule"
 category = "FIO"
 number = 30
 title = "Exclude user input from format strings"

@@ -51,7 +51,7 @@ use crate::analyze::context::ScopedTable;
 use crate::analyze::context::SummaryLookup;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::null_state::condition_tests_null;
-use crate::manifest::{RuleCategory, Severity};
+use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
     documented_nonnull_parameters, get_function_parameters, get_node_text, get_sanitized_node_text,
     integer_type_width, is_pointer_type, is_unsigned_type, ordered_parameter_names,
@@ -127,10 +127,6 @@ impl CertRule for Api00C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
-    }
-
-    fn category(&self) -> RuleCategory {
-        RuleCategory::Recommendation
     }
 
     fn cert_id(&self) -> &'static str {
