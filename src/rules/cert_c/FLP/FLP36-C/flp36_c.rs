@@ -16,11 +16,20 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::sync::Arc;
 use tree_sitter::Node;
 
-pub struct Flp36C;
+#[derive(Default)]
+pub struct Flp36C {
+    /// The run's policy and environment settings: whether an
+    /// NDEBUG-strippable assert counts as a precision check
+    /// (`assert_is_guard`).
+    settings: RefCell<Arc<AnalysisSettings>>,
+}
 
 impl CertRule for Flp36C {
     fn rule_id(&self) -> &'static str {
@@ -41,6 +50,10 @@ impl CertRule for Flp36C {
 
     fn cert_id(&self) -> &'static str {
         "FLP36-C"
+    }
+
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        *self.settings.borrow_mut() = Arc::clone(settings);
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -151,7 +164,14 @@ impl Flp36C {
             return true;
         }
 
-        if body_text.contains("assert") && body_text.contains("LONG_MAX") {
+        // An `assert(x <= LONG_MAX ...)` counts only when the policy credits
+        // an NDEBUG-strippable assert (`assert_is_guard`); the strict policy
+        // reads the release configuration, where it checks nothing
+        // (ADR-0010 D5).
+        if self.settings.borrow().flag("assert_is_guard")
+            && body_text.contains("assert")
+            && body_text.contains("LONG_MAX")
+        {
             return true;
         }
 
