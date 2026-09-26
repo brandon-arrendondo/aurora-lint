@@ -63,6 +63,7 @@ struct FilePrescanResult {
     packed_struct_candidates: Vec<(String, String)>,
     packed_macro_names: HashSet<String>,
     defined_macro_names: HashSet<String>,
+    function_macro_names: HashSet<String>,
     unused_attribute_macros: HashSet<String>,
     initializer_function_refs: HashSet<String>,
     value_position_identifiers: HashSet<String>,
@@ -124,6 +125,7 @@ impl FilePrescanResult {
             packed_struct_candidates: Vec::new(),
             packed_macro_names: HashSet::new(),
             defined_macro_names: HashSet::new(),
+            function_macro_names: HashSet::new(),
             unused_attribute_macros: HashSet::new(),
             initializer_function_refs: HashSet::new(),
             value_position_identifiers: HashSet::new(),
@@ -245,6 +247,10 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         crate::utility::cert_c::ast_utils::collect_defined_macro_names(
             &source,
             &mut result.defined_macro_names,
+        );
+        crate::analyze::macro_expand::collect_function_macro_names(
+            &source,
+            &mut result.function_macro_names,
         );
         crate::utility::cert_c::ast_utils::collect_unused_attribute_macro_names(
             &source,
@@ -479,6 +485,7 @@ fn prescan_file_list(
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
     let mut packed_macro_names: HashSet<String> = HashSet::new();
     let mut defined_macro_names: HashSet<String> = HashSet::new();
+    let mut function_macro_names: HashSet<String> = HashSet::new();
     let mut unused_attribute_macros: HashSet<String> = HashSet::new();
     let mut initializer_function_refs: HashSet<String> = HashSet::new();
     let mut value_position_identifiers: HashSet<String> = HashSet::new();
@@ -687,6 +694,7 @@ fn prescan_file_list(
         packed_struct_candidates.extend(r.packed_struct_candidates);
         packed_macro_names.extend(r.packed_macro_names);
         defined_macro_names.extend(r.defined_macro_names);
+        function_macro_names.extend(r.function_macro_names);
         unused_attribute_macros.extend(r.unused_attribute_macros);
         initializer_function_refs.extend(r.initializer_function_refs);
         if let Some(key) = &file_key {
@@ -1030,6 +1038,7 @@ fn prescan_file_list(
         packed_structs: Arc::new(packed_structs),
         noreturn_functions: noreturn_functions.map(|names| Arc::new(names.clone())),
         defined_macro_names: Arc::new(defined_macro_names),
+        function_macro_names: Arc::new(function_macro_names),
         unused_attribute_macros: Arc::new(unused_attribute_macros),
         global_constants,
         global_var_null_states: Arc::new(global_var_null_states),
@@ -6425,6 +6434,10 @@ pub fn resolve_includes(
                 crate::utility::cert_c::ast_utils::collect_defined_macro_names(
                     &hsource,
                     Arc::make_mut(&mut context.defined_macro_names),
+                );
+                crate::analyze::macro_expand::collect_function_macro_names(
+                    &hsource,
+                    Arc::make_mut(&mut context.function_macro_names),
                 );
                 crate::utility::cert_c::ast_utils::collect_unused_attribute_macro_names(
                     &hsource,

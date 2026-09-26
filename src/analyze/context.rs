@@ -141,6 +141,13 @@ pub struct ProjectContext {
     /// different file than the struct.
     #[serde(default)]
     pub defined_macro_names: Arc<HashSet<String>>,
+    /// Names of every function-like `#define` across all scanned files
+    /// (incl. headers), in every preprocessor branch and including variadic
+    /// and `#`/`##` macros: what says a call is a macro invocation, rather
+    /// than the callee's spelling. See
+    /// [`crate::analyze::macro_expand::is_function_like_macro`].
+    #[serde(default)]
+    pub function_macro_names: Arc<HashSet<String>>,
     /// Names of every object-like `#define` whose replacement text is an
     /// unused-attribute annotation — `__attribute__((unused))`,
     /// `[[maybe_unused]]`, and the reserved spellings — collected across all
