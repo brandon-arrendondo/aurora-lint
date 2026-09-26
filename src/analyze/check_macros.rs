@@ -302,6 +302,35 @@ pub fn abort_check_macros(
     out
 }
 
+/// The argument `stmt` checks, when `stmt` is an expression statement calling
+/// one of `checks` (an [`abort_check_macros`] table): control passes the
+/// statement only when that argument is true, in every configuration.
+///
+/// Anything else is `None`, and that includes every spelling of an
+/// `NDEBUG`-strippable assert (`assert`, curl's `DEBUGASSERT`, hostap's
+/// `WPA_ASSERT`), whatever its name suggests (ADR-0010 D5). A statement inside
+/// a preprocessor wrapper is not looked into either: a check that only some
+/// configurations compile guards nothing in the others.
+pub fn abort_checked_argument<'a>(
+    stmt: &tree_sitter::Node<'a>,
+    source: &str,
+    checks: &HashMap<String, usize>,
+) -> Option<tree_sitter::Node<'a>> {
+    if stmt.kind() != "expression_statement" {
+        return None;
+    }
+    let call = stmt.named_child(0)?;
+    if call.kind() != "call_expression" {
+        return None;
+    }
+    let name = call
+        .child_by_field_name("function")?
+        .utf8_text(source.as_bytes())
+        .ok()?;
+    let &index = checks.get(name)?;
+    call.child_by_field_name("arguments")?.named_child(index)
+}
+
 const MAX_DEPTH: usize = 8;
 
 /// How a failure branch leaves.
