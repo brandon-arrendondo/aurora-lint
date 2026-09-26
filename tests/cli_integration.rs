@@ -1402,8 +1402,8 @@ fn manifest_mem31() -> PathBuf {
 /// The loop-array check reports an array whose elements a loop allocates
 /// only when this function is the one that should release them. Returned to
 /// the caller, kept in a file-scope table, or released by an unwind loop
-/// through a project deallocator: none is a loop-array finding (aurora_lint
-/// 1494, where every relocated real-world one was of these kinds).
+/// through a project deallocator: none is a loop-array finding. Every
+/// real-world loop-array finding relocated to these shapes was one of them.
 #[test]
 fn loop_array_elements_owned_elsewhere_are_not_reported() {
     let dir =
