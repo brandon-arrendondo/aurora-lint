@@ -2,13 +2,38 @@
 // Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::macro_expand::collect_function_macro_names;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::sync::Arc;
 use tree_sitter::Node;
 
-pub struct Pre32C;
+pub struct Pre32C {
+    /// Every function-like macro name across the scanned files
+    /// (`ProjectContext::function_macro_names`).
+    project_macro_names: RefCell<Arc<HashSet<String>>>,
+    /// The function-like macro names the file being scanned defines itself.
+    file_macro_names: RefCell<HashSet<String>>,
+}
+
+impl Pre32C {
+    pub fn new() -> Self {
+        Self {
+            project_macro_names: RefCell::new(Arc::new(HashSet::new())),
+            file_macro_names: RefCell::new(HashSet::new()),
+        }
+    }
+}
+
+impl Default for Pre32C {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Information about an unclosed function call
 struct UnclosedCallInfo {
@@ -33,7 +58,14 @@ impl CertRule for Pre32C {
         "PRE32-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project_macro_names.borrow_mut() = context.function_macro_names.clone();
+    }
+
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let mut file_names = HashSet::new();
+        collect_function_macro_names(source, &mut file_names);
+        *self.file_macro_names.borrow_mut() = file_names;
         self.check_node(node, source, violations);
     }
 }
@@ -312,11 +344,12 @@ impl Pre32C {
         .cloned()
         .collect();
 
-        std_lib_functions.contains(function_name) ||
-        // Any function could potentially be a macro, so we should be conservative
-        // But focus on functions commonly implemented as macros
-        function_name.chars().all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit())
-        // ALL_CAPS suggests macro
+        // C11 7.1.4: any library function may also be implemented as a
+        // function-like macro. Anything else is a macro only where some
+        // preprocessor branch defines it as one, whatever its spelling.
+        std_lib_functions.contains(function_name)
+            || self.file_macro_names.borrow().contains(function_name)
+            || self.project_macro_names.borrow().contains(function_name)
     }
 
     fn contains_preprocessor_directives(&self, text: &str) -> bool {
