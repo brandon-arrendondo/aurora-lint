@@ -201,11 +201,16 @@ Each names its basis, so a label can cite it (Brandon, 2026-09-24/25).
   as `int32_t`, where it exists (7.20.1.1), are proof. "Usually 4 bytes" is
   why `int_least32_t` and `int32_t` exist. Anything that relies on LP64 or
   ILP32 is basis 4.
-- **noreturn** is proven only by a body verified never to return, or by the
-  ISO standard library's noreturn functions (`abort`, `exit`, `_Exit`,
-  `quick_exit`, `longjmp`, `thrd_exit`). `_Noreturn` and
-  `__attribute__((noreturn))` alone are not proof; a function that returns
-  anyway is undefined, not impossible.
+- **noreturn.** Under both policies (ADR-0015), a body verified never to
+  return, and the ISO standard library's noreturn functions (`abort`, `exit`,
+  `_Exit`, `quick_exit`, `longjmp`, `thrd_exit`), are proof. Under the
+  default policy, a function declared `_Noreturn` is also proof: it is ISO C
+  (C11 6.7.4p8, "shall not return to its caller"), a standard contract like
+  the library's. Under the strict policy it isn't, because a `_Noreturn`
+  function that returns is undefined, not impossible. `__attribute__((noreturn))`
+  is a compiler extension and is proof under neither (basis 4). A wrapper
+  macro such as `NORETURN` is resolved by expanding it, never by its name
+  (Brandon, 2026-09-25).
 - **A correlation inside one function** (a flag set only under `p && ...`, a
   pointer non-NULL only when a tested sibling is set) is proof when the
   function's own code establishes it on every path, with no reassignment in

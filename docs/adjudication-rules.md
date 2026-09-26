@@ -131,8 +131,10 @@ contract model. (ADR-0015)
   that length, which needs a closed caller set.
 - **C11. Integer widths:** only the ISO minimums and the exact width of an
   exact-width type are proof.
-- **C12. noreturn:** only a body verified never to return, or the standard
-  library's noreturn functions.
+- **C12. noreturn:** a body verified never to return, or the standard
+  library's noreturn functions. Under the default policy, an ISO `_Noreturn`
+  declaration too; never a compiler attribute or a macro's name. (ADR-0011,
+  ADR-0015)
 - **C13. A correlation inside one function** (a flag set only when a pointer
   was tested) is proof when the function's own code establishes it on every
   path, with no reassignment in between.

@@ -45,9 +45,11 @@ safety-critical user unprotected.
    - **`default`**, for the average codebase: a dominating assert whose
      condition establishes the property is a guard, strippable or not (the
      assumption the analyzers above make); in a proof chain, only the first
-     failing site is reported.
+     failing site is reported; a function declared `_Noreturn` (ISO C) is
+     trusted not to return.
    - **`strict`**, for safety-critical, MISRA-like and certified code: a
-     strippable assert guards nothing; every violating line is reported.
+     strippable assert guards nothing; every violating line is reported;
+     only a body verified never to return proves noreturn.
    In both, a violation inside an assert's argument is reported, and an
    assert macro no configuration strips, whose failure path never returns, is
    a guard.
