@@ -86,13 +86,9 @@ pub fn expr_is_float(
 ) -> bool {
     match node.kind() {
         "number_literal" => is_float_literal(ast_utils::get_node_text(node, source)),
-        "identifier" => {
-            let name = ast_utils::get_node_text(node, source);
-            type_map
-                .get(name)
-                .map(|t| is_float_type(t))
-                .unwrap_or(false)
-        }
+        "identifier" => ast_utils::identifier_type(node, source, type_map)
+            .map(|t| is_float_type(&t))
+            .unwrap_or(false),
         "field_expression" => {
             ast_utils::resolve_field_expression_type(node, source, type_map, struct_field_types)
                 .map(|t| is_float_type(&t))
@@ -145,13 +141,10 @@ pub fn expr_is_definitely_integer(
 ) -> bool {
     match node.kind() {
         "number_literal" => !is_float_literal(ast_utils::get_node_text(node, source)),
-        "identifier" => {
-            let name = ast_utils::get_node_text(node, source);
-            match type_map.get(name) {
-                Some(t) => !is_float_type(t) && !t.contains('*'),
-                None => false,
-            }
-        }
+        "identifier" => match ast_utils::identifier_type(node, source, type_map) {
+            Some(t) => !is_float_type(&t) && !t.contains('*'),
+            None => false,
+        },
         "parenthesized_expression" => node
             .named_child(0)
             .map(|c| expr_is_definitely_integer(&c, source, type_map))

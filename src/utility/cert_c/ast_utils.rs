@@ -419,6 +419,88 @@ pub fn resolve_identifier_declared_type(
     })
 }
 
+/// The type of the identifier occurrence `ident`, spelled as the
+/// function-local `{name -> type}` maps spell it
+/// ([`crate::utility::cert_c::overflow_helpers::collect_variable_types`],
+/// [`crate::utility::cert_c::float_typing::collect_variable_types`]): the
+/// declaration's type specifier, plus ` *` when the name's own declarator is
+/// a pointer (an array keeps its element type).
+///
+/// A name is not a variable (ADR-0006). Those maps are keyed by name, so a
+/// same-named variable in another function (a map built from a translation
+/// unit) or in an inner block (a function's map flattens its scopes) answers
+/// for this occurrence. When the occurrence resolves to a local or a
+/// parameter of its enclosing function, that declaration is the answer --
+/// `None` if the map spelling cannot express it (an enum or union type),
+/// never the map's same-named entry. Otherwise, a file-scope name or one
+/// this file does not declare, `type_map` answers as before.
+pub fn identifier_type<'m>(
+    ident: &Node,
+    source: &str,
+    type_map: &'m HashMap<String, String>,
+) -> Option<std::borrow::Cow<'m, str>> {
+    let name = get_node_text(ident, source);
+    if let Some((decl, declarator)) = resolve_identifier_declarator(ident, name, source) {
+        if has_function_definition_ancestor(&decl) {
+            return local_type_spelling(&decl, &declarator, source).map(std::borrow::Cow::Owned);
+        }
+    }
+    type_map
+        .get(name)
+        .map(|t| std::borrow::Cow::Borrowed(t.as_str()))
+}
+
+/// The `{name -> type}` map spelling of `declarator` in `decl`. `None` for a
+/// function or function pointer, and for a type specifier the maps do not
+/// record.
+fn local_type_spelling(decl: &Node, declarator: &Node, source: &str) -> Option<String> {
+    let mut base = String::new();
+    for i in 0..decl.child_count() {
+        if let Some(child) = decl.child(i) {
+            if matches!(
+                child.kind(),
+                "primitive_type" | "sized_type_specifier" | "type_identifier" | "struct_specifier"
+            ) {
+                base = get_node_text(&child, source).to_string();
+            }
+        }
+    }
+    if base.is_empty() {
+        return None;
+    }
+    let mut d = *declarator;
+    loop {
+        match d.kind() {
+            "function_declarator" => return None,
+            "pointer_declarator" | "array_declarator" | "parenthesized_declarator" => {}
+            _ => break,
+        }
+        match d
+            .child_by_field_name("declarator")
+            .or_else(|| d.named_child(0))
+        {
+            Some(inner) if inner.id() != d.id() => d = inner,
+            _ => break,
+        }
+    }
+    Some(if declarator.kind() == "pointer_declarator" {
+        format!("{} *", base)
+    } else {
+        base
+    })
+}
+
+fn has_function_definition_ancestor(node: &Node) -> bool {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if n.kind() == "function_definition" {
+            return true;
+        }
+        cur = n.parent();
+    }
+    false
+}
+
 /// Fallback for file-scope (global) declarations, which
 /// `find_enclosing_declaration_for_identifier` intentionally does not
 /// resolve to (it only walks enclosing `compound_statement` blocks).
@@ -2088,18 +2170,17 @@ pub fn resolve_field_expression_type(
     // Resolve the struct type of the argument. Supports chained access
     // (`a.b.c`, `a->b.c`) by recursing through nested field_expressions.
     let base_type = match argument.kind() {
-        "identifier" => {
-            let base_name = argument.utf8_text(source.as_bytes()).ok()?;
-            type_map.get(base_name)?.clone()
-        }
+        "identifier" => identifier_type(&argument, source, type_map)?.into_owned(),
         "field_expression" => {
             resolve_field_expression_type(&argument, source, type_map, struct_field_types)?
         }
         "pointer_expression" => {
             // `*p.field` — dereference one pointer level from `p`'s type.
             let inner = argument.child_by_field_name("argument")?;
-            let inner_name = inner.utf8_text(source.as_bytes()).ok()?;
-            let t = type_map.get(inner_name)?;
+            if inner.kind() != "identifier" {
+                return None;
+            }
+            let t = identifier_type(&inner, source, type_map)?;
             t.strip_suffix(" *")
                 .or_else(|| t.strip_suffix('*'))
                 .map(|s| s.trim().to_string())?

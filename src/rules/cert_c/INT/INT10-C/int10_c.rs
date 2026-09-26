@@ -307,8 +307,10 @@ impl Int10C {
         let typedef_types = self.typedef_types.borrow();
         query::find_first_descendant(*node, |n| {
             if n.kind() == "identifier" {
-                let name = get_node_text(&n, source);
-                if let Some(t) = type_map.get(name) {
+                if let Some(t) =
+                    crate::utility::cert_c::ast_utils::identifier_type(&n, source, type_map)
+                {
+                    let t = t.as_ref();
                     return t.contains("size_t")
                         || t.contains("unsigned")
                         || t.contains("uint")

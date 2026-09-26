@@ -156,9 +156,7 @@ impl Flp34C {
         let left = assignment_node.child_by_field_name("left")?;
         let right = assignment_node.child_by_field_name("right")?;
 
-        // Get variable names
         let left_name = ast_utils::get_node_text(&left, source);
-        let right_name = ast_utils::get_node_text(&right, source);
 
         // Only check simple identifier-to-identifier assignments
         // Skip if right side contains function calls, casts, or complex expressions
@@ -167,11 +165,15 @@ impl Flp34C {
         }
 
         // Look up types for both sides
-        let left_type = type_map.get(left_name)?;
-        let right_type = type_map.get(right_name)?;
+        let left_type = if left.kind() == "identifier" {
+            ast_utils::identifier_type(&left, source, type_map)?
+        } else {
+            std::borrow::Cow::Borrowed(type_map.get(left_name)?.as_str())
+        };
+        let right_type = ast_utils::identifier_type(&right, source, type_map)?;
 
         // Check if this is a dangerous floating-point conversion
-        if !self.is_dangerous_assignment(left_type, right_type) {
+        if !self.is_dangerous_assignment(&left_type, &right_type) {
             return None;
         }
 

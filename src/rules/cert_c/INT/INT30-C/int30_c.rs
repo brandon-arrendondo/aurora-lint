@@ -1753,13 +1753,14 @@ impl Int30C {
         // Check identifiers against the type map (most reliable).
         // Return the actual declared type to preserve narrow-type info (uint8_t etc.).
         if node.kind() == "identifier" {
-            if let Some(declared_type) = type_map.get(text) {
+            if let Some(declared_type) = ast_utils::identifier_type(node, source, type_map) {
+                let declared_type = declared_type.as_ref();
                 // Pointer types are not integer types — skip
                 if declared_type.contains('*') {
                     return "not_applicable".to_string();
                 }
                 if self.is_unsigned_type(declared_type) {
-                    return declared_type.clone();
+                    return declared_type.to_string();
                 }
                 // Non-integer types (float, double, char, pointers, structs) — not applicable
                 if !declared_type.contains("int")
@@ -1778,14 +1779,22 @@ impl Int30C {
         // declared type if present.
         if node.kind() == "pointer_expression" {
             let var_name = text.trim_start_matches('*').trim();
-            if let Some(declared_type) = type_map.get(var_name) {
+            let declared = match node.child_by_field_name("argument") {
+                Some(arg) if arg.kind() == "identifier" => {
+                    ast_utils::identifier_type(&arg, source, type_map)
+                }
+                _ => type_map
+                    .get(var_name)
+                    .map(|t| std::borrow::Cow::Borrowed(t.as_str())),
+            };
+            if let Some(declared_type) = declared.as_deref() {
                 // Strip one level of pointer indirection (dereference)
                 let deref_type = if let Some(stripped) = declared_type.strip_suffix(" *") {
                     stripped
                 } else if let Some(stripped) = declared_type.strip_suffix('*') {
                     stripped
                 } else {
-                    declared_type.as_str()
+                    declared_type
                 };
                 if deref_type.contains('*') {
                     // Still a pointer after dereference (e.g. int **)
@@ -2392,8 +2401,8 @@ impl Int30C {
                 recurse(node.child_by_field_name("left")),
                 recurse(node.child_by_field_name("right")),
             ),
-            "identifier" => match type_map.get(get_node_text(node, source)) {
-                Some(t) => self.type_width_bits(t),
+            "identifier" => match ast_utils::identifier_type(node, source, type_map) {
+                Some(t) => self.type_width_bits(&t),
                 None => Some(PROMOTED_ARITH_BITS),
             },
             "field_expression" => {
@@ -2523,8 +2532,7 @@ impl Int30C {
     ) -> Option<String> {
         match node.kind() {
             "identifier" => {
-                let name = get_node_text(node, source);
-                type_map.get(name).cloned()
+                ast_utils::identifier_type(node, source, type_map).map(|t| t.into_owned())
             }
             "call_expression" => {
                 // For function calls, check if the result is assigned to a typed variable

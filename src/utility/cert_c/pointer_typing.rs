@@ -137,7 +137,7 @@ pub fn expr_is_pointer(
             // here, for a local, a parameter or a file-scope variable alike.
             let resolved = ast_utils::resolve_identifier_declarator(node, name, source)
                 .map(|(_, declarator)| declarator_decays_to_pointer(&declarator));
-            match type_map.get(name) {
+            match ast_utils::identifier_type(node, source, type_map).as_deref() {
                 Some(t) if ast_utils::is_pointer_type(t) => true,
                 // A local or parameter the map spells as a non-pointer: only
                 // its own declarator can say otherwise (the array case).
