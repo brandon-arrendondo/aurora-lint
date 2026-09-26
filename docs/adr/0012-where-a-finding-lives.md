@@ -80,6 +80,17 @@ questions.
    stated. It is a CERT L3 recommendation with no external benchmark ground
    truth. Headline null-dereference figures are EXP34-C's.
 
+5. **The first site of failure is the site.** When a pointer is
+   dereferenced unguarded (`p->x`) and a later test (`if (p && ...)`) shows
+   it may be NULL, the violation is the first dereference. Report it there;
+   don't silently drop both the dereference and the later disjunct. Later
+   sites that depend on the first may not show until it is fixed (ADR-0011,
+   proof chains).
+6. **`&p->field` and `&p->a[i]` with `p` unproven are dereference sites.**
+   They evaluate member access through `p`, which is undefined for a null
+   `p` (C11 6.5.2.3; 6.5.3.2 exempts only `&*E` and `&E[i]`). A plain `f(p)`
+   still isn't a site (item 1).
+
 ## Consequences
 
 - **No existing API00-C TP flips for resting on forwarding alone.** The

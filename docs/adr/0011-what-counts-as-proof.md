@@ -159,3 +159,51 @@ TP. That holds even when it is almost certainly harmless in practice.
 - This ADR does not change ADR-0010's rule that every compilable
   configuration counts. A construct that is safe in one build and unsafe in
   another is unsafe, because the unsafe build exists.
+
+## Settled cases
+
+Rulings that apply the bases above to shapes that recur in adjudication.
+Each names its basis, so a label can cite it (Brandon, 2026-09-24/25).
+
+- **`main()`'s parameters.** `argv` itself is never NULL: C11 5.1.2.2.1
+  requires `argv[argc]` to be a null pointer (basis 1). `argv[i]` read
+  without an `argc` bound is a violation. `argc` is judged like any other
+  integer parameter.
+- **Static storage is zero-initialized** (C11 6.7.9p10, basis 1), so reading
+  a static or thread-local object with no initializer is not a use of an
+  indeterminate value.
+- **A callee's postcondition** is a link in a proof chain when the callee's
+  body proves it on every return path (for example, non-NULL on every
+  success return) and the caller tests the return code, so the chain ends in
+  a test (basis 3). The reason names the callee and its return paths.
+  Callers that exist only in generated files absent from the checkout prove
+  nothing.
+- **A `(pointer, length)` parameter pair is a contract, and a contract is
+  not proof.** `memcmp(p, q, n)` on parameters is a violation unless every
+  call site provably passes a buffer that holds `n` bytes, which needs a
+  closed caller set. On an exported function it is always a violation.
+- **Integer widths are implementation-defined.** Only the ISO minimum
+  magnitudes (C11 5.2.4.2.1) and the exact width of an exact-width type such
+  as `int32_t`, where it exists (7.20.1.1), are proof. "Usually 4 bytes" is
+  why `int_least32_t` and `int32_t` exist. Anything that relies on LP64 or
+  ILP32 is basis 4.
+- **noreturn** is proven only by a body verified never to return, or by the
+  ISO standard library's noreturn functions (`abort`, `exit`, `_Exit`,
+  `quick_exit`, `longjmp`, `thrd_exit`). `_Noreturn` and
+  `__attribute__((noreturn))` alone are not proof; a function that returns
+  anyway is undefined, not impossible.
+- **A correlation inside one function** (a flag set only under `p && ...`, a
+  pointer non-NULL only when a tested sibling is set) is proof when the
+  function's own code establishes it on every path, with no reassignment in
+  between (basis 3). If any path breaks it, it isn't.
+- **Anything that could be publicly callable is an API.** If some compilable
+  configuration of the tree lets code outside the scanned source call a
+  function (an installed or example-linked library, `-rdynamic` or
+  `--export-dynamic`, `dlopen`ed plugins, a registered callback, an exported
+  ops table), its caller set is open and in-tree callers prove nothing about
+  its inputs. APIs need the strongest input validation and are where
+  vulnerabilities concentrate. Why the export exists (plugins, backtraces)
+  doesn't matter.
+- **The converse: code that no real build in the tree exports stays
+  closed.** A Windows-only file can't be a `dlopen`/`-rdynamic` build without
+  `dlfcn`; a third-party shim the tree doesn't use doesn't count.
