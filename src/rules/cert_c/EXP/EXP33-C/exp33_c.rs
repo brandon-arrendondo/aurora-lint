@@ -15,6 +15,7 @@ use crate::analyze::context::SummaryLookup;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::init_state::{self, InitAnalysisResult, InitState, InitStateMap};
 use crate::manifest::{RuleCategory, Severity};
+use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
 use crate::utility::cert_c::guard_dominance;
 use lang_parsing_substrate::query;
@@ -43,6 +44,9 @@ pub struct Exp33C {
     /// (computed once per file from `function_macros`). Feeds the init-state
     /// transfer and the read-checker so macro-written args are not flagged.
     macro_output_params: RefCell<HashMap<String, Vec<usize>>>,
+    /// The run's policy and environment settings: whether static storage is
+    /// zeroed before `main` (`static_zero_init`).
+    settings: RefCell<Arc<AnalysisSettings>>,
 }
 
 impl Exp33C {
@@ -56,6 +60,7 @@ impl Exp33C {
             file_scope_constants: RefCell::new(HashMap::new()),
             function_macros: RefCell::new(Arc::new(HashMap::new())),
             macro_output_params: RefCell::new(HashMap::new()),
+            settings: RefCell::default(),
         }
     }
 
@@ -209,6 +214,10 @@ impl CertRule for Exp33C {
         "EXP33-C"
     }
 
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        *self.settings.borrow_mut() = Arc::clone(settings);
+    }
+
     fn set_project_context(&self, context: &ProjectContext) {
         *self.cross_file_summaries.borrow_mut() = context.function_summaries.clone();
         // Merge prescan global constants into file-scope constants.
@@ -350,6 +359,7 @@ impl CertRule for Exp33C {
                         cross_file_output_params,
                         cross_file_conditional_output_params,
                         cross_file_conditional_output_return_correlation,
+                        static_storage_not_zeroed: !self.settings.borrow().flag("static_zero_init"),
                     };
                     let analysis = init_state::analyze_init_states_with_statics(
                         cfg, node, source, &statics, &config,
@@ -1253,8 +1263,9 @@ fn check_deref_read(
     // zero-initialized (NULL) per C11 6.7.9p10 -- its value is determinate,
     // just not what the programmer probably intended. Dereferencing it is a
     // null-pointer-deref concern, not "uninitialized/indeterminate content"
-    // -- EXP33-C's own domain.
-    if info.is_static {
+    // -- EXP33-C's own domain. Unless the environment is declared not to
+    // zero static storage (`static_zero_init`).
+    if info.is_static && !config.static_storage_not_zeroed {
         return;
     }
 
@@ -1367,8 +1378,9 @@ fn check_subscript_read(
     // A static/thread-local array with no explicit initializer is
     // zero-initialized per C11 6.7.9p10 -- its elements are determinate
     // (just possibly not what the programmer intended), not indeterminate
-    // content the way an uninitialized auto array's would be.
-    if info.is_static {
+    // content the way an uninitialized auto array's would be. Unless the
+    // environment is declared not to zero static storage (`static_zero_init`).
+    if info.is_static && !config.static_storage_not_zeroed {
         return;
     }
 

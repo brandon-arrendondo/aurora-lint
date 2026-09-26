@@ -75,5 +75,5 @@ Environment contracts
    - Default preset: ``true``; strict preset: ``true``
    - Scope: contract
    - Oracle tag: ``contract:static_zero_init``
-   - Basis: C11 6.7.9p10. Startup code that skips clearing .bss breaks it.
+   - Basis: C11 6.7.9p10. Startup code that skips clearing .bss breaks it. Withdrawn, a block-scope static read before its function writes it is indeterminate; file-scope objects, which any function may write first, are not tracked.
 
