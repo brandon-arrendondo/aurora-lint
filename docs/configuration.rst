@@ -27,19 +27,15 @@ Custom Manifest Format
     description = "Custom CERT C rules for my project"
     cert_version = "2016"
 
-    [rules.ARR30-C]
+    [rules.cert_c.ARR30-C]
     enabled = true
     severity = "High"
     description = "Do not form or use out-of-bounds pointers or array subscripts"
-    category = "Rule"
-    cert_id = "ARR30-C"
 
-    [rules.STR31-C]
+    [rules.cert_c.STR31-C]
     enabled = false  # Disable this rule
     severity = "Medium"
     description = "Guarantee that storage for strings has sufficient space"
-    category = "Rule"
-    cert_id = "STR31-C"
 
 Supported CERT C Rules
 ----------------------

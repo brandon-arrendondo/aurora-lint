@@ -26,9 +26,9 @@ struct RuleSingleSettings {
 // Build-time manifest validation (see `validate_rule_manifest`).
 //
 // These structs deliberately mirror the runtime schema in
-// `src/manifest/mod.rs` (`RuleNamespaces` / `RuleConfig` / `Severity` /
-// `RuleCategory`) so that a syntax error, an unknown/typo'd field, or an
-// invalid enum value in an individual rule TOML is caught when `build.rs`
+// `src/manifest/mod.rs` (`RuleNamespaces` / `RuleConfig` / `Severity`) so
+// that a syntax error, an unknown/typo'd field, or an invalid enum value in
+// an individual rule TOML is caught when `build.rs`
 // merges the manifests instead of only when the manifest is loaded at runtime.
 // `deny_unknown_fields` is what turns a misspelled key (e.g. `enabld`) into a
 // hard build failure. build.rs cannot depend on the crate it is building, so
@@ -51,9 +51,6 @@ struct ValidatedRuleConfig {
     enabled: bool,
     severity: Option<ValidatedSeverity>,
     description: Option<String>,
-    category: Option<ValidatedCategory>,
-    cert_id: Option<String>,
-    parameters: Option<HashMap<String, String>>,
 }
 
 #[derive(Deserialize)]
@@ -62,12 +59,6 @@ enum ValidatedSeverity {
     Medium,
     High,
     Critical,
-}
-
-#[derive(Deserialize)]
-enum ValidatedCategory {
-    Rule,
-    Recommendation,
 }
 
 fn main() {
@@ -140,7 +131,7 @@ fn validate_rule_manifest(path: &std::path::Path, content: &str) -> Result<()> {
     // 3. Strict schema for the [rules] table.
     let table: ValidatedRulesTable = rules.clone().try_into().with_context(|| {
         format!(
-            "Invalid [rules] schema in {} (unknown/malformed field or bad severity/category value)",
+            "Invalid [rules] schema in {} (unknown/malformed field or bad severity value)",
             path.display()
         )
     })?;

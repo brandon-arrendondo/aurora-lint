@@ -1,0 +1,13 @@
+[metadata]
+name = "CLI Integration Test - removed per-rule keys"
+version = "1.0.0"
+description = "MSC04-C only, still setting the removed per-rule keys"
+cert_version = "2016"
+
+[rules.cert_c.MSC04-C]
+enabled = true
+category = "Rule"
+cert_id = "MSC04-C"
+
+[rules.cert_c.MSC04-C.parameters]
+max = "1"

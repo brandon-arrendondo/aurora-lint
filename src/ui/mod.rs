@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use tree_sitter::Node;
 
 use crate::analyze::suppression::SuppressionManager;
-use crate::manifest::{RuleCategory, RuleConfig, RuleManifest, Severity};
+use crate::manifest::{RuleConfig, RuleManifest, Severity};
 use crate::rules::{RuleRegistry, RuleViolation};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -261,9 +261,6 @@ impl TerminalUI {
                     enabled: true,
                     severity: None, // Categories don't have severity
                     description: Some(format!("{} Rules", category)),
-                    category: Some(RuleCategory::Rule),
-                    cert_id: None,
-                    parameters: None,
                 },
                 level: 0,
                 is_category: true,

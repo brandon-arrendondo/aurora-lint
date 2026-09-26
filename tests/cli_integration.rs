@@ -85,6 +85,34 @@ fn git_in(repo_dir: &std::path::Path, args: &[&str]) {
 // ─── Export formats ──────────────────────────────────────────────────────────
 
 #[test]
+fn removed_per_rule_keys_warn_and_still_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        fixtures().join("violation.c").to_str().unwrap(),
+        "-m",
+        fixtures()
+            .join("manifest_removed_keys.toml")
+            .to_str()
+            .unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    for key in ["category", "cert_id", "parameters"] {
+        assert!(
+            stderr.contains(&format!("Warning: ignoring `{key}` for rule MSC04-C")),
+            "expected a warning naming `{key}` and the rule, stderr: {stderr}"
+        );
+    }
+
+    // The rest of the manifest still applies: MSC04-C runs and reports.
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    assert_eq!(violations.len(), 1);
+}
+
+#[test]
 fn export_json_structure() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");

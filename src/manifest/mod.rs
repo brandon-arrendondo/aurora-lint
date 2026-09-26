@@ -46,12 +46,6 @@ pub struct RuleConfig {
     pub severity: Option<Severity>,
     /// Overrides the rule's default description.
     pub description: Option<String>,
-    /// Overrides the rule's default category (rule vs. recommendation).
-    pub category: Option<RuleCategory>,
-    /// Overrides the rule's default CERT identifier.
-    pub cert_id: Option<String>,
-    /// Rule-specific parameters, passed through as raw strings.
-    pub parameters: Option<HashMap<String, String>>,
 }
 
 /// How serious a violation of a rule is.
@@ -165,6 +159,54 @@ impl RuleCategory {
     }
 }
 
+/// Per-rule manifest keys aurora-lint used to accept and no longer does,
+/// each with why it went. A manifest that still sets one loads, with a
+/// warning, rather than failing on a key that never changed any output.
+pub const REMOVED_RULE_KEYS: &[(&str, &str)] = &[
+    (
+        "category",
+        "it never had any effect; whether a rule is a CERT rule or a \
+         recommendation comes from its CERT id",
+    ),
+    (
+        "cert_id",
+        "it never had any effect; a rule's CERT id is its rule id",
+    ),
+    (
+        "parameters",
+        "it never had any effect; no rule takes parameters from the manifest",
+    ),
+];
+
+/// One warning per rule that sets a key in [`REMOVED_RULE_KEYS`], in rule
+/// order. Empty when `content` is not valid TOML: the real parse reports
+/// that.
+fn removed_rule_key_warnings(content: &str) -> Vec<String> {
+    let Ok(doc) = content.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    let Some(namespaces) = doc.get("rules").and_then(|r| r.as_table()) else {
+        return Vec::new();
+    };
+    let mut warnings = Vec::new();
+    for rules in namespaces.values().filter_map(|n| n.as_table()) {
+        for (rule_id, config) in rules {
+            let Some(config) = config.as_table() else {
+                continue;
+            };
+            for (key, why) in REMOVED_RULE_KEYS {
+                if config.contains_key(*key) {
+                    warnings.push(format!(
+                        "ignoring `{key}` for rule {rule_id}: the per-rule `{key}` \
+                         manifest key has been removed ({why})"
+                    ));
+                }
+            }
+        }
+    }
+    warnings
+}
+
 impl RuleManifest {
     /// Read and parse `path` as a TOML rule manifest.
     pub fn load(path: &str) -> Result<Self> {
@@ -175,8 +217,12 @@ impl RuleManifest {
             .with_context(|| format!("Failed to parse manifest file: {}", path))
     }
 
-    /// Parse `content` as a TOML rule manifest.
+    /// Parse `content` as a TOML rule manifest, warning on stderr about any
+    /// per-rule key in [`REMOVED_RULE_KEYS`] (ignored, never an error).
     pub fn from_toml_str(content: &str) -> Result<Self> {
+        for warning in removed_rule_key_warnings(content) {
+            eprintln!("Warning: {warning}");
+        }
         let manifest: RuleManifest = toml::from_str(content)?;
         Ok(manifest)
     }
@@ -237,9 +283,6 @@ impl Default for RuleManifest {
                 enabled: true,
                 severity: None,    // Use rule's default severity
                 description: None, // Use rule's default description
-                category: None,    // Use rule's default category
-                cert_id: None,     // Use rule's default cert_id
-                parameters: None,
             },
         );
 
@@ -249,9 +292,6 @@ impl Default for RuleManifest {
                 enabled: true,
                 severity: None,    // Use rule's default severity
                 description: None, // Use rule's default description
-                category: None,    // Use rule's default category
-                cert_id: None,     // Use rule's default cert_id
-                parameters: None,
             },
         );
 
@@ -272,7 +312,68 @@ impl Default for RuleManifest {
 
 #[cfg(test)]
 mod tests {
-    use super::RuleCategory;
+    use super::{removed_rule_key_warnings, RuleCategory, RuleManifest};
+
+    const WITH_REMOVED_KEYS: &str = r#"
+[metadata]
+name = "t"
+version = "1"
+cert_version = "2016"
+
+[rules.cert_c.ARR30-C]
+enabled = true
+category = "Rule"
+
+[rules.cert_c.STR31-C]
+enabled = false
+
+[rules.cert_c.MEM30-C]
+enabled = true
+cert_id = "MEM30-C"
+
+[rules.cert_c.MEM30-C.parameters]
+threshold = "4"
+
+[rules.brules.BRULE-065]
+enabled = true
+category = "Recommendation"
+"#;
+
+    #[test]
+    fn removed_keys_still_load() {
+        // Fails if RuleConfig starts refusing unknown keys: a removed key
+        // must warn, never stop a manifest from loading.
+        let manifest = RuleManifest::from_toml_str(WITH_REMOVED_KEYS).unwrap();
+        assert!(manifest.get_rule("ARR30-C").unwrap().enabled);
+        assert!(!manifest.get_rule("STR31-C").unwrap().enabled);
+        assert!(manifest.get_rule("BRULE-065").unwrap().enabled);
+        assert!(manifest.get_rule("MEM30-C").unwrap().enabled);
+    }
+
+    #[test]
+    fn removed_keys_warn_once_per_rule_and_key() {
+        let mut warnings = removed_rule_key_warnings(WITH_REMOVED_KEYS);
+        warnings.sort();
+        let heads: Vec<_> = warnings
+            .iter()
+            .map(|w| w.split(':').next().unwrap())
+            .collect();
+        assert_eq!(
+            heads,
+            [
+                "ignoring `category` for rule ARR30-C",
+                "ignoring `category` for rule BRULE-065",
+                "ignoring `cert_id` for rule MEM30-C",
+                "ignoring `parameters` for rule MEM30-C",
+            ]
+        );
+    }
+
+    #[test]
+    fn manifest_without_removed_keys_warns_about_nothing() {
+        let default_manifest = include_str!("../../rules_templates/rules-all.toml");
+        assert!(removed_rule_key_warnings(default_manifest).is_empty());
+    }
 
     #[test]
     fn from_cert_id_splits_at_30() {
