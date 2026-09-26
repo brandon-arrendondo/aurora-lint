@@ -575,6 +575,30 @@ pub struct FunctionSummary {
     /// in a non-clearing alternate.
     #[serde(default)]
     pub clears_params: HashSet<usize>,
+    /// Parameter indices whose buffer reaches a declared credential sink
+    /// (`credential_sinks::CREDENTIAL_SINKS`: `LogonUser`'s password,
+    /// `crypt`'s key, a `PAM_AUTHTOK` item), directly or through another
+    /// function that does (`propagate_transitive_credential_facts`). A
+    /// buffer handed here holds a secret by the callee's contract, which is
+    /// what MEM06-C calls sensitive.
+    #[serde(default)]
+    pub credential_sink_params: HashSet<usize>,
+    /// Parameter indices whose pages this function locks into memory: the
+    /// parameter is the first argument of `mlock`/`VirtualLock`, or of
+    /// another function that locks it.
+    #[serde(default)]
+    pub locks_params: HashSet<usize>,
+    /// Every `return` hands back a bare identifier whose pages the body
+    /// locked -- a source function that allocates a buffer and
+    /// `VirtualLock`s it before returning it.
+    #[serde(default)]
+    pub returns_locked: bool,
+    /// The body keeps the whole process's memory out of core dumps or swap:
+    /// `setrlimit(RLIMIT_CORE, ...)` with a limit it sets to zero, or
+    /// `mlockall`. MEM06-C credits it when the function is on the startup
+    /// path, i.e. `main` or reachable from it.
+    #[serde(default)]
+    pub protects_process_memory: bool,
     /// Parameter indices where at least one call site within the project
     /// passes an argument recognized as tainted (a known user-input source,
     /// `argv`, or data traced back to one via a direct assignment/string-copy
@@ -1214,6 +1238,7 @@ fn analyze_function(
             &mut summary,
         );
         credit_clears_params(&sweep.calls, source, &params, clearing_names, &mut summary);
+        credit_credential_facts(&body, &sweep.calls, source, &params, &mut summary);
 
         // Compute return value range for integer-returning functions (only when VRA is needed)
         if compute_return_ranges && !is_void_return && !is_pointer_return {
@@ -3574,6 +3599,12 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
     }
     existing.closes_params.extend(summary.closes_params);
     existing.clears_params.extend(summary.clears_params);
+    existing
+        .credential_sink_params
+        .extend(summary.credential_sink_params);
+    existing.locks_params.extend(summary.locks_params);
+    existing.returns_locked |= summary.returns_locked;
+    existing.protects_process_memory |= summary.protects_process_memory;
     for (idx, fields) in summary.frees_param_fields {
         existing
             .frees_param_fields
@@ -3820,6 +3851,137 @@ fn credit_clears_params(
             summary.clears_params.insert(idx);
         }
     }
+}
+
+/// Credit the MEM06-C facts one body establishes on its own:
+/// `credential_sink_params` and `locks_params` for a parameter handed, casts
+/// and parentheses peeled, to a declared credential sink or page-lock call;
+/// `returns_locked` when every `return` names a variable the body locked;
+/// `protects_process_memory` for a zero `RLIMIT_CORE` or an `mlockall`.
+/// Forwarding to another project function is `param_passthroughs`' job and
+/// is carried by `propagate_transitive_credential_facts`.
+fn credit_credential_facts(
+    body: &Node,
+    calls: &[Node],
+    source: &str,
+    params: &[String],
+    summary: &mut FunctionSummary,
+) {
+    use crate::utility::cert_c::credential_sinks;
+    use lang_parsing_substrate::query;
+
+    let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+    let mut locked_vars: HashSet<String> = HashSet::new();
+    for &call in calls {
+        let Some(function) = call.child_by_field_name("function") else {
+            continue;
+        };
+        if function.kind() != "identifier" {
+            continue;
+        }
+        let name = text(&function);
+        let Some(arguments) = call.child_by_field_name("arguments") else {
+            continue;
+        };
+        let args: Vec<Node> = (0..arguments.named_child_count())
+            .filter_map(|i| arguments.named_child(i))
+            .filter(|a| a.kind() != "comment")
+            .collect();
+        let arg_var = |i: usize| -> Option<String> {
+            let a = init_state::strip_arg_casts(args.get(i)?);
+            (a.kind() == "identifier").then(|| text(&a))
+        };
+        let param_idx = |var: &str| params.iter().position(|p| !p.is_empty() && p == var);
+
+        if credential_sinks::is_credential_sink_function(&name) {
+            let arg_texts: Vec<String> = args.iter().map(|a| text(a).trim().to_string()).collect();
+            let arg_refs: Vec<&str> = arg_texts.iter().map(String::as_str).collect();
+            for i in credential_sinks::sink_args_of_call(&name, &arg_refs) {
+                if let Some(idx) = arg_var(i).as_deref().and_then(param_idx) {
+                    summary.credential_sink_params.insert(idx);
+                }
+            }
+        }
+        if credential_sinks::is_page_lock_call(&name) {
+            if let Some(var) = arg_var(0) {
+                if let Some(idx) = param_idx(&var) {
+                    summary.locks_params.insert(idx);
+                }
+                locked_vars.insert(var);
+            }
+        }
+        if name == "mlockall" || (name == "setrlimit" && sets_zero_core_limit(body, &args, source))
+        {
+            summary.protects_process_memory = true;
+        }
+    }
+
+    let returns = query::find_descendants_of_kind(*body, "return_statement");
+    summary.returns_locked = !returns.is_empty()
+        && returns.iter().all(|r| {
+            r.named_child(0)
+                .map(|e| init_state::strip_arg_casts(&e))
+                .is_some_and(|e| e.kind() == "identifier" && locked_vars.contains(&text(&e)))
+        });
+}
+
+/// Whether a `setrlimit` call's arguments are `RLIMIT_CORE` and the address
+/// of a `struct rlimit` whose soft limit the enclosing body sets to zero,
+/// by an initializer (`= {0, 0}`, `= {0}`) or an assignment
+/// (`limit.rlim_cur = 0`). Raising the core limit is also a
+/// `setrlimit(RLIMIT_CORE, ...)` call, so the resource alone proves nothing.
+fn sets_zero_core_limit(body: &Node, args: &[Node], source: &str) -> bool {
+    use lang_parsing_substrate::query;
+
+    let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+    if args.len() != 2 || text(&args[0]).trim() != "RLIMIT_CORE" {
+        return false;
+    }
+    let limit = init_state::strip_arg_casts(&args[1]);
+    let var = match limit.kind() {
+        "pointer_expression" => limit
+            .child_by_field_name("argument")
+            .filter(|a| a.kind() == "identifier")
+            .map(|a| text(&a)),
+        _ => None,
+    };
+    let Some(var) = var else {
+        return false;
+    };
+    let is_zero = |n: &Node| {
+        let t = text(n);
+        let t = t.trim();
+        t == "0" || t == "0L" || t == "0UL" || t == "0u" || t == "0U"
+    };
+    let assigned_zero = query::find_descendants_of_kind(*body, "assignment_expression")
+        .into_iter()
+        .any(|a| {
+            let (Some(left), Some(right)) = (
+                a.child_by_field_name("left"),
+                a.child_by_field_name("right"),
+            ) else {
+                return false;
+            };
+            left.kind() == "field_expression"
+                && left
+                    .child_by_field_name("argument")
+                    .is_some_and(|b| text(&b) == var)
+                && left
+                    .child_by_field_name("field")
+                    .is_some_and(|f| text(&f) == "rlim_cur")
+                && is_zero(&right)
+        });
+    let initialized_zero = query::find_descendants_of_kind(*body, "init_declarator")
+        .into_iter()
+        .any(|d| {
+            d.child_by_field_name("declarator")
+                .is_some_and(|n| text(&n) == var)
+                && d.child_by_field_name("value").is_some_and(|v| {
+                    v.kind() == "initializer_list"
+                        && v.named_child(0).is_some_and(|first| is_zero(&first))
+                })
+        });
+    assigned_zero || initialized_zero
 }
 
 /// Credit a single call argument as freeing whichever parameter it names
@@ -5550,6 +5712,63 @@ pub fn propagate_transitive_clears(
                         || snapshot.get(callee).is_some_and(|c| c.contains(callee_idx));
                     if clears && !summary.clears_params.contains(caller_idx) {
                         summary.clears_params.insert(*caller_idx);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Propagate `credential_sink_params` and `locks_params` through param
+/// pass-through chains, the way `propagate_transitive_clears` carries
+/// `clears_params`: a wrapper that forwards its parameter to a function that
+/// hands it to `LogonUser` (or locks it) does the same to its own parameter.
+/// A callee the project defines answers from its summary, never from the
+/// library table, since a project's own `crypt` is not libc's; an edge
+/// landing on an unconditional row of `credential_sinks` (or on a page-lock
+/// call at argument 0) counts by itself.
+pub fn propagate_transitive_credential_facts(
+    summaries: &mut HashMap<String, FunctionSummary>,
+    macro_aliases: &HashMap<String, String>,
+) {
+    use crate::utility::cert_c::credential_sinks;
+
+    for _pass in 0..10 {
+        let mut changed = false;
+        let snapshot: HashMap<String, (HashSet<usize>, HashSet<usize>)> = summaries
+            .iter()
+            .map(|(n, s)| {
+                (
+                    n.clone(),
+                    (s.credential_sink_params.clone(), s.locks_params.clone()),
+                )
+            })
+            .collect();
+
+        for summary in summaries.values_mut() {
+            for (caller_idx, callees) in &summary.param_passthroughs {
+                for (callee_name, callee_idx) in callees {
+                    let callee = edge_target(macro_aliases, callee_name, |n| {
+                        snapshot.contains_key(n)
+                            || credential_sinks::is_credential_sink_function(n)
+                            || credential_sinks::is_page_lock_call(n)
+                    });
+                    let (sinks, locks) = match snapshot.get(callee) {
+                        Some((s, l)) => (s.contains(callee_idx), l.contains(callee_idx)),
+                        None => (
+                            credential_sinks::is_unconditional_sink_arg(callee, *callee_idx),
+                            *callee_idx == 0 && credential_sinks::is_page_lock_call(callee),
+                        ),
+                    };
+                    if sinks && summary.credential_sink_params.insert(*caller_idx) {
+                        changed = true;
+                    }
+                    if locks && summary.locks_params.insert(*caller_idx) {
                         changed = true;
                     }
                 }

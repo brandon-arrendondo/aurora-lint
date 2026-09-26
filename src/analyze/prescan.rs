@@ -905,6 +905,10 @@ fn prescan_file_list(
     function_summary::propagate_transitive_frees_param_pointees(&mut function_summaries);
     function_summary::propagate_transitive_closes(&mut function_summaries);
     function_summary::propagate_transitive_clears(&mut function_summaries, &macro_aliases);
+    function_summary::propagate_transitive_credential_facts(
+        &mut function_summaries,
+        &macro_aliases,
+    );
     function_summary::propagate_return_taint(&mut function_summaries);
 
     // CON03-C/CON07-C reachability gate: needs the fully merged,
@@ -6366,6 +6370,10 @@ pub fn resolve_includes(
         &context.macro_aliases,
     );
     function_summary::propagate_transitive_clears(
+        context.function_summaries.make_mut(),
+        &context.macro_aliases,
+    );
+    function_summary::propagate_transitive_credential_facts(
         context.function_summaries.make_mut(),
         &context.macro_aliases,
     );

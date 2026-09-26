@@ -429,6 +429,32 @@ dereferenced by *C's* semantics still does not mean that callee will read the
 pointee. That is a per-callee formatter-body question, deliberately out of
 this module.
 
+### `src/utility/cert_c/credential_sinks.rs`
+**Problem solved:** "does this buffer hold a secret?", answered by what the
+buffer reaches instead of what it is called. Each row of
+`CREDENTIAL_SINKS` is a platform contract: one argument of a named Win32 or
+POSIX API that receives a password, passphrase or plaintext to protect
+(`LogonUser*`'s password, `crypt`'s key, `CryptProtectMemory`'s buffer, a
+`PAM_AUTHTOK` item). MEM06-C's old form reported every `malloc` because it
+had no notion of sensitivity at all; a name list (`secret`, `pw`) would have
+been the same misfire in a narrower shape. A project function with the same
+name as a row is not the library call, so consult
+`FunctionSummary::credential_sink_params` first and the table only for a
+callee the project does not define.
+
+| Function | Signature | Description |
+|---|---|---|
+| `CREDENTIAL_SINKS` | `&[CredentialSink]` | The rows: `function`, zero-based `arg`, an optional `when_arg` condition (`pam_set_item`'s item type), and the documented `basis`. |
+| `sink_args_of_call` | `(function: &str, args: &[&str]) -> Vec<usize>` | The argument indices of one call that receive a secret, conditions applied to the call's argument text. |
+| `is_unconditional_sink_arg` | `(function: &str, arg: usize) -> bool` | A row with no condition: what an edge-only walk (`param_passthroughs`) can check without the call. |
+| `is_credential_sink_function` | `(function: &str) -> bool` | Any row names `function`. |
+| `is_page_lock_call` | `(function: &str) -> bool` | `mlock`/`mlock2`/`VirtualLock`: locks the pages of its first argument. |
+
+The summary facts built on it are `credential_sink_params`, `locks_params`
+(both propagated by `propagate_transitive_credential_facts`),
+`returns_locked` and `protects_process_memory` (a zero `RLIMIT_CORE` or
+`mlockall`); see `function_summary.rs` below.
+
 ### `src/utility/cert_c/clearing_extent.rs`
 **Problem solved:** how far a memory-clearing call's write reaches.
 `call_roles::is_memory_clearing_call`, `FunctionSummary::clears_params` and
@@ -929,7 +955,9 @@ a call through a function POINTER — `sqlite3GlobalConfig.m.xFree(p)`, lua's
 fact, it exists only to separate "releases nothing" from "the release, if
 any, is unreadable"),
 `has_env03_taint_source`, `returns_tainted`,
-`closes_params`, `clears_params` (the body overwrites the parameter's pointee:
+`closes_params`, `credential_sink_params` / `locks_params` / `returns_locked` /
+`protects_process_memory` (MEM06-C's facts, from `credential_sinks`),
+`clears_params` (the body overwrites the parameter's pointee:
 a `MEMORY_CLEARING_FUNCS` call, a file-scope function pointer initialized
 from one — mbedtls/hostap's `static void *(*const volatile memset_func)(...)
 = memset;` idiom, which exists precisely so the call is not spelled
