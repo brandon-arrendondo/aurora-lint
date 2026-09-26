@@ -9,6 +9,12 @@
  * dereference much further down -- hostap's ieee802_1x_encapsulate_radius
  * dereferences `sta` in its first statement, tests `if (sta && ...)` 36 lines
  * later, and was reported at a `sta->` 65 lines after that.
+ *
+ * Expect: default=clean strict=violation
+ * That is the default policy's first_site_only relaxation: the later
+ * dereference depends on the same missing check as the first. The strict
+ * policy reports every violating line, so the dereferences after the test
+ * are reported there.
  */
 struct sm { int id; };
 struct sta { struct sm *eapol_sm; void *hs20_ie; };
