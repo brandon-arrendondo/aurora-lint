@@ -1,6 +1,9 @@
 /*
  * Rule: FIO15-C
- * Source: wiki
+ * Source: wiki, adapted from CERT (not verbatim)
+ * Adapted: CERT names the file with a variable (file_name); this copy uses
+ * the literal "/tmp/myfile", which the rule detects by its path. CERT's
+ * example as written is expected_fail/wiki_noncompliant_1_verbatim.c.
  * Status: FAIL - Should trigger FIO15-C violation
  */
 
