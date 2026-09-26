@@ -17,9 +17,9 @@ from pathlib import Path
 
 from bench.analyzer import analyze_shard, merge_shards
 from bench.config import (
-    DEFAULT_JOBS, GENERATE_MAP_SCRIPT, JULIET_BASE, MANIFEST_JULIET_FULL,
-    MANIFEST_CWE_DIR, RULE_CWE_MAP, SQC_BIN,
-    JULIET_COMPILE_DB, juliet_run_id,
+    DEFAULT_JOBS, DEFAULT_PROFILE, GENERATE_MAP_SCRIPT, JULIET_BASE,
+    MANIFEST_JULIET_FULL, MANIFEST_CWE_DIR, RULE_CWE_MAP, SQC_BIN,
+    JULIET_COMPILE_DB, juliet_run_id, resolved_settings_json,
 )
 from bench.db import BenchDB
 from bench.machine import get_machine_metadata
@@ -217,7 +217,8 @@ def _warm_prescan(cwe_dir_name: str, cwe_dir_str: str, manifest: str,
 def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
                     shard_dir_str: str, manifest: str, scan_id: int,
                     keep_reports: bool = False, compile_db: str | None = None,
-                    prescan_cache: str | None = None) -> dict:
+                    prescan_cache: str | None = None,
+                    profile: str = DEFAULT_PROFILE) -> dict:
     """Scan one shard: run sqc, parse its own JSON report into a raw ShardPartial.
 
     Runs in a worker process. A shard of a split CWE loads the context its
@@ -237,9 +238,12 @@ def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
 
     start_time = time.monotonic()
     try:
+        # The settings are applied per scan and never baked into a prescan,
+        # so a shard loading its CWE's warm cache needs only the flag.
         cmd = [
             str(SQC_BIN), str(shard_dir),
             "-m", manifest,
+            "--profile", profile,
         ]
         if prescan_cache:
             cmd.extend(["--load-prescan", prescan_cache])
@@ -393,7 +397,8 @@ def _build_submissions(work_items: list[tuple]) -> tuple[list[dict], dict]:
 def _run_submissions(db: BenchDB, run_id: str, scan_map: dict, work_items: list[tuple],
                      submissions: list[dict], shard_counts: dict, jobs: int,
                      keep_reports: bool, compile_db: str | None,
-                     already_done: int, total_cwes: int) -> tuple[int, int]:
+                     already_done: int, total_cwes: int,
+                     profile: str = DEFAULT_PROFILE) -> tuple[int, int]:
     """Drive the worker pool until every submission has landed and every
     CWE's rows are written. Returns (completed, failed) CWE counts."""
     # A split CWE's shards load one shared prescan cache, built by a warm
@@ -444,7 +449,7 @@ def _run_submissions(db: BenchDB, run_id: str, scan_map: dict, work_items: list[
                 _scan_one_shard, sub["cwe_dir_name"], sub["cwe_id"],
                 str(sub["cwe_dir"]), str(sub["shard_dir"]), sub["manifest"],
                 scan_id, keep_reports, compile_db,
-                prescan_caches.get(sub["cwe_dir_name"]),
+                prescan_caches.get(sub["cwe_dir_name"]), profile,
             )
             futures[future] = ("shard", sub["cwe_dir_name"])
 
@@ -511,7 +516,8 @@ def _run_submissions(db: BenchDB, run_id: str, scan_map: dict, work_items: list[
 
 def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
                   keep_reports: bool = False, compile_commands: bool = False,
-                  cwes: list[str] | None = None) -> str:
+                  cwes: list[str] | None = None,
+                  profile: str = DEFAULT_PROFILE) -> str:
     """Run a full Juliet benchmark.
 
     Args:
@@ -525,6 +531,10 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
         cwes: Restrict the run to these CWEs ("78", "CWE78" or "CWE-78").
             A smoke test, not a benchmark: the run gets its own run_id and
             mode, so it never stands in for the build's full run.
+        profile: The policy/environment preset to scan under (ADR-0015),
+            recorded in the run's `settings`. Only the default is recordable
+            until a non-default run_id suffix is ruled on
+            (`config.settings_run_suffix`).
 
     Returns:
         The run_id for the completed benchmark.
@@ -558,7 +568,8 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     version = _get_sqc_version()
     sha = _get_git_sha()
     run_id = juliet_run_id(version, sha, fast=fast, compile_commands=compile_commands,
-                           cwes=cwe_ids)
+                           cwes=cwe_ids, profile=profile)
+    settings = resolved_settings_json(profile)
     mode = "fast" if fast else "full"
     if compile_commands:
         mode += " +compile-db"
@@ -602,7 +613,7 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     # Create or update run record
     if not existing:
         db.create_run(run_id, version, sha, mode, started_at,
-                      os.getpid(), jobs, total_cwes, machine)
+                      os.getpid(), jobs, total_cwes, machine, settings=settings)
     else:
         db.update_run_status(run_id, "running")
 
@@ -622,6 +633,7 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     completed, failed = _run_submissions(
         db, run_id, scan_map, work_items, submissions, shard_counts,
         jobs, keep_reports, compile_db, len(completed_cwes), total_cwes,
+        profile,
     )
 
     # Finalize

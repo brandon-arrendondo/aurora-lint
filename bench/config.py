@@ -1,6 +1,8 @@
 """Centralized paths, constants, and defaults for the benchmark infrastructure."""
 
+import json
 import os
+import subprocess
 from pathlib import Path
 
 # ── Project layout ────────────────────────────────────────────────────────────
@@ -144,8 +146,50 @@ def compile_db_for(path) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+# ── Policy/environment settings (ADR-0015) ────────────────────────────────────
+# The preset every run scans under unless told otherwise. It is also the
+# binary's own default, so every run recorded before settings existed ran
+# under the closest thing to it (their `settings` column stays NULL: they ran
+# under neither preset exactly, and nothing back-fills one).
+DEFAULT_PROFILE = "default"
+PROFILES = ("default", "strict")
+
+
+def settings_run_suffix(profile: str) -> str:
+    """The run_id suffix that names a run's settings: empty for the default
+    preset, so default runs share the bare `sqc-{version}-{sha}` namespace with
+    every historical run.
+
+    A run under any other profile needs a suffix of its own, or it would land
+    on the default run's row. Its spelling becomes part of benchmarking_db's
+    keys, and it is awaiting a ruling, so such a run is refused here rather
+    than recorded under a guessed name. This is the one place that spelling
+    will live.
+    """
+    if profile not in PROFILES:
+        raise ValueError(f"unknown profile '{profile}'; one of: {', '.join(PROFILES)}")
+    if profile == DEFAULT_PROFILE:
+        return ""
+    raise ValueError(
+        f"--profile {profile}: a run under a non-default profile cannot be recorded "
+        "yet -- the run_id suffix that keeps it apart from the default run of the "
+        "same build is awaiting a ruling. For a local look, scan with "
+        f"`aurora-lint --profile {profile}` directly.")
+
+
+def resolved_settings_json(profile: str) -> str:
+    """The settings `profile` resolves to, exactly as the binary reports them
+    (`aurora-lint --list-options json`), as canonical JSON for a run's
+    `settings` column."""
+    out = subprocess.run(
+        [str(SQC_BIN), "--list-options", "json", "--profile", profile],
+        capture_output=True, text=True, check=True)
+    return json.dumps(json.loads(out.stdout)["current"], sort_keys=True)
+
+
 def juliet_run_id(version: str, sha: str, *, fast: bool,
-                  compile_commands: bool, cwes: tuple[str, ...] = ()) -> str:
+                  compile_commands: bool, cwes: tuple[str, ...] = (),
+                  profile: str = DEFAULT_PROFILE) -> str:
     """The run_id for a Juliet run, distinct per (mode, compile-db, CWE
     subset) so every configuration of one sqc build is its own run.
 
@@ -161,6 +205,7 @@ def juliet_run_id(version: str, sha: str, *, fast: bool,
     if cwes:
         numbers = sorted({c.removeprefix("CWE-") for c in cwes}, key=int)
         run_id += f"-{CWE_SUBSET_RUN_SUFFIX}{'_'.join(numbers)}"
+    run_id += settings_run_suffix(profile)
     return run_id
 
 # ── Database ──────────────────────────────────────────────────────────────────
