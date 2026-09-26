@@ -227,6 +227,16 @@ fn sarif_records_default_settings() {
     assert_eq!(s["libc"], "iso-posix");
     assert_eq!(s["options"]["assert_is_guard"], true);
     assert_eq!(s["options"]["free_null_is_noop"], true);
+    // The hash names the settings: 64 hex characters, stable for equal
+    // settings, different for different ones.
+    let hash = s["hash"].as_str().unwrap();
+    assert_eq!(hash.len(), 64);
+    assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_eq!(sarif_settings(&manifest_msc04(), &[])["hash"], s["hash"]);
+    assert_ne!(
+        sarif_settings(&manifest_msc04(), &["--profile", "strict"])["hash"],
+        s["hash"]
+    );
 }
 
 #[test]

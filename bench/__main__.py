@@ -71,13 +71,6 @@ def cmd_realworld_run(args):
             print(f"Unknown codebase '{cb}'. Must be one of: {', '.join(sorted(CODEBASES))}")
             return
 
-    if "sqc" in tools:
-        from bench.config import settings_run_suffix
-        try:
-            settings_run_suffix(args.profile)
-        except ValueError as e:
-            print(e)
-            sys.exit(2)
     print(f"Running {'+'.join(tools)} against {len(codebases)} codebase(s): "
           f"{', '.join(codebases)}\n")
     summary = run_and_ingest(tools, codebases, compile_commands=args.compile_commands,
@@ -173,6 +166,10 @@ def cmd_compare(args):
     s = result["summary"]
     d = s["delta"]
     print(f"Comparing: {s['base_run']} → {s['target_run']}")
+    from bench.db import diff_settings
+    for line in diff_settings(db.get_run(base).get("settings"),
+                              db.get_run(target).get("settings")):
+        print(line)
     print(f"\nOverall Delta: TP {d['tp']:+d}  FP {d['fp']:+d}  "
           f"TP Rate {d['tp_rate_pp']:+.2f}pp")
     base_cache = s["base"]["cache_state"]
@@ -291,6 +288,10 @@ def cmd_realworld(args):
               f": {sign}{delta} ({sign}{delta / dashboard['base_total'] * 100:.1f}%)"
               if dashboard["base_total"] > 0
               else f"  vs v{base['sqc_version']}")
+        from bench.db import diff_settings
+        for line in diff_settings(db.get_realworld_run(base_id).get("settings"),
+                                  db.get_realworld_run(dashboard["run"]["id"]).get("settings")):
+            print(f"  {line}")
     print(f"  Total violations: {total:,}")
     print()
 

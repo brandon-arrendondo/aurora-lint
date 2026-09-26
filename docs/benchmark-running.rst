@@ -128,11 +128,20 @@ the ``settings`` column of ``runs`` and ``realworld_runs``, so a figure can
 always name its setting (:doc:`options`). Runs recorded before settings
 existed have ``settings`` NULL: they ran under neither preset exactly.
 
-The default preset keeps the bare run_id. A run under any other profile
-needs a run_id suffix of its own to stay apart from the default run of the
-same build, and that spelling is not settled yet, so ``bench`` refuses to
-record one. Scan with ``aurora-lint --profile strict`` directly for a local
-look.
+Every new run_id names its settings:
+``sqc-{version}-{sha}[-full][-cdb]-{preset}-{hash12}[-cwe...]``, where
+``{preset}`` is ``default`` or ``strict`` when the settings are exactly that
+preset and ``preset`` otherwise, and ``{hash12}`` is the first 12 characters
+of the settings hash (the binary computes it; the full hash is in the
+``settings`` column and the SARIF report). Real-world runs carry the same
+suffix in their ``variant`` (``default-{hash12}``, ``cdb-strict-{hash12}``).
+Runs recorded before settings existed keep their bare ids ("pre-settings");
+nothing is renamed. A bare SHA resolves to the default-preset run of that
+build.
+
+``compare`` and ``realworld --compare`` print the option-by-option settings
+difference between the two runs, and flag two runs that share a preset name
+but not a hash: that preset's own options changed between the builds.
 
 Compile-Database Runs
 ~~~~~~~~~~~~~~~~~~~~~

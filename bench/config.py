@@ -147,65 +147,68 @@ def compile_db_for(path) -> Path | None:
 
 
 # ── Policy/environment settings (ADR-0015) ────────────────────────────────────
-# The preset every run scans under unless told otherwise. It is also the
-# binary's own default, so every run recorded before settings existed ran
-# under the closest thing to it (their `settings` column stays NULL: they ran
-# under neither preset exactly, and nothing back-fills one).
+# The preset every run scans under unless told otherwise; also the binary's
+# own default. Runs recorded before settings existed keep their bare
+# `sqc-{version}-{sha}` ids and a NULL `settings` column ("pre-settings"):
+# they ran under neither preset exactly, and nothing renames or back-fills
+# them.
 DEFAULT_PROFILE = "default"
 PROFILES = ("default", "strict")
 
 
-def settings_run_suffix(profile: str) -> str:
-    """The run_id suffix that names a run's settings: empty for the default
-    preset, so default runs share the bare `sqc-{version}-{sha}` namespace with
-    every historical run.
-
-    A run under any other profile needs a suffix of its own, or it would land
-    on the default run's row. Its spelling becomes part of benchmarking_db's
-    keys, and it is awaiting a ruling, so such a run is refused here rather
-    than recorded under a guessed name. This is the one place that spelling
-    will live.
-    """
+def resolve_settings(profile: str) -> dict:
+    """The settings `profile` resolves to, exactly as the binary reports them
+    (`aurora-lint --list-options json`): the resolved values, the preset they
+    equal (None for neither) and their SHA-256 `hash`, which the binary
+    computes over their canonical JSON so SARIF and this harness never
+    disagree about it."""
     if profile not in PROFILES:
         raise ValueError(f"unknown profile '{profile}'; one of: {', '.join(PROFILES)}")
-    if profile == DEFAULT_PROFILE:
-        return ""
-    raise ValueError(
-        f"--profile {profile}: a run under a non-default profile cannot be recorded "
-        "yet -- the run_id suffix that keeps it apart from the default run of the "
-        "same build is awaiting a ruling. For a local look, scan with "
-        f"`aurora-lint --profile {profile}` directly.")
-
-
-def resolved_settings_json(profile: str) -> str:
-    """The settings `profile` resolves to, exactly as the binary reports them
-    (`aurora-lint --list-options json`), as canonical JSON for a run's
-    `settings` column."""
     out = subprocess.run(
         [str(SQC_BIN), "--list-options", "json", "--profile", profile],
         capture_output=True, text=True, check=True)
-    return json.dumps(json.loads(out.stdout)["current"], sort_keys=True)
+    return json.loads(out.stdout)["current"]
+
+
+def settings_run_suffix(settings: dict) -> str:
+    """The run_id suffix naming a run's settings, and the one place its
+    spelling lives: `-default-{hash12}` or `-strict-{hash12}` when the
+    settings are exactly that preset, `-preset-{hash12}` for anything else.
+    The hash tells two runs apart even when they share a preset name --
+    a preset whose options changed between builds hashes differently."""
+    label = settings.get("preset") or "preset"
+    return f"-{label}-{settings['hash'][:12]}"
+
+
+def settings_column(settings: dict) -> str:
+    """`settings` as stored in a run's `settings` column: sorted-key JSON,
+    hash included."""
+    return json.dumps(settings, sort_keys=True)
 
 
 def juliet_run_id(version: str, sha: str, *, fast: bool,
                   compile_commands: bool, cwes: tuple[str, ...] = (),
-                  profile: str = DEFAULT_PROFILE) -> str:
-    """The run_id for a Juliet run, distinct per (mode, compile-db, CWE
-    subset) so every configuration of one sqc build is its own run.
+                  settings: dict | None = None) -> str:
+    """The run_id for a Juliet run, distinct per (mode, compile-db, settings,
+    CWE subset) so every configuration of one sqc build is its own run:
+    `sqc-{version}-{sha}[-full][-cdb]-{preset}-{hash12}[-cwe...]`.
+
+    Every new run passes `settings` (`resolve_settings`); None yields the bare
+    pre-settings form, which only historical runs carry.
 
     benchmarking_db's queue_worker.py builds the same name to find the run it
-    ingests; change the two together. `cwes` defaults to empty, which leaves
-    every id the queue builds unchanged.
+    ingests; change the two together.
     """
     run_id = f"sqc-{version}-{sha}"
     if not fast:
         run_id += f"-{FULL_MODE_RUN_SUFFIX}"
     if compile_commands:
         run_id += f"-{COMPILE_DB_RUN_SUFFIX}"
+    if settings is not None:
+        run_id += settings_run_suffix(settings)
     if cwes:
         numbers = sorted({c.removeprefix("CWE-") for c in cwes}, key=int)
         run_id += f"-{CWE_SUBSET_RUN_SUFFIX}{'_'.join(numbers)}"
-    run_id += settings_run_suffix(profile)
     return run_id
 
 # ── Database ──────────────────────────────────────────────────────────────────

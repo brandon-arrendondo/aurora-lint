@@ -36,6 +36,43 @@ def _wall_seconds(started_at: str, finished_at: str) -> float | None:
 # importable on its own.
 _COMPILE_DB_VARIANT = "cdb"
 
+# Ordering terms that rank a run under anything but the default preset after
+# one under it: a run_id ending in `-strict-{hash12}` / `-preset-{hash12}`
+# (bench/config.py settings_run_suffix), or a real-world variant other than
+# the pre-settings NULL or a bare `default-{hash12}`.
+_NON_DEFAULT_SETTINGS_SQL = "({col} LIKE '%-strict-%' OR {col} LIKE '%-preset-%')"
+_NON_DEFAULT_VARIANT_SQL = "NOT (variant IS NULL OR variant LIKE 'default-%')"
+
+def diff_settings(base: str | None, target: str | None) -> list[str]:
+    """Lines describing how two runs' `settings` columns differ: the preset
+    and hash when they differ, then every option whose value does, so a
+    comparison says what reading changed and not just that one did. Flags two
+    runs that share a preset name but not a hash (the preset's own options
+    changed between the builds). A NULL column is a pre-settings run."""
+    if base == target:
+        return []
+    if base is None or target is None:
+        which = "base" if base is None else "target"
+        return [f"Settings: {which} is a pre-settings run (no recorded settings)"]
+    b, t = json.loads(base), json.loads(target)
+    lines = []
+    bp, tp = b.get("preset") or "custom", t.get("preset") or "custom"
+    if bp != tp:
+        lines.append(f"Settings: preset {bp} -> {tp}")
+    elif b.get("hash") != t.get("hash"):
+        lines.append(f"Settings: SAME PRESET NAME '{bp}', DIFFERENT HASH "
+                     f"({b.get('hash', '')[:12]} -> {t.get('hash', '')[:12]}): "
+                     "the preset's own options changed between these builds")
+    for axis in ("policy", "environment", "libc"):
+        if b.get(axis) != t.get(axis):
+            lines.append(f"  {axis}: {b.get(axis)} -> {t.get(axis)}")
+    bo, to = b.get("options", {}), t.get("options", {})
+    for name in sorted(set(bo) | set(to)):
+        if bo.get(name) != to.get(name):
+            lines.append(f"  {name}: {bo.get(name, '(absent)')} -> {to.get(name, '(absent)')}")
+    return lines
+
+
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 _SCHEMA = """
@@ -1720,10 +1757,10 @@ class BenchDB:
                 return row["id"]
 
             # Version match (e.g. "0.3.28")
-            cur.execute("""
+            cur.execute(f"""
                 SELECT id FROM realworld_runs
                 WHERE sqc_version = ?
-                ORDER BY variant IS NOT NULL, id DESC LIMIT 1
+                ORDER BY {_NON_DEFAULT_VARIANT_SQL}, id DESC LIMIT 1
             """, (ident,))
             row = cur.fetchone()
             if row:
@@ -1731,12 +1768,13 @@ class BenchDB:
 
             # Commit SHA match. Now that a variant run stores the same SHA
             # as the default run it was paired with, this is ambiguous by
-            # construction -- resolve it to the DEFAULT run, since a variant
-            # is always reachable by its own explicit run_id.
-            cur.execute("""
+            # construction -- resolve it to the DEFAULT run (no compile
+            # database, default preset), since a variant is always reachable
+            # by its own explicit run_id.
+            cur.execute(f"""
                 SELECT id FROM realworld_runs
                 WHERE commit_sha = ?
-                ORDER BY variant IS NOT NULL, id DESC LIMIT 1
+                ORDER BY {_NON_DEFAULT_VARIANT_SQL}, id DESC LIMIT 1
             """, (ident,))
             row = cur.fetchone()
             if row:
@@ -2800,11 +2838,14 @@ class BenchDB:
             return ident
 
         # Commit SHA match. One build can have a fast, full and compile-db run,
-        # so prefer the plain fast run (the published default); the others are
-        # reachable by their own run_id.
+        # under several settings, so prefer the plain fast run under the
+        # default preset (the published default); the others are reachable by
+        # their own run_id.
         with self._cursor() as cur:
             cur.execute("SELECT run_id FROM runs WHERE commit_sha = ? "
-                        "ORDER BY mode <> 'fast', started_at DESC LIMIT 1",
+                        "ORDER BY mode <> 'fast', "
+                        f"{_NON_DEFAULT_SETTINGS_SQL.format(col='run_id')}, "
+                        "started_at DESC LIMIT 1",
                         (ident,))
             row = cur.fetchone()
             if row:

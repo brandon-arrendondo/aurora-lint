@@ -96,7 +96,9 @@ preset and under the current settings (``--list-options json`` for tooling).
 :doc:`options` is generated from the same table. An unknown option name, or
 one set on the wrong axis, is an error naming the allowed set. A SARIF
 export records the settings in ``runs[0].properties["aurora-lint/settings"]``,
-so a report always says which reading produced it.
+so a report always says which reading produced it. Its ``hash`` is the SHA-256
+of the settings' canonical JSON (sorted keys): equal settings always hash
+equally, and adding or changing any option changes it.
 
 Supported CERT C Rules
 ----------------------

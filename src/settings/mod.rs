@@ -484,8 +484,30 @@ impl AnalysisSettings {
         OPTIONS.iter().map(|o| (o.name, self.values[o.name]))
     }
 
-    /// The settings as a JSON object, for a report's run metadata.
+    /// The settings as a JSON object, for a report's run metadata: the
+    /// resolved values plus their [`settings_hash`](Self::settings_hash).
     pub fn to_json(&self) -> serde_json::Value {
+        let mut v = self.identity_json();
+        v["hash"] = serde_json::Value::String(self.settings_hash());
+        v
+    }
+
+    /// The settings as canonical JSON: every object's keys sorted, no
+    /// whitespace. Stable across builds and serde feature sets, so equal
+    /// settings always serialize to equal bytes.
+    pub fn canonical_json(&self) -> String {
+        canonical(&self.identity_json())
+    }
+
+    /// SHA-256 (hex) of [`canonical_json`](Self::canonical_json). Names the
+    /// settings a run scanned under: benchmark run ids carry its first 12
+    /// characters, and a report carries all of it. Every option the table
+    /// knows is part of it, so adding an option changes every hash.
+    pub fn settings_hash(&self) -> String {
+        crate::utility::hash::sha256_hex(self.canonical_json().as_bytes())
+    }
+
+    fn identity_json(&self) -> serde_json::Value {
         let options: serde_json::Map<String, serde_json::Value> = self
             .values()
             .map(|(k, v)| (k.to_string(), serde_json::Value::Bool(v)))
@@ -523,6 +545,35 @@ macro_rules! display_via_serde {
 }
 
 display_via_serde!(Preset, Policy, EnvironmentKind, Libc);
+
+/// `v` serialized with every object's keys in sorted order and no
+/// whitespace, whatever order the map preserved.
+fn canonical(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let fields: Vec<String> = keys
+                .into_iter()
+                .map(|k| {
+                    format!(
+                        "{}:{}",
+                        serde_json::Value::String(k.clone()),
+                        canonical(&map[k])
+                    )
+                })
+                .collect();
+            format!("{{{}}}", fields.join(","))
+        }
+        serde_json::Value::Array(items) => {
+            format!(
+                "[{}]",
+                items.iter().map(canonical).collect::<Vec<_>>().join(",")
+            )
+        }
+        other => other.to_string(),
+    }
+}
 
 fn scope_label(scope: Scope) -> String {
     match scope {
