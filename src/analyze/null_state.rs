@@ -1434,7 +1434,15 @@ pub fn analyze_null_states(
     source: &str,
     summaries: &HashMap<String, FunctionSummary>,
 ) -> NullAnalysisResult {
-    analyze_null_states_with_globals(cfg, func_node, source, summaries, &StateMap::new(), None)
+    analyze_null_states_with_globals(
+        cfg,
+        func_node,
+        source,
+        summaries,
+        &StateMap::new(),
+        None,
+        true,
+    )
 }
 
 /// Like `analyze_null_states` but seeds the initial state with file-scope
@@ -1450,6 +1458,7 @@ pub fn analyze_null_states_with_globals(
     summaries: &(impl SummaryLookup + ?Sized),
     global_states: &StateMap,
     func_name: Option<&str>,
+    first_site_only: bool,
 ) -> NullAnalysisResult {
     let body = match func_node.child_by_field_name("body") {
         Some(b) => b,
@@ -1498,6 +1507,7 @@ pub fn analyze_null_states_with_globals(
         &mut entry_states,
         &mut exit_states,
         &proven_nonnull_params,
+        first_site_only,
     );
 
     NullAnalysisResult {
@@ -1614,6 +1624,7 @@ fn run_null_state_worklist(
     entry_states: &mut HashMap<BlockId, StateMap>,
     exit_states: &mut HashMap<BlockId, StateMap>,
     proven_nonnull_params: &HashSet<String>,
+    first_site_only: bool,
 ) {
     // Worklist — companion set for O(1) membership test instead of O(N) VecDeque::contains.
     let mut worklist: VecDeque<BlockId> = VecDeque::new();
@@ -1650,6 +1661,7 @@ fn run_null_state_worklist(
                 body,
                 source,
                 proven_nonnull_params,
+                first_site_only,
             );
 
             if first {
@@ -1745,6 +1757,7 @@ fn apply_edge_refinement(
     body: &Node,
     source: &str,
     proven_nonnull_params: &HashSet<String>,
+    first_site_only: bool,
 ) -> StateMap {
     let mut state = pred_exit.clone();
 
@@ -1805,7 +1818,10 @@ fn apply_edge_refinement(
         // null disjunct is impossible and the pointer keeps the state it had.
         // This is what separates hostap's dead-defensive `if (sta && ...)`,
         // 36 lines after `sta->eapol_sm`, from a real guard on an
-        // unconstrained parameter. The join alone cannot tell them apart:
+        // unconstrained parameter. It is the `first_site_only` relaxation:
+        // the later sites depend on the same missing check as the earlier
+        // dereference, so the strict policy does not credit it and reports
+        // them too. The join alone cannot tell them apart:
         // join(NotNull, DefinitelyNull) is PossiblyNull either way.
         let introduces_null = matches!(
             new_state,
@@ -1825,11 +1841,12 @@ fn apply_edge_refinement(
         if introduces_null
             && current != NullState::DefinitelyNull
             && (proven_nonnull_params.contains(&info.var_name)
-                || crate::utility::cert_c::guard_dominance::has_dominating_dereference(
-                    &info.var_name,
-                    &cond_node,
-                    source,
-                ))
+                || (first_site_only
+                    && crate::utility::cert_c::guard_dominance::has_dominating_dereference(
+                        &info.var_name,
+                        &cond_node,
+                        source,
+                    )))
         {
             continue;
         }
@@ -2487,8 +2504,9 @@ void sink() {
             })
             .unwrap();
         let cfg = build_function_cfg(&sink_func, code).unwrap();
-        let result =
-            analyze_null_states_with_globals(&cfg, &sink_func, code, &summaries, &globals, None);
+        let result = analyze_null_states_with_globals(
+            &cfg, &sink_func, code, &summaries, &globals, None, true,
+        );
         let body = sink_func.child_by_field_name("body").unwrap();
         let deref_pos = code.find("*data = 42").unwrap();
         assert!(is_null_deref_at(

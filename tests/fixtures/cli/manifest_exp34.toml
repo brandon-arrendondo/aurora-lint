@@ -1,7 +1,7 @@
 [metadata]
 name = "CLI Integration Test - EXP34-C only"
 version = "1.0.0"
-description = "Minimal manifest for EXP34-C cross-file tests"
+description = "Minimal manifest for CLI integration tests"
 cert_version = "2016"
 
 [rules.cert_c.EXP34-C]

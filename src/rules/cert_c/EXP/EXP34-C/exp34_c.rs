@@ -190,6 +190,7 @@ impl CertRule for Exp34C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
         let settings = Arc::clone(&self.settings.borrow());
+        let first_site_only = settings.flag("first_site_only");
         let summaries = self.function_summaries.borrow();
         let cfgs = self.function_cfgs.borrow();
         let all_macros = self.function_macros.borrow();
@@ -286,10 +287,11 @@ impl CertRule for Exp34C {
                         &effective_summaries,
                         &global_states,
                         func_name.as_deref(),
+                        first_site_only,
                     );
 
                     // Walk AST for dereferences and check each against the dataflow result
-                    let mut reported_vars: HashSet<String> = HashSet::new();
+                    let mut reported_vars = ReportedSites::new(first_site_only);
                     check_dereferences_cfg(
                         &body,
                         source,
@@ -314,6 +316,38 @@ impl CertRule for Exp34C {
 // Dereference walker (AST-based, queries CFG analysis for safety)
 // ---------------------------------------------------------------------------
 
+/// What has already been reported in one function. Under `first_site_only`
+/// (the default policy) a variable is reported once, at the first failing
+/// site of the chain: every later site depends on the same missing check.
+/// Otherwise (strict) every violating line is reported.
+struct ReportedSites {
+    first_site_only: bool,
+    keys: HashSet<(String, Option<usize>)>,
+}
+
+impl ReportedSites {
+    fn new(first_site_only: bool) -> Self {
+        Self {
+            first_site_only,
+            keys: HashSet::new(),
+        }
+    }
+
+    fn key(&self, name: &str, site: &Node) -> (String, Option<usize>) {
+        let line = (!self.first_site_only).then(|| site.start_position().row);
+        (name.to_string(), line)
+    }
+
+    fn contains(&self, name: &str, site: &Node) -> bool {
+        self.keys.contains(&self.key(name, site))
+    }
+
+    fn insert(&mut self, name: &str, site: &Node) {
+        let key = self.key(name, site);
+        self.keys.insert(key);
+    }
+}
+
 fn check_dereferences_cfg(
     node: &Node,
     source: &str,
@@ -324,7 +358,7 @@ fn check_dereferences_cfg(
     macros: &HashMap<String, FunctionMacro>,
     settings: &AnalysisSettings,
     violations: &mut Vec<RuleViolation>,
-    reported_vars: &mut HashSet<String>,
+    reported_vars: &mut ReportedSites,
 ) {
     for n in query::find_descendants_of_kinds(
         *node,
@@ -395,7 +429,7 @@ fn check_pointer_deref_cfg(
     body: &Node,
     summaries: &(impl SummaryLookup + ?Sized),
     violations: &mut Vec<RuleViolation>,
-    reported_vars: &mut HashSet<String>,
+    reported_vars: &mut ReportedSites,
 ) {
     let is_deref = node
         .child_by_field_name("operator")
@@ -422,12 +456,12 @@ fn check_pointer_deref_cfg(
     ) {
         return;
     }
-    if reported_vars.contains(&deref_text)
+    if reported_vars.contains(&deref_text, node)
         || !is_unsafe_at(&deref_text, node, source, analysis, cfg, body, summaries)
     {
         return;
     }
-    reported_vars.insert(deref_text.clone());
+    reported_vars.insert(&deref_text, node);
     let start_point = node.start_position();
     violations.push(RuleViolation {
         rule_id: "EXP34-C".to_string(),
@@ -456,19 +490,19 @@ fn check_subscript_deref_cfg(
     body: &Node,
     summaries: &(impl SummaryLookup + ?Sized),
     violations: &mut Vec<RuleViolation>,
-    reported_vars: &mut HashSet<String>,
+    reported_vars: &mut ReportedSites,
 ) {
     let Some(array) = node.child(0) else { return };
     if array.kind() != "identifier" {
         return;
     }
     let var_name = ast_utils::get_node_text_owned(&array, source);
-    if reported_vars.contains(&var_name)
+    if reported_vars.contains(&var_name, node)
         || !is_unsafe_at(&var_name, node, source, analysis, cfg, body, summaries)
     {
         return;
     }
-    reported_vars.insert(var_name.clone());
+    reported_vars.insert(&var_name, node);
     let start_point = node.start_position();
     violations.push(RuleViolation {
         rule_id: "EXP34-C".to_string(),
@@ -497,7 +531,7 @@ fn check_field_deref_cfg(
     body: &Node,
     summaries: &(impl SummaryLookup + ?Sized),
     violations: &mut Vec<RuleViolation>,
-    reported_vars: &mut HashSet<String>,
+    reported_vars: &mut ReportedSites,
 ) {
     let Some(argument) = node.child_by_field_name("argument") else {
         return;
@@ -506,12 +540,12 @@ fn check_field_deref_cfg(
         return;
     }
     let var_name = ast_utils::get_node_text_owned(&argument, source);
-    if reported_vars.contains(&var_name)
+    if reported_vars.contains(&var_name, node)
         || !is_unsafe_at(&var_name, node, source, analysis, cfg, body, summaries)
     {
         return;
     }
-    reported_vars.insert(var_name.clone());
+    reported_vars.insert(&var_name, node);
     let start_point = node.start_position();
     violations.push(RuleViolation {
         rule_id: "EXP34-C".to_string(),
@@ -550,7 +584,7 @@ fn check_call_expression_cfg(
     macros: &HashMap<String, FunctionMacro>,
     settings: &AnalysisSettings,
     violations: &mut Vec<RuleViolation>,
-    reported_vars: &mut HashSet<String>,
+    reported_vars: &mut ReportedSites,
 ) {
     let Some(function) = node.child_by_field_name("function") else {
         return;
@@ -559,11 +593,11 @@ fn check_call_expression_cfg(
     // Function pointer call
     if function.kind() == "identifier" {
         let func_name = ast_utils::get_node_text_owned(&function, source);
-        if !reported_vars.contains(&func_name)
+        if !reported_vars.contains(&func_name, &function)
             && !is_provably_not_a_pointer(&function, &func_name, source)
             && is_unsafe_at(&func_name, node, source, analysis, cfg, body, summaries)
         {
-            reported_vars.insert(func_name.clone());
+            reported_vars.insert(&func_name, &function);
             let start_point = function.start_position();
             violations.push(RuleViolation {
                 rule_id: "EXP34-C".to_string(),
@@ -638,17 +672,17 @@ fn check_function_arguments_cfg(
     body: &Node,
     summaries: &(impl SummaryLookup + ?Sized),
     violations: &mut Vec<RuleViolation>,
-    reported_vars: &mut HashSet<String>,
+    reported_vars: &mut ReportedSites,
 ) {
     for i in 0..args.child_count() {
         if let Some(arg) = args.child(i) {
             if arg.kind() == "identifier" {
                 let var_name = ast_utils::get_node_text_owned(&arg, source);
-                if !reported_vars.contains(&var_name)
+                if !reported_vars.contains(&var_name, &arg)
                     && !is_provably_not_a_pointer(&arg, &var_name, source)
                     && is_unsafe_at(&var_name, &arg, source, analysis, cfg, body, summaries)
                 {
-                    reported_vars.insert(var_name.clone());
+                    reported_vars.insert(&var_name, &arg);
                     let start_point = arg.start_position();
                     violations.push(RuleViolation {
                         rule_id: "EXP34-C".to_string(),

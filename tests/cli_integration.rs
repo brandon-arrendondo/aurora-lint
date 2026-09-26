@@ -290,6 +290,25 @@ fn unknown_or_misplaced_option_is_refused() {
 }
 
 #[test]
+fn first_site_only_reports_a_dependent_chain_once() {
+    // `p` may be null and is dereferenced unchecked on four lines, all
+    // depending on one missing check.
+    let count = |preset: &str| {
+        let (code, stdout, stderr) = run_aurora_lint(&[
+            fixtures().join("repeated_deref.c").to_str().unwrap(),
+            "-m",
+            fixtures().join("manifest_exp34.toml").to_str().unwrap(),
+            "--profile",
+            preset,
+        ]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        stdout.matches("EXP34-C:").count()
+    };
+    assert_eq!(count("default"), 1);
+    assert_eq!(count("strict"), 4);
+}
+
+#[test]
 fn options_doc_matches_the_table() {
     let (code, stdout, stderr) = run_aurora_lint(&["--list-options", "rst"]);
     assert_eq!(code, 0, "stderr: {stderr}");
