@@ -909,6 +909,7 @@ fn prescan_file_list(
         &function_macros,
         &call_graph,
         &ambiguous_call_targets,
+        &function_summaries,
     );
 
     // Resolve trailing-macro packed-struct candidates against the
@@ -1052,14 +1053,21 @@ fn invert_call_graph(
 /// is found anywhere in the scanned project (e.g. a single-threaded
 /// codebase with no `pthread_create`/ISR/`signal()` anywhere) — see
 /// `docs/design/con03-con07-isr-thread-reachability.md`.
+///
+/// Every function whose caller set is open is a root as well
+/// (`concurrency_roots::open_caller_set_roots`): code outside the scanned
+/// source calls it, from whatever thread it likes, so "nothing in the tree
+/// reaches it from a thread root" proves nothing about it (ADR-0011).
 fn compute_concurrency_reachable(
     source_files: &[PathBuf],
     parser: &mut CParser,
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     call_graph: &HashMap<String, HashSet<String>>,
     ambiguous_call_targets: &HashSet<String>,
+    function_summaries: &HashMap<String, FunctionSummary>,
 ) -> HashSet<String> {
-    let mut roots: HashSet<String> = HashSet::new();
+    let mut roots: HashSet<String> =
+        crate::analyze::concurrency_roots::open_caller_set_roots(function_summaries.iter());
     for file_path in source_files {
         if let Ok((tree, source)) = parser.parse_file(&file_path.to_string_lossy()) {
             crate::analyze::concurrency_roots::collect_concurrency_roots(

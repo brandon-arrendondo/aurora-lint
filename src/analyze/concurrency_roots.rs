@@ -20,7 +20,15 @@
 //!   only `signal(SIG, handler)`'s direct 2-argument form. Verified against
 //!   the one real-world codebase with labeled CON03-C signal-handler TPs
 //!   (mosquitto's `src/signals.c`): it uses `signal()` exclusively.
+//!
+//! Those registration APIs are not the only roots, though: every function
+//! whose caller set is open is one too (`open_caller_set_roots`), because
+//! code outside the scanned source calls it from whatever thread it likes.
+//! That also covers the registrations named above as out of scope -- a
+//! `sigaction` handler or a `pthread_once` initializer is a static whose
+//! address escapes.
 
+use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
@@ -196,6 +204,29 @@ fn is_ident_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
+/// Every function in `summaries` whose caller set is open
+/// (`FunctionSummary::caller_set_is_closed` is false), by bare name: an
+/// exported function, or a static one whose address escapes. Code outside
+/// the scanned source calls such a function, and nothing constrains which
+/// thread it calls from -- a library's caller, a plugin, a callback
+/// registered with a threaded event loop, a `sigaction` handler or a
+/// `pthread_once` initializer. So each is a concurrency root in its own
+/// right, which also covers the registration APIs the list above does not
+/// name (ADR-0011: in-tree reachability is a caller-set proof like any other).
+///
+/// Except `main`: the execution environment calls it once, at program
+/// startup, before any thread the program creates exists (C11 5.1.2.2).
+pub fn open_caller_set_roots<'a>(
+    summaries: impl Iterator<Item = (&'a String, &'a FunctionSummary)>,
+) -> HashSet<String> {
+    summaries
+        .filter(|(_, s)| !s.caller_set_is_closed())
+        .map(|(key, _)| key.split_once('\0').map_or(key.as_str(), |(_, n)| n))
+        .filter(|name| *name != "main")
+        .map(str::to_string)
+        .collect()
+}
+
 /// Forward-reachability set from `roots` over `call_graph`, treating any
 /// edge into `ambiguous_call_targets` as unresolved rather than chasing it
 /// (same reasoning as an earlier fix's MSC04-C fix, applied to a reachability
@@ -245,6 +276,21 @@ pub fn reachable_within_file(root: &Node, source: &str) -> HashSet<String> {
     }
     let mut roots = HashSet::new();
     collect_concurrency_roots(root, source, &function_macros, &mut roots);
+    // This file's own open functions, judged the way the prescan judges
+    // them: external linkage, or a static named somewhere as a value.
+    let mut value_names = HashSet::new();
+    crate::analyze::prescan::collect_value_position_identifiers(root, source, &mut value_names);
+    for def in query::find_descendants_of_kind(*root, "function_definition") {
+        let Some(name) = crate::analyze::cfg::get_function_name(&def, source) else {
+            continue;
+        };
+        let is_static = crate::utility::cert_c::ast_utils::declaration_has_storage_class(
+            &def, "static", source,
+        );
+        if name != "main" && (!is_static || value_names.contains(name)) {
+            roots.insert(name.to_string());
+        }
+    }
     reachable_from_roots(&roots, &call_graph, &HashSet::new())
 }
 
