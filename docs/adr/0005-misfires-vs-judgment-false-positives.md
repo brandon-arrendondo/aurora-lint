@@ -72,6 +72,21 @@ appeared to have, and it is reported as lost recall, not avoided by
 keeping the unsound path (Brandon, 2026-09-25). How the oracle and a run
 combine into TP, FP, FN and TN is set out in ADR-0014.
 
+### Juliet section scoring is not line truth
+
+Juliet scores a finding by section: anything reported inside a flawed
+("bad") function counts as a hit, whatever it says. That is much coarser
+than the oracle (ADR-0014), which asks whether *this line* violates *this
+rule*. A rule can hit Juliet's bad sections by firing near the flaw, or by
+misfiring on an unrelated line inside the bad region, and look as if it
+works. That illusion held for this project's early rules, which were judged
+on Juliet hits and misses as other tools are. It fails the moment exact
+violation lines have to be adjudicated. So a Juliet "TP" means "fired in the
+flawed section", an approximation of the oracle, not a confirmed violation. A
+misfire fix that removes such hits is still a fix, and reported Juliet
+figures state the section-level scoring. This is separate from what Juliet
+misses by design compared with real codebases (Brandon, 2026-09-25).
+
 ## Consequences
 
 - When reviewing a same-session correction like the one that prompted this

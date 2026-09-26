@@ -1,4 +1,4 @@
-# 0014. The oracle is independent of the tool; TP, FP, FN and TN come from pairing it with a run
+# 0014. The oracle is a CERT C oracle, independent of the tool; TP, FP, FN and TN come from pairing it with a run
 
 ## Status
 
@@ -22,7 +22,8 @@ once produced. It has caused confusion as the tool improves:
 
 ## Decision
 
-1. **The oracle is a statement about the code, independent of any tool.**
+1. **The oracle is a CERT C oracle: a statement about the code,
+   independent of any tool.**
    For a pinned commit, each entry keyed `(project, commit, file, line,
    rule)` records whether the code at that place violates that CERT C rule
    as written, or doesn't. If aurora-lint didn't exist, the oracle could
@@ -65,10 +66,13 @@ once produced. It has caused confusion as the tool improves:
 - "The label flipped" and "the finding went away" are different events,
   and a changelog of the oracle (label churn) is separate from a
   comparison of runs.
-- The oracle is only as complete as its adjudication. Lines no run has ever
-  reported are mostly unadjudicated, so recall is measured against the
-  violations the oracle knows about. That limit belongs in every recall
-  figure's caveats.
+- **The oracle is incomplete by necessity.** A full CERT C oracle for a
+  corpus means deciding every rule on every line, which is years of effort
+  per codebase; building a suite like Juliet plausibly took years too. So
+  the oracle covers the lines runs have reported plus the known misses.
+  Lines no run has ever reported are mostly unadjudicated, so recall is
+  measured against the violations the oracle knows about. That limit
+  belongs in every recall figure's caveats (Brandon, 2026-09-25).
 - ADR-0007's clarification of what a label is follows this definition.
 - A second tool's run can be scored against the same oracle, which is what
   makes cross-tool comparison on our corpora meaningful.
