@@ -68,6 +68,9 @@ fn join_states(a: &StateMap, b: &StateMap) -> StateMap {
 
 /// Result of null-state analysis for one function.
 pub struct NullAnalysisResult {
+    /// The policy the analysis ran under; a per-position query replays the
+    /// block's statements under the same one.
+    pub policy: NullPolicy,
     /// Entry state for each block (after joining predecessors + edge refinement).
     pub block_entry_states: HashMap<BlockId, StateMap>,
     /// Exit state for each block (after simulating block statements).
@@ -75,6 +78,35 @@ pub struct NullAnalysisResult {
     pub block_exit_states: HashMap<BlockId, StateMap>,
     /// Set of variables declared as pointer types.
     pub declared_pointers: HashSet<String>,
+}
+
+/// The ADR-0015 policy options the null-state analysis honors. `Default` is
+/// the default policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NullPolicy {
+    /// `assert_is_guard`: a plain `assert(...)` (strippable by `NDEBUG`)
+    /// establishes the pointers its condition proves non-null. An abort-check
+    /// macro no configuration strips is a guard under every policy.
+    pub assert_is_guard: bool,
+    /// `first_site_only`: a null test on a pointer already dereferenced does
+    /// not re-introduce null (see `apply_edge_refinement`).
+    pub first_site_only: bool,
+}
+
+impl Default for NullPolicy {
+    fn default() -> Self {
+        Self::from_settings(&crate::settings::AnalysisSettings::default())
+    }
+}
+
+impl NullPolicy {
+    /// The options `settings` resolves to.
+    pub fn from_settings(settings: &crate::settings::AnalysisSettings) -> Self {
+        Self {
+            assert_is_guard: settings.flag("assert_is_guard"),
+            first_site_only: settings.flag("first_site_only"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +388,7 @@ fn apply_transfer(
     source: &str,
     declared_pointers: &mut HashSet<String>,
     summaries: &(impl SummaryLookup + ?Sized),
+    policy: NullPolicy,
 ) -> StateMap {
     let mut state = entry.clone();
     for &(start, end) in &block.statements {
@@ -366,6 +399,7 @@ fn apply_transfer(
                 &mut state,
                 declared_pointers,
                 summaries,
+                policy,
             );
         }
     }
@@ -379,6 +413,7 @@ fn process_statement_for_null_state(
     state: &mut StateMap,
     declared_pointers: &mut HashSet<String>,
     summaries: &(impl SummaryLookup + ?Sized),
+    policy: NullPolicy,
 ) {
     // Cross-file output params (a follow-on to the EXP33-C fix):
     // any call anywhere in this statement -- bare statement, assignment RHS,
@@ -398,7 +433,7 @@ fn process_statement_for_null_state(
         }
         "expression_statement" => {
             // Handle assert(var) before other expression processing
-            process_assert_for_null_state(node, source, state, summaries);
+            process_assert_for_null_state(node, source, state, summaries, policy);
             if let Some(expr) = node.child(0) {
                 process_expression_null(&expr, source, state, declared_pointers, summaries);
             }
@@ -410,7 +445,14 @@ fn process_statement_for_null_state(
         // declarations and assignments inside case/default blocks.
         "switch_statement" => {
             if let Some(body) = node.child_by_field_name("body") {
-                walk_switch_body_for_null_state(&body, source, state, declared_pointers, summaries);
+                walk_switch_body_for_null_state(
+                    &body,
+                    source,
+                    state,
+                    declared_pointers,
+                    summaries,
+                    policy,
+                );
             }
         }
         // Condition expressions (parenthesized_expression at top level of if/while)
@@ -418,7 +460,7 @@ fn process_statement_for_null_state(
         // from conditions — that's handled by edge refinement.
         _ => {
             // Recognize assert(var) / assert(var != NULL) as making var NotNull
-            process_assert_for_null_state(node, source, state, summaries);
+            process_assert_for_null_state(node, source, state, summaries, policy);
             // Recurse into compound expressions to find nested assignments
             for i in 0..node.child_count() {
                 if let Some(child) = node.child(i) {
@@ -447,6 +489,7 @@ fn walk_switch_body_for_null_state(
     state: &mut StateMap,
     declared_pointers: &mut HashSet<String>,
     summaries: &(impl SummaryLookup + ?Sized),
+    policy: NullPolicy,
 ) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
@@ -459,6 +502,7 @@ fn walk_switch_body_for_null_state(
                         state,
                         declared_pointers,
                         summaries,
+                        policy,
                     );
                 }
                 "declaration" | "expression_statement" | "assignment_expression" => {
@@ -468,6 +512,7 @@ fn walk_switch_body_for_null_state(
                         state,
                         declared_pointers,
                         summaries,
+                        policy,
                     );
                 }
                 _ => {}
@@ -854,6 +899,7 @@ fn process_assert_for_null_state(
     source: &str,
     state: &mut StateMap,
     summaries: &(impl SummaryLookup + ?Sized),
+    policy: NullPolicy,
 ) {
     // Look for expression_statement -> call_expression -> assert
     let call_node = if node.kind() == "expression_statement" {
@@ -872,7 +918,13 @@ fn process_assert_for_null_state(
         return;
     };
     let name = get_text(&function, source);
+    // A plain `assert` is compiled out under NDEBUG, so it guards only when
+    // the policy credits it (`assert_is_guard`); an abort-check macro no
+    // configuration strips is a guard under every policy.
     let (cond_index, strict) = if name == "assert" {
+        if !policy.assert_is_guard {
+            return;
+        }
         (0, false)
     } else if let Some(i) = summaries
         .get(&name)
@@ -1441,7 +1493,7 @@ pub fn analyze_null_states(
         summaries,
         &StateMap::new(),
         None,
-        true,
+        NullPolicy::default(),
     )
 }
 
@@ -1458,12 +1510,13 @@ pub fn analyze_null_states_with_globals(
     summaries: &(impl SummaryLookup + ?Sized),
     global_states: &StateMap,
     func_name: Option<&str>,
-    first_site_only: bool,
+    policy: NullPolicy,
 ) -> NullAnalysisResult {
     let body = match func_node.child_by_field_name("body") {
         Some(b) => b,
         None => {
             return NullAnalysisResult {
+                policy,
                 block_entry_states: HashMap::new(),
                 block_exit_states: HashMap::new(),
                 declared_pointers: HashSet::new(),
@@ -1495,6 +1548,7 @@ pub fn analyze_null_states_with_globals(
         source,
         &mut declared_pointers,
         summaries,
+        policy,
     );
     exit_states.insert(cfg.entry, entry_exit);
 
@@ -1507,10 +1561,11 @@ pub fn analyze_null_states_with_globals(
         &mut entry_states,
         &mut exit_states,
         &proven_nonnull_params,
-        first_site_only,
+        policy,
     );
 
     NullAnalysisResult {
+        policy,
         block_entry_states: entry_states,
         block_exit_states: exit_states,
         declared_pointers,
@@ -1624,7 +1679,7 @@ fn run_null_state_worklist(
     entry_states: &mut HashMap<BlockId, StateMap>,
     exit_states: &mut HashMap<BlockId, StateMap>,
     proven_nonnull_params: &HashSet<String>,
-    first_site_only: bool,
+    policy: NullPolicy,
 ) {
     // Worklist — companion set for O(1) membership test instead of O(N) VecDeque::contains.
     let mut worklist: VecDeque<BlockId> = VecDeque::new();
@@ -1661,7 +1716,7 @@ fn run_null_state_worklist(
                 body,
                 source,
                 proven_nonnull_params,
-                first_site_only,
+                policy.first_site_only,
             );
 
             if first {
@@ -1686,6 +1741,7 @@ fn run_null_state_worklist(
             source,
             declared_pointers,
             summaries,
+            policy,
         );
 
         // Check convergence
@@ -1896,7 +1952,7 @@ pub fn is_null_deref_at(
             break;
         }
         if let Some(stmt_node) = find_node_at_range(body, start, end) {
-            if end > deref_byte && is_abort_check_statement(&stmt_node, source, summaries) {
+            if end > deref_byte && is_guard_statement(&stmt_node, source, summaries) {
                 break;
             }
             process_statement_for_null_state(
@@ -1905,6 +1961,7 @@ pub fn is_null_deref_at(
                 &mut state,
                 &mut declared_pointers,
                 summaries,
+                result.policy,
             );
         }
     }
@@ -1947,7 +2004,7 @@ pub fn get_var_state_at(
             break;
         }
         if let Some(stmt_node) = find_node_at_range(body, start, end) {
-            if end > byte_offset && is_abort_check_statement(&stmt_node, source, summaries) {
+            if end > byte_offset && is_guard_statement(&stmt_node, source, summaries) {
                 break;
             }
             process_statement_for_null_state(
@@ -1956,6 +2013,7 @@ pub fn get_var_state_at(
                 &mut state,
                 &mut declared_pointers,
                 summaries,
+                result.policy,
             );
         }
     }
@@ -1969,6 +2027,28 @@ pub fn get_var_state_at(
 /// nothing there: `serverAssert(c->bufpos == 0)` dereferences `c` unguarded.
 /// The statement-replay loops stop in front of it rather than apply its
 /// refinement to its own argument.
+/// True when `stmt` is a check whose credit applies only once it has run:
+/// an abort-check call ([`is_abort_check_statement`]) or an `assert(...)`.
+/// A dereference inside the statement's own argument is evaluated before the
+/// check has established anything, so the statement must not guard it.
+fn is_guard_statement(
+    stmt: &Node,
+    source: &str,
+    summaries: &(impl SummaryLookup + ?Sized),
+) -> bool {
+    if is_abort_check_statement(stmt, source, summaries) {
+        return true;
+    }
+    let call = if stmt.kind() == "expression_statement" {
+        stmt.child(0)
+    } else {
+        Some(*stmt)
+    };
+    call.filter(|c| c.kind() == "call_expression")
+        .and_then(|c| c.child_by_field_name("function"))
+        .is_some_and(|f| get_text(&f, source) == "assert")
+}
+
 fn is_abort_check_statement(
     stmt: &Node,
     source: &str,
@@ -2505,7 +2585,13 @@ void sink() {
             .unwrap();
         let cfg = build_function_cfg(&sink_func, code).unwrap();
         let result = analyze_null_states_with_globals(
-            &cfg, &sink_func, code, &summaries, &globals, None, true,
+            &cfg,
+            &sink_func,
+            code,
+            &summaries,
+            &globals,
+            None,
+            NullPolicy::default(),
         );
         let body = sink_func.child_by_field_name("body").unwrap();
         let deref_pos = code.find("*data = 42").unwrap();
