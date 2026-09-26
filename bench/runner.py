@@ -19,7 +19,7 @@ from bench.analyzer import analyze_shard, merge_shards
 from bench.config import (
     DEFAULT_JOBS, DEFAULT_PROFILE, GENERATE_MAP_SCRIPT, JULIET_BASE,
     MANIFEST_JULIET_FULL, MANIFEST_CWE_DIR, RULE_CWE_MAP, SQC_BIN,
-    JULIET_COMPILE_DB, juliet_run_id, resolved_settings_json,
+    JULIET_COMPILE_DB, juliet_run_id, resolve_settings, settings_column,
 )
 from bench.db import BenchDB
 from bench.machine import get_machine_metadata
@@ -531,10 +531,10 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
         cwes: Restrict the run to these CWEs ("78", "CWE78" or "CWE-78").
             A smoke test, not a benchmark: the run gets its own run_id and
             mode, so it never stands in for the build's full run.
-        profile: The policy/environment preset to scan under (ADR-0015),
-            recorded in the run's `settings`. Only the default is recordable
-            until a non-default run_id suffix is ruled on
-            (`config.settings_run_suffix`).
+        profile: The policy/environment preset to scan under (ADR-0015).
+            The run_id carries its name and settings hash
+            (`config.settings_run_suffix`) and the run's `settings` column
+            the resolved values.
 
     Returns:
         The run_id for the completed benchmark.
@@ -567,9 +567,9 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
 
     version = _get_sqc_version()
     sha = _get_git_sha()
+    settings = resolve_settings(profile)
     run_id = juliet_run_id(version, sha, fast=fast, compile_commands=compile_commands,
-                           cwes=cwe_ids, profile=profile)
-    settings = resolved_settings_json(profile)
+                           cwes=cwe_ids, settings=settings)
     mode = "fast" if fast else "full"
     if compile_commands:
         mode += " +compile-db"
@@ -613,7 +613,8 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     # Create or update run record
     if not existing:
         db.create_run(run_id, version, sha, mode, started_at,
-                      os.getpid(), jobs, total_cwes, machine, settings=settings)
+                      os.getpid(), jobs, total_cwes, machine,
+                      settings=settings_column(settings))
     else:
         db.update_run_status(run_id, "running")
 

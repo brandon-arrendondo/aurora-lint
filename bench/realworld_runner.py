@@ -35,7 +35,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from bench.config import (
-    BENCH_ROOT, DEFAULT_PROFILE, PROJECT_DIR, resolved_settings_json, settings_run_suffix,
+    BENCH_ROOT, DEFAULT_PROFILE, PROJECT_DIR, resolve_settings, settings_column,
+    settings_run_suffix,
 )
 from bench.config import opam_wrap as _opam_wrap
 from bench.db import BenchDB
@@ -1453,12 +1454,10 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
     """Run one tool against one codebase, synchronously, blocking until done.
     Writes result files under RESULTS_BASE. Returns a summary dict.
 
-    `profile` is aurora-lint's policy/environment preset (ADR-0015); only the
-    default is recordable until a non-default run_id suffix is ruled on
-    (`config.settings_run_suffix`, which refuses the rest)."""
+    `profile` is aurora-lint's policy/environment preset (ADR-0015). An sqc
+    run's variant, and so its run_id and results directory, carries the
+    settings' name and hash (`config.settings_run_suffix`)."""
     tool = tool.strip().lower()
-    if tool == "sqc":
-        settings_run_suffix(profile)
     codebase = codebase.strip().lower()
     if tool not in VALID_TOOLS:
         raise ValueError(f"Unknown tool '{tool}'. Must be one of: {', '.join(VALID_TOOLS)}")
@@ -1502,6 +1501,10 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
                 "Generate it with: ansible-playbook playbooks/setup-compile-commands.yml "
                 "-i 'localhost,' -c local --ask-become-pass")
         compile_db = str(found)
+
+    if tool == "sqc":
+        suffix = settings_run_suffix(resolve_settings(profile)).lstrip("-")
+        variant = f"{variant}-{suffix}" if variant else suffix
 
     version = _get_tool_version(tool)
     sha = _get_git_sha()
@@ -1681,7 +1684,7 @@ def _ingest(results: list[dict], summary: dict, profile: str = DEFAULT_PROFILE) 
         run_id = db.ingest_realworld_run(sqc_dir.name, str(sqc_dir), machine=machine,
                                          durations=durations, metrics=metrics,
                                          only_projects={r["codebase"] for r in sqc_results},
-                                         settings=resolved_settings_json(profile))
+                                         settings=settings_column(resolve_settings(profile)))
         summary["run_id"] = run_id
 
         for r in results:
