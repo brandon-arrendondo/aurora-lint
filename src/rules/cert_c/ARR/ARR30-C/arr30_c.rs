@@ -59,10 +59,10 @@ use tree_sitter::Node;
 
 // Import shared utility functions
 use crate::utility::cert_c::ast_utils::{
-    find_containing_for_loop, find_containing_function, find_containing_if_statement,
-    find_enclosing_declaration_for_identifier, find_identifier_in_declarator,
-    get_identifier_from_declarator, get_node_text, is_address_of_expression,
-    resolve_identifier_declarator,
+    declares_static, find_containing_for_loop, find_containing_function,
+    find_containing_if_statement, find_enclosing_declaration_for_identifier,
+    find_identifier_in_declarator, get_identifier_from_declarator, get_node_text,
+    is_address_of_expression, resolve_identifier_declarator, static_macro_names_in_scope,
 };
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::guard_dominance::{
@@ -70,6 +70,11 @@ use crate::utility::cert_c::guard_dominance::{
 };
 
 pub struct Arr30C {
+    /// Macros any scanned file defines as `static`
+    /// (`ProjectContext::static_macro_names`).
+    project_static_macros: RefCell<Arc<HashSet<String>>>,
+    /// Those plus the file being scanned's own; set per file.
+    static_macros: RefCell<HashSet<String>>,
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
     /// Macro/enum/const constants gathered cross-file by the prescan
@@ -242,6 +247,7 @@ impl CertRule for Arr30C {
     }
 
     fn set_project_context(&self, context: &ProjectContext) {
+        *self.project_static_macros.borrow_mut() = context.static_macro_names.clone();
         *self.macro_constants.borrow_mut() = context.macro_constants.clone();
         *self.project_validated_params.borrow_mut() = context
             .function_summaries
@@ -259,6 +265,8 @@ impl CertRule for Arr30C {
         // Analyze all buffer allocations once at root level
         if node.parent().is_none() {
             self.decode_taint_cache.borrow_mut().clear();
+            *self.static_macros.borrow_mut() =
+                static_macro_names_in_scope(source, &self.project_static_macros.borrow());
             self.param_decode_buf_cache.borrow_mut().clear();
             self.param_decode_reported.borrow_mut().clear();
             *self.null_sentinel_macros.borrow_mut() = collect_null_sentinel_macros(node, source);
@@ -351,6 +359,8 @@ impl CertRule for Arr30C {
 impl Arr30C {
     pub fn new() -> Self {
         Self {
+            project_static_macros: RefCell::new(Arc::new(HashSet::new())),
+            static_macros: RefCell::new(HashSet::new()),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
             macro_constants: RefCell::new(Arc::new(HashMap::new())),
@@ -1659,24 +1669,6 @@ impl Arr30C {
     // Removed: find_enclosing_function - now using ast_utils::find_containing_function
 
     // Removed: is_function_parameter - now using ast_utils::is_function_parameter with find_containing_function
-
-    /// Returns true if `function_node` is declared `static` or uses a STATIC macro prefix.
-    fn is_static_function(function_node: &Node, source: &str) -> bool {
-        for i in 0..function_node.child_count() {
-            if let Some(child) = function_node.child(i) {
-                if child.kind() == "storage_class_specifier" {
-                    if &source[child.start_byte()..child.end_byte()] == "static" {
-                        return true;
-                    }
-                }
-            }
-        }
-        let func_text = &source[function_node.start_byte()..function_node.end_byte()];
-        let before_paren = func_text.split('(').next().unwrap_or("");
-        before_paren
-            .split_whitespace()
-            .any(|tok| tok.contains("STATIC"))
-    }
 
     /// Returns true if the named parameter of `func_node` is declared with a
     /// non-primitive (user-defined) type such as an enum typedef.
@@ -3476,7 +3468,7 @@ impl Arr30C {
         }
         if let Some(func_node) = find_containing_function(node) {
             if self.is_function_parameter_any_return(&func_node, var, source)
-                && !(Self::is_static_function(&func_node, source)
+                && !(declares_static(&func_node, source, &self.static_macros.borrow())
                     && Self::param_has_user_defined_type(&func_node, var, source))
             {
                 return !self.has_function_parameter_bounds_check(&func_node, var, source);

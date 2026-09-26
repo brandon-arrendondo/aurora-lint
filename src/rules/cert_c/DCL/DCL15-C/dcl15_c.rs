@@ -10,7 +10,9 @@
 use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
 use crate::rules::{CertRule, RuleViolation};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{
+    declares_static, get_node_text, static_macro_names_in_scope,
+};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -20,12 +22,19 @@ use tree_sitter::Node;
 pub struct Dcl15C {
     /// Functions declared (prototyped) in header files — public API.
     header_declared: RefCell<Arc<HashSet<String>>>,
+    /// Macros any scanned file defines as `static`
+    /// (`ProjectContext::static_macro_names`).
+    project_static_macros: RefCell<Arc<HashSet<String>>>,
+    /// Those plus the file being scanned's own; set per scan.
+    static_macros: RefCell<HashSet<String>>,
 }
 
 impl Default for Dcl15C {
     fn default() -> Self {
         Self {
             header_declared: RefCell::new(Arc::new(HashSet::new())),
+            project_static_macros: RefCell::new(Arc::new(HashSet::new())),
+            static_macros: RefCell::new(HashSet::new()),
         }
     }
 }
@@ -48,11 +57,14 @@ impl CertRule for Dcl15C {
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        *self.static_macros.borrow_mut() =
+            static_macro_names_in_scope(source, &self.project_static_macros.borrow());
         self.check_translation_unit(node, source, violations);
     }
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.header_declared.borrow_mut() = context.header_declared_functions.clone();
+        *self.project_static_macros.borrow_mut() = context.static_macro_names.clone();
     }
 }
 
@@ -170,57 +182,13 @@ impl Dcl15C {
         }
     }
 
+    /// Whether `node` is declared `static`, directly or through a macro some
+    /// `#define` expands to `static` (tree-sitter does not expand macros, so
+    /// `STATIC void f(void)` shows no storage-class specifier). The
+    /// definition decides, not the spelling: an undefined `PRIVATE` is not
+    /// static.
     fn has_static_storage_class(&self, node: &Node, source: &str) -> bool {
-        // Look for storage_class_specifier nodes that contain "static"
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "storage_class_specifier" {
-                    let text = get_node_text(&child, source);
-                    if text == "static" {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        // Tree-sitter does not expand macros, so a macro like `STATIC` (which
-        // conditionally expands to `static` for production builds and to nothing
-        // for unit-test builds) will never appear as a storage_class_specifier.
-        // Scan the raw source text of the declaration prefix for well-known
-        // static-equivalent macro names used in embedded/firmware codebases.
-        self.has_static_macro_in_prefix(node, source)
-    }
-
-    /// Returns true if the source text before the function name contains a
-    /// recognised macro that is a conditional alias for `static`.
-    fn has_static_macro_in_prefix(&self, node: &Node, source: &str) -> bool {
-        // Common macro names used as conditional-static wrappers.
-        const STATIC_MACROS: &[&str] = &[
-            "STATIC",
-            "STATIC_FUNC",
-            "STATIC_INLINE",
-            "PRIVATE",
-            "INTERNAL",
-            "LOCAL",
-        ];
-
-        // Only look at the first line of the declaration to avoid false
-        // matches in function bodies or parameter lists.
-        let node_text = get_node_text(node, source);
-        let first_line = node_text.lines().next().unwrap_or("");
-
-        // Tokenise the first line and check for any static-equivalent macro
-        // before the opening parenthesis (i.e., before the parameter list).
-        let before_paren = first_line.split('(').next().unwrap_or(first_line);
-        for token in before_paren.split_whitespace() {
-            // Strip any leading '*' from pointer return types
-            let token = token.trim_start_matches('*');
-            if STATIC_MACROS.contains(&token) {
-                return true;
-            }
-        }
-
-        false
+        declares_static(node, source, &self.static_macros.borrow())
     }
 
     fn extract_function_name(&self, declarator: &Node, source: &str) -> Option<String> {

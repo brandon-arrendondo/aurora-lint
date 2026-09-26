@@ -2014,6 +2014,30 @@ fn find_assignment_targets(text: &str, ident: &str, rhs_ok: impl Fn(usize) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn function_macro_names_cover_every_branch_and_shape() {
+        let src = "#ifdef A\n\
+                   #define one(x) (x)\n\
+                   #else\n\
+                   #define one(x) ((x) + 0)\n\
+                   #endif\n\
+                   #define LOG(fmt, ...) printf(fmt, __VA_ARGS__)\n\
+                   #define CAT(a, b) a##b\n\
+                   #define OBJECT (1)\n\
+                   #define SPLIT(a, \\\n    b) ((a) + (b))\n\
+                   int FOO(int);\n";
+        let mut names = HashSet::new();
+        collect_function_macro_names(src, &mut names);
+        let mut names: Vec<_> = names.into_iter().collect();
+        names.sort();
+        assert_eq!(names, ["CAT", "LOG", "SPLIT", "one"]);
+
+        let project: HashSet<String> = ["HEADER_MACRO".to_string()].into();
+        let scope = FunctionMacroNames::new(src, &project);
+        assert!(scope.contains("one") && scope.contains("HEADER_MACRO"));
+        assert!(!scope.contains("FOO") && !scope.contains("OBJECT"));
+    }
     use crate::parser::CParser;
 
     fn table(src: &str) -> HashMap<String, FunctionMacro> {

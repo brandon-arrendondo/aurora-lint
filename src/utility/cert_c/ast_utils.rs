@@ -2460,6 +2460,75 @@ pub fn collect_unused_attribute_macro_names(
     }
 }
 
+/// Add to `out` the name of every object-like `#define` in `source` whose
+/// replacement list contains the token `static`, in any preprocessor branch:
+/// `#define STATIC static`, `#define LOCAL_INLINE static inline`.
+///
+/// Tree-sitter does not expand macros, so a declaration written
+/// `STATIC int f(void)` never shows a `static` storage-class specifier. What
+/// makes such a prefix mean `static` is its definition, not its spelling: an
+/// undefined `PRIVATE` is not static, and a project's `#define LOCAL static`
+/// is. A name defined as `static` in one branch and as nothing in another
+/// (production vs unit-test builds) is `static` in the configuration that
+/// matters for linkage. A chain through a second macro
+/// (`#define MY_LOCAL STATIC`) is not followed. Merged project-wide into
+/// `ProjectContext::static_macro_names`; see [`static_macro_names_in_scope`].
+pub fn collect_static_macro_names(source: &str, out: &mut std::collections::HashSet<String>) {
+    for cap in define_line_re().captures_iter(source) {
+        let body = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+        // A function-like macro opens its parameter list right after the
+        // name; its body is not a storage-class spelling.
+        if body.starts_with('(') {
+            continue;
+        }
+        let body = body.split("/*").next().unwrap_or(body);
+        let body = body.split("//").next().unwrap_or(body);
+        if body
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(|token| token == "static")
+        {
+            if let Some(name) = cap.get(1) {
+                out.insert(name.as_str().to_string());
+            }
+        }
+    }
+}
+
+/// The macros that spell `static` in scope for one file: every scanned
+/// file's (`ProjectContext::static_macro_names`) plus this file's own.
+/// Compute once per file and pass to [`declares_static`].
+pub fn static_macro_names_in_scope(
+    source: &str,
+    project: &std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
+    let mut names = project.clone();
+    collect_static_macro_names(source, &mut names);
+    names
+}
+
+/// Whether the function definition or declaration `node` has internal
+/// linkage as written: a `static` storage-class specifier, or a token before
+/// its parameter list or initializer (on its first line) that
+/// `static_macros` says expands to `static`.
+pub fn declares_static(
+    node: &Node,
+    source: &str,
+    static_macros: &std::collections::HashSet<String>,
+) -> bool {
+    let mut cursor = node.walk();
+    if node.children(&mut cursor).any(|child| {
+        child.kind() == "storage_class_specifier" && get_node_text(&child, source) == "static"
+    }) {
+        return true;
+    }
+    let text = get_node_text(node, source);
+    let first_line = text.lines().next().unwrap_or("");
+    let prefix = first_line.split(['(', '=']).next().unwrap_or(first_line);
+    prefix
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|token| !token.is_empty() && static_macros.contains(token))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2838,5 +2907,84 @@ mod include_guard_tests {
             find(root).expect("nested #ifndef parsed")
         };
         assert!(!is_include_guard(&nested, src));
+    }
+}
+
+#[cfg(test)]
+mod static_macro_tests {
+    use super::{
+        collect_static_macro_names, declares_static, get_node_text, static_macro_names_in_scope,
+    };
+    use tree_sitter::Parser;
+
+    fn parse_c_code(code: &str) -> (tree_sitter::Tree, String) {
+        let mut parser = Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+        (tree, code.to_string())
+    }
+
+    #[test]
+    fn static_macro_names_come_from_definitions() {
+        let src = "#define STATIC static\n\
+                   #define LOCAL_FN static inline /* internal */\n\
+                   #define PRIVATE\n\
+                   #define NOT_STATIC /* static */ int\n\
+                   #define STATIC_ASSERT(c) _Static_assert(c, #c)\n\
+                   #define MY_STATICS 3\n";
+        let mut names = std::collections::HashSet::new();
+        collect_static_macro_names(src, &mut names);
+        let mut names: Vec<_> = names.into_iter().collect();
+        names.sort();
+        assert_eq!(names, ["LOCAL_FN", "STATIC"]);
+    }
+
+    #[test]
+    fn declares_static_through_a_defined_macro_only() {
+        let src = "#define LOCAL_FN static\n\
+                   #define PRIVATE\n\
+                   LOCAL_FN int a(void) { return 0; }\n\
+                   PRIVATE int b(void) { return 0; }\n\
+                   static int c(void) { return 0; }\n\
+                   INTERNAL int d(void) { return 0; }\n\
+                   int e(void) { return 0; }\n";
+        let (tree, source) = parse_c_code(src);
+        let statics = static_macro_names_in_scope(&source, &std::collections::HashSet::new());
+        let mut verdicts = Vec::new();
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        for node in root.children(&mut cursor) {
+            if node.kind() == "function_definition" {
+                let name = get_node_text(&node, &source)
+                    .split('(')
+                    .next()
+                    .unwrap()
+                    .split_whitespace()
+                    .last()
+                    .unwrap()
+                    .to_string();
+                verdicts.push((name, declares_static(&node, &source, &statics)));
+            }
+        }
+        let expected: Vec<(String, bool)> = [
+            ("a", true),
+            ("b", false),
+            ("c", true),
+            ("d", false),
+            ("e", false),
+        ]
+        .into_iter()
+        .map(|(n, v)| (n.to_string(), v))
+        .collect();
+        assert_eq!(verdicts, expected);
+    }
+
+    #[test]
+    fn a_project_static_macro_counts_without_a_local_define() {
+        let (tree, source) = parse_c_code("STATIC int f(void) { return 0; }\n");
+        let project: std::collections::HashSet<String> = ["STATIC".to_string()].into();
+        let statics = static_macro_names_in_scope(&source, &project);
+        let f = tree.root_node().child(0).unwrap();
+        assert!(declares_static(&f, &source, &statics));
     }
 }
