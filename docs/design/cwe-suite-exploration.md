@@ -1,6 +1,7 @@
 # Should aurora-lint grow a non-CERT CWE rule suite? (exploration)
 
 **Status:** recommendation for Brandon (aurora_lint 1529), 2026-09-25.
+The ADR references are to the set accepted at aurora-lint `72b8f734`.
 Exploration only: no rules, manifests or mappings are changed. If the
 answer is anything but "no", it becomes an ADR on the scope of the rule set,
 followed by individual rule tasks.
@@ -262,8 +263,12 @@ A proposed CWE rule is admitted only if all of these hold:
 3. **Evidence from the gap list:** a competitor fires it on in-scope corpora,
    or it has a Juliet directory, with counts stated. For a defect class no
    competitor fires on, a hand-written fixture showing the construct.
-4. **1523's shipping criterion applies unchanged.** It must be able to find a
-   TP, and must not be FP-dominated by construction.
+4. **ADR-0013's shipping criterion applies unchanged.** ADR-0013 (accepted at
+   `72b8f734`) says "the same criterion governs any new rule, CERT or not".
+   A candidate needs a disposition (Deterministic, Deterministic with review,
+   or Environment-gated), must be able to find a true violation, and must
+   not be structurally FP-dominated. One that would land in "fails the
+   criterion" is not implemented.
 5. **Labels before any precision claim** (CLAUDE.md protocol 6), on the same
    `(project, commit, file, line, rule)` oracle, under the suite's own rule
    ids.
