@@ -37,6 +37,7 @@ use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
+use crate::utility::cert_c::result_checks;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -353,37 +354,11 @@ impl Err33C {
                             return; // Don't perform the regular error check
                         }
 
-                        // An assignment whose value is the operand tested by the
-                        // controlling expression it sits in -- `if ((p = strdup(s)) == NULL)`,
-                        // `if (!(p = malloc(n)))`, `while ((c = fgetc(f)) != EOF)` -- is
-                        // checked right there. The forward search below cannot see it:
-                        // it starts at the statement AFTER the assignment, and the
-                        // enclosing `if` starts before it. The strtol family
-                        // is held to the same bar as the forward search applies to it:
-                        // its error signal is errno/endptr, which a comparison of the
-                        // value alone (`(n = strtoul(s, NULL, 8)) > 0777`) does not read.
-                        if let Some(condition) = self.enclosing_condition_testing(node, source) {
-                            let needs_errno = matches!(
-                                function_name,
-                                "strtol"
-                                    | "strtoul"
-                                    | "strtoll"
-                                    | "strtoull"
-                                    | "strtod"
-                                    | "strtof"
-                                    | "strtold"
-                            );
-                            let cond_text = get_node_text(&condition, source);
-                            if !needs_errno
-                                || cond_text.contains("errno")
-                                || cond_text.contains("endptr")
-                            {
-                                return;
-                            }
-                        }
-
-                        // Check if the assigned variable is later checked for errors
-                        if !self.is_variable_error_checked(node, var_name, function_name, source) {
+                        // Tested against the function's error value, in the
+                        // assignment's own controlling expression or after it,
+                        // before the variable is written again.
+                        if !self.stored_result_is_tested(node, &left, &right, function_name, source)
+                        {
                             let start_point = node.start_position();
                             let call_text = get_node_text(&right, source);
 
@@ -437,13 +412,19 @@ impl Err33C {
                             let var_name = get_identifier_from_declarator(&declarator, source);
 
                             if self.is_error_returning_function(function_name) {
-                                // Check if the declared variable is later checked for errors
-                                if !self.is_variable_error_checked(
-                                    node,
-                                    &var_name,
-                                    function_name,
-                                    source,
-                                ) {
+                                // Check if the declared variable is later tested
+                                // against the function's error value.
+                                let tested =
+                                    Self::declarator_name(&declarator).is_some_and(|name_node| {
+                                        self.stored_result_is_tested(
+                                            node,
+                                            &name_node,
+                                            &call,
+                                            function_name,
+                                            source,
+                                        )
+                                    });
+                                if !tested {
                                     let start_point = node.start_position();
                                     let call_text = get_node_text(&value, source);
 
@@ -799,14 +780,6 @@ impl Err33C {
         // Check if this function call is part of a condition or assignment
         if let Some(parent) = node.parent() {
             match parent.kind() {
-                // Direct assignment
-                "assignment_expression" => {
-                    if let Some(left) = parent.child_by_field_name("left") {
-                        let var_name = get_node_text(&left, source);
-                        // Check if the variable is later checked
-                        return self.is_variable_checked_in_context(&parent, var_name, source);
-                    }
-                }
                 // Used in a condition
                 "if_statement"
                 | "while_statement"
@@ -872,484 +845,35 @@ impl Err33C {
         false
     }
 
-    /// The controlling expression that tests the VALUE of `assignment`, if any.
-    ///
-    /// Walks up from the `assignment_expression` through the operators that
-    /// test a value rather than use it -- parentheses, `!`, a comparison, `&&`
-    /// / `||`, a cast -- and answers only on reaching the `condition` of an
-    /// `if`/`while`/`do`/`for`/`switch` or of a `?:`. That covers the whole
-    /// condition (`if ((p = f()))`), a compared operand (`... == NULL`, `> 0`,
-    /// `!= EOF`), a negated one (`!(p = f())`) and a non-first conjunct
-    /// (`flag == 0 || (p = f()) == NULL`).
-    ///
-    /// Any other parent ends the walk with `None`: `(p = f())->x` dereferences
-    /// the value, `g(p = f())` passes it on, `(n = f()) + 1` computes with it,
-    /// a `for` initializer stores it -- none of those tests it, and the
-    /// forward search remains the judge of what happens next. A `do`-`while`
-    /// condition counts here, unlike in `guard_dominance`: the question is
-    /// whether the value is tested at all, not whether a guard dominates a
-    /// later site.
-    fn enclosing_condition_testing<'a>(
+    /// Whether the result of `call`, stored by `store` into `target`, is
+    /// tested against `function_name`'s error value before `target` is
+    /// written again -- see `result_checks::stored_result_is_tested`. A
+    /// function the error-signal table does not know is held to any test of
+    /// its result.
+    fn stored_result_is_tested(
         &self,
-        assignment: &Node<'a>,
-        source: &str,
-    ) -> Option<Node<'a>> {
-        let mut current = *assignment;
-        while let Some(parent) = current.parent() {
-            match parent.kind() {
-                "parenthesized_expression" | "cast_expression" => {}
-                "unary_expression" => {
-                    let is_not = parent
-                        .child_by_field_name("operator")
-                        .map(|o| get_node_text(&o, source).trim() == "!")
-                        .unwrap_or(false);
-                    if !is_not {
-                        return None;
-                    }
-                }
-                "binary_expression" => {
-                    let tests = parent
-                        .child_by_field_name("operator")
-                        .map(|o| {
-                            matches!(
-                                get_node_text(&o, source).trim(),
-                                "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||"
-                            )
-                        })
-                        .unwrap_or(false);
-                    if !tests {
-                        return None;
-                    }
-                }
-                "if_statement"
-                | "while_statement"
-                | "do_statement"
-                | "for_statement"
-                | "switch_statement"
-                | "conditional_expression" => {
-                    return parent
-                        .child_by_field_name("condition")
-                        .filter(|c| c.id() == current.id());
-                }
-                _ => return None,
-            }
-            current = parent;
-        }
-        None
-    }
-
-    /// Checks if a variable assigned from an error-returning function is properly checked for errors.
-    ///
-    /// This function searches forward in the AST from the assignment point to find error checking
-    /// patterns in subsequent statements. It looks for:
-    /// - NULL pointer checks for pointer-returning functions (malloc, fopen, fgets, etc.)
-    /// - Non-zero return value checks for status-returning functions (fclose, fseek, etc.)
-    /// - Negative value checks for size/count-returning functions (printf, snprintf, etc.)
-    ///
-    /// The search is limited to the immediate scope and next 5 statements to avoid false positives
-    /// from distant, unrelated checks.
-    fn is_variable_error_checked(
-        &self,
-        assignment_node: &Node,
-        var_name: &str,
+        store: &Node,
+        target: &Node,
+        call: &Node,
         function_name: &str,
         source: &str,
     ) -> bool {
-        // Use new forward-looking algorithm
-        self.find_error_checks_in_scope(assignment_node, var_name, function_name, source)
+        let signal = result_checks::error_signal_for(function_name)
+            .unwrap_or(result_checks::ErrorSignal::Any);
+        result_checks::stored_result_is_tested(store, target, call, signal, source)
     }
 
-    /// Find error checks by looking forward from the assignment statement in the AST
-    fn find_error_checks_in_scope(
-        &self,
-        assignment_node: &Node,
-        var_name: &str,
-        function_name: &str,
-        source: &str,
-    ) -> bool {
-        // Walk up the AST to find the function body
-        let mut current = assignment_node.parent();
-        while let Some(node) = current {
-            if node.kind() == "compound_statement" {
-                // Found the function body, now search forward from the assignment position
-                if self.search_statements_for_error_checks(
-                    &node,
-                    assignment_node,
-                    var_name,
-                    function_name,
-                    source,
-                ) {
-                    return true;
-                }
-
-                // Check if the containing function is a wrapper that always handles errors
-                // by calling abort()/exit() — look at entire function body
-                if self.containing_function_handles_errors(&node, var_name, source) {
-                    return true;
-                }
-
-                return false;
+    /// The identifier a declarator declares (`*p`, `p[4]`, `(*p)` -> `p`).
+    fn declarator_name<'a>(declarator: &Node<'a>) -> Option<Node<'a>> {
+        let mut n = *declarator;
+        loop {
+            if n.kind() == "identifier" {
+                return Some(n);
             }
-            current = node.parent();
+            n = n
+                .child_by_field_name("declarator")
+                .or_else(|| n.named_child(0))?;
         }
-        false
-    }
-
-    /// Check if the containing function body has an error-handling pattern where it checks
-    /// the variable and calls abort()/exit() on failure.
-    fn containing_function_handles_errors(
-        &self,
-        compound_stmt: &Node,
-        var_name: &str,
-        source: &str,
-    ) -> bool {
-        // Pattern: if (!var) { ... abort()/exit(...) ... } or if (var == NULL) { ... }
-        // Structural (AST) check instead of whole-function-body substring matching, so a
-        // comment/string literal elsewhere in the function can't spuriously suppress a
-        // genuine missing-check violation (silent false negative).
-        query::find_descendants_of_kinds(*compound_stmt, &["if_statement"])
-            .into_iter()
-            .any(|if_stmt| {
-                let Some(condition) = if_stmt.child_by_field_name("condition") else {
-                    return false;
-                };
-                let is_null_check = self
-                    .contains_null_check_for_variable(&condition, var_name, source)
-                    || query::find_first_descendant(condition, |c| {
-                        c.kind() == "unary_expression"
-                            && c.child_by_field_name("operator")
-                                .map(|o| get_node_text(&o, source).trim() == "!")
-                                .unwrap_or(false)
-                            && c.child_by_field_name("argument")
-                                .map(|a| get_node_text(&a, source).trim() == var_name)
-                                .unwrap_or(false)
-                    })
-                    .is_some();
-                if !is_null_check {
-                    return false;
-                }
-
-                let Some(consequence) = if_stmt.child_by_field_name("consequence") else {
-                    return false;
-                };
-                query::find_descendants_of_kinds(consequence, &["call_expression"])
-                    .into_iter()
-                    .any(|call| {
-                        call.child_by_field_name("function")
-                            .map(|f| matches!(get_node_text(&f, source).trim(), "abort" | "exit"))
-                            .unwrap_or(false)
-                    })
-            })
-    }
-
-    /// Search through statements in a compound statement for error checking patterns
-    fn search_statements_for_error_checks(
-        &self,
-        compound_stmt: &Node,
-        assignment_node: &Node,
-        var_name: &str,
-        function_name: &str,
-        source: &str,
-    ) -> bool {
-        let assignment_byte_start = assignment_node.start_byte();
-        let mut statements_checked = 0;
-        const MAX_FORWARD_SEARCH: usize = 5; // Limit search to next 5 statements
-
-        // Walk through all child statements in the compound statement
-        for i in 0..compound_stmt.child_count() {
-            if let Some(child) = compound_stmt.child(i) {
-                // Skip non-statement nodes (like braces)
-                if !self.is_statement_node(&child) {
-                    continue;
-                }
-
-                // Only look at statements that come after the assignment
-                if child.start_byte() > assignment_byte_start {
-                    if self.statement_contains_error_check(&child, var_name, function_name, source)
-                    {
-                        return true;
-                    }
-
-                    // Enhanced: Also check nested compound statements for error checks
-                    if child.kind() == "if_statement" || child.kind() == "compound_statement" {
-                        if self.search_nested_statements_for_error_checks(
-                            &child,
-                            var_name,
-                            function_name,
-                            source,
-                        ) {
-                            return true;
-                        }
-                    }
-
-                    statements_checked += 1;
-                    if statements_checked >= MAX_FORWARD_SEARCH {
-                        break; // Limit search scope to avoid false positives
-                    }
-                }
-            }
-        }
-        false
-    }
-
-    /// Search through nested statements for error checking patterns (limited depth)
-    fn search_nested_statements_for_error_checks(
-        &self,
-        stmt_node: &Node,
-        var_name: &str,
-        function_name: &str,
-        source: &str,
-    ) -> bool {
-        // Recursive search in nested statements with limited depth
-        for i in 0..stmt_node.child_count() {
-            if let Some(child) = stmt_node.child(i) {
-                if child.kind() == "compound_statement" {
-                    // Search within the nested compound statement
-                    for j in 0..child.child_count() {
-                        if let Some(nested_child) = child.child(j) {
-                            if self.is_statement_node(&nested_child) {
-                                if self.statement_contains_error_check(
-                                    &nested_child,
-                                    var_name,
-                                    function_name,
-                                    source,
-                                ) {
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-                } else if self.is_statement_node(&child) {
-                    if self.statement_contains_error_check(&child, var_name, function_name, source)
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    }
-
-    /// Check if a node represents a statement
-    fn is_statement_node(&self, node: &Node) -> bool {
-        matches!(
-            node.kind(),
-            "expression_statement"
-                | "if_statement"
-                | "while_statement"
-                | "for_statement"
-                | "return_statement"
-                | "break_statement"
-                | "continue_statement"
-                | "compound_statement"
-                | "declaration"
-                | "init_declarator"
-        )
-    }
-
-    /// Check if a single statement contains error checking for the variable
-    fn statement_contains_error_check(
-        &self,
-        stmt_node: &Node,
-        var_name: &str,
-        function_name: &str,
-        source: &str,
-    ) -> bool {
-        // For if statements, check the condition
-        if stmt_node.kind() == "if_statement" {
-            if let Some(condition) = stmt_node.child_by_field_name("condition") {
-                return self.find_error_check_in_context(
-                    &condition,
-                    var_name,
-                    function_name,
-                    source,
-                );
-            }
-        }
-
-        // For other statements, check the entire statement
-        self.find_error_check_in_context(stmt_node, var_name, function_name, source)
-    }
-
-    fn is_variable_checked_in_context(&self, node: &Node, var_name: &str, source: &str) -> bool {
-        // Look in parent scopes for error checking
-        let mut current = node.parent();
-        for _ in 0..3 {
-            // Check up to 3 levels up
-            if let Some(parent) = current {
-                if self.contains_error_check(&parent, var_name, source) {
-                    return true;
-                }
-                current = parent.parent();
-            } else {
-                break;
-            }
-        }
-        false
-    }
-
-    fn find_error_check_in_context(
-        &self,
-        node: &Node,
-        var_name: &str,
-        function_name: &str,
-        source: &str,
-    ) -> bool {
-        let text = get_node_text(&node, source);
-
-        // Check for NULL pointer checks (more comprehensive patterns)
-        if matches!(
-            function_name,
-            "malloc" | "calloc" | "realloc" | "fopen" | "fgets" | "tmpfile"
-        ) {
-            // Use AST-based verification for NULL checks to ensure we're checking the right variable
-            if self.contains_null_check_for_variable(node, var_name, source) {
-                return true;
-            }
-
-            // Implicit boolean checks (still use string matching for these simpler patterns)
-            if text.contains(&format!("if ({})", var_name))
-                || text.contains(&format!("if ({} )", var_name))
-                || text.contains(&format!("if({})", var_name))
-                || text.contains(&format!("!{}", var_name))
-                || text.contains(&format!("if (!{})", var_name))
-            {
-                return true;
-            }
-
-            // Assignment with check in same expression
-            if text.contains(&format!("({} = ", var_name))
-                && (text.contains("!= NULL") || text.contains("== NULL"))
-            {
-                return true;
-            }
-        }
-
-        // For printf/fprintf - skip if in error handling context
-        if matches!(function_name, "printf" | "fprintf" | "sprintf" | "snprintf") {
-            if self.is_in_error_handling_context(node, source) {
-                return true; // Accept printf/fprintf in error contexts
-            }
-
-            // Otherwise check for explicit return value checking
-            if text.contains(&format!("{} < 0", var_name))
-                || text.contains(&format!("0 > {}", var_name))
-                || text.contains(&format!("{} >= sizeof", var_name))
-            {
-                return true;
-            }
-        }
-
-        // For fclose/fseek - check for non-zero return
-        if matches!(function_name, "fclose" | "fseek" | "fflush") {
-            if text.contains(&format!("{} != 0", var_name))
-                || text.contains(&format!("0 != {}", var_name))
-                || text.contains(&format!("{} == 0", var_name))
-                || text.contains(&format!("0 == {}", var_name))
-            {
-                return true;
-            }
-        }
-
-        // For ftell - check for -1L return
-        if function_name == "ftell" {
-            if text.contains(&format!("{} == -1", var_name))
-                || text.contains(&format!("-1 == {}", var_name))
-                || text.contains(&format!("{} == -1L", var_name))
-                || text.contains(&format!("-1L == {}", var_name))
-            {
-                return true;
-            }
-        }
-
-        // For fread/fwrite - check if result equals expected
-        if matches!(function_name, "fread" | "fwrite") {
-            if text.contains(&format!("{} ==", var_name))
-                || text.contains(&format!("{} !=", var_name))
-                || text.contains(&format!("{} <", var_name))
-                || text.contains(&format!("{} >", var_name))
-            {
-                return true;
-            }
-        }
-
-        // For strtol family - check errno and endptr
-        if matches!(
-            function_name,
-            "strtol" | "strtoul" | "strtoll" | "strtoull" | "strtod" | "strtof" | "strtold"
-        ) {
-            if text.contains("errno") || text.contains("endptr") {
-                return true;
-            }
-        }
-
-        // For setlocale - check for NULL return
-        if function_name == "setlocale" {
-            if text.contains(&format!("{} == NULL", var_name))
-                || text.contains(&format!("NULL == {}", var_name))
-                || text.contains(&format!("{} != NULL", var_name))
-                || text.contains(&format!("NULL != {}", var_name))
-            {
-                return true;
-            }
-        }
-
-        // For system - check for -1 return
-        if function_name == "system" {
-            if text.contains(&format!("{} == -1", var_name))
-                || text.contains(&format!("-1 == {}", var_name))
-                || text.contains(&format!("{} != -1", var_name))
-                || text.contains(&format!("-1 != {}", var_name))
-            {
-                return true;
-            }
-        }
-
-        // For getenv, ctime, localtime, gmtime, asctime - check for NULL return
-        if matches!(
-            function_name,
-            "getenv" | "ctime" | "localtime" | "gmtime" | "asctime"
-        ) {
-            // AST-based check (handles all whitespace variants and ==0)
-            if self.contains_null_check_for_variable(node, var_name, source) {
-                return true;
-            }
-            // Fallback string patterns (with and without spaces)
-            if text.contains(&format!("{}!=NULL", var_name))
-                || text.contains(&format!("{} != NULL", var_name))
-                || text.contains(&format!("{}==NULL", var_name))
-                || text.contains(&format!("{} == NULL", var_name))
-                || text.contains(&format!("!{}", var_name))
-                || text.contains(&format!("if ({})", var_name))
-                || text.contains(&format!("if({})", var_name))
-            {
-                return true;
-            }
-        }
-
-        // For time - check for (time_t)(-1) return
-        if function_name == "time" {
-            if text.contains(&format!("{} == (time_t)(-1)", var_name))
-                || text.contains(&format!("(time_t)(-1) == {}", var_name))
-                || text.contains(&format!("{} == -1", var_name))
-                || text.contains(&format!("-1 == {}", var_name))
-            {
-                return true;
-            }
-        }
-
-        // For remove/rename - check for non-zero return
-        if matches!(function_name, "remove" | "rename") {
-            if text.contains(&format!("{} != 0", var_name))
-                || text.contains(&format!("0 != {}", var_name))
-                || text.contains(&format!("{} == 0", var_name))
-                || text.contains(&format!("0 == {}", var_name))
-            {
-                return true;
-            }
-        }
-
-        false
     }
 
     /// Check for the dangerous realloc pattern where the same variable is both the argument and the assignment target.
@@ -1378,204 +902,6 @@ impl Err33C {
             }
         }
         false
-    }
-
-    /// Check if a node contains a NULL check for a specific variable using AST analysis.
-    /// This is more precise than string matching as it verifies the actual variable name in the comparison.
-    fn contains_null_check_for_variable(&self, node: &Node, var_name: &str, source: &str) -> bool {
-        // Search for binary_expression nodes that compare the variable to NULL
-        query::find_first_descendant(*node, |n| {
-            if n.kind() != "binary_expression" {
-                return false;
-            }
-            let Some(operator) = n.child_by_field_name("operator") else {
-                return false;
-            };
-            let op_text = get_node_text(&operator, source);
-
-            // Check if this is a NULL comparison operator
-            if !matches!(op_text, "==" | "!=") {
-                return false;
-            }
-            let (Some(left), Some(right)) = (
-                n.child_by_field_name("left"),
-                n.child_by_field_name("right"),
-            ) else {
-                return false;
-            };
-            let left_text = get_node_text(&left, source);
-            let right_text = get_node_text(&right, source);
-
-            // Check if one side is our variable and the other is NULL/0
-            let is_null = |s: &str| s == "NULL" || s == "0" || s == "((void *)0)";
-            (left_text == var_name && is_null(right_text))
-                || (right_text == var_name && is_null(left_text))
-        })
-        .is_some()
-    }
-
-    fn contains_error_check(&self, node: &Node, var_name: &str, source: &str) -> bool {
-        // Use AST-based checking for NULL comparisons to ensure we're checking the right variable
-        if self.contains_null_check_for_variable(node, var_name, source) {
-            return true;
-        }
-
-        // For non-NULL checks, still use string matching
-        let text = get_node_text(&node, source);
-        text.contains(&format!("!{}", var_name))
-            || text.contains(&format!("if ({})", var_name))
-            || text.contains(&format!("if({}", var_name))
-            || text.contains(&format!("{} < 0", var_name))
-            || text.contains(&format!("0 > {}", var_name))
-            || text.contains(&format!("{} != 0", var_name))
-            || text.contains(&format!("0 != {}", var_name))
-            || text.contains(&format!("{} == -1", var_name))
-            || text.contains(&format!("-1 == {}", var_name))
-            || text.contains(&format!("{} >= sizeof", var_name))
-    }
-
-    /// Check if a node appears to be in an error handling context.
-    ///
-    /// This function identifies contexts where certain functions (like printf/fprintf) are
-    /// used for error reporting or logging purposes, where return value checking is often
-    /// not required or practical. Detected contexts include:
-    ///
-    /// 1. Signal handler functions (identified by parameter patterns or naming)
-    /// 2. Error handling if-blocks (where condition tests for error states)
-    /// 3. Cleanup code sections (often containing fclose without return checking)
-    /// 4. Error reporting blocks (containing stderr output or error messages)
-    ///
-    /// Returns true if the node is in a context where stricter return value checking
-    /// can be relaxed, false otherwise.
-    fn is_in_error_handling_context(&self, node: &Node, source: &str) -> bool {
-        let mut current = node.parent();
-
-        for level in 0..5 {
-            if let Some(parent) = current {
-                // Check if we're inside a signal handler function
-                if parent.kind() == "function_definition" {
-                    if let Some(declarator) = parent.child_by_field_name("declarator") {
-                        let function_text = get_node_text(&declarator, source);
-                        // Signal handlers typically have (int sig) parameter
-                        if function_text.contains("signal_handler")
-                            || function_text.contains("handler")
-                            || (function_text.contains("(int sig")
-                                || function_text.contains("(int signal"))
-                        {
-                            return true; // Allow printf/fprintf in signal handlers
-                        }
-                    }
-                }
-
-                // Check if we're in an if statement that tests for errors
-                if parent.kind() == "if_statement" {
-                    if let Some(condition) = parent.child_by_field_name("condition") {
-                        let condition_text = get_node_text(&condition, source);
-                        // Look for error checking patterns in the condition
-                        if condition_text.contains("== NULL")
-                            || condition_text.contains("!= NULL")
-                            || condition_text.contains("< 0")
-                            || condition_text.contains("!= 0")
-                            || condition_text.contains("== -1")
-                            || condition_text.contains("== EOF")
-                            || condition_text.contains("== (time_t)(-1)")
-                        {
-                            return true;
-                        }
-                    }
-
-                    // Check if we're in the THEN block of an error condition
-                    if let Some(consequence) = parent.child_by_field_name("consequence") {
-                        if self.node_contains_or_is_ancestor(&consequence, node) {
-                            // We're in the then-block of an if statement, check if condition is error check
-                            if let Some(condition) = parent.child_by_field_name("condition") {
-                                let condition_text = get_node_text(&condition, source);
-                                if condition_text.contains("== NULL")
-                                    || condition_text.contains("< 0")
-                                    || condition_text.contains("== -1")
-                                    || condition_text.contains("== EOF")
-                                {
-                                    return true; // We're in error handling
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Enhanced cleanup context detection for fclose
-                if parent.kind() == "expression_statement" {
-                    let parent_text = get_node_text(&parent, source);
-                    // Look for fclose in error cleanup contexts
-                    if parent_text.contains("fclose(") && level <= 2 {
-                        // Check if we're in an error handling block
-                        if let Some(compound_stmt) = parent.parent() {
-                            if compound_stmt.kind() == "compound_statement" {
-                                if let Some(if_stmt) = compound_stmt.parent() {
-                                    if if_stmt.kind() == "if_statement" {
-                                        if let Some(condition) =
-                                            if_stmt.child_by_field_name("condition")
-                                        {
-                                            let condition_text = get_node_text(&condition, source);
-                                            // If the condition checks for an error, fclose is likely cleanup
-                                            if condition_text.contains("< 0")
-                                                || condition_text.contains("== NULL")
-                                                || condition_text.contains("!= NULL")
-                                                || condition_text.contains("== -1")
-                                            {
-                                                return true;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Check if we're in the else clause of an error check
-                if parent.kind() == "else_clause" {
-                    if let Some(if_stmt) = parent.parent() {
-                        if if_stmt.kind() == "if_statement" {
-                            if let Some(condition) = if_stmt.child_by_field_name("condition") {
-                                let condition_text = get_node_text(&condition, source);
-                                if condition_text.contains("!= NULL")
-                                    || condition_text.contains(">= 0")
-                                {
-                                    return true; // This is likely an error handling else clause
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Look for explicit error handling keywords in close parent context
-                if level <= 2 {
-                    let parent_text = get_node_text(&parent, source);
-                    if parent_text.contains("stderr")
-                        || parent_text.contains("perror")
-                        || parent_text.contains("return -1")
-                        || parent_text.contains("exit(")
-                        || parent_text.contains("goto error")
-                        || parent_text.contains("cleanup")
-                        || parent_text.contains("Failed to")
-                        || parent_text.contains("Error:")
-                    {
-                        return true;
-                    }
-                }
-
-                current = parent.parent();
-            } else {
-                break;
-            }
-        }
-        false
-    }
-
-    /// Helper function to check if a node contains or is an ancestor of another node
-    fn node_contains_or_is_ancestor(&self, potential_ancestor: &Node, target: &Node) -> bool {
-        potential_ancestor.start_byte() <= target.start_byte()
-            && potential_ancestor.end_byte() >= target.end_byte()
     }
 
     // ========================================================================

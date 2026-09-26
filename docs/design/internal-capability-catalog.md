@@ -890,6 +890,25 @@ dominance (it returns true if the text contains `"if"` anywhere and one of
 eight spacing-sensitive comparison substrings). It is still ARR00-C's, in three
 places. Anything new should use this module.
 
+### `src/utility/cert_c/result_checks.rs`
+**Problem solved:** "was the result this call stored tested against the value
+that signals the function's failure?" -- the forward-looking question that a
+rule checking library return values asks of `p = malloc(n);`. The
+`guard_dominance` queries look backward from a site; this looks forward from a
+store. Added when ERR33-C's text credit (`"!s"` matching `!sz`, `"n =="`
+matching `len ==`, the word `stderr` in a nearby comment, an `endptr` spelling)
+turned out to credit checks that were not there and miss ones that were.
+
+| Function | Signature | Description |
+|---|---|---|
+| `error_signal_for` | `(function_name: &str) -> Option<ErrorSignal>` | How a standard library function signals failure through its result: `Null`, `NonZero`, `Eof`, `Negative`, `Count`, `MinusOne`, `SigErr`, `ErrnoOrEnd` (the `strto*` family, whose value alone does not), or `Any`. `None` for a name the table does not know. |
+| `stored_result_is_tested` | `(store, target, call, signal, source) -> bool` | Whether the result `store` (an `assignment_expression` or `init_declarator`) wrote into `target` is tested against `signal` before `target` is written again, anywhere after the store in the enclosing function, including the store's own controlling expression (`if ((p = malloc(n)) == NULL)`). A test is a comparison that detects the error value, a `!`, an `&&`/`\|\|` operand or a controlling expression -- never one inside `assert(...)`, which `NDEBUG` removes. For `ErrnoOrEnd`, a read of `errno` or of the end pointer passed as `&end` in such a test counts, whatever the pointer is named. |
+| `same_lvalue` | `(a, b, source) -> bool` | Whether two expressions denote the same object: identifiers resolving to the same declarator (a declarator's own name resolves to its declaration), or field/subscript/`*` chains matching member by member over the same base. Spelling alone never matches two identifiers that resolve differently (ADR-0006). |
+
+Source order inside the function stands in for "on a path", as in the rest of
+the AST-level guard queries. `(T)(x)` with a typedef the parser cannot know is
+read as the cast it is, not the call it parses as.
+
 ### `src/analyze/prescan.rs` (per-call-site null guard)
 **Problem solved:** "is this pointer already guarded non-null *at this call
 site*?" — the per-site half of the question `local_states` cannot answer,
