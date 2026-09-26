@@ -155,13 +155,39 @@ fn find_function_declarator<'a>(node: &Node<'a>) -> Option<Node<'a>> {
 }
 
 /// True if `decl_or_def` (a `declaration` or `function_definition` node)
-/// carries a `_Noreturn` qualifier among its direct children.
-fn has_noreturn_keyword(decl_or_def: &Node, source: &str) -> bool {
+/// declares its function noreturn with an ISO spelling: the C11 `_Noreturn`
+/// function specifier, `<stdnoreturn.h>`'s `noreturn` macro for it (which
+/// tree-sitter-c parses as the same qualifier), or the C23 `[[noreturn]]`
+/// (or deprecated `[[_Noreturn]]`) attribute, on the declaration or its
+/// declarator. A prefixed attribute such as `[[gnu::noreturn]]` is a vendor
+/// extension and, like `__attribute__((noreturn))`, is not the keyword.
+pub fn has_noreturn_keyword(decl_or_def: &Node, source: &str) -> bool {
+    let is_keyword = |text: &str| matches!(text.trim(), "_Noreturn" | "noreturn");
     let mut cursor = decl_or_def.walk();
-    let result = decl_or_def
+    let qualifier = decl_or_def
         .children(&mut cursor)
-        .any(|c| c.kind() == "type_qualifier" && get_node_text(&c, source).trim() == "_Noreturn");
-    result
+        .any(|c| c.kind() == "type_qualifier" && is_keyword(&get_node_text(&c, source)));
+    if qualifier {
+        return true;
+    }
+    // `[[noreturn]]` before the declaration, or after the declarator
+    // (`void f(void) [[noreturn]];`), but never on a parameter or in a body.
+    let body = decl_or_def.child_by_field_name("body");
+    let params =
+        find_function_declarator(decl_or_def).and_then(|f| f.child_by_field_name("parameters"));
+    let outside = |n: &Node| {
+        !body.is_some_and(|b| b.start_byte() <= n.start_byte() && n.end_byte() <= b.end_byte())
+            && !params
+                .is_some_and(|p| p.start_byte() <= n.start_byte() && n.end_byte() <= p.end_byte())
+    };
+    query::find_descendants_of_kind(*decl_or_def, "attribute")
+        .into_iter()
+        .filter(|a| outside(a))
+        .any(|a| {
+            a.child_by_field_name("prefix").is_none()
+                && a.child_by_field_name("name")
+                    .is_some_and(|name| is_keyword(&get_node_text(&name, source)))
+        })
 }
 
 /// The noreturn function names `settings` accepts in `root`: the
@@ -443,6 +469,29 @@ mod tests {
         assert!(names.contains("_EXIT"));
         assert!(!names.contains("siglongjmp"));
         assert!(!names.contains("jump"));
+    }
+
+    #[test]
+    fn iso_spellings_of_the_keyword_are_trusted_like_noreturn() {
+        for src in [
+            "#include <stdnoreturn.h>\nnoreturn void die(void);\n",
+            "[[noreturn]] void die(void);\n",
+            "void die(void) [[noreturn]];\n",
+            "[[_Noreturn]] void die(void);\n",
+        ] {
+            assert!(default_names(src).contains("die"), "{src}");
+            assert!(!strict_names(src).contains("die"), "{src}");
+        }
+    }
+
+    #[test]
+    fn a_prefixed_or_parameter_attribute_is_not_the_keyword() {
+        for src in [
+            "[[gnu::noreturn]] void die(void);\n",
+            "void die(int x [[noreturn]]);\n",
+        ] {
+            assert!(!default_names(src).contains("die"), "{src}");
+        }
     }
 
     #[test]

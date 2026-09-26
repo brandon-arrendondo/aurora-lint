@@ -185,11 +185,7 @@ impl Msc37C {
         let mut names = HashSet::new();
         for node in query::find_descendants_of_kinds(*root, &["declaration", "function_definition"])
         {
-            let mut cursor = node.walk();
-            let is_noreturn = node.children(&mut cursor).any(|c| {
-                c.kind() == "type_qualifier" && get_node_text(&c, source).trim() == "_Noreturn"
-            });
-            if !is_noreturn {
+            if !crate::analyze::noreturn::has_noreturn_keyword(&node, source) {
                 continue;
             }
             if let Some(declarator) = node.child_by_field_name("declarator") {
