@@ -271,10 +271,20 @@ impl Api00C {
             return; // Skip validation for qsort-style comparators
         }
 
+        // A hosted environment guarantees `main`'s second parameter is a
+        // non-null array of `argc + 1` pointers (C11 5.1.2.2.1p2), so there
+        // is nothing to validate -- when the declared environment provides
+        // that guarantee (`main_argv_guarantees`).
+        let guaranteed_argv = (self.settings.borrow().flag("main_argv_guarantees")
+            && params.len() >= 2
+            && self.get_function_name(function_node, source) == "main")
+            .then(|| params[1].0.as_str());
+
         // Filter for pointer parameters, excluding debug parameters only if this is a debug function
         let pointer_params: Vec<String> = params
             .iter()
             .filter(|(_, param_type)| is_pointer_type(param_type))
+            .filter(|(name, _)| Some(name.as_str()) != guaranteed_argv)
             .filter(|(name, _)| !(has_debug_params && self.is_debug_parameter(name)))
             .filter(|(name, _)| !self.is_callback_context_parameter(name))
             .filter(|(name, _)| !documented_names.contains(name))
