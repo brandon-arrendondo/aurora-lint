@@ -37,6 +37,9 @@ struct FilePrescanResult {
     /// Every `#define` in this file, all arms (see
     /// `ProjectContext::macro_definitions`).
     macro_definitions: HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>>,
+    /// Names this file `#define`s inside a live conditional arm (see
+    /// `ProjectContext::conditional_macro_names`).
+    conditional_macro_names: HashSet<String>,
     /// Function-like `#define`s in this file the collector skipped or had
     /// to arbitrate, and the line of the definition it kept per name — the
     /// raw material for `--report-macro-gaps`.
@@ -103,6 +106,7 @@ impl FilePrescanResult {
             macro_aliases: HashMap::new(),
             function_macros: HashMap::new(),
             macro_definitions: HashMap::new(),
+            conditional_macro_names: HashSet::new(),
             macro_definition_audit: Default::default(),
             restrict_params: HashMap::new(),
             documented_nonnull_params: HashMap::new(),
@@ -185,6 +189,8 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         result.function_macros =
             crate::analyze::macro_expand::collect_function_macros(&root, &source);
         result.macro_definitions = crate::analyze::check_macros::collect_macro_definitions(&source);
+        result.conditional_macro_names =
+            crate::analyze::check_macros::collect_conditional_macro_names(&source);
         result.macro_definition_audit =
             crate::analyze::macro_gaps::audit_definitions(&source, &file_path.to_string_lossy());
         result.restrict_params = ast_utils::restrict_parameter_indices(&root, &source);
@@ -446,6 +452,7 @@ fn prescan_file_list(
         HashMap::new();
     let mut macro_definitions: HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>> =
         HashMap::new();
+    let mut conditional_macro_names: HashSet<String> = HashSet::new();
     // Which file's definition `function_macros` holds per name, so a later
     // file defining the same name differently is recorded as a conflict
     // rather than silently losing.
@@ -654,6 +661,7 @@ fn prescan_file_list(
             &mut macro_definitions,
             r.macro_definitions,
         );
+        conditional_macro_names.extend(r.conditional_macro_names);
         for (name, indices) in r.restrict_params {
             restrict_params.entry(name).or_insert(indices);
         }
@@ -985,6 +993,7 @@ fn prescan_file_list(
         macro_aliases: Arc::new(macro_aliases),
         function_macros: Arc::new(function_macros),
         macro_definitions: Arc::new(macro_definitions),
+        conditional_macro_names: Arc::new(conditional_macro_names),
         abort_check_macros: Arc::new(abort_check_macros),
         struct_field_types: Arc::new(struct_field_types),
         struct_typedef_aliases: Arc::new(struct_typedef_aliases),
@@ -6267,6 +6276,9 @@ pub fn resolve_includes(
                 crate::analyze::check_macros::merge_macro_definitions(
                     Arc::make_mut(&mut context.macro_definitions),
                     crate::analyze::check_macros::collect_macro_definitions(&hsource),
+                );
+                Arc::make_mut(&mut context.conditional_macro_names).extend(
+                    crate::analyze::check_macros::collect_conditional_macro_names(&hsource),
                 );
 
                 // Collect struct field types from resolved headers

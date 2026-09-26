@@ -107,6 +107,13 @@ pub struct ProjectContext {
     /// alternative, not the one `function_macros` keeps.
     #[serde(default)]
     pub macro_definitions: Arc<HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>>>,
+    /// Names `#define`d inside a live `#if`/`#ifdef`/`#ifndef` arm of any
+    /// scanned file or header, per
+    /// [`crate::analyze::check_macros::collect_conditional_macro_names`]: a
+    /// configuration exists in which that definition is absent, so what the
+    /// name expands to is not settled by `macro_definitions` alone.
+    #[serde(default)]
+    pub conditional_macro_names: Arc<HashSet<String>>,
     /// `macro name -> index of the parameter it checks`, for the assert-style
     /// macros no configuration compiles out (valkey's `serverAssert`), per
     /// [`crate::analyze::check_macros::abort_check_macros`]. Recomputed

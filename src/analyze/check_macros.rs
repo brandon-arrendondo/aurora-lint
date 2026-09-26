@@ -123,6 +123,149 @@ pub fn merge_macro_definitions(
     }
 }
 
+/// Names `#define`d inside a live `#if`/`#ifdef`/`#ifndef` arm of `source`,
+/// at any depth. Such a name has a configuration in which that definition is
+/// absent, and when no other arm supplies one the name is not a macro there
+/// at all: sqlite's `sqliteInt.h` defines `memcpy(D,S,N)` as a `{ }` block
+/// only under `#ifdef SQLITE_INLINE_MEMCPY`, and every other build calls the
+/// library function (ADR-0010). An include guard is not a configuration and
+/// does not count; neither does a region the file itself proves dead, whose
+/// definitions no build sees.
+pub fn collect_conditional_macro_names(source: &str) -> HashSet<String> {
+    let dead: Vec<(usize, usize)> = lang_parsing_substrate::dead_code_ranges(source)
+        .into_iter()
+        .map(|r| (r.start_line, r.end_line))
+        .collect();
+    // Each directive's logical text, with its first physical line.
+    let lines: Vec<&str> = source.lines().collect();
+    let mut directives: Vec<(usize, String)> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let first_line = i + 1;
+        let mut logical = String::new();
+        while i < lines.len() {
+            let te = lines[i].trim_end();
+            i += 1;
+            if let Some(stripped) = te.strip_suffix('\\') {
+                logical.push_str(stripped);
+                logical.push(' ');
+            } else {
+                logical.push_str(te);
+                break;
+            }
+        }
+        if let Some(d) = logical.trim_start().strip_prefix('#') {
+            directives.push((first_line, d.trim_start().to_string()));
+        }
+    }
+
+    let keyword = |d: &str| -> String {
+        d.chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect()
+    };
+    // The name an `#ifndef X` / `#if !defined(X)` tests, for guard detection.
+    let guard_name = |d: &str| -> Option<String> {
+        let rest = if let Some(r) = d.strip_prefix("ifndef") {
+            r
+        } else {
+            let r = d.strip_prefix("if")?.trim_start().strip_prefix('!')?;
+            let r = r.trim_start().strip_prefix("defined")?.trim_start();
+            r.strip_prefix('(').unwrap_or(r)
+        };
+        let name: String = rest
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        (!name.is_empty()).then_some(name)
+    };
+
+    // One entry per open conditional: whether it is a file-level include guard.
+    let mut open: Vec<bool> = Vec::new();
+    let mut out = HashSet::new();
+    for (k, (line, d)) in directives.iter().enumerate() {
+        match keyword(d).as_str() {
+            "if" | "ifdef" | "ifndef" => {
+                let is_guard = open.is_empty()
+                    && guard_name(d).is_some_and(|g| {
+                        directives.get(k + 1).is_some_and(|(_, next)| {
+                            next.strip_prefix("define")
+                                .map(str::trim_start)
+                                .is_some_and(|n| {
+                                    n.strip_prefix(g.as_str()).is_some_and(|r| {
+                                        !r.starts_with(|c: char| {
+                                            c.is_ascii_alphanumeric() || c == '_'
+                                        })
+                                    })
+                                })
+                        })
+                    });
+                open.push(is_guard);
+            }
+            "endif" => {
+                open.pop();
+            }
+            "define" if open.iter().any(|&g| !g) => {
+                if dead.iter().any(|&(s, e)| *line >= s && *line <= e) {
+                    continue;
+                }
+                if let Some((name, _)) = parse_define(&format!("#{d}")) {
+                    out.insert(name);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Whether an invocation of `name` is one `{ ... }` block in every
+/// configuration, reading the union of several tables (the project's and one
+/// file's own): it has at least one definition, no table lists it as
+/// conditional ([`collect_conditional_macro_names`]), and every definition is
+/// function-like with a replacement list that is exactly one braced block.
+/// valkey's `swapcode(TYPE, a, b, n) { ... }` qualifies; a
+/// `do { ... } while (0)` or an `if` does not.
+pub fn expands_to_block_everywhere(
+    defs: &[&HashMap<String, Vec<MacroDefinition>>],
+    conditional: &[&HashSet<String>],
+    name: &str,
+) -> bool {
+    if conditional.iter().any(|c| c.contains(name)) {
+        return false;
+    }
+    let mut alts = defs.iter().filter_map(|d| d.get(name)).flatten().peekable();
+    alts.peek().is_some()
+        && alts.all(|d| match d {
+            MacroDefinition::Function { body, .. } => is_one_block(body),
+            _ => false,
+        })
+}
+
+/// Whether `body` is exactly one `{ ... }`: its first `{` closes at its last
+/// byte. `body` is normalized, so no brace inside a literal or comment is read.
+fn is_one_block(body: &str) -> bool {
+    let body = body.trim();
+    if !body.starts_with('{') || !body.ends_with('}') {
+        return false;
+    }
+    let mut depth = 0usize;
+    for (i, b) in body.bytes().enumerate() {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i == body.len() - 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// `macro name -> index of the parameter it checks`, for every function-like
 /// macro that, under every one of its definitions, returns only when that
 /// parameter is true (see the module doc for exactly what qualifies).
@@ -654,6 +797,45 @@ fn contains_top_level_keyword(s: &str, kw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn blocks(src: &str, name: &str) -> bool {
+        let defs = collect_macro_definitions(src);
+        let cond = collect_conditional_macro_names(src);
+        expands_to_block_everywhere(&[&defs], &[&cond], name)
+    }
+
+    #[test]
+    fn an_unconditional_block_macro_is_a_block() {
+        let src = "#define SWAP(a, b) { int t = a; a = b; b = t; }\n";
+        assert!(blocks(src, "SWAP"));
+    }
+
+    #[test]
+    fn a_block_under_ifdef_is_not_a_block_everywhere() {
+        let src = "#ifdef INLINE_MEMCPY\n# define memcpy(D,S,N) { copy(D,S,N); }\n#endif\n";
+        assert!(collect_conditional_macro_names(src).contains("memcpy"));
+        assert!(!blocks(src, "memcpy"));
+    }
+
+    #[test]
+    fn an_include_guard_is_not_a_configuration() {
+        let src = "#ifndef H_H\n#define H_H\n#define SWAP(a, b) { a = b; }\n#endif\n";
+        assert!(collect_conditional_macro_names(src).is_empty());
+        assert!(blocks(src, "SWAP"));
+    }
+
+    #[test]
+    fn a_define_in_a_dead_region_is_not_conditional() {
+        let src = "#if 0\n#define SWAP(a, b) { a = b; }\n#endif\n";
+        assert!(collect_conditional_macro_names(src).is_empty());
+    }
+
+    #[test]
+    fn a_do_while_or_an_if_is_not_a_block() {
+        assert!(!blocks("#define F(x) do { g(x); } while (0)\n", "F"));
+        assert!(!blocks("#define F(x) if (x) { g(x); }\n", "F"));
+        assert!(!blocks("#define F(x) { g(x); } { h(x); }\n", "F"));
+    }
 
     fn checks(src: &str) -> HashMap<String, usize> {
         let defs = collect_macro_definitions(src);

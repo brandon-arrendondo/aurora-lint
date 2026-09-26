@@ -684,6 +684,17 @@ pub fn is_include_guard(node: &Node, source: &str) -> bool {
 /// `#` itself), and neither follows continuations. Changing them to satisfy a
 /// rule-layer caller would alter passes that run before parsing.
 pub fn is_on_preproc_directive_line(source: &str, offset: usize) -> bool {
+    preproc_directive_start(source, offset).is_some()
+}
+
+/// Byte offset of the first line of the preprocessor directive whose LOGICAL
+/// line holds `offset` — the start of that physical line, not the `#` —
+/// or `None` when `offset` is not on a directive line. Same test as
+/// [`is_on_preproc_directive_line`], for a caller that has to read the
+/// directive's text up to `offset`: tree-sitter ends a `#define`'s
+/// `preproc_arg` at a `/* */` comment on a continued line and parses the rest
+/// of the body as C, so a rule landing there needs the part it lost.
+pub fn preproc_directive_start(source: &str, offset: usize) -> Option<usize> {
     let offset = offset.min(source.len());
     let mut line_start = source[..offset].rfind('\n').map_or(0, |i| i + 1);
 
@@ -707,7 +718,10 @@ pub fn is_on_preproc_directive_line(source: &str, offset: usize) -> bool {
     let line_end = source[line_start..]
         .find('\n')
         .map_or(source.len(), |i| line_start + i);
-    source[line_start..line_end].trim_start().starts_with('#')
+    source[line_start..line_end]
+        .trim_start()
+        .starts_with('#')
+        .then_some(line_start)
 }
 
 /// Byte offset of the first code token at or after `from`, skipping
