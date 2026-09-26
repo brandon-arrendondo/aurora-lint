@@ -8,7 +8,7 @@ use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
 
@@ -21,12 +21,17 @@ pub struct Pre31C {
     /// bodies, so every single-evaluation-safe macro defined outside the
     /// current file stayed (wrongly) flagged.
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
+    /// Every function-like macro name across the scanned files
+    /// (`ProjectContext::function_macro_names`): what makes a call a macro
+    /// invocation at all, whatever its spelling.
+    function_macro_names: RefCell<Arc<HashSet<String>>>,
 }
 
 impl Pre31C {
     pub fn new() -> Self {
         Self {
             function_macros: RefCell::new(Arc::new(HashMap::new())),
+            function_macro_names: RefCell::new(Arc::new(HashSet::new())),
         }
     }
 }
@@ -56,6 +61,7 @@ impl CertRule for Pre31C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_macros.borrow_mut() = context.function_macros.clone();
+        *self.function_macro_names.borrow_mut() = context.function_macro_names.clone();
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
@@ -73,7 +79,40 @@ impl CertRule for Pre31C {
         // idiom `merged_macro_aliases` uses (see the capability catalog).
         let mut function_macros = HashMap::clone(&self.function_macros.borrow());
         function_macros.extend(macro_expand::collect_function_macros(node, source));
-        self.check_node(node, source, &function_macros, violations);
+        // Every definition of a name in this file, one per preprocessor
+        // branch: a parameter is evaluated at most once only if it is in
+        // every branch, since any one of them may be the one compiled.
+        let alternatives = macro_expand::collect_function_macro_alternatives(source);
+        let project_names = Arc::clone(&self.function_macro_names.borrow());
+        let macro_names = macro_expand::FunctionMacroNames::new(source, &project_names);
+        let macros = MacroTables {
+            names: &macro_names,
+            first: &function_macros,
+            alternatives: &alternatives,
+        };
+        self.check_node(node, source, &macros, violations);
+    }
+}
+
+/// What this file knows about function-like macros: which names are macros
+/// at all, and their definitions.
+struct MacroTables<'a> {
+    names: &'a macro_expand::FunctionMacroNames<'a>,
+    /// One definition per name (project-wide, this file's winning).
+    first: &'a HashMap<String, FunctionMacro>,
+    /// This file's definitions, every preprocessor branch.
+    alternatives: &'a HashMap<String, Vec<FunctionMacro>>,
+}
+
+impl MacroTables<'_> {
+    /// The definitions a call to `name` may expand to: every branch of this
+    /// file's own, else the project's one. Empty when no body is known
+    /// (variadic, `#`/`##`, or the library's own macros).
+    fn definitions(&self, name: &str) -> Vec<&FunctionMacro> {
+        match self.alternatives.get(name) {
+            Some(alts) if !alts.is_empty() => alts.iter().collect(),
+            _ => self.first.get(name).into_iter().collect(),
+        }
     }
 }
 
@@ -82,7 +121,7 @@ impl Pre31C {
         &self,
         node: &Node,
         source: &str,
-        function_macros: &HashMap<String, FunctionMacro>,
+        macros: &MacroTables,
         violations: &mut Vec<RuleViolation>,
     ) {
         for call_node in query::find_descendants_of_kind(*node, "call_expression") {
@@ -94,7 +133,7 @@ impl Pre31C {
             if ast_utils::is_on_preproc_directive_line(source, call_node.start_byte()) {
                 continue;
             }
-            self.check_macro_call(&call_node, source, function_macros, violations);
+            self.check_macro_call(&call_node, source, macros, violations);
         }
     }
 
@@ -102,20 +141,20 @@ impl Pre31C {
         &self,
         node: &Node,
         source: &str,
-        function_macros: &HashMap<String, FunctionMacro>,
+        macros: &MacroTables,
         violations: &mut Vec<RuleViolation>,
     ) {
         if let Some(function_node) = node.child_by_field_name("function") {
             let function_name = get_node_text(&function_node, source);
 
             // Check if this is a potentially unsafe macro
-            if self.is_unsafe_macro(function_name) {
+            if self.is_unsafe_macro(function_name, macros) {
                 // Skip if the macro is defined with a safe pattern (_Generic or statement expr)
                 if self.is_safe_macro_definition(function_name, source) {
                     return;
                 }
 
-                let macro_def = function_macros.get(function_name);
+                let definitions = macros.definitions(function_name);
                 let args = self.get_function_arguments(node, source);
 
                 // Check each argument for side effects
@@ -143,14 +182,15 @@ impl Pre31C {
                     // is exactly as surprising to a caller as running twice
                     // (`IS_VALID_RANGE(x, low, high) = (x)>=(low) && (x)<=(high)`
                     // always evaluates `low` but only conditionally `high`).
-                    if let Some(def) = macro_def {
-                        if !body_has_conditional_evaluation(&def.body) {
-                            if let Some(param) = def.params.get(i) {
-                                if count_whole_ident_occurrences(&def.body, param) <= 1 {
-                                    continue;
-                                }
-                            }
-                        }
+                    //
+                    // With several definitions (one per `#if` branch), the
+                    // parameter must be evaluated at most once in every one.
+                    if !definitions.is_empty()
+                        && definitions
+                            .iter()
+                            .all(|def| evaluates_param_at_most_once(def, i))
+                    {
+                        continue;
                     }
                     if self.has_side_effects(arg, node, source) {
                         let start_point = node.start_position();
@@ -185,48 +225,15 @@ impl Pre31C {
         }
     }
 
-    fn is_unsafe_macro(&self, function_name: &str) -> bool {
-        // Fast path: safe prefix short-circuits all checks
-        if function_name.starts_with("SAFE_") {
-            return false;
-        }
-
-        // Check for known safe patterns (small set — use linear search)
-        const SAFE_MACROS: &[&str] = &["SAFE_ABS", "SAFE_MAX", "SAFE_MIN"];
-        if SAFE_MACROS.contains(&function_name) {
-            return false;
-        }
-
-        // Known unsafe macros (used with linear search; this is called only when
-        // is_unsafe_macro returns true in check_macro_call, which filters first)
-        const UNSAFE_MACROS: &[&str] = &[
-            "ABS",
-            "abs",
-            "MAX",
-            "max",
-            "MIN",
-            "min",
-            "assert",
-            "getc",
-            "putc",
-            "getwc",
-            "putwc",
-            "SWAP",
-            "swap",
-            "CLAMP",
-            "clamp",
-            "NDEBUG",
-            "DEBUG",
-            "SAFE_FREE",
-            "SAFE_DELETE",
-            "IF_DEBUG",
-            "WHEN",
-            "UNLESS",
-        ];
-
-        UNSAFE_MACROS.contains(&function_name)
-            || (function_name.chars().all(|c| c.is_uppercase() || c == '_')
-                && function_name.len() > 2)
+    /// Whether a call to `function_name` is a macro invocation this rule
+    /// concerns: a function-like macro defined in some branch of this or
+    /// any scanned file, or a C library name whose macro form may evaluate
+    /// an argument other than once. Decided from definitions, never from
+    /// spelling: `int FOO(int);` makes `FOO(i++)` a function call, and a
+    /// lowercase `#define` makes its calls macro invocations.
+    fn is_unsafe_macro(&self, function_name: &str, macros: &MacroTables) -> bool {
+        macro_expand::LIBRARY_MACROS_WITH_UNSAFE_ARGUMENTS.contains(&function_name)
+            || macros.names.contains(function_name)
     }
 
     /// Check if the source contains a safe definition of the macro
@@ -671,6 +678,17 @@ fn count_whole_ident_occurrences(text: &str, ident: &str) -> usize {
 
 fn is_ident_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
+}
+
+/// Whether `def` evaluates its parameter at position `index` at most once:
+/// the parameter appears at most once in a body with no `&&`/`||`/`?:` that
+/// could skip it.
+fn evaluates_param_at_most_once(def: &FunctionMacro, index: usize) -> bool {
+    !body_has_conditional_evaluation(&def.body)
+        && def
+            .params
+            .get(index)
+            .is_some_and(|param| count_whole_ident_occurrences(&def.body, param) <= 1)
 }
 
 /// True if a macro's replacement text contains a short-circuit (`&&`/`||`) or

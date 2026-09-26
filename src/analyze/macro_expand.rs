@@ -168,6 +168,62 @@ pub fn collect_function_macro_alternatives(source: &str) -> HashMap<String, Vec<
     out
 }
 
+/// Add the name of every function-like `#define` in `source` to `out`, in
+/// every preprocessor branch, including the ones the expansion tables skip
+/// (variadic, `#`/`##`).
+///
+/// This answers "is a call to `name` a macro invocation?", which a spelling
+/// guess cannot: an ALL_CAPS name can be a real function (`int FOO(int);`)
+/// and a lowercase one a macro. A branch is not settled here because a name
+/// defined as a macro in any configuration is a macro in that
+/// configuration. Merged project-wide into
+/// `ProjectContext::function_macro_names`, since the `#define` usually lives
+/// in a header; ask through [`FunctionMacroNames`].
+pub fn collect_function_macro_names(source: &str, out: &mut HashSet<String>) {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let (logical, next) = join_continuation(&lines, i);
+        i = next;
+        if let Some((name, _)) = classify_define_line(&logical) {
+            out.insert(name);
+        }
+    }
+}
+
+/// The function-like macro names in scope for one file: every scanned
+/// file's (`project`, `ProjectContext::function_macro_names`) plus this
+/// file's own. Build once per file; [`Self::contains`] is then what says a
+/// call is a macro invocation.
+pub struct FunctionMacroNames<'a> {
+    project: &'a HashSet<String>,
+    local: HashSet<String>,
+}
+
+impl<'a> FunctionMacroNames<'a> {
+    /// The names in scope for `source`, given the project-wide set.
+    pub fn new(source: &str, project: &'a HashSet<String>) -> Self {
+        let mut local = HashSet::new();
+        collect_function_macro_names(source, &mut local);
+        Self { project, local }
+    }
+
+    /// Whether some branch of this file or of any scanned file defines
+    /// `name` as a function-like macro.
+    pub fn contains(&self, name: &str) -> bool {
+        self.local.contains(name) || self.project.contains(name)
+    }
+}
+
+/// C library names a macro implementation may evaluate an argument of more
+/// than once: `getc`, `putc`, `getwc` and `putwc` may evaluate their stream
+/// argument more than once (C11 7.21.7.5, 7.21.7.8, 7.29.3.6, 7.29.3.9),
+/// and `assert` is always a macro whose argument is not evaluated at all
+/// under `NDEBUG` (7.2). C11 7.1.4 requires every other library function
+/// implemented as a macro to evaluate each argument exactly once.
+pub const LIBRARY_MACROS_WITH_UNSAFE_ARGUMENTS: &[&str] =
+    &["assert", "getc", "putc", "getwc", "putwc"];
+
 /// One occurrence of a free identifier in a macro's replacement list.
 struct FreeIdentOccurrence {
     name: String,
