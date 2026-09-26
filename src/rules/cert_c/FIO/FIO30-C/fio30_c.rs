@@ -318,8 +318,9 @@ impl FormatStringAnalyzer {
             }
             "if_statement" => {
                 if let Some(cond) = node.child_by_field_name("condition") {
-                    let cond_val =
-                        const_eval::try_evaluate_expr(&cond, source, &self.file_scope_constants);
+                    let visible =
+                        init_state::constants_visible_at(&cond, source, &self.file_scope_constants);
+                    let cond_val = const_eval::try_evaluate_expr(&cond, source, &visible);
                     match cond_val {
                         Some(v) if v != 0 => {
                             if let Some(consequence) = node.child_by_field_name("consequence") {
@@ -539,8 +540,9 @@ impl FormatStringAnalyzer {
                 // Prevents taint from dead branches (e.g. if(staticFalse){ fgets(...) })
                 // from flowing into the live branch.
                 if let Some(cond) = node.child_by_field_name("condition") {
-                    let cond_val =
-                        const_eval::try_evaluate_expr(&cond, source, &self.file_scope_constants);
+                    let visible =
+                        init_state::constants_visible_at(&cond, source, &self.file_scope_constants);
+                    let cond_val = const_eval::try_evaluate_expr(&cond, source, &visible);
                     match cond_val {
                         Some(v) if v != 0 => {
                             // Condition always true: only process then-block

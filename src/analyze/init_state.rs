@@ -2550,52 +2550,134 @@ fn collect_file_scope_statics_recursive(node: &Node, source: &str, state: &mut I
 // File-scope constant collection (for dead-branch elimination)
 // ---------------------------------------------------------------------------
 
-/// Collect file-scope constants: `static [const] TYPE NAME = VALUE;` and
-/// `const TYPE NAME = VALUE;` where VALUE is a compile-time constant.
-/// Used by init-state dead-branch elimination to resolve opaque predicates.
+/// Collect file-scope constants for init-state dead-branch elimination:
+/// `const TYPE NAME = VALUE;`, and `static TYPE NAME = VALUE;` only when
+/// nothing in the file writes it or takes its address
+/// ([`const_eval::file_static_never_written`]: Juliet's `staticFalse`).
+/// A mutable object is not a constant because it happens to be `static`,
+/// and a non-`static` one can be written from another file.
+///
+/// Every preprocessor arm is read, and a name whose definitions disagree
+/// across arms, or one of which is not a compile-time value, is left out:
+/// it has no single value in every configuration (ADR-0010 D4).
+///
+/// Keyed by name, so a use must first be checked to bind to the file-scope
+/// object rather than a local of the same name: [`constants_visible_at`].
 pub fn collect_file_scope_constants(root: &Node, source: &str) -> HashMap<String, i64> {
-    let mut constants = HashMap::new();
-    collect_constants_recursive(root, source, &mut constants);
-    constants
+    // name -> Some((value, needs the never-written check)), None = no one value
+    let mut seen: HashMap<String, Option<(i64, bool)>> = HashMap::new();
+    collect_constants_recursive(root, source, &mut seen);
+    seen.into_iter()
+        .filter_map(|(name, entry)| {
+            let (value, needs_check) = entry?;
+            (!needs_check || const_eval::file_static_never_written(root, source, &name))
+                .then_some((name, value))
+        })
+        .collect()
 }
 
-fn collect_constants_recursive(node: &Node, source: &str, constants: &mut HashMap<String, i64>) {
+/// `constants` less every name that some identifier in `expr` binds to a
+/// local or a parameter rather than to the file-scope object (ADR-0006: a
+/// name is not a variable). A local `debug` shadowing a file-scope
+/// `static const int debug = 0;` must not fold to 0.
+pub fn constants_visible_at<'c>(
+    expr: &Node,
+    source: &str,
+    constants: &'c HashMap<String, i64>,
+) -> std::borrow::Cow<'c, HashMap<String, i64>> {
+    use crate::utility::cert_c::ast_utils::{resolve_identifier_binding, IdentifierBinding};
+    let shadowed: Vec<&str> =
+        lang_parsing_substrate::query::find_descendants_of_kind(*expr, "identifier")
+            .into_iter()
+            .filter_map(|id| {
+                let name = id.utf8_text(source.as_bytes()).ok()?;
+                (constants.contains_key(name)
+                    && matches!(
+                        resolve_identifier_binding(&id, name, source),
+                        Some(IdentifierBinding::Local(_)) | Some(IdentifierBinding::Parameter(_))
+                    ))
+                .then_some(name)
+            })
+            .collect();
+    if shadowed.is_empty() {
+        return std::borrow::Cow::Borrowed(constants);
+    }
+    let mut visible = constants.clone();
+    for name in shadowed {
+        visible.remove(name);
+    }
+    std::borrow::Cow::Owned(visible)
+}
+
+fn collect_constants_recursive(
+    node: &Node,
+    source: &str,
+    seen: &mut HashMap<String, Option<(i64, bool)>>,
+) {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "declaration" => {
-                    let type_text = extract_type_text(&child, source);
-                    // Accept: static const, static, or const at file scope
-                    let is_static_or_const =
-                        type_text.contains("static") || type_text.contains("const");
-                    if !is_static_or_const {
-                        continue;
-                    }
-                    // Walk declarators looking for init_declarator with a value
-                    for j in 0..child.child_count() {
-                        if let Some(decl) = child.child(j) {
-                            if decl.kind() == "init_declarator" {
-                                let name = get_declarator_name(&decl, source);
-                                if name.is_empty() {
-                                    continue;
-                                }
-                                if let Some(value) = decl.child_by_field_name("value") {
-                                    let empty_macros: HashMap<String, i64> = HashMap::new();
-                                    if let Some(val) =
-                                        const_eval::try_evaluate_expr(&value, source, &empty_macros)
-                                    {
-                                        constants.insert(name, val);
-                                    }
-                                }
-                            }
+        let Some(child) = node.child(i) else {
+            continue;
+        };
+        match child.kind() {
+            "declaration" => {
+                let text_of = |n: Node| n.utf8_text(source.as_bytes()).unwrap_or("");
+                let mut is_const = false;
+                let mut is_static = false;
+                for k in 0..child.child_count() {
+                    if let Some(c) = child.child(k) {
+                        match c.kind() {
+                            "type_qualifier" if text_of(c) == "const" => is_const = true,
+                            "storage_class_specifier" if text_of(c) == "static" => is_static = true,
+                            _ => {}
                         }
                     }
                 }
-                "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif" => {
-                    collect_constants_recursive(&child, source, constants);
+                if !is_const && !is_static {
+                    continue;
                 }
-                _ => {}
+                for j in 0..child.child_count() {
+                    let Some(decl) = child.child(j) else {
+                        continue;
+                    };
+                    if decl.kind() != "init_declarator" {
+                        continue;
+                    }
+                    // `static const char *p` is a mutable pointer; an array
+                    // is not one value either.
+                    if decl
+                        .child_by_field_name("declarator")
+                        .is_none_or(|d| d.kind() != "identifier")
+                    {
+                        continue;
+                    }
+                    let name = get_declarator_name(&decl, source);
+                    if name.is_empty() {
+                        continue;
+                    }
+                    let empty_macros: HashMap<String, i64> = HashMap::new();
+                    let value = decl
+                        .child_by_field_name("value")
+                        .and_then(|v| const_eval::try_evaluate_expr(&v, source, &empty_macros));
+                    let entry = value.map(|v| (v, !is_const));
+                    match seen.get(&name) {
+                        None => {
+                            seen.insert(name, entry);
+                        }
+                        Some(Some((old, old_check))) => {
+                            let merged = match entry {
+                                Some((v, check)) if v == *old => Some((v, check || *old_check)),
+                                _ => None,
+                            };
+                            seen.insert(name, merged);
+                        }
+                        Some(None) => {}
+                    }
+                }
             }
+            "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif" => {
+                collect_constants_recursive(&child, source, seen);
+            }
+            _ => {}
         }
     }
 }
@@ -2819,8 +2901,10 @@ pub fn try_evaluate_block_condition(
 ) -> Option<bool> {
     let (cond_start, cond_end) = block.condition_range?;
     let cond_node = body.descendant_for_byte_range(cond_start, cond_end)?;
-    // Use file-scope constants as macro constants for evaluation
-    let val = const_eval::try_evaluate_expr(&cond_node, source, constants)?;
+    // File-scope constants stand in as macro constants, less any name the
+    // condition binds to a local or parameter.
+    let visible = constants_visible_at(&cond_node, source, constants);
+    let val = const_eval::try_evaluate_expr(&cond_node, source, &visible)?;
     Some(val != 0) // C truthiness: 0 is false, anything else is true
 }
 

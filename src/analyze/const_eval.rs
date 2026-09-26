@@ -713,58 +713,61 @@ fn collect_non_const_static_defs(root: &Node, source: &str, defs: &mut Vec<(Stri
         }
     }
 
-    let source_bytes = source.as_bytes();
-    for (name, value, decl_end) in candidates {
-        if !static_var_assigned_after(source_bytes, &name, decl_end) {
+    for (name, value, _decl_end) in candidates {
+        if file_static_never_written(root, source, &name) {
             defs.push((name, value));
         }
     }
 }
 
-/// Return true if `name` appears as an assignment target after `after_offset` bytes.
-/// Checks for `=` (not `==`), compound assignments, and `++`/`--`.
-fn static_var_assigned_after(source: &[u8], name: &str, after_offset: usize) -> bool {
-    let name_b = name.as_bytes();
-    let n = source.len();
-    let m = name_b.len();
-
-    let mut i = after_offset;
-    while i + m <= n {
-        if &source[i..i + m] != name_b {
-            i += 1;
+/// Whether nothing in the translation unit `root` can change the file-scope
+/// object `name` after its initializer: no occurrence that binds to it (a
+/// local or parameter of the same name is another object, ADR-0006) is an
+/// assignment target, a `++`/`--` operand, or has its address taken with
+/// `&` (after which any pointer write may reach it). Only then is a
+/// `static int staticFalse = 0;` (Juliet's flow variants) an effective
+/// constant (ADR-0011 basis 3: proof in the scanned source). The text scan
+/// this replaces saw `x = ` and `x++` but not `++x`, `&x` handed out, or a
+/// local `x` shadowing the static, so the CFG pruned branches that run.
+/// A non-`static` object has external linkage and another file can write it;
+/// callers ask this only of `static` ones.
+pub fn file_static_never_written(root: &Node, source: &str, name: &str) -> bool {
+    use crate::utility::cert_c::ast_utils::{resolve_identifier_binding, IdentifierBinding};
+    let ids = lang_parsing_substrate::query::find_descendants_of_kind(*root, "identifier");
+    for id in ids {
+        if id.utf8_text(source.as_bytes()).unwrap_or("") != name {
             continue;
         }
-        // Word boundary before
-        let before_ok = i == 0 || {
-            let b = source[i - 1];
-            !b.is_ascii_alphanumeric() && b != b'_'
-        };
-        let after_pos = i + m;
-        // Word boundary after
-        let after_ok = after_pos >= n || {
-            let b = source[after_pos];
-            !b.is_ascii_alphanumeric() && b != b'_'
-        };
-        if before_ok && after_ok {
-            let mut j = after_pos;
-            while j < n && (source[j] == b' ' || source[j] == b'\t') {
-                j += 1;
-            }
-            if j < n {
-                let next = source[j];
-                let is_assign = next == b'=' && (j + 1 >= n || source[j + 1] != b'=');
-                let is_compound =
-                    matches!(next, b'+' | b'-' | b'*' | b'/' | b'%' | b'&' | b'|' | b'^')
-                        && j + 1 < n
-                        && source[j + 1] == b'=';
-                let is_inc = (next == b'+' && j + 1 < n && source[j + 1] == b'+')
-                    || (next == b'-' && j + 1 < n && source[j + 1] == b'-');
-                if is_assign || is_compound || is_inc {
-                    return true;
-                }
-            }
+        if matches!(
+            resolve_identifier_binding(&id, name, source),
+            Some(IdentifierBinding::Local(_)) | Some(IdentifierBinding::Parameter(_))
+        ) {
+            continue;
         }
-        i += 1;
+        if is_write_context(&id) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether the expression `id` (looking through parentheses) is written or
+/// has its address taken where it stands.
+fn is_write_context(id: &Node) -> bool {
+    let mut node = *id;
+    while let Some(parent) = node.parent() {
+        if parent.kind() == "parenthesized_expression" {
+            node = parent;
+            continue;
+        }
+        return match parent.kind() {
+            "assignment_expression" => parent
+                .child_by_field_name("left")
+                .is_some_and(|l| l.id() == node.id()),
+            "update_expression" => true,
+            "pointer_expression" => parent.child(0).is_some_and(|op| op.kind() == "&"),
+            _ => false,
+        };
     }
     false
 }
