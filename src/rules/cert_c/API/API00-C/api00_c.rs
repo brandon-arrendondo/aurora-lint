@@ -54,9 +54,9 @@ use crate::analyze::null_state::condition_tests_null;
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::{
-    documented_nonnull_parameters, get_function_parameters, get_node_text, get_sanitized_node_text,
-    integer_type_width, is_in_unevaluated_operand, is_pointer_type, is_unsigned_type,
-    ordered_parameter_names,
+    declares_static, documented_nonnull_parameters, get_function_parameters, get_node_text,
+    get_sanitized_node_text, integer_type_width, is_in_unevaluated_operand, is_pointer_type,
+    is_unsigned_type, ordered_parameter_names, static_macro_names_in_scope,
 };
 use crate::utility::cert_c::float_typing::StructFieldTypes;
 use crate::utility::cert_c::guard_dominance;
@@ -89,6 +89,11 @@ struct PointerTypes<'a> {
 }
 
 pub struct Api00C {
+    /// Macros any scanned file defines as `static`
+    /// (`ProjectContext::static_macro_names`).
+    project_static_macros: RefCell<Arc<HashSet<String>>>,
+    /// Those plus the file being scanned's own; set per file.
+    static_macros: RefCell<HashSet<String>>,
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     struct_field_types: RefCell<Arc<StructFieldTypes>>,
     pointer_facts: RefCell<PointerFacts>,
@@ -112,6 +117,8 @@ pub struct Api00C {
 impl Api00C {
     pub fn new() -> Self {
         Self {
+            project_static_macros: RefCell::new(Arc::new(HashSet::new())),
+            static_macros: RefCell::new(HashSet::new()),
             function_summaries: RefCell::default(),
             struct_field_types: RefCell::new(Arc::new(StructFieldTypes::new())),
             pointer_facts: RefCell::new(PointerFacts::default()),
@@ -140,6 +147,7 @@ impl CertRule for Api00C {
     }
 
     fn set_project_context(&self, context: &ProjectContext) {
+        *self.project_static_macros.borrow_mut() = context.static_macro_names.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
@@ -157,6 +165,8 @@ impl CertRule for Api00C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+        *self.static_macros.borrow_mut() =
+            static_macro_names_in_scope(source, &self.project_static_macros.borrow());
         *self.pointer_facts.borrow_mut() = PointerFacts::collect(node, source);
         let mut documented = self.documented_nonnull_params.borrow().clone();
         for (name, indices) in documented_nonnull_parameters(node, source) {
@@ -200,7 +210,7 @@ impl Api00C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Skip static functions — API00-C is about public API contracts
-        if Self::is_static_function(function_node, source) {
+        if declares_static(function_node, source, &self.static_macros.borrow()) {
             return;
         }
 
@@ -1638,31 +1648,6 @@ impl Api00C {
         }
 
         false
-    }
-
-    /// Check if a function_definition has `static` storage class or a STATIC macro prefix.
-    fn is_static_function(function_node: &Node, source: &str) -> bool {
-        for i in 0..function_node.child_count() {
-            if let Some(child) = function_node.child(i) {
-                if child.kind() == "storage_class_specifier" {
-                    if let Ok(text) = child.utf8_text(source.as_bytes()) {
-                        if text == "static" {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-        // Check for STATIC macro prefix (tree-sitter sees unexpanded macro as first tokens).
-        // Match any token in the declaration prefix that contains "STATIC" as a
-        // substring — covers project-specific macros like LIN_STATIC_INLINE,
-        // MY_STATIC_FUNC, etc.
-        let func_text = function_node.utf8_text(source.as_bytes()).unwrap_or("");
-        let before_paren = func_text.split('(').next().unwrap_or("");
-        before_paren.split_whitespace().any(|token| {
-            let t = token.trim_start_matches('*');
-            t.contains("STATIC") || matches!(t, "PRIVATE" | "INTERNAL" | "LOCAL")
-        })
     }
 
     fn report_violation(

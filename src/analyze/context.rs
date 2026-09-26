@@ -148,6 +148,12 @@ pub struct ProjectContext {
     /// [`crate::analyze::macro_expand::is_function_like_macro`].
     #[serde(default)]
     pub function_macro_names: Arc<HashSet<String>>,
+    /// Names of every object-like `#define` whose replacement list contains
+    /// `static` (`#define STATIC static`), across all scanned files (incl.
+    /// headers), any branch. See
+    /// [`crate::utility::cert_c::ast_utils::collect_static_macro_names`].
+    #[serde(default)]
+    pub static_macro_names: Arc<HashSet<String>>,
     /// Names of every object-like `#define` whose replacement text is an
     /// unused-attribute annotation — `__attribute__((unused))`,
     /// `[[maybe_unused]]`, and the reserved spellings — collected across all

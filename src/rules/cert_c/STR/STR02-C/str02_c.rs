@@ -103,7 +103,8 @@ use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
-    get_node_text, get_sanitized_node_text, is_function_parameter,
+    declares_static, get_node_text, get_sanitized_node_text, is_function_parameter,
+    static_macro_names_in_scope,
 };
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -141,6 +142,11 @@ const TAINT_OVERWRITE_PROPAGATORS: &[&str] = &[
 ];
 
 pub struct Str02C {
+    /// Macros any scanned file defines as `static`
+    /// (`ProjectContext::static_macro_names`).
+    project_static_macros: RefCell<Arc<HashSet<String>>>,
+    /// Those plus the file being scanned's own; set per file.
+    static_macros: RefCell<HashSet<String>>,
     project_aliases: RefCell<Arc<HashMap<String, String>>>,
     current_aliases: RefCell<HashMap<String, String>>,
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
@@ -157,6 +163,8 @@ pub struct Str02C {
 impl Str02C {
     pub fn new() -> Self {
         Self {
+            project_static_macros: RefCell::new(Arc::new(HashSet::new())),
+            static_macros: RefCell::new(HashSet::new()),
             project_aliases: RefCell::new(Arc::new(HashMap::new())),
             current_aliases: RefCell::new(HashMap::new()),
             function_summaries: RefCell::default(),
@@ -289,7 +297,7 @@ impl Str02C {
     ) -> HashMap<String, HashSet<usize>> {
         let mut static_fns: HashSet<String> = HashSet::new();
         for func in query::find_descendants_of_kind(*root, "function_definition") {
-            if Self::is_static_function(&func, source) {
+            if declares_static(&func, source, &self.static_macros.borrow()) {
                 if let Some(name) = cfg::get_function_name(&func, source) {
                     static_fns.insert(name.to_string());
                 }
@@ -349,16 +357,6 @@ impl Str02C {
             }
         }
         result
-    }
-
-    /// True if a `function_definition` node carries the `static`
-    /// storage-class specifier.
-    fn is_static_function(func: &Node, source: &str) -> bool {
-        (0..func.child_count()).any(|i| {
-            func.child(i).is_some_and(|c| {
-                c.kind() == "storage_class_specifier" && get_node_text(&c, source) == "static"
-            })
-        })
     }
 
     /// Walk a function body to find variables tainted by external input.
@@ -1204,6 +1202,7 @@ impl CertRule for Str02C {
     }
 
     fn set_project_context(&self, context: &ProjectContext) {
+        *self.project_static_macros.borrow_mut() = context.static_macro_names.clone();
         *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
 
@@ -1213,6 +1212,8 @@ impl CertRule for Str02C {
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
+        *self.static_macros.borrow_mut() =
+            static_macro_names_in_scope(source, &self.project_static_macros.borrow());
         // Merge project-level aliases with per-file aliases (per-file wins)
         *self.current_aliases.borrow_mut() =
             const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);

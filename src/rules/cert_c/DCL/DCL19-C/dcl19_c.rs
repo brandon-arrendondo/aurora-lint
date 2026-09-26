@@ -5,7 +5,9 @@ use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{
+    declares_static, get_node_text, static_macro_names_in_scope,
+};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -17,6 +19,11 @@ pub struct DCL19C {
     /// `ProjectContext::callers`: who calls each function, across every
     /// scanned file.
     callers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
+    /// Macros any scanned file defines as `static`
+    /// (`ProjectContext::static_macro_names`).
+    project_static_macros: RefCell<Arc<HashSet<String>>>,
+    /// Those plus the file being scanned's own; set per check.
+    static_macros: RefCell<HashSet<String>>,
 }
 
 impl DCL19C {
@@ -24,6 +31,8 @@ impl DCL19C {
         Self {
             header_declared: RefCell::new(Arc::new(HashSet::new())),
             callers: RefCell::new(Arc::new(HashMap::new())),
+            project_static_macros: RefCell::new(Arc::new(HashSet::new())),
+            static_macros: RefCell::new(HashSet::new()),
         }
     }
 }
@@ -48,10 +57,13 @@ impl CertRule for DCL19C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.header_declared.borrow_mut() = context.header_declared_functions.clone();
         *self.callers.borrow_mut() = context.callers.clone();
+        *self.project_static_macros.borrow_mut() = context.static_macro_names.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+        *self.static_macros.borrow_mut() =
+            static_macro_names_in_scope(source, &self.project_static_macros.borrow());
 
         if node.kind() == "translation_unit" {
             let mut cursor = node.walk();
@@ -154,74 +166,12 @@ impl DCL19C {
         }
     }
 
+    /// Whether `node` is declared `static`, directly or through a macro some
+    /// `#define` expands to `static` (tree-sitter does not expand macros).
+    /// The definition decides, not the spelling: an undefined `PRIVATE` is
+    /// not static.
     fn is_static_function(&self, node: &Node, source: &str) -> bool {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "storage_class_specifier" {
-                let text = get_node_text(&child, source);
-                if text == "static" {
-                    return true;
-                }
-            }
-        }
-
-        // Tree-sitter does not expand macros, so a macro like `STATIC` (which
-        // conditionally expands to `static` for production builds and to nothing
-        // for unit-test builds) will never appear as a storage_class_specifier.
-        // Scan the raw source text of the declaration prefix for well-known
-        // static-equivalent macro names used in embedded/firmware codebases.
-        self.has_static_macro_in_prefix(node, source)
-    }
-
-    /// Returns true if the declaration text contains a STATIC-equivalent macro.
-    fn has_static_macro_in_declaration(&self, node: &Node, source: &str) -> bool {
-        const STATIC_MACROS: &[&str] = &[
-            "STATIC",
-            "STATIC_VAR",
-            "STATIC_INLINE",
-            "PRIVATE",
-            "INTERNAL",
-            "LOCAL",
-        ];
-
-        let node_text = get_node_text(node, source);
-        let first_line = node_text.lines().next().unwrap_or("");
-        // Check tokens before the `=` or `;`
-        let before_eq = first_line.split('=').next().unwrap_or(first_line);
-        for token in before_eq.split_whitespace() {
-            let token = token.trim_start_matches('*');
-            if STATIC_MACROS.contains(&token) {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Returns true if the source text before the function name contains a
-    /// recognised macro that is a conditional alias for `static`.
-    fn has_static_macro_in_prefix(&self, node: &Node, source: &str) -> bool {
-        const STATIC_MACROS: &[&str] = &[
-            "STATIC",
-            "STATIC_FUNC",
-            "STATIC_INLINE",
-            "PRIVATE",
-            "INTERNAL",
-            "LOCAL",
-        ];
-
-        let node_text = get_node_text(node, source);
-        let first_line = node_text.lines().next().unwrap_or("");
-
-        // Tokenise the first line before the opening parenthesis
-        let before_paren = first_line.split('(').next().unwrap_or(first_line);
-        for token in before_paren.split_whitespace() {
-            let token = token.trim_start_matches('*');
-            if STATIC_MACROS.contains(&token) {
-                return true;
-            }
-        }
-
-        false
+        declares_static(node, source, &self.static_macros.borrow())
     }
 
     fn check_file_scope_variable(&self, node: &Node, source: &str) -> Option<RuleViolation> {
@@ -255,8 +205,9 @@ impl DCL19C {
             }
         }
 
-        // Check for STATIC macro in the raw text (same as function check)
-        if self.has_static_macro_in_declaration(node, source) {
+        // A macro some `#define` expands to `static` (same as the function
+        // check).
+        if declares_static(node, source, &self.static_macros.borrow()) {
             is_static = true;
         }
 
