@@ -179,9 +179,11 @@ pub static OPTIONS: &[OptionSpec] = &[
             strict: false,
         },
         oracle_tag: "noreturn-trusted",
-        summary: "A function declared _Noreturn is trusted not to return; otherwise only a \
-                  body verified never to return proves it.",
-        basis: "C11 6.7.4p8. A GNU noreturn attribute is proof under neither policy.",
+        summary: "A function declared _Noreturn (or <stdnoreturn.h> noreturn, or C23 \
+                  [[noreturn]]) is trusted not to return; otherwise only a body verified \
+                  never to return proves it.",
+        basis: "C11 6.7.4p8, 7.23; C23 6.7.13.7. A GNU noreturn attribute, [[gnu::noreturn]] \
+                included, is proof under neither policy.",
     },
     OptionSpec {
         name: "free_null_is_noop",

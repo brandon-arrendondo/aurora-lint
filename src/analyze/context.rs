@@ -387,17 +387,45 @@ impl ProjectContext {
 
     /// Save prescan context to a binary cache file.
     pub fn save_to_file(&self, path: &Path) -> anyhow::Result<()> {
-        let encoded = bincode::serialize(self)?;
+        let mut encoded = cache_header().into_bytes();
+        encoded.extend(bincode::serialize(self)?);
         std::fs::write(path, &encoded)?;
         Ok(())
     }
 
-    /// Load prescan context from a binary cache file.
+    /// Load prescan context from a binary cache file. A cache written by a
+    /// different format or aurora-lint version is refused by its header:
+    /// bincode is not self-describing, so reading one would fail at best and
+    /// silently misread fields at worst.
     pub fn load_from_file(path: &Path) -> anyhow::Result<Self> {
         let data = std::fs::read(path)?;
-        let context: Self = bincode::deserialize(&data)?;
+        let header = cache_header();
+        let Some(body) = data.strip_prefix(header.as_bytes()) else {
+            anyhow::bail!(
+                "prescan cache {} was written by a different aurora-lint build or cache \
+                 format (expected header {:?}); re-create it with --save-prescan",
+                path.display(),
+                header.trim_end()
+            );
+        };
+        let context: Self = bincode::deserialize(body)?;
         Ok(context)
     }
+}
+
+/// Version of the prescan cache's serialized layout. Bump it with any change
+/// to a serialized field of [`ProjectContext`] (or of a type it holds): the
+/// cache header carries it, so an old cache is refused instead of misread.
+const PRESCAN_CACHE_FORMAT: u32 = 2;
+
+/// The header a prescan cache file starts with: a magic, the layout version
+/// and the aurora-lint version that wrote it.
+fn cache_header() -> String {
+    format!(
+        "aurora-lint-prescan format={} version={}\n",
+        PRESCAN_CACHE_FORMAT,
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 /// The key a (file, name) pair is stored under in a [`ScopedTable`]: a name
