@@ -117,6 +117,7 @@ pub fn analyze_project(
     compile_db: Option<&compile_commands::CompileDb>,
     jobs: usize,
     report_macro_gaps: bool,
+    settings: &crate::settings::AnalysisSettings,
 ) -> Result<AnalysisResults> {
     let mut violations = Vec::new();
     let mut suppressed = Vec::new();
@@ -128,7 +129,7 @@ pub fn analyze_project(
         .any(|(rule_id, _)| registry.get_rule(rule_id).is_some_and(|r| r.needs_vra()));
 
     // Load or compute cross-file context (prescan, includes, optional cache save)
-    let context = load_project_context(
+    let mut context = load_project_context(
         project_source,
         progress,
         directories,
@@ -139,10 +140,9 @@ pub fn analyze_project(
         compile_db,
         needs_vra,
     )?;
+    context.settings = std::sync::Arc::new(settings.clone());
 
-    if context.has_cross_file_data() {
-        set_project_context_for_enabled(&registry, manifest, &context);
-    }
+    set_project_context_for_enabled(&registry, manifest, &context);
 
     // The parse-repair pass consults the prescan's macro table to blank a
     // stranded declaration's *macro* rather than its real type or declarator
@@ -206,7 +206,6 @@ pub fn analyze_project(
             .num_threads(effective_jobs)
             .stack_size(WORKER_STACK_BYTES)
             .build()?;
-        let has_cross_file_data = context.has_cross_file_data();
         let file_counter = AtomicUsize::new(0);
 
         let results: Vec<_> = pool.install(|| {
@@ -231,9 +230,7 @@ pub fn analyze_project(
                     // defines `static`.
                     let local = context.as_seen_from(std::path::Path::new(file_path));
                     let file_context = local.as_ref().unwrap_or(&context);
-                    if has_cross_file_data {
-                        set_project_context_for_enabled(&file_registry, manifest, file_context);
-                    }
+                    set_project_context_for_enabled(&file_registry, manifest, file_context);
                     let mut file_supp = suppression_manager.clone();
 
                     let result = analyze_one_file(
@@ -282,7 +279,6 @@ pub fn analyze_project(
     // Fresh registry per file to prevent cross-file state leakage from RefCell fields
     let mut parser = CParser::new()?;
     parser.set_repair_macros(std::sync::Arc::clone(&repair_macros));
-    let has_cross_file_data = context.has_cross_file_data();
 
     for (file_idx, file_path) in c_files.iter().enumerate() {
         // Check for cancellation before processing each file
@@ -297,9 +293,7 @@ pub fn analyze_project(
         let file_registry = RuleRegistry::new();
         let local = context.as_seen_from(std::path::Path::new(file_path));
         let file_context = local.as_ref().unwrap_or(&context);
-        if has_cross_file_data {
-            set_project_context_for_enabled(&file_registry, manifest, file_context);
-        }
+        set_project_context_for_enabled(&file_registry, manifest, file_context);
 
         let (file_violations, file_suppressed) = analyze_one_file(
             file_path,
@@ -457,14 +451,22 @@ fn load_project_context(
 /// grew with every rule that learned to read a new context table. Only a
 /// rule the manifest enables is ever asked to check a file, so only those
 /// receive the context.
+///
+/// The settings go to every enabled rule unconditionally; the context only
+/// when the pre-scan found cross-file data, since some rules read "a context
+/// was set" as "the project's function set is known".
 fn set_project_context_for_enabled(
     registry: &RuleRegistry,
     manifest: &RuleManifest,
     context: &context::ProjectContext,
 ) {
+    let has_cross_file_data = context.has_cross_file_data();
     for (rule_id, _) in manifest.enabled_rules() {
         if let Some(rule) = registry.get_rule(rule_id) {
-            rule.set_project_context(context);
+            rule.set_analysis_settings(&context.settings);
+            if has_cross_file_data {
+                rule.set_project_context(context);
+            }
         }
     }
 }

@@ -532,10 +532,22 @@ enum Expect {
 /// pass consults its macro table to decide which token a misparsed
 /// declaration should lose, so parsing first would hand the rule a weaker
 /// repair than a real scan performs.
+///
+/// `preset` and `overrides` (the fixture header's `Settings:` line,
+/// `name=value` pairs separated by commas) are the policy and environment
+/// settings the fixture runs under; every fixture runs under each preset.
 #[cfg(test)]
-fn run_fixture(test_name: &str, rule_id: &str, relative_path: &str, expect: Expect) {
+fn run_fixture(
+    test_name: &str,
+    rule_id: &str,
+    relative_path: &str,
+    expect: Expect,
+    preset: &str,
+    overrides: &str,
+) {
     use crate::parser::CParser;
     use crate::rules::RuleRegistry;
+    use crate::settings::{AnalysisSettings, SettingsConfig};
 
     let registry = RuleRegistry::new();
     let rule = registry
@@ -546,8 +558,26 @@ fn run_fixture(test_name: &str, rule_id: &str, relative_path: &str, expect: Expe
     let raw = fs::read_to_string(&test_path)
         .unwrap_or_else(|e| panic!("Failed to read {:?}: {}", test_path, e));
 
-    let context = crate::analyze::prescan::prescan_single_file(&test_path, rule.needs_vra())
+    let mut config = SettingsConfig {
+        profile: Some(preset.parse().expect("build.rs emits a known preset")),
+        ..Default::default()
+    };
+    for assignment in overrides
+        .split(',')
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+    {
+        config
+            .set(assignment)
+            .unwrap_or_else(|e| panic!("{:?}: bad Settings: line: {}", test_path, e));
+    }
+    let settings = AnalysisSettings::resolve(&config)
+        .unwrap_or_else(|e| panic!("{:?}: bad Settings: line: {}", test_path, e));
+
+    let mut context = crate::analyze::prescan::prescan_single_file(&test_path, rule.needs_vra())
         .unwrap_or_else(|e| panic!("Failed to prescan {:?}: {}", test_path, e));
+    context.settings = std::sync::Arc::new(settings);
+    rule.set_analysis_settings(&context.settings);
     rule.set_project_context(&context);
 
     let mut parser = CParser::new().expect("Failed to create parser");
@@ -561,18 +591,35 @@ fn run_fixture(test_name: &str, rule_id: &str, relative_path: &str, expect: Expe
 
     let violations = rule.check(&tree.root_node(), &source);
 
+    // The test summary (docs/test-summary.md) records the default preset's
+    // run of each fixture; the other presets are asserted, not tabulated.
+    //
     // The failure message prints a clickable `<path>:<line>`, a copy-paste
     // command re-running the rule on just this file, and the fixture's
     // wiki-derived description.
     let about = fixture_description(&raw)
         .map(|d| format!("\n  about:     {}", d))
         .unwrap_or_default();
-    let reproduce = format!("cargo run -- --rules {} {}", rule_id, relative_path);
+    let settings_args = std::iter::once(format!(" --profile {preset}"))
+        .chain(
+            overrides
+                .split(',')
+                .map(str::trim)
+                .filter(|a| !a.is_empty())
+                .map(|a| format!(" --set {a}")),
+        )
+        .collect::<String>();
+    let reproduce = format!(
+        "cargo run -- --rules {}{} {}",
+        rule_id, settings_args, relative_path
+    );
 
     match expect {
         Expect::Violation => {
             let detected = !violations.is_empty();
-            record_test_result(test_name, detected, true);
+            if preset == "default" {
+                record_test_result(test_name, detected, true);
+            }
             assert!(
                 detected,
                 "\n[{}] expected a violation in this FAIL test, but none was detected.\n  \
@@ -585,7 +632,9 @@ fn run_fixture(test_name: &str, rule_id: &str, relative_path: &str, expect: Expe
         }
         Expect::Clean => {
             let clean = violations.is_empty();
-            record_test_result(test_name, clean, false);
+            if preset == "default" {
+                record_test_result(test_name, clean, false);
+            }
             let fp = violations.first();
             assert!(
                 clean,

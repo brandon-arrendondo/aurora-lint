@@ -63,6 +63,13 @@ pub trait CertRule {
     /// section of `docs/design/internal-capability-catalog.md`.
     fn set_project_context(&self, _context: &ProjectContext) {}
 
+    /// Inject the policy and environment settings (ADR-0015) this run
+    /// analyzes under. Called for every enabled rule on every file, whether
+    /// or not cross-file context exists. Default is a no-op; a rule that
+    /// honors an option in `settings::OPTIONS` overrides this and keeps the
+    /// value it reads.
+    fn set_analysis_settings(&self, _settings: &crate::settings::AnalysisSettings) {}
+
     /// Inject per-file function CFGs for flow-sensitive analysis.
     /// Default is a no-op; only rules that need CFG data override this.
     fn set_function_cfgs(&self, _cfgs: &HashMap<usize, FunctionCfg>) {}

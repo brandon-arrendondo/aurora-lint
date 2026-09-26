@@ -713,19 +713,106 @@ fn generate_test_function(
     // test made the generated code ~170K lines, and compiling that dominated
     // the test build's wall-clock and peak memory. An `expected_fail` fixture
     // asserts like a `fail` one; it is ignored above.
-    let expect = if test_type == "pass" {
+    //
+    // Every fixture runs once per preset (ADR-0015: each setting is validated
+    // like rule behavior). The directory states the expectation under both
+    // unless the fixture's header says otherwise; see `fixture_header`.
+    let dir_expect = if test_type == "pass" {
         "Clean"
     } else {
         "Violation"
     };
-    writeln!(
-        f,
-        "fn {}() {{ super::run_fixture({:?}, {:?}, {:?}, super::Expect::{}); }}",
-        test_fn_name, test_fn_name, rule_id, relative_path, expect
-    )?;
-    writeln!(f)?;
+    let header = fixture_header(test_path)?;
+    for preset in PRESETS {
+        let expect = header
+            .expect
+            .iter()
+            .find(|(p, _)| p == preset)
+            .map_or(dir_expect, |(_, e)| e.as_str());
+        // The default preset keeps the bare name, so a fixture's identity in
+        // test output and the test summary does not change.
+        let name = if *preset == "default" {
+            test_fn_name.clone()
+        } else {
+            format!("{}__{}", test_fn_name, preset)
+        };
+        if *preset != "default" {
+            writeln!(f, "#[test]")?;
+            writeln!(f, "#[allow(non_snake_case)]")?;
+            if !is_enabled {
+                writeln!(f, "#[ignore = \"Rule {} not yet implemented\"]", rule_id)?;
+            } else if test_type == "expected_fail" {
+                writeln!(
+                    f,
+                    "#[ignore = \"Known limitation: {} cannot detect this pattern yet\"]",
+                    rule_id
+                )?;
+            }
+        }
+        writeln!(
+            f,
+            "fn {}() {{ super::run_fixture({:?}, {:?}, {:?}, super::Expect::{}, {:?}, {:?}); }}",
+            name, name, rule_id, relative_path, expect, preset, header.settings
+        )?;
+        writeln!(f)?;
+    }
 
     Ok(())
+}
+
+/// The presets every fixture runs under. Must match `settings::Preset`.
+const PRESETS: &[&str] = &["default", "strict"];
+
+/// What a fixture's leading comment says about settings.
+struct FixtureHeader {
+    /// `Expect: default=clean strict=violation` -- per-preset expectations
+    /// that override the directory's.
+    expect: Vec<(String, String)>,
+    /// `Settings: name=value, name=value` -- option overrides applied on top
+    /// of each preset.
+    settings: String,
+}
+
+/// Read a fixture's `Expect:` and `Settings:` lines from its leading comment
+/// (the first 20 lines, like the `Description:` banner). A malformed line is
+/// a build error, never a silently ignored expectation.
+fn fixture_header(path: &std::path::Path) -> Result<FixtureHeader> {
+    let source = fs::read_to_string(path).with_context(|| format!("read {:?}", path))?;
+    let mut header = FixtureHeader {
+        expect: Vec::new(),
+        settings: String::new(),
+    };
+    for line in source.lines().take(20) {
+        let l = line.trim().trim_start_matches(['*', '/', ' ']).trim();
+        if let Some(rest) = l.strip_prefix("Expect:") {
+            for pair in rest.split_whitespace() {
+                let (preset, outcome) = pair
+                    .split_once('=')
+                    .with_context(|| format!("{:?}: bad Expect entry '{}'", path, pair))?;
+                anyhow::ensure!(
+                    PRESETS.contains(&preset),
+                    "{:?}: Expect names unknown preset '{}'",
+                    path,
+                    preset
+                );
+                let outcome = match outcome {
+                    "clean" => "Clean",
+                    "violation" => "Violation",
+                    _ => anyhow::bail!(
+                        "{:?}: Expect outcome must be clean or violation, got '{}'",
+                        path,
+                        outcome
+                    ),
+                };
+                header
+                    .expect
+                    .push((preset.to_string(), outcome.to_string()));
+            }
+        } else if let Some(rest) = l.strip_prefix("Settings:") {
+            header.settings = rest.trim().to_string();
+        }
+    }
+    Ok(header)
 }
 
 fn check_if_rule_enabled(toml_path: &str) -> Result<bool> {

@@ -54,11 +54,31 @@ under ``src/rules/cert_c/<CATEGORY>/<RULE-ID>/tests/``:
 
 **Coverage**: every rule with fixtures has three tiers — ``fail/``
 (must-detect), ``pass/`` (must-not-detect) and ``expected_fail/`` (known
-limitations). Each fixture generates one Rust test; all pass, and the
-``expected_fail`` tier plus fixtures for rules that are tracked but not
-implemented are ``#[ignore]``\ d. The counts change with nearly every rule
-fix, so they are not typed here: ``python3 scripts/fixture_provenance.py``
-prints them per tier for the checkout you have.
+limitations). Each fixture generates one Rust test per preset (see below);
+all pass, and the ``expected_fail`` tier plus fixtures for rules that are
+tracked but not implemented are ``#[ignore]``\ d. The counts change with
+nearly every rule fix, so they are not typed here:
+``python3 scripts/fixture_provenance.py`` prints them per tier for the
+checkout you have.
+
+**Settings**: every policy and environment option (:doc:`options`) is
+validated like rule behavior. Every fixture runs under both the ``default``
+and the ``strict`` preset; the ``strict`` run's test name ends in
+``__strict``, and ``docs/test-summary.md`` tabulates the ``default`` run.
+The directory's expectation holds under both presets unless the fixture's
+leading comment overrides it per preset, and a ``Settings:`` line applies
+option overrides on top of each preset:
+
+.. code-block:: c
+
+    /*
+     * Expect: default=clean strict=violation
+     * Settings: free_null_is_noop=false
+     */
+
+A rule that honors an option carries at least one fixture whose outcome
+depends on it, so each setting is exercised in both directions. CI runs the
+whole suite, so both presets are covered there.
 
 Tests are auto-generated into Rust test functions from ``.c`` files — no embedded
 ``#[cfg(test)]`` modules in rule implementation files. Run tests with:

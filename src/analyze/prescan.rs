@@ -982,6 +982,7 @@ fn prescan_file_list(
         crate::analyze::check_macros::abort_check_macros(&macro_definitions, &noreturn_functions);
 
     Ok(ProjectContext {
+        settings: Default::default(),
         known_functions: Arc::new(known_functions),
         header_declared_functions: Arc::new(header_declared_functions),
         function_summaries: function_summaries.into(),

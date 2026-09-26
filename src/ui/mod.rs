@@ -2162,6 +2162,12 @@ impl TerminalUI {
             );
         }
 
+        context.settings = std::sync::Arc::new(crate::settings::AnalysisSettings::resolve(
+            &self.manifest.settings_config(),
+        )?);
+        for rule in self.registry.all_rules() {
+            rule.set_analysis_settings(&context.settings);
+        }
         if context.has_cross_file_data() {
             for rule in self.registry.all_rules() {
                 rule.set_project_context(&context);
