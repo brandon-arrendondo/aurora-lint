@@ -17,7 +17,7 @@ int krnr_style(arr)
 }
 
 int main() {
-    int values[] = {1, 2, 3};
+    int values[3] = {1, 2, 3};
     proto_with_array_param(values);
     return krnr_style(values);
 }

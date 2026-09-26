@@ -1,16 +1,15 @@
 /*
  * Rule: ARR02-C
  * Source: testcases
- * Status: PASS - Should NOT trigger ARR02-C violation (brace initializer determines the bound; well-defined per C11 6.7.9p22)
+ * Status: PASS - ARR02-C-EX1: a character array initialized by a string
+ * literal may omit its bound (STR11-C asks for exactly that)
  */
 
 #include <stdio.h>
 
 int main() {
-    int implicit_array[] = {1, 2, 3, 4, 5};
     char text[] = "implicit sizing";
-    double values[] = {1.1, 2.2, 3.3};
-    
-    printf("Array with implicit bounds\n");
+
+    printf("%s\n", text);
     return 0;
 }
