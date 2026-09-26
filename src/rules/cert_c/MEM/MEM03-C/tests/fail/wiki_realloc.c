@@ -1,6 +1,9 @@
 /*
  * Rule: MEM03-C
- * Source: wiki
+ * Source: wiki, adapted from CERT (not verbatim)
+ * Adapted: wrapped in a function with a malloc() source, and the size
+ * check returns early instead of CERT's else branch around realloc().
+ * CERT's example as written is expected_fail/wiki_realloc_verbatim.c.
  * Status: FAIL - Should trigger MEM03-C violation
  * Description: realloc without clearing old data (shrinking can leak)
  */
