@@ -68,7 +68,7 @@ impl CertRule for Pre31C {
         // Real macro-body definitions (params + replacement text), collected the
         // same way every other macro-aware rule does (see
         // docs/design/internal-capability-catalog.md). Lets us prove a specific
-        // parameter is evaluated at most once — the do-while(0)/passthrough
+        // parameter is evaluated exactly once — the do-while(0)/passthrough
         // idiom that the old _Generic/statement-expression-only check missed —
         // instead of guessing from the definition's raw suffix text.
         //
@@ -80,7 +80,7 @@ impl CertRule for Pre31C {
         let mut function_macros = HashMap::clone(&self.function_macros.borrow());
         function_macros.extend(macro_expand::collect_function_macros(node, source));
         // Every definition of a name in this file, one per preprocessor
-        // branch: a parameter is evaluated at most once only if it is in
+        // branch: a parameter is evaluated exactly once only if it is in
         // every branch, since any one of them may be the one compiled.
         let alternatives = macro_expand::collect_function_macro_alternatives(source);
         let project_names = Arc::clone(&self.function_macro_names.borrow());
@@ -164,15 +164,16 @@ impl Pre31C {
                     if trimmed.starts_with('"') && trimmed.ends_with('"') {
                         continue;
                     }
-                    // A macro provably evaluates *this* parameter at most once
-                    // when its name appears 0 or 1 times (whole-token) in the
+                    // A macro provably evaluates *this* parameter exactly once
+                    // when its name appears exactly once (whole-token) in the
                     // macro's own replacement text — the single-evaluation
                     // passthrough / do-while(0)-wrapper idiom (e.g.
                     // `#define DEBUGF(x) x`), which is the majority shape of
                     // real-world "safe" macros and was previously only
                     // recognized via the narrower _Generic/statement-expr check.
-                    // A parameter referenced twice (MAX/CLAMP-style) still
-                    // counts >1 and stays flagged, matching CERT's intent.
+                    // A parameter referenced twice (MAX/CLAMP-style) or not at
+                    // all (a body that discards it, and its side effect)
+                    // stays flagged, matching CERT's intent.
                     //
                     // Guarded to bodies with no `&&`/`||`/`?:` at all: CERT's
                     // concern isn't only "evaluated more than once" but also
@@ -184,11 +185,11 @@ impl Pre31C {
                     // always evaluates `low` but only conditionally `high`).
                     //
                     // With several definitions (one per `#if` branch), the
-                    // parameter must be evaluated at most once in every one.
+                    // parameter must be evaluated exactly once in every one.
                     if !definitions.is_empty()
                         && definitions
                             .iter()
-                            .all(|def| evaluates_param_at_most_once(def, i))
+                            .all(|def| evaluates_param_exactly_once(def, i))
                     {
                         continue;
                     }
@@ -680,15 +681,16 @@ fn is_ident_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-/// Whether `def` evaluates its parameter at position `index` at most once:
-/// the parameter appears at most once in a body with no `&&`/`||`/`?:` that
-/// could skip it.
-fn evaluates_param_at_most_once(def: &FunctionMacro, index: usize) -> bool {
+/// Whether `def` evaluates its parameter at position `index` exactly once:
+/// the parameter appears exactly once in a body with no `&&`/`||`/`?:` that
+/// could skip it. Zero is unsafe too: a body that drops the argument
+/// (`#define DEBUGF(x)` in a release build) drops its side effect with it.
+fn evaluates_param_exactly_once(def: &FunctionMacro, index: usize) -> bool {
     !body_has_conditional_evaluation(&def.body)
         && def
             .params
             .get(index)
-            .is_some_and(|param| count_whole_ident_occurrences(&def.body, param) <= 1)
+            .is_some_and(|param| count_whole_ident_occurrences(&def.body, param) == 1)
 }
 
 /// True if a macro's replacement text contains a short-circuit (`&&`/`||`) or
