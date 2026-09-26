@@ -2,24 +2,19 @@
  * Rule: API00-C
  * Source: custom
  * Status: PASS - Should NOT trigger API00-C violation
- * Description: Two integer-overflow FP classes from an earlier fix.
+ * Description: An integer-overflow FP class from an earlier fix.
  *
  * update_crc_64 (libcrc src/crc64.c): `crc << 8` on a uint64_t with a literal
  * shift count below the type's width. Unsigned wraparound is defined
  * behaviour and in a CRC it is the algorithm; the only undefined unsigned
  * shift is one whose count reaches the operand's width.
  *
- * bump (curl-shaped): the only arithmetic on the parameter is inside an
- * assert, which compiles out under NDEBUG and so is not a production
- * computation. Symmetric with guard_dominance's refusal to credit an assert
- * as validation -- an assert neither validates nor counts as a use.
+ * Arithmetic that happens only inside an assert used to be skipped here too.
+ * It is now a site: see fail/assert_only_arithmetic.c.
  */
 
 typedef unsigned long long uint64_t;
 typedef unsigned int uint32_t;
-
-void assert(int cond);
-void DEBUGASSERT(int cond);
 
 static const uint64_t crc_tab64[256];
 
@@ -35,11 +30,4 @@ uint32_t rotate_left(uint32_t word)
 {
     word <<= 3;
     return word;
-}
-
-int bump(int num)
-{
-    DEBUGASSERT(num + 1 > 0);
-    assert(num * 2 != 0);
-    return 0;
 }
