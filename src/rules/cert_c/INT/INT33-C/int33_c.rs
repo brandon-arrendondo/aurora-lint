@@ -3,10 +3,13 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::FunctionCfg;
+use crate::analyze::check_macros;
 use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
 use crate::analyze::context::ProjectContext;
+use crate::analyze::noreturn::ByNoreturnTrust;
 use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::manifest::{RuleCategory, Severity};
+use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::guard_dominance;
@@ -27,6 +30,13 @@ pub struct Int33C {
     /// Struct name -> field name -> field type (from project context), used to
     /// resolve the type of `obj.field` / `ptr->field` divisor operands.
     struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
+    /// Assert-style macros no configuration compiles out, with the index of
+    /// the parameter each checks (`ProjectContext::abort_check_macros`),
+    /// under each setting of `trust_noreturn_keyword`.
+    abort_check_macros: RefCell<ByNoreturnTrust<Arc<HashMap<String, usize>>>>,
+    /// The run's policy and environment settings: whether an
+    /// NDEBUG-strippable assert guards a division (`assert_is_guard`).
+    settings: RefCell<Arc<AnalysisSettings>>,
 }
 
 impl Int33C {
@@ -37,8 +47,19 @@ impl Int33C {
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
             struct_field_types: RefCell::new(Arc::new(HashMap::new())),
+            abort_check_macros: RefCell::default(),
+            settings: RefCell::default(),
         }
     }
+}
+
+/// Which preceding check statements count as a divisor guard.
+struct GuardCredit<'a> {
+    /// `assert_is_guard`: an `NDEBUG`-strippable assert counts.
+    assert_is_guard: bool,
+    /// Check macros no configuration compiles out, with the index of the
+    /// parameter each checks; these count under every policy.
+    checks: &'a HashMap<String, usize>,
 }
 
 /// Information about macros that perform division
@@ -74,6 +95,11 @@ impl CertRule for Int33C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_macros.borrow_mut() = context.macro_constants.clone();
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
+        *self.abort_check_macros.borrow_mut() = context.abort_check_macros.clone();
+    }
+
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        *self.settings.borrow_mut() = Arc::clone(settings);
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -654,23 +680,29 @@ impl Int33C {
             return true;
         }
 
-        Self::asserted_nonzero_before(div_node, &targets, source, &macros)
+        let settings = self.settings.borrow();
+        let checks = Arc::clone(self.abort_check_macros.borrow().get(&settings));
+        let credit = GuardCredit {
+            assert_is_guard: settings.flag("assert_is_guard"),
+            checks: &checks,
+        };
+        Self::asserted_nonzero_before(div_node, &targets, source, &macros, &credit)
     }
 
-    /// Whether an assert-shaped statement preceding `site` in one of its
-    /// enclosing blocks asserts a condition excluding zero for one of
-    /// `targets`, with no assignment to that target between the two.
+    /// Whether a check statement preceding `site` in one of its enclosing
+    /// blocks checks a condition excluding zero for one of `targets`, with no
+    /// assignment to that target between the two. Which statements count is
+    /// `credit`'s: see [`Self::asserts_nonzero`].
     ///
     /// Same walk as ARR38-C's `asserted_size_bound`: preceding siblings at each
     /// block level up to the function, looking through preprocessor wrappers
-    /// because an `assert` under `#ifndef NDEBUG` is a common spelling. The
-    /// assert is name-shape matched (`assert`, `serverAssert`, `DEBUGASSERT`,
-    /// `WPA_ASSERT`) rather than listed.
+    /// because an `assert` under `#ifndef NDEBUG` is a common spelling.
     fn asserted_nonzero_before(
         site: &Node,
         targets: &[String],
         source: &str,
         macros: &MacroConstantMap,
+        credit: &GuardCredit,
     ) -> bool {
         const BLOCK_LIKE_KINDS: &[&str] = &[
             "compound_statement",
@@ -689,7 +721,7 @@ impl Int33C {
                     .take_while(|stmt| stmt.start_byte() < current.start_byte())
                     .collect();
                 for (i, stmt) in preceding.iter().enumerate() {
-                    if !Self::asserts_nonzero(stmt, targets, source, macros) {
+                    if !Self::asserts_nonzero(stmt, targets, source, macros, credit) {
                         continue;
                     }
                     // Anything assigned to the divisor after the assert and
@@ -710,18 +742,33 @@ impl Int33C {
         false
     }
 
-    /// Whether `stmt` -- or, when it is a preprocessor wrapper, any statement
-    /// inside it -- is an assert whose condition excludes zero for a target.
+    /// Whether `stmt` checks a condition excluding zero for a target:
+    ///
+    /// - a check macro no configuration compiles out, recognized by what it
+    ///   expands to (`check_macros::abort_checked_argument`, e.g. valkey's
+    ///   `serverAssert`), under every policy;
+    /// - an assert-named call (`assert`, `DEBUGASSERT`, `WPA_ASSERT`), or one
+    ///   inside a preprocessor wrapper, only when the policy credits an
+    ///   `NDEBUG`-strippable assert (`assert_is_guard`). The strict policy
+    ///   reads the release configuration, where it is gone and the division
+    ///   is unchecked (ADR-0010 D5).
     fn asserts_nonzero(
         stmt: &Node,
         targets: &[String],
         source: &str,
         macros: &MacroConstantMap,
+        credit: &GuardCredit,
     ) -> bool {
+        if let Some(cond) = check_macros::abort_checked_argument(stmt, source, credit.checks) {
+            return guard_dominance::condition_excludes_zero(&cond, targets, true, source, macros);
+        }
+        if !credit.assert_is_guard {
+            return false;
+        }
         if stmt.kind().starts_with("preproc_") {
             let mut cursor = stmt.walk();
             let mut inner = stmt.named_children(&mut cursor);
-            return inner.any(|s| Self::asserts_nonzero(&s, targets, source, macros));
+            return inner.any(|s| Self::asserts_nonzero(&s, targets, source, macros, credit));
         }
         let call = if stmt.kind() == "expression_statement" {
             match stmt.named_child(0) {
