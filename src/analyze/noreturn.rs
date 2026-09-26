@@ -14,32 +14,74 @@
 //! fastpath.h`.
 //!
 //! This module collects the set of function names known to be noreturn for
-//! a translation unit, combining four signals:
+//! a translation unit, from three signals:
 //! 1. The fixed C standard library list (`abort`, `exit`, ...).
-//! 2. `_Noreturn`-qualified declarations/definitions (a real C11 keyword,
-//!    parses cleanly).
-//! 3. `__attribute__((noreturn))` / `__attribute__((__noreturn__))` (a real
-//!    GNU extension, also parses cleanly).
-//! 4. A definition whose body unconditionally terminates the process, even
+//! 2. `_Noreturn`-qualified declarations/definitions (C11 6.7.4p8), trusted
+//!    only when `trust_noreturn_keyword` holds (the default policy).
+//! 3. A definition whose body unconditionally terminates the process, even
 //!    with nothing declaring it noreturn -- pure-ftpd's `pure-pw.c` defines
 //!    its own `static void no_mem(void) { fprintf(...); exit(...); }` with
 //!    no attribute anywhere. Inferred to a fixpoint, so a wrapper around a
-//!    wrapper is recognized too.
-//! 5. seL4-style bare-identifier attribute macros (`void NORETURN foo(...)`)
-//!    whose `#define` lives in a header this single-file parse never sees.
-//!    tree-sitter-c's grammar has no production for an unresolvable
-//!    identifier between a return type and a declarator, so
-//!    `unknown_identifier_recovery`'s ERROR-node recovery blanks the token
-//!    -- except for names in [`noreturn::NORETURN_ATTRIBUTE_MACRO_NAMES`], where it
-//!    leaves `MARKER` in its place instead (same length-preserving
-//!    recoverable-marker idiom an earlier fix used for label-guarded
-//!    preprocessor directives), so this module can still recognize the
-//!    declaration as noreturn post-parse.
+//!    wrapper is recognized too. This is the only proof the strict policy
+//!    accepts for a project function.
+//!
+//! `__attribute__((noreturn))` is proof under neither policy (ADR-0015): it
+//! is a promise the compiler does not check, so a function declared with it
+//! is noreturn here only when its body is verified to be. The same holds for
+//! a bare-identifier attribute macro such as seL4's `NORETURN`, whose
+//! expansion is that attribute.
+//!
+//! Signal 2 changes what signal 3 infers (a wrapper around a `_Noreturn`
+//! function is itself noreturn only when the keyword is trusted), so the
+//! names are collected once per setting of `trust_noreturn_keyword`, as a
+//! [`ByNoreturnTrust`]. A prescan records both and a rule picks one with
+//! [`ByNoreturnTrust::get`], which keeps a saved prescan valid under every
+//! setting.
 
+use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
+
+/// A value computed under each setting of `trust_noreturn_keyword`.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ByNoreturnTrust<T> {
+    /// When a `_Noreturn` declaration is trusted (the default policy).
+    pub trusting_keyword: T,
+    /// When only a body verified never to return is proof (strict).
+    pub verified_only: T,
+}
+
+impl<T> ByNoreturnTrust<T> {
+    /// The value for `settings`.
+    pub fn get(&self, settings: &AnalysisSettings) -> &T {
+        if settings.flag("trust_noreturn_keyword") {
+            &self.trusting_keyword
+        } else {
+            &self.verified_only
+        }
+    }
+
+    /// Apply `f` under each setting.
+    pub fn map<U>(&self, f: impl Fn(&T) -> U) -> ByNoreturnTrust<U> {
+        ByNoreturnTrust {
+            trusting_keyword: f(&self.trusting_keyword),
+            verified_only: f(&self.verified_only),
+        }
+    }
+}
+
+/// Noreturn function names under each setting of `trust_noreturn_keyword`.
+pub type NoreturnNames = ByNoreturnTrust<HashSet<String>>;
+
+impl NoreturnNames {
+    /// Add `other`'s names under each setting.
+    pub fn extend(&mut self, other: NoreturnNames) {
+        self.trusting_keyword.extend(other.trusting_keyword);
+        self.verified_only.extend(other.verified_only);
+    }
+}
 
 /// C standard library functions that never return to their caller.
 const STDLIB_NORETURN_FUNCTIONS: &[&str] = &["abort", "exit", "_Exit", "quick_exit", "longjmp"];
@@ -51,12 +93,12 @@ const STDLIB_NORETURN_FUNCTIONS: &[&str] = &["abort", "exit", "_Exit", "quick_ex
 /// see [`is_process_terminating_name`].
 const NON_TERMINATING_NORETURN_FUNCTIONS: &[&str] = &["longjmp", "siglongjmp"];
 
-/// Bare-identifier attribute-macro spellings recognized as marking a
-/// function noreturn when their `#define` isn't visible to this parse.
-/// Kept short and explicit -- unlike `_Noreturn`/`__attribute__((noreturn))`
-/// this is a name-based heuristic, so it only covers spellings actually
-/// seen in a pinned real-world corpus (seL4's `NORETURN`, from
-/// `include/util.h`: `#define NORETURN __attribute__((__noreturn__))`).
+/// Bare-identifier attribute-macro spellings the parse-repair pass replaces
+/// with a length-preserving marker rather than a blank, seen in a pinned
+/// real-world corpus (seL4's `NORETURN`, from `include/util.h`:
+/// `#define NORETURN __attribute__((__noreturn__))`). The marker is no
+/// longer credited as noreturn: the macro expands to an attribute, which is
+/// proof under neither policy (module docs).
 pub const NORETURN_ATTRIBUTE_MACRO_NAMES: &[&str] = &["NORETURN"];
 
 /// Marker written in place of a blanked [`NORETURN_ATTRIBUTE_MACRO_NAMES`]
@@ -81,12 +123,6 @@ pub fn write_marker(source: &str, start: usize, end: usize) -> Option<String> {
     Some(out)
 }
 
-/// True if `text` (already the trimmed span between a declaration's return
-/// type and its declarator) contains the recovered [`MARKER`].
-fn has_marker(text: &str) -> bool {
-    text.contains(MARKER)
-}
-
 /// Depth-first search for a `function_declarator`, descending through
 /// `pointer_declarator` wrappers -- mirrors
 /// `utility::cert_c::ast_utils::find_function_declarator`, reimplemented
@@ -106,60 +142,39 @@ fn find_function_declarator<'a>(node: &Node<'a>) -> Option<Node<'a>> {
 }
 
 /// True if `decl_or_def` (a `declaration` or `function_definition` node)
-/// carries a `_Noreturn` qualifier or a
-/// `__attribute__((noreturn))`/`__attribute__((__noreturn__))` attribute
-/// among its direct children.
-fn has_noreturn_qualifier_or_attribute(decl_or_def: &Node, source: &str) -> bool {
+/// carries a `_Noreturn` qualifier among its direct children.
+fn has_noreturn_keyword(decl_or_def: &Node, source: &str) -> bool {
     let mut cursor = decl_or_def.walk();
-    let result = decl_or_def.children(&mut cursor).any(|c| match c.kind() {
-        "type_qualifier" => get_node_text(&c, source).trim() == "_Noreturn",
-        "attribute_specifier" => {
-            let text = get_node_text(&c, source);
-            text.contains("noreturn")
-        }
-        _ => false,
-    });
+    let result = decl_or_def
+        .children(&mut cursor)
+        .any(|c| c.kind() == "type_qualifier" && get_node_text(&c, source).trim() == "_Noreturn");
     result
 }
 
-/// True if an `__attribute__((noreturn))` sits on the *declarator* rather
-/// than on the declaration itself -- the trailing spelling,
-/// `void no_mem(void) __attribute__((noreturn));`.
-///
-/// tree-sitter-c hangs a trailing attribute off an `attributed_declarator`
-/// inside the declaration's `declarator`, not off the declaration node, so
-/// [`has_noreturn_qualifier_or_attribute`]'s direct-children scan sees only
-/// the leading spellings. pure-ftpd declares its `no_mem()` helper this way
-/// in `ftpd.h`, which is the form an earlier fix was filed against.
-///
-/// Attributes inside the parameter list are excluded: an attribute on a
-/// parameter says nothing about whether the function returns.
-fn has_declarator_noreturn_attribute(decl: &Node, func_declarator: &Node, source: &str) -> bool {
-    let params = func_declarator.child_by_field_name("parameters");
-    // A definition's attribute sits on its specifiers or declarator, never in
-    // the body -- and the body is nearly all of the subtree, so it is skipped
-    // rather than swept for every function in the file.
-    let body = decl.child_by_field_name("body");
-    let mut cursor = decl.walk();
-    let found = decl
-        .children(&mut cursor)
-        .filter(|child| body.is_none_or(|b| b.id() != child.id()))
-        .flat_map(|child| query::find_descendants_of_kinds(child, &["attribute_specifier"]))
-        .filter(|a| match params {
-            Some(p) => a.start_byte() < p.start_byte() || a.start_byte() >= p.end_byte(),
-            None => true,
-        })
-        .any(|a| get_node_text(&a, source).contains("noreturn"));
-    found
+/// The noreturn function names `settings` accepts in `root`: the
+/// [`collect_noreturn_names`] set it selects.
+pub fn collect_noreturn_function_names(
+    root: &Node,
+    source: &str,
+    settings: &AnalysisSettings,
+) -> HashSet<String> {
+    let mut names = collect_noreturn_names(root, source);
+    std::mem::take(if settings.flag("trust_noreturn_keyword") {
+        &mut names.trusting_keyword
+    } else {
+        &mut names.verified_only
+    })
 }
 
 /// Collect the names of every function in `root` recognized as noreturn by
-/// any of the four signals documented at module level.
-pub fn collect_noreturn_function_names(root: &Node, source: &str) -> HashSet<String> {
-    let mut names: HashSet<String> = STDLIB_NORETURN_FUNCTIONS
+/// the signals documented at module level, under each setting of
+/// `trust_noreturn_keyword`.
+pub fn collect_noreturn_names(root: &Node, source: &str) -> NoreturnNames {
+    let stdlib: HashSet<String> = STDLIB_NORETURN_FUNCTIONS
         .iter()
         .map(|s| s.to_string())
         .collect();
+    let mut declared: HashSet<String> = HashSet::new();
 
     for node in query::find_descendants_of_kinds(*root, &["declaration", "function_definition"]) {
         let declarator = match node.child_by_field_name("declarator") {
@@ -177,17 +192,20 @@ pub fn collect_noreturn_function_names(root: &Node, source: &str) -> HashSet<Str
             continue;
         }
 
-        let marked = has_marker(&source[node.start_byte()..func_declarator.start_byte()]);
-        if marked
-            || has_noreturn_qualifier_or_attribute(&node, source)
-            || has_declarator_noreturn_attribute(&node, &func_declarator, source)
-        {
-            names.insert(name);
+        if has_noreturn_keyword(&node, source) {
+            declared.insert(name);
         }
     }
 
-    infer_terminating_definitions(root, source, &mut names);
-    names
+    let mut trusting_keyword = stdlib.clone();
+    trusting_keyword.extend(declared);
+    infer_terminating_definitions(root, source, &mut trusting_keyword);
+    let mut verified_only = stdlib;
+    infer_terminating_definitions(root, source, &mut verified_only);
+    NoreturnNames {
+        trusting_keyword,
+        verified_only,
+    }
 }
 
 /// Maximum fixpoint rounds for [`infer_terminating_definitions`]. A wrapper
@@ -352,34 +370,81 @@ mod tests {
         parser.parse_source(src).expect("parse")
     }
 
+    /// The names the default policy accepts in `src`.
+    fn default_names(src: &str) -> HashSet<String> {
+        let (tree, source) = parse(src);
+        collect_noreturn_names(&tree.root_node(), &source).trusting_keyword
+    }
+
+    /// The names the strict policy accepts in `src`.
+    fn strict_names(src: &str) -> HashSet<String> {
+        let (tree, source) = parse(src);
+        collect_noreturn_names(&tree.root_node(), &source).verified_only
+    }
+
     #[test]
     fn stdlib_names_always_present() {
-        let (tree, source) = parse("int main(void) { return 0; }\n");
-        let names = collect_noreturn_function_names(&tree.root_node(), &source);
-        assert!(names.contains("abort"));
-        assert!(names.contains("exit"));
-        assert!(names.contains("longjmp"));
+        for names in [
+            default_names("int main(void) { return 0; }\n"),
+            strict_names("int main(void) { return 0; }\n"),
+        ] {
+            assert!(names.contains("abort"));
+            assert!(names.contains("exit"));
+            assert!(names.contains("longjmp"));
+        }
     }
 
     #[test]
-    fn recognizes_c11_noreturn_keyword() {
-        let (tree, source) = parse("_Noreturn void die(void) { for (;;) {} }\n");
-        let names = collect_noreturn_function_names(&tree.root_node(), &source);
-        assert!(names.contains("die"));
+    fn c11_noreturn_keyword_is_trusted_only_by_the_default_policy() {
+        let src = "_Noreturn void die(void);\n";
+        assert!(default_names(src).contains("die"));
+        assert!(!strict_names(src).contains("die"));
     }
 
     #[test]
-    fn recognizes_gnu_attribute() {
-        let (tree, source) = parse("__attribute__((noreturn)) void die(void) { for (;;) {} }\n");
-        let names = collect_noreturn_function_names(&tree.root_node(), &source);
-        assert!(names.contains("die"));
+    fn a_wrapper_around_a_keyword_declared_function_follows_the_keyword() {
+        let src = "_Noreturn void die(void);\nstatic void bail(void) { die(); }\n";
+        assert!(default_names(src).contains("bail"));
+        assert!(!strict_names(src).contains("bail"));
+    }
+
+    #[test]
+    fn a_verified_body_is_proof_under_both_policies() {
+        let src = "_Noreturn void die(void) { exit(1); }\n";
+        assert!(default_names(src).contains("die"));
+        assert!(strict_names(src).contains("die"));
+    }
+
+    #[test]
+    fn gnu_attribute_is_proof_under_neither_policy() {
+        for src in [
+            "__attribute__((noreturn)) void die(void);\n",
+            "void die(void) __attribute__((noreturn));\n",
+        ] {
+            assert!(!default_names(src).contains("die"), "{src}");
+            assert!(!strict_names(src).contains("die"), "{src}");
+        }
+    }
+
+    #[test]
+    fn collect_noreturn_function_names_selects_by_settings() {
+        use crate::settings::Preset;
+        let (tree, source) = parse("_Noreturn void die(void);\n");
+        let default = AnalysisSettings::preset(Preset::Default);
+        let strict = AnalysisSettings::preset(Preset::Strict);
+        assert!(
+            collect_noreturn_function_names(&tree.root_node(), &source, &default).contains("die")
+        );
+        assert!(
+            !collect_noreturn_function_names(&tree.root_node(), &source, &strict).contains("die")
+        );
     }
 
     #[test]
     fn infers_noreturn_from_a_definition_that_only_exits() {
         let (tree, source) =
             parse("static void no_mem(void) { fprintf(stderr, \"oom\"); exit(1); }\n");
-        let names = collect_noreturn_function_names(&tree.root_node(), &source);
+        let names = collect_noreturn_names(&tree.root_node(), &source).trusting_keyword;
         assert!(names.contains("no_mem"));
     }
 
@@ -389,7 +454,7 @@ mod tests {
             "static void die(void) { exit(1); }\n\
              static void bail(void) { die(); }\n",
         );
-        let names = collect_noreturn_function_names(&tree.root_node(), &source);
+        let names = collect_noreturn_names(&tree.root_node(), &source).trusting_keyword;
         assert!(names.contains("die"));
         assert!(names.contains("bail"));
     }
@@ -397,14 +462,14 @@ mod tests {
     #[test]
     fn does_not_infer_when_an_earlier_return_can_escape() {
         let (tree, source) = parse("static void maybe(int x) { if (x) return; exit(1); }\n");
-        let names = collect_noreturn_function_names(&tree.root_node(), &source);
+        let names = collect_noreturn_names(&tree.root_node(), &source).trusting_keyword;
         assert!(!names.contains("maybe"));
     }
 
     #[test]
     fn does_not_infer_when_the_exit_is_conditional() {
         let (tree, source) = parse("static void maybe(int x) { if (x) { exit(1); } }\n");
-        let names = collect_noreturn_function_names(&tree.root_node(), &source);
+        let names = collect_noreturn_names(&tree.root_node(), &source).trusting_keyword;
         assert!(!names.contains("maybe"));
     }
 
@@ -414,21 +479,20 @@ mod tests {
         // make `is_process_terminating_name` answer true and turn every
         // allocation live across it into a suppressed leak.
         let (tree, source) = parse("static void unwind(void) { longjmp(env, 1); }\n");
-        let names = collect_noreturn_function_names(&tree.root_node(), &source);
+        let names = collect_noreturn_names(&tree.root_node(), &source).trusting_keyword;
         assert!(!names.contains("unwind"));
         assert!(!is_process_terminating_name("unwind", &names));
     }
 
     #[test]
-    fn recognizes_marker_recovered_bare_macro_prototype() {
-        // No local #define for NORETURN -- exactly the seL4 shape: the
-        // prototype is what unknown_identifier_recovery blanks/marks; the
-        // definition can be a plain, ordinary function.
+    fn marker_recovered_bare_macro_prototype_is_not_proof() {
+        // The seL4 shape: NORETURN expands to a GNU attribute, which is
+        // proof under neither policy, and the definition's body can return.
         let src = "void NORETURN slowpath(int x);\nvoid slowpath(int x) { for (;;) {} }\n";
-        let (tree, source) = parse(src);
+        let (_, source) = parse(src);
         assert!(source.contains(MARKER), "expected marker in: {source:?}");
-        let names = collect_noreturn_function_names(&tree.root_node(), &source);
-        assert!(names.contains("slowpath"));
+        assert!(!default_names(src).contains("slowpath"));
+        assert!(!strict_names(src).contains("slowpath"));
     }
 
     #[test]
@@ -438,7 +502,7 @@ mod tests {
         // must not make `foo` noreturn.
         let src = "void VISIBLE foo(void) { return; }\n";
         let (tree, source) = parse(src);
-        let names = collect_noreturn_function_names(&tree.root_node(), &source);
+        let names = collect_noreturn_names(&tree.root_node(), &source).trusting_keyword;
         assert!(!names.contains("foo"));
     }
 
@@ -467,7 +531,7 @@ mod tests {
     fn is_noreturn_call_statement_matches_expression_statement_call() {
         let src = "void f(void) { abort(); }\n";
         let (tree, source) = parse(src);
-        let names = collect_noreturn_function_names(&tree.root_node(), &source);
+        let names = collect_noreturn_names(&tree.root_node(), &source).trusting_keyword;
         let call_stmt =
             query::find_descendants_of_kinds(tree.root_node(), &["expression_statement"])
                 .into_iter()

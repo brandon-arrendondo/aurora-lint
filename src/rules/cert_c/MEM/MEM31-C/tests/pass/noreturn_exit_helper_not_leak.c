@@ -1,7 +1,8 @@
 /*
  * Rule: MEM31-C
  * Source: real-world
- * Status: PASS - Should NOT trigger MEM31-C violation
+ * Status: PASS under the default preset; VIOLATION under strict
+ * Expect: default=clean strict=violation
  *
  * Reason: `check_for_return_macro` treats any callee whose name contains
  * RETURN/EXIT/ABORT as a possible early return out of the function and
@@ -9,6 +10,10 @@
  * actually a noreturn process-exit helper, nothing leaks -- the process is
  * ending and the OS reclaims the allocation. Modelled on pure-ftpd's
  * `die_mem()`, whose name-heuristic match produced exactly this shape.
+ *
+ * `exit_with_error` is declared `_Noreturn` with no body in view: the
+ * default policy trusts the keyword, the strict policy does not, so under
+ * strict the early exit is a path on which `buf` leaks.
  */
 
 #include <stdlib.h>

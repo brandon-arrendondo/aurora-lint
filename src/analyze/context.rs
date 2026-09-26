@@ -75,16 +75,15 @@ pub struct ProjectContext {
     pub packed_structs: Arc<HashSet<String>>,
     /// Names of functions known never to return to their caller, collected
     /// across all scanned files (incl. headers) by
-    /// [`crate::analyze::noreturn::collect_noreturn_function_names`]: the
-    /// fixed C standard library set, `_Noreturn` qualifiers,
-    /// `__attribute__((noreturn))`, and the recovered bare-identifier
-    /// attribute macros. Cross-file because the declaration carrying the
-    /// attribute is routinely in a header the single-file parse never sees
-    /// -- pure-ftpd marks its `no_mem()` allocation-failure helper
-    /// `__attribute__((noreturn))` in `ftpd.h` while every call site is in
-    /// a `.c` file.
+    /// [`crate::analyze::noreturn::collect_noreturn_names`]: the fixed C
+    /// standard library set, `_Noreturn` qualifiers, and definitions
+    /// verified never to return -- once per setting of
+    /// `trust_noreturn_keyword`; a reader picks one with
+    /// [`ByNoreturnTrust::get`](crate::analyze::noreturn::ByNoreturnTrust::get).
+    /// Cross-file because the declaration carrying the keyword is routinely
+    /// in a header the single-file parse never sees.
     #[serde(default)]
-    pub noreturn_functions: Arc<HashSet<String>>,
+    pub noreturn_functions: crate::analyze::noreturn::ByNoreturnTrust<Arc<HashSet<String>>>,
     /// Global constants: `[const] TYPE NAME = VALUE;` from across all scanned files.
     /// Used by init-state analysis for dead-branch elimination.
     #[serde(default)]
@@ -126,10 +125,12 @@ pub struct ProjectContext {
     pub conditional_macro_names: Arc<HashSet<String>>,
     /// `macro name -> index of the parameter it checks`, for the assert-style
     /// macros no configuration compiles out (valkey's `serverAssert`), per
-    /// [`crate::analyze::check_macros::abort_check_macros`]. Recomputed
+    /// [`crate::analyze::check_macros::abort_check_macros`], under each
+    /// setting of `trust_noreturn_keyword` (whether a macro's failure path
+    /// ends depends on which functions count as noreturn). Recomputed
     /// whenever `macro_definitions` or `noreturn_functions` grows.
     #[serde(default)]
-    pub abort_check_macros: Arc<HashMap<String, usize>>,
+    pub abort_check_macros: crate::analyze::noreturn::ByNoreturnTrust<Arc<HashMap<String, usize>>>,
     /// Names of every `#define NAME ...` object-like macro collected across
     /// all scanned files (incl. headers), regardless of what they expand to.
     /// Used by DCL40-C to recognize a trailing bare identifier after a
