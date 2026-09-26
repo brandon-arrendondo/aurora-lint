@@ -10,11 +10,11 @@
  * below is the purest case: it is literally the "if (N <" the pattern set
  * looked for, missed on the absent spaces alone. The rest are the spellings
  * the same adjudication turned up: reversed operands, a compound left-hand
- * side, an `&&` conjunct, an enclosing loop condition, an equality that pins
- * the size exactly, and an assert stating the capacity contract.
+ * side, an `&&` conjunct, an enclosing loop condition, and an equality that
+ * pins the size exactly. An assert stating the capacity contract, a bound
+ * only under the default policy, is strippable_assert_bound_needs_assert_is_guard.c.
  */
 
-#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -70,20 +70,4 @@ void equality_pins_size(const unsigned char *src, size_t n) {
     if (n == 5) {
         memcpy(buf, src, n);
     }
-}
-
-/* An assert is the author writing down the capacity contract. */
-void asserted_bound(const unsigned char *src, size_t n) {
-    unsigned char buf[64];
-    assert(n <= sizeof(buf));
-    memcpy(buf, src, n);
-}
-
-/* The same assert, written under the `#ifndef NDEBUG` aurora-lint never preprocesses. */
-void preproc_wrapped_assert(const unsigned char *src, size_t n) {
-    unsigned char buf[64];
-#ifndef NDEBUG
-    assert(n <= sizeof(buf));
-#endif
-    memcpy(buf, src, n);
 }

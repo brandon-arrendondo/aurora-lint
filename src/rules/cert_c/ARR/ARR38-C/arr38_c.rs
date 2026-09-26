@@ -3,8 +3,11 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::buffer_size;
+use crate::analyze::check_macros;
 use crate::analyze::context::ProjectContext;
+use crate::analyze::noreturn::ByNoreturnTrust;
 use crate::manifest::{RuleCategory, Severity};
+use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::{self, find_containing_function, get_node_text};
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::guard_dominance;
@@ -12,6 +15,7 @@ use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// function name → parameter index → field name → minimum element-count
@@ -29,6 +33,13 @@ pub struct Arr38C {
     /// source files"), where the sink function's own body only sees
     /// `data = myStruct.field;` with no idea what the caller set `field` to.
     callsite_param_field_buffer_size: RefCell<FieldBufferSizeMap>,
+    /// Assert-style macros no configuration compiles out, with the index of
+    /// the parameter each checks (`ProjectContext::abort_check_macros`),
+    /// under each setting of `trust_noreturn_keyword`.
+    abort_check_macros: RefCell<ByNoreturnTrust<Arc<HashMap<String, usize>>>>,
+    /// The run's policy and environment settings: whether an
+    /// NDEBUG-strippable assert bounds a copy (`assert_is_guard`).
+    settings: RefCell<Arc<AnalysisSettings>>,
 }
 
 /// Information about a buffer size from allocation or declaration
@@ -76,7 +87,12 @@ impl CertRule for Arr38C {
         "ARR38-C"
     }
 
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        *self.settings.borrow_mut() = Arc::clone(settings);
+    }
+
     fn set_project_context(&self, context: &ProjectContext) {
+        *self.abort_check_macros.borrow_mut() = context.abort_check_macros.clone();
         let mut map = self.callsite_param_field_buffer_size.borrow_mut();
         map.clear();
         for (name, summary) in context.function_summaries.iter() {
@@ -2592,11 +2608,79 @@ impl Arr38C {
             node,
             source,
             guard_dominance::ComparisonKind::Any,
-        ) || Self::asserted_size_bound(size_arg, node, source)
+        ) || self.checked_size_bound(size_arg, node, source)
+            || (self.settings.borrow().flag("assert_is_guard")
+                && Self::asserted_size_bound(size_arg, node, source))
+    }
+
+    /// True when a check macro no configuration compiles out, preceding
+    /// `site` in one of its ancestor blocks, tests `size_arg`
+    /// (`check_macros::abort_checked_argument`).
+    ///
+    /// `guard_dominance` does not look at statements like these at all, so
+    /// ARR38-C asks here. An `NDEBUG`-strippable `assert(len <= sizeof(buf))`
+    /// does not count, whatever the macro is called (`assert`, curl's
+    /// `DEBUGASSERT`, hostap's `WPA_ASSERT`): in the release configuration it
+    /// is gone and the copy is unchecked (ADR-0010 D5). One that aborts in
+    /// every configuration, such as valkey's `serverAssert`, is a check like
+    /// any other.
+    ///
+    /// Only preceding statements are scanned: a check macro is a statement, so
+    /// it never encloses the copy site the way an `if` does. An enclosing
+    /// preprocessor arm counts as a block, because the check and the copy are
+    /// then compiled together.
+    fn checked_size_bound(&self, size_arg: &str, site: &Node, source: &str) -> bool {
+        const BLOCK_LIKE_KINDS: &[&str] = &[
+            "compound_statement",
+            "preproc_if",
+            "preproc_ifdef",
+            "preproc_else",
+            "preproc_elif",
+        ];
+
+        let checks = Arc::clone(
+            self.abort_check_macros
+                .borrow()
+                .get(&self.settings.borrow()),
+        );
+        if checks.is_empty() {
+            return false;
+        }
+        let mut current = *site;
+        while let Some(parent) = current.parent() {
+            if BLOCK_LIKE_KINDS.contains(&parent.kind()) {
+                let mut cursor = parent.walk();
+                let preceding = parent
+                    .named_children(&mut cursor)
+                    .take_while(|stmt| stmt.start_byte() < current.start_byte());
+                for stmt in preceding {
+                    let tests_size = check_macros::abort_checked_argument(&stmt, source, &checks)
+                        .is_some_and(|cond| {
+                            guard_dominance::condition_compares_var(
+                                &cond,
+                                size_arg,
+                                source,
+                                guard_dominance::ComparisonKind::Any,
+                            )
+                        });
+                    if tests_size {
+                        return true;
+                    }
+                }
+            }
+            if parent.kind() == "function_definition" {
+                break;
+            }
+            current = parent;
+        }
+        false
     }
 
     /// True when an `assert`-shaped call preceding `site` in one of its
-    /// ancestor blocks tests `size_arg`.
+    /// ancestor blocks tests `size_arg`. Credited only under the default
+    /// policy (`assert_is_guard`): `NDEBUG` strips such an assert, and the
+    /// strict policy reads the release configuration, where the copy is
+    /// unchecked (ADR-0010 D5).
     ///
     /// `guard_dominance` excludes asserts deliberately, and ARR38-C opts back
     /// in here so the choice stays visible at the call site. The question
