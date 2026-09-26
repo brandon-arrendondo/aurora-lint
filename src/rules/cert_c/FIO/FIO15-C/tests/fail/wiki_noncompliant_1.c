@@ -2,8 +2,10 @@
  * Rule: FIO15-C
  * Source: wiki, adapted from CERT (not verbatim)
  * Adapted: CERT names the file with a variable (file_name); this copy uses
- * the literal "/tmp/myfile", which the rule detects by its path. CERT's
- * example as written is expected_fail/wiki_noncompliant_1_verbatim.c.
+ * the literal "/tmp/myfile", which the rule detects by its path. CERT's own
+ * form is out of reach by ruling: FIO15-C is ruled unenforceable, because
+ * whether a directory is secure is a property of the running system, not
+ * of the source, so no fixture asserts that it should be reported.
  * Status: FAIL - Should trigger FIO15-C violation
  */
 
