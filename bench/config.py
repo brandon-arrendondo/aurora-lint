@@ -197,7 +197,11 @@ def juliet_run_id(version: str, sha: str, *, fast: bool,
     pre-settings form, which only historical runs carry.
 
     benchmarking_db's queue_worker.py builds the same name to find the run it
-    ingests; change the two together.
+    ingests, and a results directory named the same way for real-world runs.
+    It must produce the settings suffix too (by calling `resolve_settings` and
+    `settings_run_suffix` rather than re-spelling them), and land together
+    with any change here: a worker still building the bare name finds nothing
+    to ingest.
     """
     run_id = f"sqc-{version}-{sha}"
     if not fast:

@@ -611,7 +611,7 @@ impl Int33C {
         if let Some((a, b)) = Self::extract_diff_operands(divisor, source) {
             if let Some(func) = ast_utils::find_containing_function(div_node) {
                 if let Some(body) = func.child_by_field_name("body") {
-                    if Self::has_early_return_for_unordered_diff(&body, &a, &b, source, div_node) {
+                    if self.has_early_return_for_unordered_diff(&body, &a, &b, source, div_node) {
                         return true;
                     }
                 }
@@ -881,7 +881,7 @@ impl Int33C {
                             if self.checks_for_zero(&condition, var_name, source) {
                                 if let Some(consequence) = child.child_by_field_name("consequence")
                                 {
-                                    if Self::has_return_or_exit(&consequence, source) {
+                                    if self.has_return_or_exit(&consequence, source) {
                                         return true;
                                     }
                                 }
@@ -914,10 +914,18 @@ impl Int33C {
     }
 
     /// Check if a branch contains return or exit
-    fn has_return_or_exit(node: &Node, source: &str) -> bool {
+    fn has_return_or_exit(&self, node: &Node, source: &str) -> bool {
         let text = ast_utils::get_node_text(node, source);
 
-        if text.contains("return") || text.contains("exit") || text.contains("abort") {
+        if text.contains("return") {
+            return true;
+        }
+        // An `exit`/`abort` spelling ends the branch only when the declared
+        // environment honors the standard library's noreturn contract
+        // (`stdlib_noreturn`).
+        if self.settings.borrow().flag("stdlib_noreturn")
+            && (text.contains("exit") || text.contains("abort"))
+        {
             return true;
         }
 
@@ -1089,6 +1097,7 @@ impl Int33C {
     /// (or `b >= a`) preceding the division, which implies the safe path has
     /// `a > b`. Mirrors `has_early_return_for_zero`'s recursive block walk.
     fn has_early_return_for_unordered_diff(
+        &self,
         scope: &Node,
         a: &str,
         b: &str,
@@ -1111,14 +1120,14 @@ impl Int33C {
                 if let Some(condition) = child.child_by_field_name("condition") {
                     if Self::is_unordered_diff_guard(&condition, a, b, source) {
                         if let Some(consequence) = child.child_by_field_name("consequence") {
-                            if Self::has_return_or_exit(&consequence, source) {
+                            if self.has_return_or_exit(&consequence, source) {
                                 return true;
                             }
                         }
                     }
                 }
                 if let Some(consequence) = child.child_by_field_name("consequence") {
-                    if Self::has_early_return_for_unordered_diff(
+                    if self.has_early_return_for_unordered_diff(
                         &consequence,
                         a,
                         b,
@@ -1131,7 +1140,7 @@ impl Int33C {
             }
 
             if child.kind() == "compound_statement"
-                && Self::has_early_return_for_unordered_diff(&child, a, b, source, div_node)
+                && self.has_early_return_for_unordered_diff(&child, a, b, source, div_node)
             {
                 return true;
             }

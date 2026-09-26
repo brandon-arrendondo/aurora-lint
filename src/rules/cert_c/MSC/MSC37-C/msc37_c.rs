@@ -66,11 +66,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
 
-/// Standard/POSIX functions that never return to their caller, so a call to
-/// one of them as a function's last statement satisfies MSC37-C the same
-/// way an explicit return would (control can't fall off the end).
-const STDLIB_NORETURN_FUNCTIONS: &[&str] = &["exit", "_Exit", "abort", "quick_exit", "longjmp"];
-
 pub struct Msc37C {
     /// Function-like macros the prescan collected project-wide, so a
     /// `RETURN`-style macro defined in a header is known when a file's
@@ -243,7 +238,10 @@ impl Msc37C {
             return false;
         };
         let name = get_node_text(&function, source).trim().to_string();
-        STDLIB_NORETURN_FUNCTIONS.contains(&name.as_str()) || noreturn_names.contains(&name)
+        // A standard noreturn function satisfies MSC37-C the same way an
+        // explicit return would, when the environment honors that contract.
+        crate::analyze::noreturn::is_stdlib_noreturn_name(&name, &self.settings.borrow())
+            || noreturn_names.contains(&name)
     }
 
     /// Check if the last statement in a compound statement is a return

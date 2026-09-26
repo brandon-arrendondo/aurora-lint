@@ -1177,10 +1177,9 @@ impl Api00C {
                 if child.kind() == "call_expression" {
                     if let Some(func) = child.child_by_field_name("function") {
                         let func_name = get_node_text(&func, source);
-                        // Check for common noreturn functions
-                        if matches!(
+                        if crate::analyze::noreturn::is_stdlib_noreturn_name(
                             func_name,
-                            "longjmp" | "exit" | "abort" | "_Exit" | "quick_exit" | "thrd_exit"
+                            &self.settings.borrow(),
                         ) {
                             return true;
                         }
