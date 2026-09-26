@@ -368,29 +368,21 @@ impl Env03C {
     }
 
     /// Return true when we can prove every caller of `scope`'s function
-    /// has no taint-source call in its body. False when we lack caller
-    /// info or when at least one caller is tainted.
+    /// has no taint-source call and no relative-command write in its body,
+    /// all the way up the reverse call graph, with no caller outside the
+    /// scanned source able to reach it (`every_caller_is_clean`, ADR-0011).
+    /// False when we lack caller info or when any caller on the way is
+    /// tainted or open.
     fn callers_are_all_clean(&self, scope: &Node, source: &str) -> bool {
-        let Some(scope_name) = cfg::get_function_name(scope, source) else {
+        let Some(name) = cfg::get_function_name(scope, source) else {
             return false;
         };
-
-        let callers = self.callers.borrow();
-        let Some(caller_set) = callers.get(scope_name) else {
-            return false;
-        };
-        if caller_set.is_empty() {
-            return false;
-        }
-
-        let summaries = self.function_summaries.borrow();
-        for caller in caller_set {
-            match summaries.get(caller) {
-                Some(s) if !s.has_env03_taint_source && !s.has_relative_command_write => {}
-                _ => return false,
-            }
-        }
-        true
+        crate::analyze::function_summary::every_caller_is_clean(
+            name,
+            &self.callers.borrow(),
+            &*self.function_summaries.borrow(),
+            |s| !s.has_env03_taint_source && !s.has_relative_command_write,
+        )
     }
 }
 

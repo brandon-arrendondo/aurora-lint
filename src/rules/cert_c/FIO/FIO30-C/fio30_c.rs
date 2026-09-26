@@ -1206,11 +1206,18 @@ impl FormatStringAnalyzer {
                 // unsafe. But when this function is called by name within the TU
                 // and no caller passes tainted data to this parameter, the format
                 // string is a literal forwarded by the caller (Juliet goodG2B
-                // pattern) — treat it as safe. Cross-TU sinks, whose callers live
-                // in another file and are therefore unobservable, stay conservative.
+                // pattern) — treat it as safe. Only while the function's caller
+                // set is closed (`FunctionSummary::caller_set_is_closed`): an
+                // exported function, or a static whose address escapes, has
+                // callers nothing here saw, so what the visible ones pass is
+                // not a proof (ADR-0011).
                 if self.function_parameters.contains(&var_name) {
                     let has_local_caller =
                         self.called_function_names.contains(&self.current_function);
+                    let closed = self
+                        .function_summaries
+                        .get(&self.current_function)
+                        .is_some_and(|s| s.caller_set_is_closed());
                     if let Some(&param_idx) = self.param_positions.get(&var_name) {
                         if let Some(summary) = self.function_summaries.get(&self.current_function) {
                             // Cross-file: the project-wide prescan already
@@ -1228,17 +1235,21 @@ impl FormatStringAnalyzer {
                             // check does -- a value returned by a local
                             // source function, a static global written from
                             // tainted data (Juliet's variants 42 and 45).
+                            // An open function's observed set holds only
+                            // tainted positions (see
+                            // `prescan::aggregate_callsite_taint_args`), so the
+                            // clean verdict below is a closed function's.
                             if summary.callsite_param_taint_observed.contains(&param_idx) {
                                 if summary.callsite_param_tainted.contains(&param_idx) {
                                     return true;
                                 }
-                                if !(summary.has_internal_linkage && has_local_caller) {
+                                if closed && !has_local_caller {
                                     return false;
                                 }
                             }
                         }
                     }
-                    if has_local_caller && !self.param_is_interproc_tainted(&var_name) {
+                    if closed && has_local_caller && !self.param_is_interproc_tainted(&var_name) {
                         return false;
                     }
                     return true;

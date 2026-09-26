@@ -248,48 +248,24 @@ impl Env33C {
         true
     }
 
-    /// True when we can prove every transitive caller of `func_node`'s
-    /// function is free of direct taint sources and transitively-tainted
-    /// return values. False when caller info is missing at any level or any
-    /// ancestor caller is tainted.
+    /// Return true when we can prove every transitive caller of
+    /// `func_node`'s function has no direct taint source and no tainted
+    /// return, with no caller outside the scanned source able to reach it
+    /// (`every_caller_is_clean`, ADR-0011). False when caller info is
+    /// missing at any level, or any caller on the way is tainted or open.
     ///
-    /// The reverse call graph is walked BFS-style because Juliet's variants
-    /// 52/53/54 route data through multi-level forwarding sinks where the
-    /// immediate caller is a clean pass-through but a grand-caller reads
-    /// from a taint source (e.g. recv).
+    /// Multi-level because Juliet's variants 52/53/54 route data through
+    /// clean pass-through sinks before reaching the actual bad source.
     fn callers_are_all_clean(&self, func_node: &Node, source: &str) -> bool {
         let Some(name) = cfg::get_function_name(func_node, source) else {
             return false;
         };
-        let callers = self.callers.borrow();
-        let Some(root_callers) = callers.get(name) else {
-            return false;
-        };
-        if root_callers.is_empty() {
-            return false;
-        }
-
-        let summaries = self.function_summaries.borrow();
-        let mut visited: HashSet<String> = HashSet::new();
-        let mut stack: Vec<String> = root_callers.iter().cloned().collect();
-
-        while let Some(current) = stack.pop() {
-            if !visited.insert(current.clone()) {
-                continue;
-            }
-            match summaries.get(&current) {
-                Some(s) if !s.has_env03_taint_source && !s.returns_tainted => {}
-                _ => return false,
-            }
-            if let Some(next) = callers.get(&current) {
-                for c in next {
-                    if !visited.contains(c) {
-                        stack.push(c.clone());
-                    }
-                }
-            }
-        }
-        true
+        crate::analyze::function_summary::every_caller_is_clean(
+            name,
+            &self.callers.borrow(),
+            &*self.function_summaries.borrow(),
+            |s| !s.has_env03_taint_source && !s.returns_tainted,
+        )
     }
 
     /// Walk up the AST to find the containing function_definition.
