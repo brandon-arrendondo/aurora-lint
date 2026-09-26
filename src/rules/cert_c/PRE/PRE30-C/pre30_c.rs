@@ -2,12 +2,47 @@
 // Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::macro_expand::collect_function_macro_names;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::sync::Arc;
 use tree_sitter::Node;
 
-pub struct Pre30C;
+pub struct Pre30C {
+    /// Every function-like macro name across the scanned files
+    /// (`ProjectContext::function_macro_names`).
+    project_macro_names: RefCell<Arc<HashSet<String>>>,
+    /// The function-like macro names the file being checked defines itself.
+    file_macro_names: RefCell<HashSet<String>>,
+}
+
+impl Pre30C {
+    pub fn new() -> Self {
+        Self {
+            project_macro_names: RefCell::new(Arc::new(HashSet::new())),
+            file_macro_names: RefCell::new(HashSet::new()),
+        }
+    }
+
+    /// Whether some branch of this or any scanned file defines `name` as a
+    /// function-like macro. Only a macro can paste its arguments into a
+    /// universal character name; an ordinary function call cannot, whatever
+    /// the callee is called.
+    fn is_function_like_macro(&self, name: &str) -> bool {
+        self.file_macro_names.borrow().contains(name)
+            || self.project_macro_names.borrow().contains(name)
+    }
+}
+
+impl Default for Pre30C {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CertRule for Pre30C {
     fn rule_id(&self) -> &'static str {
@@ -26,8 +61,15 @@ impl CertRule for Pre30C {
         "PRE30-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project_macro_names.borrow_mut() = context.function_macro_names.clone();
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+        let mut file_names = HashSet::new();
+        collect_function_macro_names(source, &mut file_names);
+        *self.file_macro_names.borrow_mut() = file_names;
 
         // First, do text-based scanning for UCN fragments
         self.check_source_for_ucn_fragments(source, &mut violations);
@@ -194,12 +236,15 @@ impl Pre30C {
         // Check for macro calls that might involve UCN concatenation
         if let Some(function_node) = node.child_by_field_name("function") {
             let function_name = get_node_text(&function_node, source);
+            if !self.is_function_like_macro(function_name) {
+                return;
+            }
 
             // Get the arguments to check for UCN patterns
             let args = self.get_macro_arguments(node, source);
 
             // Look for patterns where UCN fragments might be concatenated
-            if self.has_ucn_concatenation_pattern(&args, function_name) {
+            if self.has_ucn_concatenation_pattern(&args) {
                 let start_point = node.start_position();
 
                 violations.push(RuleViolation {
@@ -314,21 +359,7 @@ impl Pre30C {
         false
     }
 
-    fn has_ucn_concatenation_pattern(&self, args: &[String], macro_name: &str) -> bool {
-        // Check if macro arguments suggest UCN concatenation
-
-        // Look for known dangerous macro patterns
-        if macro_name.contains("assign")
-            || macro_name.contains("concat")
-            || macro_name.contains("join")
-        {
-            for arg in args {
-                if self.looks_like_ucn_fragment(arg) {
-                    return true;
-                }
-            }
-        }
-
+    fn has_ucn_concatenation_pattern(&self, args: &[String]) -> bool {
         // Check for patterns where multiple args might form UCNs
         if args.len() >= 2 {
             for i in 0..args.len() - 1 {
@@ -339,18 +370,6 @@ impl Pre30C {
         }
 
         false
-    }
-
-    fn looks_like_ucn_fragment(&self, arg: &str) -> bool {
-        let cleaned = arg.trim();
-
-        // Check for partial UCN patterns
-        cleaned.starts_with("\\u") && cleaned.len() < 6
-            || cleaned.starts_with("\\U") && cleaned.len() < 10
-            || cleaned.ends_with("\\u")
-            || cleaned.ends_with("\\U")
-            || (cleaned.chars().all(|c| c.is_ascii_hexdigit())
-                && (cleaned.len() == 2 || cleaned.len() == 4))
     }
 
     fn get_macro_arguments(&self, node: &Node, source: &str) -> Vec<String> {
@@ -403,6 +422,9 @@ impl Pre30C {
                 if let Some(v) = self.check_line_for_ucn_fragments(&args_str, line_num) {
                     return Some(v);
                 }
+                continue;
+            }
+            if !self.is_function_like_macro(&macro_name) {
                 continue;
             }
 
