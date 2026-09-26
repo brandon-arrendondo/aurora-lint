@@ -66,6 +66,9 @@ struct FilePrescanResult {
     unused_attribute_macros: HashSet<String>,
     initializer_function_refs: HashSet<String>,
     value_position_identifiers: HashSet<String>,
+    /// File names of `.c` files this file `#include`s -- a static defined in
+    /// one of those is visible to the includer too.
+    included_c_files: HashSet<String>,
     global_constants: HashMap<String, i64>,
     global_var_null_states: HashMap<String, NullState>,
     global_writers: HashMap<String, HashSet<String>>,
@@ -124,6 +127,7 @@ impl FilePrescanResult {
             unused_attribute_macros: HashSet::new(),
             initializer_function_refs: HashSet::new(),
             value_position_identifiers: HashSet::new(),
+            included_c_files: HashSet::new(),
             global_constants: HashMap::new(),
             global_var_null_states: HashMap::new(),
             global_writers: HashMap::new(),
@@ -167,6 +171,11 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         collect_function_names(&root, &source, &mut result.known_functions);
         collect_initializer_function_refs(&root, &source, &mut result.initializer_function_refs);
         collect_value_position_identifiers(&root, &source, &mut result.value_position_identifiers);
+        result.included_c_files = extract_include_directives(&root, &source)
+            .into_iter()
+            .filter(|path| path.ends_with(".c"))
+            .map(|path| file_name_of(&path).to_string())
+            .collect();
 
         if is_header {
             collect_header_declarations(&root, &source, &mut result.header_declared_functions);
@@ -473,6 +482,8 @@ fn prescan_file_list(
     let mut unused_attribute_macros: HashSet<String> = HashSet::new();
     let mut initializer_function_refs: HashSet<String> = HashSet::new();
     let mut value_position_identifiers: HashSet<String> = HashSet::new();
+    let mut value_positions_by_file: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut included_c_files: HashSet<String> = HashSet::new();
     let mut global_constants: HashMap<String, i64> = HashMap::new();
     let mut global_var_null_states: HashMap<String, NullState> = HashMap::new();
     let mut global_writers: HashMap<String, HashSet<String>> = HashMap::new();
@@ -678,7 +689,14 @@ fn prescan_file_list(
         defined_macro_names.extend(r.defined_macro_names);
         unused_attribute_macros.extend(r.unused_attribute_macros);
         initializer_function_refs.extend(r.initializer_function_refs);
+        if let Some(key) = &file_key {
+            value_positions_by_file
+                .entry(key.clone())
+                .or_default()
+                .extend(r.value_position_identifiers.iter().cloned());
+        }
         value_position_identifiers.extend(r.value_position_identifiers);
+        included_c_files.extend(r.included_c_files);
         global_constants.extend(r.global_constants);
         global_var_null_states.extend(r.global_var_null_states);
 
@@ -818,9 +836,23 @@ fn prescan_file_list(
     // files. Both scopes were measured across the twelve pinned corpora: the
     // wider one withdraws a few more proofs (hostap 56 against 39 of 3373) and
     // changes not one finding either way, so it is taken for the gap it closes
-    // at no measured cost. It also pools two same-named statics in different
-    // files, which over-approximates in the safe direction.
-    mark_address_taken(&mut function_summaries, &value_position_identifiers);
+    // at no measured cost.
+    //
+    // It must not pool two same-named statics in different `.c` files,
+    // though: once every caller-set proof goes through this flag, one file
+    // taking the address of its own `goodG2BSink` withdrew the proof from
+    // every other file's -- Juliet defines a static of that name in hundreds
+    // of files, and its function-pointer variants take the address of theirs.
+    // A static defined in a `.c` file is visible only to its own translation
+    // unit, so a file-qualified one is judged by its own file's references,
+    // unless some file `#include`s that `.c` file. A header's static and a
+    // bare-keyed one keep the pooled set.
+    mark_address_taken_scoped(
+        &mut function_summaries,
+        &value_position_identifiers,
+        &value_positions_by_file,
+        &included_c_files,
+    );
 
     aggregate_callsite_null_states(
         &callsite_args,
@@ -1393,18 +1425,48 @@ pub(crate) fn mark_address_taken(
     summaries: &mut HashMap<String, FunctionSummary>,
     value_position_identifiers: &HashSet<String>,
 ) {
+    mark_address_taken_scoped(
+        summaries,
+        value_position_identifiers,
+        &HashMap::new(),
+        &HashSet::new(),
+    );
+}
+
+/// [`mark_address_taken`], with a file-qualified static defined in a `.c`
+/// file judged only by the value-position names of its own file
+/// (`by_file`, keyed like the qualified keys). A `.c` file named in
+/// `included_c_files` -- `#include`d by some other file -- and any other key
+/// fall back to the pooled `value_position_identifiers`.
+pub(crate) fn mark_address_taken_scoped(
+    summaries: &mut HashMap<String, FunctionSummary>,
+    value_position_identifiers: &HashSet<String>,
+    by_file: &HashMap<String, HashSet<String>>,
+    included_c_files: &HashSet<String>,
+) {
     for (key, summary) in summaries.iter_mut() {
         if !summary.has_internal_linkage {
             continue;
         }
-        let bare = key
-            .as_str()
-            .split_once('\0')
-            .map_or(key.as_str(), |(_, name)| name);
-        if value_position_identifiers.contains(bare) {
+        let (file, bare) = match key.split_once('\0') {
+            Some((file, name)) => (Some(file), name),
+            None => (None, key.as_str()),
+        };
+        let own_file_only = file.and_then(|f| {
+            (f.ends_with(".c") && !included_c_files.contains(file_name_of(f)))
+                .then(|| by_file.get(f))
+                .flatten()
+        });
+        let names = own_file_only.unwrap_or(value_position_identifiers);
+        if names.contains(bare) {
             summary.address_taken = true;
         }
     }
+}
+
+/// The last path component of `path`, `/` or `\\` separated.
+fn file_name_of(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
 /// Collect every bare identifier that appears as a value inside an
@@ -8724,6 +8786,40 @@ void caller(char *other) {
             !tainted("b_good.c"),
             "b_good.c's sink only ever sees a literal"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two `.c` files each define their own `static` sink. One takes the
+    /// address of its own; that says nothing about the other file's, whose
+    /// only caller passes a constant, so that one keeps a closed caller set
+    /// and the constant.
+    #[test]
+    fn a_static_address_taken_in_another_file_leaves_this_files_closed() {
+        let dir = std::env::temp_dir().join("aurora-lint-prescan-scoped-address-taken");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("a_ptr.c"),
+            "static void sink(int n) { (void)n; }\nvoid a(void) { void (*f)(int) = sink; f(7); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("b_direct.c"),
+            "static void sink(int n) { (void)n; }\nvoid b(void) { sink(2); }\n",
+        )
+        .unwrap();
+        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let sink_of = |file: &str| {
+            let view = ctx.as_seen_from(&dir.join(file)).expect("a scoped view");
+            view.function_summaries
+                .get("sink")
+                .expect("its own sink")
+                .clone()
+        };
+        assert!(sink_of("a_ptr.c").address_taken);
+        let b = sink_of("b_direct.c");
+        assert!(b.caller_set_is_closed());
+        assert_eq!(b.callsite_param_const_int.get(&0), Some(&2));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
