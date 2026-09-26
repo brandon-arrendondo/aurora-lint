@@ -50,10 +50,25 @@ decided by benchmark counts. If it were, it would contradict 0002.
    - **Fails the criterion**: any checkable form of the rule can only
      approximate an intent or design judgment, so its findings are
      structurally FP-dominated. Not shipped. The row names why.
+   - **Covered by another rule** (amended 2026-09-25, Brandon): the
+     guideline's only checkable form is what another shipped rule already
+     reports, so a detector of its own would add no violation, only a
+     second report of the same one. ERR00-C is the example. "Check error
+     returns" is ERR33-C's (library calls) and EXP12-C's (any call), and
+     the rest of it, a consistent error-handling policy, is a design
+     judgment. Not shipped. The row names the covering rules. This is
+     different from overlap between two rules with distinct checkable
+     forms, where both keep firing (`docs/design/cross-rule-overlap.md`).
 3. **Anything the Juliet suite covers ships.** Juliet was built to test
    deterministic static checkers, so a Juliet-mapped rule can never fall
    into "fails the criterion". If its detector is weak, that's a rewrite
    question (ADR-0002, ADR-0005), not a drop.
+   - **The mapping has to be verified** (amended 2026-09-25, Brandon): a
+     rule counts as Juliet-mapped only if the test cases for the CWE
+     exercise what the rule checks. A CWE copied from CERT's related-CWE
+     list isn't evidence on its own.
+   - A rule **covered by another rule** keeps its Juliet coverage through
+     the covering rule, which ships and is scored on that CWE.
 4. **"Not shipped" means removed from the tool,** not disabled by default.
    It gets a changelog "Removed" entry (ADR-0009). A configuration file
    that names a removed rule loads with a warning, not an error. The rule's

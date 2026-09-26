@@ -201,8 +201,11 @@ contract model. (ADR-0015)
   its findings aren't structurally FP-dominated on any codebase. Decided from
   the rule's nature, never from benchmark counts.
 - **G2.** Each rule gets one disposition: deterministic; deterministic with
-  review; environment-gated; unenforceable; fails the criterion.
-- **G3.** Anything Juliet covers ships.
+  review; environment-gated; unenforceable; fails the criterion; covered by
+  another rule (its only checkable form is a shipped rule's).
+- **G3.** Anything Juliet covers ships, counting only a CWE mapping verified
+  against the test cases. A covered rule's Juliet coverage is the covering
+  rule's.
 - **G4.** Every rule, including one marked for review, is labeled against its
   written scope: the construct its disposition row names and the exceptions
   written into it. Whether the author meant it is the user's call, handled by
