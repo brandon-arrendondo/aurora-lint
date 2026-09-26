@@ -47,6 +47,7 @@
 <li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
 <li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
 <li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="options.html">Policy and Environment Options</a></li>
 <li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
 <li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Testing Methodology</a><ul>
@@ -175,11 +176,28 @@ under <code class="docutils literal notranslate"><span class="pre">src/rules/cer
 </div>
 <p><strong>Coverage</strong>: every rule with fixtures has three tiers — <code class="docutils literal notranslate"><span class="pre">fail/</span></code>
 (must-detect), <code class="docutils literal notranslate"><span class="pre">pass/</span></code> (must-not-detect) and <code class="docutils literal notranslate"><span class="pre">expected_fail/</span></code> (known
-limitations). Each fixture generates one Rust test; all pass, and the
-<code class="docutils literal notranslate"><span class="pre">expected_fail</span></code> tier plus fixtures for rules that are tracked but not
-implemented are <code class="docutils literal notranslate"><span class="pre">#[ignore]</span></code>d. The counts change with nearly every rule
-fix, so they are not typed here: <code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">scripts/fixture_provenance.py</span></code>
-prints them per tier for the checkout you have.</p>
+limitations). Each fixture generates one Rust test per preset (see below);
+all pass, and the <code class="docutils literal notranslate"><span class="pre">expected_fail</span></code> tier plus fixtures for rules that are
+tracked but not implemented are <code class="docutils literal notranslate"><span class="pre">#[ignore]</span></code>d. The counts change with
+nearly every rule fix, so they are not typed here:
+<code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">scripts/fixture_provenance.py</span></code> prints them per tier for the
+checkout you have.</p>
+<p><strong>Settings</strong>: every policy and environment option (<a class="reference internal" href="options.html"><span class="doc">Policy and Environment Options</span></a>) is
+validated like rule behavior. Every fixture runs under both the <code class="docutils literal notranslate"><span class="pre">default</span></code>
+and the <code class="docutils literal notranslate"><span class="pre">strict</span></code> preset; the <code class="docutils literal notranslate"><span class="pre">strict</span></code> run’s test name ends in
+<code class="docutils literal notranslate"><span class="pre">__strict</span></code>, and <code class="docutils literal notranslate"><span class="pre">docs/test-summary.md</span></code> tabulates the <code class="docutils literal notranslate"><span class="pre">default</span></code> run.
+The directory’s expectation holds under both presets unless the fixture’s
+leading comment overrides it per preset, and a <code class="docutils literal notranslate"><span class="pre">Settings:</span></code> line applies
+option overrides on top of each preset:</p>
+<div class="highlight-c notranslate"><div class="highlight"><pre><span></span><span class="cm">/*</span>
+<span class="cm"> * Expect: default=clean strict=violation</span>
+<span class="cm"> * Settings: free_null_is_noop=false</span>
+<span class="cm"> */</span>
+</pre></div>
+</div>
+<p>A rule that honors an option carries at least one fixture whose outcome
+depends on it, so each setting is exercised in both directions. CI runs the
+whole suite, so both presets are covered there.</p>
 <p>Tests are auto-generated into Rust test functions from <code class="docutils literal notranslate"><span class="pre">.c</span></code> files — no embedded
 <code class="docutils literal notranslate"><span class="pre">#[cfg(test)]</span></code> modules in rule implementation files. Run tests with:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># All tests</span>

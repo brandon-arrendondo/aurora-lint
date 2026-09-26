@@ -19,6 +19,7 @@ testing methodology, project internals, and contributing.
    cli-usage
    suppression
    configuration
+   options
    cicd-integration
    interactive-ui
    testing-methodology

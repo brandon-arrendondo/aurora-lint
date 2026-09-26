@@ -1,0 +1,214 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Policy and Environment Options &mdash; aurora-lint  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="CI/CD Integration" href="cicd-integration.html" />
+    <link rel="prev" title="Configuration" href="configuration.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            aurora-lint
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Policy and Environment Options</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#policy-options">Policy options</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#environment-contracts">Environment contracts</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tool-comparison.html">Comparison To Other Tools</a></li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="licensing.html">Licensing and content provenance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">aurora-lint</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Policy and Environment Options</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/options.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="policy-and-environment-options">
+<h1>Policy and Environment Options<a class="headerlink" href="#policy-and-environment-options" title="Link to this heading"></a></h1>
+<p>Every assumption the analyzer can be told to make or drop is a named option
+below, with its value under each preset. This list is the complete record of
+what the default preset relaxes. See <a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a> for how to set
+them.</p>
+<ul class="simple">
+<li><p>The <strong>default</strong> preset is <code class="docutils literal notranslate"><span class="pre">policy</span> <span class="pre">=</span> <span class="pre">default</span></code> with a <code class="docutils literal notranslate"><span class="pre">hosted</span></code>
+environment and the ISO C + POSIX library model.</p></li>
+<li><p>The <strong>strict</strong> preset is <code class="docutils literal notranslate"><span class="pre">policy</span> <span class="pre">=</span> <span class="pre">strict</span></code> with a <code class="docutils literal notranslate"><span class="pre">freestanding</span></code>
+environment and no library model.</p></li>
+</ul>
+<section id="policy-options">
+<h2>Policy options<a class="headerlink" href="#policy-options" title="Link to this heading"></a></h2>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">assert_is_guard</span></code></dt><dd><p>A dominating assert whose condition establishes the property is a guard, even if NDEBUG can strip it.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: cross-cutting</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">assert-dominated</span></code></p></li>
+<li><p>Basis: The Clang Static Analyzer, Polyspace and Coverity’s models treat a live assert as an assumption; CERT’s EXP34-C compliant solution uses one.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">first_site_only</span></code></dt><dd><p>In a proof chain, only the first failing site is reported, not the sites that depend on the same missing check.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: cross-cutting</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">dependent-site</span></code></p></li>
+<li><p>Basis: Mainstream path-sensitive analyzers report one missing check once.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">trust_noreturn_keyword</span></code></dt><dd><p>A function declared _Noreturn (or &lt;stdnoreturn.h&gt; noreturn, or C23 [[noreturn]]) is trusted not to return; otherwise only a body verified never to return proves it.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: cross-cutting</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">noreturn-trusted</span></code></p></li>
+<li><p>Basis: C11 6.7.4p8, 7.23; C23 6.7.13.7. A GNU noreturn attribute, [[gnu::noreturn]] included, is proof under neither policy.</p></li>
+</ul>
+</dd>
+</dl>
+</section>
+<section id="environment-contracts">
+<h2>Environment contracts<a class="headerlink" href="#environment-contracts" title="Link to this heading"></a></h2>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">free_null_is_noop</span></code></dt><dd><p>free(NULL) does nothing.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: contract</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">contract:free_null_is_noop</span></code></p></li>
+<li><p>Basis: C11 7.22.3.3p2.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">realloc_null_is_malloc</span></code></dt><dd><p>realloc(NULL, size) behaves like malloc(size).</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: contract</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">contract:realloc_null_is_malloc</span></code></p></li>
+<li><p>Basis: C11 7.22.3.5p3.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">stdlib_noreturn</span></code></dt><dd><p>abort, exit, _Exit, quick_exit, longjmp, thrd_exit and POSIX _exit never return to their caller.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: contract</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">contract:stdlib_noreturn</span></code></p></li>
+<li><p>Basis: C11 7.22.4.1, 7.22.4.4, 7.22.4.5, 7.22.4.7, 7.13.2.1 and 7.26.5.5; POSIX.1-2024 _exit(). A freestanding implementation need not provide &lt;stdlib.h&gt;, &lt;setjmp.h&gt; or &lt;threads.h&gt; at all. Known limitation: two cross-file summaries built by the prescan (a parameter’s null state after <cite>if (!p) exit(1);</cite>, and whether a function never returns) still credit these calls whatever this option says.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">main_argv_guarantees</span></code></dt><dd><p>main’s argc is nonnegative, argv[argc] is a null pointer, and argv[0..argc) point to strings.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: contract</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">contract:main_argv_guarantees</span></code></p></li>
+<li><p>Basis: C11 5.1.2.2.1p2, which binds hosted environments only.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">static_zero_init</span></code></dt><dd><p>Objects with static storage duration and no initializer are zeroed before main runs.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">true</span></code></p></li>
+<li><p>Scope: contract</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">contract:static_zero_init</span></code></p></li>
+<li><p>Basis: C11 6.7.9p10. Startup code that skips clearing .bss breaks it. Withdrawn, a block-scope static read before its function writes it is indeterminate; file-scope objects, which any function may write first, are not tracked.</p></li>
+</ul>
+</dd>
+</dl>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="configuration.html" class="btn btn-neutral float-left" title="Configuration" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="cicd-integration.html" class="btn btn-neutral float-right" title="CI/CD Integration" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025-2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

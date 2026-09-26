@@ -61,6 +61,7 @@
 </li>
 <li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
 <li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="options.html">Policy and Environment Options</a></li>
 <li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
 <li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
 <li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
@@ -159,6 +160,22 @@ Options:
                                    re-scanning -d directories
   -j, --jobs &lt;N&gt;                   Number of parallel analysis threads
                                    (0 = auto-detect, 1 = sequential; default: 0)
+      --profile &lt;PRESET&gt;           Preset for both settings axes: default (default
+                                   policy, hosted) or strict (strict policy,
+                                   freestanding). Overrides the manifest&#39;s `profile`
+      --policy &lt;POLICY&gt;            Policy axis: which findings are reported
+                                   [default, strict] (overrides the preset)
+      --environment &lt;KIND&gt;         Environment axis [hosted, freestanding] (overrides
+                                   the preset). Declared, never inferred from the
+                                   scanning host
+      --libc &lt;MODEL&gt;               C library model whose documented contracts are
+                                   trusted [iso-posix, glibc, musl, newlib,
+                                   picolibc, custom]
+      --set &lt;NAME=VALUE&gt;           Override one named option (repeatable); see
+                                   --list-options
+      --list-options [&lt;FORMAT&gt;]    List every policy and environment option with its
+                                   value under each preset and the current settings,
+                                   then exit [text, json, rst]
       --detect-relevance           Detect categorically-inapplicable rule classes
                                    (CON*/WIN*) in PATH and -d directories, then write
                                    a relevance-gated manifest with --write-manifest.

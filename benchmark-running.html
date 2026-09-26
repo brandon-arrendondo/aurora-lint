@@ -47,6 +47,7 @@
 <li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
 <li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
 <li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="options.html">Policy and Environment Options</a></li>
 <li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
 <li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
 <li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
@@ -64,6 +65,7 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#juliet-benchmark">Juliet Benchmark</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#policy-and-environment-settings">Policy and Environment Settings</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#compile-database-runs">Compile-Database Runs</a></li>
 </ul>
 </li>
@@ -225,7 +227,7 @@ depending on the machine. Check status no more than once every 5 minutes.</p></l
 </section>
 <section id="juliet-benchmark">
 <h2>Juliet Benchmark<a class="headerlink" href="#juliet-benchmark" title="Link to this heading"></a></h2>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>juliet<span class="w"> </span><span class="o">[</span>--full<span class="o">]</span><span class="w"> </span><span class="o">[</span>--jobs<span class="w"> </span>N<span class="o">]</span><span class="w"> </span><span class="o">[</span>--keep-reports<span class="o">]</span><span class="w"> </span><span class="o">[</span>--compile-commands<span class="o">]</span><span class="w"> </span><span class="o">[</span>--cwe<span class="w"> </span>CWE<span class="o">[</span>,CWE<span class="o">]]</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>juliet<span class="w"> </span><span class="o">[</span>--full<span class="o">]</span><span class="w"> </span><span class="o">[</span>--jobs<span class="w"> </span>N<span class="o">]</span><span class="w"> </span><span class="o">[</span>--keep-reports<span class="o">]</span><span class="w"> </span><span class="o">[</span>--compile-commands<span class="o">]</span><span class="w"> </span><span class="o">[</span>--cwe<span class="w"> </span>CWE<span class="o">[</span>,CWE<span class="o">]]</span><span class="w"> </span><span class="o">[</span>--profile<span class="w"> </span>P<span class="o">]</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>status<span class="w"> </span><span class="o">[</span>RUN_ID<span class="o">]</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>compare<span class="w"> </span>BASE<span class="w"> </span>TARGET
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>runs
@@ -255,6 +257,28 @@ it never stands in for the build’s full run, and an unknown CWE is an error</p
 <code class="docutils literal notranslate"><span class="pre">sqlite3</span> <span class="pre">data/benchmarks.db</span></code> query away (<code class="docutils literal notranslate"><span class="pre">cwe_scans</span></code>, <code class="docutils literal notranslate"><span class="pre">violations</span></code>,
 <code class="docutils literal notranslate"><span class="pre">rule_cwe_breakdown</span></code>) – there’s no separate CLI subcommand for it</p></li>
 </ul>
+<section id="policy-and-environment-settings">
+<h3>Policy and Environment Settings<a class="headerlink" href="#policy-and-environment-settings" title="Link to this heading"></a></h3>
+<p>Every scan passes aurora-lint’s <code class="docutils literal notranslate"><span class="pre">--profile</span></code> (<code class="docutils literal notranslate"><span class="pre">default</span></code> unless
+<code class="docutils literal notranslate"><span class="pre">--profile</span></code> says otherwise), and each run records the settings it scanned
+under – the resolved values from <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--list-options</span> <span class="pre">json</span></code> – in
+the <code class="docutils literal notranslate"><span class="pre">settings</span></code> column of <code class="docutils literal notranslate"><span class="pre">runs</span></code> and <code class="docutils literal notranslate"><span class="pre">realworld_runs</span></code>, so a figure can
+always name its setting (<a class="reference internal" href="options.html"><span class="doc">Policy and Environment Options</span></a>). Runs recorded before settings
+existed have <code class="docutils literal notranslate"><span class="pre">settings</span></code> NULL: they ran under neither preset exactly.</p>
+<p>Every new run_id names its settings:
+<code class="docutils literal notranslate"><span class="pre">sqc-{version}-{sha}[-full][-cdb]-{preset}-{hash12}[-cwe...]</span></code>, where
+<code class="docutils literal notranslate"><span class="pre">{preset}</span></code> is <code class="docutils literal notranslate"><span class="pre">default</span></code> or <code class="docutils literal notranslate"><span class="pre">strict</span></code> when the settings are exactly that
+preset and <code class="docutils literal notranslate"><span class="pre">preset</span></code> otherwise, and <code class="docutils literal notranslate"><span class="pre">{hash12}</span></code> is the first 12 characters
+of the settings hash (the binary computes it; the full hash is in the
+<code class="docutils literal notranslate"><span class="pre">settings</span></code> column and the SARIF report). Real-world runs carry the same
+suffix in their <code class="docutils literal notranslate"><span class="pre">variant</span></code> (<code class="docutils literal notranslate"><span class="pre">default-{hash12}</span></code>, <code class="docutils literal notranslate"><span class="pre">cdb-strict-{hash12}</span></code>).
+Runs recorded before settings existed keep their bare ids (“pre-settings”);
+nothing is renamed. A bare SHA resolves to the default-preset run of that
+build.</p>
+<p><code class="docutils literal notranslate"><span class="pre">compare</span></code> and <code class="docutils literal notranslate"><span class="pre">realworld</span> <span class="pre">--compare</span></code> print the option-by-option settings
+difference between the two runs, and flag two runs that share a preset name
+but not a hash: that preset’s own options changed between the builds.</p>
+</section>
 <section id="compile-database-runs">
 <h3>Compile-Database Runs<a class="headerlink" href="#compile-database-runs" title="Link to this heading"></a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">--compile-commands</span></code> makes a run pass aurora-lint’s <code class="docutils literal notranslate"><span class="pre">--compile-commands</span></code> flag,
@@ -302,7 +326,7 @@ and <code class="docutils literal notranslate"><span class="pre">-D</span></code
 <h2>Real-World Benchmark<a class="headerlink" href="#real-world-benchmark" title="Link to this heading"></a></h2>
 <p>Local and sequential, by design: one person running one benchmark in their
 own terminal, against their own SQLite DB. See <code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code>.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-run<span class="w"> </span><span class="o">[</span>--tool<span class="w"> </span>sqc,cppcheck,clang-tidy<span class="o">]</span><span class="w"> </span><span class="o">[</span>--codebase<span class="w"> </span>C,C<span class="o">]</span><span class="w"> </span><span class="o">[</span>--compile-commands<span class="o">]</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-run<span class="w"> </span><span class="o">[</span>--tool<span class="w"> </span>sqc,cppcheck,clang-tidy<span class="o">]</span><span class="w"> </span><span class="o">[</span>--codebase<span class="w"> </span>C,C<span class="o">]</span><span class="w"> </span><span class="o">[</span>--compile-commands<span class="o">]</span><span class="w"> </span><span class="o">[</span>--profile<span class="w"> </span>P<span class="o">]</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld<span class="w"> </span><span class="o">[</span>RUN<span class="o">]</span><span class="w"> </span><span class="o">[</span>--compare<span class="w"> </span>BASE<span class="o">]</span><span class="w">   </span><span class="c1"># FP dashboard</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-runs<span class="w">                     </span><span class="c1"># list runs</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-score<span class="w"> </span><span class="o">[</span>RUN<span class="o">]</span><span class="w">               </span><span class="c1"># measured precision/recall</span>
