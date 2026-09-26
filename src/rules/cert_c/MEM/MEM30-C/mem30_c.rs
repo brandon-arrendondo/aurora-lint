@@ -8,8 +8,10 @@ use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::FunctionMacro;
 use crate::analyze::macro_gaps;
+use crate::analyze::noreturn::ByNoreturnTrust;
 use crate::analyze::points_to::{lvalue_of, resolve_canonical, AliasMap, LValue};
 use crate::manifest::{RuleCategory, Severity};
+use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::clearing_extent::cleared_extent;
@@ -46,8 +48,11 @@ pub struct Mem30C {
     /// Cross-file noreturn function names from the prescan, unioned in
     /// `check` with this file's own declarations and the stdlib set, so a
     /// branch ending in `exit(1)` or a project `fatal()` is known to have
-    /// no successor.
-    noreturn_functions: RefCell<Arc<HashSet<String>>>,
+    /// no successor. Held under each setting of `trust_noreturn_keyword`;
+    /// `settings` picks one.
+    noreturn_functions: RefCell<ByNoreturnTrust<Arc<HashSet<String>>>>,
+    /// The run's policy and environment settings.
+    settings: RefCell<Arc<AnalysisSettings>>,
     /// Typedefs that hide a pointer, and the project-wide one-level typedef
     /// alias map. Both feed `arg_can_be_freed`, which must not read a
     /// pointer-hiding alias (`client`, `LPPOINT`) as a non-pointer and drop a
@@ -86,6 +91,10 @@ impl CertRule for Mem30C {
 
     fn cert_id(&self) -> &'static str {
         "MEM30-C"
+    }
+
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        *self.settings.borrow_mut() = Arc::clone(settings);
     }
 
     fn set_project_context(&self, context: &ProjectContext) {
@@ -185,11 +194,12 @@ impl CertRule for Mem30C {
         );
 
         // Functions that never return to their caller: the stdlib set, the
-        // prescan's cross-file `_Noreturn`/`__attribute__((noreturn))`
-        // declarations, and this file's own.
-        let mut noreturn_names = HashSet::clone(&self.noreturn_functions.borrow());
+        // prescan's cross-file set, and this file's own, under the run's
+        // setting of `trust_noreturn_keyword`.
+        let settings = Arc::clone(&self.settings.borrow());
+        let mut noreturn_names = HashSet::clone(self.noreturn_functions.borrow().get(&settings));
         noreturn_names.extend(crate::analyze::noreturn::collect_noreturn_function_names(
-            node, source,
+            node, source, &settings,
         ));
 
         let macro_constants =

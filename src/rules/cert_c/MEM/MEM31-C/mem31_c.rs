@@ -7,8 +7,10 @@ use crate::analyze::context::{ProjectContext, ScopedTable};
 use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::init_state;
 use crate::analyze::macro_expand::{self, FunctionMacro};
+use crate::analyze::noreturn::ByNoreturnTrust;
 use crate::analyze::preproc_arms::PreprocArms;
 use crate::manifest::{RuleCategory, Severity};
+use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::declarator_utils;
@@ -80,8 +82,11 @@ pub struct Mem31C {
     known_functions: RefCell<Arc<HashSet<String>>>,
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     /// Cross-file noreturn function names from the prescan, unioned in
-    /// `check` with the ones this file declares for itself.
-    noreturn_functions: RefCell<Arc<HashSet<String>>>,
+    /// `check` with the ones this file declares for itself. Held under each
+    /// setting of `trust_noreturn_keyword`; `settings` picks one.
+    noreturn_functions: RefCell<ByNoreturnTrust<Arc<HashSet<String>>>>,
+    /// The run's policy and environment settings.
+    settings: RefCell<Arc<AnalysisSettings>>,
     /// Project-wide `#define ALIAS target` map, merged in `check` with this
     /// file's own. A callee is classified by the name the chain ends at, so
     /// `mbedtls_calloc(...)` is an allocation and `mbedtls_free(...)` is a
@@ -98,7 +103,8 @@ impl Mem31C {
             struct_typedef_aliases: RefCell::new(Arc::new(HashMap::new())),
             known_functions: RefCell::new(Arc::new(HashSet::new())),
             function_macros: RefCell::new(Arc::new(HashMap::new())),
-            noreturn_functions: RefCell::new(Arc::new(HashSet::new())),
+            noreturn_functions: RefCell::default(),
+            settings: RefCell::default(),
             project_aliases: RefCell::new(Arc::new(HashMap::new())),
         }
     }
@@ -125,6 +131,10 @@ impl CertRule for Mem31C {
         "MEM31-C"
     }
 
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        *self.settings.borrow_mut() = Arc::clone(settings);
+    }
+
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.value_only_globals.borrow_mut() = context.value_only_globals.clone();
@@ -148,9 +158,10 @@ impl CertRule for Mem31C {
         // A call that never returns ends its branch exactly as `return` does.
         // The prescan set carries declarations from headers this parse never
         // sees; the per-file pass catches a helper declared only here.
-        let mut noreturn_names = HashSet::clone(&self.noreturn_functions.borrow());
+        let settings = Arc::clone(&self.settings.borrow());
+        let mut noreturn_names = HashSet::clone(self.noreturn_functions.borrow().get(&settings));
         noreturn_names.extend(crate::analyze::noreturn::collect_noreturn_function_names(
-            node, source,
+            node, source, &settings,
         ));
         let macro_aliases =
             const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);

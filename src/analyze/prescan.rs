@@ -59,7 +59,7 @@ struct FilePrescanResult {
     function_pointer_typedef_names: HashSet<String>,
     pointer_typedef_names: HashSet<String>,
     packed_structs: HashSet<String>,
-    noreturn_functions: HashSet<String>,
+    noreturn_functions: crate::analyze::noreturn::NoreturnNames,
     packed_struct_candidates: Vec<(String, String)>,
     packed_macro_names: HashSet<String>,
     defined_macro_names: HashSet<String>,
@@ -117,7 +117,7 @@ impl FilePrescanResult {
             function_pointer_typedef_names: HashSet::new(),
             pointer_typedef_names: HashSet::new(),
             packed_structs: HashSet::new(),
-            noreturn_functions: HashSet::new(),
+            noreturn_functions: Default::default(),
             packed_struct_candidates: Vec::new(),
             packed_macro_names: HashSet::new(),
             defined_macro_names: HashSet::new(),
@@ -228,7 +228,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
             &mut result.packed_struct_candidates,
         );
         result.noreturn_functions =
-            crate::analyze::noreturn::collect_noreturn_function_names(&root, &source);
+            crate::analyze::noreturn::collect_noreturn_names(&root, &source);
         crate::utility::cert_c::ast_utils::collect_packed_macro_names(
             &source,
             &mut result.packed_macro_names,
@@ -466,7 +466,7 @@ fn prescan_file_list(
     let mut function_pointer_typedef_names: HashSet<String> = HashSet::new();
     let mut pointer_typedef_names: HashSet<String> = HashSet::new();
     let mut packed_structs: HashSet<String> = HashSet::new();
-    let mut noreturn_functions: HashSet<String> = HashSet::new();
+    let mut noreturn_functions = crate::analyze::noreturn::NoreturnNames::default();
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
     let mut packed_macro_names: HashSet<String> = HashSet::new();
     let mut defined_macro_names: HashSet<String> = HashSet::new();
@@ -978,8 +978,12 @@ fn prescan_file_list(
         .map(|(file, names)| (file, Arc::new(names)))
         .collect();
 
-    let abort_check_macros =
-        crate::analyze::check_macros::abort_check_macros(&macro_definitions, &noreturn_functions);
+    let abort_check_macros = noreturn_functions.map(|names| {
+        Arc::new(crate::analyze::check_macros::abort_check_macros(
+            &macro_definitions,
+            names,
+        ))
+    });
 
     Ok(ProjectContext {
         settings: Default::default(),
@@ -995,14 +999,14 @@ fn prescan_file_list(
         function_macros: Arc::new(function_macros),
         macro_definitions: Arc::new(macro_definitions),
         conditional_macro_names: Arc::new(conditional_macro_names),
-        abort_check_macros: Arc::new(abort_check_macros),
+        abort_check_macros,
         struct_field_types: Arc::new(struct_field_types),
         struct_typedef_aliases: Arc::new(struct_typedef_aliases),
         typedef_types: Arc::new(typedef_types),
         function_pointer_typedef_names: Arc::new(function_pointer_typedef_names),
         pointer_typedef_names: Arc::new(pointer_typedef_names),
         packed_structs: Arc::new(packed_structs),
-        noreturn_functions: Arc::new(noreturn_functions),
+        noreturn_functions: noreturn_functions.map(|names| Arc::new(names.clone())),
         defined_macro_names: Arc::new(defined_macro_names),
         unused_attribute_macros: Arc::new(unused_attribute_macros),
         global_constants,
@@ -6372,10 +6376,12 @@ pub fn resolve_includes(
     );
     // Headers resolved here may add a definition of a name, including the
     // `NDEBUG` arm that disqualifies it, so the check table is rebuilt.
-    context.abort_check_macros = Arc::new(crate::analyze::check_macros::abort_check_macros(
-        &context.macro_definitions,
-        &context.noreturn_functions,
-    ));
+    context.abort_check_macros = context.noreturn_functions.map(|names| {
+        Arc::new(crate::analyze::check_macros::abort_check_macros(
+            &context.macro_definitions,
+            names,
+        ))
+    });
 
     if let Some(reporter) = progress {
         reporter.report_include_resolve_complete(resolved_set.len());

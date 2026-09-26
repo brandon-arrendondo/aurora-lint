@@ -58,6 +58,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::{collect_function_macro_alternatives, FunctionMacro};
 use crate::manifest::{RuleCategory, Severity};
+use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -75,12 +76,16 @@ pub struct Msc37C {
     /// `RETURN`-style macro defined in a header is known when a file's
     /// function ends with it.
     project_function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
+    /// The run's policy and environment settings: whether a `_Noreturn`
+    /// declaration is trusted (`trust_noreturn_keyword`).
+    settings: RefCell<Arc<AnalysisSettings>>,
 }
 
 impl Msc37C {
     pub fn new() -> Self {
         Self {
             project_function_macros: RefCell::default(),
+            settings: RefCell::default(),
         }
     }
 
@@ -569,13 +574,23 @@ impl CertRule for Msc37C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_function_macros.borrow_mut() = context.function_macros.clone();
     }
+
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        *self.settings.borrow_mut() = Arc::clone(settings);
+    }
 }
 
 impl Msc37C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Calls that end a path the way a return does: `_Noreturn`
-        // functions, and macros that return on the function's behalf.
+        // functions, and macros that return on the function's behalf. A
+        // policy that does not trust the keyword keeps only the `_Noreturn`
+        // functions whose bodies are verified never to return.
         let mut noreturn_names = Self::collect_noreturn_function_names(node, source);
+        if !self.settings.borrow().flag("trust_noreturn_keyword") {
+            let verified = crate::analyze::noreturn::collect_noreturn_names(node, source);
+            noreturn_names.retain(|name| verified.verified_only.contains(name));
+        }
         noreturn_names.extend(self.collect_returning_macros(source));
         // Check function definitions
         for func in query::find_descendants_of_kind(*node, "function_definition") {

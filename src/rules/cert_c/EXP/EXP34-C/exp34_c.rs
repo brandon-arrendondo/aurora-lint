@@ -8,6 +8,7 @@ use crate::analyze::context::ScopedTable;
 use crate::analyze::context::SummaryLookup;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::{self, FunctionMacro};
+use crate::analyze::noreturn::ByNoreturnTrust;
 use crate::analyze::null_state::{self, NullAnalysisResult, NullState, StateMap};
 use crate::manifest::{RuleCategory, Severity};
 use crate::settings::AnalysisSettings;
@@ -45,10 +46,11 @@ pub struct Exp34C {
     /// afterward the same way real `free(p); p = NULL;` already is.
     macro_null_params: RefCell<HashMap<String, Vec<usize>>>,
     /// Assert-style macros no configuration compiles out, with the index of
-    /// the parameter each checks (`ProjectContext::abort_check_macros`).
+    /// the parameter each checks (`ProjectContext::abort_check_macros`),
+    /// under each setting of `trust_noreturn_keyword`.
     /// Synthesized into `FunctionSummary::returns_only_if_param_true` so the
     /// dataflow reads `serverAssert(p != NULL);` as a dominating check.
-    abort_check_macros: RefCell<Arc<HashMap<String, usize>>>,
+    abort_check_macros: RefCell<ByNoreturnTrust<Arc<HashMap<String, usize>>>>,
     /// The run's policy and environment settings: which library contracts
     /// a call to a null-accepting function may rely on.
     settings: RefCell<Arc<AnalysisSettings>>,
@@ -64,7 +66,7 @@ impl Exp34C {
             function_macros: RefCell::new(Arc::new(HashMap::new())),
             macro_write_params: RefCell::new(HashMap::new()),
             macro_null_params: RefCell::new(HashMap::new()),
-            abort_check_macros: RefCell::new(Arc::new(HashMap::new())),
+            abort_check_macros: RefCell::default(),
             settings: RefCell::default(),
         }
     }
@@ -82,7 +84,11 @@ impl Exp34C {
     ) -> HashMap<String, FunctionSummary> {
         let macro_write_params = self.macro_write_params.borrow();
         let macro_null_params = self.macro_null_params.borrow();
-        let abort_check_macros = self.abort_check_macros.borrow();
+        let abort_check_macros = Arc::clone(
+            self.abort_check_macros
+                .borrow()
+                .get(&self.settings.borrow()),
+        );
         // Only the macro names are added, beside the shared table
         // rather than into a copy of it.
         if macro_write_params.is_empty()

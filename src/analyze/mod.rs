@@ -886,7 +886,7 @@ pub(crate) fn build_file_analysis(
     needs_vra: bool,
 ) -> FileAnalysis {
     let mut function_cfgs: HashMap<usize, cfg::FunctionCfg> = HashMap::new();
-    collect_function_cfgs(root_node, source, &mut function_cfgs);
+    collect_function_cfgs(root_node, source, &mut function_cfgs, &context.settings);
 
     let vra_results = compute_vra_if_needed(
         needs_vra,
@@ -1000,9 +1000,10 @@ pub fn collect_function_cfgs(
     node: &tree_sitter::Node,
     source: &str,
     cfgs: &mut HashMap<usize, cfg::FunctionCfg>,
+    settings: &crate::settings::AnalysisSettings,
 ) {
     let constants = const_eval::collect_macro_constants(node, source);
-    let noreturn_names = noreturn::collect_noreturn_function_names(node, source);
+    let noreturn_names = noreturn::collect_noreturn_function_names(node, source, settings);
     collect_function_cfgs_with_constants(node, source, cfgs, &constants, &noreturn_names);
 }
 
@@ -1116,7 +1117,7 @@ mod tests {
         let code = "void foo(void) { int x = 1; } void bar(int n) { return; }";
         let (tree, source) = parse_c(code);
         let mut cfgs = HashMap::new();
-        collect_function_cfgs(&tree.root_node(), &source, &mut cfgs);
+        collect_function_cfgs(&tree.root_node(), &source, &mut cfgs, &Default::default());
         assert_eq!(cfgs.len(), 2);
     }
 
@@ -1125,7 +1126,7 @@ mod tests {
         let code = "int x = 42;"; // no functions
         let (tree, source) = parse_c(code);
         let mut cfgs = HashMap::new();
-        collect_function_cfgs(&tree.root_node(), &source, &mut cfgs);
+        collect_function_cfgs(&tree.root_node(), &source, &mut cfgs, &Default::default());
         assert!(cfgs.is_empty());
     }
 
