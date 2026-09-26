@@ -66,12 +66,15 @@ pub fn callee_is_risky_source(callee: &str, summaries: &(impl SummaryLookup + ?S
 /// True when a parameter of `func_name` must be treated as carrying untrusted
 /// or unbounded input.
 ///
-/// Risky whenever the scan cannot see a caller that bounds it:
-///   - no caller of `func_name` is known — an entry point, or public API whose
-///     arguments arrive from outside the scan set; or
-///   - some known caller carries taint, or has no summary to judge by.
+/// Risky whenever the scan cannot prove what reaches it:
+///   - `func_name` has callers outside the scanned source -- external linkage,
+///     or an address that escapes (ADR-0011: the visible callers are then a
+///     sample, not the set); or
+///   - no caller of it is known, or some caller on the way up carries taint,
+///     forwards a parameter of its own from an open caller set, or has no
+///     summary to judge by (`function_summary::every_caller_is_clean`).
 ///
-/// Bounded only when every known caller is taint-free. That is an
+/// Bounded only when every such caller is taint-free. That is an
 /// approximation of "every caller passes bounded values": the prescan
 /// summaries carry per-function taint, not per-argument value ranges, so a
 /// taint-free caller is taken to pass bounded arguments. It is the same
@@ -82,13 +85,9 @@ pub fn parameter_is_risky(
     callers: &HashMap<String, HashSet<String>>,
     summaries: &(impl SummaryLookup + ?Sized),
 ) -> bool {
-    match callers.get(func_name) {
-        Some(cs) if !cs.is_empty() => cs.iter().any(|c| match summaries.get(c) {
-            Some(s) => s.has_env03_taint_source || s.returns_tainted,
-            None => true,
-        }),
-        _ => true,
-    }
+    !crate::analyze::function_summary::every_caller_is_clean(func_name, callers, summaries, |s| {
+        !s.has_env03_taint_source && !s.returns_tainted
+    })
 }
 
 /// Walk `body` ONCE and collect every variable name fed from a risky source:

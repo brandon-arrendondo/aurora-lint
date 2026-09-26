@@ -325,19 +325,14 @@ impl Int31C {
         }
 
         if is_function_parameter(&func, var_name, source) {
-            // Parameter case: defer taint judgement to callers.
-            let callers = self.callers.borrow();
-            let caller_set = match callers.get(func_name) {
-                Some(set) if !set.is_empty() => set,
-                _ => return false,
-            };
-            for caller in caller_set {
-                match summaries.get(caller) {
-                    Some(s) if !s.has_env03_taint_source => {}
-                    _ => return false,
-                }
-            }
-            return true;
+            // Parameter case: defer taint judgement to callers, which proves
+            // something only over a closed caller set (ADR-0011).
+            return crate::analyze::function_summary::every_caller_is_clean(
+                func_name,
+                &self.callers.borrow(),
+                &*summaries,
+                |s| !s.has_env03_taint_source,
+            );
         }
 
         // Local variable: only suppress when we see a call-return assignment

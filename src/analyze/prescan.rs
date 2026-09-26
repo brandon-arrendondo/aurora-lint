@@ -820,18 +820,7 @@ fn prescan_file_list(
     // changes not one finding either way, so it is taken for the gap it closes
     // at no measured cost. It also pools two same-named statics in different
     // files, which over-approximates in the safe direction.
-    for (key, summary) in function_summaries.iter_mut() {
-        if !summary.has_internal_linkage {
-            continue;
-        }
-        let bare = key
-            .as_str()
-            .split_once('\0')
-            .map_or(key.as_str(), |(_, name)| name);
-        if value_position_identifiers.contains(bare) {
-            summary.address_taken = true;
-        }
-    }
+    mark_address_taken(&mut function_summaries, &value_position_identifiers);
 
     aggregate_callsite_null_states(
         &callsite_args,
@@ -1387,6 +1376,29 @@ fn unwrap_to_identifier(node: Node<'_>) -> Option<Node<'_>> {
     }
 }
 
+/// Set `address_taken` on every internally-linked summary whose name
+/// `value_position_identifiers` (from [`collect_value_position_identifiers`])
+/// mentions as a value, so [`FunctionSummary::caller_set_is_closed`] stops
+/// treating its collected call sites as all of them. A key qualified by its
+/// defining file is matched on its bare name.
+pub(crate) fn mark_address_taken(
+    summaries: &mut HashMap<String, FunctionSummary>,
+    value_position_identifiers: &HashSet<String>,
+) {
+    for (key, summary) in summaries.iter_mut() {
+        if !summary.has_internal_linkage {
+            continue;
+        }
+        let bare = key
+            .as_str()
+            .split_once('\0')
+            .map_or(key.as_str(), |(_, name)| name);
+        if value_position_identifiers.contains(bare) {
+            summary.address_taken = true;
+        }
+    }
+}
+
 /// Collect every bare identifier that appears as a value inside an
 /// `initializer_list` (aggregate initializer) anywhere in the tree — the
 /// dispatch-table registration idiom, e.g.
@@ -1419,7 +1431,11 @@ fn unwrap_to_identifier(node: Node<'_>) -> Option<Node<'_>> {
 /// or an array element read all pass a function pointer along just as well as
 /// `&f` does, and the surplus names cost nothing -- only a name that is also a
 /// function's is ever looked up.
-fn collect_value_position_identifiers(node: &Node, source: &str, out: &mut HashSet<String>) {
+pub(crate) fn collect_value_position_identifiers(
+    node: &Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
     if node.kind() == "identifier" && !is_direct_call_target(node) && !is_declarator_name(node) {
         if let Ok(name) = node.utf8_text(source.as_bytes()) {
             out.insert(name.to_string());
@@ -2020,8 +2036,11 @@ fn aggregate_callsite_pointee_null_states(
 ///
 /// For each parameter index, if every call site within the project passes the
 /// same integer constant literal, that constant is stored so VRA can narrow the
-/// parameter's entry range. Functions visible to external callers (header-declared)
-/// are skipped — we can't know what external code passes.
+/// parameter's entry range. Only for a function whose caller set is closed
+/// (`FunctionSummary::caller_set_is_closed`): an exported function, or a static
+/// one whose address escapes, has callers nothing collected, so the constant
+/// the visible ones agree on says nothing about what the others pass
+/// (ADR-0011). Header-declared functions are skipped as well.
 pub(crate) fn aggregate_callsite_int_args(
     callsite_int_args: &HashMap<String, Vec<Vec<Option<i64>>>>,
     summaries: &mut HashMap<String, FunctionSummary>,
@@ -2032,6 +2051,9 @@ pub(crate) fn aggregate_callsite_int_args(
             continue;
         }
         if let Some(summary) = summaries.get_mut(callee_name) {
+            if !summary.caller_set_is_closed() {
+                continue;
+            }
             let max_params = call_sites.iter().map(|v| v.len()).max().unwrap_or(0);
             for param_idx in 0..max_params {
                 let mut agreed: Option<i64> = None;
@@ -2391,9 +2413,11 @@ fn collect_int_calls_in_node(
 /// buffer size only when *every* call site passes a pointer to a statically
 /// sized buffer. If any call site passes an unresolvable buffer (a different
 /// parameter, a non-constant allocation, an opaque expression) the parameter is
-/// left unrecorded so the consuming rule stays conservative. Header-declared
-/// functions are skipped — external callers are unknowable, so we cannot prove
-/// the minimum over *all* callers.
+/// left unrecorded so the consuming rule stays conservative. Only a function
+/// whose caller set is closed (`FunctionSummary::caller_set_is_closed`) is
+/// recorded: an exported function, or a static one whose address escapes, has
+/// callers the scan never collected, so we cannot prove the minimum over *all*
+/// callers (ADR-0011). Header-declared functions are skipped as well.
 pub(crate) fn aggregate_callsite_buf_args(
     callsite_buf_args: &HashMap<String, Vec<Vec<Option<usize>>>>,
     summaries: &mut HashMap<String, FunctionSummary>,
@@ -2404,6 +2428,9 @@ pub(crate) fn aggregate_callsite_buf_args(
             continue;
         }
         if let Some(summary) = summaries.get_mut(callee_name) {
+            if !summary.caller_set_is_closed() {
+                continue;
+            }
             let max_params = call_sites.iter().map(|v| v.len()).max().unwrap_or(0);
             for param_idx in 0..max_params {
                 let mut min_size: Option<usize> = None;
@@ -2448,7 +2475,8 @@ pub(crate) fn aggregate_callsite_buf_args(
 /// stricter than `aggregate_callsite_field_null_states`'s voting scheme:
 /// null-state suppression is lower-stakes, but a wrong buffer-size bound
 /// here would silently suppress a real overflow (the exact risk class
-/// commit 18cbff53 fixed for ARR30-C).
+/// commit 18cbff53 fixed for ARR30-C). And, like that aggregation, only for a
+/// function whose caller set is closed (`FunctionSummary::caller_set_is_closed`).
 pub(crate) fn aggregate_callsite_field_buffer_sizes(
     callsite_field_buf_args: &HashMap<String, Vec<Vec<HashMap<String, usize>>>>,
     summaries: &mut HashMap<String, FunctionSummary>,
@@ -2461,6 +2489,9 @@ pub(crate) fn aggregate_callsite_field_buffer_sizes(
         let Some(summary) = summaries.get_mut(callee_name) else {
             continue;
         };
+        if !summary.caller_set_is_closed() {
+            continue;
+        }
         let max_params = call_sites.iter().map(|v| v.len()).max().unwrap_or(0);
         for param_idx in 0..max_params {
             // Union of field names ever reported at this param position,
@@ -2525,6 +2556,13 @@ pub(crate) fn aggregate_callsite_field_buffer_sizes(
 /// pointer, or one with no callers visible in the scanned directories).
 /// Header-declared functions are skipped, matching the other `callsite_*`
 /// aggregations: external callers are unknowable.
+///
+/// "Every observed caller passed clean data" is a proof only over a closed
+/// caller set (`FunctionSummary::caller_set_is_closed`, ADR-0011). For any
+/// other function the visible callers are a sample, so the clean verdict is
+/// never recorded; a tainted caller still is, since an unseen caller cannot
+/// make a seen one's argument any less tainted. For such a function the two
+/// sets are therefore equal, and "observed" reads as "observed tainted".
 pub(crate) fn aggregate_callsite_taint_args(
     callsite_taint_args: &HashMap<String, Vec<Vec<bool>>>,
     summaries: &mut HashMap<String, FunctionSummary>,
@@ -2535,6 +2573,7 @@ pub(crate) fn aggregate_callsite_taint_args(
             continue;
         }
         if let Some(summary) = summaries.get_mut(callee_name) {
+            let closed = summary.caller_set_is_closed();
             let max_params = call_sites.iter().map(|v| v.len()).max().unwrap_or(0);
             for param_idx in 0..max_params {
                 let mut any_site = false;
@@ -2545,7 +2584,7 @@ pub(crate) fn aggregate_callsite_taint_args(
                         any_tainted |= tainted;
                     }
                 }
-                if any_site {
+                if any_site && (closed || any_tainted) {
                     summary.callsite_param_taint_observed.insert(param_idx);
                     if any_tainted {
                         summary.callsite_param_tainted.insert(param_idx);
@@ -2564,18 +2603,14 @@ pub(crate) fn aggregate_callsite_taint_args(
 /// comparison, and at least one call site was observed. One unguarded site — or
 /// one passing something other than a bare variable — disqualifies the position.
 ///
-/// **Header-declared functions are deliberately NOT skipped here**, unlike every
-/// other `callsite_*` aggregation in this module. Those exist to prove a *bound*
-/// (a minimum buffer size, a null state) that must hold over all callers,
-/// including ones outside the scanned tree, so an exported function has to stay
-/// unresolved. This one supplements ARR30-C's pre-existing per-file summary,
-/// which already credits a suppression from the call sites in one translation
-/// unit alone and accepts, explicitly, that a caller elsewhere might validate
-/// nothing. Inheriting the skip would make the project-wide view — which sees
-/// strictly more call sites, and disqualifies on any of them — more conservative
-/// than the single-file view it extends, and would defeat the motivating cases
-/// outright: seL4's validate-then-act pairs are declared in headers precisely so
-/// the `decode` half can reach the `invoke` half across a file boundary.
+/// Only for a function whose caller set is closed
+/// (`FunctionSummary::caller_set_is_closed`). This used to be a documented
+/// exception that credited an exported function's in-tree callers too, for
+/// seL4's validate-then-act pairs, which are declared in headers so the
+/// `decode` half can reach the `invoke` half across a file boundary. ADR-0011
+/// settles it the other way: checks made by every caller count only when no
+/// caller can sit outside the scanned source, so an exported `invoke` is
+/// reported on its own body.
 pub(crate) fn aggregate_callsite_validated_args(
     callsite_validated_args: &HashMap<String, Vec<Vec<bool>>>,
     summaries: &mut HashMap<String, FunctionSummary>,
@@ -2584,6 +2619,9 @@ pub(crate) fn aggregate_callsite_validated_args(
         let Some(summary) = summaries.get_mut(callee_name) else {
             continue;
         };
+        if !summary.caller_set_is_closed() {
+            continue;
+        }
         let max_params = call_sites.iter().map(|v| v.len()).max().unwrap_or(0);
         for param_idx in 0..max_params {
             let mut any_site = false;
@@ -3686,7 +3724,7 @@ fn seedable_param_states(summary: &FunctionSummary) -> HashMap<usize, NullState>
         .iter()
         .filter(|(idx, state)| {
             **state != NullState::NotNull
-                || (summary.has_internal_linkage
+                || (summary.caller_set_is_closed()
                     && summary.callsite_param_proven_nonnull.contains(*idx))
         })
         .map(|(idx, state)| (*idx, *state))
@@ -6771,8 +6809,8 @@ mod tests {
         sites.insert("mixed".into(), vec![vec![c], vec![HashMap::new()]]);
 
         let mut summaries: HashMap<String, FunctionSummary> = HashMap::new();
-        summaries.insert("good".into(), FunctionSummary::default());
-        summaries.insert("mixed".into(), FunctionSummary::default());
+        summaries.insert("good".into(), closed_summary());
+        summaries.insert("mixed".into(), closed_summary());
         aggregate_callsite_field_buffer_sizes(&sites, &mut summaries, &HashSet::new());
 
         assert_eq!(
@@ -6795,14 +6833,69 @@ mod tests {
         // `mixed` has one resolved and one unresolved caller → not recorded.
         sites.insert("mixed".into(), vec![vec![Some(100)], vec![None]]);
         let mut summaries: HashMap<String, FunctionSummary> = HashMap::new();
-        summaries.insert("good".into(), FunctionSummary::default());
-        summaries.insert("mixed".into(), FunctionSummary::default());
+        summaries.insert("good".into(), closed_summary());
+        summaries.insert("mixed".into(), closed_summary());
         aggregate_callsite_buf_args(&sites, &mut summaries, &HashSet::new());
         assert_eq!(
             summaries["good"].callsite_param_buffer_size.get(&0),
             Some(&100usize)
         );
         assert!(summaries["mixed"].callsite_param_buffer_size.is_empty());
+    }
+
+    /// A summary whose collected call sites are all of them: `static`, with
+    /// its address never taken.
+    fn closed_summary() -> FunctionSummary {
+        FunctionSummary {
+            has_internal_linkage: true,
+            ..Default::default()
+        }
+    }
+
+    /// Every caller-set aggregation records nothing for a function whose
+    /// caller set is open, whichever way it is open: external linkage, or a
+    /// static whose address is taken (ADR-0011). The taint one keeps a
+    /// tainted caller, which an unseen caller cannot make less tainted, and
+    /// drops only the clean verdict.
+    #[test]
+    fn an_open_caller_set_gets_no_caller_side_proof() {
+        let exported = FunctionSummary::default();
+        let escaping = FunctionSummary {
+            has_internal_linkage: true,
+            address_taken: true,
+            ..Default::default()
+        };
+        for open in [exported, escaping] {
+            assert!(!open.caller_set_is_closed());
+            let mut summaries: HashMap<String, FunctionSummary> = HashMap::new();
+            summaries.insert("f".into(), open);
+
+            let ints = HashMap::from([("f".to_string(), vec![vec![Some(2i64)]])]);
+            aggregate_callsite_int_args(&ints, &mut summaries, &HashSet::new());
+            let bufs = HashMap::from([("f".to_string(), vec![vec![Some(100usize)]])]);
+            aggregate_callsite_buf_args(&bufs, &mut summaries, &HashSet::new());
+            let fields = HashMap::from([(
+                "f".to_string(),
+                vec![vec![HashMap::from([("buf".to_string(), 100usize)])]],
+            )]);
+            aggregate_callsite_field_buffer_sizes(&fields, &mut summaries, &HashSet::new());
+            let validated = HashMap::from([("f".to_string(), vec![vec![true]])]);
+            aggregate_callsite_validated_args(&validated, &mut summaries);
+            let taint = HashMap::from([("f".to_string(), vec![vec![false, true]])]);
+            aggregate_callsite_taint_args(&taint, &mut summaries, &HashSet::new());
+
+            let f = &summaries["f"];
+            assert!(f.callsite_param_const_int.is_empty());
+            assert!(f.callsite_param_buffer_size.is_empty());
+            assert!(f.callsite_param_field_buffer_size.is_empty());
+            assert!(f.callsite_param_validated.is_empty());
+            assert!(
+                !f.callsite_param_taint_observed.contains(&0),
+                "no clean verdict"
+            );
+            assert!(f.callsite_param_tainted.contains(&1));
+            assert!(f.callsite_param_taint_observed.contains(&1));
+        }
     }
 
     #[test]
@@ -8648,8 +8741,12 @@ void caller(char *other) {
         let bad = ctx.function_summaries.get("bad_sink").unwrap();
         assert!(bad.callsite_param_taint_observed.contains(&0));
         assert!(bad.callsite_param_tainted.contains(&0));
+        // Bound to a function pointer, so its address is taken and its
+        // caller set is open: the literal the one visible call passes is not
+        // a clean verdict (ADR-0011: no function-pointer route in).
         let good = ctx.function_summaries.get("good_sink").unwrap();
-        assert!(good.callsite_param_taint_observed.contains(&0));
+        assert!(good.address_taken);
+        assert!(!good.callsite_param_taint_observed.contains(&0));
         assert!(!good.callsite_param_tainted.contains(&0));
         let _ = std::fs::remove_dir_all(&dir);
     }

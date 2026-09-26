@@ -1721,7 +1721,7 @@ fn collect_proven_nonnull_params(
     let Some(summary) = func_name.and_then(|n| summaries.get(n)) else {
         return out;
     };
-    if !summary.has_internal_linkage || summary.callsite_param_proven_nonnull.is_empty() {
+    if !summary.caller_set_is_closed() || summary.callsite_param_proven_nonnull.is_empty() {
         return out;
     }
     let params = crate::analyze::function_summary::collect_param_names(func_node, source);

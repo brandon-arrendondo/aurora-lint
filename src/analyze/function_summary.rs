@@ -606,6 +606,37 @@ pub struct FunctionSummary {
     /// passing an unguarded variable, disqualifies the position entirely.
     #[serde(default)]
     pub callsite_param_validated: HashSet<usize>,
+    /// The definition's parameter list is empty or exactly `(void)`, so no
+    /// value a caller passes can reach its body through a parameter. That is
+    /// where a walk up the reverse call graph for "what reaches this value"
+    /// can stop: see [`every_caller_is_clean`]. False whenever the list is
+    /// anything else, including a K&R identifier list, and whenever the
+    /// declarator is too unusual to be sure.
+    #[serde(default)]
+    pub declares_no_params: bool,
+}
+
+impl FunctionSummary {
+    /// Whether the call sites the scan collected for this function are
+    /// provably ALL of them, so that what every one of them passes is a fact
+    /// about the parameter rather than about today's callers (ADR-0011,
+    /// "checks made by every caller count").
+    ///
+    /// Two things have to hold. The function has internal linkage, so no
+    /// translation unit the scan never saw can call it -- a non-static
+    /// function is open whether or not a header declares it, since a library
+    /// exports it and `-rdynamic` exports it from an executable. And its
+    /// address stays inside the scanned source (`address_taken` is false), so
+    /// no call is made through a stored pointer by code that never names it.
+    ///
+    /// This is the gate every caller-set proof goes through: a constant every
+    /// caller passes, a minimum buffer size, "no caller passes taint", "every
+    /// caller range-checks the index", reachability from a thread root. It
+    /// says nothing about how many call sites there are; a proof also needs
+    /// at least one, which each aggregation checks for itself.
+    pub fn caller_set_is_closed(&self) -> bool {
+        self.has_internal_linkage && !self.address_taken
+    }
 }
 
 /// Names of functions that read externally-controlled data into their
@@ -1047,6 +1078,7 @@ fn analyze_function(
 
     let mut summary = FunctionSummary {
         has_internal_linkage,
+        declares_no_params: declares_no_params(func_node, source),
         ..Default::default()
     };
 
@@ -1326,6 +1358,101 @@ fn find_variadic_arity_in_declarator(node: &Node) -> Option<usize> {
         node.child_by_field_name("declarator")
             .and_then(|d| find_variadic_arity_in_declarator(&d))
     }
+}
+
+/// See [`FunctionSummary::declares_no_params`].
+fn declares_no_params(func_node: &Node, source: &str) -> bool {
+    let Some(mut node) = func_node.child_by_field_name("declarator") else {
+        return false;
+    };
+    while node.kind() != "function_declarator" {
+        match node.child_by_field_name("declarator") {
+            Some(inner) => node = inner,
+            None => return false,
+        }
+    }
+    // A function returning a function pointer nests a second parameter list;
+    // which one is the definition's own is not worth guessing at here.
+    if node.child_by_field_name("declarator").is_some_and(|d| {
+        !lang_parsing_substrate::query::find_descendants_of_kind(d, "function_declarator")
+            .is_empty()
+    }) {
+        return false;
+    }
+    let Some(params) = node.child_by_field_name("parameters") else {
+        return false;
+    };
+    let mut cursor = params.walk();
+    let entries: Vec<Node> = params
+        .named_children(&mut cursor)
+        .filter(|c| c.kind() != "comment")
+        .collect();
+    match entries.as_slice() {
+        [] => true,
+        [only] => {
+            only.kind() == "parameter_declaration"
+                && only.child_by_field_name("declarator").is_none()
+                && only
+                    .child_by_field_name("type")
+                    .is_some_and(|t| t.utf8_text(source.as_bytes()) == Ok("void"))
+                && only.named_child_count() == 1
+        }
+        _ => false,
+    }
+}
+
+/// Whether every value that can reach `name`'s parameters provably comes from
+/// callers `is_clean` accepts -- the caller-side proof of ADR-0011, walked up
+/// the reverse call graph (`callers`, as `ProjectContext::callers` holds it).
+///
+/// `name` itself needs a closed caller set
+/// ([`FunctionSummary::caller_set_is_closed`]) and at least one caller. Each
+/// caller on the way up must pass `is_clean`. A caller that declares no
+/// parameters ends its branch: nothing its own callers pass can reach it. Any
+/// other caller forwards whatever reached it, so the proof needs the same of
+/// it in turn -- a closed caller set and at least one caller -- until every
+/// branch ends in a parameterless function. An exported relay, a static relay
+/// whose address escapes, or `main` (open, and handed `argv`) ends the proof,
+/// which is what a relay one hop up (`void api(char *s) { sink(s); }`) needs:
+/// the sink's only caller is clean-bodied, but `s` comes from outside.
+/// A caller with no summary ends it the same way.
+pub fn every_caller_is_clean(
+    name: &str,
+    callers: &HashMap<String, HashSet<String>>,
+    summaries: &(impl crate::analyze::context::SummaryLookup + ?Sized),
+    is_clean: impl Fn(&FunctionSummary) -> bool,
+) -> bool {
+    let closed_with_callers = |fname: &str| -> Option<Vec<String>> {
+        let own = summaries.get(fname)?;
+        if !own.caller_set_is_closed() {
+            return None;
+        }
+        let cs = callers.get(fname).filter(|cs| !cs.is_empty())?;
+        Some(cs.iter().cloned().collect())
+    };
+    let Some(mut stack) = closed_with_callers(name) else {
+        return false;
+    };
+    let mut visited: HashSet<String> = HashSet::from([name.to_string()]);
+    while let Some(current) = stack.pop() {
+        if !visited.insert(current.clone()) {
+            continue;
+        }
+        let Some(summary) = summaries.get(&current) else {
+            return false;
+        };
+        if !is_clean(summary) {
+            return false;
+        }
+        if summary.declares_no_params {
+            continue;
+        }
+        let Some(up) = closed_with_callers(&current) else {
+            return false;
+        };
+        stack.extend(up.into_iter().filter(|c| !visited.contains(c)));
+    }
+    true
 }
 
 /// Collect parameter names from a function declaration.
@@ -5381,6 +5508,10 @@ pub fn propagate_forwards_to_indirect_call(summaries: &mut HashMap<String, Funct
 /// CWE-134 flow variants nest up to 5 files deep (variant 54). Skips
 /// header-declared callees: their external callers are unknowable, so
 /// nothing here should assert their call sites are conclusively observed.
+/// For the same reason a callee whose caller set is open
+/// (`FunctionSummary::caller_set_is_closed`) takes only the tainted half:
+/// `aggregate_callsite_taint_args` never records a clean observation for it,
+/// and a forwarded one must not either.
 pub fn propagate_transitive_param_taint(
     summaries: &mut HashMap<String, FunctionSummary>,
     header_declared: &HashSet<String>,
@@ -5419,6 +5550,9 @@ pub fn propagate_transitive_param_taint(
                 continue;
             }
             if let Some(callee_summary) = summaries.get_mut(&callee_name) {
+                if !is_tainted && !callee_summary.caller_set_is_closed() {
+                    continue;
+                }
                 if callee_summary
                     .callsite_param_taint_observed
                     .insert(callee_idx)

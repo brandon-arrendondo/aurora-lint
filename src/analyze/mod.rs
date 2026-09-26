@@ -939,7 +939,24 @@ pub(crate) fn compute_vra_if_needed(
 
     // Augment same-file summaries with caller constant arg propagation so that
     // VRA can narrow parameter ranges (e.g. goodG2B passes data=2 to goodG2BSink).
+    // Only a function whose caller set is closed is narrowed
+    // (`FunctionSummary::caller_set_is_closed`), so these fresh summaries need
+    // the address-escape half of that too: from this file's own value-position
+    // names, and from the prescan's project-wide verdict, which also sees a
+    // header's `static inline` referenced from the files that include it.
     {
+        let mut value_position_identifiers = std::collections::HashSet::new();
+        prescan::collect_value_position_identifiers(
+            root_node,
+            source,
+            &mut value_position_identifiers,
+        );
+        prescan::mark_address_taken(&mut file_summaries, &value_position_identifiers);
+        for (name, summary) in file_summaries.iter_mut() {
+            if prescan_summaries.get(name).is_some_and(|s| s.address_taken) {
+                summary.address_taken = true;
+            }
+        }
         let mut callsite_int_args = std::collections::HashMap::new();
         prescan::collect_callsite_int_args_from_tree(root_node, source, &mut callsite_int_args);
         prescan::aggregate_callsite_int_args(
