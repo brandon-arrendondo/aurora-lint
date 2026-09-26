@@ -2010,8 +2010,10 @@ fn aggregate_callsite_null_states(
 /// Aggregate struct field null states from call sites into function summaries.
 ///
 /// For each callee, aggregates per-field null states across all call sites using
-/// the same voting scheme as `aggregate_callsite_null_states`: any DefinitelyNull
-/// or majority PossiblyNull → PossiblyNull, otherwise NotNull.
+/// the same scheme as `aggregate_callsite_null_states`: any DefinitelyNull or
+/// PossiblyNull caller → PossiblyNull, otherwise (every known caller NotNull)
+/// NotNull. It was a majority vote, which let a pile of NotNull callers
+/// outvote the one caller that can pass a null field.
 fn aggregate_callsite_field_null_states(
     callsite_field_args: &HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
     summaries: &mut HashMap<String, FunctionSummary>,
@@ -2041,7 +2043,11 @@ fn aggregate_callsite_field_null_states(
                 for (field_name, (null_count, possibly_count, not_null_count)) in &field_counts {
                     let total = null_count + possibly_count + not_null_count;
                     if total > 0 {
-                        let aggregated = if *null_count > 0 || possibly_count > not_null_count {
+                        // Any caller that can hand this field a null wins, as for
+                        // the parameter itself (`aggregate_callsite_null_states`):
+                        // a count of NotNull callers is a description of the
+                        // others, not a proof about this one.
+                        let aggregated = if *null_count > 0 || *possibly_count > 0 {
                             NullState::PossiblyNull
                         } else {
                             NullState::NotNull
@@ -2088,7 +2094,8 @@ fn aggregate_callsite_pointee_null_states(
                 }
                 let total_known = null_count + possibly_count + not_null_count;
                 if total_known > 0 {
-                    let aggregated = if null_count > 0 || possibly_count > not_null_count {
+                    // Any caller that can pass a null pointee wins, as above.
+                    let aggregated = if null_count > 0 || possibly_count > 0 {
                         NullState::PossiblyNull
                     } else {
                         NullState::NotNull
