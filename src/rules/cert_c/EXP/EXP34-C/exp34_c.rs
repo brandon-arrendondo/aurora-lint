@@ -1666,24 +1666,19 @@ fn analyze_condition_for_safety(node: &Node, var_name: &str, source: &str, negat
                     "!=" if is_null_comparison(node, var_name, source) => {
                         return !negated;
                     }
-                    "&&" => {
+                    // De Morgan: `A && B` true means both hold, so either may
+                    // prove it; `A && B` FALSE means only `!A || !B`, so both
+                    // must. `||` is the dual. `negated` asks about the
+                    // condition being false.
+                    "&&" | "||" => {
                         if let (Some(left), Some(right)) = (
                             node.child_by_field_name("left"),
                             node.child_by_field_name("right"),
                         ) {
                             let l = analyze_condition_for_safety(&left, var_name, source, negated);
                             let r = analyze_condition_for_safety(&right, var_name, source, negated);
-                            return l || r;
-                        }
-                    }
-                    "||" => {
-                        if let (Some(left), Some(right)) = (
-                            node.child_by_field_name("left"),
-                            node.child_by_field_name("right"),
-                        ) {
-                            let l = analyze_condition_for_safety(&left, var_name, source, negated);
-                            let r = analyze_condition_for_safety(&right, var_name, source, negated);
-                            return l && r;
+                            let either_proves = (op == "&&") != negated;
+                            return if either_proves { l || r } else { l && r };
                         }
                     }
                     _ => {}
