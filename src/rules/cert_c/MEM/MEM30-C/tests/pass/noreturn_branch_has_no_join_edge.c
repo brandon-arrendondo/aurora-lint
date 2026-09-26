@@ -11,6 +11,12 @@
  *         merge already drops. Its free was being carried to the join
  *         point anyway, so every later use of the pointer read as a
  *         use-after-free and the single legitimate free as a double free.
+ *
+ * Settings: stdlib_noreturn=true
+ * The library contract that abort/exit never return is held on under every
+ * preset: it is not what this fixture tests (the strict preset's
+ * freestanding environment withdraws it; see
+ * src/rules/cert_c/MEM/MEM30-C/tests/pass/stdlib_exit_branch_needs_stdlib_noreturn.c).
  */
 
 #include <stdio.h>

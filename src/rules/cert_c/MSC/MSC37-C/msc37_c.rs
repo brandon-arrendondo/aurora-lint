@@ -587,9 +587,11 @@ impl Msc37C {
         // policy that does not trust the keyword keeps only the `_Noreturn`
         // functions whose bodies are verified never to return.
         let mut noreturn_names = Self::collect_noreturn_function_names(node, source);
-        if !self.settings.borrow().flag("trust_noreturn_keyword") {
-            let verified = crate::analyze::noreturn::collect_noreturn_names(node, source);
-            noreturn_names.retain(|name| verified.verified_only.contains(name));
+        let settings = self.settings.borrow();
+        if !settings.flag("trust_noreturn_keyword") {
+            let verified =
+                crate::analyze::noreturn::collect_noreturn_function_names(node, source, &settings);
+            noreturn_names.retain(|name| verified.contains(name));
         }
         noreturn_names.extend(self.collect_returning_macros(source));
         // Check function definitions

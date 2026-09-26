@@ -2,6 +2,12 @@
  * Rule: MEM31-C
  * Source: real-world regression
  * Status: PASS - Should NOT trigger MEM31-C violation
+ *
+ * Settings: stdlib_noreturn=true
+ * The library contract that abort/exit never return is held on under every
+ * preset: it is not what this fixture tests (the strict preset's
+ * freestanding environment withdraws it; see
+ * src/rules/cert_c/MEM/MEM30-C/tests/pass/stdlib_exit_branch_needs_stdlib_noreturn.c).
  */
 
 /*

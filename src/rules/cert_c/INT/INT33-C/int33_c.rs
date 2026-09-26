@@ -32,7 +32,7 @@ pub struct Int33C {
     struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
     /// Assert-style macros no configuration compiles out, with the index of
     /// the parameter each checks (`ProjectContext::abort_check_macros`),
-    /// under each setting of `trust_noreturn_keyword`.
+    /// under each noreturn setting (`ByNoreturnTrust`).
     abort_check_macros: RefCell<ByNoreturnTrust<Arc<HashMap<String, usize>>>>,
     /// The run's policy and environment settings: whether an
     /// NDEBUG-strippable assert guards a division (`assert_is_guard`).

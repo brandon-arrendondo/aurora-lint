@@ -77,8 +77,8 @@ pub struct ProjectContext {
     /// across all scanned files (incl. headers) by
     /// [`crate::analyze::noreturn::collect_noreturn_names`]: the fixed C
     /// standard library set, `_Noreturn` qualifiers, and definitions
-    /// verified never to return -- once per setting of
-    /// `trust_noreturn_keyword`; a reader picks one with
+    /// verified never to return -- once per combination of
+    /// `trust_noreturn_keyword` and `stdlib_noreturn`; a reader picks one with
     /// [`ByNoreturnTrust::get`](crate::analyze::noreturn::ByNoreturnTrust::get).
     /// Cross-file because the declaration carrying the keyword is routinely
     /// in a header the single-file parse never sees.
@@ -126,7 +126,8 @@ pub struct ProjectContext {
     /// `macro name -> index of the parameter it checks`, for the assert-style
     /// macros no configuration compiles out (valkey's `serverAssert`), per
     /// [`crate::analyze::check_macros::abort_check_macros`], under each
-    /// setting of `trust_noreturn_keyword` (whether a macro's failure path
+    /// noreturn setting ([`crate::analyze::noreturn::ByNoreturnTrust`]:
+    /// whether a macro's failure path
     /// ends depends on which functions count as noreturn). Recomputed
     /// whenever `macro_definitions` or `noreturn_functions` grows.
     #[serde(default)]

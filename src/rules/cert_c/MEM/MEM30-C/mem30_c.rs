@@ -48,7 +48,7 @@ pub struct Mem30C {
     /// Cross-file noreturn function names from the prescan, unioned in
     /// `check` with this file's own declarations and the stdlib set, so a
     /// branch ending in `exit(1)` or a project `fatal()` is known to have
-    /// no successor. Held under each setting of `trust_noreturn_keyword`;
+    /// no successor. Held under each noreturn setting (`ByNoreturnTrust`);
     /// `settings` picks one.
     noreturn_functions: RefCell<ByNoreturnTrust<Arc<HashSet<String>>>>,
     /// The run's policy and environment settings.
@@ -195,7 +195,7 @@ impl CertRule for Mem30C {
 
         // Functions that never return to their caller: the stdlib set, the
         // prescan's cross-file set, and this file's own, under the run's
-        // setting of `trust_noreturn_keyword`.
+        // noreturn settings.
         let settings = Arc::clone(&self.settings.borrow());
         let mut noreturn_names = HashSet::clone(self.noreturn_functions.borrow().get(&settings));
         noreturn_names.extend(crate::analyze::noreturn::collect_noreturn_function_names(

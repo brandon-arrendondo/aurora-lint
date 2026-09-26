@@ -4237,6 +4237,11 @@ fn guarded_nonnull_after(stmt: &Node, var: &str, source: &str) -> bool {
 
 /// True when `branch` is, or is a block ending in, a call to a standard
 /// noreturn function: `if (!p) { exit(1); }` leaves as surely as a `return`.
+///
+/// Known limitation: this runs in the prescan, so it credits the standard
+/// list whatever the run's `stdlib_noreturn` contract says, and a call-site
+/// summary built on it is the same under every setting. Honoring the
+/// contract here would need the summaries kept per setting.
 fn ends_in_stdlib_noreturn_call(branch: &Node, source: &str) -> bool {
     let last = if branch.kind() == "compound_statement" {
         let mut cursor = branch.walk();

@@ -183,29 +183,14 @@ fn blank_range(source: &str, start: usize, end: usize) -> String {
     String::from_utf8(bytes).unwrap_or_else(|_| source.to_string())
 }
 
-/// Same as [`blank_range`], but if the identifier being blanked is a known
-/// noreturn-attribute macro name (an earlier fix -- e.g. seL4's
-/// `void NORETURN slowpath(...)`, where `NORETURN` has no local `#define`
-/// for `empty_macro_blank` to find and expands to
-/// `__attribute__((noreturn))` in a header this single-file parse never
-/// sees), write `crate::analyze::noreturn::MARKER` in its place instead of
-/// plain blanking -- the same length-preserving recoverable-marker idiom
-/// an earlier fix introduced for label-guarded preprocessor directives.
-///
-/// An unused-attribute macro (resolved through the prescan's
-/// [`RepairMacros::unused_attribute_macros`] rather than by spelling) leaves
-/// [`UNUSED_ATTRIBUTE_MARKER`] behind for the same reason: what the macro
+/// Same as [`blank_range`], but an unused-attribute macro (resolved through
+/// the prescan's [`RepairMacros::unused_attribute_macros`] rather than by
+/// spelling) leaves [`UNUSED_ATTRIBUTE_MARKER`] behind: what the macro
 /// expanded to is the author's statement that the variable may go unread,
 /// and blanking it hands MSC13-C a declaration with nothing left to read.
-/// Every other unknown identifier is blanked exactly as before -- only these
-/// two narrow, purpose-known cases get the marker treatment.
+/// Every other unknown identifier is blanked.
 fn blank_or_mark(source: &str, start: usize, end: usize, macros: &RepairMacros) -> String {
     let trimmed = source[start..end].trim();
-    if crate::analyze::noreturn::NORETURN_ATTRIBUTE_MACRO_NAMES.contains(&trimmed) {
-        if let Some(marked) = crate::analyze::noreturn::write_marker(source, start, end) {
-            return marked;
-        }
-    }
     if macros.unused_attribute_macros.contains(trimmed) {
         if let Some(marked) = write_padded_marker(source, start, end, UNUSED_ATTRIBUTE_MARKER) {
             return marked;

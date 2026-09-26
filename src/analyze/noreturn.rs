@@ -15,7 +15,9 @@
 //!
 //! This module collects the set of function names known to be noreturn for
 //! a translation unit, from three signals:
-//! 1. The fixed C standard library list (`abort`, `exit`, ...).
+//! 1. The fixed C standard library list (`abort`, `exit`, ...), trusted only
+//!    when the declared environment honors that library contract
+//!    (`stdlib_noreturn`: hosted, or a declared libc model).
 //! 2. `_Noreturn`-qualified declarations/definitions (C11 6.7.4p8), trusted
 //!    only when `trust_noreturn_keyword` holds (the default policy).
 //! 3. A definition whose body unconditionally terminates the process, even
@@ -29,12 +31,13 @@
 //! is a promise the compiler does not check, so a function declared with it
 //! is noreturn here only when its body is verified to be. The same holds for
 //! a bare-identifier attribute macro such as seL4's `NORETURN`, whose
-//! expansion is that attribute.
+//! expansion is that attribute: it is not recognized by its spelling at all.
 //!
-//! Signal 2 changes what signal 3 infers (a wrapper around a `_Noreturn`
-//! function is itself noreturn only when the keyword is trusted), so the
-//! names are collected once per setting of `trust_noreturn_keyword`, as a
-//! [`ByNoreturnTrust`]. A prescan records both and a rule picks one with
+//! Signals 1 and 2 change what signal 3 infers (a wrapper around `exit` or a
+//! `_Noreturn` function is noreturn only when that callee is), so the names
+//! are collected once per combination of `stdlib_noreturn` and
+//! `trust_noreturn_keyword`, as a [`ByNoreturnTrust`]. A prescan records all
+//! four and a rule picks one with
 //! [`ByNoreturnTrust::get`], which keeps a saved prescan valid under every
 //! setting.
 
@@ -44,42 +47,58 @@ use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
-/// A value computed under each setting of `trust_noreturn_keyword`.
+/// A value computed under each combination of the two options that decide
+/// what counts as noreturn: `trust_noreturn_keyword` (policy: is a `_Noreturn`
+/// declaration proof?) and `stdlib_noreturn` (environment: do `abort`, `exit`
+/// and the rest honor their library contract?).
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ByNoreturnTrust<T> {
-    /// When a `_Noreturn` declaration is trusted (the default policy).
-    pub trusting_keyword: T,
-    /// When only a body verified never to return is proof (strict).
-    pub verified_only: T,
+    /// Keyword and library contract both trusted (the default preset).
+    pub keyword_and_stdlib: T,
+    /// Only the library contract trusted (strict policy on a declared libc).
+    pub stdlib_only: T,
+    /// Only the keyword trusted (default policy, freestanding, no libc).
+    pub keyword_only: T,
+    /// Neither: only a body verified never to return (the strict preset),
+    /// which with no library contract leaves nothing to verify against.
+    pub neither: T,
 }
 
 impl<T> ByNoreturnTrust<T> {
     /// The value for `settings`.
     pub fn get(&self, settings: &AnalysisSettings) -> &T {
-        if settings.flag("trust_noreturn_keyword") {
-            &self.trusting_keyword
-        } else {
-            &self.verified_only
+        match (
+            settings.flag("trust_noreturn_keyword"),
+            settings.flag("stdlib_noreturn"),
+        ) {
+            (true, true) => &self.keyword_and_stdlib,
+            (false, true) => &self.stdlib_only,
+            (true, false) => &self.keyword_only,
+            (false, false) => &self.neither,
         }
     }
 
-    /// Apply `f` under each setting.
+    /// Apply `f` under each combination.
     pub fn map<U>(&self, f: impl Fn(&T) -> U) -> ByNoreturnTrust<U> {
         ByNoreturnTrust {
-            trusting_keyword: f(&self.trusting_keyword),
-            verified_only: f(&self.verified_only),
+            keyword_and_stdlib: f(&self.keyword_and_stdlib),
+            stdlib_only: f(&self.stdlib_only),
+            keyword_only: f(&self.keyword_only),
+            neither: f(&self.neither),
         }
     }
 }
 
-/// Noreturn function names under each setting of `trust_noreturn_keyword`.
+/// Noreturn function names under each combination of the noreturn options.
 pub type NoreturnNames = ByNoreturnTrust<HashSet<String>>;
 
 impl NoreturnNames {
-    /// Add `other`'s names under each setting.
+    /// Add `other`'s names under each combination.
     pub fn extend(&mut self, other: NoreturnNames) {
-        self.trusting_keyword.extend(other.trusting_keyword);
-        self.verified_only.extend(other.verified_only);
+        self.keyword_and_stdlib.extend(other.keyword_and_stdlib);
+        self.stdlib_only.extend(other.stdlib_only);
+        self.keyword_only.extend(other.keyword_only);
+        self.neither.extend(other.neither);
     }
 }
 
@@ -92,36 +111,6 @@ const STDLIB_NORETURN_FUNCTIONS: &[&str] = &["abort", "exit", "_Exit", "quick_ex
 /// (rather than merely "does not return to my caller") must exclude these --
 /// see [`is_process_terminating_name`].
 const NON_TERMINATING_NORETURN_FUNCTIONS: &[&str] = &["longjmp", "siglongjmp"];
-
-/// Bare-identifier attribute-macro spellings the parse-repair pass replaces
-/// with a length-preserving marker rather than a blank, seen in a pinned
-/// real-world corpus (seL4's `NORETURN`, from `include/util.h`:
-/// `#define NORETURN __attribute__((__noreturn__))`). The marker is no
-/// longer credited as noreturn: the macro expands to an attribute, which is
-/// proof under neither policy (module docs).
-pub const NORETURN_ATTRIBUTE_MACRO_NAMES: &[&str] = &["NORETURN"];
-
-/// Marker written in place of a blanked [`NORETURN_ATTRIBUTE_MACRO_NAMES`]
-/// token. Short enough to fit inside the shortest name currently in that
-/// list, padded with spaces to preserve the original byte length.
-const MARKER: &str = "/*R*/";
-
-/// Write `MARKER` into `source[start..end]`, right-padded with spaces to
-/// preserve length. Returns `None` (caller should fall back to a plain
-/// blank) if the marker doesn't fit -- defensive against a future,
-/// shorter-than-`MARKER` addition to [`NORETURN_ATTRIBUTE_MACRO_NAMES`].
-pub fn write_marker(source: &str, start: usize, end: usize) -> Option<String> {
-    let len = end - start;
-    if len < MARKER.len() {
-        return None;
-    }
-    let mut out = String::with_capacity(source.len());
-    out.push_str(&source[..start]);
-    out.push_str(MARKER);
-    out.push_str(&" ".repeat(len - MARKER.len()));
-    out.push_str(&source[end..]);
-    Some(out)
-}
 
 /// Depth-first search for a `function_declarator`, descending through
 /// `pointer_declarator` wrappers -- mirrors
@@ -158,17 +147,13 @@ pub fn collect_noreturn_function_names(
     source: &str,
     settings: &AnalysisSettings,
 ) -> HashSet<String> {
-    let mut names = collect_noreturn_names(root, source);
-    std::mem::take(if settings.flag("trust_noreturn_keyword") {
-        &mut names.trusting_keyword
-    } else {
-        &mut names.verified_only
-    })
+    let names = collect_noreturn_names(root, source);
+    names.get(settings).clone()
 }
 
 /// Collect the names of every function in `root` recognized as noreturn by
-/// the signals documented at module level, under each setting of
-/// `trust_noreturn_keyword`.
+/// the signals documented at module level, under each combination of
+/// `trust_noreturn_keyword` and `stdlib_noreturn`.
 pub fn collect_noreturn_names(root: &Node, source: &str) -> NoreturnNames {
     let stdlib: HashSet<String> = STDLIB_NORETURN_FUNCTIONS
         .iter()
@@ -197,14 +182,20 @@ pub fn collect_noreturn_names(root: &Node, source: &str) -> NoreturnNames {
         }
     }
 
-    let mut trusting_keyword = stdlib.clone();
-    trusting_keyword.extend(declared);
-    infer_terminating_definitions(root, source, &mut trusting_keyword);
-    let mut verified_only = stdlib;
-    infer_terminating_definitions(root, source, &mut verified_only);
+    let infer = |seed: HashSet<String>| {
+        let mut names = seed;
+        infer_terminating_definitions(root, source, &mut names);
+        names
+    };
+    let with_declared = |mut base: HashSet<String>| {
+        base.extend(declared.iter().cloned());
+        base
+    };
     NoreturnNames {
-        trusting_keyword,
-        verified_only,
+        keyword_and_stdlib: infer(with_declared(stdlib.clone())),
+        stdlib_only: infer(stdlib),
+        keyword_only: infer(with_declared(HashSet::new())),
+        neither: infer(HashSet::new()),
     }
 }
 
@@ -373,13 +364,14 @@ mod tests {
     /// The names the default policy accepts in `src`.
     fn default_names(src: &str) -> HashSet<String> {
         let (tree, source) = parse(src);
-        collect_noreturn_names(&tree.root_node(), &source).trusting_keyword
+        collect_noreturn_names(&tree.root_node(), &source).keyword_and_stdlib
     }
 
-    /// The names the strict policy accepts in `src`.
+    /// The names the strict policy accepts in `src`, on an environment that
+    /// honors the library contract (strict policy, declared libc).
     fn strict_names(src: &str) -> HashSet<String> {
         let (tree, source) = parse(src);
-        collect_noreturn_names(&tree.root_node(), &source).verified_only
+        collect_noreturn_names(&tree.root_node(), &source).stdlib_only
     }
 
     #[test]
@@ -444,7 +436,7 @@ mod tests {
     fn infers_noreturn_from_a_definition_that_only_exits() {
         let (tree, source) =
             parse("static void no_mem(void) { fprintf(stderr, \"oom\"); exit(1); }\n");
-        let names = collect_noreturn_names(&tree.root_node(), &source).trusting_keyword;
+        let names = collect_noreturn_names(&tree.root_node(), &source).keyword_and_stdlib;
         assert!(names.contains("no_mem"));
     }
 
@@ -454,7 +446,7 @@ mod tests {
             "static void die(void) { exit(1); }\n\
              static void bail(void) { die(); }\n",
         );
-        let names = collect_noreturn_names(&tree.root_node(), &source).trusting_keyword;
+        let names = collect_noreturn_names(&tree.root_node(), &source).keyword_and_stdlib;
         assert!(names.contains("die"));
         assert!(names.contains("bail"));
     }
@@ -462,14 +454,14 @@ mod tests {
     #[test]
     fn does_not_infer_when_an_earlier_return_can_escape() {
         let (tree, source) = parse("static void maybe(int x) { if (x) return; exit(1); }\n");
-        let names = collect_noreturn_names(&tree.root_node(), &source).trusting_keyword;
+        let names = collect_noreturn_names(&tree.root_node(), &source).keyword_and_stdlib;
         assert!(!names.contains("maybe"));
     }
 
     #[test]
     fn does_not_infer_when_the_exit_is_conditional() {
         let (tree, source) = parse("static void maybe(int x) { if (x) { exit(1); } }\n");
-        let names = collect_noreturn_names(&tree.root_node(), &source).trusting_keyword;
+        let names = collect_noreturn_names(&tree.root_node(), &source).keyword_and_stdlib;
         assert!(!names.contains("maybe"));
     }
 
@@ -479,30 +471,39 @@ mod tests {
         // make `is_process_terminating_name` answer true and turn every
         // allocation live across it into a suppressed leak.
         let (tree, source) = parse("static void unwind(void) { longjmp(env, 1); }\n");
-        let names = collect_noreturn_names(&tree.root_node(), &source).trusting_keyword;
+        let names = collect_noreturn_names(&tree.root_node(), &source).keyword_and_stdlib;
         assert!(!names.contains("unwind"));
         assert!(!is_process_terminating_name("unwind", &names));
     }
 
     #[test]
-    fn marker_recovered_bare_macro_prototype_is_not_proof() {
+    fn bare_noreturn_macro_prototype_is_not_proof() {
         // The seL4 shape: NORETURN expands to a GNU attribute, which is
         // proof under neither policy, and the definition's body can return.
         let src = "void NORETURN slowpath(int x);\nvoid slowpath(int x) { for (;;) {} }\n";
-        let (_, source) = parse(src);
-        assert!(source.contains(MARKER), "expected marker in: {source:?}");
         assert!(!default_names(src).contains("slowpath"));
         assert!(!strict_names(src).contains("slowpath"));
     }
 
     #[test]
+    fn nothing_is_noreturn_without_the_library_contract_or_the_keyword() {
+        // The strict preset: freestanding with no libc, strict policy.
+        let (tree, source) =
+            parse("_Noreturn void die(void);\nstatic void bail(void) { exit(1); }\n");
+        let names = collect_noreturn_names(&tree.root_node(), &source);
+        assert!(names.neither.is_empty());
+        assert!(names.keyword_only.contains("die"));
+        assert!(!names.keyword_only.contains("exit"));
+        assert!(names.stdlib_only.contains("bail"));
+    }
+
+    #[test]
     fn does_not_flag_unrelated_unknown_macro() {
-        // VISIBLE has no local #define either, but it isn't in
-        // NORETURN_ATTRIBUTE_MACRO_NAMES, so it stays a plain blank and
-        // must not make `foo` noreturn.
+        // An unresolvable macro between the return type and the declarator
+        // is blanked, and must not make `foo` noreturn.
         let src = "void VISIBLE foo(void) { return; }\n";
         let (tree, source) = parse(src);
-        let names = collect_noreturn_names(&tree.root_node(), &source).trusting_keyword;
+        let names = collect_noreturn_names(&tree.root_node(), &source).keyword_and_stdlib;
         assert!(!names.contains("foo"));
     }
 
@@ -531,7 +532,7 @@ mod tests {
     fn is_noreturn_call_statement_matches_expression_statement_call() {
         let src = "void f(void) { abort(); }\n";
         let (tree, source) = parse(src);
-        let names = collect_noreturn_names(&tree.root_node(), &source).trusting_keyword;
+        let names = collect_noreturn_names(&tree.root_node(), &source).keyword_and_stdlib;
         let call_stmt =
             query::find_descendants_of_kinds(tree.root_node(), &["expression_statement"])
                 .into_iter()

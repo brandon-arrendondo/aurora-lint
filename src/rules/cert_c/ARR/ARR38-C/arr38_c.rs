@@ -35,7 +35,7 @@ pub struct Arr38C {
     callsite_param_field_buffer_size: RefCell<FieldBufferSizeMap>,
     /// Assert-style macros no configuration compiles out, with the index of
     /// the parameter each checks (`ProjectContext::abort_check_macros`),
-    /// under each setting of `trust_noreturn_keyword`.
+    /// under each noreturn setting (`ByNoreturnTrust`).
     abort_check_macros: RefCell<ByNoreturnTrust<Arc<HashMap<String, usize>>>>,
     /// The run's policy and environment settings: whether an
     /// NDEBUG-strippable assert bounds a copy (`assert_is_guard`).
