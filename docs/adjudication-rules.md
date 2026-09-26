@@ -1,5 +1,8 @@
 # How aurora-lint findings are adjudicated
 
+aurora-lint is a rules conformance checker; its primary ruleset is CERT C
+(ADR-0001). A violation a team accepts is a deviation, not a false positive.
+
 The rulebook for labeling a finding, and for judging whether a rule change is
 correct. Each rule cites the ADR (`docs/adr/`) that decides it: the ADR
 records why, and this page states what. Where the two disagree, the ADR

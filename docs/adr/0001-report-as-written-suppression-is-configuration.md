@@ -23,6 +23,17 @@ one project is failing at its one job everywhere else.
 
 ## Decision
 
+**aurora-lint is a rules conformance checker, not a bug finder.** Its primary
+ruleset is CERT C. In CERT's and MISRA's model, conformance means no rule
+violations, and an instance a team accepts is still a violation, recorded as
+a documented deviation. Bug finders make the opposite trade on purpose,
+tolerating misses to keep false-positive rates low for adoption; that is a
+different goal, and their false-positive budgets aren't this tool's. The
+architecture (a language-independent parsing substrate) leaves room for other
+rulesets later, such as CERT's rules for another language or a style
+standard, but there are no such plans: aurora-lint is a C tool today
+(Brandon, 2026-09-25).
+
 aurora-lint's job is to correctly surface every violation of a rule as the
 rule is written — not to guess which violations a given team will care
 about, and not to bend detection logic to accommodate a particular
@@ -43,6 +54,21 @@ This ADR is the record of *why* that split exists, so it doesn't need
 re-deriving every time a rule looks noisy on one project.
 
 ## Consequences
+
+- **A suppression records a deviation; it doesn't change the verdict.** An
+  inline suppression or a disabled rule says the team accepts that
+  violation. The oracle row for it stays a violation (ADR-0014).
+- **A reviewer may quote CERT's front matter** ("unless otherwise noted,
+  function arguments should be assumed to point to valid values"). That
+  sentence governs how CERT's own code examples are written, and the next one
+  sends real parameter validation to API00-C. NIST SATE likewise scores "the
+  function has a weakness, but is always called with safe parameters" as a
+  true finding. Cite both.
+- **Defensible choices exist in both directions.** Where the field genuinely
+  splits (asserts as guards, trusting the standard library), ADR-0015 exposes
+  the choice as a documented setting instead of picking a side that
+  alienates one group of users. Each such setting is validated like any rule
+  behavior: measured under each preset.
 
 - A rule fix changes detection logic only to make the rule **more correct**
   against its own written definition — fewer findings that don't actually
