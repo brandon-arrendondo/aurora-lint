@@ -2032,6 +2032,56 @@ fn output_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
     out
 }
 
+/// Parameter indices of `name` that some live definition drops -- its full
+/// expansion never mentions the argument -- while every other live definition
+/// either drops it too or assigns it whole. At the invocation such an argument
+/// is untouched: no build reads it there, and not every build writes it. A
+/// read of the variable later is where an uninitialized use shows (EXP33-C
+/// reports `use(v)` after `GET(v)`, not `GET(v)`, when one build's `GET` is
+/// `0`). A definition that reads the argument, or one the expander cannot
+/// read, keeps the invocation a read.
+pub fn macro_untouched_param_indices(
+    table: &HashMap<String, FunctionMacro>,
+    name: &str,
+) -> Vec<usize> {
+    let Some(m) = table.get(name) else {
+        return Vec::new();
+    };
+    let arity = m.params.len();
+    if arity == 0 {
+        return Vec::new();
+    }
+    let definitions: Vec<Option<&FunctionMacro>> = if m.alternatives.is_empty() {
+        vec![Some(m)]
+    } else {
+        m.alternatives.iter().map(Option::as_ref).collect()
+    };
+    let sentinels: Vec<String> = (0..arity).map(|i| format!("__SQC_MUNT_{i}__")).collect();
+    let mut dropped = vec![false; arity];
+    let mut settled = vec![true; arity];
+    for definition in definitions {
+        let Some(definition) = definition.filter(|d| d.params.len() == arity) else {
+            return Vec::new();
+        };
+        let view = WithDefinition {
+            table,
+            name,
+            definition,
+        };
+        let Some(expanded) = expand_in(&view, name, &sentinels) else {
+            return Vec::new();
+        };
+        for (i, sent) in sentinels.iter().enumerate() {
+            if !contains_whole_ident(&expanded, sent) {
+                dropped[i] = true;
+            } else if !is_whole_assignment_target(&expanded, sent) {
+                settled[i] = false;
+            }
+        }
+    }
+    (0..arity).filter(|&i| dropped[i] && settled[i]).collect()
+}
+
 /// True if a function-like macro's replacement list begins with a `case`
 /// label — e.g. sqlite's `#define CASE(i,str) case i: assert(...);`, invoked
 /// as `CASE(0, "xColumnCount") { ... }`. Tree-sitter parses the invocation as
@@ -3401,6 +3451,42 @@ mod tests {
             "#endif\n",
         ));
         assert!(macro_output_param_indices(&reads, "FETCH", Live::All).is_empty());
+    }
+
+    #[test]
+    fn an_argument_one_build_drops_and_the_other_writes_is_untouched() {
+        let drops = table(concat!(
+            "#ifdef X\n",
+            "#define GET(v) ((v) = f())\n",
+            "#else\n",
+            "#define GET(v) 0\n",
+            "#endif\n",
+        ));
+        assert_eq!(macro_untouched_param_indices(&drops, "GET"), vec![0]);
+        // One definition, and it drops the argument.
+        let only = table("#define IGNORE(v) 0\n");
+        assert_eq!(macro_untouched_param_indices(&only, "IGNORE"), vec![0]);
+        // A build that reads the argument keeps the invocation a read.
+        let reads = table(concat!(
+            "#ifdef X\n",
+            "#define LOG(v) log_value(v)\n",
+            "#else\n",
+            "#define LOG(v) 0\n",
+            "#endif\n",
+        ));
+        assert!(macro_untouched_param_indices(&reads, "LOG").is_empty());
+        // Every build writes it: an output, not untouched.
+        let writes = table("#define SET(v) ((v) = 1)\n");
+        assert!(macro_untouched_param_indices(&writes, "SET").is_empty());
+        // A build the expander cannot read proves nothing.
+        let unreadable = table(concat!(
+            "#ifdef X\n",
+            "#define GET2(v) v##_tmp\n",
+            "#else\n",
+            "#define GET2(v) 0\n",
+            "#endif\n",
+        ));
+        assert!(macro_untouched_param_indices(&unreadable, "GET2").is_empty());
     }
 
     #[test]

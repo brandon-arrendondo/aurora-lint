@@ -44,6 +44,8 @@ pub struct Exp33C {
     /// (computed once per file from `function_macros`). Feeds the init-state
     /// transfer and the read-checker so macro-written args are not flagged.
     macro_output_params: RefCell<HashMap<String, Vec<usize>>>,
+    /// Invoked macros' argument indices that no build reads at the invocation.
+    macro_untouched_params: RefCell<HashMap<String, Vec<usize>>>,
     /// The run's policy and environment settings: whether static storage is
     /// zeroed before `main` (`static_zero_init`).
     settings: RefCell<Arc<AnalysisSettings>>,
@@ -60,6 +62,7 @@ impl Exp33C {
             file_scope_constants: RefCell::new(HashMap::new()),
             function_macros: RefCell::new(Arc::new(HashMap::new())),
             macro_output_params: RefCell::new(HashMap::new()),
+            macro_untouched_params: RefCell::new(HashMap::new()),
             settings: RefCell::default(),
         }
     }
@@ -287,8 +290,15 @@ impl CertRule for Exp33C {
                     let mut invoked = HashSet::new();
                     collect_invoked_macro_names(node, source, &macros, &mut invoked);
                     let mut out_params = HashMap::new();
+                    let mut untouched_params = HashMap::new();
                     let cross_file_summaries = self.cross_file_summaries.borrow();
                     for name in invoked {
+                        let untouched = crate::analyze::macro_expand::macro_untouched_param_indices(
+                            &macros, &name,
+                        );
+                        if !untouched.is_empty() {
+                            untouched_params.insert(name.clone(), untouched);
+                        }
                         let mut idx = crate::analyze::macro_expand::macro_output_param_indices(
                             &macros,
                             &name,
@@ -325,6 +335,7 @@ impl CertRule for Exp33C {
                     }
                     drop(cross_file_summaries);
                     *self.macro_output_params.borrow_mut() = out_params;
+                    *self.macro_untouched_params.borrow_mut() = untouched_params;
                 }
             }
 
@@ -353,12 +364,14 @@ impl CertRule for Exp33C {
                         self.build_cross_file_conditional_output_return_correlation();
                     let file_constants = self.file_scope_constants.borrow();
                     let macro_out = self.macro_output_params.borrow();
+                    let macro_untouched = self.macro_untouched_params.borrow();
                     let config = init_state::InitAnalysisConfig {
                         conditionally_init_fns: cond_fns.clone(),
                         realloc_wrapper_fns: realloc_fns.clone(),
                         read_only_deref_fns: read_only_fns.clone(),
                         file_scope_constants: file_constants.clone(),
                         macro_output_params: macro_out.clone(),
+                        macro_untouched_params: macro_untouched.clone(),
                         cross_file_output_params,
                         cross_file_conditional_output_params,
                         cross_file_conditional_output_return_correlation,
@@ -930,6 +943,14 @@ fn check_identifier_read(
     // writes this arg, so its appearance in the invocation is not a read of an
     // uninitialized value. Phase 2c-ii of docs/design/macro-expansion.md.
     if is_function_macro_output_arg(node, source, &config.macro_output_params) {
+        return;
+    }
+
+    // Skip an argument some build's definition drops and no build reads
+    // (`GET(v)` that is `((v) = f())` in one build and `0` in the other).
+    // Nothing reads it here; if no build wrote it, the next use is where
+    // the uninitialized value shows.
+    if is_function_macro_output_arg(node, source, &config.macro_untouched_params) {
         return;
     }
 

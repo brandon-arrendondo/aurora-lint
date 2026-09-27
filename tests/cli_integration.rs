@@ -660,6 +660,45 @@ fn macro_output_arg_not_flagged_uninitialized() {
     );
 }
 
+/// An argument that one build's macro definition drops is not read at the
+/// invocation: `GET(v)` is `((v) = f())` in one build and `0` in the other,
+/// so `v` stays uninitialized in the second and EXP33-C reports the later
+/// `use(v)`, not `GET(v)`, which reads nothing in either build. The
+/// generated fixture test only sees that EXP33-C fires, so the line is
+/// asserted here from the fixture's UNINIT-USE tag.
+#[test]
+fn a_dropped_macro_argument_is_reported_at_its_next_use() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "src/rules/cert_c/EXP/EXP33-C/tests/fail/\
+         macro_that_drops_its_argument_in_one_arm_leaves_it_unwritten.c",
+    );
+
+    let (code, _, _) = run_aurora_lint(&[
+        fixture.to_str().unwrap(),
+        "-m",
+        manifest_exp33().to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let source = std::fs::read_to_string(&fixture).unwrap();
+    let tagged = source
+        .lines()
+        .position(|text| text.contains("UNINIT-USE"))
+        .map(|idx| idx as u64 + 1)
+        .expect("fixture lost its UNINIT-USE tag");
+    let lines: Vec<u64> = violations
+        .iter()
+        .filter_map(|v| v["line"].as_u64())
+        .collect();
+    assert_eq!(lines, vec![tagged], "got: {violations:?}");
+}
+
 // ─── Suppression ─────────────────────────────────────────────────────────────
 
 #[test]

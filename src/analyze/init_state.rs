@@ -429,6 +429,12 @@ pub struct InitAnalysisConfig {
     /// `save`), so it becomes Initialized — clearing "used uninitialized" FPs on
     /// macro output arguments. Keyed by macro name; only invoked macros present.
     pub macro_output_params: HashMap<String, Vec<usize>>,
+    /// Argument indices of invoked function-like macros that some build's
+    /// definition drops while every other build drops or assigns them
+    /// (`macro_expand::macro_untouched_param_indices`). A bare identifier
+    /// there is neither read nor written at the invocation, so a read check
+    /// skips it and the variable's state carries on to its next use.
+    pub macro_untouched_params: HashMap<String, Vec<usize>>,
     /// Output-parameter indices for cross-file functions, computed from the
     /// prescan's `FunctionSummary::modifies_params` (an earlier fix follow-on to
     /// an earlier fix: un-blinding `#ifdef`-wrapped code to the CFG exposed how many
