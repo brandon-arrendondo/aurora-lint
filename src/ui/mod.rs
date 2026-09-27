@@ -2198,6 +2198,16 @@ impl TerminalUI {
             }
 
             if let Ok((tree, source)) = parser.parse_file(file_path) {
+                // The struct and typedef tables this file sees, as a scan
+                // hands them over in FileAnalysis::apply_to.
+                let visible = crate::analyze::context::VisibleTypes::for_file(
+                    &context,
+                    &tree.root_node(),
+                    &source,
+                );
+                for rule in self.registry.all_rules() {
+                    rule.set_visible_types(&visible);
+                }
                 self.scan_parsed_file(terminal, file_path, &tree.root_node(), &source)?;
             }
         }
