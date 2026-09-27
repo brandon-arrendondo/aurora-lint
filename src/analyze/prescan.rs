@@ -594,6 +594,10 @@ fn prescan_file_list(
         HashMap::new();
     let mut function_macro_arms: HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>> =
         HashMap::new();
+    let mut c_file_macro_arms: Vec<(
+        String,
+        HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>,
+    )> = Vec::new();
     let mut unused_attribute_macros: HashSet<String> = HashSet::new();
     let mut initializer_function_refs: HashSet<String> = HashSet::new();
     let mut value_position_identifiers: HashSet<String> = HashSet::new();
@@ -888,10 +892,20 @@ fn prescan_file_list(
                 params,
             );
         }
-        crate::analyze::macro_expand::merge_function_macro_arms(
-            &mut function_macro_arms,
-            r.function_macro_arms,
-        );
+        // A `#define` in a .c file is live only in that translation unit,
+        // so its arms stay out of the project-wide table unless another file
+        // #includes the .c file, which is resolved after the loop.
+        match (is_c_file, &r.source_path) {
+            (true, Some(path)) => c_file_macro_arms.push((
+                file_name_of(&path.to_string_lossy()).to_string(),
+                r.function_macro_arms,
+            )),
+            (true, None) => {}
+            (false, _) => crate::analyze::macro_expand::merge_function_macro_arms(
+                &mut function_macro_arms,
+                r.function_macro_arms,
+            ),
+        }
         unused_attribute_macros.extend(r.unused_attribute_macros);
         initializer_function_refs.extend(r.initializer_function_refs);
         if let Some(key) = &file_key {
@@ -1255,6 +1269,12 @@ fn prescan_file_list(
     noreturn_functions.remove_all(
         &returning_functions.map(|names| names.difference(&keyword_noreturn).cloned().collect()),
     );
+
+    for (file_name, arms) in c_file_macro_arms {
+        if included_c_files.contains(&file_name) {
+            crate::analyze::macro_expand::merge_function_macro_arms(&mut function_macro_arms, arms);
+        }
+    }
     let mut abort_check_noreturn = noreturn_functions.clone();
     for (file_name, names) in c_file_static_noreturn {
         if included_c_files.contains(&file_name) {

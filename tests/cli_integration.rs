@@ -3022,20 +3022,21 @@ fn manifest_pre31() -> PathBuf {
 /// PRE31-C findings for `main.c` in one `crossfile_pre31` project, whose
 /// macro is defined in a header the prescan reads.
 fn pre31_crossfile_violations(case: &str) -> Vec<serde_json::Value> {
+    let project = fixtures().join("crossfile_pre31").join(case);
+    let project = project.to_str().unwrap();
+    pre31_violations(&format!("{project}/main.c"), &["-d", project])
+}
+
+/// PRE31-C findings for one file, with `extra` arguments.
+fn pre31_violations(file: &str, extra: &[&str]) -> Vec<serde_json::Value> {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
-    let project = fixtures().join("crossfile_pre31").join(case);
-
-    let (code, _, _) = run_aurora_lint(&[
-        project.join("main.c").to_str().unwrap(),
-        "-m",
-        manifest_pre31().to_str().unwrap(),
-        "-d",
-        project.to_str().unwrap(),
-        "-e",
-        out.to_str().unwrap(),
-    ]);
-    assert_eq!(code, 0);
+    let manifest = manifest_pre31();
+    let mut args = vec![file, "-m", manifest.to_str().unwrap()];
+    args.extend_from_slice(extra);
+    args.extend_from_slice(&["-e", out.to_str().unwrap()]);
+    let (code, _, stderr) = run_aurora_lint(&args);
+    assert_eq!(code, 0, "{stderr}");
     serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap()
 }
 
@@ -3055,4 +3056,45 @@ fn pre31_header_macro_judged_by_every_arm() {
 fn pre31_header_macro_evaluating_once_in_every_arm_is_clean() {
     let violations = pre31_crossfile_violations("once_in_every_arm");
     assert!(violations.is_empty(), "{:?}", violations);
+}
+
+/// A `#define` in another .c file is live only in that translation unit:
+/// `a.c`'s own `TWICE` evaluates its argument twice, but `main.c` gets
+/// `util.h`'s, which evaluates it once.
+#[test]
+fn pre31_macro_defined_in_another_c_file_does_not_apply() {
+    let violations = pre31_crossfile_violations("unrelated_c_file");
+    assert!(violations.is_empty(), "{:?}", violations);
+}
+
+/// A header found only through `-I` is judged by every arm, as one in a
+/// scanned directory is.
+#[test]
+fn pre31_header_on_include_path_judged_by_every_arm() {
+    let project = fixtures().join("crossfile_pre31/include_path");
+    let src = project.join("src");
+    let include = project.join("include");
+    let violations = pre31_violations(
+        src.join("main.c").to_str().unwrap(),
+        &["-d", src.to_str().unwrap(), "-I", include.to_str().unwrap()],
+    );
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+}
+
+/// The arms survive a prescan cache round trip: a scan from the saved
+/// context reports what the scan that saved it did.
+#[test]
+fn pre31_header_macro_arms_survive_prescan_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("prescan.bin");
+    let cache = cache.to_str().unwrap();
+    let project = fixtures().join("crossfile_pre31/dropped_in_one_arm");
+    let main_c = project.join("main.c");
+    let saved = pre31_violations(
+        main_c.to_str().unwrap(),
+        &["-d", project.to_str().unwrap(), "--save-prescan", cache],
+    );
+    let loaded = pre31_violations(main_c.to_str().unwrap(), &["--load-prescan", cache]);
+    assert_eq!(saved.len(), 1, "{:?}", saved);
+    assert_eq!(loaded, saved);
 }
