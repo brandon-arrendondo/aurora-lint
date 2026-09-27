@@ -879,6 +879,20 @@ fn collect_declared_names(node: &Node, source: &str, out: &mut HashSet<String>) 
 mod tests {
     use super::*;
 
+    #[test]
+    fn prescanned_headers_match_names_under_the_lookup_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/net")).unwrap();
+        std::fs::write(dir.path().join("src/net/Checksum.h"), "").unwrap();
+        let walked = PrescannedHeaders::walk(&[dir.path().to_string_lossy().to_string()]);
+        let cl = HeaderLookup::new(IncludeNames::CaseInsensitive);
+        assert!(walked.contains("NET/checksum.h", &cl));
+        assert!(walked.contains("net\\checksum.h", &cl));
+        let exact = HeaderLookup::default();
+        assert!(!walked.contains("net/checksum.h", &exact));
+        assert!(walked.contains("net/Checksum.h", &exact));
+    }
+
     fn kinds(gaps: &[MacroGap]) -> Vec<(MacroGapKind, &str, usize)> {
         gaps.iter()
             .map(|g| (g.kind, g.name.as_str(), g.line))

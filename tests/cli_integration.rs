@@ -2370,3 +2370,32 @@ fn msvc_database_names_include_matching_in_the_settings() {
     assert_eq!(cl["preset"], "default");
     assert_ne!(cl["hash"], plain["hash"]);
 }
+
+#[test]
+fn case_mismatch_is_reported_without_any_search_path() {
+    // No -I and no database: only the per-file audit sees the include, and
+    // it still names the spelling cl's rule tolerates.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("local.h"), "#define LOCAL 1\n").unwrap();
+    let src = dir.path().join("a.c");
+    std::fs::write(&src, "#include \"Local.H\"\nint a = LOCAL;\n").unwrap();
+    let scan = |names: &str| {
+        let (code, stdout, stderr) = run_aurora_lint(&[
+            src.to_str().unwrap(),
+            "-m",
+            fixtures().join("manifest_arr30.toml").to_str().unwrap(),
+            "--include-names",
+            names,
+            "--report-macro-gaps",
+        ]);
+        assert_eq!(code, 0, "{stderr}");
+        format!("{stdout}{stderr}")
+    };
+    let cl = scan("case-insensitive");
+    assert!(
+        cl.contains("spelled in a different case") && cl.contains("Local.H"),
+        "{cl}"
+    );
+    let exact = scan("exact");
+    assert!(!exact.contains("spelled in a different case"), "{exact}");
+}

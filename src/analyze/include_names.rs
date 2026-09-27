@@ -45,9 +45,41 @@ pub struct HeaderMatch {
 /// Directory → (folded entry name → the entry names on disk, sorted).
 type DirIndex = HashMap<String, Vec<String>>;
 
+/// The kind of entry a walk must end on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Want {
+    File,
+    Dir,
+}
+
+/// `path` split into its root (`/`, or a drive prefix and root) and the
+/// rest, `/`-joined, for a walk from the root.
+fn split_root(path: &Path) -> (PathBuf, String) {
+    let mut root = PathBuf::new();
+    let mut rest = Vec::new();
+    for c in path.components() {
+        match c {
+            Component::RootDir | Component::Prefix(_) if rest.is_empty() => root.push(c),
+            _ => rest.push(c.as_os_str().to_string_lossy().into_owned()),
+        }
+    }
+    (root, rest.join("/"))
+}
+
+/// Whether two paths are one file: equal after resolving symlinks, or
+/// spelled the same when either cannot be resolved.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
 /// Looks `#include` names up under one [`IncludeNames`] rule. Cheap to
 /// create; in the case-insensitive mode it caches one index per directory it
-/// has read, for as long as it lives. Safe to share across threads.
+/// has read, for as long as it lives. Safe to share across threads (two
+/// threads meeting a directory at once may both read it; either index is
+/// the same).
 #[derive(Debug, Default)]
 pub struct HeaderLookup {
     mode: IncludeNames,
@@ -79,7 +111,9 @@ impl HeaderLookup {
 
     /// Find `include_path` in `dir`. Exact mode joins and tests, as the
     /// resolver always has; case-insensitive mode walks the index. `/` and,
-    /// for cl, `\` separate components.
+    /// for cl, `\` separate components. A search directory spelled in the
+    /// wrong case is found too, since cl would find it; that spelling is the
+    /// command line's, not the `#include`'s, so it is not a mismatch.
     pub fn find_in(&self, dir: &Path, include_path: &str) -> Option<HeaderMatch> {
         match self.mode {
             IncludeNames::Exact => {
@@ -90,9 +124,10 @@ impl HeaderLookup {
                     ambiguous_with: Vec::new(),
                 })
             }
-            IncludeNames::CaseInsensitive => self
-                .walk_folded(dir, include_path)
-                .filter(|m| m.path.is_file()),
+            IncludeNames::CaseInsensitive => {
+                let dir = self.search_dir(dir)?;
+                self.walk_folded(&dir, include_path, Want::File)
+            }
         }
     }
 
@@ -100,9 +135,10 @@ impl HeaderLookup {
     pub fn dir_exists(&self, root: &Path, rel: &Path) -> bool {
         match self.mode {
             IncludeNames::Exact => root.join(rel).is_dir(),
-            IncludeNames::CaseInsensitive => self
-                .walk_folded(root, &rel.to_string_lossy())
-                .is_some_and(|m| m.path.is_dir()),
+            IncludeNames::CaseInsensitive => self.search_dir(root).is_some_and(|root| {
+                self.walk_folded(&root, &rel.to_string_lossy(), Want::Dir)
+                    .is_some()
+            }),
         }
     }
 
@@ -119,57 +155,90 @@ impl HeaderLookup {
         if self.mode == IncludeNames::Exact {
             return None;
         }
-        let mut root = PathBuf::new();
-        let mut rest = Vec::new();
-        for c in include_path.components() {
-            match c {
-                Component::RootDir | Component::Prefix(_) if rest.is_empty() => root.push(c),
-                _ => rest.push(c.as_os_str().to_string_lossy().into_owned()),
-            }
+        let (root, rest) = split_root(include_path);
+        self.walk_folded(&root, &rest, Want::File)
+    }
+
+    /// `dir` as it exists on disk: itself when it does, otherwise, for an
+    /// absolute path, the directory its components name ignoring case.
+    fn search_dir(&self, dir: &Path) -> Option<PathBuf> {
+        if dir.is_dir() {
+            return Some(dir.to_path_buf());
         }
-        self.walk_folded(&root, &rest.join("/"))
-            .filter(|m| m.path.is_file())
+        if !dir.is_absolute() {
+            return None;
+        }
+        let (root, rest) = split_root(dir);
+        self.walk_folded(&root, &rest, Want::Dir).map(|m| m.path)
     }
 
     /// Follow `include_path` down from `dir` one component at a time,
-    /// matching each ignoring case. The result may name a file or a
-    /// directory; the caller says which it needs.
-    fn walk_folded(&self, dir: &Path, include_path: &str) -> Option<HeaderMatch> {
-        let mut at = dir.to_path_buf();
-        let mut case_differs = false;
-        let mut ambiguous_with = Vec::new();
+    /// matching each ignoring case, to an entry of the kind `want` names. A
+    /// name ending in a separator names no file.
+    fn walk_folded(&self, dir: &Path, include_path: &str, want: Want) -> Option<HeaderMatch> {
+        if want == Want::File && include_path.ends_with(['/', '\\']) {
+            return None;
+        }
         let parts: Vec<&str> = include_path
             .split(['/', '\\'])
             .filter(|p| !p.is_empty() && *p != ".")
             .collect();
-        for part in parts {
-            if part == ".." {
-                at.push(part);
-                continue;
-            }
-            let index = self.index(&at);
-            let names = index.get(&fold(part))?;
-            let chosen = if names.iter().any(|n| n == part) {
-                part.to_string()
-            } else {
-                case_differs = true;
-                let first = names[0].clone();
-                let first_file = at.join(&first).canonicalize().ok();
-                for other in &names[1..] {
-                    let other_path = at.join(other);
-                    if first_file.is_none() || other_path.canonicalize().ok() != first_file {
-                        ambiguous_with.push(other_path);
-                    }
-                }
-                first
+        self.descend(dir.to_path_buf(), &parts, want, false)
+    }
+
+    /// One step of [`walk_folded`](Self::walk_folded). Every entry whose name
+    /// folds to `parts[0]` is a candidate, the exact spelling first and then
+    /// byte order; the first that leads to a `want` wins. Trying them all,
+    /// rather than committing to one, is what a Windows checkout does: there
+    /// `Sdk/` and `sdk/` are one directory, and a file of the right name
+    /// beats a directory of it. An exact spelling that leads somewhere wins
+    /// outright; otherwise every other candidate that leads to a different
+    /// file is listed in `ambiguous_with`.
+    fn descend(
+        &self,
+        at: PathBuf,
+        parts: &[&str],
+        want: Want,
+        case_differs: bool,
+    ) -> Option<HeaderMatch> {
+        let Some((part, rest)) = parts.split_first() else {
+            let found = match want {
+                Want::File => at.is_file(),
+                Want::Dir => at.is_dir(),
             };
-            at.push(chosen);
+            return found.then_some(HeaderMatch {
+                path: at,
+                case_differs,
+                ambiguous_with: Vec::new(),
+            });
+        };
+        if *part == ".." {
+            return self.descend(at.join(part), rest, want, case_differs);
         }
-        Some(HeaderMatch {
-            path: at,
-            case_differs,
-            ambiguous_with,
-        })
+        let index = self.index(&at);
+        let names = index.get(&fold(part))?;
+        let candidates = names
+            .iter()
+            .filter(|n| n.as_str() == *part)
+            .chain(names.iter().filter(|n| n.as_str() != *part));
+        let mut found: Option<HeaderMatch> = None;
+        for name in candidates {
+            let exact = name.as_str() == *part;
+            let Some(hit) = self.descend(at.join(name), rest, want, case_differs || !exact) else {
+                continue;
+            };
+            match &mut found {
+                None if exact => return Some(hit),
+                None => found = Some(hit),
+                Some(first) => {
+                    if !same_file(&first.path, &hit.path) {
+                        first.ambiguous_with.push(hit.path);
+                    }
+                    first.ambiguous_with.extend(hit.ambiguous_with);
+                }
+            }
+        }
+        found
     }
 
     /// The index of `dir`, read on first use.
@@ -343,6 +412,64 @@ mod tests {
         let exact = HeaderLookup::new(IncludeNames::Exact);
         assert!(!exact.dir_exists(&dir.path().join("include"), Path::new("Object")));
         assert!(exact.dir_exists(&dir.path().join("include"), Path::new("object")));
+    }
+
+    #[test]
+    fn an_entry_of_the_wrong_kind_does_not_hide_the_header() {
+        // A directory `Config.h/` sorts before the file `config.h`.
+        let dir = tree(&["Config.h/x", "config.h"]);
+        let lookup = HeaderLookup::new(IncludeNames::CaseInsensitive);
+        let hit = lookup.find_in(dir.path(), "CONFIG.H").unwrap();
+        assert_eq!(hit.path, dir.path().join("config.h"));
+        assert!(hit.ambiguous_with.is_empty());
+    }
+
+    #[test]
+    fn directories_differing_only_in_case_are_searched_as_one() {
+        // On a Windows checkout `Sdk/` and `sdk/` are one directory.
+        let dir = tree(&["Sdk/other.h", "sdk/c.h"]);
+        let lookup = HeaderLookup::new(IncludeNames::CaseInsensitive);
+        let hit = lookup.find_in(dir.path(), "SDK/c.h").unwrap();
+        assert_eq!(hit.path, dir.path().join("sdk").join("c.h"));
+        assert!(hit.ambiguous_with.is_empty());
+        // The same name under both is ambiguous, and names the files.
+        let dir = tree(&["Sdk/c.h", "sdk/c.h"]);
+        let hit = lookup.find_in(dir.path(), "SDK/c.h").unwrap();
+        assert_eq!(hit.path, dir.path().join("Sdk").join("c.h"));
+        assert_eq!(hit.ambiguous_with, vec![dir.path().join("sdk").join("c.h")]);
+    }
+
+    #[test]
+    fn a_trailing_separator_names_no_file() {
+        let dir = tree(&["inc/a.h"]);
+        let lookup = HeaderLookup::new(IncludeNames::CaseInsensitive);
+        assert!(lookup.find_in(dir.path(), "INC/a.h/").is_none());
+        assert!(lookup.find_in(dir.path(), "INC\\a.h\\").is_none());
+    }
+
+    #[test]
+    fn a_search_directory_spelled_in_another_case_is_found() {
+        let dir = tree(&["Inc/a.h"]);
+        let lookup = HeaderLookup::new(IncludeNames::CaseInsensitive);
+        let hit = lookup.find_in(&dir.path().join("inc"), "a.h").unwrap();
+        assert_eq!(hit.path, dir.path().join("Inc").join("a.h"));
+        assert!(
+            !hit.case_differs,
+            "the command line's spelling is not the #include's"
+        );
+        assert!(HeaderLookup::new(IncludeNames::Exact)
+            .find_in(&dir.path().join("inc"), "a.h")
+            .is_none());
+    }
+
+    #[test]
+    fn an_absolute_name_with_a_parent_component_folds() {
+        let dir = tree(&["Sdk/Idx.h", "src/x.c"]);
+        let lookup = HeaderLookup::new(IncludeNames::CaseInsensitive);
+        let written = dir.path().join("SRC").join("..").join("sdk").join("idx.h");
+        let hit = lookup.find_absolute(&written).unwrap();
+        assert!(hit.path.is_file());
+        assert!(hit.case_differs);
     }
 
     #[test]

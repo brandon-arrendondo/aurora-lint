@@ -7,6 +7,7 @@ use super::include_names::{HeaderLookup, HeaderMatch};
 use crate::analyze::null_state::NullState;
 use crate::parser::CParser;
 use crate::progress::ProgressReporter;
+use crate::settings::IncludeNames;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::declarator_utils;
@@ -6835,7 +6836,13 @@ pub(crate) fn is_missing_project_header(
     include_search_paths: &[String],
     lookup: &HeaderLookup,
 ) -> bool {
-    let Some(parent) = Path::new(include_path).parent() else {
+    // cl also separates components with `\`, which `Path` on a POSIX host
+    // does not.
+    let include_path = match lookup.mode() {
+        IncludeNames::Exact => std::borrow::Cow::Borrowed(include_path),
+        IncludeNames::CaseInsensitive => std::borrow::Cow::Owned(include_path.replace('\\', "/")),
+    };
+    let Some(parent) = Path::new(include_path.as_ref()).parent() else {
         return false;
     };
     if parent.as_os_str().is_empty() {
@@ -8022,6 +8029,26 @@ no_mem:
     #[test]
     fn test_resolve_header_not_found() {
         assert!(find_header("nonexistent.h", None, &[], &HeaderLookup::default()).is_none());
+    }
+
+    #[test]
+    fn a_backslash_name_can_be_a_missing_project_header_under_cl() {
+        let root = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(root.path().join("include/Object")).unwrap();
+        let search = vec![root.path().join("include").to_string_lossy().to_string()];
+        let cl = HeaderLookup::new(IncludeNames::CaseInsensitive);
+        assert!(is_missing_project_header(
+            "object\\gen.h",
+            None,
+            &search,
+            &cl
+        ));
+        assert!(!is_missing_project_header(
+            "object\\gen.h",
+            None,
+            &search,
+            &HeaderLookup::default()
+        ));
     }
 
     /// A Windows source spells the SDK's `ShlObj.h` as `Shlobj.h`. cl finds

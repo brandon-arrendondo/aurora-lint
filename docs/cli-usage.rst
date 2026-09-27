@@ -210,7 +210,11 @@ whose name matches exactly still wins. When a directory holds several different
 files that differ only in case, the first in byte order is read. Each header
 found only by ignoring case, and each such ambiguity, is listed by
 ``--report-macro-gaps``, so a spelling that only a Windows build tolerates is
-visible.
+visible. Two things are still matched exactly: a ``/FI`` name, which is looked
+up beside the database entry only when it is spelled as on disk, and the file
+names in ``#include "x.c"`` that decide which ``.c`` files are compiled into
+another. A ``--save-prescan`` cache does not record which rule built it, so
+reuse it only under the same ``include_names``.
 
 Reaching the Compiler's Own Headers
 -----------------------------------
