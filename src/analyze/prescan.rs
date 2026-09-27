@@ -1346,6 +1346,16 @@ fn scope_summary_callees(
             key(callee);
         }
     }
+    for clause in summary.lock_param_obligations.values_mut().flatten() {
+        for (callee, _) in clause.iter_mut() {
+            key(callee);
+        }
+    }
+    for clause in summary.returns_locked_obligations.iter_mut() {
+        for (callee, _) in clause.iter_mut() {
+            key(callee);
+        }
+    }
     for set in [
         &mut summary.returned_callees,
         &mut summary.returns_from_callees,

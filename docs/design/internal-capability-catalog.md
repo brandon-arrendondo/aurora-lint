@@ -491,12 +491,17 @@ callee the project does not define.
 Credential SOURCES (`getpass`, `pam_get_authtok`, ...) are not rows yet.
 
 The summary facts built on it (see `function_summary.rs` below):
-- `credential_sink_params` and `locks_params`, carried over
-  `param_passthroughs` by `propagate_transitive_credential_facts`, which
-  resolves an edge against the project's summaries before the table;
+- `credential_sink_params`, carried over `param_passthroughs` by
+  `propagate_transitive_credential_facts`, which resolves an edge against
+  the project's summaries before the table;
 - `conditional_sink_hits`, which join `credential_sink_params` only when no
   project summary has the callee's name;
-- `returns_locked` (every non-null return is covered by a dominating lock);
+- `locks_params` and `returns_locked` (every non-null return is covered by a
+  dominating lock), MUST facts resolved in the same pass from
+  `lock_param_obligations` / `returns_locked_obligations`: clauses naming
+  the callees (a project lock wrapper, a project allocator) whose summaries
+  decide them. Definitions of one name fold by concatenating clauses, so
+  the fact holds only if every definition offers it (ADR-0010);
 - `protects_process_memory` (an always-executed zero `RLIMIT_CORE`, per
   `sets_zero_core_limit`, or `mlockall`, carried over `unconditional_callees`);
 - `main_call_sequence`, `main`'s calls in order, which is how MEM06-C asks

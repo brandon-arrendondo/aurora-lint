@@ -595,19 +595,44 @@ pub struct FunctionSummary {
     /// what MEM06-C calls sensitive.
     #[serde(default)]
     pub credential_sink_params: HashSet<usize>,
-    /// Parameter indices whose pages this function locks into memory: the
-    /// parameter is the first argument of `mlock`/`VirtualLock`, or of
-    /// another function that locks it.
+    /// Parameter indices whose pages this function locks into memory on
+    /// every path: the parameter is handed unconditionally to `mlock`/
+    /// `VirtualLock` at argument 0, or to another function that locks it.
+    /// Derived entirely by `propagate_transitive_credential_facts` from
+    /// `lock_param_obligations`.
     #[serde(default)]
     pub locks_params: HashSet<usize>,
+    /// What `locks_params` needs, per parameter, as a conjunction of
+    /// clauses: each clause is one definition's unconditional pass-throughs
+    /// of that parameter, `(callee, callee param)`, and holds when any of
+    /// them locks. Folding definitions concatenates their clauses (a MUST
+    /// fact holds only if every definition offers it), and a definition with
+    /// no unconditional pass-through of a parameter contributes an empty,
+    /// unsatisfiable clause. Kept as clauses rather than a resolved set
+    /// because the callees' own lock facts are known only after the fold.
+    #[serde(default)]
+    pub lock_param_obligations: HashMap<usize, Vec<Vec<(String, usize)>>>,
     /// Every non-null `return` hands back a variable whose pages a lock in
-    /// the body (`mlock`/`VirtualLock`, or a locked-by-construction
-    /// allocator such as `sodium_malloc`) covers on every path to that
-    /// return -- a source function that allocates a buffer and locks it
-    /// before returning it. `return NULL` on a failure path does not
-    /// withdraw it; at least one non-null return is required.
+    /// the body (`mlock`/`VirtualLock`, a project function whose summary
+    /// locks that argument, or a locked-by-construction allocator such as
+    /// `sodium_malloc` or a project source whose summary says
+    /// `returns_locked`) covers on every path to that return -- a source
+    /// function that allocates a buffer and locks it before returning it.
+    /// `return NULL` on a failure path does not withdraw it; at least one
+    /// non-null return is required. Before propagation this holds only what
+    /// the body proves on its own; `propagate_transitive_credential_facts`
+    /// recomputes it from `returns_locked_obligations`.
     #[serde(default)]
     pub returns_locked: bool,
+    /// What `returns_locked` still needs from other functions, as a
+    /// conjunction of clauses, each a disjunction of `(callee, None)` (the
+    /// callee returns a locked block) and `(callee, Some(i))` (the callee
+    /// locks its parameter `i`). An empty clause is unsatisfiable: the body
+    /// returns something no lock can cover. Folding definitions
+    /// concatenates their clauses, so the name returns locked memory only if
+    /// every definition does.
+    #[serde(default)]
+    pub returns_locked_obligations: Vec<Vec<(String, Option<usize>)>>,
     /// The body protects the whole process's memory unconditionally: a
     /// `setrlimit(RLIMIT_CORE, &rl)` whose zero limit dominates the call, an
     /// `mlockall`, or an unconditional call to another function that does
@@ -3771,15 +3796,46 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
     existing
         .credential_sink_params
         .extend(summary.credential_sink_params);
-    existing.locks_params.extend(summary.locks_params);
-    existing.returns_locked |= summary.returns_locked;
-    existing.protects_process_memory |= summary.protects_process_memory;
+    // MUST facts, intersected: a lock or a process-wide protection is a
+    // guarantee MEM06-C credits against a finding, so it holds for the name
+    // only if every definition offers it. A definition that skips the lock
+    // is a configuration that leaves the secret pageable (ADR-0010), and a
+    // union would credit it with another definition's lock.
+    existing
+        .locks_params
+        .retain(|idx| summary.locks_params.contains(idx));
+    let lock_keys: HashSet<usize> = existing
+        .lock_param_obligations
+        .keys()
+        .chain(summary.lock_param_obligations.keys())
+        .copied()
+        .collect();
+    let mut incoming = summary.lock_param_obligations;
+    for idx in lock_keys {
+        let clauses = existing.lock_param_obligations.entry(idx).or_default();
+        match incoming.remove(&idx) {
+            Some(more) => {
+                if clauses.is_empty() {
+                    // The existing definition had no unconditional
+                    // pass-through of this parameter.
+                    clauses.push(Vec::new());
+                }
+                clauses.extend(more);
+            }
+            None => clauses.push(Vec::new()),
+        }
+    }
+    existing.returns_locked &= summary.returns_locked;
+    existing
+        .returns_locked_obligations
+        .extend(summary.returns_locked_obligations);
+    existing.protects_process_memory &= summary.protects_process_memory;
     existing
         .conditional_sink_hits
         .extend(summary.conditional_sink_hits);
     existing
         .unconditional_callees
-        .extend(summary.unconditional_callees);
+        .retain(|callee| summary.unconditional_callees.contains(callee));
     // Two `main`s (a tool and a test harness, say) are two programs: their
     // call orders cannot be merged into one.
     if !summary.main_call_sequence.is_empty() || summary.main_call_sequence_ambiguous {
@@ -4046,8 +4102,12 @@ fn credit_clears_params(
 /// library's. What is credited:
 /// - `conditional_sink_hits`, for a conditional row the call's arguments
 ///   select (`pam_set_item(h, PAM_AUTHTOK, param)`);
+/// - `lock_param_obligations`, one clause per parameter from its
+///   unconditional pass-throughs;
 /// - `returns_locked`, when every non-null return names a variable a lock
-///   covers on every path to it;
+///   covers on every path to it, and `returns_locked_obligations` for the
+///   coverage only another function's summary can decide (a project lock
+///   wrapper, a project allocator);
 /// - `protects_process_memory`, for an unconditionally reached zero
 ///   `RLIMIT_CORE` or `mlockall`;
 /// - `unconditional_callees`, and for `main` its `main_call_sequence`.
@@ -4060,11 +4120,14 @@ fn credit_credential_facts(
     summary: &mut FunctionSummary,
 ) {
     use crate::utility::cert_c::credential_sinks;
-    use lang_parsing_substrate::query;
 
     let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
     let is_main = extract_function_name(func_node, source).as_deref() == Some("main");
     let mut locks: Vec<(String, Node)> = Vec::new();
+    // Every other call handed a plain variable: (variable, call, callee,
+    // argument index). A project lock wrapper is one of these; whether it
+    // locks is known only once every summary is folded.
+    let mut handed: Vec<(String, Node, String, usize)> = Vec::new();
     let mut sequence: Vec<(usize, String, bool)> = Vec::new();
     for &call in calls {
         let Some(function) = call.child_by_field_name("function") else {
@@ -4101,9 +4164,14 @@ fn credit_credential_facts(
                 }
             }
         }
-        if credential_sinks::is_page_lock_call(&name) {
-            if let Some(var) = arg_var(0) {
+        for i in 0..args.len() {
+            let Some(var) = arg_var(i) else {
+                continue;
+            };
+            if i == 0 && credential_sinks::is_page_lock_call(&name) {
                 locks.push((var, call));
+            } else {
+                handed.push((var, call, name.clone(), i));
             }
         }
         let protects = name == "mlockall"
@@ -4128,12 +4196,35 @@ fn credit_credential_facts(
         summary.main_call_sequence = sequence.into_iter().map(|(_, n, u)| (n, u)).collect();
     }
 
-    // `returns_locked`: every block the body allocates and returns is
-    // locked on every path from its allocation to that return. A return of
-    // NULL, or of a variable no allocation in the body reaches (the caller's
-    // own pointer handed back), is neutral; at least one locked block must
-    // be returned. A locked-by-construction allocator needs no lock.
-    let allocations: Vec<(String, Node, bool)> = plain_assignments(body, source)
+    for (idx, callees) in &summary.unconditional_param_passthroughs {
+        summary
+            .lock_param_obligations
+            .insert(*idx, vec![callees.clone()]);
+    }
+
+    credit_returns_locked(body, source, &locks, &handed, summary);
+}
+
+/// `returns_locked`: every block the body allocates and returns is
+/// locked on every path from its allocation to that return. A return of
+/// NULL, or of a variable no allocation in the body reaches (the caller's
+/// own pointer handed back), is neutral; at least one locked block must
+/// be returned. A locked-by-construction allocator needs no lock. What
+/// only another function's summary can settle -- a project allocator, a
+/// project lock wrapper -- becomes a clause of
+/// `returns_locked_obligations`.
+fn credit_returns_locked(
+    body: &Node,
+    source: &str,
+    locks: &[(String, Node)],
+    handed: &[(String, Node, String, usize)],
+    summary: &mut FunctionSummary,
+) {
+    use crate::utility::cert_c::credential_sinks;
+    use lang_parsing_substrate::query;
+
+    let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+    let allocations: Vec<(String, Node, String, bool)> = plain_assignments(body, source)
         .into_iter()
         .filter_map(|(target, value)| {
             let v = init_state::strip_arg_casts(&value);
@@ -4142,11 +4233,11 @@ fn credit_credential_facts(
             }
             let callee = v.child_by_field_name("function").map(|f| text(&f))?;
             let locked = credential_sinks::platform_allocation_is_locked(&callee) == Some(true);
-            Some((target, v, locked))
+            Some((target, v, callee, locked))
         })
         .collect();
-    let mut returned_locked = 0usize;
-    let mut unlocked_return = false;
+    let mut obligations: Vec<Vec<(String, Option<usize>)>> = Vec::new();
+    let mut returned = 0usize;
     for r in query::find_descendants_of_kind(*body, "return_statement") {
         let Some(e) = r.named_child(0).map(|e| init_state::strip_arg_casts(&e)) else {
             continue;
@@ -4156,43 +4247,58 @@ fn credit_credential_facts(
             continue;
         }
         match e.kind() {
-            // `return sodium_malloc(n);` hands back a locked block directly.
+            // `return sodium_malloc(n);` hands back a locked block directly;
+            // `return secure_alloc(n);` does if that function returns one.
             "call_expression" => {
-                let callee = e.child_by_field_name("function").map(|f| text(&f));
-                if callee.is_some_and(|c| {
-                    credential_sinks::platform_allocation_is_locked(&c) == Some(true)
-                }) {
-                    returned_locked += 1;
-                } else {
-                    unlocked_return = true;
+                returned += 1;
+                let function = e.child_by_field_name("function");
+                let callee = function
+                    .filter(|f| f.kind() == "identifier")
+                    .map(|f| text(&f));
+                match callee {
+                    Some(c)
+                        if credential_sinks::platform_allocation_is_locked(&c) == Some(true) => {}
+                    Some(c) => obligations.push(vec![(c, None)]),
+                    None => obligations.push(Vec::new()),
                 }
             }
             "identifier" => {
-                let reaching: Vec<&(String, Node, bool)> = allocations
+                let reaching: Vec<&(String, Node, String, bool)> = allocations
                     .iter()
-                    .filter(|(var, a, _)| *var == t && a.start_byte() < r.start_byte())
+                    .filter(|(var, a, _, _)| *var == t && a.start_byte() < r.start_byte())
                     .collect();
                 if reaching.is_empty() {
                     continue;
                 }
-                let all_covered = reaching.iter().all(|(_, a, locked)| {
-                    *locked
-                        || locks.iter().any(|(var, lock)| {
-                            *var == t
-                                && lock.start_byte() < r.start_byte()
-                                && guard_dominance::runs_on_every_path_from(lock, a)
-                        })
-                });
-                if all_covered {
-                    returned_locked += 1;
-                } else {
-                    unlocked_return = true;
+                returned += 1;
+                for (_, a, callee, locked) in reaching {
+                    let covers = |lock: &Node| {
+                        lock.start_byte() < r.start_byte()
+                            && guard_dominance::runs_on_every_path_from(lock, a)
+                    };
+                    if *locked || locks.iter().any(|(var, lock)| *var == t && covers(lock)) {
+                        continue;
+                    }
+                    let mut clause: Vec<(String, Option<usize>)> = vec![(callee.clone(), None)];
+                    for (var, call, name, i) in handed {
+                        if *var == t && covers(call) {
+                            clause.push((name.clone(), Some(*i)));
+                        }
+                    }
+                    obligations.push(clause);
                 }
             }
-            _ => unlocked_return = true,
+            _ => {
+                returned += 1;
+                obligations.push(Vec::new());
+            }
         }
     }
-    summary.returns_locked = returned_locked > 0 && !unlocked_return;
+    if returned == 0 {
+        obligations.push(Vec::new());
+    }
+    summary.returns_locked = obligations.is_empty();
+    summary.returns_locked_obligations = obligations;
 }
 
 fn credential_sinks_marker() -> String {
@@ -6120,15 +6226,22 @@ pub fn propagate_transitive_clears(
 
 /// Propagate the MEM06-C facts across functions, to a fixpoint.
 ///
-/// `credential_sink_params` and `locks_params` ride `param_passthroughs`,
-/// the way `propagate_transitive_clears` carries `clears_params`: a wrapper
-/// that forwards its parameter to a function that hands it to `LogonUser`
-/// (or locks it) does the same to its own parameter. A callee the project
-/// defines answers from its summary, never from the library table, since a
-/// project's own `crypt` is not libc's; an edge landing on an unconditional
-/// row of `credential_sinks` (or on a page-lock call at argument 0) counts by
-/// itself, as does a `conditional_sink_hits` entry whose callee has no
-/// project summary. `protects_process_memory` rides `unconditional_callees`.
+/// `credential_sink_params` rides `param_passthroughs`, the way
+/// `propagate_transitive_clears` carries `clears_params`: a wrapper that
+/// forwards its parameter to a function that hands it to `LogonUser` does
+/// the same to its own parameter. A callee the project defines answers from
+/// its summary, never from the library table, since a project's own `crypt`
+/// is not libc's; an edge landing on an unconditional row of
+/// `credential_sinks` counts by itself, as does a `conditional_sink_hits`
+/// entry whose callee has no project summary.
+/// `protects_process_memory` rides `unconditional_callees`.
+///
+/// The lock facts are MUST facts and are recomputed from scratch here, so a
+/// second call gives the same answer: `locks_params` from
+/// `lock_param_obligations` (a page-lock call at argument 0 with no project
+/// summary counts by itself) and `returns_locked` from
+/// `returns_locked_obligations`, each the least fixpoint, so a cycle of
+/// wrappers locks nothing.
 pub fn propagate_transitive_credential_facts(
     summaries: &mut HashMap<String, FunctionSummary>,
     macro_aliases: &HashMap<String, String>,
@@ -6146,8 +6259,24 @@ pub fn propagate_transitive_credential_facts(
         summary.credential_sink_params.extend(library_hits);
     }
 
+    // Start every obligation-backed fact from false. A summary with no
+    // obligations keeps what its body proved (or what it was built with).
+    for summary in summaries.values_mut() {
+        let obligations = &summary.lock_param_obligations;
+        summary
+            .locks_params
+            .retain(|idx| !obligations.contains_key(idx));
+        if !summary.returns_locked_obligations.is_empty() {
+            summary.returns_locked = false;
+        }
+    }
+
     for _pass in 0..10 {
         let mut changed = false;
+        let locked_returns: HashMap<String, bool> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.returns_locked))
+            .collect();
         let snapshot: HashMap<String, (HashSet<usize>, HashSet<usize>, bool)> = summaries
             .iter()
             .map(|(n, s)| {
@@ -6170,20 +6299,59 @@ pub fn propagate_transitive_credential_facts(
                             || credential_sinks::is_credential_sink_function(n)
                             || credential_sinks::is_page_lock_call(n)
                     });
-                    let (sinks, locks) = match snapshot.get(callee) {
-                        Some((s, l, _)) => (s.contains(callee_idx), l.contains(callee_idx)),
-                        None => (
-                            credential_sinks::is_unconditional_sink_arg(callee, *callee_idx),
-                            *callee_idx == 0 && credential_sinks::is_page_lock_call(callee),
-                        ),
+                    let sinks = match snapshot.get(callee) {
+                        Some((s, _, _)) => s.contains(callee_idx),
+                        None => credential_sinks::is_unconditional_sink_arg(callee, *callee_idx),
                     };
                     if sinks && summary.credential_sink_params.insert(*caller_idx) {
                         changed = true;
                     }
-                    if locks && summary.locks_params.insert(*caller_idx) {
-                        changed = true;
-                    }
                 }
+            }
+            let locks = |callee_name: &str, idx: usize| {
+                let callee = edge_target(macro_aliases, callee_name, |n| {
+                    snapshot.contains_key(n) || credential_sinks::is_page_lock_call(n)
+                });
+                match snapshot.get(callee) {
+                    Some((_, l, _)) => l.contains(&idx),
+                    None => idx == 0 && credential_sinks::is_page_lock_call(callee),
+                }
+            };
+            let newly_locked: Vec<usize> = summary
+                .lock_param_obligations
+                .iter()
+                .filter(|(idx, _)| !summary.locks_params.contains(idx))
+                .filter(|(_, clauses)| {
+                    clauses
+                        .iter()
+                        .all(|clause| clause.iter().any(|(c, i)| locks(c, *i)))
+                })
+                .map(|(idx, _)| *idx)
+                .collect();
+            if !newly_locked.is_empty() {
+                summary.locks_params.extend(newly_locked);
+                changed = true;
+            }
+            if !summary.returns_locked
+                && summary.returns_locked_obligations.iter().all(|clause| {
+                    clause.iter().any(|(c, i)| match i {
+                        Some(i) => locks(c, *i),
+                        None => {
+                            let callee =
+                                edge_target(macro_aliases, c, |n| locked_returns.contains_key(n));
+                            match locked_returns.get(callee) {
+                                Some(locked) => *locked,
+                                None => {
+                                    credential_sinks::platform_allocation_is_locked(callee)
+                                        == Some(true)
+                                }
+                            }
+                        }
+                    })
+                })
+            {
+                summary.returns_locked = true;
+                changed = true;
             }
             if !summary.protects_process_memory
                 && summary.unconditional_callees.iter().any(|c| {

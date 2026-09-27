@@ -444,7 +444,7 @@ impl ProjectContext {
 /// Version of the prescan cache's serialized layout. Bump it with any change
 /// to a serialized field of [`ProjectContext`] (or of a type it holds): the
 /// cache header carries it, so an old cache is refused instead of misread.
-const PRESCAN_CACHE_FORMAT: u32 = 5;
+const PRESCAN_CACHE_FORMAT: u32 = 6;
 
 /// The header a prescan cache file starts with: a magic, the layout version
 /// and the aurora-lint version that wrote it.
