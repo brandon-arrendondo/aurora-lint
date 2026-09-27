@@ -2162,6 +2162,7 @@ impl TerminalUI {
                 &mut context,
                 None,
                 true,
+                &crate::analyze::include_names::HeaderLookup::new(self.settings.include_names),
             );
         }
 

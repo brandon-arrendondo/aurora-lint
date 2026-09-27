@@ -29,6 +29,7 @@ pub mod embedded_js_blank;
 pub mod empty_macro_blank;
 pub mod function_summary;
 pub mod has_include_angle;
+pub mod include_names;
 pub mod init_state;
 /// Pre-parse repair for a label immediately followed by an `#ifdef`/`#if`
 /// block -- `tree-sitter-c`'s `labeled_statement` can't parse that shape.
@@ -128,6 +129,10 @@ pub fn analyze_project(
         .enabled_rules()
         .any(|(rule_id, _)| registry.get_rule(rule_id).is_some_and(|r| r.needs_vra()));
 
+    // One lookup for the whole scan, so each directory an `#include` search
+    // passes through is read once whichever pass asks.
+    let header_lookup = include_names::HeaderLookup::new(settings.include_names);
+
     // Load or compute cross-file context (prescan, includes, optional cache save)
     let mut context = load_project_context(
         project_source,
@@ -139,6 +144,7 @@ pub fn analyze_project(
         load_prescan,
         compile_db,
         needs_vra,
+        &header_lookup,
     )?;
     context.settings = std::sync::Arc::new(settings.clone());
 
@@ -181,8 +187,15 @@ pub fn analyze_project(
 
     // Independent of the rules: it reads the same files and context, so it
     // can run first and the findings loop below stays untouched.
-    let macro_gaps = report_macro_gaps
-        .then(|| macro_gaps::build_report(&c_files, &context, directories, include_paths));
+    let macro_gaps = report_macro_gaps.then(|| {
+        macro_gaps::build_report(
+            &c_files,
+            &context,
+            directories,
+            include_paths,
+            &header_lookup,
+        )
+    });
 
     // Determine effective parallelism
     let effective_jobs = if jobs == 0 {
@@ -339,6 +352,7 @@ fn load_project_context(
     load_prescan: Option<&str>,
     compile_db: Option<&compile_commands::CompileDb>,
     needs_vra: bool,
+    header_lookup: &include_names::HeaderLookup,
 ) -> Result<context::ProjectContext> {
     // A declared build configuration decides which conditional definitions the
     // collectors below may keep, so it has to be in force BEFORE prescan runs
@@ -414,6 +428,7 @@ fn load_project_context(
             &mut context,
             progress,
             needs_vra,
+            header_lookup,
         )?;
     }
 

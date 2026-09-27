@@ -3,6 +3,7 @@ use super::const_eval;
 use super::context::ProjectContext;
 use super::dead_regions::DeadRegions;
 use super::function_summary::{self, FunctionSummary};
+use super::include_names::{HeaderLookup, HeaderMatch};
 use crate::analyze::null_state::NullState;
 use crate::parser::CParser;
 use crate::progress::ProgressReporter;
@@ -6382,7 +6383,11 @@ fn extract_field_id_from_declarator(node: &Node, source: &str) -> Option<String>
 ///
 /// Each resolved header is parsed only once (deduped by canonical path).
 /// Both `"quoted.h"` and `<angle.h>` forms are resolved; unfound system
-/// headers are silently skipped.
+/// headers are silently skipped. Names are matched under `lookup`'s rule; a
+/// header found only by ignoring case is recorded as a macro gap against the
+/// file that named it, since the build finds it only on a toolchain that
+/// ignores case too.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_includes(
     source_files: &[String],
     forced_includes: &[String],
@@ -6391,6 +6396,7 @@ pub fn resolve_includes(
     context: &mut super::context::ProjectContext,
     progress: Option<&dyn ProgressReporter>,
     needs_vra: bool,
+    lookup: &HeaderLookup,
 ) -> Result<()> {
     if let Some(reporter) = progress {
         reporter.report_include_resolve_start(include_paths.len());
@@ -6404,16 +6410,19 @@ pub fn resolve_includes(
     let mut parser = CParser::new()?;
     let mut resolved_set: HashSet<PathBuf> = HashSet::new();
 
-    // Queue of (include_path, source_dir) pairs to resolve — supports transitive includes
-    let mut queue: Vec<(String, Option<PathBuf>)> = Vec::new();
+    // Queue of (include_path, source_dir, includer) to resolve — supports
+    // transitive includes. The includer is the file whose `#include` this is,
+    // `None` for a forced include, which no file names.
+    let mut queue: Vec<(String, Option<PathBuf>, Option<Arc<str>>)> = Vec::new();
 
     // Seed the queue with #include directives from source files
     for file_path in source_files {
         if let Ok((tree, source)) = parser.parse_file(file_path) {
             let directives = extract_include_directives(&tree.root_node(), &source);
             let source_dir = Path::new(file_path).parent().map(|p| p.to_path_buf());
+            let includer: Arc<str> = Arc::from(file_path.as_str());
             for inc in directives {
-                queue.push((inc, source_dir.clone()));
+                queue.push((inc, source_dir.clone(), Some(Arc::clone(&includer))));
             }
         }
     }
@@ -6423,9 +6432,9 @@ pub fn resolve_includes(
     // command-line order. The queue pops from the back: pushing the list
     // reversed, after the sources' own includes, pops it first and in order.
     // Like any other header it is looked up on the search paths, unless it is
-    // already an absolute path (see `resolve_header`).
+    // already an absolute path (see `find_header`).
     for header in forced_includes.iter().rev() {
-        queue.push((header.clone(), None));
+        queue.push((header.clone(), None, None));
     }
 
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
@@ -6435,11 +6444,24 @@ pub fn resolve_includes(
     // rather than once per occurrence — `<stdio.h>` alone recurs in every
     // file of a large tree.
     let mut unresolved_seen: HashSet<(String, Option<PathBuf>)> = HashSet::new();
+    // (spelling, includer) pairs already recorded as matched only by case.
+    let mut case_seen: HashSet<(String, Option<Arc<str>>)> = HashSet::new();
 
     // Process queue: resolve each header, parse it, and enqueue its transitive includes
-    while let Some((include_path, source_dir)) = queue.pop() {
-        if let Some(resolved) = resolve_header(&include_path, source_dir.as_deref(), include_paths)
+    while let Some((include_path, source_dir, includer)) = queue.pop() {
+        if let Some(found) =
+            find_header(&include_path, source_dir.as_deref(), include_paths, lookup)
         {
+            if found.case_differs && case_seen.insert((include_path.clone(), includer.clone())) {
+                context
+                    .macro_gaps
+                    .extend(crate::analyze::macro_gaps::include_case_gaps(
+                        &include_path,
+                        includer.as_deref(),
+                        &found,
+                    ));
+            }
+            let resolved = found.path;
             let canonical = match resolved.canonicalize() {
                 Ok(c) => c,
                 Err(_) => resolved.clone(),
@@ -6572,8 +6594,9 @@ pub fn resolve_includes(
 
                 // Enqueue transitive includes from this header
                 let header_dir = resolved.parent().map(|p| p.to_path_buf());
+                let includer: Arc<str> = Arc::from(header_path.as_str());
                 for inc in extract_include_directives(&root, &hsource) {
-                    queue.push((inc, header_dir.clone()));
+                    queue.push((inc, header_dir.clone(), Some(Arc::clone(&includer))));
                 }
             }
         } else if unresolved_seen.insert((include_path.clone(), source_dir.clone())) {
@@ -6581,6 +6604,7 @@ pub fn resolve_includes(
                 &include_path,
                 source_dir.as_deref(),
                 &project_search_paths,
+                lookup,
             );
             context
                 .macro_gaps
@@ -6706,42 +6730,40 @@ fn extract_includes_recursive(node: &Node, source: &str, directives: &mut Vec<St
     }
 }
 
-/// Resolve an include path against search directories.
+/// Resolve an include path against search directories under `lookup`'s
+/// name-matching rule.
 ///
 /// An absolute `include_path` is taken as written. Otherwise the search order
 /// is (1) the source file's directory (if available), (2) each `-I` path in
-/// order. Returns the first match where the candidate is a file.
-pub(crate) fn resolve_header(
+/// order. Returns the first directory holding a matching file: under cl's
+/// rule, a case-folded match in an earlier directory beats an exact one in a
+/// later directory, as it does for cl.
+pub(crate) fn find_header(
     include_path: &str,
     source_dir: Option<&Path>,
     include_search_paths: &[String],
-) -> Option<PathBuf> {
+    lookup: &HeaderLookup,
+) -> Option<HeaderMatch> {
     // An absolute path names its file outright. Joining it onto a directory
     // below would give the same path, but only when there is a directory to
     // join onto: a forced include has no including file, and a build may pass
     // no search path at all.
     let as_written = Path::new(include_path);
     if as_written.is_absolute() {
-        return as_written.is_file().then(|| as_written.to_path_buf());
+        return lookup.find_absolute(as_written);
     }
 
     // First: try relative to the source file's directory
     if let Some(dir) = source_dir {
-        let candidate = dir.join(include_path);
-        if candidate.is_file() {
-            return Some(candidate);
+        if let Some(found) = lookup.find_in(dir, include_path) {
+            return Some(found);
         }
     }
 
     // Then: try each -I path in order
-    for search_dir in include_search_paths {
-        let candidate = Path::new(search_dir).join(include_path);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-
-    None
+    include_search_paths
+        .iter()
+        .find_map(|search_dir| lookup.find_in(Path::new(search_dir), include_path))
 }
 
 /// The subset of `include_paths` that lie inside the project being scanned.
@@ -6784,7 +6806,7 @@ fn project_local_search_paths(include_paths: &[String], project_roots: &[String]
         .collect()
 }
 
-/// True if an include that `resolve_header` failed to find is a *project*
+/// True if an include that `find_header` failed to find is a *project*
 /// header rather than a system one: its directory prefix exists under the
 /// source file's directory or one of the **project-local** search paths, but
 /// the file itself does not.
@@ -6803,10 +6825,15 @@ fn project_local_search_paths(include_paths: &[String], project_roots: &[String]
 /// Requiring a directory component is what keeps this conservative: a bare
 /// `#include <stdio.h>` or `#include "config.h"` would otherwise match every
 /// search root trivially.
+///
+/// The directory prefix is matched under `lookup`'s rule, so
+/// `<Object/gen.h>` finds an `object/` directory when the toolchain ignores
+/// case.
 pub(crate) fn is_missing_project_header(
     include_path: &str,
     source_dir: Option<&Path>,
     include_search_paths: &[String],
+    lookup: &HeaderLookup,
 ) -> bool {
     let Some(parent) = Path::new(include_path).parent() else {
         return false;
@@ -6819,7 +6846,7 @@ pub(crate) fn is_missing_project_header(
         .into_iter()
         .map(|d| d.to_path_buf())
         .chain(include_search_paths.iter().map(PathBuf::from))
-        .any(|root| root.join(parent).is_dir())
+        .any(|root| lookup.dir_exists(&root, parent))
 }
 
 #[cfg(test)]
@@ -7971,14 +7998,14 @@ no_mem:
         assert!(dirs.contains(&"foo.h".to_string()));
     }
 
-    // -- resolve_header --
+    // -- find_header --
 
     #[test]
     fn test_resolve_header_source_dir() {
         let dir = tempfile::TempDir::new().unwrap();
         let header = dir.path().join("test.h");
         std::fs::File::create(&header).unwrap();
-        let result = resolve_header("test.h", Some(dir.path()), &[]);
+        let result = find_header("test.h", Some(dir.path()), &[], &HeaderLookup::default());
         assert!(result.is_some());
     }
 
@@ -7988,13 +8015,66 @@ no_mem:
         let header = dir.path().join("sys.h");
         std::fs::File::create(&header).unwrap();
         let search = vec![dir.path().to_string_lossy().to_string()];
-        let result = resolve_header("sys.h", None, &search);
+        let result = find_header("sys.h", None, &search, &HeaderLookup::default());
         assert!(result.is_some());
     }
 
     #[test]
     fn test_resolve_header_not_found() {
-        assert!(resolve_header("nonexistent.h", None, &[]).is_none());
+        assert!(find_header("nonexistent.h", None, &[], &HeaderLookup::default()).is_none());
+    }
+
+    /// A Windows source spells the SDK's `ShlObj.h` as `Shlobj.h`. cl finds
+    /// it; so does the scan under cl's rule, and it says which spelling
+    /// differed. Under exact matching the header is out of reach, as for GCC.
+    #[test]
+    fn resolve_includes_matches_names_under_the_toolchain_rule() {
+        use crate::analyze::macro_gaps::MacroGapKind;
+        use crate::settings::IncludeNames;
+        let root = tempfile::TempDir::new().unwrap();
+        let src = root.path().join("src");
+        let sdk = root.path().join("sdk");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&sdk).unwrap();
+        std::fs::write(sdk.join("ShlObj.h"), "#define SHL_IDX 8\n").unwrap();
+        let c_file = src.join("a.c");
+        std::fs::write(&c_file, "#include <Shlobj.h>\nint a;\n").unwrap();
+        let sources = [c_file.to_string_lossy().to_string()];
+        let search = [sdk.to_string_lossy().to_string()];
+        let scan = |mode| {
+            let mut ctx = ProjectContext::new();
+            resolve_includes(
+                &sources,
+                &[],
+                &search,
+                &[root.path().to_string_lossy().to_string()],
+                &mut ctx,
+                None,
+                false,
+                &HeaderLookup::new(mode),
+            )
+            .unwrap();
+            ctx
+        };
+
+        let exact = scan(IncludeNames::Exact);
+        assert!(!exact.macro_constants.contains_key("SHL_IDX"));
+        assert!(exact
+            .macro_gaps
+            .iter()
+            .any(|g| g.kind == MacroGapKind::UnresolvedInclude && g.name == "Shlobj.h"));
+
+        let cl = scan(IncludeNames::CaseInsensitive);
+        assert_eq!(cl.macro_constants.get("SHL_IDX"), Some(&8));
+        let mismatches: Vec<_> = cl
+            .macro_gaps
+            .iter()
+            .filter(|g| g.kind == MacroGapKind::IncludeCaseMismatch)
+            .collect();
+        assert_eq!(mismatches.len(), 1, "{:?}", cl.macro_gaps);
+        assert_eq!(mismatches[0].name, "Shlobj.h");
+        assert_eq!(mismatches[0].file, sources[0]);
+        assert!(mismatches[0].detail.contains("ShlObj.h"));
     }
 
     // -- aggregate_callsite_null_states --
@@ -8459,26 +8539,37 @@ void caller(char *other) {
         let search = vec![include.to_string_lossy().to_string()];
 
         assert!(
-            is_missing_project_header("object/structures_gen.h", None, &search),
+            is_missing_project_header(
+                "object/structures_gen.h",
+                None,
+                &search,
+                &HeaderLookup::default()
+            ),
             "a header under a directory the project does have is a missing project header"
         );
         assert!(
-            !is_missing_project_header("sys/socket.h", None, &search),
+            !is_missing_project_header("sys/socket.h", None, &search, &HeaderLookup::default()),
             "no `sys/` directory under the project: just a system header off the -I path"
         );
         assert!(
-            !is_missing_project_header("stdio.h", None, &search),
+            !is_missing_project_header("stdio.h", None, &search, &HeaderLookup::default()),
             "a bare header name has no directory component and must never match"
         );
         assert!(
-            !is_missing_project_header("config.h", None, &search),
+            !is_missing_project_header("config.h", None, &search, &HeaderLookup::default()),
             "an autotools-generated config.h has no directory component either"
         );
 
         // Once the generated header is actually present it resolves normally
         // and is no longer reported as missing.
         std::fs::write(include.join("object").join("structures_gen.h"), "\n").unwrap();
-        assert!(resolve_header("object/structures_gen.h", None, &search).is_some());
+        assert!(find_header(
+            "object/structures_gen.h",
+            None,
+            &search,
+            &HeaderLookup::default()
+        )
+        .is_some());
     }
 
     #[test]
@@ -8510,12 +8601,12 @@ void caller(char *other) {
 
         // ...so the unresolvable system header is no longer "the project's".
         assert!(
-            !is_missing_project_header("sys/_types.h", None, &local),
+            !is_missing_project_header("sys/_types.h", None, &local, &HeaderLookup::default()),
             "an unresolvable header under a SYSTEM root must not look project-local"
         );
         // Left unfiltered, it does -- which is exactly the bug.
         assert!(
-            is_missing_project_header("sys/_types.h", None, &all_paths),
+            is_missing_project_header("sys/_types.h", None, &all_paths, &HeaderLookup::default()),
             "guard removed: the system root answers, reproducing the bug"
         );
     }

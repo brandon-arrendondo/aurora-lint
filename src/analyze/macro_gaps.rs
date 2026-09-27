@@ -23,9 +23,11 @@
 
 use super::context::ProjectContext;
 use super::dead_regions::{DeadEvidence, DeadRegions};
+use super::include_names::{HeaderLookup, HeaderMatch};
 use super::macro_expand::{self, DefineSkip, FunctionMacro};
 use super::macro_semantics;
 use crate::parser::CParser;
+use crate::settings::IncludeNames;
 use crate::utility::cert_c::{ast_utils, std_functions};
 use lang_parsing_substrate::DeadCodeReason;
 use rayon::prelude::*;
@@ -71,6 +73,14 @@ pub enum MacroGapKind {
     /// An `#include` that resolved to no file on the source directory or any
     /// search path, so whatever it defines was never collected.
     UnresolvedInclude,
+    /// An `#include` whose spelling differs in case from the file it
+    /// resolved to, matched because the toolchain ignores case (cl). The
+    /// header was read; the row says the build finds it only on a toolchain
+    /// that ignores case too.
+    IncludeCaseMismatch,
+    /// An `#include` that, ignoring case, matched several different files in
+    /// one directory. The byte-wise first was read; the row names the others.
+    AmbiguousIncludeCase,
     /// A call to a macro the collector saw but skipped (see the three
     /// `*Definition` kinds above): known to be a macro, known to be opaque.
     UnexpandableInvocation,
@@ -104,6 +114,12 @@ impl MacroGapKind {
                 "macros defined differently in two files (scan order decides)"
             }
             MacroGapKind::UnresolvedInclude => "#include directives that resolved to no file",
+            MacroGapKind::IncludeCaseMismatch => {
+                "#include directives spelled in a different case from the file they found"
+            }
+            MacroGapKind::AmbiguousIncludeCase => {
+                "#include directives matching several files that differ only in case"
+            }
             MacroGapKind::UnexpandableInvocation => "invocations of macros the engine cannot expand",
             MacroGapKind::ArityMismatch => {
                 "invocations whose argument count does not match the held definition"
@@ -321,6 +337,48 @@ pub fn unresolved_include(
     }
 }
 
+/// The rows for an `#include` of `include_path` that `found` matched only by
+/// ignoring case: one naming the file it found, and one more if other files
+/// matched as well. `includer` is the file whose directive it is, `None` for
+/// a forced include.
+pub fn include_case_gaps(
+    include_path: &str,
+    includer: Option<&str>,
+    found: &HeaderMatch,
+) -> Vec<MacroGap> {
+    let mut gaps = vec![MacroGap {
+        kind: MacroGapKind::IncludeCaseMismatch,
+        file: includer.unwrap_or_default().to_string(),
+        line: 0,
+        name: include_path.to_string(),
+        detail: format!(
+            "found {} only by ignoring case; a toolchain that matches case would not find it",
+            found.path.display()
+        ),
+        count: 1,
+    }];
+    if !found.ambiguous_with.is_empty() {
+        let others: Vec<String> = found
+            .ambiguous_with
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        gaps.push(MacroGap {
+            kind: MacroGapKind::AmbiguousIncludeCase,
+            file: includer.unwrap_or_default().to_string(),
+            line: 0,
+            name: include_path.to_string(),
+            detail: format!(
+                "read {}, the first by byte order; also matched {}",
+                found.path.display(),
+                others.join(", ")
+            ),
+            count: 1,
+        });
+    }
+    gaps
+}
+
 /// Headers and other includable files the `-d` pre-scan walked, keyed for
 /// suffix matching, so an `#include "checksum.h"` that no search path
 /// places but that sits under a `-d` directory is not reported: the
@@ -349,10 +407,15 @@ impl PrescannedHeaders {
 
     /// Whether some pre-scanned header ends with `include_path`'s
     /// components (leading `..`/`.` stripped, since those describe the
-    /// includer's position, not the header's).
-    fn contains(&self, include_path: &str) -> bool {
+    /// includer's position, not the header's), compared under `lookup`'s
+    /// rule; cl also separates components with `\`.
+    fn contains(&self, include_path: &str, lookup: &HeaderLookup) -> bool {
+        let separators: &[char] = match lookup.mode() {
+            IncludeNames::Exact => &['/'],
+            IncludeNames::CaseInsensitive => &['/', '\\'],
+        };
         let wanted: Vec<&str> = include_path
-            .split('/')
+            .split(separators)
             .filter(|c| !c.is_empty() && *c != "." && *c != "..")
             .collect();
         if wanted.is_empty() {
@@ -367,7 +430,7 @@ impl PrescannedHeaders {
                 && comps[comps.len() - wanted.len()..]
                     .iter()
                     .zip(&wanted)
-                    .all(|(a, b)| a == b)
+                    .all(|(a, b)| lookup.same_name(a, b))
         })
     }
 }
@@ -456,12 +519,14 @@ impl MacroGapReport {
 /// Build the report: the definition- and include-side gaps the pre-scan
 /// already recorded in `context`, plus an invocation audit of every file in
 /// `c_files` (parallel, parse-only). `include_paths` is consulted only to
-/// decide whether an `#include` in an analyzed file could have resolved.
+/// decide whether an `#include` in an analyzed file could have resolved,
+/// matching names under `lookup`'s rule.
 pub fn build_report(
     c_files: &[String],
     context: &ProjectContext,
     directories: &[String],
     include_paths: &[String],
+    lookup: &HeaderLookup,
 ) -> MacroGapReport {
     let prescanned = PrescannedHeaders::walk(directories);
     // Names the pre-scan saw as macros but will never expand, with the reason
@@ -480,7 +545,16 @@ pub fn build_report(
 
     let per_file: Vec<Vec<MacroGap>> = c_files
         .par_iter()
-        .map(|file| audit_file(file, context, include_paths, &prescanned, &unexpandable))
+        .map(|file| {
+            audit_file(
+                file,
+                context,
+                include_paths,
+                &prescanned,
+                &unexpandable,
+                lookup,
+            )
+        })
         .collect();
 
     // Analyzed-file rows first: when the same include or definition was
@@ -556,6 +630,7 @@ fn audit_file(
     include_paths: &[String],
     prescanned: &PrescannedHeaders,
     prescan_unexpandable: &HashMap<&str, MacroGapKind>,
+    lookup: &HeaderLookup,
 ) -> Vec<MacroGap> {
     let mut parser = match CParser::new() {
         Ok(p) => p,
@@ -588,15 +663,22 @@ fn audit_file(
     // Includes this file names that resolve to nothing the engine read.
     let source_dir = Path::new(file).parent();
     for inc in super::prescan::extract_include_directives(&root, &source) {
-        if super::prescan::resolve_header(&inc, source_dir, include_paths).is_some()
-            || prescanned.contains(&inc)
-        {
+        if let Some(found) = super::prescan::find_header(&inc, source_dir, include_paths, lookup) {
+            // The same row `resolve_includes` records when it walked this
+            // file; the two collapse in `dedupe_and_sort`. Recorded here too
+            // because that walk runs only with a search path.
+            if found.case_differs {
+                gaps.extend(include_case_gaps(&inc, Some(file), &found));
+            }
+            continue;
+        }
+        if prescanned.contains(&inc, lookup) {
             continue;
         }
         // Same classification `resolve_includes` applies, restricted to the
         // includer's own directory (the search paths were judged there).
         let project = context.unresolved_project_headers.contains(&inc)
-            || super::prescan::is_missing_project_header(&inc, source_dir, &[]);
+            || super::prescan::is_missing_project_header(&inc, source_dir, &[], lookup);
         gaps.push(unresolved_include(&inc, Some(file), None, project));
     }
 
@@ -937,7 +1019,13 @@ int main(int argc, char **argv) {
         )
         .unwrap();
         let context = ProjectContext::new();
-        let report = build_report(&[c.to_string_lossy().to_string()], &context, &[], &[]);
+        let report = build_report(
+            &[c.to_string_lossy().to_string()],
+            &context,
+            &[],
+            &[],
+            &HeaderLookup::default(),
+        );
         let names: Vec<(MacroGapKind, &str, usize)> = report
             .gaps
             .iter()
@@ -975,7 +1063,13 @@ int main(int argc, char **argv) {
             detail: DefineSkip::PasteOrStringize.describe().into(),
             count: 1,
         });
-        let report = build_report(&[c.to_string_lossy().to_string()], &context, &[], &[]);
+        let report = build_report(
+            &[c.to_string_lossy().to_string()],
+            &context,
+            &[],
+            &[],
+            &HeaderLookup::default(),
+        );
         let names: Vec<(MacroGapKind, &str)> = report
             .gaps
             .iter()

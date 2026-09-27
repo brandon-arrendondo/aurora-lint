@@ -289,12 +289,30 @@ syntax. `docs/cli-usage.rst` describes the user-facing behaviour.
 
 | Item | Signature | Description |
 |---|---|---|
-| `CompileDb::load` | `(path: &Path) -> Result<CompileDb>` | The distilled database: `include_paths`, `defines`, `undefines`, `forced_includes` (cl's `/FI`), `compilers`, `configured_sources`. Flags are unioned across entries, not scoped per TU. |
+| `CompileDb::load` | `(path: &Path) -> Result<CompileDb>` | The distilled database: `include_paths`, `defines`, `undefines`, `forced_includes` (cl's `/FI`), `compilers`, `configured_sources`, and `msvc` (any entry built by cl), which makes `#include` matching case-insensitive unless the settings say otherwise. Flags are unioned across entries, not scoped per TU. |
 | `split_command` | `(cmd: &str) -> Vec<String>` | POSIX-shell-ish argv split: single and double quotes, backslash escapes. |
 | `split_command_windows` | `(cmd: &str) -> Vec<String>` | The MSVC C runtime's argv split: backslashes are literal except before `"` (`2n` then `"` gives `n` and toggles quoting, `2n+1` gives `n` and a literal quote), `""` inside quotes is a literal quote, and only space, tab and line breaks separate. Use it for any Windows-written command line or response file. The POSIX split turns `C:\src\inc` into `C:srcinc`. |
 | `split_command_for_host` | `(cmd: &str) -> Vec<String>` | Picks one of the two splits by the driver word (looking past a compiler launcher): a Windows path or an `.exe` means the Windows split. |
 | `is_msvc_driver` | `(argv: &[String]) -> bool` | Whether an entry's driver is `cl`/`clang-cl` (behind a `ccache`/`sccache`/… launcher too) or is given `--driver-mode=cl`. This gates every `/`-spelled flag, so a POSIX path such as `/Users/x` is never read as `/U`. |
 | `expand_response_files` | `(argv, base: &Path, msvc: bool) -> Vec<String>` | Splices `@file` arguments in place, resolved against the entry directory. It decodes UTF-8, UTF-16LE (with or without a BOM) and UTF-16BE, cuts cycles, bounds nesting, and drops an unreadable file. |
+
+### `src/analyze/include_names.rs`
+**Problem solved:** finding the file an `#include` name refers to under the
+toolchain's matching rule (`settings::IncludeNames`): exact, or ignoring case
+as cl does on Windows. Use it for any lookup of an include name on disk, so a
+Windows project scanned on Linux reaches the headers its build reaches.
+
+| Item | Signature | Description |
+|---|---|---|
+| `HeaderLookup::new` | `(mode: IncludeNames) -> HeaderLookup` | One per scan. In the case-insensitive mode it reads each directory once and caches a folded-name index, so a lookup is a map probe. Shareable across threads. |
+| `HeaderLookup::find_in` | `(&self, dir: &Path, include_path: &str) -> Option<HeaderMatch>` | The file `include_path` names under `dir`. Case-insensitive matching goes one component at a time (`\` separates too); an exact-case entry wins; several different files differing only in case yield the first in byte order plus `ambiguous_with`. `case_differs` says whether any component matched only by ignoring case. |
+| `HeaderLookup::find_absolute` | `(&self, path: &Path) -> Option<HeaderMatch>` | The same for an absolute name, such as a forced include. |
+| `HeaderLookup::dir_exists` | `(&self, root: &Path, rel: &Path) -> bool` | Whether `rel` names a directory under `root`, under the same rule. |
+| `HeaderLookup::same_name` | `(&self, a: &str, b: &str) -> bool` | Whether two single file names match under the rule. |
+
+`prescan::find_header` applies a lookup over the include search order (the
+includer's directory, then each search path). `macro_gaps::include_case_gaps`
+builds the report rows for a header found only by ignoring case.
 
 ## Declaration / type / declarator resolution
 

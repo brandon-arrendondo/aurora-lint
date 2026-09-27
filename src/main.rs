@@ -62,6 +62,12 @@ fn settings_from_cli(matches: &clap::ArgMatches) -> Result<SettingsConfig> {
         config.environment.get_or_insert_with(Default::default).libc =
             Some(libc.parse().map_err(anyhow::Error::msg)?);
     }
+    if let Some(names) = parse("include_names") {
+        config
+            .environment
+            .get_or_insert_with(Default::default)
+            .include_names = Some(names.parse().map_err(anyhow::Error::msg)?);
+    }
     for assignment in matches.get_many::<String>("set").into_iter().flatten() {
         config.set(assignment).context("--set")?;
     }
@@ -73,13 +79,24 @@ fn settings_from_cli(matches: &clap::ArgMatches) -> Result<SettingsConfig> {
 /// A `--profile` on the command line restarts from that preset: the
 /// manifest's own axis settings and overrides would otherwise silently
 /// survive a request for the strict preset.
-fn resolve_settings(manifest: &RuleManifest, cli: &SettingsConfig) -> Result<AnalysisSettings> {
+///
+/// A compile database written for cl (`msvc_db`) declares a toolchain that
+/// matches `#include` names case-insensitively; an explicit `include_names`
+/// in either layer still wins.
+fn resolve_settings(
+    manifest: &RuleManifest,
+    cli: &SettingsConfig,
+    msvc_db: bool,
+) -> Result<AnalysisSettings> {
     let mut config = if cli.profile.is_some() {
         SettingsConfig::default()
     } else {
         manifest.settings_config()
     };
     config.overlay(cli);
+    if msvc_db {
+        config.default_include_names(settings::IncludeNames::CaseInsensitive);
+    }
     AnalysisSettings::resolve(&config).context("invalid policy/environment settings")
 }
 
@@ -273,6 +290,13 @@ fn run() -> Result<i32> {
                 .value_parser(["iso-posix", "glibc", "musl", "newlib", "picolibc", "custom"]),
         )
         .arg(
+            Arg::new("include_names")
+                .long("include-names")
+                .help("How #include names match files: exact, or case-insensitive as cl does on Windows. Default: case-insensitive with an MSVC --compile-commands database, exact otherwise; never taken from the scanning host")
+                .value_name("MODE")
+                .value_parser(["exact", "case-insensitive"]),
+        )
+        .arg(
             Arg::new("set")
                 .long("set")
                 .help("Override one named option (repeatable); see --list-options")
@@ -434,7 +458,11 @@ fn run() -> Result<i32> {
     let settings_cli = settings_from_cli(&matches)?;
 
     if let Some(format) = matches.get_one::<String>("list_options") {
-        let settings = resolve_settings(&load_manifest(manifest_path)?, &settings_cli)?;
+        let settings = resolve_settings(
+            &load_manifest(manifest_path)?,
+            &settings_cli,
+            compile_db.as_ref().is_some_and(|db| db.msvc),
+        )?;
         match format.as_str() {
             "json" => println!(
                 "{}",
@@ -476,7 +504,11 @@ fn run() -> Result<i32> {
     if let Some(ref rules) = rule_filter {
         manifest.restrict_to(rules);
     }
-    let analysis_settings = resolve_settings(&manifest, &settings_cli)?;
+    let analysis_settings = resolve_settings(
+        &manifest,
+        &settings_cli,
+        compile_db.as_ref().is_some_and(|db| db.msvc),
+    )?;
 
     // Handle suppression generation
     if let Some(gen_spec) = generate_suppression {

@@ -2185,6 +2185,16 @@ fn msvc_cdb_fixtures() -> PathBuf {
 /// way CMake writes a cl database, so the `command` string is split with
 /// Windows quoting as well.
 fn arr30_messages_with_msvc_cdb(source: &str, cl_flags: Option<&str>) -> Vec<String> {
+    arr30_scan_with_msvc_cdb(source, cl_flags, &[]).0
+}
+
+/// [`arr30_messages_with_msvc_cdb`] with `extra` arguments appended, also
+/// returning stdout and stderr together.
+fn arr30_scan_with_msvc_cdb(
+    source: &str,
+    cl_flags: Option<&str>,
+    extra: &[&str],
+) -> (Vec<String>, String) {
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join("proj");
     let sdk = dir.path().join("sdk");
@@ -2217,15 +2227,17 @@ fn arr30_messages_with_msvc_cdb(source: &str, cl_flags: Option<&str>) -> Vec<Str
         args.push("--compile-commands".into());
         args.push(db.to_str().unwrap().to_string());
     }
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let (code, _, stderr) = run_aurora_lint(&args);
+    let mut args: Vec<&str> = args.iter().map(String::as_str).collect();
+    args.extend_from_slice(extra);
+    let (code, stdout, stderr) = run_aurora_lint(&args);
     assert_eq!(code, 0, "{stderr}");
     let violations: Vec<serde_json::Value> =
         serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
-    violations
+    let messages = violations
         .iter()
         .map(|v| v["message"].as_str().unwrap().to_string())
-        .collect()
+        .collect();
+    (messages, format!("{stdout}{stderr}"))
 }
 
 fn names_index_8(messages: &[String]) -> bool {
@@ -2309,4 +2321,52 @@ fn check_macro_calling_a_static_exit_helper_survives_include_resolution() {
         .filter(|v| v["rule_id"] == "EXP34-C")
         .collect();
     assert!(exp34.is_empty(), "{violations:?}");
+}
+
+#[test]
+fn msvc_database_matches_include_names_ignoring_case() {
+    // `<MSVC_Idx.H>` names sdk/msvc_idx.h only to a toolchain that ignores
+    // case. A cl database declares one, so the header is read and the index
+    // it defines gates the finding.
+    let (with, output) =
+        arr30_scan_with_msvc_cdb("case.c", Some("/I../sdk"), &["--report-macro-gaps"]);
+    assert!(names_index_8(&with), "{with:?}");
+    assert!(
+        output.contains("spelled in a different case") && output.contains("MSVC_Idx.H"),
+        "{output}"
+    );
+    // An explicit setting wins over what the database implies.
+    let (exact, _) =
+        arr30_scan_with_msvc_cdb("case.c", Some("/I../sdk"), &["--include-names", "exact"]);
+    assert!(!names_index_8(&exact), "{exact:?}");
+}
+
+#[test]
+fn msvc_database_names_include_matching_in_the_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("compile_commands.json");
+    std::fs::write(
+        &db,
+        serde_json::json!([{
+            "directory": dir.path().to_str().unwrap(),
+            "file": "a.c",
+            "command": r"C:\VS\bin\cl.exe /nologo -c a.c",
+        }])
+        .to_string(),
+    )
+    .unwrap();
+    let current = |extra: &[&str]| {
+        let mut args = vec!["--list-options", "json"];
+        args.extend_from_slice(extra);
+        let (code, stdout, stderr) = run_aurora_lint(&args);
+        assert_eq!(code, 0, "{stderr}");
+        let listing: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        listing["current"].clone()
+    };
+    let plain = current(&[]);
+    let cl = current(&["--compile-commands", db.to_str().unwrap()]);
+    assert!(plain["include_names"].is_null());
+    assert_eq!(cl["include_names"], "case-insensitive");
+    assert_eq!(cl["preset"], "default");
+    assert_ne!(cl["hash"], plain["hash"]);
 }

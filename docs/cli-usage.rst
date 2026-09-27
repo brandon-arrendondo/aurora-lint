@@ -200,6 +200,18 @@ directories with ``-I``. The database also keeps the Windows paths it was
 written with: scanning from WSL or another host needs them remapped, and
 aurora-lint warns when its include paths do not exist.
 
+Windows looks file names up ignoring case, so a Windows project can spell a
+header ``<Shlobj.h>`` or ``COMMCTRL.H`` when the file on disk is ``ShlObj.h`` or
+``CommCtrl.h``. A cl database therefore makes ``#include`` matching
+case-insensitive, one path component at a time; ``--include-names exact`` (or
+``include_names`` in the manifest, see :doc:`configuration`) turns that off, and
+``--include-names case-insensitive`` turns it on without a database. An entry
+whose name matches exactly still wins. When a directory holds several different
+files that differ only in case, the first in byte order is read. Each header
+found only by ignoring case, and each such ambiguity, is listed by
+``--report-macro-gaps``, so a spelling that only a Windows build tolerates is
+visible.
+
 Reaching the Compiler's Own Headers
 -----------------------------------
 

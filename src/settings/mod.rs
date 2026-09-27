@@ -72,6 +72,21 @@ pub enum Libc {
     Custom,
 }
 
+/// How an `#include` name is matched against the files on disk: a fact about
+/// the toolchain that builds the code, not a contract the rules trust, so it
+/// is a field of the environment rather than a row of [`OPTIONS`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum IncludeNames {
+    /// Byte-for-byte, as GCC and Clang on a POSIX file system see it.
+    #[default]
+    Exact,
+    /// Ignoring case, as cl sees it: Windows looks a file name up
+    /// case-insensitively unless a directory has been marked case-sensitive
+    /// (Microsoft Learn, "Case sensitivity"). An exact-case entry still wins.
+    CaseInsensitive,
+}
+
 /// Which axis an option belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Axis {
@@ -335,12 +350,26 @@ pub struct EnvironmentConfig {
     /// The libc model whose contracts are trusted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub libc: Option<Libc>,
+    /// How `#include` names match files. Unset, an MSVC compile database
+    /// makes it case-insensitive and anything else exact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_names: Option<IncludeNames>,
     /// Per-contract overrides.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub overrides: BTreeMap<String, bool>,
 }
 
 impl SettingsConfig {
+    /// Use `names` for `#include` matching unless a value is already set:
+    /// what a compile database's compiler implies, which an explicit
+    /// setting overrides.
+    pub fn default_include_names(&mut self, names: IncludeNames) {
+        self.environment
+            .get_or_insert_with(Default::default)
+            .include_names
+            .get_or_insert(names);
+    }
+
     /// Layer `other` over `self`: every value `other` sets wins.
     pub fn overlay(&mut self, other: &SettingsConfig) {
         if other.profile.is_some() {
@@ -361,6 +390,9 @@ impl SettingsConfig {
             }
             if e.libc.is_some() {
                 mine.libc = e.libc;
+            }
+            if e.include_names.is_some() {
+                mine.include_names = e.include_names;
             }
             mine.overrides
                 .extend(e.overrides.iter().map(|(k, v)| (k.clone(), *v)));
@@ -412,6 +444,8 @@ pub struct AnalysisSettings {
     pub environment: EnvironmentKind,
     /// The libc model, `None` when a freestanding environment declares none.
     pub libc: Option<Libc>,
+    /// How `#include` names match files.
+    pub include_names: IncludeNames,
     values: BTreeMap<&'static str, bool>,
 }
 
@@ -441,12 +475,14 @@ impl AnalysisSettings {
             Preset::Strict => (Policy::Strict, EnvironmentKind::Freestanding),
         };
         let mut libc = None;
+        let mut include_names = IncludeNames::default();
         if let Some(p) = &config.policy {
             policy = p.level.unwrap_or(policy);
         }
         if let Some(e) = &config.environment {
             environment = e.kind.unwrap_or(environment);
             libc = e.libc;
+            include_names = e.include_names.unwrap_or_default();
         }
         // A hosted implementation provides the standard library, so its
         // contracts hold unless a model says otherwise; a freestanding one
@@ -503,6 +539,7 @@ impl AnalysisSettings {
             policy,
             environment,
             libc,
+            include_names,
             values,
         })
     }
@@ -519,11 +556,16 @@ impl AnalysisSettings {
         }
     }
 
-    /// The preset these settings equal exactly, if any.
+    /// The preset these settings equal, if any. A preset says nothing about
+    /// how `#include` names match, so that field is not compared.
     pub fn matching_preset(&self) -> Option<Preset> {
-        [Preset::Default, Preset::Strict]
-            .into_iter()
-            .find(|p| *self == Self::preset(*p))
+        [Preset::Default, Preset::Strict].into_iter().find(|p| {
+            *self
+                == Self {
+                    include_names: self.include_names,
+                    ..Self::preset(*p)
+                }
+        })
     }
 
     /// Every option's resolved value, in table order.
@@ -559,13 +601,19 @@ impl AnalysisSettings {
             .values()
             .map(|(k, v)| (k.to_string(), serde_json::Value::Bool(v)))
             .collect();
-        serde_json::json!({
+        let mut identity = serde_json::json!({
             "preset": self.matching_preset(),
             "policy": self.policy,
             "environment": self.environment,
             "libc": self.libc,
             "options": options,
-        })
+        });
+        // Present only when it departs from exact matching, so the settings
+        // every run scanned under before the field existed keep their hash.
+        if self.include_names != IncludeNames::Exact {
+            identity["include_names"] = serde_json::json!(self.include_names);
+        }
+        identity
     }
 }
 
@@ -591,7 +639,7 @@ macro_rules! display_via_serde {
     )*};
 }
 
-display_via_serde!(Preset, Policy, EnvironmentKind, Libc);
+display_via_serde!(Preset, Policy, EnvironmentKind, Libc, IncludeNames);
 
 /// `v` serialized with every object's keys in sorted order and no
 /// whitespace, whatever order the map preserved.
@@ -643,12 +691,13 @@ pub fn render_text(current: &AnalysisSettings) -> String {
     let default = AnalysisSettings::preset(Preset::Default);
     let strict = AnalysisSettings::preset(Preset::Strict);
     let mut out = format!(
-        "Current: policy={}, environment={}, libc={}\n\n",
+        "Current: policy={}, environment={}, libc={}, include_names={}\n\n",
         current.policy,
         current.environment,
         current
             .libc
             .map_or_else(|| "none".to_string(), |l| l.to_string()),
+        current.include_names,
     );
     out.push_str(&format!(
         "{:<24} {:<12} {:<14} {:>7} {:>7} {:>7}\n",
@@ -734,5 +783,115 @@ pub fn render_rst() -> String {
             out.push_str(&format!("   - Basis: {}\n\n", o.basis));
         }
     }
+    out.push_str(
+        "Toolchain\n\
+         ---------\n\n\
+         ``include_names``\n   \
+         How an ``#include`` name is matched against the files on disk: ``exact``, or\n   \
+         ``case-insensitive`` as cl does on Windows, where an exact-case entry still\n   \
+         wins. It is a fact about the toolchain rather than an assumption the rules\n   \
+         trust, so neither preset sets it and it carries no oracle tag. Unset, it is\n   \
+         ``case-insensitive`` when ``--compile-commands`` names a cl or clang-cl build\n   \
+         and ``exact`` otherwise; the scanning host's own file system never decides it.\n\n   \
+         - Set with ``[environment] include_names`` or ``--include-names``\n   \
+         - Part of the settings hash only when ``case-insensitive``\n   \
+         - Basis: Windows looks file names up case-insensitively unless a directory\n     \
+         is marked case-sensitive (Microsoft Learn, \"Case sensitivity\").\n",
+    );
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_names(preset: Preset, names: Option<IncludeNames>) -> AnalysisSettings {
+        AnalysisSettings::resolve(&SettingsConfig {
+            profile: Some(preset),
+            environment: names.map(|n| EnvironmentConfig {
+                include_names: Some(n),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn exact_include_names_leave_every_preset_hash_as_it_was() {
+        // The hashes the presets had before `include_names` existed. Benchmark
+        // run ids carry them, so exact matching must not move them.
+        assert_eq!(
+            AnalysisSettings::preset(Preset::Default).settings_hash(),
+            "146f25fdde211a31e40cb3d049b8d8c173b4025ae10aba035c0b478baadb05f0"
+        );
+        assert_eq!(
+            AnalysisSettings::preset(Preset::Strict).settings_hash(),
+            "1df095acbd20780b729da10b67af7fa2a32180a844f7c69a35cc1c4b91141694"
+        );
+        assert_eq!(
+            with_names(Preset::Default, Some(IncludeNames::Exact)).settings_hash(),
+            AnalysisSettings::preset(Preset::Default).settings_hash()
+        );
+    }
+
+    #[test]
+    fn case_insensitive_include_names_are_named_and_hashed_but_keep_the_preset() {
+        let s = with_names(Preset::Default, Some(IncludeNames::CaseInsensitive));
+        assert_eq!(s.include_names, IncludeNames::CaseInsensitive);
+        assert_eq!(s.matching_preset(), Some(Preset::Default));
+        assert_ne!(
+            s.settings_hash(),
+            AnalysisSettings::preset(Preset::Default).settings_hash()
+        );
+        assert_eq!(s.to_json()["include_names"], "case-insensitive");
+        assert!(AnalysisSettings::preset(Preset::Default).to_json()["include_names"].is_null());
+    }
+
+    #[test]
+    fn a_compile_database_default_yields_to_an_explicit_setting() {
+        let mut implied = SettingsConfig::default();
+        implied.default_include_names(IncludeNames::CaseInsensitive);
+        assert_eq!(
+            AnalysisSettings::resolve(&implied).unwrap().include_names,
+            IncludeNames::CaseInsensitive
+        );
+
+        let mut explicit = SettingsConfig {
+            environment: Some(EnvironmentConfig {
+                include_names: Some(IncludeNames::Exact),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        explicit.default_include_names(IncludeNames::CaseInsensitive);
+        assert_eq!(
+            AnalysisSettings::resolve(&explicit).unwrap().include_names,
+            IncludeNames::Exact
+        );
+    }
+
+    #[test]
+    fn include_names_parse_from_the_manifest_and_overlay() {
+        let config: SettingsConfig =
+            toml::from_str("[environment]\ninclude_names = \"case-insensitive\"\n").unwrap();
+        assert_eq!(
+            AnalysisSettings::resolve(&config).unwrap().include_names,
+            IncludeNames::CaseInsensitive
+        );
+        let mut base = config.clone();
+        base.overlay(&SettingsConfig {
+            environment: Some(EnvironmentConfig {
+                include_names: Some(IncludeNames::Exact),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert_eq!(
+            AnalysisSettings::resolve(&base).unwrap().include_names,
+            IncludeNames::Exact
+        );
+        assert!("exact".parse::<IncludeNames>().is_ok());
+        assert!("insensitive".parse::<IncludeNames>().is_err());
+    }
 }

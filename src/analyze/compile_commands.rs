@@ -171,6 +171,10 @@ pub struct CompileDb {
     /// source files that *are* the declared configuration. A database lists
     /// compiled TUs only, so this never contains a header.
     pub configured_sources: HashSet<String>,
+    /// Whether any entry was built by cl or clang-cl. Such a build looks
+    /// `#include` names up the way Windows does, ignoring case, so unless the
+    /// settings say otherwise the scan does too.
+    pub msvc: bool,
 }
 
 impl CompileDb {
@@ -230,6 +234,7 @@ impl CompileDb {
                 expanded = expand_response_files(argv, base, msvc);
             }
             let argv = expanded;
+            db.msvc |= msvc;
 
             if let Some(file) = &entry.file {
                 db.configured_sources
@@ -1151,6 +1156,7 @@ mod tests {
             &mut ctx,
             None,
             false,
+            &super::super::include_names::HeaderLookup::default(),
         )
         .unwrap();
 
@@ -1623,6 +1629,7 @@ mod tests {
             &mut ctx,
             None,
             false,
+            &super::super::include_names::HeaderLookup::default(),
         )
         .unwrap();
         assert_eq!(ctx.macro_constants.get("FORCED_LEN"), Some(&12));
@@ -1654,6 +1661,7 @@ mod tests {
             &mut ctx,
             None,
             false,
+            &super::super::include_names::HeaderLookup::default(),
         )
         .unwrap();
         ctx

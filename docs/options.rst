@@ -101,3 +101,18 @@ Environment contracts
    - Oracle tag: ``contract:static_zero_init``
    - Basis: C11 6.7.9p10. Startup code that skips clearing .bss breaks it. Withdrawn, a block-scope static read before its function writes it is indeterminate; file-scope objects, which any function may write first, are not tracked.
 
+Toolchain
+---------
+
+``include_names``
+   How an ``#include`` name is matched against the files on disk: ``exact``, or
+   ``case-insensitive`` as cl does on Windows, where an exact-case entry still
+   wins. It is a fact about the toolchain rather than an assumption the rules
+   trust, so neither preset sets it and it carries no oracle tag. Unset, it is
+   ``case-insensitive`` when ``--compile-commands`` names a cl or clang-cl build
+   and ``exact`` otherwise; the scanning host's own file system never decides it.
+
+   - Set with ``[environment] include_names`` or ``--include-names``
+   - Part of the settings hash only when ``case-insensitive``
+   - Basis: Windows looks file names up case-insensitively unless a directory
+     is marked case-sensitive (Microsoft Learn, "Case sensitivity").
