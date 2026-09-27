@@ -188,7 +188,8 @@ impl CertRule for Mem30C {
         let mut macro_aliases =
             const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
         // A free or realloc in one build starts the finding in that build
-        // (ADR-0010 D1), whatever the alias is in the others.
+        // (ADR-0010 D1), whatever the alias is in the others; so does the
+        // allocation a later free is paired with.
         const_eval::with_accusing_alias_targets(
             &mut macro_aliases,
             &const_eval::merged_macro_alias_alternatives(
@@ -196,7 +197,7 @@ impl CertRule for Mem30C {
                 node,
                 source,
             ),
-            |t| t == "free" || t == "realloc",
+            |t| matches!(t, "free" | "realloc" | "malloc" | "calloc"),
         );
 
         // Function-like macros this file defines more than one way under a

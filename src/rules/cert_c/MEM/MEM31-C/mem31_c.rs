@@ -101,6 +101,9 @@ pub struct Mem31C {
     /// `mbedtls_calloc(...)` is an allocation and `mbedtls_free(...)` is a
     /// literal `free`, not a `*_free`-shaped guess.
     project_aliases: RefCell<Arc<HashMap<String, String>>>,
+    /// Every live target of each project alias
+    /// (`ProjectContext::macro_alias_alternatives`), for allocators.
+    project_alias_alternatives: RefCell<Arc<HashMap<String, Vec<String>>>>,
 }
 
 impl Mem31C {
@@ -115,6 +118,7 @@ impl Mem31C {
             noreturn_functions: RefCell::default(),
             settings: RefCell::default(),
             project_aliases: RefCell::new(Arc::new(HashMap::new())),
+            project_alias_alternatives: RefCell::new(Arc::new(HashMap::new())),
         }
     }
 }
@@ -149,6 +153,7 @@ impl CertRule for Mem31C {
         *self.function_macros.borrow_mut() = context.function_macros.clone();
         *self.noreturn_functions.borrow_mut() = context.noreturn_functions.clone();
         *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
+        *self.project_alias_alternatives.borrow_mut() = context.macro_alias_alternatives.clone();
     }
 
     fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
@@ -185,8 +190,21 @@ impl CertRule for Mem31C {
             source,
             &settings,
         );
-        let macro_aliases =
+        let mut macro_aliases =
             const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
+        // An allocation starts a leak finding, so an alias that is an
+        // allocator in one build allocates there (ADR-0010 D1): mbedtls's
+        // `mbedtls_calloc` is `calloc` unless MBEDTLS_PLATFORM_MEMORY. A free
+        // only suppresses one, and stays on the settled aliases.
+        const_eval::with_accusing_alias_targets(
+            &mut macro_aliases,
+            &const_eval::merged_macro_alias_alternatives(
+                &self.project_alias_alternatives.borrow(),
+                node,
+                source,
+            ),
+            call_roles::is_allocator_call,
+        );
 
         // Analyze each function independently for memory leaks. A real C
         // file never nests one function_definition inside another, but
