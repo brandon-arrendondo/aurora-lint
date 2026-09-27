@@ -288,6 +288,21 @@ variable, not through flags, so a cl database lists none of them. Pass those
 directories with <code class="docutils literal notranslate"><span class="pre">-I</span></code>. The database also keeps the Windows paths it was
 written with: scanning from WSL or another host needs them remapped, and
 aurora-lint warns when its include paths do not exist.</p>
+<p>Windows looks file names up ignoring case, so a Windows project can spell a
+header <code class="docutils literal notranslate"><span class="pre">&lt;Shlobj.h&gt;</span></code> or <code class="docutils literal notranslate"><span class="pre">COMMCTRL.H</span></code> when the file on disk is <code class="docutils literal notranslate"><span class="pre">ShlObj.h</span></code> or
+<code class="docutils literal notranslate"><span class="pre">CommCtrl.h</span></code>. A cl database therefore makes <code class="docutils literal notranslate"><span class="pre">#include</span></code> matching
+case-insensitive, one path component at a time; <code class="docutils literal notranslate"><span class="pre">--include-names</span> <span class="pre">exact</span></code> (or
+<code class="docutils literal notranslate"><span class="pre">include_names</span></code> in the manifest, see <a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a>) turns that off, and
+<code class="docutils literal notranslate"><span class="pre">--include-names</span> <span class="pre">case-insensitive</span></code> turns it on without a database. An entry
+whose name matches exactly still wins. When a directory holds several different
+files that differ only in case, the first in byte order is read. Each header
+found only by ignoring case, and each such ambiguity, is listed by
+<code class="docutils literal notranslate"><span class="pre">--report-macro-gaps</span></code>, so a spelling that only a Windows build tolerates is
+visible. Two things are still matched exactly: a <code class="docutils literal notranslate"><span class="pre">/FI</span></code> name, which is looked
+up beside the database entry only when it is spelled as on disk, and the file
+names in <code class="docutils literal notranslate"><span class="pre">#include</span> <span class="pre">&quot;x.c&quot;</span></code> that decide which <code class="docutils literal notranslate"><span class="pre">.c</span></code> files are compiled into
+another. A <code class="docutils literal notranslate"><span class="pre">--save-prescan</span></code> cache does not record which rule built it, so
+reuse it only under the same <code class="docutils literal notranslate"><span class="pre">include_names</span></code>.</p>
 </section>
 <section id="reaching-the-compiler-s-own-headers">
 <h2>Reaching the Compiler’s Own Headers<a class="headerlink" href="#reaching-the-compiler-s-own-headers" title="Link to this heading"></a></h2>

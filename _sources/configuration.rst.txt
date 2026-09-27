@@ -75,6 +75,7 @@ be set explicitly, down to single options:
     [environment]
     kind = "freestanding"       # "hosted" | "freestanding"; overrides the preset
     libc = "newlib"             # iso-posix | glibc | musl | newlib | picolibc | custom
+    include_names = "exact"     # "exact" | "case-insensitive" (as cl on Windows)
 
     [environment.overrides]
     static_zero_init = false    # our startup code does not clear .bss
@@ -83,8 +84,8 @@ be set explicitly, down to single options:
     enabled = true
 
 The same settings are available on the command line, where they win over the
-manifest: ``--profile``, ``--policy``, ``--environment``, ``--libc`` and a
-repeatable ``--set NAME=VALUE``. A ``--profile`` given on the command line
+manifest: ``--profile``, ``--policy``, ``--environment``, ``--libc``,
+``--include-names`` and a repeatable ``--set NAME=VALUE``. A ``--profile`` given on the command line
 starts again from that preset, discarding the manifest's settings.
 
 ``aurora-lint --list-options`` lists every option with its value under each
@@ -95,6 +96,14 @@ export records the settings in ``runs[0].properties["aurora-lint/settings"]``,
 so a report always says which reading produced it. Its ``hash`` is the SHA-256
 of the settings' canonical JSON (sorted keys): equal settings always hash
 equally, and adding or changing any option changes it.
+
+``include_names`` says how an ``#include`` name is matched against the files on
+disk. It describes the toolchain rather than an assumption the rules trust, so
+neither preset sets it. Left unset, it is ``case-insensitive`` when
+``--compile-commands`` names a cl or clang-cl build (see :doc:`cli-usage`) and
+``exact`` otherwise. The file system of the machine running the scan never
+decides it. It enters the settings hash only when ``case-insensitive``, so
+settings that never mention it keep the hash they always had.
 
 Supported CERT C Rules
 ----------------------

@@ -166,6 +166,7 @@ be set explicitly, down to single options:</p>
 <span class="k">[environment]</span>
 <span class="n">kind</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;freestanding&quot;</span><span class="w">       </span><span class="c1"># &quot;hosted&quot; | &quot;freestanding&quot;; overrides the preset</span>
 <span class="n">libc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;newlib&quot;</span><span class="w">             </span><span class="c1"># iso-posix | glibc | musl | newlib | picolibc | custom</span>
+<span class="n">include_names</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;exact&quot;</span><span class="w">     </span><span class="c1"># &quot;exact&quot; | &quot;case-insensitive&quot; (as cl on Windows)</span>
 
 <span class="k">[environment.overrides]</span>
 <span class="n">static_zero_init</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="w">    </span><span class="c1"># our startup code does not clear .bss</span>
@@ -175,8 +176,8 @@ be set explicitly, down to single options:</p>
 </pre></div>
 </div>
 <p>The same settings are available on the command line, where they win over the
-manifest: <code class="docutils literal notranslate"><span class="pre">--profile</span></code>, <code class="docutils literal notranslate"><span class="pre">--policy</span></code>, <code class="docutils literal notranslate"><span class="pre">--environment</span></code>, <code class="docutils literal notranslate"><span class="pre">--libc</span></code> and a
-repeatable <code class="docutils literal notranslate"><span class="pre">--set</span> <span class="pre">NAME=VALUE</span></code>. A <code class="docutils literal notranslate"><span class="pre">--profile</span></code> given on the command line
+manifest: <code class="docutils literal notranslate"><span class="pre">--profile</span></code>, <code class="docutils literal notranslate"><span class="pre">--policy</span></code>, <code class="docutils literal notranslate"><span class="pre">--environment</span></code>, <code class="docutils literal notranslate"><span class="pre">--libc</span></code>,
+<code class="docutils literal notranslate"><span class="pre">--include-names</span></code> and a repeatable <code class="docutils literal notranslate"><span class="pre">--set</span> <span class="pre">NAME=VALUE</span></code>. A <code class="docutils literal notranslate"><span class="pre">--profile</span></code> given on the command line
 starts again from that preset, discarding the manifest’s settings.</p>
 <p><code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--list-options</span></code> lists every option with its value under each
 preset and under the current settings (<code class="docutils literal notranslate"><span class="pre">--list-options</span> <span class="pre">json</span></code> for tooling).
@@ -186,6 +187,13 @@ export records the settings in <code class="docutils literal notranslate"><span 
 so a report always says which reading produced it. Its <code class="docutils literal notranslate"><span class="pre">hash</span></code> is the SHA-256
 of the settings’ canonical JSON (sorted keys): equal settings always hash
 equally, and adding or changing any option changes it.</p>
+<p><code class="docutils literal notranslate"><span class="pre">include_names</span></code> says how an <code class="docutils literal notranslate"><span class="pre">#include</span></code> name is matched against the files on
+disk. It describes the toolchain rather than an assumption the rules trust, so
+neither preset sets it. Left unset, it is <code class="docutils literal notranslate"><span class="pre">case-insensitive</span></code> when
+<code class="docutils literal notranslate"><span class="pre">--compile-commands</span></code> names a cl or clang-cl build (see <a class="reference internal" href="cli-usage.html"><span class="doc">Advanced CLI Usage</span></a>) and
+<code class="docutils literal notranslate"><span class="pre">exact</span></code> otherwise. The file system of the machine running the scan never
+decides it. It enters the settings hash only when <code class="docutils literal notranslate"><span class="pre">case-insensitive</span></code>, so
+settings that never mention it keep the hash they always had.</p>
 </section>
 <section id="supported-cert-c-rules">
 <h2>Supported CERT C Rules<a class="headerlink" href="#supported-cert-c-rules" title="Link to this heading"></a></h2>

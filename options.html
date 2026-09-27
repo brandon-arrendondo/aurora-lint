@@ -50,6 +50,7 @@
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Policy and Environment Options</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#policy-options">Policy options</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#environment-contracts">Environment contracts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#toolchain">Toolchain</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
@@ -190,6 +191,24 @@ environment and no library model.</p></li>
 <li><p>Scope: contract</p></li>
 <li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">contract:static_zero_init</span></code></p></li>
 <li><p>Basis: C11 6.7.9p10. Startup code that skips clearing .bss breaks it. Withdrawn, a block-scope static read before its function writes it is indeterminate; file-scope objects, which any function may write first, are not tracked.</p></li>
+</ul>
+</dd>
+</dl>
+</section>
+<section id="toolchain">
+<h2>Toolchain<a class="headerlink" href="#toolchain" title="Link to this heading"></a></h2>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">include_names</span></code></dt><dd><p>How an <code class="docutils literal notranslate"><span class="pre">#include</span></code> name is matched against the files on disk: <code class="docutils literal notranslate"><span class="pre">exact</span></code>, or
+<code class="docutils literal notranslate"><span class="pre">case-insensitive</span></code> as cl does on Windows, where an exact-case entry still
+wins. It is a fact about the toolchain rather than an assumption the rules
+trust, so neither preset sets it and it carries no oracle tag. Unset, it is
+<code class="docutils literal notranslate"><span class="pre">case-insensitive</span></code> when <code class="docutils literal notranslate"><span class="pre">--compile-commands</span></code> names a cl or clang-cl build
+and <code class="docutils literal notranslate"><span class="pre">exact</span></code> otherwise; the scanning host’s own file system never decides it.</p>
+<ul class="simple">
+<li><p>Set with <code class="docutils literal notranslate"><span class="pre">[environment]</span> <span class="pre">include_names</span></code> or <code class="docutils literal notranslate"><span class="pre">--include-names</span></code></p></li>
+<li><p>Part of the settings hash only when <code class="docutils literal notranslate"><span class="pre">case-insensitive</span></code></p></li>
+<li><p>Basis: Windows looks file names up case-insensitively unless a directory
+is marked case-sensitive (Microsoft Learn, “Case sensitivity”).</p></li>
 </ul>
 </dd>
 </dl>
