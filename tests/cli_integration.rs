@@ -2490,6 +2490,28 @@ fn a_files_own_macro_decides_whether_it_reads_an_argument() {
 }
 
 #[test]
+fn a_c_files_private_alias_is_not_another_files_alternative() {
+    // h.h makes XFREE free for everyone who includes it; a.c redefines it
+    // privately. c.c's XFREE(p) is still free, so p does not leak.
+    let found = scan_project(
+        &[
+            ("h.h", "#include <stdlib.h>\n#define XFREE free\n"),
+            (
+                "a.c",
+                "#include \"h.h\"\nvoid my_free(void *);\n#undef XFREE\n#define XFREE my_free\n\
+                 void a(void *q) { XFREE(q); }\n",
+            ),
+            (
+                "c.c",
+                "#include \"h.h\"\nvoid c(void) { char *p = malloc(4); if (p) p[0] = 0; XFREE(p); }\n",
+            ),
+        ],
+        "MEM31-C",
+    );
+    assert!(!found.iter().any(|l| l.contains("c.c")), "{found:?}");
+}
+
+#[test]
 fn a_c_files_private_macro_is_not_another_files_alternative() {
     // Each .c file defines GET privately; b.c's is not a build of a.c's,
     // so a.c's GET still writes `v`.

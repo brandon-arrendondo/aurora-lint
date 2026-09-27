@@ -502,6 +502,8 @@ fn prescan_file_list(
     let mut static_defining_files: HashMap<String, HashSet<PathBuf>> = HashMap::new();
     let mut macro_constants: HashMap<String, i64> = HashMap::new();
     let mut macro_alias_alternatives: HashMap<String, Vec<String>> = HashMap::new();
+    // Whether the kept aliases of a name came from a header.
+    let mut macro_alias_from_header: HashMap<String, bool> = HashMap::new();
     let mut function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro> =
         HashMap::new();
     let mut macro_definitions: HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>> =
@@ -693,11 +695,30 @@ fn prescan_file_list(
         }
 
         macro_constants.extend(r.macro_constants);
-        const_eval::merge_macro_alias_alternatives(
-            &mut macro_alias_alternatives,
-            r.macro_alias_alternatives,
-        );
         let file_display = r.display_path.clone();
+        // As for function-like macros below: only headers are shared, a
+        // header's aliases replace a .c file's, and two headers' definitions
+        // of one name are alternatives.
+        let from_header = is_header_path(&file_display);
+        for (name, targets) in r.macro_alias_alternatives {
+            match macro_alias_from_header.get(&name) {
+                None => {
+                    macro_alias_from_header.insert(name.clone(), from_header);
+                    macro_alias_alternatives.insert(name, targets);
+                }
+                Some(false) if from_header => {
+                    macro_alias_from_header.insert(name.clone(), true);
+                    macro_alias_alternatives.insert(name, targets);
+                }
+                Some(true) if from_header => {
+                    const_eval::merge_macro_alias_alternatives(
+                        &mut macro_alias_alternatives,
+                        HashMap::from([(name, targets)]),
+                    );
+                }
+                Some(_) => {}
+            }
+        }
         for (name, m) in r.function_macros {
             match function_macros.entry(name) {
                 std::collections::hash_map::Entry::Vacant(e) => {
