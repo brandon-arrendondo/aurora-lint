@@ -64,6 +64,9 @@ struct FilePrescanResult {
     pointer_typedef_names: HashSet<String>,
     packed_structs: HashSet<String>,
     noreturn_functions: crate::analyze::noreturn::NoreturnNames,
+    /// Functions this file defines with a body that can return
+    /// (`noreturn::collect_returning_definitions`).
+    returning_functions: crate::analyze::noreturn::NoreturnNames,
     packed_struct_candidates: Vec<(String, String)>,
     packed_macro_names: HashSet<String>,
     defined_macro_names: HashSet<String>,
@@ -129,6 +132,7 @@ impl FilePrescanResult {
             pointer_typedef_names: HashSet::new(),
             packed_structs: HashSet::new(),
             noreturn_functions: Default::default(),
+            returning_functions: Default::default(),
             packed_struct_candidates: Vec::new(),
             packed_macro_names: HashSet::new(),
             defined_macro_names: HashSet::new(),
@@ -251,6 +255,11 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         );
         result.noreturn_functions =
             crate::analyze::noreturn::collect_noreturn_names(&root, &source);
+        result.returning_functions = crate::analyze::noreturn::collect_returning_definitions(
+            &root,
+            &source,
+            &result.noreturn_functions,
+        );
         crate::utility::cert_c::ast_utils::collect_packed_macro_names(
             &source,
             &mut result.packed_macro_names,
@@ -502,6 +511,7 @@ fn prescan_file_list(
     let mut pointer_typedef_names: HashSet<String> = HashSet::new();
     let mut packed_structs: HashSet<String> = HashSet::new();
     let mut noreturn_functions = crate::analyze::noreturn::NoreturnNames::default();
+    let mut returning_functions = crate::analyze::noreturn::NoreturnNames::default();
     let mut c_file_static_noreturn: Vec<(String, crate::analyze::noreturn::NoreturnNames)> =
         Vec::new();
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
@@ -743,8 +753,13 @@ fn prescan_file_list(
                     .push((file_name_of(&path.to_string_lossy()).to_string(), own));
             }
             noreturn_functions.extend(shared);
+            returning_functions.extend(
+                r.returning_functions
+                    .map(|names| names.difference(statics).cloned().collect()),
+            );
         } else {
             noreturn_functions.extend(r.noreturn_functions);
+            returning_functions.extend(r.returning_functions);
         }
         packed_struct_candidates.extend(r.packed_struct_candidates);
         packed_macro_names.extend(r.packed_macro_names);
@@ -1093,6 +1108,10 @@ fn prescan_file_list(
     // and no rule rebuilds it per file, so it keeps every .c file's own
     // static noreturn names too: a file-local `REQUIRE(x)` whose failure
     // path calls that file's `static void die(...)` is still a guard.
+    // A name is noreturn only if no file defines it with a body that can
+    // come back: a terminating definition in one file and a returning one in
+    // another are two builds, and the one that returns keeps the paths.
+    noreturn_functions.remove_all(&returning_functions);
     let mut abort_check_noreturn = noreturn_functions.clone();
     for (file_name, names) in c_file_static_noreturn {
         if included_c_files.contains(&file_name) {

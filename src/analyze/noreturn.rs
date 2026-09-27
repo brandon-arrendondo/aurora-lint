@@ -41,10 +41,11 @@
 //! [`ByNoreturnTrust::get`], which keeps a saved prescan valid under every
 //! setting.
 
+use crate::analyze::dead_regions::DeadRegions;
 use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 /// A value computed under each combination of the two options that decide
@@ -99,6 +100,16 @@ impl NoreturnNames {
         self.stdlib_only.extend(other.stdlib_only);
         self.keyword_only.extend(other.keyword_only);
         self.neither.extend(other.neither);
+    }
+
+    /// Drop `other`'s names under each combination.
+    pub fn remove_all(&mut self, other: &NoreturnNames) {
+        self.keyword_and_stdlib
+            .retain(|n| !other.keyword_and_stdlib.contains(n));
+        self.stdlib_only.retain(|n| !other.stdlib_only.contains(n));
+        self.keyword_only
+            .retain(|n| !other.keyword_only.contains(n));
+        self.neither.retain(|n| !other.neither.contains(n));
     }
 }
 
@@ -277,6 +288,11 @@ const INFERENCE_MAX_ROUNDS: usize = 4;
 /// process, iterating until nothing new is found so a wrapper calling a
 /// wrapper is caught too.
 ///
+/// A name defined more than once (in `#if` arms no platform profile settles)
+/// qualifies only when every live definition ends the process: noreturn
+/// prunes the paths after a call, so one build whose definition comes back
+/// keeps them (ADR-0010 D1). A definition in a platform-dead arm is no build.
+///
 /// Only process-*terminating* callees seed this. A local wrapper around
 /// `longjmp` is genuinely noreturn, but adding it to this set would also make
 /// [`is_process_terminating_name`] answer true for it -- that function
@@ -285,23 +301,31 @@ const INFERENCE_MAX_ROUNDS: usize = 4;
 /// live across that wrapper from a real leak into a suppressed one, so the
 /// wrapper is deliberately left unrecognized: a miss, not a wrong answer.
 fn infer_terminating_definitions(root: &Node, source: &str, names: &mut HashSet<String>) {
-    // Only a definition whose body has no `return` and no `goto` can ever
-    // qualify (see `body_unconditionally_terminates`), and that does not
-    // change between rounds -- so the candidates are found once, and the
-    // rounds only re-ask which of them now call a known terminator.
-    let candidates: Vec<(Node, String)> =
-        query::find_descendants_of_kind(*root, "function_definition")
-            .into_iter()
-            .filter(|def| body_has_no_return_or_goto(def))
-            .filter_map(|def| definition_name(&def, source).map(|name| (def, name)))
-            .collect();
+    // Only a name all of whose live definitions have no `return` and no
+    // `goto` can ever qualify (see `body_unconditionally_terminates`), and
+    // that does not change between rounds -- so the candidates are found
+    // once, and the rounds only re-ask which of them now call a known
+    // terminator.
+    let mut candidates: HashMap<String, Vec<Node>> = HashMap::new();
+    let mut returning: HashSet<String> = HashSet::new();
+    for (def, name) in live_definitions(root, source) {
+        if body_has_no_return_or_goto(&def) {
+            candidates.entry(name).or_default().push(def);
+        } else {
+            returning.insert(name);
+        }
+    }
+    candidates.retain(|name, _| !returning.contains(name));
     for _ in 0..INFERENCE_MAX_ROUNDS {
         let mut added = false;
-        for (def, name) in &candidates {
+        for (name, defs) in &candidates {
             if names.contains(name) {
                 continue;
             }
-            if body_unconditionally_terminates(def, source, names) {
+            if defs
+                .iter()
+                .all(|def| body_unconditionally_terminates(def, source, names))
+            {
                 names.insert(name.clone());
                 added = true;
             }
@@ -310,6 +334,34 @@ fn infer_terminating_definitions(root: &Node, source: &str, names: &mut HashSet<
             break;
         }
     }
+}
+
+/// Every function definition in `root` outside a platform-dead region, with
+/// its name.
+fn live_definitions<'t>(root: &Node<'t>, source: &str) -> Vec<(Node<'t>, String)> {
+    let dead = DeadRegions::of(source);
+    query::find_descendants_of_kind(*root, "function_definition")
+        .into_iter()
+        .filter(|def| !dead.contains_node(def))
+        .filter_map(|def| definition_name(&def, source).map(|name| (def, name)))
+        .collect()
+}
+
+/// The names of the functions `root` defines, outside a platform-dead
+/// region, that `noreturn` does not hold under each combination: each has a
+/// definition that can come back. The project-wide set drops them, so one
+/// file's terminating definition does not decide for another file's that
+/// returns.
+pub fn collect_returning_definitions(
+    root: &Node,
+    source: &str,
+    noreturn: &NoreturnNames,
+) -> NoreturnNames {
+    let defined: HashSet<String> = live_definitions(root, source)
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect();
+    noreturn.map(|names| defined.difference(names).cloned().collect())
 }
 
 /// Whether `def`'s body contains no `return` and no `goto` anywhere.
@@ -544,6 +596,37 @@ mod tests {
             parse("static void no_mem(void) { fprintf(stderr, \"oom\"); exit(1); }\n");
         let names = collect_noreturn_names(&tree.root_node(), &source).keyword_and_stdlib;
         assert!(names.contains("no_mem"));
+    }
+
+    #[test]
+    fn a_name_with_a_live_returning_definition_is_not_inferred() {
+        let (tree, source) = parse(
+            "#ifdef HARD_FAIL\n\
+             void fatal(void) { abort(); }\n\
+             #else\n\
+             void fatal(void) { log_it(); }\n\
+             #endif\n",
+        );
+        let names = collect_noreturn_names(&tree.root_node(), &source);
+        assert!(!names.keyword_and_stdlib.contains("fatal"));
+        let returning = collect_returning_definitions(&tree.root_node(), &source, &names);
+        assert!(returning.keyword_and_stdlib.contains("fatal"));
+    }
+
+    #[test]
+    fn a_returning_definition_in_a_platform_dead_arm_does_not_count() {
+        // `_WIN32` is dead under the default profile.
+        let (tree, source) = parse(
+            "#ifdef _WIN32\n\
+             void fatal(void) { log_it(); }\n\
+             #else\n\
+             void fatal(void) { abort(); }\n\
+             #endif\n",
+        );
+        let names = collect_noreturn_names(&tree.root_node(), &source);
+        assert!(names.keyword_and_stdlib.contains("fatal"));
+        let returning = collect_returning_definitions(&tree.root_node(), &source, &names);
+        assert!(!returning.keyword_and_stdlib.contains("fatal"));
     }
 
     #[test]
