@@ -198,8 +198,9 @@ pub static OPTIONS: &[OptionSpec] = &[
                   than once, is not treated as a side effect: a call to a function with no \
                   definition in the scanned files and no library contract, a call through a \
                   pointer, a call to a function another scanned file defines that is not yet \
-                  proven pure or impure, or strerror/inet_ntoa (whose only effect is the \
-                  static buffer they return). A callee shown to have a side effect is \
+                  proven pure or impure, or strerror, inet_ntoa, strsignal, gai_strerror, \
+                  getenv, gmtime and asctime (whose only effect is the static buffer they \
+                  return). A callee shown to have a side effect is \
                   reported either way.",
         basis: "C11 5.1.2.3p2 (which CERT quotes) makes a call a side effect only when the \
                 function does one. cppcheck's assertWithSideEffect and Polyspace's MISRA C:2012 \

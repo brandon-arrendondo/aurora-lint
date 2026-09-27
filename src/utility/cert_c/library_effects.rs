@@ -160,11 +160,30 @@ const PURE_LIBRARY_FUNCTIONS: &[&str] = &[
 ];
 
 /// Functions whose only side effect is the static buffer they return, a
-/// named exception (maintainer ruling on PRE31-C, 2026-09-27): C11
-/// 7.24.6.2 lets a later strerror call overwrite its string (and POSIX lets
-/// it set errno for an invalid code); POSIX inet_ntoa returns a static
-/// buffer overwritten by the next call.
-const OWN_BUFFER_ONLY_FUNCTIONS: &[&str] = &["strerror", "inet_ntoa"];
+/// named exception (maintainer rulings on PRE31-C, 2026-09-27). Left out on
+/// purpose: ctime and localtime (they may call tzset, which writes tzname
+/// and timezone), dlerror (a second call returns NULL: a real state change),
+/// inet_ntop and strerror_r (they write the caller's buffer).
+const OWN_BUFFER_ONLY_FUNCTIONS: &[&str] = &[
+    // C11 7.24.6.2p4: the string "may be overwritten by a subsequent call to
+    // the strerror function"; POSIX lets it set errno for an invalid code.
+    "strerror",
+    // POSIX: the string "may point to static data that may be overwritten by
+    // subsequent calls to inet_ntoa()".
+    "inet_ntoa",
+    // POSIX: the string "might be overwritten by a subsequent call to
+    // strsignal()".
+    "strsignal",
+    // POSIX: returns a pointer to a string describing the error code.
+    "gai_strerror",
+    // C11 7.22.4.6p4: the string "may be overwritten by a subsequent call to
+    // the getenv function".
+    "getenv",
+    // C11 7.27.3p1: gmtime and asctime return pointers to static objects that
+    // a later call to any of the time conversion functions may overwrite.
+    "gmtime",
+    "asctime",
+];
 
 /// The contract's verdict on a call to `name`, or `None` when `name` is not
 /// an ISO C or POSIX function the tool knows (a project function, a Windows

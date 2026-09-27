@@ -161,7 +161,7 @@ enum Effect {
     None,
     /// A call to a function no scanned file defines and no library contract
     /// covers (or one through a pointer), or to a library function whose only
-    /// effect is the static buffer it returns (`strerror`, `inet_ntoa`).
+    /// effect is the static buffer it returns (`strerror`, `getenv`, ...).
     Unknown,
     /// A call to a function another scanned file defines. Its body is in the
     /// scan but no cross-file side-effect summary exists yet, so it is
