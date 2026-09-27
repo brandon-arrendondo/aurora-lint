@@ -51,6 +51,11 @@
 //! from every branch's definition (`macro_expand::collect_macro_operand_params`),
 //! this file's and every scanned file's.
 //!
+//! Only a parameter used exclusively as a `#`/`##` operand counts. One the
+//! same definition also uses plainly is fully expanded where it is used, and
+//! its `#` only prints the source text: `assert(expr)` evaluating `expr` and
+//! reporting `#expr`, or a `case x: return #x;` table.
+//!
 //! A name known only as a function-like macro is not expanded unless the
 //! next token is `(` (C11 6.10.3p10), so `STR(min)` with a function-like
 //! `min` stringizes "min" either way and is not reported; `STR(min(1, 2))`

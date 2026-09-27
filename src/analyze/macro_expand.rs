@@ -671,11 +671,15 @@ impl OperandParams {
 }
 
 /// Add to `out`, for every function-like `#define` in `source` that applies
-/// `#` or `##` to a parameter, which parameters those are. Every branch
-/// counts, and a name defined in several branches gets the union: any of
-/// them may be the one compiled. Variadic macros are included
-/// (`#__VA_ARGS__`). Merged project-wide into
-/// `ProjectContext::macro_operand_params`. PRE05-C reads it.
+/// `#` or `##` to a parameter, which parameters those are. Only a parameter
+/// used exclusively as an operand counts: one that the same definition also
+/// uses plainly (glibc's `assert(expr)`, which evaluates `expr` and prints
+/// `#expr`) is fully expanded where it is evaluated, and its `#` only prints
+/// the source text. That is decided per definition; every branch counts, and
+/// a name defined in several branches gets the union: any of them may be the
+/// one compiled. Variadic macros are included (`#__VA_ARGS__`). Merged
+/// project-wide into `ProjectContext::macro_operand_params`. PRE05-C reads
+/// it.
 pub fn collect_macro_operand_params(source: &str, out: &mut HashMap<String, OperandParams>) {
     let lines: Vec<&str> = source.lines().collect();
     let mut i = 0;
@@ -694,9 +698,15 @@ pub fn collect_macro_operand_params(source: &str, out: &mut HashMap<String, Oper
                 .iter()
                 .position(|p| p.trim_end_matches("...").trim() == token)
         };
-        let indices: Vec<usize> = operand_tokens(&strip_comments(&body))
+        let (operands, plain) = operand_tokens(&strip_comments(&body));
+        let plain: HashSet<usize> = plain
             .iter()
             .filter_map(|token| param_index(token))
+            .collect();
+        let indices: Vec<usize> = operands
+            .iter()
+            .filter_map(|token| param_index(token))
+            .filter(|index| !plain.contains(index))
             .collect();
         if indices.is_empty() {
             continue;
@@ -755,8 +765,9 @@ fn split_function_like_define(line: &str) -> Option<(String, Vec<String>, String
 }
 
 /// The identifiers in a replacement list that are operands of `#` or `##`,
-/// skipping string and character literals.
-fn operand_tokens(body: &str) -> Vec<String> {
+/// and those that appear with neither next to them, skipping string and
+/// character literals.
+fn operand_tokens(body: &str) -> (Vec<String>, Vec<String>) {
     #[derive(PartialEq)]
     enum Tok {
         Ident(String),
@@ -800,17 +811,20 @@ fn operand_tokens(body: &str) -> Vec<String> {
             tokens.push(Tok::Other);
         }
     }
-    let mut out = Vec::new();
+    let mut operands = Vec::new();
+    let mut plain = Vec::new();
     for (k, tok) in tokens.iter().enumerate() {
         let Tok::Ident(name) = tok else { continue };
         let before = k.checked_sub(1).map(|p| &tokens[p]);
         let after = tokens.get(k + 1);
         if matches!(before, Some(Tok::Hash) | Some(Tok::HashHash)) || after == Some(&Tok::HashHash)
         {
-            out.push(name.clone());
+            operands.push(name.clone());
+        } else {
+            plain.push(name.clone());
         }
     }
-    out
+    (operands, plain)
 }
 
 /// The function-like macro names in scope for one file: every scanned
@@ -2650,6 +2664,15 @@ mod tests {
                    #define TWO(a, b) a\n\
                    #else\n\
                    #define TWO(a, b) #b\n\
+                   #endif\n\
+                   #define CHECK(e) ((e) ? (void)0 : fail(#e, __FILE__))\n\
+                   #define NAMED(v, s) case v: return #v; case s: return #s\n\
+                   #define HALF(a, b) (a) + (b ## _n)\n\
+                   #define VA(fmt, ...) f(#__VA_ARGS__, __VA_ARGS__)\n\
+                   #ifdef B\n\
+                   #define ARM(call) ((call) < 0)\n\
+                   #else\n\
+                   #define ARM(call) (workaround_ ## call)\n\
                    #endif\n";
         let mut out = HashMap::new();
         collect_macro_operand_params(src, &mut out);
@@ -2662,6 +2685,13 @@ mod tests {
         assert_eq!(get("TWO"), Some((vec![1], None)));
         assert_eq!(get("QUOTED"), None);
         assert_eq!(get("PLAIN"), None);
+        // A parameter the same definition also evaluates is expanded there.
+        assert_eq!(get("CHECK"), None);
+        assert_eq!(get("NAMED"), None);
+        assert_eq!(get("HALF"), Some((vec![1], None)));
+        assert_eq!(get("VA"), None);
+        // Decided per definition: the pasting branch alone makes it one.
+        assert_eq!(get("ARM"), Some((vec![0], None)));
         let args = out["ARGS"].clone();
         assert!(args.covers_argument(0) && args.covers_argument(3));
     }
