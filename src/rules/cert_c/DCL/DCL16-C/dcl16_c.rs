@@ -14,7 +14,8 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
-use tree_sitter::Node;
+use crate::utility::cert_c::pp_tokens::{define_directives, point_at, PpKind};
+use tree_sitter::{Node, Point};
 
 pub struct Dcl16C;
 
@@ -24,45 +25,53 @@ impl Dcl16C {
         Dcl16C
     }
 
-    /// Check a node and all its descendants for violations
+    /// Check a node and all its descendants for violations, skipping the
+    /// `#define` directives in `defines`, whose literals are read from their
+    /// tokens instead.
     fn check_node<'a>(
         &self,
         node: &Node<'a>,
         source: &'a str,
+        defines: &[std::ops::Range<usize>],
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Look for number literals
         if node.kind() == "number_literal" {
-            let text = get_node_text(node, source);
-
-            // Check for lowercase 'l' or 'll' suffix
-            if self.has_lowercase_long_suffix(text) {
-                let suggested = self.fix_lowercase_suffix(text);
-
-                violations.push(RuleViolation {
-                    rule_id: self.rule_id().to_string(),
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
-                    message: format!(
-                        "Integer literal '{}' uses lowercase 'l' suffix which can be confused with digit '1'",
-                        text
-                    ),
-                    severity: self.severity(),
-                    file_path: String::new(),
-                    suggestion: Some(format!(
-                        "Use uppercase 'L': {}",
-                        suggested
-                    )),
-                    requires_manual_review: None,
-                });
+            if !defines.iter().any(|d| d.contains(&node.start_byte())) {
+                self.check_literal(
+                    get_node_text(node, source),
+                    node.start_position(),
+                    violations,
+                );
             }
         }
 
         // Recurse into children
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
+                self.check_node(&child, source, defines, violations);
             }
+        }
+    }
+
+    /// Check one integer literal, spelled `text` at `at`.
+    fn check_literal(&self, text: &str, at: Point, violations: &mut Vec<RuleViolation>) {
+        // Check for lowercase 'l' or 'll' suffix
+        if self.has_lowercase_long_suffix(text) {
+            let suggested = self.fix_lowercase_suffix(text);
+
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                line: at.row + 1,
+                column: at.column + 1,
+                message: format!(
+                    "Integer literal '{}' uses lowercase 'l' suffix which can be confused with digit '1'",
+                    text
+                ),
+                severity: self.severity(),
+                file_path: String::new(),
+                suggestion: Some(format!("Use uppercase 'L': {}", suggested)),
+                requires_manual_review: None,
+            });
         }
     }
 
@@ -123,6 +132,19 @@ impl CertRule for Dcl16C {
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        self.check_node(node, source, violations);
+        // A `#define`'s replacement list is one opaque token to tree-sitter,
+        // so its literals come from the pp-token lexer.
+        let defines = define_directives(node, source);
+        let ranges: Vec<_> = defines.iter().map(|(range, _)| range.clone()).collect();
+        self.check_node(node, source, &ranges, violations);
+        for (_, define) in &defines {
+            for token in define.tokens() {
+                if token.kind == PpKind::Number {
+                    let at = point_at(source, define.body_start + token.start);
+                    self.check_literal(token.text, at, violations);
+                }
+            }
+        }
+        violations.sort_by_key(|v| (v.line, v.column));
     }
 }

@@ -269,6 +269,49 @@ pub fn define_at<'s>(node: &tree_sitter::Node, source: &'s str) -> Option<Define
     Some(define)
 }
 
+/// Every `#define` under `root`, each with the byte range of its whole
+/// directive in `source` (from its `#` to its end, as [`directive_end`]
+/// decides), in source order. A rule looking for something inside
+/// replacement lists (a number literal, say) reads them here and skips AST
+/// nodes inside these ranges: tree-sitter has no nodes for a replacement
+/// list's contents, and where it misparses a directive the nodes it builds
+/// there are not the list's.
+pub fn define_directives<'s>(
+    root: &tree_sitter::Node,
+    source: &'s str,
+) -> Vec<(std::ops::Range<usize>, DefineDirective<'s>)> {
+    let mut out: Vec<(std::ops::Range<usize>, DefineDirective<'s>)> = Vec::new();
+    for node in lang_parsing_substrate::query::find_descendants_of_kinds(
+        *root,
+        &["preproc_def", "preproc_function_def"],
+    ) {
+        let start = node.start_byte();
+        if out.iter().any(|(range, _)| range.contains(&start)) {
+            continue;
+        }
+        if let Some(define) = define_at(&node, source) {
+            out.push((start..define.body_start + define.body.len(), define));
+        }
+    }
+    out.sort_by_key(|(range, _)| range.start);
+    out
+}
+
+/// The row and column (both 0-based, the column in bytes, as tree-sitter
+/// counts them) of byte `offset` in `source`.
+pub fn point_at(source: &str, offset: usize) -> tree_sitter::Point {
+    let before = &source.as_bytes()[..offset.min(source.len())];
+    let row = before.iter().filter(|&&b| b == b'\n').count();
+    let line_start = before
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(0, |k| k + 1);
+    tree_sitter::Point {
+        row,
+        column: offset - line_start,
+    }
+}
+
 fn lex(text: &str) -> Vec<PpToken<'_>> {
     let mut tokens = Vec::new();
     let mut end = text.len();

@@ -4,8 +4,9 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::pp_tokens::{define_directives, point_at, PpKind};
 use lang_parsing_substrate::query;
-use tree_sitter::Node;
+use tree_sitter::{Node, Point};
 
 pub struct Dcl18C;
 
@@ -38,17 +39,37 @@ impl CertRule for Dcl18C {
 
 impl Dcl18C {
     /// Recursively check nodes for integer literals that appear to be unintended octals
+    /// A `#define`'s replacement list is one opaque token to tree-sitter, so
+    /// its literals come from the pp-token lexer, and the AST nodes inside a
+    /// directive (which exist only where tree-sitter misparsed it) are
+    /// skipped.
     fn check_node(&self, node: Node, source: &str) -> Vec<RuleViolation> {
-        query::find_descendants_of_kind(node, "number_literal")
-            .into_iter()
-            .filter_map(|n| self.check_number_literal(n, source))
-            .collect()
+        let defines = define_directives(&node, source);
+        let mut violations: Vec<RuleViolation> =
+            query::find_descendants_of_kind(node, "number_literal")
+                .into_iter()
+                .filter(|n| {
+                    !defines
+                        .iter()
+                        .any(|(range, _)| range.contains(&n.start_byte()))
+                })
+                .filter_map(|n| self.check_literal(get_node_text(&n, source), n.start_position()))
+                .collect();
+        for (_, define) in &defines {
+            for token in define.tokens() {
+                if token.kind == PpKind::Number {
+                    let at = point_at(source, define.body_start + token.start);
+                    violations.extend(self.check_literal(token.text, at));
+                }
+            }
+        }
+        violations.sort_by_key(|v| (v.line, v.column));
+        violations
     }
 
-    /// Check if a number_literal is an unintended octal constant
-    fn check_number_literal(&self, literal_node: Node, source: &str) -> Option<RuleViolation> {
-        let literal_text = get_node_text(&literal_node, source);
-
+    /// Check if the integer literal `literal_text`, at `at`, is an
+    /// unintended octal constant.
+    fn check_literal(&self, literal_text: &str, at: Point) -> Option<RuleViolation> {
         // Check if this is an octal literal (starts with 0 but is not a special case)
         if self.is_unintended_octal(&literal_text) {
             let decimal_value = self.parse_octal_as_decimal(&literal_text);
@@ -74,8 +95,8 @@ impl Dcl18C {
                 severity: self.severity(),
                 message,
                 file_path: String::new(),
-                line: literal_node.start_position().row + 1,
-                column: literal_node.start_position().column + 1,
+                line: at.row + 1,
+                column: at.column + 1,
                 suggestion: Some(suggestion),
                 ..Default::default()
             });
