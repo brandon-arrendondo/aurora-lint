@@ -412,6 +412,8 @@ fn macro_argument_tests(occ: &Node, cx: &Cx, unsigned: bool, requested: Option<&
                 FunctionMacro {
                     params: params.clone(),
                     body: body.clone(),
+                    // This one definition is being judged on its own.
+                    alternatives: Vec::new(),
                 },
             )]);
             macro_expand::expand_invocation(&table, name, &key.1).is_some_and(|expanded| {

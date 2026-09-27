@@ -36,6 +36,19 @@ pub struct FunctionMacro {
     pub params: Vec<String>,
     /// Raw replacement-list text, e.g. `(((x) < (y)) ? (x) : (y))`.
     pub body: String,
+    /// Every live definition of this name, when there is more than one:
+    /// `#ifdef` arms the platform profile cannot settle, or different bodies
+    /// in different files. `None` is a definition the expander cannot read
+    /// (variadic, `#`/`##`, an unclosed parameter list). Empty when this
+    /// definition is the only one.
+    ///
+    /// `params`/`body` stay the one definition an expansion uses. The
+    /// parameter facts ([`macro_frees_param_indices`] and its siblings) are
+    /// instead evaluated over every alternative and merged toward the
+    /// finding (ADR-0010 D1), so which definition was met first no longer
+    /// decides whether a caller's pointer is freed or nulled.
+    #[serde(default)]
+    pub alternatives: Vec<Option<FunctionMacro>>,
 }
 
 impl FunctionMacro {
@@ -48,6 +61,35 @@ impl FunctionMacro {
         self.params.len() == other.params.len() && self.positional_body() == other.positional_body()
     }
 
+    /// Fold another definition of the same name into this one's
+    /// alternatives, keeping `params`/`body` as they are. Order-independent
+    /// as a set, and collapses back to no alternatives when every
+    /// definition expands alike.
+    pub fn absorb(&mut self, other: FunctionMacro) {
+        if self.alternatives.is_empty() {
+            self.alternatives.push(Some(self.definition_only()));
+        }
+        let incoming = if other.alternatives.is_empty() {
+            vec![Some(other)]
+        } else {
+            other.alternatives
+        };
+        for alt in incoming {
+            push_alternative(&mut self.alternatives, alt);
+        }
+        if self.alternatives.len() == 1 && self.alternatives[0].is_some() {
+            self.alternatives.clear();
+        }
+    }
+
+    fn definition_only(&self) -> FunctionMacro {
+        FunctionMacro {
+            params: self.params.clone(),
+            body: self.body.clone(),
+            alternatives: Vec::new(),
+        }
+    }
+
     fn positional_body(&self) -> String {
         let map: HashMap<String, String> = self
             .params
@@ -57,6 +99,102 @@ impl FunctionMacro {
             .collect();
         substitute_params(&self.body, &map)
     }
+}
+
+/// Add `alt` to `alts` unless an alternative that expands alike is there.
+fn push_alternative(alts: &mut Vec<Option<FunctionMacro>>, alt: Option<FunctionMacro>) {
+    let present = alts.iter().any(|a| match (a, &alt) {
+        (Some(a), Some(b)) => a.same_expansion(b),
+        (None, None) => true,
+        _ => false,
+    });
+    if !present {
+        alts.push(alt);
+    }
+}
+
+/// Where the expander finds a macro's definition by name.
+trait MacroLookup {
+    fn lookup(&self, name: &str) -> Option<&FunctionMacro>;
+}
+
+impl MacroLookup for HashMap<String, FunctionMacro> {
+    fn lookup(&self, name: &str) -> Option<&FunctionMacro> {
+        self.get(name)
+    }
+}
+
+/// A table in which one name resolves to one chosen alternative; every other
+/// name, including those the alternative's body invokes, resolves as before.
+struct WithDefinition<'a> {
+    table: &'a HashMap<String, FunctionMacro>,
+    name: &'a str,
+    definition: &'a FunctionMacro,
+}
+
+impl MacroLookup for WithDefinition<'_> {
+    fn lookup(&self, name: &str) -> Option<&FunctionMacro> {
+        if name == self.name {
+            Some(self.definition)
+        } else {
+            self.table.get(name)
+        }
+    }
+}
+
+/// How a parameter fact is merged across a macro's live definitions. Each
+/// definition is a configuration some build compiles, and a violation any
+/// configuration produces is reported (ADR-0010 D1), so the merge goes
+/// toward the finding.
+#[derive(Clone, Copy)]
+enum Merge {
+    /// Union, for a free: a build whose definition frees the argument uses
+    /// freed memory if the caller touches it again. A definition the
+    /// expander cannot read adds nothing.
+    Union,
+    /// Intersection, for a fact that clears the state a finding rests on (a
+    /// null, a write, a clear): it holds only if every definition does it. A
+    /// definition the expander cannot read proves nothing, so the fact is
+    /// empty.
+    Intersect,
+}
+
+/// `fact` of `name`, over every live definition `table` holds for it,
+/// merged in the direction `merge` names; `fact` alone when there is only
+/// one definition.
+fn over_live_definitions(
+    table: &HashMap<String, FunctionMacro>,
+    name: &str,
+    merge: Merge,
+    fact: impl Fn(&dyn MacroLookup, &str) -> Vec<usize>,
+) -> Vec<usize> {
+    let Some(m) = table.get(name) else {
+        return Vec::new();
+    };
+    if m.alternatives.is_empty() {
+        return fact(table, name);
+    }
+    let mut merged: Option<std::collections::BTreeSet<usize>> = None;
+    for alt in &m.alternatives {
+        let Some(definition) = alt else {
+            match merge {
+                Merge::Union => continue,
+                Merge::Intersect => return Vec::new(),
+            }
+        };
+        let view = WithDefinition {
+            table,
+            name,
+            definition,
+        };
+        let found: std::collections::BTreeSet<usize> = fact(&view, name).into_iter().collect();
+        merged = Some(match (merged, merge) {
+            (None, _) => found,
+            (Some(acc), Merge::Union) => &acc | &found,
+            (Some(acc), Merge::Intersect) => &acc & &found,
+        });
+    }
+    merged.map(|s| s.into_iter().collect()).unwrap_or_default()
 }
 
 /// Maximum recursive-rescan depth (defense against pathological input; real
@@ -93,6 +231,37 @@ pub fn collect_function_macros(root: &Node, source: &str) -> HashMap<String, Fun
     for (name, m) in collect_function_macros_textual_outside(source, &dead) {
         out.entry(name).or_insert(m);
     }
+    for (name, alternatives) in live_alternatives(source, &dead) {
+        if let Some(m) = out.get_mut(&name) {
+            m.alternatives = alternatives;
+        }
+    }
+    out
+}
+
+/// Each name with more than one live function-like definition in `source`,
+/// with all of them: every `#define` outside a region `dead` rules out,
+/// deduplicated by expansion, an unreadable one as `None`. Line-oriented, so
+/// it sees every arm, including those tree-sitter buried in error recovery.
+fn live_alternatives(
+    source: &str,
+    dead: &DeadRegions,
+) -> HashMap<String, Vec<Option<FunctionMacro>>> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut out: HashMap<String, Vec<Option<FunctionMacro>>> = HashMap::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let (logical, next) = join_continuation(&lines, i);
+        let first_line = i + 1;
+        i = next;
+        if dead.contains_line(first_line) {
+            continue;
+        }
+        if let Some((name, outcome)) = classify_define_line(&logical) {
+            push_alternative(out.entry(name).or_default(), outcome.ok());
+        }
+    }
+    out.retain(|_, alts| alts.len() > 1);
     out
 }
 
@@ -1339,7 +1508,14 @@ fn classify_define_line(line: &str) -> Option<(String, Result<FunctionMacro, Def
     if body_uses_paste_or_stringize(&body) {
         return Some((name, Err(DefineSkip::PasteOrStringize)));
     }
-    Some((name, Ok(FunctionMacro { params, body })))
+    Some((
+        name,
+        Ok(FunctionMacro {
+            params,
+            body,
+            alternatives: Vec::new(),
+        }),
+    ))
 }
 
 /// Parse `(p1, p2, …)` starting at `open` (an index of `'('`). Returns the
@@ -1466,7 +1642,14 @@ fn parse_function_def(node: &Node, source: &str) -> Option<(String, FunctionMacr
         return None;
     }
 
-    Some((name, FunctionMacro { params, body }))
+    Some((
+        name,
+        FunctionMacro {
+            params,
+            body,
+            alternatives: Vec::new(),
+        },
+    ))
 }
 
 /// Detect `#`/`##` operators in a replacement list, ignoring occurrences inside
@@ -1502,12 +1685,16 @@ pub fn expand_invocation(
     name: &str,
     args: &[String],
 ) -> Option<String> {
+    expand_in(table, name, args)
+}
+
+fn expand_in(table: &dyn MacroLookup, name: &str, args: &[String]) -> Option<String> {
     let mut active = HashSet::new();
     expand_named(table, name, args, &mut active, 0)
 }
 
 fn expand_named(
-    table: &HashMap<String, FunctionMacro>,
+    table: &dyn MacroLookup,
     name: &str,
     args: &[String],
     active: &mut HashSet<String>,
@@ -1516,7 +1703,7 @@ fn expand_named(
     if depth >= MAX_EXPAND_DEPTH || active.contains(name) {
         return None;
     }
-    let m = table.get(name)?;
+    let m = table.lookup(name)?;
     if m.params.len() != args.len() {
         return None; // arity mismatch — do not expand
     }
@@ -1577,7 +1764,7 @@ fn substitute_params(body: &str, map: &HashMap<String, String>) -> String {
 
 /// Rescan expanded text, expanding any further function-like macro invocations.
 fn rescan(
-    table: &HashMap<String, FunctionMacro>,
+    table: &dyn MacroLookup,
     text: &str,
     active: &mut HashSet<String>,
     depth: usize,
@@ -1619,7 +1806,7 @@ fn rescan(
             while j < chars.len() && chars[j].is_whitespace() {
                 j += 1;
             }
-            if table.contains_key(&ident)
+            if table.lookup(&ident).is_some()
                 && !active.contains(&ident)
                 && j < chars.len()
                 && chars[j] == '('
@@ -1724,7 +1911,11 @@ pub fn macro_output_param_indices(
     table: &HashMap<String, FunctionMacro>,
     name: &str,
 ) -> Vec<usize> {
-    let m = match table.get(name) {
+    over_live_definitions(table, name, Merge::Intersect, output_param_indices_in)
+}
+
+fn output_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
+    let m = match table.lookup(name) {
         Some(m) => m,
         None => return Vec::new(),
     };
@@ -1737,7 +1928,7 @@ pub fn macro_output_param_indices(
     let sentinels: Vec<String> = (0..m.params.len())
         .map(|i| format!("__SQC_MOUT_{i}__"))
         .collect();
-    let expanded = match expand_invocation(table, name, &sentinels) {
+    let expanded = match expand_in(table, name, &sentinels) {
         Some(e) => e,
         None => return Vec::new(),
     };
@@ -1787,7 +1978,11 @@ pub fn macro_expands_to_case_label(table: &HashMap<String, FunctionMacro>, name:
 /// (mosquitto `mosquitto_FREE`, `SAFE_FREE` share the idiom — engine, not
 /// allowlist.)
 pub fn macro_nulls_param_indices(table: &HashMap<String, FunctionMacro>, name: &str) -> Vec<usize> {
-    let m = match table.get(name) {
+    over_live_definitions(table, name, Merge::Intersect, nulls_param_indices_in)
+}
+
+fn nulls_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
+    let m = match table.lookup(name) {
         Some(m) => m,
         None => return Vec::new(),
     };
@@ -1797,7 +1992,7 @@ pub fn macro_nulls_param_indices(table: &HashMap<String, FunctionMacro>, name: &
     let sentinels: Vec<String> = (0..m.params.len())
         .map(|i| format!("__SQC_MNULL_{i}__"))
         .collect();
-    let expanded = match expand_invocation(table, name, &sentinels) {
+    let expanded = match expand_in(table, name, &sentinels) {
         Some(e) => e,
         None => return Vec::new(),
     };
@@ -1831,7 +2026,11 @@ pub fn macro_writes_param_indices(
     table: &HashMap<String, FunctionMacro>,
     name: &str,
 ) -> Vec<usize> {
-    let m = match table.get(name) {
+    over_live_definitions(table, name, Merge::Intersect, writes_param_indices_in)
+}
+
+fn writes_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
+    let m = match table.lookup(name) {
         Some(m) => m,
         None => return Vec::new(),
     };
@@ -1841,7 +2040,7 @@ pub fn macro_writes_param_indices(
     let sentinels: Vec<String> = (0..m.params.len())
         .map(|i| format!("__SQC_MWR_{i}__"))
         .collect();
-    let expanded = match expand_invocation(table, name, &sentinels) {
+    let expanded = match expand_in(table, name, &sentinels) {
         Some(e) => e,
         None => return Vec::new(),
     };
@@ -2097,7 +2296,11 @@ const DEALLOC_FUNCTIONS: &[&str] = &["free", "fclose", "close"];
 /// (e.g. MEM12-C's early-return leak check) don't need the null-clearing
 /// signal.
 pub fn macro_frees_param_indices(table: &HashMap<String, FunctionMacro>, name: &str) -> Vec<usize> {
-    let m = match table.get(name) {
+    over_live_definitions(table, name, Merge::Union, frees_param_indices_in)
+}
+
+fn frees_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
+    let m = match table.lookup(name) {
         Some(m) => m,
         None => return Vec::new(),
     };
@@ -2107,7 +2310,7 @@ pub fn macro_frees_param_indices(table: &HashMap<String, FunctionMacro>, name: &
     let sentinels: Vec<String> = (0..m.params.len())
         .map(|i| format!("__SQC_MFREE_{i}__"))
         .collect();
-    let expanded = match expand_invocation(table, name, &sentinels) {
+    let expanded = match expand_in(table, name, &sentinels) {
         Some(e) => e,
         None => return Vec::new(),
     };
@@ -2130,7 +2333,11 @@ pub fn macro_clears_param_indices(
     table: &HashMap<String, FunctionMacro>,
     name: &str,
 ) -> Vec<usize> {
-    let m = match table.get(name) {
+    over_live_definitions(table, name, Merge::Intersect, clears_param_indices_in)
+}
+
+fn clears_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
+    let m = match table.lookup(name) {
         Some(m) => m,
         None => return Vec::new(),
     };
@@ -2140,7 +2347,7 @@ pub fn macro_clears_param_indices(
     let sentinels: Vec<String> = (0..m.params.len())
         .map(|i| format!("__SQC_MCLEAR_{i}__"))
         .collect();
-    let expanded = match expand_invocation(table, name, &sentinels) {
+    let expanded = match expand_in(table, name, &sentinels) {
         Some(e) => e,
         None => return Vec::new(),
     };
@@ -2181,12 +2388,14 @@ pub fn macro_param_indices_released_by(
     name: &str,
     releases: impl Fn(&str) -> bool,
 ) -> Vec<usize> {
-    let mut active = HashSet::new();
-    released_param_indices(table, name, &releases, &mut active, 0)
+    over_live_definitions(table, name, Merge::Union, |table, name| {
+        let mut active = HashSet::new();
+        released_param_indices(table, name, &releases, &mut active, 0)
+    })
 }
 
 fn released_param_indices(
-    table: &HashMap<String, FunctionMacro>,
+    table: &dyn MacroLookup,
     name: &str,
     releases: &impl Fn(&str) -> bool,
     active: &mut HashSet<String>,
@@ -2195,7 +2404,7 @@ fn released_param_indices(
     if depth >= MAX_EXPAND_DEPTH || active.contains(name) {
         return Vec::new();
     }
-    let Some(m) = table.get(name) else {
+    let Some(m) = table.lookup(name) else {
         return Vec::new();
     };
     if m.params.is_empty() {
@@ -2231,7 +2440,7 @@ fn released_param_indices(
             for arg in &args {
                 out.extend(sentinel_indices_in(arg));
             }
-        } else if table.contains_key(&callee) {
+        } else if table.lookup(&callee).is_some() {
             for j in released_param_indices(table, &callee, releases, active, depth + 1) {
                 if let Some(arg) = args.get(j) {
                     out.extend(sentinel_indices_in(arg));
@@ -2976,6 +3185,103 @@ mod tests {
     }
 
     #[test]
+    fn a_free_in_any_live_definition_is_a_free() {
+        // The first arm is a no-op, so first-wins said nothing is freed.
+        let t = table(concat!(
+            "#ifdef NO_OWNERSHIP\n",
+            "#define RELEASE(p) ((void)(p))\n",
+            "#else\n",
+            "#define RELEASE(p) free(p)\n",
+            "#endif\n",
+        ));
+        assert_eq!(macro_frees_param_indices(&t, "RELEASE"), vec![0]);
+        assert_eq!(
+            macro_param_indices_released_by(&t, "RELEASE", |c| c == "free"),
+            vec![0]
+        );
+    }
+
+    #[test]
+    fn a_null_holds_only_when_every_live_definition_nulls() {
+        let t = table(concat!(
+            "#ifdef TRACK\n",
+            "#define SAFE_FREE(x) do { free(x); (x) = NULL; } while(0)\n",
+            "#else\n",
+            "#define SAFE_FREE(x) free(x)\n",
+            "#endif\n",
+        ));
+        assert!(macro_nulls_param_indices(&t, "SAFE_FREE").is_empty());
+        assert_eq!(macro_frees_param_indices(&t, "SAFE_FREE"), vec![0]);
+        let both = table(concat!(
+            "#ifdef TRACK\n",
+            "#define SAFE_FREE(x) do { trace(x); free(x); (x) = NULL; } while(0)\n",
+            "#else\n",
+            "#define SAFE_FREE(x) do { free(x); (x) = NULL; } while(0)\n",
+            "#endif\n",
+        ));
+        assert_eq!(macro_nulls_param_indices(&both, "SAFE_FREE"), vec![0]);
+    }
+
+    #[test]
+    fn an_unreadable_definition_proves_no_write_and_adds_no_free() {
+        let t = table(concat!(
+            "#ifdef PASTE\n",
+            "#define SET(out, v) out##_tmp = (v)\n",
+            "#else\n",
+            "#define SET(out, v) ((out) = (v))\n",
+            "#endif\n",
+        ));
+        assert!(macro_output_param_indices(&t, "SET").is_empty());
+        assert!(macro_writes_param_indices(&t, "SET").is_empty());
+        let frees = table(concat!(
+            "#ifdef VARIADIC\n",
+            "#define DROP(p, ...) free(p)\n",
+            "#else\n",
+            "#define DROP(p) free(p)\n",
+            "#endif\n",
+        ));
+        assert_eq!(macro_frees_param_indices(&frees, "DROP"), vec![0]);
+    }
+
+    #[test]
+    fn a_platform_dead_definition_is_not_an_alternative() {
+        // `_WIN32` is dead under the default profile, so only the POSIX
+        // body is live and its null stands.
+        let t = table(concat!(
+            "#ifdef _WIN32\n",
+            "#define SAFE_FREE(x) free(x)\n",
+            "#else\n",
+            "#define SAFE_FREE(x) do { free(x); (x) = NULL; } while(0)\n",
+            "#endif\n",
+        ));
+        assert!(t["SAFE_FREE"].alternatives.is_empty());
+        assert_eq!(macro_nulls_param_indices(&t, "SAFE_FREE"), vec![0]);
+    }
+
+    #[test]
+    fn absorbing_another_files_definition_is_order_independent() {
+        let m = |params: &[&str], body: &str| FunctionMacro {
+            params: params.iter().map(|p| p.to_string()).collect(),
+            body: body.to_string(),
+            alternatives: Vec::new(),
+        };
+        let nulls = m(&["x"], "do { free(x); (x) = NULL; } while(0)");
+        let frees = m(&["x"], "free(x)");
+        let mut a = nulls.clone();
+        a.absorb(frees.clone());
+        let mut b = frees.clone();
+        b.absorb(nulls.clone());
+        for merged in [a, b] {
+            let t: HashMap<String, FunctionMacro> = [("F".to_string(), merged)].into();
+            assert!(macro_nulls_param_indices(&t, "F").is_empty());
+            assert_eq!(macro_frees_param_indices(&t, "F"), vec![0]);
+        }
+        let mut same = frees.clone();
+        same.absorb(m(&["y"], "free(y)"));
+        assert!(same.alternatives.is_empty());
+    }
+
+    #[test]
     fn nulls_param_zero_literal() {
         let t = table("#define SAFE_FREE(x) do { free(x); (x) = 0; } while(0)\n");
         assert_eq!(macro_nulls_param_indices(&t, "SAFE_FREE"), vec![0]);
@@ -3357,6 +3663,7 @@ mod macro_write_tests {
         FunctionMacro {
             params: params.iter().map(|p| p.to_string()).collect(),
             body: body.to_string(),
+            alternatives: Vec::new(),
         }
     }
 

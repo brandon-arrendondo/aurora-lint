@@ -679,24 +679,28 @@ fn prescan_file_list(
                     function_macro_origin.insert(e.key().clone(), file_display.clone());
                     e.insert(m);
                 }
-                std::collections::hash_map::Entry::Occupied(e) if !e.get().same_expansion(&m) => {
-                    let line = r
-                        .macro_definition_audit
-                        .kept_lines
-                        .get(e.key())
-                        .copied()
-                        .unwrap_or(0);
-                    macro_gaps.push(crate::analyze::macro_gaps::conflicting_definition(
-                        e.key(),
-                        &file_display,
-                        line,
-                        function_macro_origin
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    if !e.get().same_expansion(&m) {
+                        let line = r
+                            .macro_definition_audit
+                            .kept_lines
                             .get(e.key())
-                            .map(String::as_str)
-                            .unwrap_or("another file"),
-                    ));
+                            .copied()
+                            .unwrap_or(0);
+                        macro_gaps.push(crate::analyze::macro_gaps::conflicting_definition(
+                            e.key(),
+                            &file_display,
+                            line,
+                            function_macro_origin
+                                .get(e.key())
+                                .map(String::as_str)
+                                .unwrap_or("another file"),
+                        ));
+                    }
+                    // The expansion keeps the first file's body; the
+                    // parameter facts see every file's.
+                    e.get_mut().absorb(m);
                 }
-                std::collections::hash_map::Entry::Occupied(_) => {}
             }
         }
         macro_gaps.extend(r.macro_definition_audit.gaps);
@@ -6532,20 +6536,21 @@ pub fn resolve_includes(
                         std::collections::hash_map::Entry::Vacant(e) => {
                             e.insert(m);
                         }
-                        std::collections::hash_map::Entry::Occupied(e)
-                            if !e.get().same_expansion(&m) =>
-                        {
-                            let line = header_audit.kept_lines.get(e.key()).copied().unwrap_or(0);
-                            context.macro_gaps.push(
-                                crate::analyze::macro_gaps::conflicting_definition(
-                                    e.key(),
-                                    &header_path,
-                                    line,
-                                    "a file scanned earlier",
-                                ),
-                            );
+                        std::collections::hash_map::Entry::Occupied(mut e) => {
+                            if !e.get().same_expansion(&m) {
+                                let line =
+                                    header_audit.kept_lines.get(e.key()).copied().unwrap_or(0);
+                                context.macro_gaps.push(
+                                    crate::analyze::macro_gaps::conflicting_definition(
+                                        e.key(),
+                                        &header_path,
+                                        line,
+                                        "a file scanned earlier",
+                                    ),
+                                );
+                            }
+                            e.get_mut().absorb(m);
                         }
-                        std::collections::hash_map::Entry::Occupied(_) => {}
                     }
                 }
                 context.macro_gaps.extend(header_audit.gaps);
