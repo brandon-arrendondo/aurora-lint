@@ -281,12 +281,11 @@ impl Dcl31C {
 
                 let func_name = get_node_text(&function, source);
 
-                // Tree-sitter cannot expand macros, so it sees a macro
-                // invocation like SAFE_PRINT(x) as a function call. A name
-                // some `#define` (this file or any scanned one) defines is
-                // not an undeclared function; one that no `#define` names is
-                // judged like any other callee, whatever its spelling.
-                if self.is_known_macro(func_name, source) {
+                // Skip ALL_CAPS identifiers — in C, all-uppercase names are macros by
+                // convention. Tree-sitter cannot expand macros, so it sees macro
+                // invocations like SAFE_PRINT(x) or CU_ASSERT_EQUAL(a,b) as function
+                // calls. They are never truly undeclared functions.
+                if is_macro_like_name(func_name) || self.is_known_macro(func_name, source) {
                     return;
                 }
 
@@ -447,6 +446,19 @@ impl CertRule for Dcl31C {
     fn scan(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.traverse(root, source, violations);
     }
+}
+
+/// Returns true if the name looks like a C macro rather than a function.
+///
+/// By C convention, macro names are ALL_CAPS (may include digits and underscores).
+/// Tree-sitter sees macro invocations like `SAFE_PRINT(x)` as function calls
+/// because it cannot expand preprocessor definitions. Skipping all-uppercase
+/// names avoids these false positives.
+fn is_macro_like_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 impl Dcl31C {
