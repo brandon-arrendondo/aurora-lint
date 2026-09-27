@@ -637,9 +637,19 @@ pub struct FunctionSummary {
     /// `setrlimit(RLIMIT_CORE, &rl)` whose zero limit dominates the call, an
     /// `mlockall`, or an unconditional call to another function that does
     /// (`propagate_transitive_credential_facts`, over
-    /// `unconditional_callees`). A protection inside an `if` does not count.
+    /// `protects_process_obligations`). A protection inside an `if` does not
+    /// count.
     #[serde(default)]
     pub protects_process_memory: bool,
+    /// What `protects_process_memory` still needs from other functions, as a
+    /// conjunction of clauses, one per definition that does not protect the
+    /// process itself: the callees it reaches unconditionally, any one of
+    /// which protecting would do. An empty clause is unsatisfiable. Folding
+    /// definitions concatenates their clauses, so one definition protecting
+    /// directly and another through a helper protect the name when the
+    /// helper does.
+    #[serde(default)]
+    pub protects_process_obligations: Vec<Vec<String>>,
     /// Conditional credential-sink rows (`pam_set_item`, `ldap_bind_s`) the
     /// body hands a parameter to, as `(callee, param index)`. The row
     /// applies only if the callee is the library's, so the index joins
@@ -3831,6 +3841,9 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
         .extend(summary.returns_locked_obligations);
     existing.protects_process_memory &= summary.protects_process_memory;
     existing
+        .protects_process_obligations
+        .extend(summary.protects_process_obligations);
+    existing
         .conditional_sink_hits
         .extend(summary.conditional_sink_hits);
     existing
@@ -4194,6 +4207,11 @@ fn credit_credential_facts(
     if is_main {
         sequence.sort_by_key(|(pos, _, _)| *pos);
         summary.main_call_sequence = sequence.into_iter().map(|(_, n, u)| (n, u)).collect();
+    }
+    if !summary.protects_process_memory {
+        let mut callees: Vec<String> = summary.unconditional_callees.iter().cloned().collect();
+        callees.sort();
+        summary.protects_process_obligations = vec![callees];
     }
 
     for (idx, callees) in &summary.unconditional_param_passthroughs {
@@ -6234,7 +6252,12 @@ pub fn propagate_transitive_clears(
 /// is not libc's; an edge landing on an unconditional row of
 /// `credential_sinks` counts by itself, as does a `conditional_sink_hits`
 /// entry whose callee has no project summary.
-/// `protects_process_memory` rides `unconditional_callees`.
+/// `protects_process_memory` is recomputed from
+/// `protects_process_obligations`, the same way the lock facts are.
+///
+/// Each fixpoint runs at most 10 passes, so a wrapper chain deeper than
+/// that is left unresolved: the fact stays false and MEM06-C reports, which
+/// errs toward a finding rather than a silent miss.
 ///
 /// The lock facts are MUST facts and are recomputed from scratch here, so a
 /// second call gives the same answer: `locks_params` from
@@ -6268,6 +6291,9 @@ pub fn propagate_transitive_credential_facts(
             .retain(|idx| !obligations.contains_key(idx));
         if !summary.returns_locked_obligations.is_empty() {
             summary.returns_locked = false;
+        }
+        if !summary.protects_process_obligations.is_empty() {
+            summary.protects_process_memory = false;
         }
     }
 
@@ -6360,11 +6386,16 @@ pub fn propagate_transitive_credential_facts(
                 summary.returns_locked = true;
                 changed = true;
             }
+            let protects = |c: &String| {
+                let c = edge_target(macro_aliases, c, |n| snapshot.contains_key(n));
+                snapshot.get(c).is_some_and(|(_, _, p)| *p)
+            };
             if !summary.protects_process_memory
-                && summary.unconditional_callees.iter().any(|c| {
-                    let c = edge_target(macro_aliases, c, |n| snapshot.contains_key(n));
-                    snapshot.get(c).is_some_and(|(_, _, p)| *p)
-                })
+                && !summary.protects_process_obligations.is_empty()
+                && summary
+                    .protects_process_obligations
+                    .iter()
+                    .all(|clause| clause.iter().any(protects))
             {
                 summary.protects_process_memory = true;
                 changed = true;

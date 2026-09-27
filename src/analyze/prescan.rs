@@ -1367,6 +1367,9 @@ fn scope_summary_callees(
             key(callee);
         }
     }
+    for callee in summary.protects_process_obligations.iter_mut().flatten() {
+        key(callee);
+    }
     for set in [
         &mut summary.returned_callees,
         &mut summary.returns_from_callees,
