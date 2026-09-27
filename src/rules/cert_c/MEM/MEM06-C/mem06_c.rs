@@ -66,7 +66,9 @@ use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
     get_identifier_from_declarator, get_node_text, resolve_identifier_declarator,
 };
-use crate::utility::cert_c::guard_dominance::runs_before_on_every_path;
+use crate::utility::cert_c::guard_dominance::{
+    in_expression_branch_outside, runs_before_on_every_path,
+};
 use crate::utility::cert_c::{call_roles, credential_sinks};
 use lang_parsing_substrate::query;
 
@@ -176,12 +178,16 @@ impl Mem06C {
 
         let copies = copies_in(&body, source);
         let cfg: std::cell::OnceCell<Option<FunctionCfg>> = std::cell::OnceCell::new();
+        // The CFG settles what the AST walk refuses over jumps; it cannot
+        // see a `&&`/`||`/`?:` branch, so it is never asked about a step in
+        // one.
         let precedes = |step: &Node, target: &Node| {
             runs_before_on_every_path(step, target)
-                || cfg
-                    .get_or_init(|| build_function_cfg(func, source))
-                    .as_ref()
-                    .is_some_and(|g| cfg_dominates(g, step, target))
+                || !in_expression_branch_outside(step, target)
+                    && cfg
+                        .get_or_init(|| build_function_cfg(func, source))
+                        .as_ref()
+                        .is_some_and(|g| cfg_dominates(g, step, target))
         };
         let mut reported: HashSet<usize> = HashSet::new();
         for origin in self.origins(&body, source) {

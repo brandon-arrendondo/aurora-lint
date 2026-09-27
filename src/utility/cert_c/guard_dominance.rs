@@ -1976,6 +1976,43 @@ fn do_body_jumps_before(do_body: &Node, before: usize) -> bool {
         .any(|c| walk(&c, before, false, false))
 }
 
+/// Whether `step` sits in a `?:` branch or the right operand of `&&` / `||`
+/// that `target` is outside: an expression-level branch that may skip
+/// `step`. `analyze::cfg` keeps a whole condition or expression statement
+/// in one block, so a CFG dominance answer cannot see this branch; a caller
+/// that falls back to the CFG when [`runs_before_on_every_path`] says no
+/// must not do so for a `step` this answers true for.
+pub fn in_expression_branch_outside(step: &Node, target: &Node) -> bool {
+    let mut cur = *step;
+    while let Some(parent) = cur.parent() {
+        if parent.kind() == "function_definition" {
+            return false;
+        }
+        let is = |field: &str| {
+            parent
+                .child_by_field_name(field)
+                .is_some_and(|c| c.id() == cur.id())
+        };
+        let branch = match parent.kind() {
+            "conditional_expression" => is("consequence") || is("alternative"),
+            "binary_expression" => {
+                is("right")
+                    && parent
+                        .child_by_field_name("operator")
+                        .is_some_and(|op| matches!(op.kind(), "&&" | "||"))
+            }
+            _ => false,
+        };
+        if branch
+            && !(cur.start_byte() <= target.start_byte() && target.end_byte() <= cur.end_byte())
+        {
+            return true;
+        }
+        cur = parent;
+    }
+    false
+}
+
 /// Walk from `node` to its function, and whenever it sits in a conditional
 /// part of an ancestor, require `allowed(part)`.
 fn escapes_no_conditional_part(node: &Node, allowed: impl Fn(&Node) -> bool) -> bool {
