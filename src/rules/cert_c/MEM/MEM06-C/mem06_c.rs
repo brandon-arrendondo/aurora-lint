@@ -191,8 +191,9 @@ impl Mem06C {
         };
         let mut reported: HashSet<usize> = HashSet::new();
         for origin in self.origins(&body, source) {
-            let holds =
-                |object: usize, site: &Node| holders_at(&origin, &copies, site).contains(&object);
+            let holds = |object: usize, site: &Node| {
+                holders_at(&origin, &copies, site, &precedes).contains(&object)
+            };
             let Some((first_sink, sink_callee, sink_object)) = sinks
                 .iter()
                 .filter(|(call, _, object)| call.start_byte() > origin.at && holds(*object, call))
@@ -218,7 +219,9 @@ impl Mem06C {
                 let graph = cfg
                     .get_or_init(|| build_function_cfg(func, source))
                     .as_ref();
-                let mut stores = self.stores(&calls, &body, &origin, &copies, first_sink, source);
+                let mut stores = self.stores(
+                    &calls, &body, &origin, &copies, first_sink, source, &precedes,
+                );
                 if let Some(g) = graph {
                     stores.retain(|s| origin_sinks.iter().any(|k| cfg_reaches(g, s, k)));
                 }
@@ -429,8 +432,11 @@ impl Mem06C {
         copies: &[Copy],
         sink: &Node<'a>,
         source: &str,
+        precedes: &dyn Fn(&Node, &Node) -> bool,
     ) -> Vec<Node<'a>> {
-        let holds = |object: usize, site: &Node| holders_at(origin, copies, site).contains(&object);
+        let holds = |object: usize, site: &Node| {
+            holders_at(origin, copies, site, precedes).contains(&object)
+        };
         let summaries = self.function_summaries.borrow();
         let call_stores = calls
             .iter()
@@ -634,8 +640,15 @@ fn cfg_reaches(cfg: &FunctionCfg, from: &Node, to: &Node) -> bool {
 /// holder, plus every copy made from a holder since (on any path), minus
 /// every holder overwritten since on every path to `site`, replayed in
 /// source order. An overwrite in the other arm of an `if` does not end the
-/// block's life on this arm.
-fn holders_at(origin: &Origin, copies: &[Copy], site: &Node) -> HashSet<usize> {
+/// block's life on this arm. `precedes` decides "on every path", so a
+/// function with a `goto` gets the CFG's answer rather than keeping every
+/// overwritten copy alive.
+fn holders_at(
+    origin: &Origin,
+    copies: &[Copy],
+    site: &Node,
+    precedes: &dyn Fn(&Node, &Node) -> bool,
+) -> HashSet<usize> {
     let mut held: HashSet<usize> = HashSet::from([origin.holder]);
     for copy in copies
         .iter()
@@ -645,7 +658,7 @@ fn holders_at(origin: &Origin, copies: &[Copy], site: &Node) -> HashSet<usize> {
             Some(s) if held.contains(&s) => {
                 held.insert(copy.target);
             }
-            _ if runs_before_on_every_path(&copy.node, site) => {
+            _ if precedes(&copy.node, site) => {
                 held.remove(&copy.target);
             }
             _ => {}
