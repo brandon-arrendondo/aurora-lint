@@ -1081,13 +1081,20 @@ fn prescan_file_list(
 
     // A .c file another .c file #includes is compiled as part of its
     // includer, so its static noreturn helpers are visible there.
+    //
+    // The abort-check-macro table is project-wide and keyed by macro name,
+    // and no rule rebuilds it per file, so it keeps every .c file's own
+    // static noreturn names too: a file-local `REQUIRE(x)` whose failure
+    // path calls that file's `static void die(...)` is still a guard.
+    let mut abort_check_noreturn = noreturn_functions.clone();
     for (file_name, names) in c_file_static_noreturn {
         if included_c_files.contains(&file_name) {
-            noreturn_functions.extend(names);
+            noreturn_functions.extend(names.clone());
         }
+        abort_check_noreturn.extend(names);
     }
 
-    let abort_check_macros = noreturn_functions.map(|names| {
+    let abort_check_macros = abort_check_noreturn.map(|names| {
         Arc::new(crate::analyze::check_macros::abort_check_macros(
             &macro_definitions,
             names,
@@ -1117,6 +1124,7 @@ fn prescan_file_list(
         pointer_typedef_names: Arc::new(pointer_typedef_names),
         packed_structs: Arc::new(packed_structs),
         noreturn_functions: noreturn_functions.map(|names| Arc::new(names.clone())),
+        abort_check_noreturn_functions: abort_check_noreturn.map(|names| Arc::new(names.clone())),
         defined_macro_names: Arc::new(defined_macro_names),
         function_macro_names: Arc::new(function_macro_names),
         static_macro_names: Arc::new(static_macro_names),
@@ -6615,7 +6623,7 @@ pub fn resolve_includes(
     );
     // Headers resolved here may add a definition of a name, including the
     // `NDEBUG` arm that disqualifies it, so the check table is rebuilt.
-    context.abort_check_macros = context.noreturn_functions.map(|names| {
+    context.abort_check_macros = context.abort_check_noreturn_functions.map(|names| {
         Arc::new(crate::analyze::check_macros::abort_check_macros(
             &context.macro_definitions,
             names,

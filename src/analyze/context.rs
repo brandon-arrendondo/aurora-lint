@@ -84,6 +84,15 @@ pub struct ProjectContext {
     /// in a header the single-file parse never sees.
     #[serde(default)]
     pub noreturn_functions: crate::analyze::noreturn::ByNoreturnTrust<Arc<HashSet<String>>>,
+    /// `noreturn_functions` plus every `.c` file's own `static` noreturn
+    /// names, which `noreturn_functions` leaves to the file that defines
+    /// them. The input [`abort_check_macros`](Self::abort_check_macros) is
+    /// built from, at both of its build sites: that table is project-wide and
+    /// keyed by macro name, so a file-local check macro calling its file's
+    /// static exit helper must still qualify.
+    #[serde(default)]
+    pub abort_check_noreturn_functions:
+        crate::analyze::noreturn::ByNoreturnTrust<Arc<HashSet<String>>>,
     /// Global constants: `[const] TYPE NAME = VALUE;` from across all scanned files.
     /// Used by init-state analysis for dead-branch elimination.
     #[serde(default)]
@@ -444,7 +453,7 @@ impl ProjectContext {
 /// Version of the prescan cache's serialized layout. Bump it with any change
 /// to a serialized field of [`ProjectContext`] (or of a type it holds): the
 /// cache header carries it, so an old cache is refused instead of misread.
-const PRESCAN_CACHE_FORMAT: u32 = 6;
+const PRESCAN_CACHE_FORMAT: u32 = 7;
 
 /// The header a prescan cache file starts with: a magic, the layout version
 /// and the aurora-lint version that wrote it.
