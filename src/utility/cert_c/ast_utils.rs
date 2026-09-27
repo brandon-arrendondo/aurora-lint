@@ -429,11 +429,13 @@ pub fn resolve_identifier_declared_type(
 /// A name is not a variable (ADR-0006). Those maps are keyed by name, so a
 /// same-named variable in another function (a map built from a translation
 /// unit) or in an inner block (a function's map flattens its scopes) answers
-/// for this occurrence. When the occurrence resolves to a local or a
-/// parameter of its enclosing function, that declaration is the answer --
-/// `None` if the map spelling cannot express it (an enum or union type),
-/// never the map's same-named entry. Otherwise, a file-scope name or one
-/// this file does not declare, `type_map` answers as before.
+/// for this occurrence, and a file-scope variable, which the maps never
+/// record, is typed by some function's same-named local. When the occurrence
+/// resolves to a declaration in this file (a local, a parameter of its
+/// enclosing function, or a file-scope variable), that declaration is the
+/// answer -- `None` if the map spelling cannot express it (an enum or union
+/// type, a function), never the map's same-named entry. Only for a name this
+/// file does not declare does `type_map` answer.
 pub fn identifier_type<'m>(
     ident: &Node,
     source: &str,
@@ -441,9 +443,7 @@ pub fn identifier_type<'m>(
 ) -> Option<std::borrow::Cow<'m, str>> {
     let name = get_node_text(ident, source);
     if let Some((decl, declarator)) = resolve_identifier_declarator(ident, name, source) {
-        if has_function_definition_ancestor(&decl) {
-            return local_type_spelling(&decl, &declarator, source).map(std::borrow::Cow::Owned);
-        }
+        return local_type_spelling(&decl, &declarator, source).map(std::borrow::Cow::Owned);
     }
     type_map
         .get(name)
@@ -488,17 +488,6 @@ fn local_type_spelling(decl: &Node, declarator: &Node, source: &str) -> Option<S
     } else {
         base
     })
-}
-
-fn has_function_definition_ancestor(node: &Node) -> bool {
-    let mut cur = node.parent();
-    while let Some(n) = cur {
-        if n.kind() == "function_definition" {
-            return true;
-        }
-        cur = n.parent();
-    }
-    false
 }
 
 /// Fallback for file-scope (global) declarations, which
