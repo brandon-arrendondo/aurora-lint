@@ -6321,10 +6321,12 @@ pub fn propagate_transitive_credential_facts(
                 .lock_param_obligations
                 .iter()
                 .filter(|(idx, _)| !summary.locks_params.contains(idx))
+                // An empty conjunction is no evidence, not a proof.
                 .filter(|(_, clauses)| {
-                    clauses
-                        .iter()
-                        .all(|clause| clause.iter().any(|(c, i)| locks(c, *i)))
+                    !clauses.is_empty()
+                        && clauses
+                            .iter()
+                            .all(|clause| clause.iter().any(|(c, i)| locks(c, *i)))
                 })
                 .map(|(idx, _)| *idx)
                 .collect();
@@ -6332,7 +6334,12 @@ pub fn propagate_transitive_credential_facts(
                 summary.locks_params.extend(newly_locked);
                 changed = true;
             }
+            // Only obligations can promote `returns_locked`: a summary with
+            // none keeps what its body proved. Without this a summary never
+            // built by `credit_returns_locked` (false, no clauses) would pass
+            // the empty `all` and come out returning locked memory.
             if !summary.returns_locked
+                && !summary.returns_locked_obligations.is_empty()
                 && summary.returns_locked_obligations.iter().all(|clause| {
                     clause.iter().any(|(c, i)| match i {
                         Some(i) => locks(c, *i),
@@ -7194,6 +7201,26 @@ mod tests {
         let mut swapped = guessed;
         merge_summary_variant(&mut swapped, quiet);
         assert!(swapped.frees_params_guessed.contains(&2));
+    }
+
+    /// A summary no body built (false, no obligation clauses) is no evidence
+    /// that the function returns locked memory or locks its parameters: an
+    /// empty conjunction must not resolve to true.
+    #[test]
+    fn an_empty_obligation_set_locks_nothing() {
+        let mut summaries = HashMap::from([
+            ("stub".to_string(), FunctionSummary::default()),
+            (
+                "keyed".to_string(),
+                FunctionSummary {
+                    lock_param_obligations: HashMap::from([(0, Vec::new())]),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        propagate_transitive_credential_facts(&mut summaries, &HashMap::new());
+        assert!(!summaries["stub"].returns_locked);
+        assert!(summaries["keyed"].locks_params.is_empty());
     }
 
     /// curl's curlx_memdup0: the allocation sits in one arm of the
