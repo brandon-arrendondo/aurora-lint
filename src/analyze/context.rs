@@ -148,6 +148,13 @@ pub struct ProjectContext {
     /// alternative, not the one `function_macros` keeps.
     #[serde(default)]
     pub macro_definitions: Arc<HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>>>,
+    /// Names `#define`d in a header resolved from outside every project root
+    /// (a system header: glibc's `#define signal __sysv_signal`) and in no
+    /// scanned file or project header. Their `macro_definitions` are the
+    /// implementation's, not the project's: a rule judging a call by what a
+    /// macro expands to can still say so in the name the code wrote.
+    #[serde(default)]
+    pub macros_defined_outside_project: Arc<HashSet<String>>,
     /// Names `#define`d inside a live `#if`/`#ifdef`/`#ifndef` arm of any
     /// scanned file or header, per
     /// [`crate::analyze::check_macros::collect_conditional_macro_names`]: a

@@ -1,0 +1,8 @@
+[metadata]
+name = "CLI Integration Test - SIG30-C only"
+version = "1.0.0"
+description = "Minimal manifest for SIG30-C macro-origin tests"
+cert_version = "2016"
+
+[rules.cert_c.SIG30-C]
+enabled = true

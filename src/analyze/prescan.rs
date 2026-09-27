@@ -1288,6 +1288,8 @@ fn prescan_file_list(
         macro_alias_alternatives: Arc::new(macro_alias_alternatives),
         function_macros: Arc::new(function_macros),
         macro_definitions: Arc::new(macro_definitions),
+        // Filled by `resolve_includes`: every file scanned here is the project's.
+        macros_defined_outside_project: Arc::default(),
         conditional_macro_names: Arc::new(conditional_macro_names),
         config_dependent_constants: Arc::new(config_dependent_constants),
         abort_check_macros,
@@ -6612,6 +6614,15 @@ pub fn resolve_includes(
     // *project* header. Computed once: the check is filesystem-
     // touching and the answer is the same for every include.
     let project_search_paths = project_local_search_paths(include_paths, project_roots);
+    // A header outside every project root is the implementation's (see
+    // `ProjectContext::macros_defined_outside_project`). With no root to sit
+    // under, nothing can be judged outside.
+    let canonical_roots: Vec<PathBuf> = project_roots
+        .iter()
+        .map(|r| std::fs::canonicalize(r).unwrap_or_else(|_| PathBuf::from(r)))
+        .collect();
+    let mut outside_project_macros: HashSet<String> = HashSet::new();
+    let mut project_macros: HashSet<String> = context.macro_definitions.keys().cloned().collect();
 
     let mut parser = CParser::new()?;
     let mut resolved_set: HashSet<PathBuf> = HashSet::new();
@@ -6675,6 +6686,8 @@ pub fn resolve_includes(
             if resolved_set.contains(&canonical) {
                 continue;
             }
+            let outside_project = !canonical_roots.is_empty()
+                && !canonical_roots.iter().any(|r| canonical.starts_with(r));
             resolved_set.insert(canonical);
 
             let header_path = resolved.to_string_lossy().to_string();
@@ -6767,9 +6780,16 @@ pub fn resolve_includes(
                     }
                 }
                 context.macro_gaps.extend(header_audit.gaps);
+                let header_definitions =
+                    crate::analyze::check_macros::collect_macro_definitions(&hsource);
+                if outside_project {
+                    outside_project_macros.extend(header_definitions.keys().cloned());
+                } else {
+                    project_macros.extend(header_definitions.keys().cloned());
+                }
                 crate::analyze::check_macros::merge_macro_definitions(
                     Arc::make_mut(&mut context.macro_definitions),
-                    crate::analyze::check_macros::collect_macro_definitions(&hsource),
+                    header_definitions,
                 );
                 Arc::make_mut(&mut context.conditional_macro_names).extend(
                     crate::analyze::check_macros::collect_conditional_macro_names(&hsource),
@@ -6841,6 +6861,10 @@ pub fn resolve_includes(
             }
         }
     }
+
+    let outside = Arc::make_mut(&mut context.macros_defined_outside_project);
+    outside.extend(outside_project_macros);
+    outside.retain(|name| !project_macros.contains(name));
 
     // Resolve trailing-macro packed-struct candidates against the
     // macro names seen across ALL resolved headers (the macro's #define and

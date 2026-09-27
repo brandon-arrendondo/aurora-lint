@@ -1979,6 +1979,57 @@ fn crossfile_registration_does_not_reach_a_static_namesake() {
     assert!(sig34_lines("other.c").is_empty());
 }
 
+fn manifest_sig30() -> PathBuf {
+    fixtures().join("manifest_sig30.toml")
+}
+
+#[test]
+fn signal_handler_macros_are_judged_by_where_they_are_defined() {
+    // sysalias.h sits outside the project, as a C library header would:
+    // its remapping of signal() is the implementation's, and its unsafe
+    // siglongjmp() is reported by the name the code wrote. projalias.h is
+    // the project's own: its remapping of alarm() is judged by the target.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let fixture_dir = fixtures().join("sig30_macro_origin");
+    let project = fixture_dir.join("project");
+    let (code, _, _) = run_aurora_lint(&[
+        project.join("main.c").to_str().unwrap(),
+        "-m",
+        manifest_sig30().to_str().unwrap(),
+        "-d",
+        project.to_str().unwrap(),
+        "-I",
+        fixture_dir.join("system").to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    let found: Vec<(u64, String)> = violations
+        .iter()
+        .filter(|v| v["rule_id"] == "SIG30-C")
+        .map(|v| {
+            (
+                v["line"].as_u64().unwrap(),
+                v["message"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let expected = [
+        (17, "calls 'project_alarm()' (through macro 'alarm')"),
+        // The macro's parameter is shown as the argument it was given.
+        (18, "calls '(g)->log()' (through macro 'CB')"),
+        (19, "calls 'siglongjmp()' which"),
+    ];
+    assert_eq!(found.len(), expected.len(), "{found:?}");
+    for ((line, message), (want_line, want)) in found.iter().zip(expected) {
+        assert_eq!(*line, want_line, "{found:?}");
+        assert!(message.contains(want), "{message}");
+    }
+}
+
 #[test]
 fn crossfile_sibling_header_suppresses_public_api_without_d_flag() {
     // aurora-lint auto-scans sibling .h files even without -d, so public API functions
