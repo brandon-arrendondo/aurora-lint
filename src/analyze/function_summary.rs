@@ -4162,6 +4162,12 @@ fn credit_credential_facts(
             let a = init_state::strip_arg_casts(args.get(i)?);
             (a.kind() == "identifier").then(|| text(&a))
         };
+        // The same argument keyed by the object it names (ADR-0006), for
+        // matching a lock or a hand-off to the block a return names.
+        let arg_object = |i: usize| -> Option<String> {
+            let a = init_state::strip_arg_casts(args.get(i)?);
+            (a.kind() == "identifier").then(|| object_key(&a, source))
+        };
 
         if credential_sinks::has_conditional_sink_row(&name) {
             let arg_texts: Vec<String> = args.iter().map(|a| text(a).trim().to_string()).collect();
@@ -4178,7 +4184,7 @@ fn credit_credential_facts(
             }
         }
         for i in 0..args.len() {
-            let Some(var) = arg_var(i) else {
+            let Some(var) = arg_object(i) else {
                 continue;
             };
             if i == 0 && credential_sinks::is_page_lock_call(&name) {
@@ -4281,6 +4287,7 @@ fn credit_returns_locked(
                 }
             }
             "identifier" => {
+                let t = object_key(&e, source);
                 let reaching: Vec<&(String, Node, String, bool)> = allocations
                     .iter()
                     .filter(|(var, a, _, _)| *var == t && a.start_byte() < r.start_byte())
@@ -4323,8 +4330,19 @@ fn credential_sinks_marker() -> String {
     PROTECTS_PROCESS_MARKER.to_string()
 }
 
-/// `(target variable, value)` for every plain `x = value` and `T *x = value`
-/// in `body`, the target given by name.
+/// The object an identifier occurrence names, as a key: its resolved
+/// declarator's position (ADR-0006: a shadowing inner `p` is another object),
+/// or the spelling when nothing in scope declares it.
+fn object_key(ident: &Node, source: &str) -> String {
+    let name = ident.utf8_text(source.as_bytes()).unwrap_or("");
+    match crate::utility::cert_c::ast_utils::resolve_identifier_declarator(ident, name, source) {
+        Some((_, declarator)) => format!("@{}", declarator.start_byte()),
+        None => name.to_string(),
+    }
+}
+
+/// `(target object, value)` for every plain `x = value` and `T *x = value`
+/// in `body`, the target keyed by [`object_key`].
 fn plain_assignments<'a>(body: &Node<'a>, source: &str) -> Vec<(String, Node<'a>)> {
     use lang_parsing_substrate::query;
 
@@ -4340,7 +4358,7 @@ fn plain_assignments<'a>(body: &Node<'a>, source: &str) -> Vec<(String, Node<'a>
             a.child_by_field_name("right"),
         ) {
             if l.kind() == "identifier" {
-                out.push((text(&l), r));
+                out.push((object_key(&l, source), r));
             }
         }
     }
@@ -4349,10 +4367,12 @@ fn plain_assignments<'a>(body: &Node<'a>, source: &str) -> Vec<(String, Node<'a>
             d.child_by_field_name("declarator"),
             d.child_by_field_name("value"),
         ) {
-            let name =
-                crate::utility::cert_c::ast_utils::get_identifier_from_declarator(&decl, source);
-            if !name.is_empty() {
-                out.push((name.to_string(), v));
+            let ident = lang_parsing_substrate::query::find_first_descendant(decl, |n| {
+                n.kind() == "identifier"
+            })
+            .or_else(|| (decl.kind() == "identifier").then_some(decl));
+            if let Some(ident) = ident {
+                out.push((object_key(&ident, source), v));
             }
         }
     }
