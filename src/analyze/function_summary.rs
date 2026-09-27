@@ -16,6 +16,11 @@ use tree_sitter::Node;
 /// so no callee can collide with it.
 pub const PROTECTS_PROCESS_MARKER: &str = "<protects-process-memory>";
 
+/// The arm assumptions of each definition behind a fact
+/// ([`crate::analyze::dead_regions::arm_assumptions`]), one set per
+/// definition; an empty set is a definition no arm constrains.
+pub type ArmSets = Vec<Vec<(String, bool)>>;
+
 /// Summary of a function's behavior relevant to CERT C rules.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct FunctionSummary {
@@ -100,6 +105,18 @@ pub struct FunctionSummary {
     /// applies everywhere.
     #[serde(default)]
     pub escape_arms: Vec<Vec<(String, bool)>>,
+    /// The arm assumptions of every definition that forwards a parameter
+    /// to a callee, per parameter and callee (`param_passthroughs`). A
+    /// propagate pass crediting a fact through that edge gives the fact
+    /// these arms, since the edge exists only in those definitions; an edge
+    /// with no entry here was added later and applies everywhere.
+    #[serde(default)]
+    pub passthrough_arms: HashMap<usize, HashMap<String, ArmSets>>,
+    /// [`Self::passthrough_arms`] for the edges `returned_value_escapes` is
+    /// propagated through: `returned_value_passthroughs` and
+    /// `returned_callees`.
+    #[serde(default)]
+    pub return_edge_arms: Vec<Vec<(String, bool)>>,
     /// Subset of `modifies_params` whose write through the parameter is not
     /// known to be conditional — the MUST-write fact, and the output-param
     /// counterpart of `unconditional_frees_params`.
@@ -1326,6 +1343,20 @@ fn analyze_function(
         }
         if summary.returned_value_escapes {
             summary.escape_arms.push(arms.clone());
+        }
+        for (&idx, callees) in &summary.param_passthroughs {
+            for (callee, _) in callees {
+                summary
+                    .passthrough_arms
+                    .entry(idx)
+                    .or_default()
+                    .entry(callee.clone())
+                    .or_default()
+                    .push(arms.clone());
+            }
+        }
+        if !summary.returned_value_passthroughs.is_empty() || !summary.returned_callees.is_empty() {
+            summary.return_edge_arms.push(arms.clone());
         }
         credit_clears_params(&sweep.calls, source, &params, clearing_names, &mut summary);
         credit_credential_facts(func_node, &body, &sweep.calls, source, &mut summary);
@@ -3683,6 +3714,33 @@ impl FunctionSummary {
     }
 }
 
+impl FunctionSummary {
+    /// The arms of the definitions that forward parameter `idx` to
+    /// `callee`; unconstrained when the edge carries none.
+    fn edge_arms(&self, idx: usize, callee: &str) -> Vec<Vec<(String, bool)>> {
+        self.passthrough_arms
+            .get(&idx)
+            .and_then(|by_callee| by_callee.get(callee))
+            .cloned()
+            .unwrap_or_else(|| vec![Vec::new()])
+    }
+}
+
+/// Give fact `idx`, just credited through an edge whose definitions carry
+/// `edge`, those arms. `was_present` says the fact held before the credit:
+/// one that held with no arm entry already applies everywhere and stays so.
+fn credit_arms(
+    arms: &mut HashMap<usize, Vec<Vec<(String, bool)>>>,
+    idx: usize,
+    was_present: bool,
+    edge: Vec<Vec<(String, bool)>>,
+) {
+    if was_present && !arms.contains_key(&idx) {
+        return;
+    }
+    merge_arms(arms.entry(idx).or_default(), edge);
+}
+
 /// Whether a fact whose definitions carry `arms` applies on `line`: no
 /// entry (a later pass derived it), or some definition no arm constrains, or
 /// one whose assumptions `line` can compile under.
@@ -3814,6 +3872,13 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
     for (idx, arms) in summary.field_free_arms {
         merge_arms(existing.field_free_arms.entry(idx).or_default(), arms);
     }
+    for (idx, by_callee) in summary.passthrough_arms {
+        let slot = existing.passthrough_arms.entry(idx).or_default();
+        for (callee, arms) in by_callee {
+            merge_arms(slot.entry(callee).or_default(), arms);
+        }
+    }
+    merge_arms(&mut existing.return_edge_arms, summary.return_edge_arms);
     if summary.returned_value_escapes {
         if summary.escape_arms.is_empty() {
             // Set by a later pass: applies everywhere.
@@ -6017,6 +6082,13 @@ pub fn propagate_transitive_frees(
                     if !callee_frees {
                         continue;
                     }
+                    let edge = summary.edge_arms(*caller_idx, callee_name);
+                    credit_arms(
+                        &mut summary.free_arms,
+                        *caller_idx,
+                        summary.frees_params.contains(caller_idx),
+                        edge,
+                    );
                     if !summary.frees_params.contains(caller_idx) {
                         summary.frees_params.insert(*caller_idx);
                         if callee_guessed {
@@ -6310,11 +6382,16 @@ pub fn propagate_transitive_stores(
                     let callee = edge_target(macro_aliases, callee_name, |n| {
                         stores_snapshot.contains_key(n)
                     });
-                    if stores_snapshot
+                    if !stores_snapshot
                         .get(callee)
                         .is_some_and(|s| s.contains(callee_idx))
-                        && !summary.stores_params.contains(caller_idx)
                     {
+                        continue;
+                    }
+                    let present = summary.stores_params.contains(caller_idx);
+                    let edge = summary.edge_arms(*caller_idx, callee_name);
+                    credit_arms(&mut summary.store_arms, *caller_idx, present, edge);
+                    if !present {
                         summary.stores_params.insert(*caller_idx);
                         changed = true;
                     }
@@ -6631,6 +6708,9 @@ pub fn propagate_transitive_frees_param_fields(summaries: &mut HashMap<String, F
                     else {
                         continue;
                     };
+                    let present = summary.frees_param_fields.contains_key(caller_idx);
+                    let edge = summary.edge_arms(*caller_idx, callee_name);
+                    credit_arms(&mut summary.field_free_arms, *caller_idx, present, edge);
                     let entry = summary.frees_param_fields.entry(*caller_idx).or_default();
                     for field in callee_fields {
                         if entry.insert(field.clone()) {
@@ -6751,9 +6831,6 @@ pub fn propagate_returned_value_escapes(
             .map(|(n, s)| (n.clone(), s.returned_value_escapes))
             .collect();
         for summary in summaries.values_mut() {
-            if summary.returned_value_escapes {
-                continue;
-            }
             let through_callee = summary.returned_value_passthroughs.iter().any(|(c, idx)| {
                 stores
                     .get(edge_target(macro_aliases, c, |n| stores.contains_key(n)))
@@ -6763,9 +6840,23 @@ pub fn propagate_returned_value_escapes(
                 .returned_callees
                 .iter()
                 .any(|c| escapes.get(c).copied().unwrap_or(false));
-            if through_callee || through_return {
+            if !(through_callee || through_return) {
+                continue;
+            }
+            // The edges exist only in the definitions that carry them. An
+            // escape that already held with no arms applies everywhere.
+            let edge = if summary.return_edge_arms.is_empty() {
+                vec![Vec::new()]
+            } else {
+                summary.return_edge_arms.clone()
+            };
+            if !summary.returned_value_escapes {
                 summary.returned_value_escapes = true;
+                summary.escape_arms.clear();
+                merge_arms(&mut summary.escape_arms, edge);
                 changed = true;
+            } else if !summary.escape_arms.is_empty() {
+                merge_arms(&mut summary.escape_arms, edge);
             }
         }
         if !changed {
