@@ -50,6 +50,11 @@
 //! (`xstr`, `JOIN_AGAIN`) is compliant. Which parameters are operands comes
 //! from every branch's definition (`macro_expand::collect_macro_operand_params`),
 //! this file's and every scanned file's.
+//!
+//! A name known only as a function-like macro is not expanded unless the
+//! next token is `(` (C11 6.10.3p10), so `STR(min)` with a function-like
+//! `min` stringizes "min" either way and is not reported; `STR(min(1, 2))`
+//! is.
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
@@ -82,6 +87,12 @@ pub struct Pre05C {
     /// `ProjectContext::defined_macro_names`: every `#define` name in any
     /// scanned file.
     project_macro_names: RefCell<Arc<HashSet<String>>>,
+    /// `ProjectContext::function_macro_names`: every function-like
+    /// `#define` name in any scanned file.
+    project_function_macros: RefCell<Arc<HashSet<String>>>,
+    /// Names some scanned file defines object-like, as far as the project
+    /// tables say: `macro_constants` and `macro_aliases`.
+    project_object_macros: RefCell<HashSet<String>>,
 }
 
 impl Pre05C {
@@ -89,6 +100,8 @@ impl Pre05C {
         Self {
             project_operand_params: RefCell::new(Arc::new(HashMap::new())),
             project_macro_names: RefCell::new(Arc::new(HashSet::new())),
+            project_function_macros: RefCell::new(Arc::new(HashSet::new())),
+            project_object_macros: RefCell::new(HashSet::new()),
         }
     }
 }
@@ -119,6 +132,13 @@ impl CertRule for Pre05C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_operand_params.borrow_mut() = context.macro_operand_params.clone();
         *self.project_macro_names.borrow_mut() = context.defined_macro_names.clone();
+        *self.project_function_macros.borrow_mut() = context.function_macro_names.clone();
+        *self.project_object_macros.borrow_mut() = context
+            .macro_constants
+            .keys()
+            .chain(context.macro_aliases.keys())
+            .cloned()
+            .collect();
     }
 
     fn check(&self, _node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -155,6 +175,14 @@ impl CertRule for Pre05C {
                 if !is_macro {
                     continue;
                 }
+                // A function-like macro name not followed by `(` is not
+                // expanded, so # and ## see the same token either way.
+                let followed_by_call = arg.trim_start()[first.len()..]
+                    .trim_start()
+                    .starts_with('(');
+                if !followed_by_call && self.only_function_like(first, &directives) {
+                    continue;
+                }
                 let (line, column) = line_column(source, call.offset);
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
@@ -182,6 +210,25 @@ impl CertRule for Pre05C {
     }
 }
 
+impl Pre05C {
+    /// Whether every definition of `name` in sight is function-like: this
+    /// file's `#define`s of it, or, when it has none, the project's tables.
+    /// A name any definition makes object-like expands on its own.
+    fn only_function_like(&self, name: &str, directives: &[Directive]) -> bool {
+        if PREDEFINED_MACROS.contains(&name) || self.project_object_macros.borrow().contains(name) {
+            return false;
+        }
+        let mut local = directives
+            .iter()
+            .filter(|d| d.kind == DirectiveKind::Define && d.name == name)
+            .peekable();
+        if local.peek().is_some() {
+            return local.all(|d| d.function_like);
+        }
+        self.project_function_macros.borrow().contains(name)
+    }
+}
+
 /// One preprocessor directive (continuation lines joined) and, for a
 /// `#define`/`#undef`, the name it defines or removes.
 struct Directive {
@@ -190,6 +237,8 @@ struct Directive {
     name: String,
     /// The parameters of a function-like `#define`.
     params: Vec<String>,
+    /// A `#define` whose name is followed directly by `(`.
+    function_like: bool,
     /// Byte offset of the name in a `#define`/`#undef`.
     name_offset: usize,
 }
@@ -230,6 +279,7 @@ impl Directive {
             let mut name = String::new();
             let mut params = Vec::new();
             let mut name_offset = start;
+            let mut function_like = false;
             if kind != DirectiveKind::Other && after.starts_with(char::is_whitespace) {
                 let after_ws = after.trim_start();
                 name = after_ws
@@ -239,6 +289,7 @@ impl Directive {
                 name_offset = start + (text.len() - after_ws.len());
                 let tail = &after_ws[name.len()..];
                 if kind == DirectiveKind::Define {
+                    function_like = tail.starts_with('(');
                     if let Some(list) = tail.strip_prefix('(') {
                         if let Some(close) = list.find(')') {
                             params = list[..close]
@@ -255,6 +306,7 @@ impl Directive {
                 kind,
                 name,
                 params,
+                function_like,
                 name_offset,
             });
         }

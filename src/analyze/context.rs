@@ -163,7 +163,7 @@ pub struct ProjectContext {
     /// (incl. headers), in every preprocessor branch and including variadic
     /// and `#`/`##` macros: what says a call is a macro invocation, rather
     /// than the callee's spelling. See
-    /// [`crate::analyze::macro_expand::is_function_like_macro`].
+    /// [`crate::analyze::macro_expand::FunctionMacroNames`].
     #[serde(default)]
     pub function_macro_names: Arc<HashSet<String>>,
     /// Names of every object-like `#define` whose replacement list contains
