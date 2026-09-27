@@ -1,28 +1,24 @@
 /*
  * Rule: SIG35-C
  * Source: aurora-lint
- * Status: FAIL - a wrapper called twice registers a SIGSEGV handler that returns
+ * Status: FAIL - a wrapper's second registering call installs a SIGSEGV handler that returns
  */
 
 #include <signal.h>
 
 volatile sig_atomic_t faults;
 
-static void on_int(int sig) {
-    (void)sig;
-}
-
-static void on_segv(int sig) {
+static void on_fault(int sig) {
     (void)sig;
     faults++;
 }
 
-static void install(int sig, void (*handler)(int)) {
-    signal(sig, handler);
+static void install(void (*handler)(int)) {
+    signal(SIGINT, handler);
+    signal(SIGSEGV, handler);
 }
 
 int main(void) {
-    install(SIGINT, on_int);
-    install(SIGSEGV, on_segv);
+    install(on_fault);
     return 0;
 }

@@ -81,7 +81,9 @@ pub struct ProjectContext {
     pub packed_structs: Arc<HashSet<String>>,
     /// Functions some scanned file registers as a signal handler
     /// (`signal`/`sigaction`, directly or through its own wrapper) without
-    /// defining them there, and some scanned file defines. SIG34-C judges
+    /// defining them there, and some scanned file or header declares
+    /// (`known_functions`: a prototype or definition, and function-like macro
+    /// names too). SIG34-C acts only on a `function_definition`, and judges
     /// a definition of one as a handler in the file that defines it,
     /// unless that definition is `static` (then it is not the function the
     /// other file names).

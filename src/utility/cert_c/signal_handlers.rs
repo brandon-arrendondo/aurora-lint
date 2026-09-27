@@ -6,9 +6,9 @@ use crate::analyze::const_eval::collect_macro_aliases;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::collect_function_macros;
 use crate::utility::cert_c::ast_utils::{
-    declaration_declarator_for, file_scope_descendants_of_kinds,
+    declaration_declarator_for, declares_static, file_scope_descendants_of_kinds,
     function_names_in_error_declaration, get_identifier_from_declarator, get_node_text,
-    resolve_identifier_binding, IdentifierBinding,
+    resolve_identifier_binding, static_macro_names_in_scope, IdentifierBinding,
 };
 use crate::utility::cert_c::fn_ptr_bindings::file_scope_function_pointer_bindings;
 use lang_parsing_substrate::query;
@@ -263,6 +263,11 @@ struct Collector<'a, 's, 'p> {
     /// Every registering call a wrapper makes on its parameters: a wrapper
     /// may register the same handler for several signals.
     forwarders: HashMap<String, Vec<Forwarder>>,
+    /// Wrappers some call in this file invokes.
+    called_forwarders: HashSet<String>,
+    /// Macro names that expand to `static`, for telling a wrapper only
+    /// this file can call.
+    static_macros: HashSet<String>,
     out: Vec<HandlerRegistration>,
     caller_supplied: Vec<CallerSuppliedSite>,
 }
@@ -328,6 +333,11 @@ impl<'a, 's, 'p> Collector<'a, 's, 'p> {
             fn_ptrs: file_scope_function_pointer_bindings(root, source),
             aliases,
             forwarders: HashMap::new(),
+            called_forwarders: HashSet::new(),
+            static_macros: static_macro_names_in_scope(
+                source,
+                project.map_or(&HashSet::new(), |p| &p.static_macro_names),
+            ),
             out: Vec::new(),
             caller_supplied: Vec::new(),
         }
@@ -346,6 +356,15 @@ impl<'a, 's, 'p> Collector<'a, 's, 'p> {
             }
             if count(&self.forwarders) == before {
                 break;
+            }
+        }
+        for call in &calls {
+            let callee = call
+                .child_by_field_name("function")
+                .filter(|f| f.kind() == "identifier")
+                .map(|f| get_node_text(&f, self.source).to_string());
+            if let Some(callee) = callee.filter(|c| self.forwarders.contains_key(c)) {
+                self.called_forwarders.insert(callee);
             }
         }
         for call in &calls {
@@ -532,7 +551,7 @@ impl<'a, 's, 'p> Collector<'a, 's, 'p> {
                         );
                     }
                 }
-                HandlerRef::Parameter(_) if !forwarders_only => {
+                HandlerRef::Parameter(_) if !forwarders_only && !self.callers_all_here(call) => {
                     self.caller_supplied.push(CallerSuppliedSite {
                         kind: kind_of(api, siginfo),
                         mask: mask.clone(),
@@ -563,6 +582,23 @@ impl<'a, 's, 'p> Collector<'a, 's, 'p> {
                 _ => {}
             }
         }
+    }
+
+    /// Whether every caller of the function enclosing `call` is in this
+    /// file, and so already resolved: a `static` wrapper something here
+    /// calls. Its registering call then installs only what those callers
+    /// pass (nothing, for `set(SIGPIPE, SIG_IGN)`), not a caller-supplied
+    /// handler.
+    fn callers_all_here(&self, call: &Node<'a>) -> bool {
+        let Some(func) = query::nearest_ancestor_of_kind(*call, "function_definition") else {
+            return false;
+        };
+        let Some(d) = func.child_by_field_name("declarator") else {
+            return false;
+        };
+        self.called_forwarders
+            .contains(&get_identifier_from_declarator(&d, self.source))
+            && declares_static(&func, self.source, &self.static_macros)
     }
 
     fn record_forwarder(&mut self, call: &Node<'a>, fwd: Forwarder) {
@@ -613,6 +649,11 @@ impl<'a, 's, 'p> Collector<'a, 's, 'p> {
 
     /// What a handler argument names, by declaration.
     fn resolve_handler(&self, arg: &Node<'a>) -> HandlerRef {
+        self.resolve_handler_at(arg, 0)
+    }
+
+    /// [`Self::resolve_handler`], `depth` local pointers deep.
+    fn resolve_handler_at(&self, arg: &Node<'a>, depth: usize) -> HandlerRef {
         let Some(ident) = strip_to_identifier(arg) else {
             return HandlerRef::Nothing;
         };
@@ -626,7 +667,9 @@ impl<'a, 's, 'p> Collector<'a, 's, 'p> {
         match resolve_identifier_binding(&ident, name, self.source) {
             // A local is a saved disposition being put back, unless it is a
             // function pointer this function binds to a function.
-            Some(IdentifierBinding::Local(decl)) => self.local_fn_ptr_targets(&ident, &decl, name),
+            Some(IdentifierBinding::Local(decl)) => {
+                self.local_fn_ptr_targets(&ident, &decl, name, depth)
+            }
             Some(IdentifierBinding::Parameter(_)) => match self.parameter_index(&ident) {
                 Some(i) => HandlerRef::Parameter(i),
                 None => HandlerRef::Nothing,
@@ -665,10 +708,25 @@ impl<'a, 's, 'p> Collector<'a, 's, 'p> {
 
     /// The functions a local function pointer holds where `use_site` reads
     /// it: its initializer and every plain assignment to it earlier in the
-    /// function, each counted when it names a function (every binding, not
-    /// the last: ADR-0010 arms). `void (*old)(int) = signal(...)` binds
-    /// none, so a restore still registers nothing.
-    fn local_fn_ptr_targets(&self, use_site: &Node<'a>, decl: &Node<'a>, name: &str) -> HandlerRef {
+    /// function, each counted when it resolves to a function (every binding,
+    /// not the last: ADR-0010 arms). An assignment counts only when its left
+    /// side is this same declaration, not a shadow of the name, and its value
+    /// is resolved by declaration too, so `void (*old)(int) = signal(...)`
+    /// binds none and a pointer copied from it (`h = old`) binds none either:
+    /// a restore still registers nothing.
+    fn local_fn_ptr_targets(
+        &self,
+        use_site: &Node<'a>,
+        decl: &Node<'a>,
+        name: &str,
+        depth: usize,
+    ) -> HandlerRef {
+        // Pointer copies of pointer copies: bounded, since `a = b; b = a;`
+        // is legal C.
+        const MAX_DEPTH: usize = 4;
+        if depth >= MAX_DEPTH {
+            return HandlerRef::Nothing;
+        }
         let Some(d) = declaration_declarator_for(decl, name, self.source) else {
             return HandlerRef::Nothing;
         };
@@ -692,21 +750,20 @@ impl<'a, 's, 'p> Collector<'a, 's, 'p> {
                 ) else {
                     continue;
                 };
-                if left.kind() == "identifier" && get_node_text(&left, self.source) == name {
+                let same_object = left.kind() == "identifier"
+                    && get_node_text(&left, self.source) == name
+                    && matches!(
+                        resolve_identifier_binding(&left, name, self.source),
+                        Some(IdentifierBinding::Local(l)) if l.id() == decl.id()
+                    );
+                if same_object {
                     values.push(right);
                 }
             }
         }
         let mut targets = Vec::new();
         for v in values {
-            let Some(id) = strip_to_identifier(&v) else {
-                continue;
-            };
-            let target = get_node_text(&id, self.source);
-            if target == name {
-                continue;
-            }
-            if let HandlerRef::Functions(names) = self.function_named(target) {
+            if let HandlerRef::Functions(names) = self.resolve_handler_at(&v, depth + 1) {
                 for n in names {
                     if !targets.contains(&n) {
                         targets.push(n);
@@ -1448,6 +1505,46 @@ mod tests {
                 ("on_term".into(), Some("SIGINT".into()))
             ]
         );
+    }
+
+    #[test]
+    fn a_static_wrapper_called_here_installs_only_what_its_callers_pass() {
+        let src = "#include <signal.h>\n\
+                   static void set(int s, void (*h)(int)) { signal(s, h); }\n\
+                   int main(void) { set(SIGPIPE, SIG_IGN); return 0; }\n";
+        let r = collect(src);
+        assert!(r.registrations.is_empty() && r.caller_supplied.is_empty());
+    }
+
+    #[test]
+    fn an_external_wrapper_is_a_caller_supplied_site_even_with_a_caller_here() {
+        let src = "#include <signal.h>\n\
+                   void set(int s, void (*h)(int)) { signal(s, h); }\n\
+                   int main(void) { set(SIGPIPE, SIG_IGN); return 0; }\n";
+        assert_eq!(collect(src).caller_supplied.len(), 1);
+    }
+
+    #[test]
+    fn a_local_pointer_shadowing_a_function_holds_a_saved_disposition() {
+        let src = "#include <signal.h>\n#include <stdio.h>\n\
+                   static void cb(int s) { printf(\"%d\", s); }\n\
+                   void f(void) {\n\
+                       void (*cb)(int) = signal(SIGINT, SIG_IGN);\n\
+                       void (*h)(int) = cb;\n\
+                       signal(SIGINT, h);\n\
+                   }\n";
+        assert!(handlers(src).is_empty());
+    }
+
+    #[test]
+    fn an_assignment_to_a_shadowing_local_does_not_bind_the_outer_pointer() {
+        let src = "#include <signal.h>\nvoid on_int(int s) {}\n\
+                   void f(void) {\n\
+                       void (*h)(int) = signal(SIGINT, SIG_IGN);\n\
+                       { void (*h)(int); h = on_int; (void)h; }\n\
+                       signal(SIGINT, h);\n\
+                   }\n";
+        assert!(handlers(src).is_empty());
     }
 
     #[test]
