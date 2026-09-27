@@ -1222,7 +1222,13 @@ project per rule per file was once the dominant cost of a whole scan (the
 Juliet wall-clock regression and its follow-up fix).
 A "project table plus this file's own definitions" overlay is fine when the
 project table is small (`merged_macro_aliases`), and should hold a handle
-plus a separate file-local map when it is not. `callers` is the inverted
+plus a separate file-local map when it is not. `VisibleTypes` (`context.rs`) is that shape for
+`struct_field_types` and `typedef_types`: built once per file in
+`build_file_analysis`, handed to every rule through
+`CertRule::set_visible_types` (called after `set_project_context`, and by
+the fixture harness too), and sharing the project handles when the file
+redefines nothing. A file's own definitions win; a tag or typedef it only
+receives through a header still resolves project-wide, last file wins. `callers` is the inverted
 `call_graph`, computed once — do not re-invert it per file.
 
 **`function_summaries` is a `ScopedTable`, not a bare map.** A name several
@@ -1252,7 +1258,9 @@ macro-synthesized ones).
 | `scoped_names_by_file` | `HashMap<String, Arc<HashSet<String>>>` | Canonical file path → the names that file defines `static` while another scanned file does too. It is what `as_seen_from` scopes by; empty when no name is multiply defined. |
 | `macro_constants` | `HashMap<String, i64>` | `#define` constants collected across all scanned files. |
 | `macro_aliases` | `HashMap<String, String>` | `#define ALIAS identifier` function-name aliases (e.g. `SYSTEM` → `system`). |
-| `struct_field_types` | `HashMap<String, HashMap<String, String>>` | `struct_name -> field_name -> type_text`, for resolving `field_expression` types cross-file. |
+| `struct_field_types` | `HashMap<String, HashMap<String, String>>` | `struct_name -> field_name -> type_text`, for resolving `field_expression` types cross-file. Merged by tag, last file wins, so a rule never reads it (or `typedef_types`) from `set_project_context`: it overrides `CertRule::set_visible_types` and gets the file's `VisibleTypes` (see above). |
+| `noreturn_functions` | `ByNoreturnTrust<Arc<HashSet<String>>>` | Names of functions that never return, one set per noreturn-trust combination (`get(&settings)`). A `.c` file's own `static` helpers are left out (another file's same-named static is a different function), except for a `.c` file another `.c` file `#include`s. A rule that ends paths at noreturn calls takes its set for the checked file from `noreturn::noreturn_names_for_file`, which drops the file's own statics from this set and adds the file's own noreturn names; MEM30-C and MEM31-C do. |
+| `abort_check_noreturn_functions` | `ByNoreturnTrust<Arc<HashSet<String>>>` | `noreturn_functions` plus every `.c` file's own static noreturn names: the input `abort_check_macros` is built from, at both of its build sites (prescan and the rebuild after `-I` header resolution). That table is project-wide and keyed by macro name, so a file-local `REQUIRE(x)` calling its file's `static die()` must still qualify. Not for rules to end paths with. |
 | `struct_typedef_aliases` | `HashMap<String, String>` | `Alias -> Tag` for every `typedef struct Tag Alias;`. `struct_field_types` files a struct's fields under the TAG, and a bodyless typedef in a different file (sqlite's `typedef struct sqlite3_value Mem;`) leaves the alias unresolvable — a member reached as `pOut->z` on a `Mem *` then has no type. Deliberately NOT folded into `struct_field_types`: four rules read that map, so filing the alias there would move their finding sets; a consumer opts in by resolving through this one, which so far only ARR36-C does. |
 | `packed_structs` | `HashSet<String>` | Struct/typedef names declared `__attribute__((packed))`, directly or via a macro. |
 | `function_pointer_typedef_names` | `HashSet<String>` | Typedef names whose declarator carries a `function_declarator` (sqlite's `RecordCompare`). `typedef_types` deliberately skips these, so a "is this parameter's type a callable?" question (DCL31-C) reads this set after the chain walker terminates. |

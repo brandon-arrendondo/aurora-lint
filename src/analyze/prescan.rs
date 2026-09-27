@@ -764,10 +764,11 @@ fn prescan_file_list(
         included_c_files.extend(r.included_c_files);
         global_constants.extend(r.global_constants);
         // One object per name: these are the non-static pointer globals, so
-        // a name defined or assigned in several files is one variable, and
-        // its states are joined as converging paths would be. Keeping the
-        // last file's alone let a file that only ever assigns NULL hide
-        // another file's allocation, or the reverse.
+        // a name defined in several files is one variable, and its states
+        // are joined as converging paths would be. Keeping the last file's
+        // alone let one definition's NULL hide another's allocation, or the
+        // reverse. A file that only declares the global `extern` and
+        // assigns it contributes nothing here.
         for (name, state) in r.global_var_null_states {
             let entry = global_var_null_states
                 .entry(name)
