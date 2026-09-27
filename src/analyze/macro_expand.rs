@@ -25,6 +25,7 @@
 //     free" macros that free AND null their argument (`Curl_safefree`).
 
 use super::dead_regions::DeadRegions;
+use crate::utility::cert_c::pp_tokens::{parse_define_directive, PpKind};
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -686,7 +687,10 @@ pub fn collect_macro_operand_params(source: &str, out: &mut HashMap<String, Oper
     while i < lines.len() {
         let (logical, next) = join_continuation(&lines, i);
         i = next;
-        let Some((name, params, body)) = split_function_like_define(&logical) else {
+        let Some(define) = parse_define_directive(&logical) else {
+            continue;
+        };
+        let Some(params) = &define.params else {
             continue;
         };
         let variadic_at = params.iter().position(|p| p.ends_with("..."));
@@ -698,25 +702,33 @@ pub fn collect_macro_operand_params(source: &str, out: &mut HashMap<String, Oper
                 .iter()
                 .position(|p| p.trim_end_matches("...").trim() == token)
         };
-        let (mut operands, plain, comma_pasted) = operand_tokens(&strip_comments(&body));
-        let mut plain: HashSet<usize> = plain
-            .iter()
-            .filter_map(|token| param_index(token))
-            .collect();
-        // `, ## __VA_ARGS__` (or `, ## args` for `args...`) is GNU's comma
-        // swallow, which still expands the arguments; any other `, ## x`
-        // pastes.
-        for token in comma_pasted {
-            match param_index(&token) {
-                Some(index) if Some(index) == variadic_at => {
-                    plain.insert(index);
-                }
-                _ => operands.push(token),
+        let tokens = define.tokens();
+        let mut operands = Vec::new();
+        let mut plain = HashSet::new();
+        for (k, token) in tokens.iter().enumerate() {
+            if token.kind != PpKind::Identifier {
+                continue;
+            }
+            let Some(index) = param_index(token.text) else {
+                continue;
+            };
+            // `, ## __VA_ARGS__` (or `, ## args` for `args...`) is GNU's
+            // comma swallow, which still expands the arguments; any other
+            // `, ## x` pastes.
+            let comma_swallow = k >= 2
+                && tokens[k - 1].is("##")
+                && tokens[k - 2].is(",")
+                && !tokens.get(k + 1).is_some_and(|t| t.is("##"));
+            if comma_swallow && Some(index) == variadic_at {
+                plain.insert(index);
+            } else if token.stringized || token.pasted {
+                operands.push(index);
+            } else {
+                plain.insert(index);
             }
         }
         let indices: Vec<usize> = operands
-            .iter()
-            .filter_map(|token| param_index(token))
+            .into_iter()
             .filter(|index| !plain.contains(index))
             .collect();
         if indices.is_empty() {
@@ -724,7 +736,7 @@ pub fn collect_macro_operand_params(source: &str, out: &mut HashMap<String, Oper
         }
         merge_operand_params(
             out,
-            name,
+            define.name.to_string(),
             OperandParams {
                 indices,
                 variadic_at,
@@ -749,105 +761,6 @@ pub fn merge_operand_params(
         }
     }
     entry.indices.sort_unstable();
-}
-
-/// `#define NAME(params) body` split into its name, parameter spellings
-/// (`...` and `name...` kept as written) and body; `None` for anything else.
-fn split_function_like_define(line: &str) -> Option<(String, Vec<String>, String)> {
-    let s = line.trim_start().strip_prefix('#')?;
-    let s = s.trim_start().strip_prefix("define")?;
-    if !s.starts_with(|c: char| c.is_whitespace()) {
-        return None;
-    }
-    let s = s.trim_start();
-    let name_len = s.find(|c: char| !is_ident_char(c)).unwrap_or(s.len());
-    if name_len == 0 || !s.starts_with(is_ident_start) {
-        return None;
-    }
-    let (name, rest) = s.split_at(name_len);
-    let rest = rest.strip_prefix('(')?;
-    let close = rest.find(')')?;
-    let params = rest[..close]
-        .split(',')
-        .map(|p| p.trim().to_string())
-        .filter(|p| !p.is_empty())
-        .collect();
-    Some((name.to_string(), params, rest[close + 1..].to_string()))
-}
-
-/// The identifiers in a replacement list that are operands of `#` or `##`,
-/// those that appear with neither next to them, and those pasted onto a
-/// comma (`, ## x`), skipping string and character literals. The caller
-/// decides the last group: GNU's `, ## __VA_ARGS__` only drops the comma
-/// when the variable arguments are empty, and they are still
-/// macro-expanded, but a comma pasted to any other parameter is a real
-/// paste.
-fn operand_tokens(body: &str) -> (Vec<String>, Vec<String>, Vec<String>) {
-    #[derive(PartialEq)]
-    enum Tok {
-        Ident(String),
-        Hash,
-        HashHash,
-        Comma,
-        Other,
-    }
-    let chars: Vec<char> = body.chars().collect();
-    let mut tokens = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if c.is_whitespace() {
-            i += 1;
-        } else if c == '"' || c == '\'' {
-            i += 1;
-            while i < chars.len() && chars[i] != c {
-                if chars[i] == '\\' {
-                    i += 1;
-                }
-                i += 1;
-            }
-            i += 1;
-            tokens.push(Tok::Other);
-        } else if c == '#' {
-            if chars.get(i + 1) == Some(&'#') {
-                tokens.push(Tok::HashHash);
-                i += 2;
-            } else {
-                tokens.push(Tok::Hash);
-                i += 1;
-            }
-        } else if is_ident_start(c) {
-            let start = i;
-            while i < chars.len() && is_ident_char(chars[i]) {
-                i += 1;
-            }
-            tokens.push(Tok::Ident(chars[start..i].iter().collect()));
-        } else {
-            i += 1;
-            tokens.push(if c == ',' { Tok::Comma } else { Tok::Other });
-        }
-    }
-    let mut operands = Vec::new();
-    let mut plain = Vec::new();
-    let mut comma_pasted = Vec::new();
-    for (k, tok) in tokens.iter().enumerate() {
-        let Tok::Ident(name) = tok else { continue };
-        let before = k.checked_sub(1).map(|p| &tokens[p]);
-        let after = tokens.get(k + 1);
-        let comma_swallow = before == Some(&Tok::HashHash)
-            && k.checked_sub(2).map(|p| &tokens[p]) == Some(&Tok::Comma)
-            && after != Some(&Tok::HashHash);
-        if comma_swallow {
-            comma_pasted.push(name.clone());
-        } else if matches!(before, Some(Tok::Hash) | Some(Tok::HashHash))
-            || after == Some(&Tok::HashHash)
-        {
-            operands.push(name.clone());
-        } else {
-            plain.push(name.clone());
-        }
-    }
-    (operands, plain, comma_pasted)
 }
 
 /// The function-like macro names in scope for one file: every scanned
@@ -2695,6 +2608,8 @@ mod tests {
                    #define GNU(fmt, ...) g(fmt, ##__VA_ARGS__)\n\
                    #define GNU_NAMED(fmt, args...) g(#fmt, ## args)\n\
                    #define COMMA_FIXED(a, b) f(a, ## b)\n\
+                   #define HEXED(x10) (0x10 + #x10)\n\
+                   #define URL(p) f(\"http://host\", #p)\n\
                    #ifdef B\n\
                    #define ARM(call) ((call) < 0)\n\
                    #else\n\
@@ -2721,6 +2636,10 @@ mod tests {
         assert_eq!(get("GNU_NAMED"), Some((vec![0], Some(1))));
         // ...but only before the variadic parameter.
         assert_eq!(get("COMMA_FIXED"), Some((vec![1], None)));
+        // A number's suffix is not a parameter, and `//` in a string is
+        // not a comment.
+        assert_eq!(get("HEXED"), Some((vec![0], None)));
+        assert_eq!(get("URL"), Some((vec![0], None)));
         // Decided per definition: the pasting branch alone makes it one.
         assert_eq!(get("ARM"), Some((vec![0], None)));
         let args = out["ARGS"].clone();
