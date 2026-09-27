@@ -423,9 +423,18 @@ impl Mem06C {
                             || (i == 0 && is_data_fill(&args, source, &callee))
                     }
                 };
-                args.iter()
-                    .enumerate()
-                    .any(|(i, a)| writes(i) && object_of(a, source).is_some_and(|o| holds(o, c)))
+                // `getline(&line, ...)` writes into the block `line` points at.
+                let pointee = |i: usize, a: &Node| {
+                    !summaries.contains_key(&callee)
+                        && call_roles::writes_through_pointee_of_arg(&callee, i)
+                        && address_of(a)
+                            .and_then(|p| object_key(&p, source))
+                            .is_some_and(|o| holds(o, c))
+                };
+                args.iter().enumerate().any(|(i, a)| {
+                    (writes(i) && object_of(a, source).is_some_and(|o| holds(o, c)))
+                        || pointee(i, a)
+                })
             })
             .copied();
         let write_stores = query::find_descendants_of_kind(*body, "assignment_expression")
@@ -671,9 +680,21 @@ fn pointer_base<'a>(expr: &Node<'a>) -> Option<Node<'a>> {
                 }
                 n = strip_arg_casts(&n.child_by_field_name("left")?);
             }
+            // `*p++ = c` writes through `p`.
+            "update_expression" => n = strip_arg_casts(&n.child_by_field_name("argument")?),
             _ => return None,
         }
     }
+}
+
+/// The variable whose address `expr` takes: `line` in `&line`.
+fn address_of<'a>(expr: &Node<'a>) -> Option<Node<'a>> {
+    let n = strip_arg_casts(expr);
+    if n.kind() != "pointer_expression" || n.child(0)?.kind() != "&" {
+        return None;
+    }
+    let arg = strip_arg_casts(&n.child_by_field_name("argument")?);
+    (arg.kind() == "identifier").then_some(arg)
 }
 
 /// The pointer a store writes through: `p` in `p[i] = ...`, `*p = ...` and

@@ -159,7 +159,57 @@ const WRITES_THROUGH: &[(&str, usize, bool)] = &[
     ("sscanf", 2, true),
     ("vfscanf", 2, true),
     ("vsscanf", 2, true),
+    // Annex K and the MSVC bounded forms keep the destination first.
+    ("strcpy_s", 0, false),
+    ("strncpy_s", 0, false),
+    ("strcat_s", 0, false),
+    ("strncat_s", 0, false),
+    ("wcscpy_s", 0, false),
+    ("wcsncpy_s", 0, false),
+    ("wcscat_s", 0, false),
+    ("wcsncat_s", 0, false),
+    ("memcpy_s", 0, false),
+    ("memmove_s", 0, false),
+    ("wmemcpy_s", 0, false),
+    ("wmemmove_s", 0, false),
+    ("sprintf_s", 0, false),
+    ("snprintf_s", 0, false),
+    ("vsprintf_s", 0, false),
+    ("vsnprintf_s", 0, false),
+    ("swprintf_s", 0, false),
+    ("gets_s", 0, false),
+    ("_snprintf", 0, false),
+    ("_snwprintf", 0, false),
+    ("_vsnprintf", 0, false),
+    ("lstrcpy", 0, false),
+    ("lstrcpyA", 0, false),
+    ("lstrcpyW", 0, false),
+    ("lstrcpyn", 0, false),
+    ("lstrcpynA", 0, false),
+    ("lstrcpynW", 0, false),
+    ("lstrcat", 0, false),
+    ("lstrcatA", 0, false),
+    ("lstrcatW", 0, false),
+    ("ReadFile", 1, false),
+    ("scanf_s", 1, true),
+    ("fscanf_s", 2, true),
+    ("sscanf_s", 2, true),
 ];
+
+/// Library functions that write data into the block their argument points
+/// AT, the argument being the address of the caller's pointer:
+/// `getline(&line, &n, fp)` fills `*(&line)`.
+const WRITES_THROUGH_POINTEE: &[(&str, usize)] = &[("getline", 0), ("getdelim", 0)];
+
+/// Whether library function `name` writes data through the pointer its
+/// argument `idx` points at: `getline`'s `&line`. The argument is the
+/// address of the pointer, not the pointer, so a caller resolves `&line`
+/// to `line` before asking what it holds.
+pub fn writes_through_pointee_of_arg(name: &str, idx: usize) -> bool {
+    WRITES_THROUGH_POINTEE
+        .iter()
+        .any(|&(n, i)| n == name && i == idx)
+}
 
 /// Whether library function `name` writes data through its argument `idx`
 /// (`strcpy`'s destination, `fgets`'s buffer, a `sscanf` output). A fill
