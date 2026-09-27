@@ -301,15 +301,18 @@ impl<'a> Ctx<'a> {
                 && dereferences_applied(ident, self.source) >= levels)
     }
 
-    /// Whether a member access reads a member declared `volatile` (with as
-    /// many dereferences applied as its declarator has pointers). A volatile
+    /// Whether a member access reads a member declared `volatile`. Only a
+    /// non-pointer member counts: the struct table records a pointer member's
+    /// type with one ` *` however deep it goes (`volatile u32 **apWiData`),
+    /// so the dereferences needed to reach the volatile object are unknown
+    /// and `p->apWiData[i]` (a pointer read) must not be reported. A volatile
     /// base object is caught at its identifier by [`Self::is_volatile`].
     fn is_volatile_member(&self, member: &Node<'a>) -> bool {
         self.expression_type(member).is_some_and(|ty| {
-            let levels = ty.matches('*').count();
-            ty.split(|c: char| !c.is_alphanumeric() && c != '_')
-                .any(|w| w == "volatile")
-                && dereferences_applied(member, self.source) >= levels
+            !ty.contains('*')
+                && ty
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|w| w == "volatile")
         })
     }
 
