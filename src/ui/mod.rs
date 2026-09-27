@@ -2174,6 +2174,11 @@ impl TerminalUI {
                 rule.set_project_context(&context);
             }
         }
+        let needs_vra = self.manifest.enabled_rules().any(|(rule_id, _)| {
+            self.registry
+                .get_rule(rule_id)
+                .is_some_and(|r| r.needs_vra())
+        });
         let total_files = c_files.len();
         let mut parser = CParser::new()?;
 
@@ -2198,15 +2203,17 @@ impl TerminalUI {
             }
 
             if let Ok((tree, source)) = parser.parse_file(file_path) {
-                // The struct and typedef tables this file sees, as a scan
-                // hands them over in FileAnalysis::apply_to.
-                let visible = crate::analyze::context::VisibleTypes::for_file(
-                    &context,
+                // The per-file state a CLI scan hands every rule: CFGs, value
+                // ranges when an enabled rule asks for them, and the struct and
+                // typedef tables this file sees.
+                let analysis = crate::analyze::build_file_analysis(
                     &tree.root_node(),
                     &source,
+                    &context,
+                    needs_vra,
                 );
                 for rule in self.registry.all_rules() {
-                    rule.set_visible_types(&visible);
+                    analysis.apply_to(rule.as_ref());
                 }
                 self.scan_parsed_file(terminal, file_path, &tree.root_node(), &source)?;
             }
