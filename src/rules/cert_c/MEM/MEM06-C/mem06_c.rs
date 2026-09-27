@@ -18,9 +18,10 @@
 //! variable holding it reaches a sink, and it is protected when
 //! - a page lock (`mlock`, `VirtualLock`, `sodium_mlock`, or a project
 //!   function whose summary locks that argument) of a holder runs on every
-//!   path to the first store into the buffer, or to the sink if nothing is
+//!   path to each store into the buffer, or to the sink if nothing is
 //!   stored first; a lock after the secret was written leaves the pages it
-//!   sat in unprotected;
+//!   sat in unprotected, and a lock in one arm does not cover a store in
+//!   another;
 //! - the allocator hands the block back locked (`sodium_malloc`, a project
 //!   source whose summary says `returns_locked`); or
 //! - process-wide protection (a zero `RLIMIT_CORE`, `mlockall`) runs on
@@ -196,20 +197,24 @@ impl Mem06C {
             if origin.locked {
                 continue;
             }
-            let bound = if origin.initialized {
-                origin.node
+            let bounds = if origin.initialized {
+                vec![origin.node]
             } else {
-                self.first_store(&calls, &body, &origin, &copies, first_sink, source)
+                self.stores(&calls, &body, &origin, &copies, first_sink, source)
             };
-            let locked = calls.iter().any(|call| {
-                call.start_byte() > origin.at
-                    && self.is_lock_of(call, source, |o| holds(o, call))
-                    && precedes(call, &bound)
+            // Every store must be covered: a lock on one arm does not protect
+            // the secret another arm writes unlocked.
+            let locked = bounds.iter().all(|bound| {
+                calls.iter().any(|call| {
+                    call.start_byte() > origin.at
+                        && self.is_lock_of(call, source, |o| holds(o, call))
+                        && precedes(call, bound)
+                })
             });
-            if locked
-                || self.protected_locally(&calls, &bound, source, &precedes)
-                || self.protected_by_program(func, source, program)
-            {
+            let protected_here = bounds
+                .iter()
+                .all(|bound| self.protected_locally(&calls, bound, source, &precedes));
+            if locked || protected_here || self.protected_by_program(func, source, program) {
                 continue;
             }
 
@@ -384,15 +389,15 @@ impl Mem06C {
         out
     }
 
-    /// The first store into the block after its allocation, or the sink when
-    /// nothing is stored first. A store writes data through a holder: a
+    /// Every store into the block between its allocation and the sink, or
+    /// just the sink when nothing is stored first. A store writes data through a holder: a
     /// library call that writes through that argument (`strcpy`'s
     /// destination, `fgets`'s buffer, a non-zero `memset` fill), a project
     /// function whose summary writes through that parameter, or an
     /// assignment through one (`p[i] = c`, `*(p + i) = c`). A call that only
     /// takes the address (`madvise`, a `%p` log line, a validator) stores
     /// nothing, and neither does a lock or a zeroing clear.
-    fn first_store<'a>(
+    fn stores<'a>(
         &self,
         calls: &[Node<'a>],
         body: &Node<'a>,
@@ -400,10 +405,10 @@ impl Mem06C {
         copies: &[Copy],
         sink: &Node<'a>,
         source: &str,
-    ) -> Node<'a> {
+    ) -> Vec<Node<'a>> {
         let holds = |object: usize, site: &Node| holders_at(origin, copies, site).contains(&object);
         let summaries = self.function_summaries.borrow();
-        let call_store = calls
+        let call_stores = calls
             .iter()
             .filter(|c| c.start_byte() > origin.at && c.start_byte() < sink.start_byte())
             .filter(|c| {
@@ -422,9 +427,8 @@ impl Mem06C {
                     .enumerate()
                     .any(|(i, a)| writes(i) && object_of(a, source).is_some_and(|o| holds(o, c)))
             })
-            .min_by_key(|c| c.start_byte())
             .copied();
-        let write_store = query::find_descendants_of_kind(*body, "assignment_expression")
+        let write_stores = query::find_descendants_of_kind(*body, "assignment_expression")
             .into_iter()
             .filter(|a| a.start_byte() > origin.at && a.start_byte() < sink.start_byte())
             .filter(|a| {
@@ -432,13 +436,12 @@ impl Mem06C {
                     .and_then(|l| written_through(&l))
                     .and_then(|b| object_of(&b, source))
                     .is_some_and(|o| holds(o, a))
-            })
-            .min_by_key(|a| a.start_byte());
-        [call_store, write_store]
-            .into_iter()
-            .flatten()
-            .min_by_key(|n| n.start_byte())
-            .unwrap_or(*sink)
+            });
+        let mut stores: Vec<Node<'a>> = call_stores.chain(write_stores).collect();
+        if stores.is_empty() {
+            stores.push(*sink);
+        }
+        stores
     }
 
     /// Process-wide protection in this function on every path to `bound`:
