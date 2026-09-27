@@ -11,6 +11,15 @@ use crate::analyze::noreturn::ByNoreturnTrust;
 use crate::analyze::preproc_arms::PreprocArms;
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
+use std::borrow::Cow;
+
+/// Where a call sits: its source and 1-based line, which decide the `#if`
+/// arms its callee's definitions must share with it.
+type Site<'s> = (&'s str, usize);
+
+fn site_of<'s>(node: &Node, source: &'s str) -> Site<'s> {
+    (source, node.start_position().row + 1)
+}
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::declarator_utils;
@@ -787,14 +796,23 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// an object-like alias of `free`, which the fixed-list
     /// `macro_frees_param_indices` cannot see. Empty when `func_name` is
     /// not a function-like macro at all.
-    fn macro_freed_param_indices(&self, func_name: &str) -> Vec<usize> {
+    fn macro_freed_param_indices(&self, func_name: &str, site: Site) -> Vec<usize> {
         if self.function_macros.is_empty() {
             return Vec::new();
         }
         macro_expand::macro_param_indices_released_by(self.function_macros, func_name, |callee| {
             let resolved = const_eval::resolve_macro_alias(self.macro_aliases, callee);
-            resolved == "free" || self.is_named_deallocator(resolved)
+            resolved == "free" || self.is_named_deallocator(resolved, site)
         })
+    }
+
+    /// `func_name`'s summary as the call at `site` sees it: facts from a
+    /// definition in an `#if` arm that call cannot compile with are gone
+    /// (`FunctionSummary::at`).
+    fn summary_at(&self, func_name: &str, site: Site) -> Option<Cow<'a, FunctionSummary>> {
+        self.function_summaries
+            .get(func_name)
+            .map(|summary| summary.at(site.0, site.1))
     }
 
     fn analyze_function(
@@ -959,10 +977,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     })
             }
             "call_expression" => {
-                let Some(summary) = n
-                    .child_by_field_name("function")
-                    .and_then(|f| self.function_summaries.get(&self.callee_name(&f, source)))
-                else {
+                let Some(summary) = n.child_by_field_name("function").and_then(|f| {
+                    self.summary_at(&self.callee_name(&f, source), site_of(&n, source))
+                }) else {
                     return false;
                 };
                 Self::call_args(n)
@@ -987,9 +1004,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 return false;
             };
             let callee = self.callee_name(&function, source);
-            let summary = self.function_summaries.get(&callee);
-            let by_name = callee == "free" || self.is_named_deallocator(&callee);
-            let by_macro = self.macro_freed_param_indices(&callee);
+            let site = site_of(&n, source);
+            let summary = self.summary_at(&callee, site);
+            let by_name = callee == "free" || self.is_named_deallocator(&callee, site);
+            let by_macro = self.macro_freed_param_indices(&callee, site);
             Self::call_args(n).enumerate().any(|(idx, arg)| {
                 let arg = peel_casts_and_parens(arg);
                 arg.kind() == "subscript_expression"
@@ -998,7 +1016,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     })
                     && (by_name
                         || by_macro.contains(&idx)
-                        || summary.is_some_and(|s| s.frees_params.contains(&idx)))
+                        || summary
+                            .as_ref()
+                            .is_some_and(|s| s.frees_params.contains(&idx)))
             })
         })
         .is_some()
@@ -1553,7 +1573,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // A freeing macro counts here as it does in the walk
                 // (`process_freeing_macro`): curl's cleanup labels free
                 // through `Curl_safefree`.
-                let macro_frees = self.macro_freed_param_indices(&func_name);
+                let site = site_of(&call, source);
+                let macro_frees = self.macro_freed_param_indices(&func_name, site);
                 if !macro_frees.is_empty() {
                     if let Some(arguments) = call.child_by_field_name("arguments") {
                         let args: Vec<Node> = (0..arguments.child_count())
@@ -1583,8 +1604,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // . `named_deallocator_releases_arg` below then
                 // asks the same summary WHICH argument.
                 if func_name == "free"
-                    || self.is_named_deallocator(&func_name)
-                    || self.summary_frees_some_param(&func_name)
+                    || self.is_named_deallocator(&func_name, site)
+                    || self.summary_frees_some_param(&func_name, site)
                 {
                     if let Some(arguments) = call.child_by_field_name("arguments") {
                         let mut param_idx = 0usize;
@@ -1607,6 +1628,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                                         &func_name,
                                         this_param_idx,
                                         through_address_of,
+                                        site,
                                     )
                                 {
                                     continue;
@@ -3318,7 +3340,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         }
 
         // Check for custom deallocation functions: destroy_*, free_*, delete_*, cleanup_*, release_*
-        if self.is_named_deallocator(&func_name) {
+        if self.is_named_deallocator(&func_name, site_of(node, source)) {
             self.process_custom_deallocator(node, source, &func_name);
         }
 
@@ -3372,7 +3394,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         let Some(arguments) = node.child_by_field_name("arguments") else {
             return;
         };
-        let summary = self.function_summaries.get(func_name);
+        let summary = self.summary_at(func_name, site_of(node, source));
 
         let mut param_idx = 0usize;
         for i in 0..arguments.child_count() {
@@ -3388,7 +3410,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             let Some((target, true)) = strip_call_argument(arg) else {
                 continue;
             };
-            if let Some(summary) = summary {
+            if let Some(summary) = &summary {
                 if summary.frees_param_pointees.contains(&idx)
                     || !summary.modifies_params.contains(&idx)
                 {
@@ -3472,7 +3494,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// links it into a list on the rest, and neither half alone covers every
     /// path.
     fn process_storing_callee(&mut self, node: &Node, source: &str, func_name: &str) {
-        let Some(summary) = self.function_summaries.get(func_name) else {
+        let Some(summary) = self.summary_at(func_name, site_of(node, source)) else {
             return;
         };
         if summary.stores_params.is_empty() {
@@ -3529,7 +3551,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// leaves the name exactly as that sequence does, so a second
     /// `Curl_safefree(p)` is `free(NULL)` rather than a double free.
     fn process_freeing_macro(&mut self, node: &Node, source: &str, func_name: &str) -> bool {
-        let frees = self.macro_freed_param_indices(func_name);
+        let frees = self.macro_freed_param_indices(func_name, site_of(node, source));
         if frees.is_empty() {
             return false;
         }
@@ -3685,12 +3707,20 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             };
             let free_pos = node.start_position();
 
+            let site = site_of(node, source);
             if !self.named_deallocator_releases_arg(
                 func_name,
                 this_param_idx,
                 arg.kind() == "pointer_expression",
+                site,
             ) {
-                self.credit_callee_freed_fields(func_name, this_param_idx, &var_name, free_pos);
+                self.credit_callee_freed_fields(
+                    func_name,
+                    this_param_idx,
+                    &var_name,
+                    free_pos,
+                    site,
+                );
                 continue;
             }
 
@@ -3731,6 +3761,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 func_name,
                 this_param_idx,
                 arg.kind() == "pointer_expression",
+                site,
             ) {
                 self.freed_by_guess
                     .insert(var_name.clone(), func_name.to_string());
@@ -3740,7 +3771,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             self.freed_memory
                 .insert(var_name.clone(), (free_pos.row + 1, free_pos.column + 1));
 
-            self.credit_callee_freed_fields(func_name, this_param_idx, &var_name, free_pos);
+            self.credit_callee_freed_fields(func_name, this_param_idx, &var_name, free_pos, site);
         }
     }
 
@@ -3757,8 +3788,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         param_idx: usize,
         var_name: &str,
         free_pos: tree_sitter::Point,
+        site: Site,
     ) {
-        if let Some(summary) = self.function_summaries.get(func_name) {
+        if let Some(summary) = self.summary_at(func_name, site) {
             if let Some(fields) = summary.frees_param_fields.get(&param_idx) {
                 for field in fields {
                     let field_key = format!("{}->{}", var_name, field);
@@ -3955,12 +3987,13 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         // Check if passing allocated memory to a function that frees it.
         // Use prescan function summaries to determine if the callee frees
         // the parameter at the corresponding index.
-        let Some(summary) = self.function_summaries.get(func_name) else {
+        // Only the facts of definitions this call can link against: one in
+        // an exclusive #if arm never meets it.
+        let site = site_of(node, source);
+        let Some(summary) = self.summary_at(func_name, site) else {
             return;
         };
-        // Only the frees of definitions this call can link against: one in
-        // an exclusive #if arm never meets it.
-        let frees_here = summary.frees_at(source, node.start_position().row + 1);
+        let frees_here = &summary.frees_params;
         let Some(arguments) = node.child_by_field_name("arguments") else {
             return;
         };
@@ -4010,7 +4043,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             &var_name,
                             (free_pos.row + 1, free_pos.column + 1),
                         );
-                        if self.free_is_name_guess(func_name, param_idx, through_address_of) {
+                        if self.free_is_name_guess(func_name, param_idx, through_address_of, site) {
                             self.freed_by_guess
                                 .insert(var_name.clone(), func_name.to_string());
                         }
@@ -4065,7 +4098,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         let Some(arguments) = call.child_by_field_name("arguments") else {
             return false;
         };
-        let summary = self.function_summaries.get(&func_name);
+        let summary = self.summary_at(&func_name, site_of(&call, source));
         let mut param_idx = 0usize;
         for i in 0..arguments.child_count() {
             let Some(arg) = arguments.child(i) else {
@@ -4076,7 +4109,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
             if let Some((target, through_address_of)) = strip_call_argument(arg) {
                 if ast_utils::get_node_text_owned(&target, source) == var_name {
-                    if let Some(summary) = summary {
+                    if let Some(summary) = &summary {
                         let frees = if through_address_of {
                             summary.frees_param_pointees.contains(&param_idx)
                         } else {
@@ -4348,19 +4381,17 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// the fallback for a callee with no body in the scan.
     /// The prescan saw `func_name`'s body release a parameter -- by value
     /// or through a `&var` pointee. Evidence, not a name guess.
-    fn summary_frees_some_param(&self, func_name: &str) -> bool {
-        self.function_summaries
-            .get(func_name)
-            .is_some_and(|summary| {
-                !summary.frees_params.is_empty() || !summary.frees_param_pointees.is_empty()
-            })
+    fn summary_frees_some_param(&self, func_name: &str, site: Site) -> bool {
+        self.summary_at(func_name, site).is_some_and(|summary| {
+            !summary.frees_params.is_empty() || !summary.frees_param_pointees.is_empty()
+        })
     }
 
-    fn is_named_deallocator(&self, func_name: &str) -> bool {
+    fn is_named_deallocator(&self, func_name: &str, site: Site) -> bool {
         if !ast_utils::is_deallocation_call_name(func_name) {
             return false;
         }
-        match self.function_summaries.get(func_name) {
+        match self.summary_at(func_name, site) {
             Some(summary) => {
                 !summary.frees_params.is_empty()
                     || !summary.frees_param_pointees.is_empty()
@@ -4399,8 +4430,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         func_name: &str,
         param_idx: usize,
         through_address_of: bool,
+        site: Site,
     ) -> bool {
-        match self.function_summaries.get(func_name) {
+        match self.summary_at(func_name, site) {
             None => true,
             Some(summary) => {
                 if through_address_of {
@@ -4437,8 +4469,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         func_name: &str,
         param_idx: usize,
         through_address_of: bool,
+        site: Site,
     ) -> bool {
-        match self.function_summaries.get(func_name) {
+        match self.summary_at(func_name, site) {
             None => true,
             Some(summary) => {
                 !through_address_of
@@ -4473,8 +4506,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // the polarity that licenses a
                 // suppression, exactly as `stores_params` is).
                 if self
-                    .function_summaries
-                    .get(&func_name)
+                    .summary_at(&func_name, site_of(node, source))
                     .is_some_and(|summary| summary.returned_value_escapes)
                 {
                     return false;

@@ -89,6 +89,17 @@ pub struct FunctionSummary {
     /// and applies everywhere, as before.
     #[serde(default)]
     pub free_arms: HashMap<usize, Vec<Vec<(String, bool)>>>,
+    /// [`Self::free_arms`] for `stores_params`.
+    #[serde(default)]
+    pub store_arms: HashMap<usize, Vec<Vec<(String, bool)>>>,
+    /// [`Self::free_arms`] for the parameters `frees_param_fields` covers.
+    #[serde(default)]
+    pub field_free_arms: HashMap<usize, Vec<Vec<(String, bool)>>>,
+    /// The arm assumptions of every definition that sets
+    /// `returned_value_escapes`; empty when a later pass set it, which
+    /// applies everywhere.
+    #[serde(default)]
+    pub escape_arms: Vec<Vec<(String, bool)>>,
     /// Subset of `modifies_params` whose write through the parameter is not
     /// known to be conditional — the MUST-write fact, and the output-param
     /// counterpart of `unconditional_frees_params`.
@@ -1298,6 +1309,23 @@ fn analyze_function(
         let arms = crate::analyze::dead_regions::arm_assumptions(func_node, source);
         for &idx in &summary.frees_params {
             summary.free_arms.entry(idx).or_default().push(arms.clone());
+        }
+        for &idx in &summary.stores_params {
+            summary
+                .store_arms
+                .entry(idx)
+                .or_default()
+                .push(arms.clone());
+        }
+        for &idx in summary.frees_param_fields.keys() {
+            summary
+                .field_free_arms
+                .entry(idx)
+                .or_default()
+                .push(arms.clone());
+        }
+        if summary.returned_value_escapes {
+            summary.escape_arms.push(arms.clone());
         }
         credit_clears_params(&sweep.calls, source, &params, clearing_names, &mut summary);
         credit_credential_facts(func_node, &body, &sweep.calls, source, &mut summary);
@@ -3603,13 +3631,82 @@ impl FunctionSummary {
     fn reachable_frees(&self, set: &HashSet<usize>, source: &str, line: usize) -> HashSet<usize> {
         set.iter()
             .copied()
-            .filter(|idx| {
-                self.free_arms.get(idx).is_none_or(|arms| {
-                    arms.iter()
-                        .any(|a| crate::analyze::dead_regions::line_compiles_under(source, line, a))
-                })
-            })
+            .filter(|idx| arms_admit(self.free_arms.get(idx), source, line))
             .collect()
+    }
+
+    /// The summary as a call on 1-based `line` of `source` sees it: every
+    /// fact that records its definitions' arms ([`Self::free_arms`],
+    /// [`Self::store_arms`], [`Self::field_free_arms`],
+    /// [`Self::escape_arms`]) keeps only what a definition that can compile
+    /// together with that line establishes. Borrowed when no definition is
+    /// excluded, which is the common case.
+    pub fn at(&self, source: &str, line: usize) -> std::borrow::Cow<'_, FunctionSummary> {
+        use std::borrow::Cow;
+        let excluded = |arms: Option<&Vec<Vec<(String, bool)>>>| !arms_admit(arms, source, line);
+        let frees: HashSet<usize> = self
+            .frees_params
+            .iter()
+            .copied()
+            .filter(|idx| excluded(self.free_arms.get(idx)))
+            .collect();
+        let stores: HashSet<usize> = self
+            .stores_params
+            .iter()
+            .copied()
+            .filter(|idx| excluded(self.store_arms.get(idx)))
+            .collect();
+        let fields: HashSet<usize> = self
+            .frees_param_fields
+            .keys()
+            .copied()
+            .filter(|idx| excluded(self.field_free_arms.get(idx)))
+            .collect();
+        let escape = self.returned_value_escapes
+            && !self.escape_arms.is_empty()
+            && excluded(Some(&self.escape_arms));
+        if frees.is_empty() && stores.is_empty() && fields.is_empty() && !escape {
+            return Cow::Borrowed(self);
+        }
+        let mut seen = self.clone();
+        seen.frees_params.retain(|idx| !frees.contains(idx));
+        seen.unconditional_frees_params
+            .retain(|idx| !frees.contains(idx));
+        seen.frees_params_guessed.retain(|idx| !frees.contains(idx));
+        seen.stores_params.retain(|idx| !stores.contains(idx));
+        seen.frees_param_fields
+            .retain(|idx, _| !fields.contains(idx));
+        if escape {
+            seen.returned_value_escapes = false;
+        }
+        Cow::Owned(seen)
+    }
+}
+
+/// Whether a fact whose definitions carry `arms` applies on `line`: no
+/// entry (a later pass derived it), or some definition no arm constrains, or
+/// one whose assumptions `line` can compile under.
+fn arms_admit(arms: Option<&Vec<Vec<(String, bool)>>>, source: &str, line: usize) -> bool {
+    arms.is_none_or(|arms| {
+        arms.iter().any(|a| a.is_empty())
+            || arms
+                .iter()
+                .any(|a| crate::analyze::dead_regions::line_compiles_under(source, line, a))
+    })
+}
+
+/// Fold one definition's arm lists for a fact into the accumulated ones,
+/// each distinct arm set once, and a list holding an unconstrained
+/// definition reduced to just that: it applies everywhere.
+fn merge_arms(into: &mut Vec<Vec<(String, bool)>>, from: Vec<Vec<(String, bool)>>) {
+    for arms in from {
+        if !into.contains(&arms) {
+            into.push(arms);
+        }
+    }
+    if into.iter().any(|a| a.is_empty()) {
+        into.clear();
+        into.push(Vec::new());
     }
 }
 
@@ -3708,7 +3805,22 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
     // Each definition's arms travel with its free, so a caller can still
     // tell which definitions it can link against.
     for (idx, arms) in summary.free_arms {
-        existing.free_arms.entry(idx).or_default().extend(arms);
+        merge_arms(existing.free_arms.entry(idx).or_default(), arms);
+    }
+    // The same for the other facts a caller filters by arm (`at`).
+    for (idx, arms) in summary.store_arms {
+        merge_arms(existing.store_arms.entry(idx).or_default(), arms);
+    }
+    for (idx, arms) in summary.field_free_arms {
+        merge_arms(existing.field_free_arms.entry(idx).or_default(), arms);
+    }
+    if summary.returned_value_escapes {
+        if summary.escape_arms.is_empty() {
+            // Set by a later pass: applies everywhere.
+            existing.escape_arms = vec![Vec::new()];
+        } else {
+            merge_arms(&mut existing.escape_arms, summary.escape_arms);
+        }
     }
     // Union, for the same reason `can_return_null` is unioned:
     // if ANY definition linked under this name can return
