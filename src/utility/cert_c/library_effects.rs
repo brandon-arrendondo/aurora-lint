@@ -12,7 +12,7 @@
 //! so ask it only when that option is true; otherwise a library call is a
 //! call to an unknown function.
 
-use super::std_functions::is_known_standard_function;
+use super::std_functions::is_iso_c_or_posix_function;
 
 /// What the library contract says about one call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +90,11 @@ const PURE_LIBRARY_FUNCTIONS: &[&str] = &[
     "iswxdigit",
     "towlower",
     "towupper",
+    // POSIX <arpa/inet.h> byte-order conversion.
+    "htons",
+    "htonl",
+    "ntohs",
+    "ntohl",
     // <stdlib.h> integer arithmetic (C11 7.22.6).
     "abs",
     "labs",
@@ -134,14 +139,14 @@ const PURE_LIBRARY_FUNCTIONS: &[&str] = &[
 ];
 
 /// The contract's verdict on a call to `name`, or `None` when `name` is not
-/// a library function the tool knows (a project function, or a library it
-/// has no table for). Classify the resolved name (`resolve_macro_alias`),
+/// an ISO C or POSIX function the tool knows (a project function, a Windows
+/// API, or a library it has no table for). Classify the resolved name (`resolve_macro_alias`),
 /// and only when no scanned file defines `name`: a project's own `strlen`
 /// is judged by its body.
 pub fn library_call_effect(name: &str) -> Option<LibraryEffect> {
     if PURE_LIBRARY_FUNCTIONS.contains(&name) {
         Some(LibraryEffect::Pure)
-    } else if is_known_standard_function(name) {
+    } else if is_iso_c_or_posix_function(name) {
         Some(LibraryEffect::SideEffect)
     } else {
         None

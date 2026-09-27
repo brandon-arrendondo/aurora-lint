@@ -5,6 +5,13 @@
 /// calls where tree-sitter cannot follow `#include` directives to verify
 /// that the function was declared via a header.
 pub fn is_known_standard_function(name: &str) -> bool {
+    is_iso_c_or_posix_function(name) || is_windows_function(name) || is_uppercase_wrapper(name)
+}
+
+/// Whether `name` is a C11 standard library function or one of the POSIX
+/// subset below: the names the ISO C and POSIX library contracts
+/// (`settings::Libc::IsoPosix`) speak for.
+pub fn is_iso_c_or_posix_function(name: &str) -> bool {
     match name {
         // ===== C11 Standard Library =====
 
@@ -172,10 +179,16 @@ pub fn is_known_standard_function(name: &str) -> bool {
         | "strsignal" | "strerror_r" | "realpath" | "mkstemp" | "mkdtemp" | "glob"
         | "globfree" | "regcomp" | "regexec" | "regfree" | "regerror" => true,
 
+        _ => false,
+    }
+}
+
+/// Windows socket and Win32 API names.
+fn is_windows_function(name: &str) -> bool {
+    match name {
         // ===== Windows Socket Basics =====
-        "WSAStartup" | "WSACleanup" | "WSAGetLastError" | "WSASetLastError"
-        | "closesocket" | "ioctlsocket" | "WSASocketA" | "WSASocketW"
-        | "WSASend" | "WSARecv" => true,
+        "WSAStartup" | "WSACleanup" | "WSAGetLastError" | "WSASetLastError" | "closesocket"
+        | "ioctlsocket" | "WSASocketA" | "WSASocketW" | "WSASend" | "WSARecv" => true,
 
         // ===== Windows API (WinAPI / Win32) =====
 
@@ -184,132 +197,216 @@ pub fn is_known_standard_function(name: &str) -> bool {
         | "OpenProcess" | "OpenThread" => true,
 
         // Windows Crypto API (wincrypt.h)
-        "CryptAcquireContext" | "CryptReleaseContext"
-        | "CryptCreateHash" | "CryptDestroyHash" | "CryptHashData" | "CryptGetHashParam"
-        | "CryptDeriveKey" | "CryptDestroyKey" | "CryptGenKey"
-        | "CryptSetKeyParam" | "CryptGetKeyParam"
-        | "CryptEncrypt" | "CryptDecrypt"
-        | "CryptGenRandom" | "CryptImportKey" | "CryptExportKey"
-        | "CryptSignHash" | "CryptVerifySignature"
-        | "CryptStringToBinaryA" | "CryptStringToBinaryW"
-        | "CryptBinaryToStringA" | "CryptBinaryToStringW" => true,
+        "CryptAcquireContext"
+        | "CryptReleaseContext"
+        | "CryptCreateHash"
+        | "CryptDestroyHash"
+        | "CryptHashData"
+        | "CryptGetHashParam"
+        | "CryptDeriveKey"
+        | "CryptDestroyKey"
+        | "CryptGenKey"
+        | "CryptSetKeyParam"
+        | "CryptGetKeyParam"
+        | "CryptEncrypt"
+        | "CryptDecrypt"
+        | "CryptGenRandom"
+        | "CryptImportKey"
+        | "CryptExportKey"
+        | "CryptSignHash"
+        | "CryptVerifySignature"
+        | "CryptStringToBinaryA"
+        | "CryptStringToBinaryW"
+        | "CryptBinaryToStringA"
+        | "CryptBinaryToStringW" => true,
 
         // Windows Authentication
-        "LogonUserA" | "LogonUserW" | "LogonUser"
-        | "ImpersonateLoggedOnUser" | "RevertToSelf"
-        | "LookupAccountNameA" | "LookupAccountNameW"
-        | "OpenProcessToken" | "GetTokenInformation" => true,
+        "LogonUserA"
+        | "LogonUserW"
+        | "LogonUser"
+        | "ImpersonateLoggedOnUser"
+        | "RevertToSelf"
+        | "LookupAccountNameA"
+        | "LookupAccountNameW"
+        | "OpenProcessToken"
+        | "GetTokenInformation" => true,
 
         // Windows memory
         "SecureZeroMemory" | "ZeroMemory" | "FillMemory" | "CopyMemory" | "MoveMemory"
         | "HeapAlloc" | "HeapFree" | "HeapReAlloc" | "HeapCreate" | "HeapDestroy"
-        | "LocalAlloc" | "LocalFree" | "LocalReAlloc"
-        | "GlobalAlloc" | "GlobalFree" | "GlobalReAlloc" | "GlobalLock" | "GlobalUnlock"
-        | "VirtualAlloc" | "VirtualFree" | "VirtualLock" | "VirtualUnlock"
-        | "VirtualProtect" | "VirtualQuery" => true,
+        | "LocalAlloc" | "LocalFree" | "LocalReAlloc" | "GlobalAlloc" | "GlobalFree"
+        | "GlobalReAlloc" | "GlobalLock" | "GlobalUnlock" | "VirtualAlloc" | "VirtualFree"
+        | "VirtualLock" | "VirtualUnlock" | "VirtualProtect" | "VirtualQuery" => true,
 
         // Windows file I/O
-        "CreateFileA" | "CreateFileW" | "CreateFile"
-        | "ReadFile" | "WriteFile" | "SetFilePointer" | "SetFilePointerEx"
-        | "GetFileSize" | "GetFileSizeEx" | "SetEndOfFile"
-        | "FlushFileBuffers" | "GetFileTime" | "SetFileTime" | "CompareFileTime"
-        | "DeleteFileA" | "DeleteFileW" | "MoveFileA" | "MoveFileW" | "CopyFileA" | "CopyFileW"
-        | "GetTempFileNameA" | "GetTempFileNameW" | "GetTempPathA" | "GetTempPathW"
-        | "GetCurrentDirectoryA" | "GetCurrentDirectoryW"
-        | "SetCurrentDirectoryA" | "SetCurrentDirectoryW"
-        | "CreateDirectoryA" | "CreateDirectoryW" | "RemoveDirectoryA" | "RemoveDirectoryW"
-        | "FindFirstFileA" | "FindFirstFileW" | "FindNextFileA" | "FindNextFileW"
+        "CreateFileA"
+        | "CreateFileW"
+        | "CreateFile"
+        | "ReadFile"
+        | "WriteFile"
+        | "SetFilePointer"
+        | "SetFilePointerEx"
+        | "GetFileSize"
+        | "GetFileSizeEx"
+        | "SetEndOfFile"
+        | "FlushFileBuffers"
+        | "GetFileTime"
+        | "SetFileTime"
+        | "CompareFileTime"
+        | "DeleteFileA"
+        | "DeleteFileW"
+        | "MoveFileA"
+        | "MoveFileW"
+        | "CopyFileA"
+        | "CopyFileW"
+        | "GetTempFileNameA"
+        | "GetTempFileNameW"
+        | "GetTempPathA"
+        | "GetTempPathW"
+        | "GetCurrentDirectoryA"
+        | "GetCurrentDirectoryW"
+        | "SetCurrentDirectoryA"
+        | "SetCurrentDirectoryW"
+        | "CreateDirectoryA"
+        | "CreateDirectoryW"
+        | "RemoveDirectoryA"
+        | "RemoveDirectoryW"
+        | "FindFirstFileA"
+        | "FindFirstFileW"
+        | "FindNextFileA"
+        | "FindNextFileW"
         | "FindClose" => true,
 
         // Windows process and thread
-        "CreateProcessA" | "CreateProcessW" | "CreateProcess"
-        | "CreateProcessAsUserA" | "CreateProcessAsUserW" | "CreateProcessAsUser"
-        | "TerminateProcess" | "ExitProcess"
-        | "CreateThread" | "ExitThread" | "TerminateThread"
-        | "WaitForSingleObject" | "WaitForMultipleObjects"
-        | "GetExitCodeProcess" | "GetExitCodeThread"
-        | "GetCurrentProcessId" | "GetCurrentThreadId"
-        | "SuspendThread" | "ResumeThread" => true,
+        "CreateProcessA"
+        | "CreateProcessW"
+        | "CreateProcess"
+        | "CreateProcessAsUserA"
+        | "CreateProcessAsUserW"
+        | "CreateProcessAsUser"
+        | "TerminateProcess"
+        | "ExitProcess"
+        | "CreateThread"
+        | "ExitThread"
+        | "TerminateThread"
+        | "WaitForSingleObject"
+        | "WaitForMultipleObjects"
+        | "GetExitCodeProcess"
+        | "GetExitCodeThread"
+        | "GetCurrentProcessId"
+        | "GetCurrentThreadId"
+        | "SuspendThread"
+        | "ResumeThread" => true,
 
         // Windows synchronization
-        "CreateMutex" | "CreateMutexA" | "CreateMutexW"
-        | "OpenMutex" | "OpenMutexA" | "OpenMutexW"
-        | "ReleaseMutex" | "WaitForSingleObjectEx"
-        | "CreateEvent" | "CreateEventA" | "CreateEventW"
-        | "SetEvent" | "ResetEvent" | "PulseEvent"
-        | "CreateSemaphore" | "CreateSemaphoreA" | "CreateSemaphoreW"
+        "CreateMutex"
+        | "CreateMutexA"
+        | "CreateMutexW"
+        | "OpenMutex"
+        | "OpenMutexA"
+        | "OpenMutexW"
+        | "ReleaseMutex"
+        | "WaitForSingleObjectEx"
+        | "CreateEvent"
+        | "CreateEventA"
+        | "CreateEventW"
+        | "SetEvent"
+        | "ResetEvent"
+        | "PulseEvent"
+        | "CreateSemaphore"
+        | "CreateSemaphoreA"
+        | "CreateSemaphoreW"
         | "ReleaseSemaphore"
-        | "InitializeCriticalSection" | "DeleteCriticalSection"
-        | "EnterCriticalSection" | "LeaveCriticalSection" => true,
+        | "InitializeCriticalSection"
+        | "DeleteCriticalSection"
+        | "EnterCriticalSection"
+        | "LeaveCriticalSection" => true,
 
         // Windows DLL/library
-        "LoadLibraryA" | "LoadLibraryW" | "LoadLibrary"
-        | "FreeLibrary" | "GetProcAddress"
+        "LoadLibraryA" | "LoadLibraryW" | "LoadLibrary" | "FreeLibrary" | "GetProcAddress"
         | "GetModuleHandleA" | "GetModuleHandleW" | "GetModuleHandle" => true,
 
         // Windows registry
-        "RegOpenKeyExA" | "RegOpenKeyExW" | "RegOpenKeyEx"
-        | "RegCreateKeyA" | "RegCreateKeyW" | "RegCreateKeyExA" | "RegCreateKeyExW"
-        | "RegCloseKey" | "RegDeleteKeyA" | "RegDeleteKeyW"
-        | "RegQueryValueExA" | "RegQueryValueExW" | "RegQueryValueEx"
-        | "RegSetValueExA" | "RegSetValueExW" | "RegSetValueEx"
-        | "RegEnumKeyExA" | "RegEnumKeyExW" | "RegEnumValueA" | "RegEnumValueW"
-        | "SHRegOpenUSKeyA" | "SHRegOpenUSKeyW" => true,
+        "RegOpenKeyExA" | "RegOpenKeyExW" | "RegOpenKeyEx" | "RegCreateKeyA" | "RegCreateKeyW"
+        | "RegCreateKeyExA" | "RegCreateKeyExW" | "RegCloseKey" | "RegDeleteKeyA"
+        | "RegDeleteKeyW" | "RegQueryValueExA" | "RegQueryValueExW" | "RegQueryValueEx"
+        | "RegSetValueExA" | "RegSetValueExW" | "RegSetValueEx" | "RegEnumKeyExA"
+        | "RegEnumKeyExW" | "RegEnumValueA" | "RegEnumValueW" | "SHRegOpenUSKeyA"
+        | "SHRegOpenUSKeyW" => true,
 
         // Windows IPC (pipes, mailslots)
-        "CreateNamedPipeA" | "CreateNamedPipeW" | "CreateNamedPipe"
-        | "ConnectNamedPipe" | "DisconnectNamedPipe"
-        | "CreatePipe" | "CallNamedPipeA" | "CallNamedPipeW" => true,
+        "CreateNamedPipeA"
+        | "CreateNamedPipeW"
+        | "CreateNamedPipe"
+        | "ConnectNamedPipe"
+        | "DisconnectNamedPipe"
+        | "CreatePipe"
+        | "CallNamedPipeA"
+        | "CallNamedPipeW" => true,
 
         // Windows networking
-        "NetUserChangePassword" | "NetUserSetInfo" | "NetUserGetInfo"
-        | "NetApiBufferFree" => true,
+        "NetUserChangePassword" | "NetUserSetInfo" | "NetUserGetInfo" | "NetApiBufferFree" => true,
 
         // Windows error handling
         "GetLastError" | "SetLastError" | "FormatMessageA" | "FormatMessageW" => true,
 
         // Windows time
-        "GetSystemTime" | "GetLocalTime" | "SystemTimeToFileTime" | "FileTimeToSystemTime"
+        "GetSystemTime"
+        | "GetLocalTime"
+        | "SystemTimeToFileTime"
+        | "FileTimeToSystemTime"
         | "GetSystemTimeAsFileTime" => true,
 
         // Windows system info
-        "SetComputerNameA" | "SetComputerNameW"
-        | "GetComputerNameA" | "GetComputerNameW"
+        "SetComputerNameA" | "SetComputerNameW" | "GetComputerNameA" | "GetComputerNameW"
         | "GetSystemInfo" | "GetVersionEx" | "GetVersion" => true,
 
         // Windows path utilities (shlwapi.h)
-        "PathAppendA" | "PathAppendW" | "PathAppend"
-        | "PathCombineA" | "PathCombineW"
-        | "PathFileExistsA" | "PathFileExistsW"
-        | "PathFindFileNameA" | "PathFindFileNameW" => true,
+        "PathAppendA" | "PathAppendW" | "PathAppend" | "PathCombineA" | "PathCombineW"
+        | "PathFileExistsA" | "PathFileExistsW" | "PathFindFileNameA" | "PathFindFileNameW" => true,
 
         // Windows GDI (graphics)
-        "DeleteObject" | "SelectObject" | "ReleaseDC" | "GetDC"
-        | "GetDesktopWindow" | "GetClientRect"
-        | "CreateCompatibleDC" | "CreateCompatibleBitmap"
-        | "GetDIBits" | "GetObject" | "BitBlt"
-        | "CreateDIBSection" | "GetDeviceCaps" => true,
+        "DeleteObject"
+        | "SelectObject"
+        | "ReleaseDC"
+        | "GetDC"
+        | "GetDesktopWindow"
+        | "GetClientRect"
+        | "CreateCompatibleDC"
+        | "CreateCompatibleBitmap"
+        | "GetDIBits"
+        | "GetObject"
+        | "BitBlt"
+        | "CreateDIBSection"
+        | "GetDeviceCaps" => true,
 
         // Windows desktop/station (window station objects)
-        "CreateWindowStationA" | "CreateWindowStationW"
-        | "CloseWindowStation" | "OpenWindowStationA" | "OpenWindowStationW"
-        | "CreateDesktopA" | "CreateDesktopW"
-        | "CloseDesktop" | "OpenDesktopA" | "OpenDesktopW" => true,
+        "CreateWindowStationA"
+        | "CreateWindowStationW"
+        | "CloseWindowStation"
+        | "OpenWindowStationA"
+        | "OpenWindowStationW"
+        | "CreateDesktopA"
+        | "CreateDesktopW"
+        | "CloseDesktop"
+        | "OpenDesktopA"
+        | "OpenDesktopW" => true,
 
+        _ => false,
+    }
+}
+
+/// Uppercase project macros that stand for a standard function.
+fn is_uppercase_wrapper(name: &str) -> bool {
+    match name {
         // ===== Uppercase Macro Wrappers =====
         // Some codebases use uppercase macros that expand to standard functions.
         // Tree-sitter sees them as calls to these uppercase names.
-        "ALLOCA" | "SNPRINTF" | "VSNPRINTF"
-        | "GETENV" | "PUTENV" | "SYSTEM"
-        | "POPEN" | "PCLOSE"
-        | "OPEN" | "CLOSE" | "READ" | "WRITE"
-        | "EXECL" | "EXECLP" | "EXECV" | "EXECVP" | "EXECLE" | "EXECVE"
-        | "SLEEP" | "USLEEP"
-        | "STAT" | "FSTAT" | "LSTAT"
-        | "ACCESS" | "MKDIR" | "RMDIR" | "UNLINK" | "RENAME"
-        | "MKTEMP" | "TMPNAM" | "TEMPNAM"
-        | "FOPEN" | "FDOPEN" | "FREOPEN"
-        | "CHMOD" | "CHOWN" | "CHDIR" => true,
+        "ALLOCA" | "SNPRINTF" | "VSNPRINTF" | "GETENV" | "PUTENV" | "SYSTEM" | "POPEN"
+        | "PCLOSE" | "OPEN" | "CLOSE" | "READ" | "WRITE" | "EXECL" | "EXECLP" | "EXECV"
+        | "EXECVP" | "EXECLE" | "EXECVE" | "SLEEP" | "USLEEP" | "STAT" | "FSTAT" | "LSTAT"
+        | "ACCESS" | "MKDIR" | "RMDIR" | "UNLINK" | "RENAME" | "MKTEMP" | "TMPNAM" | "TEMPNAM"
+        | "FOPEN" | "FDOPEN" | "FREOPEN" | "CHMOD" | "CHOWN" | "CHDIR" => true,
 
         _ => false,
     }

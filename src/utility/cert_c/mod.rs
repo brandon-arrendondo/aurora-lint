@@ -27,7 +27,7 @@ pub mod format_slots;
 /// Structural "is this variable guarded here?" queries -- the AST relation
 /// that per-rule text searches for a canonical guard spelling stand in for.
 pub mod guard_dominance;
-/// Whether a C library call has a side effect (C11 5.1.2.3p2, errno
+/// Whether an ISO C or POSIX library call has a side effect (C11 5.1.2.3p2, errno
 /// included): the table behind the `stdlib_call_effects` contract.
 pub mod library_effects;
 /// The "consume a length in a loop" idiom (`while (len) { len -= n; }`),

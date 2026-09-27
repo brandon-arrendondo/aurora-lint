@@ -78,7 +78,7 @@ Environment contracts
    - Basis: C11 7.22.4.1, 7.22.4.4, 7.22.4.5, 7.22.4.7, 7.13.2.1 and 7.26.5.5; POSIX.1-2024 _exit(). A freestanding implementation need not provide <stdlib.h>, <setjmp.h> or <threads.h> at all. Known limitation: two cross-file summaries built by the prescan (a parameter's null state after `if (!p) exit(1);`, and whether a function never returns) still credit these calls whatever this option says.
 
 ``stdlib_call_effects``
-   The ISO C and POSIX functions the tool lists as free of side effects (strlen, memcmp, isdigit, fabs, ...) have none, and every other standard function it knows has one (it sets errno, touches a stream, allocates, or keeps hidden state). Withdrawn, a library call is a call to an unknown function.
+   The ISO C and POSIX functions the tool lists as free of side effects (strlen, memcmp, isdigit, fabs, ntohs, ...) have none, and every other ISO C or POSIX function it knows has one (it sets errno, touches a stream, allocates, or keeps hidden state). Withdrawn, a library call is a call to an unknown function.
 
    - Default preset: ``true``; strict preset: ``false``
    - Scope: contract

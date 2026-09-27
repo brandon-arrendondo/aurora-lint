@@ -244,8 +244,8 @@ pub static OPTIONS: &[OptionSpec] = &[
         source: Source::Library(CONFORMING_LIBCS),
         oracle_tag: "contract:stdlib_call_effects",
         summary: "The ISO C and POSIX functions the tool lists as free of side effects \
-                  (strlen, memcmp, isdigit, fabs, ...) have none, and every other standard \
-                  function it knows has one (it sets errno, touches a stream, allocates, or \
+                  (strlen, memcmp, isdigit, fabs, ntohs, ...) have none, and every other ISO C \
+                  or POSIX function it knows has one (it sets errno, touches a stream, allocates, or \
                   keeps hidden state). Withdrawn, a library call is a call to an unknown \
                   function.",
         basis: "C11 7.24 and 7.4: memcmp, strcmp, strncmp, strcoll, memchr, strchr, \
