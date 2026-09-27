@@ -2198,3 +2198,41 @@ fn msvc_undefine_removes_a_define() {
     let msgs = arr30_messages_with_msvc_cdb("define.c", Some("/DIDX=8 /UIDX"));
     assert!(!names_index_8(&msgs), "{msgs:?}");
 }
+
+/// A file-local check macro that calls the file's own static exit helper is a
+/// guard after `-I` header resolution too: resolve_includes rebuilds the
+/// abort-check-macro table, and that rebuild must also see main.c's static
+/// die(). Without -I only the first build runs, which the EXP34-C fixture
+/// covers.
+#[test]
+fn check_macro_calling_a_static_exit_helper_survives_include_resolution() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/cli/check_macro_static_exit_helper");
+    let src = dir.join("src");
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("rules_templates/rules-all.toml");
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("out.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        src.to_str().unwrap(),
+        "-d",
+        src.to_str().unwrap(),
+        "-I",
+        dir.join("include").to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "--rules",
+        "EXP34-C",
+        "-j",
+        "1",
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let exp34: Vec<_> = violations
+        .iter()
+        .filter(|v| v["rule_id"] == "EXP34-C")
+        .collect();
+    assert!(exp34.is_empty(), "{violations:?}");
+}
