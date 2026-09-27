@@ -139,13 +139,7 @@ pub fn lex_replacement_list(text: &str, function_like: bool) -> Vec<PpToken<'_>>
 /// `text` starts in, as [`lex_replacement_list`] decides it: at the first
 /// newline neither escaped nor inside a block comment (or the text's end).
 pub fn directive_end(text: &str) -> usize {
-    let mut end = text.len();
-    scan(
-        text,
-        &mut |_: PpKind, _: std::ops::Range<usize>| {},
-        &mut end,
-    );
-    end
+    scan(text, false, &mut |_: PpKind, _: std::ops::Range<usize>| {})
 }
 
 /// `text` up to the end of its directive (see [`directive_end`]), with
@@ -156,11 +150,46 @@ pub fn directive_end(text: &str) -> usize {
 /// encoding prefix and quotes.
 pub fn mask_literals_and_comments(text: &str) -> String {
     let end = directive_end(text);
-    let mut out: Vec<u8> = text.as_bytes()[..end]
+    mask(&text[..end], &lex(&text[..end]))
+}
+
+/// All of `text`, not one directive, masked as
+/// [`mask_literals_and_comments`] masks a directive: for a scan across lines
+/// (a call's argument list, the source before a directive) that must not
+/// read a parenthesis or a `#` inside a literal or a comment.
+pub fn mask_source(text: &str) -> String {
+    mask(text, &lex_lines(text))
+}
+
+/// Byte offsets in `source` of every `#` that begins a preprocessing
+/// directive: the first token on its line, so neither one inside a string,
+/// character literal or comment, nor a `#` or `##` operator in a macro body.
+pub fn directive_starts(source: &str) -> Vec<usize> {
+    let tokens = lex_lines(source);
+    let bytes = source.as_bytes();
+    tokens
         .iter()
-        .map(|&b| if b == b'\n' { b'\n' } else { b' ' })
+        .enumerate()
+        .filter(|(k, t)| {
+            t.is("#")
+                && match k.checked_sub(1) {
+                    None => true,
+                    Some(p) => {
+                        let prev_end = tokens[p].start + tokens[p].text.len();
+                        bytes[prev_end..t.start].contains(&b'\n')
+                    }
+                }
+        })
+        .map(|(_, t)| t.start)
+        .collect()
+}
+
+fn mask(text: &str, tokens: &[PpToken]) -> String {
+    let mut out: Vec<u8> = text
+        .bytes()
+        .map(|b| if b == b'\n' { b'\n' } else { b' ' })
         .collect();
-    for t in lex(&text[..end]) {
+    for t in tokens {
         let bytes = t.text.as_bytes();
         let range = t.start..t.start + bytes.len();
         if t.is_literal() {
@@ -313,10 +342,19 @@ pub fn point_at(source: &str, offset: usize) -> tree_sitter::Point {
 }
 
 fn lex(text: &str) -> Vec<PpToken<'_>> {
+    lex_with(text, false)
+}
+
+/// Every token of `text`, newlines read as white space.
+fn lex_lines(text: &str) -> Vec<PpToken<'_>> {
+    lex_with(text, true)
+}
+
+fn lex_with(text: &str, multi_line: bool) -> Vec<PpToken<'_>> {
     let mut tokens = Vec::new();
-    let mut end = text.len();
     scan(
         text,
+        multi_line,
         &mut |kind, range: std::ops::Range<usize>| {
             tokens.push(PpToken {
                 kind,
@@ -328,22 +366,25 @@ fn lex(text: &str) -> Vec<PpToken<'_>> {
                 unevaluated: false,
             })
         },
-        &mut end,
     );
     tokens
 }
 
-/// The lexer proper: report each token's kind and byte range, and set
-/// `end` to where the directive ends.
-fn scan(text: &str, emit: &mut dyn FnMut(PpKind, std::ops::Range<usize>), end: &mut usize) {
+/// The lexer proper: report each token's kind and byte range, and return
+/// where the directive ends. With `multi_line`, a newline is white space
+/// and the whole text is lexed.
+fn scan(
+    text: &str,
+    multi_line: bool,
+    emit: &mut dyn FnMut(PpKind, std::ops::Range<usize>),
+) -> usize {
     let b = text.as_bytes();
     let n = b.len();
     let mut i = 0;
     while i < n {
         let c = b[i];
-        if c == b'\n' {
-            *end = i;
-            return;
+        if c == b'\n' && !multi_line {
+            return i;
         }
         if c == b'\\' && continuation_len(b, i) > 0 {
             i += continuation_len(b, i);
@@ -422,7 +463,7 @@ fn scan(text: &str, emit: &mut dyn FnMut(PpKind, std::ops::Range<usize>), end: &
             emit(PpKind::Other, start..i);
         }
     }
-    *end = n;
+    n
 }
 
 /// Length of a line continuation starting at the `\` at `i` (`\` then
@@ -676,6 +717,21 @@ mod tests {
         let d = parse_define_directive("#define EMPTY /* nothing */\n").unwrap();
         assert_eq!(d.body, "");
         assert!(parse_define_directive("#undef X").is_none());
+    }
+
+    #[test]
+    fn directives_start_with_the_first_token_on_a_line() {
+        let src = "f(a,\n#ifdef X\n  b,\n  /* c */ # endif\n  \"#if\", '#');\n\
+                   #define S(x) #x /* #if */\n";
+        let starts: Vec<&str> = directive_starts(src)
+            .into_iter()
+            .map(|at| &src[at..src[at..].find('\n').map_or(src.len(), |e| at + e)])
+            .collect();
+        assert_eq!(starts, ["#ifdef X", "# endif", "#define S(x) #x /* #if */"]);
+        let masked = mask_source(src);
+        assert_eq!(masked.len(), src.len());
+        assert!(!masked.contains("#if\""));
+        assert!(masked.contains("\n#ifdef X\n"));
     }
 
     #[test]

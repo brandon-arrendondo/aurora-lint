@@ -6,6 +6,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::collect_function_macro_names;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::pp_tokens::{directive_starts, mask_source};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -66,12 +67,37 @@ impl CertRule for Pre32C {
         let mut file_names = HashSet::new();
         collect_function_macro_names(source, &mut file_names);
         *self.file_macro_names.borrow_mut() = file_names;
-        self.check_node(node, source, violations);
+        let text = FileText {
+            directives: directive_starts(source),
+            masked: mask_source(source),
+        };
+        self.check_node(node, source, &text, violations);
+    }
+}
+
+/// One file's source as the preprocessor reads it: where its directives
+/// start, and its text with literals and comments blanked, so neither a
+/// `#if` nor a parenthesis inside `"…"`, `'('` or a comment is read as code.
+struct FileText {
+    directives: Vec<usize>,
+    masked: String,
+}
+
+impl FileText {
+    /// Whether a preprocessing directive begins inside `range`.
+    fn has_directive(&self, range: std::ops::Range<usize>) -> bool {
+        self.directives.iter().any(|at| range.contains(at))
     }
 }
 
 impl Pre32C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn check_node(
+        &self,
+        node: &Node,
+        source: &str,
+        text: &FileText,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         const KINDS: &[&str] = &[
             "call_expression",
             "preproc_ifdef",
@@ -86,13 +112,13 @@ impl Pre32C {
         for n in query::find_descendants_of_kinds(*node, KINDS) {
             match n.kind() {
                 "call_expression" => {
-                    self.check_function_call(&n, source, violations);
+                    self.check_function_call(&n, source, text, violations);
                 }
                 // Check for preprocessor directives that contain call expressions
                 // This catches cases where tree-sitter parses the #ifdef as a wrapper
                 "preproc_ifdef" | "preproc_if" | "preproc_ifndef" | "preproc_else"
                 | "preproc_elif" | "preproc_call" | "preproc_def" | "preproc_include" => {
-                    self.check_preproc_for_macro_calls(&n, source, violations);
+                    self.check_preproc_for_macro_calls(&n, text, violations);
                 }
                 _ => {}
             }
@@ -104,9 +130,12 @@ impl Pre32C {
     fn check_preproc_for_macro_calls(
         &self,
         node: &Node,
-        source: &str,
+        text: &FileText,
         violations: &mut Vec<RuleViolation>,
     ) {
+        // Parentheses are counted in the masked text: one inside a string,
+        // character literal or comment opens no call.
+        let source = text.masked.as_str();
         let start_byte = node.start_byte();
         let _end_byte = node.end_byte();
 
@@ -220,7 +249,13 @@ impl Pre32C {
         false
     }
 
-    fn check_function_call(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn check_function_call(
+        &self,
+        node: &Node,
+        source: &str,
+        text: &FileText,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         if let Some(function_node) = node.child_by_field_name("function") {
             // A callee sitting on a preprocessor directive line is not a callee.
             // `#ifdef SQLITE_DEBUG` reparses, inside an ERROR region, as a call
@@ -249,6 +284,7 @@ impl Pre32C {
                     self.check_arguments_for_directives(
                         &arguments,
                         source,
+                        text,
                         function_name,
                         violations,
                     );
@@ -261,14 +297,13 @@ impl Pre32C {
         &self,
         arguments: &Node,
         source: &str,
+        text: &FileText,
         function_name: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Get the full text of the arguments section
-        let args_text = &source[arguments.start_byte()..arguments.end_byte()];
-
-        // Look for preprocessor directives within the arguments
-        if self.contains_preprocessor_directives(args_text) {
+        // Look for preprocessor directives within the arguments: a `#` that
+        // begins a line, not the text `#if` inside a string literal.
+        if text.has_directive(arguments.byte_range()) {
             let start_point = arguments.start_position();
 
             violations.push(RuleViolation {
@@ -291,7 +326,7 @@ impl Pre32C {
             if let Some(child) = arguments.child(i) {
                 if child.kind() != "," {
                     let arg_text = &source[child.start_byte()..child.end_byte()];
-                    if self.contains_preprocessor_directives(arg_text) {
+                    if text.has_directive(child.byte_range()) {
                         let start_point = child.start_position();
 
                         violations.push(RuleViolation {
@@ -350,22 +385,6 @@ impl Pre32C {
         std_lib_functions.contains(function_name)
             || self.file_macro_names.borrow().contains(function_name)
             || self.project_macro_names.borrow().contains(function_name)
-    }
-
-    fn contains_preprocessor_directives(&self, text: &str) -> bool {
-        // Look for preprocessor directive patterns
-        let directives = [
-            "#define", "#undef", "#include", "#if", "#ifdef", "#ifndef", "#else", "#elif",
-            "#endif", "#error", "#warning", "#pragma", "#line",
-        ];
-
-        for directive in &directives {
-            if text.contains(directive) {
-                return true;
-            }
-        }
-
-        false
     }
 
     #[allow(dead_code)]
