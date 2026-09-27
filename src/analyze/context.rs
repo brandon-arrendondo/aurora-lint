@@ -736,6 +736,30 @@ impl VisibleTypes {
     }
 }
 
+/// `fields` with each struct typedef alias also naming its tag's fields.
+///
+/// A bodyless `typedef struct cte cte_t;` files the fields under the TAG only,
+/// so a declaration spelled `cte_t *` resolves no field until the alias names
+/// the same field set. An alias that already has fields of its own keeps them.
+/// This is a rule's own view of the map, never the prescan's shared
+/// `struct_field_types`: other rules read that one, and filing aliases in it
+/// would move their finding sets.
+pub fn fold_struct_typedef_aliases<'a, 'b>(
+    fields: std::borrow::Cow<'a, HashMap<String, HashMap<String, String>>>,
+    aliases: impl IntoIterator<Item = (&'b String, &'b String)>,
+) -> std::borrow::Cow<'a, HashMap<String, HashMap<String, String>>> {
+    let additions: Vec<(String, HashMap<String, String>)> = aliases
+        .into_iter()
+        .filter(|(alias, _)| !fields.contains_key(alias.as_str()))
+        .filter_map(|(alias, tag)| Some((alias.clone(), fields.get(tag)?.clone())))
+        .collect();
+    let mut fields = fields;
+    if !additions.is_empty() {
+        fields.to_mut().extend(additions);
+    }
+    fields
+}
+
 /// `project` with `own` on top, sharing `project` when `own` changes nothing.
 fn overlay<V: Clone + PartialEq>(
     project: &Arc<HashMap<String, V>>,

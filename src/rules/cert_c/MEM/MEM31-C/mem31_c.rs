@@ -3,7 +3,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval;
-use crate::analyze::context::{ProjectContext, ScopedTable};
+use crate::analyze::context::{self, ProjectContext, ScopedTable};
 use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::init_state;
 use crate::analyze::macro_expand::{self, FunctionMacro};
@@ -150,8 +150,19 @@ impl CertRule for Mem31C {
         let mut violations = Vec::new();
         let summaries = self.function_summaries.borrow();
         let value_only_globals = self.value_only_globals.borrow();
-        let struct_field_types = self.struct_field_types.borrow();
-        let struct_typedef_aliases = self.struct_typedef_aliases.borrow();
+        let project_fields = self.struct_field_types.borrow();
+        // A bodyless `typedef struct cte cte_t;` files the fields under the
+        // tag, so the alias gets the same field set here, once per file, and a
+        // declaration spelled `cte_t *` resolves its fields directly.
+        let mut own_aliases = HashMap::new();
+        crate::analyze::prescan::collect_struct_typedef_aliases(node, source, &mut own_aliases);
+        let struct_field_types = context::fold_struct_typedef_aliases(
+            std::borrow::Cow::Borrowed(&**project_fields),
+            self.struct_typedef_aliases
+                .borrow()
+                .iter()
+                .chain(own_aliases.iter()),
+        );
         let known_functions = self.known_functions.borrow();
         let function_macros = self.function_macros.borrow();
 
@@ -192,7 +203,6 @@ impl CertRule for Mem31C {
                 &summaries,
                 &value_only_globals,
                 &struct_field_types,
-                &struct_typedef_aliases,
                 &known_functions,
                 &function_macros,
                 &noreturn_names,
@@ -359,18 +369,13 @@ struct MemoryLeakAnalyzer<'a> {
     // Project-wide `struct_name -> field_name -> type_text`, used to resolve
     // the above. Cross-file by necessity: seL4 declares `struct cte` in
     // `include/object/structures.h` and assigns its field in
-    // `src/fastpath/fastpath.c`.
+    // `src/fastpath/fastpath.c`. Every struct typedef alias is folded in
+    // (`context::fold_struct_typedef_aliases`). Required, not optional: seL4
+    // spells all three of the structs this guard needs as a BODYLESS typedef
+    // sitting apart from its body -- `struct cte { cap_t cap; };` on one line
+    // and `typedef struct cte cte_t;` four lines later -- and the prescan files
+    // the fields under the TAG only.
     struct_field_types: &'a HashMap<String, HashMap<String, String>>,
-    // `Alias -> Tag` for every `typedef struct Tag Alias;`
-    // (`ProjectContext::struct_typedef_aliases`). Required, not
-    // optional: seL4 spells all three of the structs this guard needs as a
-    // BODYLESS typedef sitting apart from its body -- `struct cte { cap_t
-    // cap; };` on one line and `typedef struct cte cte_t;` four lines later.
-    // `struct_field_types` files the fields under the TAG, so a variable
-    // declared `cte_t *` resolves to a struct name nothing in that map holds
-    // and the field type comes back unresolved. Without this hop the guard
-    // never fires on the very findings it exists for.
-    struct_typedef_aliases: &'a HashMap<String, String>,
     // Every function name the prescan saw DECLARED or DEFINED anywhere in the
     // project (`ProjectContext::known_functions`). The field guard fires only
     // when the callee is absent from this set -- see
@@ -720,7 +725,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         function_summaries: &'a ScopedTable<FunctionSummary>,
         value_only_globals: &'a HashSet<String>,
         struct_field_types: &'a HashMap<String, HashMap<String, String>>,
-        struct_typedef_aliases: &'a HashMap<String, String>,
         known_functions: &'a HashSet<String>,
         function_macros: &'a HashMap<String, FunctionMacro>,
         noreturn_names: &'a HashSet<String>,
@@ -757,7 +761,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             value_only_globals,
             value_only_fields: HashSet::new(),
             struct_field_types,
-            struct_typedef_aliases,
             known_functions,
             function_macros,
             noreturn_names,
@@ -812,7 +815,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 &body,
                 source,
                 self.struct_field_types,
-                self.struct_typedef_aliases,
                 self.function_macros,
             );
 
@@ -1279,34 +1281,15 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         body: &Node,
         source: &str,
         struct_field_types: &HashMap<String, HashMap<String, String>>,
-        struct_typedef_aliases: &HashMap<String, String>,
         function_macros: &HashMap<String, FunctionMacro>,
     ) -> HashSet<String> {
         if struct_field_types.is_empty() {
             return HashSet::new();
         }
-        let mut type_map = overflow_helpers::collect_variable_types(func_node, source);
-        // A macro-wrapped base carries its own type in the cast, so the
-        // macro path stays available in a function that declares nothing.
-        if type_map.is_empty() && function_macros.is_empty() {
-            return HashSet::new();
-        }
-        // Rewrite each declared type's struct name to the TAG its fields are
-        // actually filed under, so `cte_t *` looks up as `cte *`. Done here
-        // rather than by merging the alias into `struct_field_types` because
-        // that map is shared with four other rules, and filing aliases in it
-        // would move their finding sets as a side effect of this fix (see
-        // `ProjectContext::struct_typedef_aliases`).
-        if !struct_typedef_aliases.is_empty() {
-            for declared in type_map.values_mut() {
-                let Some(struct_name) = ast_utils::extract_struct_name_from_type(declared) else {
-                    continue;
-                };
-                if let Some(tag) = struct_typedef_aliases.get(struct_name) {
-                    *declared = declared.replacen(struct_name, tag, 1);
-                }
-            }
-        }
+        // Only a fallback: `resolve_field_expression_type` types an identifier
+        // base by its own declaration, a file-scope one included, so a function
+        // that declares nothing still resolves `slot_regs->cap` on a global.
+        let type_map = overflow_helpers::collect_variable_types(func_node, source);
 
         let mut candidates = HashSet::new();
         for assign in query::find_descendants_of_kind(*body, "assignment_expression") {
@@ -1323,13 +1306,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 struct_field_types,
             )
             .or_else(|| {
-                resolve_macro_based_field_type(
-                    &left,
-                    source,
-                    struct_field_types,
-                    struct_typedef_aliases,
-                    function_macros,
-                )
+                resolve_macro_based_field_type(&left, source, struct_field_types, function_macros)
             });
             let Some(field_type) = resolved else {
                 continue;
@@ -4832,7 +4809,6 @@ fn resolve_macro_based_field_type(
     left: &Node,
     source: &str,
     struct_field_types: &HashMap<String, HashMap<String, String>>,
-    struct_typedef_aliases: &HashMap<String, String>,
     function_macros: &HashMap<String, FunctionMacro>,
 ) -> Option<String> {
     let field_node = left.child_by_field_name("field")?;
@@ -4840,12 +4816,12 @@ fn resolve_macro_based_field_type(
     let argument = left.child_by_field_name("argument")?;
     let cast_type = macro_cast_pointer_type(&argument, source, function_macros)?;
     let struct_name = ast_utils::extract_struct_name_from_type(&cast_type)?;
-    // Same tag hop as the declared-variable path: fields file under the TAG.
-    let tag = struct_typedef_aliases
-        .get(struct_name)
-        .map(String::as_str)
-        .unwrap_or(struct_name);
-    struct_field_types.get(tag)?.get(&field_name).cloned()
+    // Typedef aliases are already folded into the map, so an alias looks up
+    // directly.
+    struct_field_types
+        .get(struct_name)?
+        .get(&field_name)
+        .cloned()
 }
 
 /// The pointer type a macro invocation casts to, or `None` if `base` is not a
