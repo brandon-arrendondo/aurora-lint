@@ -231,16 +231,10 @@ pub fn noreturn_names_for_file(
     names
 }
 
-/// Collect the names of every function in `root` recognized as noreturn by
-/// the signals documented at module level, under each combination of
-/// `trust_noreturn_keyword` and `stdlib_noreturn`.
-pub fn collect_noreturn_names(root: &Node, source: &str) -> NoreturnNames {
-    let stdlib: HashSet<String> = STDLIB_NORETURN_FUNCTIONS
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+/// The functions `root` declares or defines noreturn with an ISO spelling
+/// ([`has_noreturn_keyword`]).
+pub fn collect_keyword_noreturn_names(root: &Node, source: &str) -> HashSet<String> {
     let mut declared: HashSet<String> = HashSet::new();
-
     for node in query::find_descendants_of_kinds(*root, &["declaration", "function_definition"]) {
         let declarator = match node.child_by_field_name("declarator") {
             Some(d) => d,
@@ -261,6 +255,18 @@ pub fn collect_noreturn_names(root: &Node, source: &str) -> NoreturnNames {
             declared.insert(name);
         }
     }
+    declared
+}
+
+/// Collect the names of every function in `root` recognized as noreturn by
+/// the signals documented at module level, under each combination of
+/// `trust_noreturn_keyword` and `stdlib_noreturn`.
+pub fn collect_noreturn_names(root: &Node, source: &str) -> NoreturnNames {
+    let stdlib: HashSet<String> = STDLIB_NORETURN_FUNCTIONS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let declared = collect_keyword_noreturn_names(root, source);
 
     let infer = |seed: HashSet<String>| {
         let mut names = seed;
@@ -348,20 +354,44 @@ fn live_definitions<'t>(root: &Node<'t>, source: &str) -> Vec<(Node<'t>, String)
 }
 
 /// The names of the functions `root` defines, outside a platform-dead
-/// region, that `noreturn` does not hold under each combination: each has a
-/// definition that can come back. The project-wide set drops them, so one
-/// file's terminating definition does not decide for another file's that
-/// returns.
+/// region, with a body that visibly comes back: it has a `return` or a
+/// `goto`, or its last top-level statement calls nothing (so no callee this
+/// file cannot see can be what ends it). The project-wide set drops them, so
+/// one file's terminating definition does not decide for another file's
+/// that returns, while a definition that ends in another file's noreturn
+/// function (`die() { log_msg(m); bail(1); }`) is not mistaken for one.
+/// `noreturn` is the file's own set, under each combination.
 pub fn collect_returning_definitions(
     root: &Node,
     source: &str,
     noreturn: &NoreturnNames,
 ) -> NoreturnNames {
-    let defined: HashSet<String> = live_definitions(root, source)
+    let returning: HashSet<String> = live_definitions(root, source)
         .into_iter()
+        .filter(|(def, _)| visibly_returns(def))
         .map(|(_, name)| name)
         .collect();
-    noreturn.map(|names| defined.difference(names).cloned().collect())
+    noreturn.map(|names| returning.difference(names).cloned().collect())
+}
+
+/// Whether `def` can come back without relying on what any callee does.
+fn visibly_returns(def: &Node) -> bool {
+    if !body_has_no_return_or_goto(def) {
+        return true;
+    }
+    let Some(body) = def.child_by_field_name("body") else {
+        return false;
+    };
+    let last = (0..body.named_child_count())
+        .rev()
+        .filter_map(|i| body.named_child(i))
+        .find(|n| n.kind() != "comment");
+    match last {
+        None => true,
+        Some(stmt) => {
+            query::find_first_descendant(stmt, |n| n.kind() == "call_expression").is_none()
+        }
+    }
 }
 
 /// Whether `def`'s body contains no `return` and no `goto` anywhere.
@@ -604,7 +634,7 @@ mod tests {
             "#ifdef HARD_FAIL\n\
              void fatal(void) { abort(); }\n\
              #else\n\
-             void fatal(void) { log_it(); }\n\
+             void fatal(void) { log_it(); return; }\n\
              #endif\n",
         );
         let names = collect_noreturn_names(&tree.root_node(), &source);

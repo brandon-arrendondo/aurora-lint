@@ -67,6 +67,8 @@ struct FilePrescanResult {
     /// Functions this file defines with a body that can return
     /// (`noreturn::collect_returning_definitions`).
     returning_functions: crate::analyze::noreturn::NoreturnNames,
+    /// Functions this file declares noreturn with an ISO keyword.
+    keyword_noreturn: HashSet<String>,
     packed_struct_candidates: Vec<(String, String)>,
     packed_macro_names: HashSet<String>,
     defined_macro_names: HashSet<String>,
@@ -133,6 +135,7 @@ impl FilePrescanResult {
             packed_structs: HashSet::new(),
             noreturn_functions: Default::default(),
             returning_functions: Default::default(),
+            keyword_noreturn: HashSet::new(),
             packed_struct_candidates: Vec::new(),
             packed_macro_names: HashSet::new(),
             defined_macro_names: HashSet::new(),
@@ -255,6 +258,8 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         );
         result.noreturn_functions =
             crate::analyze::noreturn::collect_noreturn_names(&root, &source);
+        result.keyword_noreturn =
+            crate::analyze::noreturn::collect_keyword_noreturn_names(&root, &source);
         result.returning_functions = crate::analyze::noreturn::collect_returning_definitions(
             &root,
             &source,
@@ -512,6 +517,7 @@ fn prescan_file_list(
     let mut packed_structs: HashSet<String> = HashSet::new();
     let mut noreturn_functions = crate::analyze::noreturn::NoreturnNames::default();
     let mut returning_functions = crate::analyze::noreturn::NoreturnNames::default();
+    let mut keyword_noreturn: HashSet<String> = HashSet::new();
     let mut c_file_static_noreturn: Vec<(String, crate::analyze::noreturn::NoreturnNames)> =
         Vec::new();
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
@@ -775,6 +781,7 @@ fn prescan_file_list(
             noreturn_functions.extend(r.noreturn_functions);
             returning_functions.extend(r.returning_functions);
         }
+        keyword_noreturn.extend(r.keyword_noreturn);
         packed_struct_candidates.extend(r.packed_struct_candidates);
         packed_macro_names.extend(r.packed_macro_names);
         defined_macro_names.extend(r.defined_macro_names);
@@ -1125,7 +1132,11 @@ fn prescan_file_list(
     // A name is noreturn only if no file defines it with a body that can
     // come back: a terminating definition in one file and a returning one in
     // another are two builds, and the one that returns keeps the paths.
-    noreturn_functions.remove_all(&returning_functions);
+    // A keyword declaration is the project's own statement that the
+    // function never returns; a definition elsewhere does not overrule it.
+    noreturn_functions.remove_all(
+        &returning_functions.map(|names| names.difference(&keyword_noreturn).cloned().collect()),
+    );
     let mut abort_check_noreturn = noreturn_functions.clone();
     for (file_name, names) in c_file_static_noreturn {
         if included_c_files.contains(&file_name) {

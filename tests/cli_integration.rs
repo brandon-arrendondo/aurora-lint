@@ -2453,3 +2453,61 @@ fn a_c_files_private_macro_is_not_another_files_alternative() {
     );
     assert!(found.is_empty(), "{found:?}");
 }
+
+#[test]
+fn a_headers_noreturn_keyword_survives_a_definition_ending_in_another_files_noreturn() {
+    // die.c cannot see that bail() never returns, but die.h says die()
+    // does not, and nothing in die()'s body comes back on its own: the
+    // path through die() ends, so `p` is not used after the free.
+    let found = scan_project(
+        &[
+            (
+                "die.h",
+                "_Noreturn void bail(int code);\n_Noreturn void die(const char *m);\n",
+            ),
+            (
+                "bail.c",
+                "#include <stdlib.h>\nvoid bail(int code) { exit(code); }\n",
+            ),
+            (
+                "die.c",
+                "void log_msg(const char *);\n\
+                 void die(const char *m) { log_msg(m); bail(1); }\n",
+            ),
+            (
+                "main.c",
+                "#include <stdlib.h>\n#include \"die.h\"\n\
+                 void h(char *p, int x) { if (x) { free(p); die(\"x\"); } p[0] = 1; }\n",
+            ),
+        ],
+        "MEM30-C",
+    );
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn a_definition_in_another_file_that_returns_keeps_the_path() {
+    // One program's fatal() aborts, another's returns: the name is not
+    // noreturn for the caller, which uses `p` after the free in the build
+    // linked with the second.
+    let found = scan_project(
+        &[
+            (
+                "hard.c",
+                "#include <stdlib.h>\nvoid fatal(void) { abort(); }\n",
+            ),
+            (
+                "soft.c",
+                "void log_msg(const char *);\n\
+                 void fatal(void) { log_msg(\"x\"); return; }\n",
+            ),
+            (
+                "main.c",
+                "#include <stdlib.h>\nvoid fatal(void);\n\
+                 void h(char *p, int x) { if (x) { free(p); fatal(); } p[0] = 1; }\n",
+            ),
+        ],
+        "MEM30-C",
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+}
