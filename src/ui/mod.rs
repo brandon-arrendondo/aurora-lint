@@ -2156,6 +2156,7 @@ impl TerminalUI {
             project_roots.extend(self.directories.iter().cloned());
             let _ = prescan::resolve_includes(
                 &c_files,
+                &[],
                 &self.include_paths,
                 &project_roots,
                 &mut context,

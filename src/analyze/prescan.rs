@@ -6380,6 +6380,7 @@ fn extract_field_id_from_declarator(node: &Node, source: &str) -> Option<String>
 /// headers are silently skipped.
 pub fn resolve_includes(
     source_files: &[String],
+    forced_includes: &[String],
     include_paths: &[String],
     project_roots: &[String],
     context: &mut super::context::ProjectContext,
@@ -6400,6 +6401,13 @@ pub fn resolve_includes(
 
     // Queue of (include_path, source_dir) pairs to resolve — supports transitive includes
     let mut queue: Vec<(String, Option<PathBuf>)> = Vec::new();
+
+    // A forced include (cl's `/FI`) is an `#include` ahead of every TU's first
+    // line: resolved against the search paths like any other, with no
+    // including directory of its own beyond an already-absolute spelling.
+    for header in forced_includes {
+        queue.push((header.clone(), None));
+    }
 
     // Seed the queue with #include directives from source files
     for file_path in source_files {

@@ -333,6 +333,12 @@ fn run() -> Result<i32> {
                 db.defines.len(),
                 db_path,
             );
+            if !db.forced_includes.is_empty() {
+                eprintln!(
+                    "  plus {} forced include(s) (/FI), resolved ahead of every source file",
+                    db.forced_includes.len(),
+                );
+            }
             // A compile database stores absolute paths from the machine that
             // built the project. If it was generated elsewhere, those paths are
             // not here, and resolve_includes would silently skip every header

@@ -47,6 +47,25 @@
 //!   silently). It would be wrong for a project that compiles the same header
 //!   name differently per target; no such case exists in the benchmark corpus.
 //!
+//! # MSVC command lines
+//!
+//! An entry whose driver is MSVC-like (`cl`, `clang-cl`, or any driver given
+//! `--driver-mode=cl`) is read with cl.exe's own syntax: every option may be
+//! spelled with `/` or `-`, so `/DNAME=1`, `/D NAME`, `/Ipath`, `/I path`,
+//! `/UNAME` and `/FIheader.h` (forced include) are recognised alongside
+//! `-D`/`-I`, as are clang-cl's `/imsvc` and cl's `/external:I` system-header
+//! directories. `/DNAME#VALUE` is cl's alternative to `=`, and everything after
+//! `/link` belongs to the linker. The `/` spellings are deliberately *not*
+//! recognised for any other driver: a POSIX absolute path such as
+//! `/Users/me/a.c` or `/Include/x.c` would otherwise read as `/U` or `/I`.
+//!
+//! A `command` string is split with Windows command-line rules (backslashes are
+//! literal unless they precede a `"`) when its first word is a Windows path or
+//! an `.exe`, since that is the quoting the build that wrote it used; the POSIX
+//! rules would turn `C:\src\inc` into `C:srcinc`. `@file` response files, which
+//! cl builds use to stay under the command-length limit, are expanded in place
+//! for either driver.
+//!
 //! # Known gap
 //!
 //! A compile database lists the flags a build *passes*, so it does not contain
@@ -134,6 +153,11 @@ pub struct CompileDb {
     /// `#ifdef X` arm dead rather than merely unproven
     /// ([`Self::declared_macro_state`]).
     pub undefines: Vec<String>,
+    /// Headers the build force-includes into every translation unit (cl's
+    /// `/FI`), first-seen order. Absolute when the file exists relative to the
+    /// entry's directory, otherwise as spelled, so the include search paths
+    /// can still find it -- exactly how cl looks one up.
+    pub forced_includes: Vec<String>,
     /// Number of entries read from the database.
     pub entry_count: usize,
     /// Compiler executables named by the entries (`arguments[0]` / the first
@@ -179,11 +203,13 @@ impl CompileDb {
         // there is no meaningful "later flag wins" to honor across entries.
         let mut undefined: HashSet<String> = HashSet::new();
         let mut seen_defines: HashSet<String> = HashSet::new();
+        let mut seen_forced: HashSet<String> = HashSet::new();
 
         for entry in entries {
+            let base = Path::new(&entry.directory);
             let argv = match (&entry.arguments, &entry.command) {
                 (Some(args), _) => args.clone(),
-                (None, Some(cmd)) => split_command(cmd),
+                (None, Some(cmd)) => split_command_for_host(cmd),
                 (None, None) => continue,
             };
             if argv.is_empty() {
@@ -192,13 +218,14 @@ impl CompileDb {
             if seen_compilers.insert(argv[0].clone()) {
                 db.compilers.push(argv[0].clone());
             }
+            let msvc = is_msvc_driver(&argv);
+            let argv = expand_response_files(argv, base, msvc);
 
-            let base = Path::new(&entry.directory);
             if let Some(file) = &entry.file {
                 db.configured_sources
                     .insert(real_path(&absolutize(base, file)));
             }
-            for flag in parse_flags(&argv) {
+            for flag in parse_flags(&argv, msvc) {
                 match flag {
                     Flag::Include(dir) => {
                         let abs = absolutize(base, &dir);
@@ -215,6 +242,17 @@ impl CompileDb {
                     Flag::Undefine(name) => {
                         if undefined.insert(name.clone()) {
                             db.undefines.push(name);
+                        }
+                    }
+                    Flag::ForcedInclude(header) => {
+                        let abs = absolutize(base, &header);
+                        let s = if abs.is_file() {
+                            abs.to_string_lossy().to_string()
+                        } else {
+                            header
+                        };
+                        if seen_forced.insert(s.clone()) {
+                            db.forced_includes.push(s);
                         }
                     }
                 }
@@ -386,6 +424,8 @@ enum Flag {
     Define(String, String),
     /// `-U<name>`.
     Undefine(String),
+    /// cl's `/FI<header>`: included ahead of the first line of every TU.
+    ForcedInclude(String),
 }
 
 /// Flags whose directory argument may be attached (`-Idir`) or separate
@@ -393,16 +433,85 @@ enum Flag {
 /// hand-written and cross-compilation builds.
 const DIR_FLAGS: &[&str] = &["-I", "-isystem", "-iquote", "-idirafter"];
 
+/// cl.exe's header search directory options, in either spelling. `/imsvc` is
+/// clang-cl's system-header form; `/external:I` is what cl (and CMake, for a
+/// `SYSTEM` include directory) uses for third-party headers.
+const MSVC_DIR_FLAGS: &[&str] = &["/I", "-I", "/imsvc", "-imsvc", "/external:I", "-external:I"];
+
+/// Whether an entry was compiled by an MSVC-style driver, whose command line
+/// is read with cl.exe's syntax (see the module docs).
+fn is_msvc_driver(argv: &[String]) -> bool {
+    if argv.iter().any(|a| a == "--driver-mode=cl") {
+        return true;
+    }
+    let Some(driver) = argv.first() else {
+        return false;
+    };
+    let base = driver.rsplit(['/', '\\']).next().unwrap_or(driver);
+    let base = base.to_ascii_lowercase();
+    let base = base.strip_suffix(".exe").unwrap_or(&base);
+    matches!(base, "cl" | "clang-cl")
+}
+
+/// The flag in `flags` that `arg` starts with, preferring the longest so that
+/// `-idirafter` is not shadowed by a shorter flag sharing its prefix.
+fn longest_prefix<'a>(arg: &str, flags: &[&'a str]) -> Option<&'a str> {
+    flags
+        .iter()
+        .copied()
+        .filter(|f| arg.starts_with(f))
+        .max_by_key(|f| f.len())
+}
+
 /// Extract the include/define/undefine flags from one tokenized command line.
-fn parse_flags(argv: &[String]) -> Vec<Flag> {
+/// `msvc` selects cl.exe's syntax in addition to the GCC spellings, which cl
+/// also accepts; see the module docs for why it is not always on.
+fn parse_flags(argv: &[String], msvc: bool) -> Vec<Flag> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < argv.len() {
         let arg = argv[i].as_str();
         i += 1;
 
+        if msvc {
+            // Everything after /link is the linker's.
+            if arg.eq_ignore_ascii_case("/link") || arg.eq_ignore_ascii_case("-link") {
+                break;
+            }
+            if let Some(rest) = arg.strip_prefix("/D") {
+                if let Some(f) = define_flag(rest, argv, &mut i, true) {
+                    out.push(f);
+                }
+                continue;
+            }
+            if let Some(rest) = arg.strip_prefix("/U") {
+                if let Some(name) = take_value(rest, argv, &mut i) {
+                    if !name.is_empty() {
+                        out.push(Flag::Undefine(name));
+                    }
+                }
+                continue;
+            }
+            if let Some(rest) = arg.strip_prefix("/FI").or_else(|| arg.strip_prefix("-FI")) {
+                if let Some(header) = take_value(rest, argv, &mut i) {
+                    if !header.is_empty() {
+                        out.push(Flag::ForcedInclude(header));
+                    }
+                }
+                continue;
+            }
+            if let Some(f) = longest_prefix(arg, MSVC_DIR_FLAGS) {
+                if let Some(dir) = take_value(&arg[f.len()..], argv, &mut i) {
+                    if !dir.is_empty() {
+                        out.push(Flag::Include(dir));
+                    }
+                }
+                continue;
+            }
+        }
+
         if let Some(rest) = arg.strip_prefix("-D") {
-            if let Some(f) = define_flag(rest, argv, &mut i) {
+            if let Some(f) = define_flag(rest, argv, &mut i, msvc) {
                 out.push(f);
             }
             continue;
@@ -416,15 +525,7 @@ fn parse_flags(argv: &[String]) -> Vec<Flag> {
             }
             continue;
         }
-        // Longest-prefix first so `-idirafter` is not shadowed by a shorter
-        // flag sharing its prefix.
-        let mut matched: Option<&str> = None;
-        for f in DIR_FLAGS {
-            if arg.starts_with(f) && matched.is_none_or(|m: &str| f.len() > m.len()) {
-                matched = Some(f);
-            }
-        }
-        if let Some(f) = matched {
+        if let Some(f) = longest_prefix(arg, DIR_FLAGS) {
             let rest = &arg[f.len()..];
             // `-isystem=dir` (clang tolerates the `=` form for the long flags).
             let rest = rest.strip_prefix('=').unwrap_or(rest);
@@ -450,8 +551,9 @@ fn take_value(attached: &str, argv: &[String], i: &mut usize) -> Option<String> 
 }
 
 /// Build a [`Flag::Define`] from the text following `-D`, handling both
-/// `-DNAME=VALUE` and the separate `-D NAME=VALUE` form.
-fn define_flag(attached: &str, argv: &[String], i: &mut usize) -> Option<Flag> {
+/// `-DNAME=VALUE` and the separate `-D NAME=VALUE` form. cl also accepts
+/// `NAME#VALUE`, so under `msvc` a `#` separates as well.
+fn define_flag(attached: &str, argv: &[String], i: &mut usize, msvc: bool) -> Option<Flag> {
     let text = take_value(attached, argv, i)?;
     if text.is_empty() {
         return None;
@@ -459,7 +561,12 @@ fn define_flag(attached: &str, argv: &[String], i: &mut usize) -> Option<Flag> {
     // Split on the first `=`, which for a function-like macro necessarily
     // follows the parameter list: `MAX(a,b)=...` has no `=` inside `(a,b)`
     // because a parameter list is only identifiers and commas.
-    let (spelling, body) = match text.find('=') {
+    let sep = if msvc {
+        text.find(['=', '#'])
+    } else {
+        text.find('=')
+    };
+    let (spelling, body) = match sep {
         Some(eq) => (text[..eq].to_string(), text[eq + 1..].to_string()),
         None => (text, String::new()),
     };
@@ -490,7 +597,10 @@ pub(crate) fn real_path(p: &Path) -> String {
 
 fn absolutize(base: &Path, dir: &str) -> PathBuf {
     let p = Path::new(dir);
-    if p.is_absolute() {
+    // A Windows absolute path is absolute on every host: joining `C:\inc` onto
+    // the entry directory would only manufacture a path that exists nowhere,
+    // where left alone it reaches `missing_include_paths` and gets reported.
+    if p.is_absolute() || is_windows_absolute(dir) {
         p.to_path_buf()
     } else {
         base.join(p)
@@ -562,6 +672,140 @@ fn split_command(cmd: &str) -> Vec<String> {
     out
 }
 
+/// `C:\x`, `C:/x` or a UNC `\\server\share` path.
+fn is_windows_absolute(p: &str) -> bool {
+    let b = p.as_bytes();
+    (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
+        || p.starts_with("\\\\")
+}
+
+/// Split a `command` string with the quoting rules of the host that wrote it:
+/// Windows rules when its first word is a Windows path or an `.exe`, POSIX
+/// rules otherwise.
+fn split_command_for_host(cmd: &str) -> Vec<String> {
+    let windows = split_command_windows(cmd);
+    let first = windows.first().map(String::as_str).unwrap_or("");
+    if is_windows_absolute(first) || first.to_ascii_lowercase().ends_with(".exe") {
+        windows
+    } else {
+        split_command(cmd)
+    }
+}
+
+/// Split a command line the way the Microsoft C runtime (`CommandLineToArgvW`)
+/// does. Backslashes are literal except before a `"`: `2n` of them there
+/// yield `n` and the quote toggles quoting, `2n+1` yield `n` and a literal
+/// `"`. Inside quotes, `""` is a literal `"`.
+fn split_command_windows(cmd: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut has_token = false;
+    let mut in_quotes = false;
+    let chars: Vec<char> = cmd.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\\' => {
+                let start = i;
+                while i < chars.len() && chars[i] == '\\' {
+                    i += 1;
+                }
+                let n = i - start;
+                has_token = true;
+                if i < chars.len() && chars[i] == '"' {
+                    cur.extend(std::iter::repeat_n('\\', n / 2));
+                    if n % 2 == 1 {
+                        cur.push('"');
+                        i += 1;
+                    }
+                } else {
+                    cur.extend(std::iter::repeat_n('\\', n));
+                }
+                continue;
+            }
+            '"' => {
+                has_token = true;
+                if in_quotes && chars.get(i + 1) == Some(&'"') {
+                    cur.push('"');
+                    i += 2;
+                    continue;
+                }
+                in_quotes = !in_quotes;
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if has_token {
+                    out.push(std::mem::take(&mut cur));
+                    has_token = false;
+                }
+            }
+            _ => {
+                cur.push(c);
+                has_token = true;
+            }
+        }
+        i += 1;
+    }
+    if has_token {
+        out.push(cur);
+    }
+    out
+}
+
+/// Nesting limit for `@file` response files, which may name further response
+/// files; a cycle would otherwise never end.
+const MAX_RESPONSE_FILE_DEPTH: usize = 8;
+
+/// Replace each `@file` argument (after the driver) with the arguments the
+/// file holds, resolved against the entry's directory. A response file that
+/// cannot be read is dropped -- the same skip-don't-fail stance the loader
+/// takes toward any entry it cannot understand.
+fn expand_response_files(argv: Vec<String>, base: &Path, msvc: bool) -> Vec<String> {
+    fn expand(args: Vec<String>, base: &Path, msvc: bool, depth: usize, out: &mut Vec<String>) {
+        for arg in args {
+            match arg.strip_prefix('@') {
+                Some(file) if !file.is_empty() => {
+                    if depth >= MAX_RESPONSE_FILE_DEPTH {
+                        continue;
+                    }
+                    let Some(text) = read_response_file(&absolutize(base, file)) else {
+                        continue;
+                    };
+                    let inner = if msvc {
+                        split_command_windows(&text)
+                    } else {
+                        split_command(&text)
+                    };
+                    expand(inner, base, msvc, depth + 1, out);
+                }
+                _ => out.push(arg),
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(argv.len());
+    let mut args = argv.into_iter();
+    if let Some(driver) = args.next() {
+        out.push(driver);
+    }
+    expand(args.collect(), base, msvc, 0, &mut out);
+    out
+}
+
+/// Read a response file as text. cl writes them as UTF-16LE with a byte-order
+/// mark as often as UTF-8, so both are decoded.
+fn read_response_file(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16(&units).ok();
+    }
+    let rest = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes);
+    String::from_utf8(rest.to_vec()).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,7 +816,7 @@ mod tests {
 
     #[test]
     fn parses_attached_and_separate_include_flags() {
-        let flags = parse_flags(&argv(&["cc", "-Iinc", "-I", "other", "-c", "a.c"]));
+        let flags = parse_flags(&argv(&["cc", "-Iinc", "-I", "other", "-c", "a.c"]), false);
         assert_eq!(
             flags,
             vec![Flag::Include("inc".into()), Flag::Include("other".into()),]
@@ -581,14 +825,17 @@ mod tests {
 
     #[test]
     fn parses_long_include_flag_forms() {
-        let flags = parse_flags(&argv(&[
-            "cc",
-            "-isystem",
-            "/usr/local/include",
-            "-iquote=q",
-            "-idirafter",
-            "after",
-        ]));
+        let flags = parse_flags(
+            &argv(&[
+                "cc",
+                "-isystem",
+                "/usr/local/include",
+                "-iquote=q",
+                "-idirafter",
+                "after",
+            ]),
+            false,
+        );
         assert_eq!(
             flags,
             vec![
@@ -601,7 +848,7 @@ mod tests {
 
     #[test]
     fn parses_define_forms() {
-        let flags = parse_flags(&argv(&["cc", "-DFOO", "-DBAR=2", "-D", "BAZ=3"]));
+        let flags = parse_flags(&argv(&["cc", "-DFOO", "-DBAR=2", "-D", "BAZ=3"]), false);
         assert_eq!(
             flags,
             vec![
@@ -614,7 +861,7 @@ mod tests {
 
     #[test]
     fn function_like_define_keeps_parameter_list_in_spelling() {
-        let flags = parse_flags(&argv(&["cc", "-DMAX(a,b)=((a)>(b)?(a):(b))"]));
+        let flags = parse_flags(&argv(&["cc", "-DMAX(a,b)=((a)>(b)?(a):(b))"]), false);
         assert_eq!(
             flags,
             vec![Flag::Define("MAX(a,b)".into(), "((a)>(b)?(a):(b))".into())]
@@ -845,6 +1092,7 @@ mod tests {
 
         super::super::prescan::resolve_includes(
             &[c_file.to_string_lossy().to_string()],
+            &db.forced_includes,
             &db.include_paths,
             &[root.to_string_lossy().to_string()],
             &mut ctx,
@@ -968,5 +1216,372 @@ mod tests {
         let db = CompileDb::default();
         assert_eq!(db.merge_defines_into(&mut ctx).unwrap(), 0);
         assert!(ctx.macro_constants.is_empty());
+    }
+
+    // ---- MSVC command lines ------------------------------------------------
+
+    fn entry(directory: &str, command: Option<&str>, arguments: Option<&[&str]>) -> RawEntry {
+        RawEntry {
+            directory: directory.into(),
+            file: None,
+            command: command.map(Into::into),
+            arguments: arguments.map(argv),
+        }
+    }
+
+    #[test]
+    fn msvc_driver_is_recognised_by_name_path_case_and_driver_mode() {
+        for driver in [
+            "cl",
+            "cl.exe",
+            "CL.EXE",
+            r"C:\PROGRA~1\MICROS~1\2022\BUILDT~1\VC\Tools\MSVC\1444~1.352\bin\Hostx64\x64\cl.exe",
+            "/opt/msvc/bin/cl",
+            "clang-cl",
+            "clang-cl.exe",
+        ] {
+            assert!(is_msvc_driver(&argv(&[driver, "-c", "a.c"])), "{driver}");
+        }
+        assert!(is_msvc_driver(&argv(&[
+            "clang",
+            "--driver-mode=cl",
+            "-c",
+            "a.c"
+        ])));
+        for driver in [
+            "cc",
+            "gcc",
+            "clang",
+            "/usr/bin/cl-tool",
+            "x86_64-w64-mingw32-gcc.exe",
+        ] {
+            assert!(!is_msvc_driver(&argv(&[driver, "-c", "a.c"])), "{driver}");
+        }
+    }
+
+    #[test]
+    fn msvc_define_forms_in_both_spellings() {
+        let flags = parse_flags(
+            &argv(&[
+                "cl", "/DFOO", "/DBAR=2", "/D", "BAZ=3", "-DQUX", "/DHASH#4", "-D", "SEP#5",
+            ]),
+            true,
+        );
+        assert_eq!(
+            flags,
+            vec![
+                Flag::Define("FOO".into(), String::new()),
+                Flag::Define("BAR".into(), "2".into()),
+                Flag::Define("BAZ".into(), "3".into()),
+                Flag::Define("QUX".into(), String::new()),
+                Flag::Define("HASH".into(), "4".into()),
+                Flag::Define("SEP".into(), "5".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn msvc_include_forms_in_both_spellings() {
+        let flags = parse_flags(
+            &argv(&[
+                "cl",
+                "/Iinc",
+                "/I",
+                r"C:\Program Files\sdk",
+                "-Idash",
+                "/imsvc",
+                "sys",
+                "/external:Iext",
+                "-external:I",
+                "ext2",
+            ]),
+            true,
+        );
+        assert_eq!(
+            flags,
+            vec![
+                Flag::Include("inc".into()),
+                Flag::Include(r"C:\Program Files\sdk".into()),
+                Flag::Include("dash".into()),
+                Flag::Include("sys".into()),
+                Flag::Include("ext".into()),
+                Flag::Include("ext2".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn msvc_undefine_and_forced_include_forms() {
+        let flags = parse_flags(
+            &argv(&[
+                "cl", "/UONE", "/U", "TWO", "-UTHREE", "/FIpch.h", "/FI", "b.h", "-FIc.h",
+            ]),
+            true,
+        );
+        assert_eq!(
+            flags,
+            vec![
+                Flag::Undefine("ONE".into()),
+                Flag::Undefine("TWO".into()),
+                Flag::Undefine("THREE".into()),
+                Flag::ForcedInclude("pch.h".into()),
+                Flag::ForcedInclude("b.h".into()),
+                Flag::ForcedInclude("c.h".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn unknown_cl_flags_are_ignored_and_lookalikes_are_not_misread() {
+        // `/Fi` (preprocessed-output name) is not `/FI`; `/external:W0` is not
+        // `/external:I`; none of these is an error.
+        let flags = parse_flags(
+            &argv(&[
+                "cl",
+                "/nologo",
+                "/TC",
+                "/W3",
+                "/O2",
+                "/MT",
+                "/Zi",
+                "/FoCMakeFiles\\a.obj",
+                "/Fiout.i",
+                "/FdTARGET_COMPILE_PDB",
+                "/FS",
+                "/external:W0",
+                "/external:anglebrackets",
+                "/diagnostics:column",
+                "/utf-8",
+                "-c",
+                "a.c",
+            ]),
+            true,
+        );
+        assert!(flags.is_empty(), "{flags:?}");
+    }
+
+    #[test]
+    fn slash_flags_are_not_read_for_a_gcc_style_driver() {
+        // POSIX absolute paths that would read as /U, /I, /D and /FI.
+        let flags = parse_flags(
+            &argv(&[
+                "cc",
+                "/Users/me/a.c",
+                "/Include/x.c",
+                "/Data/y.c",
+                "/FIles/z.c",
+                "-DKEEP",
+            ]),
+            false,
+        );
+        assert_eq!(flags, vec![Flag::Define("KEEP".into(), String::new())]);
+    }
+
+    #[test]
+    fn hash_is_part_of_the_value_for_a_gcc_style_driver() {
+        let flags = parse_flags(&argv(&["cc", "-DA#B=1"]), false);
+        assert_eq!(flags, vec![Flag::Define("A#B".into(), "1".into())]);
+    }
+
+    #[test]
+    fn msvc_parsing_stops_at_link() {
+        let flags = parse_flags(
+            &argv(&[
+                "cl",
+                "/DA",
+                "a.c",
+                "/link",
+                "/DEBUG",
+                "/INCREMENTAL:NO",
+                "/DB",
+            ]),
+            true,
+        );
+        assert_eq!(flags, vec![Flag::Define("A".into(), String::new())]);
+    }
+
+    #[test]
+    fn split_command_windows_follows_crt_backslash_and_quote_rules() {
+        assert_eq!(
+            split_command_windows(
+                r#"cl.exe C:\a\b.c "C:\Program Files\inc" /DS=\"hi\" "tail\\" x"#
+            ),
+            argv(&[
+                "cl.exe",
+                r"C:\a\b.c",
+                r"C:\Program Files\inc",
+                r#"/DS="hi""#,
+                r"tail\",
+                "x",
+            ])
+        );
+        // Inside quotes, "" is a literal quote.
+        assert_eq!(
+            split_command_windows(r#"cl "say ""x""" y"#),
+            argv(&["cl", r#"say "x""#, "y"])
+        );
+        // An odd run of backslashes before a quote keeps the quote literal.
+        assert_eq!(split_command_windows(r#"a\\\"b"#), argv(&[r#"a\"b"#]));
+    }
+
+    #[test]
+    fn command_string_quoting_follows_the_host_that_wrote_it() {
+        assert_eq!(
+            split_command_for_host(r"C:\VS\cl.exe /IC:\src\inc -c a.c"),
+            argv(&[r"C:\VS\cl.exe", r"/IC:\src\inc", "-c", "a.c"])
+        );
+        assert_eq!(
+            split_command_for_host(r#"cc -DS=\"hi\" -c a.c"#),
+            argv(&["cc", r#"-DS="hi""#, "-c", "a.c"])
+        );
+    }
+
+    /// The shape CMake's Ninja generator writes for cl: a short-name driver
+    /// path, `-D` for target definitions and `/D` for the configuration's own,
+    /// Windows paths throughout.
+    #[test]
+    fn cmake_style_cl_command_is_read_with_msvc_syntax() {
+        let cmd = r#"C:\PROGRA~2\MICROS~2\2022\BUILDT~1\VC\Tools\MSVC\1444~1.352\bin\Hostx64\x86\cl.exe  /nologo -DVTARCH_X86 -DVTBIT=32 -DUNICODE -I"C:\src\Ventoy2Disk" -external:I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\um" /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MT /FIforced.h /FoCMakeFiles\v.dir\a.c.obj /FdTARGET_COMPILE_PDB /FS -c C:\src\Ventoy2Disk\a.c"#;
+        let db = CompileDb::from_entries(&[entry(r"C:\build", Some(cmd), None)]);
+        let names: Vec<&str> = db.defines.iter().map(|d| d.name()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "VTARCH_X86",
+                "VTBIT",
+                "UNICODE",
+                "WIN32",
+                "_WINDOWS",
+                "NDEBUG"
+            ]
+        );
+        // Windows-absolute paths are left alone, not joined onto the
+        // entry's directory.
+        assert_eq!(
+            db.include_paths,
+            vec![
+                r"C:\src\Ventoy2Disk",
+                r"C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\um",
+            ]
+        );
+        assert_eq!(db.forced_includes, vec!["forced.h"]);
+        assert!(db.compilers[0].ends_with(r"\cl.exe"));
+    }
+
+    #[test]
+    fn gcc_style_entry_is_unaffected_by_msvc_support() {
+        let db = CompileDb::from_entries(&[entry(
+            "/p",
+            Some("cc -DA=1 -Iinc /Users/x/b.c -c a.c"),
+            None,
+        )]);
+        assert_eq!(
+            db.defines,
+            vec![CommandLineDefine {
+                spelling: "A".into(),
+                body: "1".into()
+            }]
+        );
+        assert_eq!(db.include_paths, vec!["/p/inc"]);
+        assert!(db.forced_includes.is_empty());
+    }
+
+    #[test]
+    fn response_files_expand_in_place_utf8_and_utf16() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rsp"), "/DFROM_UTF8 /I inc\r\n").unwrap();
+        let mut u16 = vec![0xFF, 0xFE];
+        for unit in "/DFROM_UTF16 \"/Iwide dir\"".encode_utf16() {
+            u16.extend(unit.to_le_bytes());
+        }
+        std::fs::write(dir.path().join("w.rsp"), u16).unwrap();
+        std::fs::write(dir.path().join("loop.rsp"), "@loop.rsp /DAFTER_LOOP").unwrap();
+
+        let d = dir.path().to_string_lossy().to_string();
+        let db = CompileDb::from_entries(&[entry(
+            &d,
+            None,
+            Some(&[
+                "cl.exe",
+                "@a.rsp",
+                "@w.rsp",
+                "@missing.rsp",
+                "@loop.rsp",
+                "/DLAST",
+                "-c",
+                "x.c",
+            ]),
+        )]);
+        let names: Vec<&str> = db.defines.iter().map(|d| d.name()).collect();
+        assert_eq!(names, vec!["FROM_UTF8", "FROM_UTF16", "AFTER_LOOP", "LAST"]);
+        assert_eq!(
+            db.include_paths,
+            vec![format!("{d}/inc"), format!("{d}/wide dir")]
+        );
+    }
+
+    #[test]
+    fn forced_include_is_absolutized_when_it_exists_beside_the_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("here.h"), "").unwrap();
+        let d = dir.path().to_string_lossy().to_string();
+        let db = CompileDb::from_entries(&[entry(
+            &d,
+            None,
+            Some(&[
+                "cl",
+                "/FIhere.h",
+                "/FIelsewhere.h",
+                "/FIhere.h",
+                "-c",
+                "a.c",
+            ]),
+        )]);
+        assert_eq!(
+            db.forced_includes,
+            vec![format!("{d}/here.h"), "elsewhere.h".to_string()]
+        );
+    }
+
+    /// A header reached *only* through `/FI` -- no source file includes it --
+    /// contributes its macros, the way cl makes them visible to every TU.
+    #[test]
+    fn forced_include_brings_header_macros_into_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("inc")).unwrap();
+        std::fs::write(root.join("inc/forced.h"), "#define FORCED_LEN 12\n").unwrap();
+        let c_file = root.join("a.c");
+        std::fs::write(&c_file, "int f(void) { return 0; }\n").unwrap();
+
+        let db = CompileDb::from_entries(&[entry(
+            &root.to_string_lossy(),
+            None,
+            Some(&["cl.exe", "/I", "inc", "/FI", "forced.h", "-c", "a.c"]),
+        )]);
+        assert_eq!(db.forced_includes, vec!["forced.h"]);
+
+        let mut ctx = ProjectContext::new();
+        super::super::prescan::resolve_includes(
+            &[c_file.to_string_lossy().to_string()],
+            &db.forced_includes,
+            &db.include_paths,
+            &[root.to_string_lossy().to_string()],
+            &mut ctx,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(ctx.macro_constants.get("FORCED_LEN"), Some(&12));
+    }
+
+    #[test]
+    fn windows_absolute_paths_are_recognised_on_any_host() {
+        assert!(is_windows_absolute(r"C:\x"));
+        assert!(is_windows_absolute("d:/x"));
+        assert!(is_windows_absolute(r"\\wsl.localhost\Ubuntu\home"));
+        assert!(!is_windows_absolute("C:x"));
+        assert!(!is_windows_absolute("inc"));
+        assert!(!is_windows_absolute("/usr/include"));
     }
 }

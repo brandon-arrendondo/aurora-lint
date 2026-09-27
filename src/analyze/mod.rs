@@ -392,8 +392,10 @@ fn load_project_context(
         prescan::prescan_directories(directories, progress, needs_vra)?
     };
 
-    // Resolve #include directives against include search paths
-    if !include_paths.is_empty() {
+    // Resolve #include directives against include search paths, and the
+    // build's forced includes, which need resolving even with no search path.
+    let forced_includes: &[String] = compile_db.map_or(&[], |db| &db.forced_includes);
+    if !include_paths.is_empty() || !forced_includes.is_empty() {
         let c_files = if diff_only {
             project_source.get_modified_c_files()?
         } else {
@@ -406,6 +408,7 @@ fn load_project_context(
         project_roots.extend(directories.iter().cloned());
         prescan::resolve_includes(
             &c_files,
+            forced_includes,
             include_paths,
             &project_roots,
             &mut context,

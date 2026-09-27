@@ -2094,3 +2094,99 @@ fn global_pointer_null_state_is_joined_across_files() {
         .collect();
     assert_eq!(deref.len(), 1, "{violations:?}");
 }
+
+// ---- compile_commands.json from an MSVC build -----------------------------
+
+fn msvc_cdb_fixtures() -> PathBuf {
+    fixtures().join("msvc_compile_commands")
+}
+
+/// Scan `source` (a file in the MSVC fixture directory) with ARR30-C, with a
+/// one-entry compile database whose `command` is `cl_flags` when given, and
+/// return the finding messages.
+///
+/// The source is copied into a project directory of its own and the fixture's
+/// `sdk/` header beside it, *outside* the scan root, so only the database's
+/// flags can reach the header. The driver is spelled as a Windows path, the
+/// way CMake writes a cl database, so the `command` string is split with
+/// Windows quoting as well.
+fn arr30_messages_with_msvc_cdb(source: &str, cl_flags: Option<&str>) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("proj");
+    let sdk = dir.path().join("sdk");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&sdk).unwrap();
+    std::fs::copy(msvc_cdb_fixtures().join(source), project.join(source)).unwrap();
+    std::fs::copy(
+        msvc_cdb_fixtures().join("sdk/msvc_idx.h"),
+        sdk.join("msvc_idx.h"),
+    )
+    .unwrap();
+    let src = project.join(source);
+    let out = dir.path().join("out.json");
+    let manifest = fixtures().join("manifest_arr30.toml");
+    let mut args = vec![
+        src.to_str().unwrap().to_string(),
+        "-m".into(),
+        manifest.to_str().unwrap().to_string(),
+        "-e".into(),
+        out.to_str().unwrap().to_string(),
+    ];
+    if let Some(flags) = cl_flags {
+        let db = dir.path().join("compile_commands.json");
+        let entry = serde_json::json!([{
+            "directory": project.to_str().unwrap(),
+            "file": src.to_str().unwrap(),
+            "command": format!(r"C:\VS\bin\Hostx64\x86\cl.exe /nologo {flags} /W3 /O2 -c {source}"),
+        }]);
+        std::fs::write(&db, entry.to_string()).unwrap();
+        args.push("--compile-commands".into());
+        args.push(db.to_str().unwrap().to_string());
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (code, _, stderr) = run_aurora_lint(&args);
+    assert_eq!(code, 0, "{stderr}");
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    violations
+        .iter()
+        .map(|v| v["message"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn names_index_8(messages: &[String]) -> bool {
+    messages.iter().any(|m| m.contains("at index 8"))
+}
+
+#[test]
+fn msvc_slash_d_define_gates_a_finding() {
+    let without = arr30_messages_with_msvc_cdb("define.c", None);
+    assert!(!names_index_8(&without), "{without:?}");
+    let with = arr30_messages_with_msvc_cdb("define.c", Some("/DIDX=8"));
+    assert!(names_index_8(&with), "{with:?}");
+    // cl's NAME#VALUE spelling and the separate-token form mean the same.
+    let hash = arr30_messages_with_msvc_cdb("define.c", Some("/D IDX#8"));
+    assert!(names_index_8(&hash), "{hash:?}");
+}
+
+#[test]
+fn msvc_slash_i_include_path_gates_a_finding() {
+    let without = arr30_messages_with_msvc_cdb("include.c", None);
+    assert!(!names_index_8(&without), "{without:?}");
+    let with = arr30_messages_with_msvc_cdb("include.c", Some("/I../sdk"));
+    assert!(names_index_8(&with), "{with:?}");
+}
+
+#[test]
+fn msvc_forced_include_gates_a_finding() {
+    let without = arr30_messages_with_msvc_cdb("forced.c", Some("/I../sdk"));
+    assert!(!names_index_8(&without), "{without:?}");
+    let with = arr30_messages_with_msvc_cdb("forced.c", Some("/I ../sdk /FImsvc_idx.h"));
+    assert!(names_index_8(&with), "{with:?}");
+}
+
+#[test]
+fn msvc_undefine_removes_a_define() {
+    let msgs = arr30_messages_with_msvc_cdb("define.c", Some("/DIDX=8 /UIDX"));
+    assert!(!names_index_8(&msgs), "{msgs:?}");
+}

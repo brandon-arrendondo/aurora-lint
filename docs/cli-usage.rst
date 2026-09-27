@@ -181,6 +181,23 @@ cover. Scanning the sources your database compiles avoids it.
 Because the parse tree is untouched, every finding keeps the source location it
 always had, and the ``PRE*`` rules still audit macros as written.
 
+**Databases from an MSVC build.** An entry compiled by ``cl``, ``clang-cl`` or
+a driver given ``--driver-mode=cl`` is read with cl's own syntax. Options may be
+spelled with ``/`` or ``-``: ``/D`` (including cl's ``NAME#VALUE`` form),
+``/U``, ``/I``, ``/imsvc`` and ``/external:I``, each attached or as a separate
+argument. ``/FI`` forced includes are resolved as if every file began with that
+``#include``. Arguments after ``/link`` are ignored, as are cl options that do
+not affect headers or macros. A ``command`` string written on Windows is split
+with Windows quoting rules, and ``@file`` response files (UTF-8 or UTF-16) are
+expanded for any driver. For every other driver the ``/`` spellings are not
+read, so a POSIX path such as ``/Users/me/a.c`` is never taken for ``/U``.
+
+cl finds the Windows SDK and CRT headers through the ``INCLUDE`` environment
+variable, not through flags, so a cl database lists none of them. Pass those
+directories with ``-I``. The database also keeps the Windows paths it was
+written with: scanning from WSL or another host needs them remapped, and
+aurora-lint warns when its include paths do not exist.
+
 Reaching the Compiler's Own Headers
 -----------------------------------
 
