@@ -500,14 +500,34 @@ pub fn macro_body_effects(arm: &MacroArm) -> (bool, Vec<String>) {
                     && prev.is_some_and(|p| matches!(p, "<" | ">") && tokens[j - 2].text == p);
                 let comparison = matches!(prev, Some("=" | "<" | ">" | "!")) && !shift;
                 let equality_next = next == Some("=") && glued(j);
-                if !comparison && !equality_next {
+                // `T name = init` / `__typeof(x) name = init` declares an
+                // object the body owns: an initializer, not a write.
+                let is_ident = |k: usize| tokens[k].text.chars().next().is_some_and(is_ident_start);
+                let initializer = j >= 2
+                    && is_ident(j - 1)
+                    && (closes_typeof(&tokens, j - 2)
+                        || (is_ident(j - 2)
+                            && !matches!(
+                                tokens[j - 2].text.as_str(),
+                                "return" | "case" | "else" | "do"
+                            )));
+                if !comparison && !equality_next && !initializer {
                     writes = true;
                 }
             }
             w if next == Some("(")
                 && is_ident_start(w.chars().next().unwrap_or(' '))
                 && !UNEVALUATED_OPERATORS.contains(&w)
-                && !matches!(w, "if" | "while" | "for" | "switch" | "return" | "_Generic")
+                && !matches!(
+                    w,
+                    "if" | "while"
+                        | "for"
+                        | "switch"
+                        | "return"
+                        | "_Generic"
+                        | "__extension__"
+                        | "__attribute__"
+                )
                 && !arm.params.iter().any(|p| p == w) =>
             {
                 callees.push(w.to_string());
@@ -516,6 +536,35 @@ pub fn macro_body_effects(arm: &MacroArm) -> (bool, Vec<String>) {
         }
     }
     (writes, callees)
+}
+
+/// Whether `tokens[close]` is the `)` of a `typeof(...)`-family operator.
+fn closes_typeof(tokens: &[BodyToken], close: usize) -> bool {
+    if tokens[close].text != ")" {
+        return false;
+    }
+    let mut depth = 0i32;
+    for k in (0..=close).rev() {
+        match tokens[k].text.as_str() {
+            ")" | "]" | "}" => depth += 1,
+            "(" | "[" | "{" => {
+                depth -= 1;
+                if depth == 0 {
+                    return k > 0
+                        && matches!(
+                            tokens[k - 1].text.as_str(),
+                            "typeof"
+                                | "__typeof__"
+                                | "__typeof"
+                                | "typeof_unqual"
+                                | "__typeof_unqual__"
+                        );
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Add the name of every function-like `#define` in `source` to `out`, in

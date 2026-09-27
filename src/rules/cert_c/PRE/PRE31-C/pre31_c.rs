@@ -253,13 +253,40 @@ impl<'a> Ctx<'a> {
             .unwrap_or(Effect::None)
     }
 
-    /// Whether an identifier occurrence names an object declared `volatile`,
-    /// resolved to its declaration (ADR-0006), never matched by spelling.
+    /// Whether an identifier occurrence reads a volatile object, resolved to
+    /// its declaration (ADR-0006), never matched by spelling. A declaration's
+    /// own `volatile` qualifies what its pointers and arrays finally reach,
+    /// so `volatile T *p` makes `*p`, `p->f` and `p[i]` volatile reads and
+    /// `p` itself not; `T *volatile p` makes `p` one.
     fn is_volatile(&self, ident: &Node<'a>) -> bool {
         let name = get_node_text(ident, self.source);
-        ast_utils::resolve_identifier_declarator(ident, name, self.source).is_some_and(
-            |(decl, _)| ast_utils::declaration_has_qualifier(&decl, "volatile", self.source),
-        )
+        let Some((decl, declarator)) =
+            ast_utils::resolve_identifier_declarator(ident, name, self.source)
+        else {
+            return false;
+        };
+        let mut levels = 0;
+        let mut own_qualifier = false;
+        let mut node = Some(declarator);
+        while let Some(d) = node {
+            match d.kind() {
+                "pointer_declarator" | "array_declarator" => {
+                    levels += 1;
+                    let inner = d.child_by_field_name("declarator");
+                    if d.kind() == "pointer_declarator"
+                        && inner.is_some_and(|i| i.kind() == "identifier")
+                        && ast_utils::declaration_has_qualifier(&d, "volatile", self.source)
+                    {
+                        own_qualifier = true;
+                    }
+                    node = inner;
+                }
+                _ => node = None,
+            }
+        }
+        own_qualifier
+            || (ast_utils::declaration_has_qualifier(&decl, "volatile", self.source)
+                && dereferences_applied(ident, self.source) >= levels)
     }
 
     /// The side effect of calling `name` (as spelled at the call site).
@@ -268,6 +295,11 @@ impl<'a> Ctx<'a> {
             return Effect::Unknown;
         }
         let name = self.resolve(name);
+        // A nested assert changes nothing the program goes on with: it
+        // evaluates its condition (judged where it is written) or aborts.
+        if matches!(name, "assert" | "static_assert" | "_Static_assert") {
+            return Effect::None;
+        }
         if self.names.contains(name) {
             return self.macro_effect(name, depth);
         }
@@ -416,6 +448,43 @@ impl<'a> Ctx<'a> {
             _ => false,
         }
     }
+}
+
+/// How many dereferences the expression around an identifier applies to it:
+/// `*p`, `p[i]` and `p->f` one each, `&x` minus one.
+fn dereferences_applied(ident: &Node, source: &str) -> usize {
+    let mut depth: isize = 0;
+    let mut child = *ident;
+    while let Some(parent) = child.parent() {
+        let is_operand = parent
+            .child_by_field_name("argument")
+            .is_some_and(|a| a.id() == child.id());
+        match parent.kind() {
+            "parenthesized_expression" => {}
+            "pointer_expression" if is_operand => {
+                match parent
+                    .child_by_field_name("operator")
+                    .map(|o| get_node_text(&o, source))
+                {
+                    Some("*") => depth += 1,
+                    Some("&") => depth -= 1,
+                    _ => break,
+                }
+            }
+            "subscript_expression" if is_operand => depth += 1,
+            "field_expression" if is_operand => {
+                if parent
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| get_node_text(&o, source) == "->")
+                {
+                    depth += 1;
+                }
+            }
+            _ => break,
+        }
+        child = parent;
+    }
+    depth.max(0) as usize
 }
 
 impl Pre31C {
