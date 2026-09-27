@@ -34,18 +34,20 @@
 //! back edge taken is a loop's: a store in a `while`/`for` body or `for`
 //! update is followed by that loop's condition.
 
+use crate::analyze::check_macros::MacroDefinition;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::utility::cert_c::ast_utils::{
     declaration_declarator_for, declaration_type_text, find_containing_function, get_node_text,
     resolve_identifier_declarator,
 };
 use lang_parsing_substrate::query;
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 /// How a standard library function signals failure through its return value
 /// (C11 7.x, as tabulated by ERR33-C).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorSignal {
     /// A null pointer: `malloc`, `fopen`, `fgets`, `getenv`, ...
     Null,
@@ -72,6 +74,14 @@ pub enum ErrorSignal {
     ErrnoOrEnd,
     /// No one value is documented as the failure: any test of the result.
     Any,
+}
+
+impl ErrorSignal {
+    /// Whether the failing value cannot be used at all -- a null pointer, a
+    /// negative length, `(T)-1` -- so a use before the test defeats it.
+    fn is_unusable_on_failure(self) -> bool {
+        matches!(self, Self::Null | Self::Negative | Self::MinusOne)
+    }
 }
 
 /// The error signal of a standard library function, or `None` for one this
@@ -114,15 +124,16 @@ pub fn error_signal_for(function_name: &str) -> Option<ErrorSignal> {
 /// The store's own controlling expression counts too:
 /// `if ((p = malloc(n)) == NULL)` tests the assignment's value in place.
 ///
-/// `macros` is the function-like macro table in view: a result passed whole
-/// to a macro (`REQUIRE(p)`) is tested when the macro's expansion tests it.
+/// `macros` is every macro definition in view: a result passed whole to a
+/// function-like macro (`REQUIRE(p)`) is tested when the expansion of every
+/// definition of that macro tests it.
 pub fn stored_result_is_tested(
     store: &Node,
     target: &Node,
     call: &Node,
     signal: ErrorSignal,
     source: &str,
-    macros: &HashMap<String, FunctionMacro>,
+    macros: &MacroView,
 ) -> bool {
     let cx = Cx {
         signal,
@@ -136,8 +147,31 @@ pub fn stored_result_is_tested(
 struct Cx<'s> {
     signal: ErrorSignal,
     source: &'s str,
-    macros: &'s HashMap<String, FunctionMacro>,
+    macros: &'s MacroView<'s>,
 }
+
+/// Every definition of every macro name in view, and the names some
+/// configuration leaves undefined: the prescan's `macro_definitions` and
+/// `conditional_macro_names` next to the file's own
+/// (`check_macros::collect_macro_definitions`,
+/// `collect_conditional_macro_names`). A test inside a macro removes a
+/// finding, so it counts only when every definition makes it (ADR-0010):
+/// an object-like or opaque definition, or a configuration with none at
+/// all, is a build in which nothing tests the argument.
+pub struct MacroView<'a> {
+    /// Every definition of each name, from each table.
+    pub defs: [&'a HashMap<String, Vec<MacroDefinition>>; 2],
+    /// Names some configuration defines inside a conditional arm only.
+    pub conditional: [&'a HashSet<String>; 2],
+    /// Verdicts already reached, for the file these tables describe; the
+    /// caller empties it when the file changes.
+    pub cache: &'a RefCell<MacroTestCache>,
+}
+
+/// [`MacroView::cache`]: `(macro, actual arguments with the placeholder,
+/// signal, unsigned, requested count)` to whether every definition tests
+/// the placeholder.
+pub type MacroTestCache = HashMap<(String, Vec<String>, ErrorSignal, bool, Option<String>), bool>;
 
 /// How many plain copies (`*out = (int)count;`) a result is followed
 /// through to the object its test reads.
@@ -177,12 +211,30 @@ fn tested_from(store: &Node, target: &Node, call: &Node, cx: &Cx, hops: usize) -
     // value is first used: `p = malloc(n); memset(p, 0, n); if (!p)` tests a
     // pointer already written through. A short count or an EOF is a normal
     // value to consume before the loop test that ends on it.
-    let test_first = matches!(
-        signal,
-        ErrorSignal::Null | ErrorSignal::Negative | ErrorSignal::MinusOne
-    );
+    let test_first = signal.is_unusable_on_failure();
     let occurrences = candidate_occurrences(&body, target, source);
-    for occ in occurrences.iter().filter(in_window) {
+    // A store in a loop's body or `for` update is followed by the loop's
+    // condition, which sits before it in source order:
+    // `for (c = fgetc(f); c != EOF; c = fgetc(f))`, or a priming read
+    // `l = fgets(...)` at the bottom of `while (l != NULL) { ... }`. The
+    // occurrences are visited in the order control reaches them: the rest of
+    // the loop region, the condition, then what follows the region.
+    let back_edge = loop_condition_after(store).filter(|&(_, region_end)| until >= region_end);
+    let ordered: Vec<&Node> = match back_edge {
+        Some((condition, region_end)) => {
+            let region = occurrences
+                .iter()
+                .filter(|o| o.start_byte() >= after && o.start_byte() < region_end);
+            let in_condition = occurrences.iter().filter(|o| within(&condition, o));
+            let rest = occurrences
+                .iter()
+                .filter(in_window)
+                .filter(|o| o.start_byte() >= region_end);
+            region.chain(in_condition).chain(rest).collect()
+        }
+        None => occurrences.iter().filter(in_window).collect(),
+    };
+    for occ in ordered {
         if inside_assert(occ, source) || in_exclusive_branches(store, occ) {
             continue;
         }
@@ -202,18 +254,6 @@ fn tested_from(store: &Node, target: &Node, call: &Node, cx: &Cx, hops: usize) -
         // through the value first is a use: `p->len > 0`, `strcmp(p, s)`.
         if test_first && !is_test_operand(occ) && !is_plain_copy(occ) {
             return false;
-        }
-    }
-    // A store in a loop's body or `for` update is followed by the loop's
-    // condition, which sits before it in source order:
-    // `for (c = fgetc(f); c != EOF; c = fgetc(f))`, or a priming read
-    // `l = fgets(...)` at the bottom of `while (l != NULL) { ... }`.
-    if let Some((condition, region_end)) = loop_condition_after(store) {
-        if until >= region_end {
-            return occurrences
-                .iter()
-                .filter(|o| within(&condition, o) && !inside_assert(o, source))
-                .any(judge);
         }
     }
     false
@@ -254,10 +294,11 @@ fn loop_condition_after<'a>(store: &Node<'a>) -> Option<(Node<'a>, usize)> {
     None
 }
 
-/// For the `strto*` family: whether `errno`, or the end pointer passed as
-/// `&end`, is tested after `store` and before a later `errno = ...` or a
-/// later call handed the same end pointer overwrites what this call left
-/// there.
+/// For the `strto*` family: whether `errno` is tested after `store` and
+/// before a later `errno = ...` clears it, or the end pointer passed as
+/// `&end` is tested before a later call is handed the same pointer. Each
+/// event overwrites only its own channel: `errno = 0` leaves the end pointer
+/// as this call set it, and a later successful call does not clear errno.
 fn strto_result_is_tested(store: &Node, call: &Node, body: &Node, source: &str) -> bool {
     let after = store.end_byte();
     let end_ptr = end_pointer_argument(call);
@@ -276,27 +317,33 @@ fn strto_result_is_tested(store: &Node, call: &Node, body: &Node, source: &str) 
             })
         })
         .map(|c| c.start_byte());
-    let until = errno_reset
-        .chain(end_reused)
-        .filter(|&start| start >= after)
+    let errno_until = errno_reset
+        .filter(|&s| s >= after)
+        .min()
+        .unwrap_or(usize::MAX);
+    let end_until = end_reused
+        .filter(|&s| s >= after)
         .min()
         .unwrap_or(usize::MAX);
     query::find_descendants_of_kind(*body, "identifier")
         .into_iter()
-        .filter(|id| id.start_byte() >= after && id.start_byte() < until)
-        .filter(|id| !in_exclusive_branches(store, id))
+        .filter(|id| id.start_byte() >= after && !in_exclusive_branches(store, id))
         .any(|id| {
-            let is_errno = get_node_text(&id, source) == "errno";
-            let is_end = end_ptr.is_some_and(|e| same_lvalue(&id, &e, source));
+            let start = id.start_byte();
+            let is_errno = start < errno_until && get_node_text(&id, source) == "errno";
+            let is_end = start < end_until && end_ptr.is_some_and(|e| same_lvalue(&id, &e, source));
             (is_errno || is_end) && inside_test(&id, source)
         })
 }
 
 /// Whether `occ` is passed whole to a function-like macro whose expansion
-/// tests it: `REQUIRE(p)` for `#define REQUIRE(x) do { if (!(x)) die(); }
-/// while (0)`. The argument is replaced by a placeholder, the invocation
-/// expanded, and the placeholder judged in the expansion as `occ` would be
-/// judged in place.
+/// tests it, under every definition of that macro: `REQUIRE(p)` for
+/// `#define REQUIRE(x) do { if (!(x)) die(); } while (0)`. The argument is
+/// replaced by a placeholder, the invocation expanded once per definition,
+/// and the placeholder judged in each expansion as `occ` would be judged in
+/// place -- including, for a result unusable on failure, whether the
+/// expansion reads through it before testing it. A macro used inside the
+/// definition is not expanded in turn, so a test it hides is not seen.
 fn macro_argument_tests(occ: &Node, cx: &Cx, unsigned: bool, requested: Option<&str>) -> bool {
     const PLACEHOLDER: &str = "__sqc_stored_result__";
     let mut current = *occ;
@@ -320,7 +367,17 @@ fn macro_argument_tests(occ: &Node, cx: &Cx, unsigned: bool, requested: Option<&
         return false;
     };
     let name = get_node_text(&callee, cx.source);
-    if !cx.macros.contains_key(name) {
+    if cx.macros.conditional.iter().any(|c| c.contains(name)) {
+        return false;
+    }
+    let alternatives: Vec<&MacroDefinition> = cx
+        .macros
+        .defs
+        .iter()
+        .filter_map(|d| d.get(name))
+        .flatten()
+        .collect();
+    if alternatives.is_empty() {
         return false;
     }
     let mut cursor = args.walk();
@@ -338,21 +395,83 @@ fn macro_argument_tests(occ: &Node, cx: &Cx, unsigned: bool, requested: Option<&
     if !actuals.iter().any(|a| a == PLACEHOLDER) {
         return false;
     }
-    let Some(expanded) = macro_expand::expand_invocation(cx.macros, name, &actuals) else {
-        return false;
-    };
-    let text = format!("void __sqc_expansion(void) {{ {expanded}; }}");
-    let mut parser = tree_sitter::Parser::new();
-    if parser.set_language(&crate::parser::c_language()).is_err() {
-        return false;
+    let key = (
+        name.to_string(),
+        actuals,
+        cx.signal,
+        unsigned,
+        requested.map(str::to_string),
+    );
+    if let Some(&verdict) = cx.macros.cache.borrow().get(&key) {
+        return verdict;
     }
-    let Some(tree) = parser.parse(&text, None) else {
+    let verdict = alternatives.iter().all(|alt| match alt {
+        MacroDefinition::Function { params, body } => {
+            let table = HashMap::from([(
+                name.to_string(),
+                FunctionMacro {
+                    params: params.clone(),
+                    body: body.clone(),
+                },
+            )]);
+            macro_expand::expand_invocation(&table, name, &key.1).is_some_and(|expanded| {
+                expansion_tests(&expanded, PLACEHOLDER, cx.signal, unsigned, requested)
+            })
+        }
+        _ => false,
+    });
+    cx.macros.cache.borrow_mut().insert(key, verdict);
+    verdict
+}
+
+/// Whether `placeholder` is tested in the statement `expanded`, judged in
+/// order: the first occurrence that is a test credits it, and for a result
+/// unusable on failure an earlier use does not.
+fn expansion_tests(
+    expanded: &str,
+    placeholder: &str,
+    signal: ErrorSignal,
+    unsigned: bool,
+    requested: Option<&str>,
+) -> bool {
+    let text = format!("void __sqc_expansion(void) {{ {expanded}; }}");
+    let Some(tree) = parse_expansion(&text) else {
         return false;
     };
-    query::find_descendants_of_kind(tree.root_node(), "identifier")
+    let mut ids: Vec<Node> = query::find_descendants_of_kind(tree.root_node(), "identifier")
         .into_iter()
-        .filter(|id| get_node_text(id, &text) == PLACEHOLDER)
-        .any(|id| occurrence_tests(&id, cx.signal, unsigned, requested, &text))
+        .filter(|id| get_node_text(id, &text) == placeholder)
+        .collect();
+    ids.sort_by_key(|id| id.start_byte());
+    for id in ids {
+        if inside_assert(&id, &text) {
+            continue;
+        }
+        if occurrence_tests(&id, signal, unsigned, requested, &text) {
+            return true;
+        }
+        if signal.is_unusable_on_failure() && !is_test_operand(&id) {
+            return false;
+        }
+    }
+    false
+}
+
+thread_local! {
+    /// One C parser per thread for macro expansions.
+    static EXPANSION_PARSER: RefCell<Option<tree_sitter::Parser>> = const { RefCell::new(None) };
+}
+
+fn parse_expansion(text: &str) -> Option<tree_sitter::Tree> {
+    EXPANSION_PARSER.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            let mut parser = tree_sitter::Parser::new();
+            parser.set_language(&crate::parser::c_language()).ok()?;
+            *slot = Some(parser);
+        }
+        slot.as_mut()?.parse(text, None)
+    })
 }
 
 /// Whether `occ` is itself an operand of a test, through parentheses and
@@ -1095,7 +1214,16 @@ mod tests {
         };
         let name = get_node_text(&call.child_by_field_name("function").unwrap(), code);
         let signal = error_signal_for(name).unwrap_or(ErrorSignal::Any);
-        let macros = macro_expand::collect_function_macros(&root, code);
+        let defs = crate::analyze::check_macros::collect_macro_definitions(code);
+        let conditional = crate::analyze::check_macros::collect_conditional_macro_names(code);
+        let empty_defs = HashMap::new();
+        let empty_names = HashSet::new();
+        let cache = RefCell::new(MacroTestCache::new());
+        let macros = MacroView {
+            defs: [&empty_defs, &defs],
+            conditional: [&empty_names, &conditional],
+            cache: &cache,
+        };
         stored_result_is_tested(&store, &target, &call, signal, code, &macros)
     }
 

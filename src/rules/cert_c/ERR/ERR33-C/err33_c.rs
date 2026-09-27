@@ -50,17 +50,19 @@
 //! discard it is `(void)fclose(fp)`.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::check_macros::{self, MacroDefinition};
 use crate::analyze::const_eval;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
-use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
+use crate::utility::cert_c::ast_utils::{
+    get_identifier_from_declarator, get_node_text, resolve_identifier_declarator,
+};
 use crate::utility::cert_c::result_checks;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
 
@@ -83,11 +85,15 @@ pub struct Err33C {
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     project_aliases: RefCell<Arc<HashMap<String, String>>>,
     current_aliases: RefCell<HashMap<String, String>>,
-    /// Function-like macros: the project's, with this file's own on top. A
-    /// result passed to one is tested when the expansion tests it.
-    project_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
-    current_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
+    /// Every macro definition and conditionally defined name: the prescan's,
+    /// and this file's (set by `check`). A result passed to a function-like
+    /// macro is tested when every definition's expansion tests it.
+    project_macros: RefCell<(Arc<Definitions>, Arc<HashSet<String>>)>,
+    file_macros: RefCell<(Definitions, HashSet<String>)>,
+    macro_test_cache: RefCell<result_checks::MacroTestCache>,
 }
+
+type Definitions = HashMap<String, Vec<MacroDefinition>>;
 
 impl Err33C {
     pub fn new() -> Self {
@@ -96,7 +102,8 @@ impl Err33C {
             project_aliases: RefCell::new(Arc::new(HashMap::new())),
             current_aliases: RefCell::new(HashMap::new()),
             project_macros: RefCell::default(),
-            current_macros: RefCell::default(),
+            file_macros: RefCell::default(),
+            macro_test_cache: RefCell::default(),
         }
     }
 }
@@ -121,19 +128,21 @@ impl CertRule for Err33C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
-        *self.project_macros.borrow_mut() = context.function_macros.clone();
+        *self.project_macros.borrow_mut() = (
+            context.macro_definitions.clone(),
+            context.conditional_macro_names.clone(),
+        );
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         // Merge project-level aliases with per-file aliases (per-file wins)
         *self.current_aliases.borrow_mut() =
             const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
-        let file_macros = macro_expand::collect_function_macros(node, source);
-        let mut macros = self.project_macros.borrow().clone();
-        if !file_macros.is_empty() {
-            Arc::make_mut(&mut macros).extend(file_macros);
-        }
-        *self.current_macros.borrow_mut() = macros;
+        *self.file_macros.borrow_mut() = (
+            check_macros::collect_macro_definitions(source),
+            check_macros::collect_conditional_macro_names(source),
+        );
+        self.macro_test_cache.borrow_mut().clear();
 
         let mut violations = Vec::new();
         self.check_node(node, source, &mut violations);
@@ -271,7 +280,12 @@ impl Err33C {
                 // ERR33-C-EX1, exactly as written (see the module doc):
                 // console output may be discarded, output to any other
                 // stream may not, and sprintf/vsprintf/putc are not in it.
-                if ex1_permits_discard(function_name, call_node, source) {
+                if ex1_permits_discard(
+                    function_name,
+                    call_node,
+                    source,
+                    &self.current_aliases.borrow(),
+                ) {
                     return;
                 }
 
@@ -869,7 +883,13 @@ impl Err33C {
     ) -> bool {
         let signal = result_checks::error_signal_for(function_name)
             .unwrap_or(result_checks::ErrorSignal::Any);
-        let macros = self.current_macros.borrow();
+        let project = self.project_macros.borrow();
+        let file = self.file_macros.borrow();
+        let macros = result_checks::MacroView {
+            defs: [&project.0, &file.0],
+            conditional: [&project.1, &file.1],
+            cache: &self.macro_test_cache,
+        };
         result_checks::stored_result_is_tested(store, target, call, signal, source, &macros)
     }
 
@@ -1157,9 +1177,20 @@ struct ErrorInfo {
 /// Whether ERR33-C-EX1 lets a call to `function_name` have its result
 /// discarded: always for the console functions in its table, and for the
 /// `fprintf` and file-output families only when the stream argument is
-/// `stdout` or `stderr`. A stream held in a variable is not followed: it may
-/// be a file, so the discard is reported.
-fn ex1_permits_discard(function_name: &str, call_node: &Node, source: &str) -> bool {
+/// `stdout` or `stderr`. The stream is named directly or through an
+/// object-like alias (`#define MSG_OUT stderr`, from `aliases`), and is
+/// neither a local nor a parameter of that name (ADR-0006). A stream held in
+/// a variable is not followed: it may be a file, so the discard is reported.
+///
+/// The wide forms and `puts`/`putchar`/`putws`/`putwchar` take effect only
+/// once `is_error_returning_function` lists them; until then this is never
+/// reached for them.
+fn ex1_permits_discard(
+    function_name: &str,
+    call_node: &Node,
+    source: &str,
+    aliases: &HashMap<String, String>,
+) -> bool {
     // Index of the stream among the call's arguments, for the functions EX1
     // exempts only when writing to the console.
     let stream_index = match function_name {
@@ -1173,7 +1204,11 @@ fn ex1_permits_discard(function_name: &str, call_node: &Node, source: &str) -> b
         return false;
     };
     let mut cursor = args.walk();
-    let Some(mut stream) = args.named_children(&mut cursor).nth(stream_index) else {
+    let Some(mut stream) = args
+        .named_children(&mut cursor)
+        .filter(|a| a.kind() != "comment")
+        .nth(stream_index)
+    else {
         return false;
     };
     while stream.kind() == "parenthesized_expression" {
@@ -1182,5 +1217,31 @@ fn ex1_permits_discard(function_name: &str, call_node: &Node, source: &str) -> b
             None => return false,
         }
     }
-    matches!(get_node_text(&stream, source), "stdout" | "stderr")
+    if stream.kind() != "identifier" {
+        return false;
+    }
+    let name = get_node_text(&stream, source);
+    matches!(
+        const_eval::resolve_macro_alias(aliases, name),
+        "stdout" | "stderr"
+    ) && binds_no_local_object(&stream, name, source)
+}
+
+/// Whether `ident` is not bound by a local or parameter declaration: it
+/// resolves to nothing in the file, or to a file-scope `extern` declaration
+/// such as `<stdio.h>`'s own `extern FILE *stderr;`.
+fn binds_no_local_object(ident: &Node, name: &str, source: &str) -> bool {
+    match resolve_identifier_declarator(ident, name, source) {
+        None => true,
+        Some((decl, _)) => {
+            let mut cursor = decl.walk();
+            let is_extern = decl.children(&mut cursor).any(|c| {
+                c.kind() == "storage_class_specifier" && get_node_text(&c, source) == "extern"
+            });
+            is_extern
+                && decl
+                    .parent()
+                    .is_some_and(|p| p.kind() == "translation_unit")
+        }
+    }
 }
