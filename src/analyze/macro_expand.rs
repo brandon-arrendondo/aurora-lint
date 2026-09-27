@@ -186,11 +186,14 @@ pub struct MacroArm {
 }
 
 impl From<&FunctionMacro> for MacroArm {
+    /// Lift a definition from the AST collector, whose body is the raw
+    /// `preproc_arg` text: splice its line continuations, or a `\` between
+    /// an `if (...)` and its `{` hides the block the condition governs.
     fn from(m: &FunctionMacro) -> Self {
         Self {
             params: m.params.clone(),
             variadic: None,
-            body: m.body.clone(),
+            body: m.body.replace("\\\r\n", " ").replace("\\\n", " "),
         }
     }
 }
@@ -3364,5 +3367,46 @@ mod macro_write_tests {
         let e = m(&["c"], "if (c) x = 1; else y = 2;");
         let must = macro_free_identifier_must_writes(&e);
         assert!(!must.contains("x") && !must.contains("y"));
+    }
+
+    fn arm(params: &[&str], body: &str) -> MacroArm {
+        MacroArm::from(&m(params, body))
+    }
+
+    #[test]
+    fn argument_governed_by_if_across_continuations_is_unpredictable() {
+        // The AST collector's body keeps backslash-newlines (sqlite's
+        // SimulateIOError in os_common.h).
+        let a = arm(
+            &["CODE"],
+            "if( a \\\n || b-- == 1 ) \\\n { local_ioerr(); CODE; }",
+        );
+        assert_eq!(argument_evaluation(&a, 0), ArgEvaluation::Unpredictable);
+    }
+
+    #[test]
+    fn argument_evaluation_counts_per_occurrence() {
+        let range = arm(&["x", "low", "high"], "((x) >= (low) && (x) <= (high))");
+        assert_eq!(argument_evaluation(&range, 0), ArgEvaluation::Unpredictable);
+        assert_eq!(argument_evaluation(&range, 1), ArgEvaluation::Once);
+        assert_eq!(argument_evaluation(&range, 2), ArgEvaluation::Unpredictable);
+        let generic = arm(&["v"], "_Generic(v, int : iabs, long : labs)(v)");
+        assert_eq!(argument_evaluation(&generic, 0), ArgEvaluation::Once);
+        let stringize = arm(&["x"], "puts(#x)");
+        assert_eq!(argument_evaluation(&stringize, 0), ArgEvaluation::Never);
+        let empty = arm(&["x"], "");
+        assert_eq!(argument_evaluation(&empty, 0), ArgEvaluation::Never);
+    }
+
+    #[test]
+    fn macro_body_effects_tells_initializers_from_writes() {
+        let local = arm(&["x"], "({ __typeof(x) x_a = (x); x_a != x_a; })");
+        assert!(!macro_body_effects(&local).0);
+        let guarded = arm(&["v"], "({ if (v) last = (v); (v); })");
+        assert!(macro_body_effects(&guarded).0);
+        let shift = arm(&["v"], "(acc <<= (v))");
+        assert!(macro_body_effects(&shift).0);
+        let compare = arm(&["a", "b"], "((a) <= (b) && (a) != 0)");
+        assert!(!macro_body_effects(&compare).0);
     }
 }

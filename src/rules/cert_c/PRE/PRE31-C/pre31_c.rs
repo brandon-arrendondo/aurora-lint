@@ -3,7 +3,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval::{merged_macro_aliases, resolve_macro_alias};
-use crate::analyze::context::{ProjectContext, ScopedTable};
+use crate::analyze::context::{ProjectContext, ScopedTable, VisibleTypes};
 use crate::analyze::function_summary::{extract_function_name, FunctionSummary};
 use crate::analyze::macro_expand::{self, ArgEvaluation, FunctionMacro, MacroArm};
 use crate::manifest::Severity;
@@ -31,6 +31,9 @@ pub struct Pre31C {
     macro_aliases: RefCell<Arc<HashMap<String, String>>>,
     /// Which functions some scanned file defines.
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
+    /// Struct member and typedef types as this file sees them, for a read
+    /// of a `volatile` member.
+    types: RefCell<VisibleTypes>,
     /// `pre31_unknown_call_pure` and `stdlib_call_effects` decide how a
     /// call inside an argument is classified.
     settings: RefCell<Arc<AnalysisSettings>>,
@@ -43,6 +46,7 @@ impl Pre31C {
             function_macro_names: RefCell::new(Arc::new(HashSet::new())),
             macro_aliases: RefCell::new(Arc::new(HashMap::new())),
             function_summaries: RefCell::default(),
+            types: RefCell::default(),
             settings: RefCell::new(Arc::new(AnalysisSettings::default())),
         }
     }
@@ -78,6 +82,10 @@ impl CertRule for Pre31C {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
     }
 
+    fn set_visible_types(&self, types: &VisibleTypes) {
+        *self.types.borrow_mut() = types.clone();
+    }
+
     fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
         *self.settings.borrow_mut() = Arc::clone(settings);
     }
@@ -98,6 +106,7 @@ impl CertRule for Pre31C {
             .collect();
         let settings = Arc::clone(&self.settings.borrow());
         let summaries = self.function_summaries.borrow();
+        let types = self.types.borrow();
         let ctx = Ctx {
             source,
             names: &macro_names,
@@ -106,6 +115,7 @@ impl CertRule for Pre31C {
             aliases: &merged_macro_aliases(&self.macro_aliases.borrow(), node, source),
             local_functions: &local_functions,
             summaries: &summaries,
+            types: &types,
             settings: &settings,
             purity: RefCell::new(HashMap::new()),
         };
@@ -170,6 +180,7 @@ struct Ctx<'a> {
     /// This file's function definitions, by name.
     local_functions: &'a HashMap<String, Node<'a>>,
     summaries: &'a ScopedTable<FunctionSummary>,
+    types: &'a VisibleTypes,
     settings: &'a AnalysisSettings,
     /// Memoized verdicts on this file's functions. A function still being
     /// judged reads as [`Effect::None`], so recursion does not make a pure
@@ -226,6 +237,7 @@ impl<'a> Ctx<'a> {
                     Effect::None
                 }
             }
+            "field_expression" if self.is_volatile_member(node) => Effect::Definite,
             "call_expression" => {
                 let callee = match node.child_by_field_name("function") {
                     Some(f) if f.kind() == "identifier" => {
@@ -287,6 +299,62 @@ impl<'a> Ctx<'a> {
         own_qualifier
             || (ast_utils::declaration_has_qualifier(&decl, "volatile", self.source)
                 && dereferences_applied(ident, self.source) >= levels)
+    }
+
+    /// Whether a member access reads a member declared `volatile` (with as
+    /// many dereferences applied as its declarator has pointers). A volatile
+    /// base object is caught at its identifier by [`Self::is_volatile`].
+    fn is_volatile_member(&self, member: &Node<'a>) -> bool {
+        self.expression_type(member).is_some_and(|ty| {
+            let levels = ty.matches('*').count();
+            ty.split(|c: char| !c.is_alphanumeric() && c != '_')
+                .any(|w| w == "volatile")
+                && dereferences_applied(member, self.source) >= levels
+        })
+    }
+
+    /// The declared type of an lvalue expression built from a scope-resolved
+    /// identifier (ADR-0006), members read from the visible struct tables.
+    /// `typedef_types` holds no struct aliases, so a typedef reaches its
+    /// struct only when the alias and the tag share a name (`typedef struct
+    /// sqlite3_mutex sqlite3_mutex;`, the usual idiom).
+    fn expression_type(&self, node: &Node<'a>) -> Option<String> {
+        let strip_pointer = |t: String| {
+            t.trim_end()
+                .strip_suffix('*')
+                .map(|s| s.trim_end().to_string())
+        };
+        match node.kind() {
+            "identifier" => {
+                let name = get_node_text(node, self.source);
+                ast_utils::resolve_identifier_declared_type(node, name, self.source)
+            }
+            "parenthesized_expression" => self.expression_type(&node.named_child(0)?),
+            "pointer_expression" => {
+                strip_pointer(self.expression_type(&node.child_by_field_name("argument")?)?)
+            }
+            "subscript_expression" => {
+                strip_pointer(self.expression_type(&node.child_by_field_name("argument")?)?)
+            }
+            "field_expression" => {
+                let field = get_node_text(&node.child_by_field_name("field")?, self.source);
+                let mut base = self.expression_type(&node.child_by_field_name("argument")?)?;
+                for _ in 0..4 {
+                    let tag = ast_utils::extract_struct_name_from_type(&base)?.to_string();
+                    if let Some(ty) = self
+                        .types
+                        .struct_field_types
+                        .get(&tag)
+                        .and_then(|f| f.get(field))
+                    {
+                        return Some(ty.clone());
+                    }
+                    base = self.types.typedef_types.get(&tag)?.clone();
+                }
+                None
+            }
+            _ => None,
+        }
     }
 
     /// The side effect of calling `name` (as spelled at the call site).
@@ -378,6 +446,7 @@ impl<'a> Ctx<'a> {
                     Effect::None
                 }
             }
+            "field_expression" if self.is_volatile_member(node) => Effect::Definite,
             "call_expression" => {
                 let callee = match node.child_by_field_name("function") {
                     Some(f) if f.kind() == "identifier" => {
