@@ -78,6 +78,9 @@ docs/_build/
 todo-sqlite-cli-replica.db
 todo-sqlite-cli-replica.db-wal
 todo-sqlite-cli-replica.db-shm
+# send_message attachments land here, in the working directory; they are
+# internal review notes and must never be swept into a commit
+mqtt-files/
 
 # Personal-network / local machine setup notes (not aurora-lint tooling)
 BENCHMARK_PULLING.md
