@@ -79,6 +79,14 @@ pub struct ProjectContext {
     /// EXP36-C must not treat a cast into it as alignment-increasing.
     #[serde(default)]
     pub packed_structs: Arc<HashSet<String>>,
+    /// Functions some scanned file registers as a signal handler
+    /// (`signal`/`sigaction`, directly or through its own wrapper) without
+    /// defining them there, and some scanned file defines. SIG34-C judges
+    /// a definition of one as a handler in the file that defines it,
+    /// unless that definition is `static` (then it is not the function the
+    /// other file names).
+    #[serde(default)]
+    pub signal_handlers_registered_elsewhere: Arc<HashSet<String>>,
     /// Names of functions known never to return to their caller, collected
     /// across all scanned files (incl. headers) by
     /// [`crate::analyze::noreturn::collect_noreturn_names`]: the fixed C

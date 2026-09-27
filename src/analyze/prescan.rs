@@ -66,6 +66,8 @@ struct FilePrescanResult {
     function_pointer_typedef_names: HashSet<String>,
     pointer_typedef_names: HashSet<String>,
     packed_structs: HashSet<String>,
+    /// Signal handlers this file registers without defining them.
+    signal_handlers_defined_elsewhere: HashSet<String>,
     noreturn_functions: crate::analyze::noreturn::NoreturnNames,
     /// Functions this file defines with a body that can return
     /// (`noreturn::collect_returning_definitions`).
@@ -149,6 +151,7 @@ impl FilePrescanResult {
             function_pointer_typedef_names: HashSet::new(),
             pointer_typedef_names: HashSet::new(),
             packed_structs: HashSet::new(),
+            signal_handlers_defined_elsewhere: HashSet::new(),
             noreturn_functions: Default::default(),
             returning_functions: Default::default(),
             keyword_noreturn: HashSet::new(),
@@ -301,6 +304,10 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
             &source,
             &result.noreturn_functions,
         );
+        result.signal_handlers_defined_elsewhere =
+            crate::utility::cert_c::signal_handlers::RegisteredHandlers::signal_handlers_defined_elsewhere(
+                &root, &source,
+            );
         crate::utility::cert_c::ast_utils::collect_packed_macro_names(
             &source,
             &mut result.packed_macro_names,
@@ -566,6 +573,7 @@ fn prescan_file_list(
     let mut function_pointer_typedef_names: HashSet<String> = HashSet::new();
     let mut pointer_typedef_names: HashSet<String> = HashSet::new();
     let mut packed_structs: HashSet<String> = HashSet::new();
+    let mut signal_handlers_registered_elsewhere: HashSet<String> = HashSet::new();
     let mut noreturn_functions = crate::analyze::noreturn::NoreturnNames::default();
     let mut returning_functions = crate::analyze::noreturn::NoreturnNames::default();
     let mut keyword_noreturn: HashSet<String> = HashSet::new();
@@ -827,6 +835,7 @@ fn prescan_file_list(
         function_pointer_typedef_names.extend(r.function_pointer_typedef_names);
         pointer_typedef_names.extend(r.pointer_typedef_names);
         packed_structs.extend(r.packed_structs);
+        signal_handlers_registered_elsewhere.extend(r.signal_handlers_defined_elsewhere);
         // A `static` function defined in a .c file is that file's own: its
         // name in another file is another function, or nothing. So a .c
         // file's static noreturn helpers stay out of the project-wide set --
@@ -1260,6 +1269,11 @@ fn prescan_file_list(
         ))
     });
 
+    // A registering file's unresolved name counts once some scanned file
+    // defines a function by it (what `RegisteredHandlers::collect_in` asks
+    // of the project, deferred to here).
+    signal_handlers_registered_elsewhere.retain(|name| known_functions.contains(name));
+
     Ok(ProjectContext {
         settings: Default::default(),
         known_functions: Arc::new(known_functions),
@@ -1283,6 +1297,7 @@ fn prescan_file_list(
         function_pointer_typedef_names: Arc::new(function_pointer_typedef_names),
         pointer_typedef_names: Arc::new(pointer_typedef_names),
         packed_structs: Arc::new(packed_structs),
+        signal_handlers_registered_elsewhere: Arc::new(signal_handlers_registered_elsewhere),
         noreturn_functions: noreturn_functions.map(|names| Arc::new(names.clone())),
         abort_check_noreturn_functions: abort_check_noreturn.map(|names| Arc::new(names.clone())),
         defined_macro_names: Arc::new(defined_macro_names),

@@ -1937,6 +1937,48 @@ fn crossfile_header_declared_signal_handler_is_registered() {
     }
 }
 
+fn manifest_sig34() -> PathBuf {
+    fixtures().join("manifest_sig34.toml")
+}
+
+fn sig34_lines(file: &str) -> Vec<u64> {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let fixture_dir = fixtures().join("crossfile_sig34");
+    let (code, _, _) = run_aurora_lint(&[
+        fixture_dir.join(file).to_str().unwrap(),
+        "-m",
+        manifest_sig34().to_str().unwrap(),
+        "-d",
+        fixture_dir.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    violations
+        .iter()
+        .filter(|v| v["rule_id"] == "SIG34-C")
+        .map(|v| v["line"].as_u64().unwrap())
+        .collect()
+}
+
+#[test]
+fn crossfile_registered_handler_is_judged_where_it_is_defined() {
+    // main.c registers on_int, which handlers.c defines and which calls
+    // signal() on another signal. With -d the prescan carries the
+    // registration across, so SIG34-C judges handlers.c's definition.
+    assert_eq!(sig34_lines("handlers.c"), vec![6]);
+}
+
+#[test]
+fn crossfile_registration_does_not_reach_a_static_namesake() {
+    // other.c's static on_int is its own function, not the one main.c
+    // registers, and nothing registers it.
+    assert!(sig34_lines("other.c").is_empty());
+}
+
 #[test]
 fn crossfile_sibling_header_suppresses_public_api_without_d_flag() {
     // aurora-lint auto-scans sibling .h files even without -d, so public API functions

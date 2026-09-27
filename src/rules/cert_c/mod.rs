@@ -1217,7 +1217,7 @@ impl RuleRegistry {
         registry.register(Box::new(sig01_c::Sig01C::new()));
         registry.register(Box::new(sig02_c::Sig02C::new()));
         registry.register(Box::new(sig35_c::Sig35C));
-        registry.register(Box::new(sig34_c::Sig34C));
+        registry.register(Box::new(sig34_c::Sig34C::new()));
         registry.register(Box::new(win00_c::Win00C::new()));
         registry.register(Box::new(win01_c::Win01C));
         registry.register(Box::new(win02_c::Win02C));

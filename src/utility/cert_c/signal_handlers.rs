@@ -155,6 +155,28 @@ impl RegisteredHandlers {
         Collector::new(root, source, project).run()
     }
 
+    /// For the prescan, which runs before any project context exists: the
+    /// names this file registers as signal handlers without defining them
+    /// here, so another file's definition can be judged as a handler
+    /// (SIG34-C). A name this file leaves unresolved is kept too; the
+    /// prescan's merge keeps only the names some scanned file defines --
+    /// the check [`Self::collect_in`] makes against the project, deferred
+    /// until the project is known.
+    pub fn signal_handlers_defined_elsewhere(root: &Node, source: &str) -> HashSet<String> {
+        if !API_NAMES.iter().any(|api| source.contains(api)) {
+            return HashSet::new();
+        }
+        let mut collector = Collector::new(root, source, None);
+        collector.defer_unknown = true;
+        collector
+            .run()
+            .registrations
+            .into_iter()
+            .filter(|r| r.kind.is_signal() && !r.defined_here)
+            .map(|r| r.handler)
+            .collect()
+    }
+
     /// Names of every function registered to run on a signal.
     pub fn signal_handler_names(&self) -> HashSet<String> {
         self.names(|k| k.is_signal())
@@ -230,6 +252,10 @@ struct Collector<'a, 's, 'p> {
     root: Node<'a>,
     source: &'s str,
     project: Option<&'p ProjectContext>,
+    /// Count a name this file doesn't resolve as a function, for the
+    /// prescan's merge to check (see
+    /// `RegisteredHandlers::signal_handlers_defined_elsewhere`).
+    defer_unknown: bool,
     functions_defined: HashSet<String>,
     functions_declared: HashSet<String>,
     fn_ptrs: HashMap<String, Vec<String>>,
@@ -296,6 +322,7 @@ impl<'a, 's, 'p> Collector<'a, 's, 'p> {
             root: *root,
             source,
             project,
+            defer_unknown: false,
             functions_defined,
             functions_declared,
             fn_ptrs: file_scope_function_pointer_bindings(root, source),
@@ -628,6 +655,7 @@ impl<'a, 's, 'p> Collector<'a, 's, 'p> {
         if self.functions_defined.contains(name)
             || self.functions_declared.contains(name)
             || in_project
+            || self.defer_unknown
         {
             HandlerRef::Functions(vec![name.to_string()])
         } else {
@@ -1184,10 +1212,14 @@ fn is_ident_byte(b: u8) -> bool {
 mod tests {
     use super::*;
 
-    fn collect(src: &str) -> RegisteredHandlers {
+    fn parse(src: &str) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&crate::parser::c_language()).unwrap();
-        let tree = parser.parse(src, None).unwrap();
+        parser.parse(src, None).unwrap()
+    }
+
+    fn collect(src: &str) -> RegisteredHandlers {
+        let tree = parse(src);
         RegisteredHandlers::collect(&tree.root_node(), src)
     }
 
@@ -1430,6 +1462,26 @@ mod tests {
     fn a_file_naming_no_registering_api_registers_nothing() {
         let r = collect("void f(void) { g(); }\n");
         assert!(r.registrations.is_empty() && r.caller_supplied.is_empty());
+    }
+
+    fn elsewhere(src: &str) -> Vec<String> {
+        let tree = parse(src);
+        let mut names: Vec<String> =
+            RegisteredHandlers::signal_handlers_defined_elsewhere(&tree.root_node(), src)
+                .into_iter()
+                .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn handlers_defined_elsewhere_are_the_prescan_candidates() {
+        let src = "#include <signal.h>\n#include \"h.h\"\n\
+                   static void local(int s) { (void)s; }\n\
+                   void f(void) { void (*old)(int) = signal(SIGHUP, SIG_IGN);\n\
+                   signal(SIGINT, on_int); signal(SIGTERM, local);\n\
+                   signal(SIGHUP, old); atexit(cleanup); }\n";
+        assert_eq!(elsewhere(src), vec!["on_int".to_string()]);
     }
 
     #[test]

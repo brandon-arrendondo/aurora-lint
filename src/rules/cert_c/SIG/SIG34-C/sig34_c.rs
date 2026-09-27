@@ -2,13 +2,36 @@
 // Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
+use crate::utility::cert_c::ast_utils::{
+    declares_static, get_identifier_from_declarator, get_node_text, static_macro_names_in_scope,
+};
 use crate::utility::cert_c::signal_handlers::RegisteredHandlers;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use tree_sitter::Node;
 
-pub struct Sig34C;
+pub struct Sig34C {
+    /// The prescan's context: handlers declared only in a header, and
+    /// handlers another file registers (see
+    /// `ProjectContext::signal_handlers_registered_elsewhere`).
+    project: RefCell<Option<ProjectContext>>,
+}
+
+impl Sig34C {
+    pub fn new() -> Self {
+        Self {
+            project: RefCell::new(None),
+        }
+    }
+}
+
+impl Default for Sig34C {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CertRule for Sig34C {
     fn rule_id(&self) -> &'static str {
@@ -27,6 +50,10 @@ impl CertRule for Sig34C {
         self.rule_id()
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = Some(context.clone());
+    }
+
     fn scan(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.find_signal_handlers(root, source, violations);
     }
@@ -37,15 +64,30 @@ impl Sig34C {
         // A handler is a function this file registers (signal/sigaction,
         // resolved by declaration), never a function that merely has a
         // handler-shaped signature: `setup_signals(int verbose)` isn't one.
-        let handlers = RegisteredHandlers::collect(node, source).signal_handler_names();
-        if handlers.is_empty() {
+        // Another file may register it: then only an external definition is
+        // the function that file names.
+        let project = self.project.borrow();
+        let handlers =
+            RegisteredHandlers::collect_in(node, source, project.as_ref()).signal_handler_names();
+        let elsewhere = project
+            .as_ref()
+            .map(|p| p.signal_handlers_registered_elsewhere.clone())
+            .unwrap_or_default();
+        if handlers.is_empty() && elsewhere.is_empty() {
             return;
         }
+        let static_macros = project
+            .as_ref()
+            .map(|p| static_macro_names_in_scope(source, &p.static_macro_names))
+            .unwrap_or_default();
         for func in query::find_descendants_of_kind(*node, "function_definition") {
             let Some(declarator) = func.child_by_field_name("declarator") else {
                 continue;
             };
-            if !handlers.contains(&get_identifier_from_declarator(&declarator, source)) {
+            let name = get_identifier_from_declarator(&declarator, source);
+            let registered = handlers.contains(&name)
+                || (elsewhere.contains(&name) && !declares_static(&func, source, &static_macros));
+            if !registered {
                 continue;
             }
             let param_name = self

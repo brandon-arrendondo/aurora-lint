@@ -1,0 +1,8 @@
+[metadata]
+name = "CLI Integration Test - SIG34-C only"
+version = "1.0.0"
+description = "Minimal manifest for SIG34-C cross-file handler tests"
+cert_version = "2016"
+
+[rules.cert_c.SIG34-C]
+enabled = true
