@@ -197,10 +197,12 @@ impl CertRule for Mem30C {
         // prescan's cross-file set, and this file's own, under the run's
         // noreturn settings.
         let settings = Arc::clone(&self.settings.borrow());
-        let mut noreturn_names = HashSet::clone(self.noreturn_functions.borrow().get(&settings));
-        noreturn_names.extend(crate::analyze::noreturn::collect_noreturn_function_names(
-            node, source, &settings,
-        ));
+        let noreturn_names = crate::analyze::noreturn::noreturn_names_for_file(
+            self.noreturn_functions.borrow().get(&settings),
+            node,
+            source,
+            &settings,
+        );
 
         let macro_constants =
             const_eval::merged_macro_constants(&self.project_macros.borrow(), node, source);

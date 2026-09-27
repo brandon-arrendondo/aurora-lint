@@ -201,6 +201,25 @@ pub fn collect_noreturn_function_names(
     names.get(settings).clone()
 }
 
+/// The noreturn names a call in `root` can reach: `project` (the prescan's
+/// cross-file set) less every function this file defines `static`, plus
+/// [`collect_noreturn_function_names`] for `root`. A file's own static is
+/// the function its calls reach, so another file's same-named noreturn
+/// function must not end a path through it; the file's own noreturn helpers
+/// come back through the per-file set.
+pub fn noreturn_names_for_file(
+    project: &HashSet<String>,
+    root: &Node,
+    source: &str,
+    settings: &AnalysisSettings,
+) -> HashSet<String> {
+    let mut own_statics = HashSet::new();
+    crate::analyze::prescan::collect_static_function_names(root, source, &mut own_statics);
+    let mut names: HashSet<String> = project.difference(&own_statics).cloned().collect();
+    names.extend(collect_noreturn_function_names(root, source, settings));
+    names
+}
+
 /// Collect the names of every function in `root` recognized as noreturn by
 /// the signals documented at module level, under each combination of
 /// `trust_noreturn_keyword` and `stdlib_noreturn`.

@@ -2057,6 +2057,80 @@ fn static_noreturn_helper_is_its_own_files() {
     assert_eq!(in_b.len(), 2, "{violations:?}");
 }
 
+/// A file's own static shadows another file's external function of the same
+/// name. a_exits.c's external die() exits; b_returns.c's static die()
+/// returns, so its use-after-free and double free on the `e` path are
+/// reported.
+#[test]
+fn own_static_shadows_another_files_external_noreturn() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/cli/extern_noreturn_vs_own_static");
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("rules_templates/rules-all.toml");
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("out.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        dir.to_str().unwrap(),
+        "-d",
+        dir.to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "--rules",
+        "MEM30-C",
+        "-j",
+        "1",
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let found: Vec<_> = violations
+        .iter()
+        .filter(|v| {
+            v["rule_id"] == "MEM30-C"
+                && v["file"]
+                    .as_str()
+                    .is_some_and(|f| f.ends_with("b_returns.c"))
+        })
+        .collect();
+    assert_eq!(found.len(), 2, "{violations:?}");
+}
+
+/// A .c file another .c file #includes is compiled as part of its includer,
+/// so helpers.c's static die() ends main.c's `e` path: nothing there is used
+/// after free.
+#[test]
+fn included_c_files_static_noreturn_helper_reaches_its_includer() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/cli/included_c_static_noreturn");
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("rules_templates/rules-all.toml");
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("out.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        dir.to_str().unwrap(),
+        "-d",
+        dir.to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "--rules",
+        "MEM30-C",
+        "-j",
+        "1",
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let found: Vec<_> = violations
+        .iter()
+        .filter(|v| {
+            v["rule_id"] == "MEM30-C" && v["file"].as_str().is_some_and(|f| f.ends_with("main.c"))
+        })
+        .collect();
+    assert_eq!(found.len(), 0, "{violations:?}");
+}
+
 /// A pointer global's null state is joined across the files that define or
 /// assign it. z_assigns_buffer.c's non-null assignment used to replace
 /// a_defines_null.c's NULL, so m_dereferences.c's dereference went unreported.

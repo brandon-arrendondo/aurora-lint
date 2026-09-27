@@ -159,10 +159,12 @@ impl CertRule for Mem31C {
         // The prescan set carries declarations from headers this parse never
         // sees; the per-file pass catches a helper declared only here.
         let settings = Arc::clone(&self.settings.borrow());
-        let mut noreturn_names = HashSet::clone(self.noreturn_functions.borrow().get(&settings));
-        noreturn_names.extend(crate::analyze::noreturn::collect_noreturn_function_names(
-            node, source, &settings,
-        ));
+        let noreturn_names = crate::analyze::noreturn::noreturn_names_for_file(
+            self.noreturn_functions.borrow().get(&settings),
+            node,
+            source,
+            &settings,
+        );
         let macro_aliases =
             const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
 

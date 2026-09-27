@@ -1437,7 +1437,11 @@ fn has_static_specifier(node: &Node, source: &str) -> bool {
 /// this file (not prototypes) -- used at cross-file merge time to detect the
 /// same bare name defined as two unrelated internal-linkage functions in
 /// different files.
-fn collect_static_function_names(node: &Node, source: &str, names: &mut HashSet<String>) {
+pub(crate) fn collect_static_function_names(
+    node: &Node,
+    source: &str,
+    names: &mut HashSet<String>,
+) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if child.kind() == "function_definition" {
