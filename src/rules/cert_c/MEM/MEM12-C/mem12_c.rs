@@ -57,7 +57,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::macro_expand::{
-    collect_function_macros, macro_frees_param_indices, FunctionMacro,
+    collect_function_macros, macro_frees_param_indices, FunctionMacro, Live,
 };
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
@@ -186,7 +186,7 @@ impl Mem12C {
                     if func_name == "fclose" || func_name == "free" || func_name == "close" {
                         Some(0)
                     } else {
-                        macro_frees_param_indices(function_macros, &func_name)
+                        macro_frees_param_indices(function_macros, &func_name, Live::All)
                             .into_iter()
                             .next()
                     };

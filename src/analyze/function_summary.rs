@@ -4717,7 +4717,7 @@ fn credit_frees_params(
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     summary: &mut FunctionSummary,
 ) {
-    use crate::analyze::macro_expand::macro_frees_param_indices;
+    use crate::analyze::macro_expand::{macro_frees_param_indices, Live};
     use crate::utility::cert_c::ast_utils;
 
     for &call in calls {
@@ -4756,7 +4756,8 @@ fn credit_frees_params(
             continue;
         }
 
-        let macro_idxs = macro_frees_param_indices(function_macros, func_name);
+        // A MAY-free fact, unioned like the summary's own `frees_params`.
+        let macro_idxs = macro_frees_param_indices(function_macros, func_name, Live::Any);
         if !macro_idxs.is_empty() {
             for idx in macro_idxs {
                 if let Some(&arg) = real.get(idx) {
@@ -5486,7 +5487,7 @@ fn collect_frees_param_fields(
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     summary: &mut FunctionSummary,
 ) {
-    use crate::analyze::macro_expand::macro_nulls_param_indices;
+    use crate::analyze::macro_expand::{macro_nulls_param_indices, Live};
     use crate::analyze::points_to::LValue;
     use crate::utility::cert_c::ast_utils;
 
@@ -5547,7 +5548,7 @@ fn collect_frees_param_fields(
             continue;
         }
 
-        let null_idxs = macro_nulls_param_indices(function_macros, func_name);
+        let null_idxs = macro_nulls_param_indices(function_macros, func_name, Live::All);
         if !null_idxs.is_empty() {
             for idx in null_idxs {
                 if let Some(arg) = args.get(idx) {

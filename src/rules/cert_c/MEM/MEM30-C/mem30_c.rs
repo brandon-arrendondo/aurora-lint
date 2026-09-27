@@ -150,7 +150,11 @@ impl CertRule for Mem30C {
             let mut nulls: HashMap<String, Vec<usize>> = HashMap::new();
             let mut clears: HashMap<String, Vec<usize>> = HashMap::new();
             for name in invoked {
-                let idx = crate::analyze::macro_expand::macro_nulls_param_indices(&macros, &name);
+                let idx = crate::analyze::macro_expand::macro_nulls_param_indices(
+                    &macros,
+                    &name,
+                    crate::analyze::macro_expand::Live::All,
+                );
                 if !idx.is_empty() {
                     nulls.insert(name.clone(), idx);
                 }
@@ -159,7 +163,11 @@ impl CertRule for Mem30C {
                 // exactly as MEM03-C pairs them: hostap's `#define
                 // os_memset(s, c, n) memset(s, c, n)` is the same overwrite
                 // as a direct `memset`, and must clear the same freed paths.
-                let idx = crate::analyze::macro_expand::macro_clears_param_indices(&macros, &name);
+                let idx = crate::analyze::macro_expand::macro_clears_param_indices(
+                    &macros,
+                    &name,
+                    crate::analyze::macro_expand::Live::All,
+                );
                 if !idx.is_empty() {
                     clears.insert(name, idx);
                 }

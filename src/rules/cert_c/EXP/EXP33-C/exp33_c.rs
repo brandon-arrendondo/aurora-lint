@@ -290,7 +290,9 @@ impl CertRule for Exp33C {
                     let cross_file_summaries = self.cross_file_summaries.borrow();
                     for name in invoked {
                         let mut idx = crate::analyze::macro_expand::macro_output_param_indices(
-                            &macros, &name,
+                            &macros,
+                            &name,
+                            crate::analyze::macro_expand::Live::All,
                         );
                         // No output arg from the macro's own body text? It may
                         // still be a "pure forwarding" macro (curl's

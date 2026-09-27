@@ -800,10 +800,15 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         if self.function_macros.is_empty() {
             return Vec::new();
         }
-        macro_expand::macro_param_indices_released_by(self.function_macros, func_name, |callee| {
-            let resolved = const_eval::resolve_macro_alias(self.macro_aliases, callee);
-            resolved == "free" || self.is_named_deallocator(resolved, site)
-        })
+        macro_expand::macro_param_indices_released_by(
+            self.function_macros,
+            func_name,
+            |callee| {
+                let resolved = const_eval::resolve_macro_alias(self.macro_aliases, callee);
+                resolved == "free" || self.is_named_deallocator(resolved, site)
+            },
+            macro_expand::Live::All,
+        )
     }
 
     /// `func_name`'s summary as the call at `site` sees it: facts from a
@@ -3555,7 +3560,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         if frees.is_empty() {
             return false;
         }
-        let nulls = macro_expand::macro_nulls_param_indices(self.function_macros, func_name);
+        let nulls = macro_expand::macro_nulls_param_indices(
+            self.function_macros,
+            func_name,
+            macro_expand::Live::All,
+        );
         let Some(arguments) = node.child_by_field_name("arguments") else {
             return true;
         };

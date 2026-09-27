@@ -142,23 +142,37 @@ impl MacroLookup for WithDefinition<'_> {
     }
 }
 
+/// Which live definitions of a macro a consumer needs to agree before it
+/// acts on a parameter fact (ADR-0010 D1, merged toward the finding per
+/// consumer). A consumer the fact ACCUSES through -- EXP34-C reading a
+/// null as the start of a dereference finding -- asks for `Any`: one build
+/// is enough. A consumer the fact SUPPRESSES -- MEM31-C crediting a free
+/// against a leak, EXP33-C an output against an uninitialized read -- asks
+/// for `All`: every build must do it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Live {
+    /// The fact holds if some live definition has it.
+    Any,
+    /// The fact holds only if every live definition has it.
+    All,
+}
+
 /// How a parameter fact is merged across a macro's live definitions. Each
 /// definition is a configuration some build compiles, and a violation any
 /// configuration produces is reported (ADR-0010 D1), so the merge goes
 /// toward the finding.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Merge {
-    /// Union, for a free: a build whose definition frees the argument uses
-    /// freed memory if the caller touches it again. A definition the
-    /// expander cannot read adds nothing.
+    /// Union ([`Live::Any`]). A definition the expander cannot read adds
+    /// nothing.
     Union,
-    /// Intersection, for a clear: it holds only if every definition does
-    /// it, since a build whose definition leaves the argument alone leaves
-    /// it uncleared. A definition the expander cannot read proves nothing,
-    /// so the fact is empty.
+    /// Intersection over every definition ([`Live::All`] for a free or a
+    /// clear): a build whose definition leaves the argument alone neither
+    /// frees nor clears it. A definition the expander cannot read proves
+    /// nothing, so the fact is empty.
     Intersect,
-    /// Intersection over the definitions that mention the parameter, for a
-    /// write or a null: a definition that drops the argument entirely
+    /// Intersection over the definitions that mention the parameter
+    /// ([`Live::All`] for a write or a null): a definition that drops the argument entirely
     /// (hostap's `for_each_mld_link(partner, self)` is `if (false)` without
     /// CONFIG_IEEE80211BE) neither reads nor frees it in that build, so it
     /// is no build in which the argument is left unwritten and then read,
@@ -1936,13 +1950,13 @@ pub(crate) fn parse_call_args(chars: &[char], open: usize) -> Option<(Vec<String
 pub fn macro_output_param_indices(
     table: &HashMap<String, FunctionMacro>,
     name: &str,
+    live: Live,
 ) -> Vec<usize> {
-    over_live_definitions(
-        table,
-        name,
-        Merge::IntersectWhereUsed,
-        output_param_indices_in,
-    )
+    let merge = match live {
+        Live::Any => Merge::Union,
+        Live::All => Merge::IntersectWhereUsed,
+    };
+    over_live_definitions(table, name, merge, output_param_indices_in)
 }
 
 fn output_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
@@ -2008,13 +2022,16 @@ pub fn macro_expands_to_case_label(table: &HashMap<String, FunctionMacro>, name:
 /// removing use-after-free / double-free false positives on safe-free wrappers.
 /// (mosquitto `mosquitto_FREE`, `SAFE_FREE` share the idiom — engine, not
 /// allowlist.)
-pub fn macro_nulls_param_indices(table: &HashMap<String, FunctionMacro>, name: &str) -> Vec<usize> {
-    over_live_definitions(
-        table,
-        name,
-        Merge::IntersectWhereUsed,
-        nulls_param_indices_in,
-    )
+pub fn macro_nulls_param_indices(
+    table: &HashMap<String, FunctionMacro>,
+    name: &str,
+    live: Live,
+) -> Vec<usize> {
+    let merge = match live {
+        Live::Any => Merge::Union,
+        Live::All => Merge::IntersectWhereUsed,
+    };
+    over_live_definitions(table, name, merge, nulls_param_indices_in)
 }
 
 fn nulls_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
@@ -2061,13 +2078,13 @@ fn nulls_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
 pub fn macro_writes_param_indices(
     table: &HashMap<String, FunctionMacro>,
     name: &str,
+    live: Live,
 ) -> Vec<usize> {
-    over_live_definitions(
-        table,
-        name,
-        Merge::IntersectWhereUsed,
-        writes_param_indices_in,
-    )
+    let merge = match live {
+        Live::Any => Merge::Union,
+        Live::All => Merge::IntersectWhereUsed,
+    };
+    over_live_definitions(table, name, merge, writes_param_indices_in)
 }
 
 fn writes_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
@@ -2336,8 +2353,16 @@ const DEALLOC_FUNCTIONS: &[&str] = &["free", "fclose", "close"];
 /// the pointer — callers that only need to know the resource was released
 /// (e.g. MEM12-C's early-return leak check) don't need the null-clearing
 /// signal.
-pub fn macro_frees_param_indices(table: &HashMap<String, FunctionMacro>, name: &str) -> Vec<usize> {
-    over_live_definitions(table, name, Merge::Union, frees_param_indices_in)
+pub fn macro_frees_param_indices(
+    table: &HashMap<String, FunctionMacro>,
+    name: &str,
+    live: Live,
+) -> Vec<usize> {
+    let merge = match live {
+        Live::Any => Merge::Union,
+        Live::All => Merge::Intersect,
+    };
+    over_live_definitions(table, name, merge, frees_param_indices_in)
 }
 
 fn frees_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
@@ -2373,8 +2398,13 @@ fn frees_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
 pub fn macro_clears_param_indices(
     table: &HashMap<String, FunctionMacro>,
     name: &str,
+    live: Live,
 ) -> Vec<usize> {
-    over_live_definitions(table, name, Merge::Intersect, clears_param_indices_in)
+    let merge = match live {
+        Live::Any => Merge::Union,
+        Live::All => Merge::Intersect,
+    };
+    over_live_definitions(table, name, merge, clears_param_indices_in)
 }
 
 fn clears_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
@@ -2428,8 +2458,13 @@ pub fn macro_param_indices_released_by(
     table: &HashMap<String, FunctionMacro>,
     name: &str,
     releases: impl Fn(&str) -> bool,
+    live: Live,
 ) -> Vec<usize> {
-    over_live_definitions(table, name, Merge::Union, |table, name| {
+    let merge = match live {
+        Live::Any => Merge::Union,
+        Live::All => Merge::Intersect,
+    };
+    over_live_definitions(table, name, merge, |table, name| {
         let mut active = HashSet::new();
         released_param_indices(table, name, &releases, &mut active, 0)
     })
@@ -2958,19 +2993,19 @@ mod tests {
             "#define READS(n) ((n) + 1)\n",
         ));
         assert_eq!(
-            macro_writes_param_indices(&t, "CHACHA20_QUARTERROUND"),
+            macro_writes_param_indices(&t, "CHACHA20_QUARTERROUND", Live::All),
             vec![0, 1, 2, 3]
         );
-        assert_eq!(macro_writes_param_indices(&t, "BUMP"), vec![0]);
-        assert_eq!(macro_writes_param_indices(&t, "PRE"), vec![0]);
-        assert!(macro_writes_param_indices(&t, "READS").is_empty());
+        assert_eq!(macro_writes_param_indices(&t, "BUMP", Live::All), vec![0]);
+        assert_eq!(macro_writes_param_indices(&t, "PRE", Live::All), vec![0]);
+        assert!(macro_writes_param_indices(&t, "READS", Live::All).is_empty());
         // `*(p) += 1` writes THROUGH p (writes_through_pointer's business), and
         // must not be reported as a whole-object compound write of p itself.
         assert!(!is_compound_assignment_target("(*(p) += 1)", "p"));
         // The output-argument predicate must stay strict: a compound
         // assignment reads its target first.
         assert_eq!(
-            macro_output_param_indices(&t, "CHACHA20_QUARTERROUND"),
+            macro_output_param_indices(&t, "CHACHA20_QUARTERROUND", Live::All),
             vec![1, 3]
         );
     }
@@ -3115,7 +3150,7 @@ mod tests {
     fn output_param_simple_assignment() {
         // The first parameter is assigned; the others are only read.
         let t = table("#define SAVE(out, a, b) do { (out) = (a) + (b); } while(0)\n");
-        assert_eq!(macro_output_param_indices(&t, "SAVE"), vec![0]);
+        assert_eq!(macro_output_param_indices(&t, "SAVE", Live::All), vec![0]);
     }
 
     #[test]
@@ -3126,7 +3161,10 @@ mod tests {
             "#define CF_CTX_CALL_DATA(cf) ((cf)->ctx->call_data)\n\
              #define CF_DATA_SAVE(save, cf, data) do { (save) = CF_CTX_CALL_DATA(cf); CF_CTX_CALL_DATA(cf).data = (data); } while(0)\n",
         );
-        assert_eq!(macro_output_param_indices(&t, "CF_DATA_SAVE"), vec![0]);
+        assert_eq!(
+            macro_output_param_indices(&t, "CF_DATA_SAVE", Live::All),
+            vec![0]
+        );
     }
 
     #[test]
@@ -3138,9 +3176,9 @@ mod tests {
              #define EW(p) do { (p)[0] = 1; } while(0)\n\
              #define DW(p) do { *(p) = 1; } while(0)\n",
         );
-        assert!(macro_output_param_indices(&t, "FW").is_empty());
-        assert!(macro_output_param_indices(&t, "EW").is_empty());
-        assert!(macro_output_param_indices(&t, "DW").is_empty());
+        assert!(macro_output_param_indices(&t, "FW", Live::All).is_empty());
+        assert!(macro_output_param_indices(&t, "EW", Live::All).is_empty());
+        assert!(macro_output_param_indices(&t, "DW", Live::All).is_empty());
     }
 
     #[test]
@@ -3150,20 +3188,23 @@ mod tests {
             "#define ADDEQ(x, y) do { (x) += (y); } while(0)\n\
              #define CMP(x, y) ((x) == (y))\n",
         );
-        assert!(macro_output_param_indices(&t, "ADDEQ").is_empty());
-        assert!(macro_output_param_indices(&t, "CMP").is_empty());
+        assert!(macro_output_param_indices(&t, "ADDEQ", Live::All).is_empty());
+        assert!(macro_output_param_indices(&t, "CMP", Live::All).is_empty());
     }
 
     #[test]
     fn output_param_multiple_outputs() {
         let t = table("#define BOTH(a, b, c) do { a = 1; b = 2; (void)c; } while(0)\n");
-        assert_eq!(macro_output_param_indices(&t, "BOTH"), vec![0, 1]);
+        assert_eq!(
+            macro_output_param_indices(&t, "BOTH", Live::All),
+            vec![0, 1]
+        );
     }
 
     #[test]
     fn output_param_unknown_macro_is_empty() {
         let t = table("#define X(a) (a)\n");
-        assert!(macro_output_param_indices(&t, "NOPE").is_empty());
+        assert!(macro_output_param_indices(&t, "NOPE", Live::All).is_empty());
     }
 
     // ── Macro write-through-pointer detection (EXP34-C/ARR00-C) ────────────
@@ -3177,15 +3218,15 @@ mod tests {
              #define EW(p) do { (p)[0] = 1; } while(0)\n\
              #define DW(p) do { *(p) = 1; } while(0)\n",
         );
-        assert_eq!(macro_writes_param_indices(&t, "FW"), vec![0]);
-        assert_eq!(macro_writes_param_indices(&t, "EW"), vec![0]);
-        assert_eq!(macro_writes_param_indices(&t, "DW"), vec![0]);
+        assert_eq!(macro_writes_param_indices(&t, "FW", Live::All), vec![0]);
+        assert_eq!(macro_writes_param_indices(&t, "EW", Live::All), vec![0]);
+        assert_eq!(macro_writes_param_indices(&t, "DW", Live::All), vec![0]);
     }
 
     #[test]
     fn writes_param_still_includes_whole_object_assignment() {
         let t = table("#define SAVE(out, a, b) do { (out) = (a) + (b); } while(0)\n");
-        assert_eq!(macro_writes_param_indices(&t, "SAVE"), vec![0]);
+        assert_eq!(macro_writes_param_indices(&t, "SAVE", Live::All), vec![0]);
     }
 
     #[test]
@@ -3193,7 +3234,10 @@ mod tests {
         // sqlite's fts3GetVarint32(p, piVal): *piVal = *(u8*)(p) -- a deref
         // write to the second (output) parameter.
         let t = table("#define fts3GetVarint32(p, piVal) (*(piVal) = *(unsigned char*)(p))\n");
-        assert_eq!(macro_writes_param_indices(&t, "fts3GetVarint32"), vec![1]);
+        assert_eq!(
+            macro_writes_param_indices(&t, "fts3GetVarint32", Live::All),
+            vec![1]
+        );
     }
 
     #[test]
@@ -3202,14 +3246,14 @@ mod tests {
             "#define READ(p) ((p)->f)\n\
              #define CMP(p) ((p)->f == 1)\n",
         );
-        assert!(macro_writes_param_indices(&t, "READ").is_empty());
-        assert!(macro_writes_param_indices(&t, "CMP").is_empty());
+        assert!(macro_writes_param_indices(&t, "READ", Live::All).is_empty());
+        assert!(macro_writes_param_indices(&t, "CMP", Live::All).is_empty());
     }
 
     #[test]
     fn writes_param_unknown_macro_is_empty() {
         let t = table("#define X(a) (a)\n");
-        assert!(macro_writes_param_indices(&t, "NOPE").is_empty());
+        assert!(macro_writes_param_indices(&t, "NOPE", Live::All).is_empty());
     }
 
     // ── Free-and-null (safe-free) macro detection ───────────────────────────
@@ -3222,7 +3266,10 @@ mod tests {
             "#define curlx_free(p) free(p)\n\
              #define Curl_safefree(ptr) do { curlx_free(ptr); (ptr) = NULL; } while(0)\n",
         );
-        assert_eq!(macro_nulls_param_indices(&t, "Curl_safefree"), vec![0]);
+        assert_eq!(
+            macro_nulls_param_indices(&t, "Curl_safefree", Live::All),
+            vec![0]
+        );
     }
 
     #[test]
@@ -3235,9 +3282,10 @@ mod tests {
             "#define RELEASE(p) free(p)\n",
             "#endif\n",
         ));
-        assert_eq!(macro_frees_param_indices(&t, "RELEASE"), vec![0]);
+        assert_eq!(macro_frees_param_indices(&t, "RELEASE", Live::Any), vec![0]);
+        assert!(macro_frees_param_indices(&t, "RELEASE", Live::All).is_empty());
         assert_eq!(
-            macro_param_indices_released_by(&t, "RELEASE", |c| c == "free"),
+            macro_param_indices_released_by(&t, "RELEASE", |c| c == "free", Live::Any),
             vec![0]
         );
     }
@@ -3251,8 +3299,15 @@ mod tests {
             "#define SAFE_FREE(x) free(x)\n",
             "#endif\n",
         ));
-        assert!(macro_nulls_param_indices(&t, "SAFE_FREE").is_empty());
-        assert_eq!(macro_frees_param_indices(&t, "SAFE_FREE"), vec![0]);
+        assert!(macro_nulls_param_indices(&t, "SAFE_FREE", Live::All).is_empty());
+        assert_eq!(
+            macro_frees_param_indices(&t, "SAFE_FREE", Live::All),
+            vec![0]
+        );
+        assert_eq!(
+            macro_nulls_param_indices(&t, "SAFE_FREE", Live::Any),
+            vec![0]
+        );
         let both = table(concat!(
             "#ifdef TRACK\n",
             "#define SAFE_FREE(x) do { trace(x); free(x); (x) = NULL; } while(0)\n",
@@ -3260,7 +3315,10 @@ mod tests {
             "#define SAFE_FREE(x) do { free(x); (x) = NULL; } while(0)\n",
             "#endif\n",
         ));
-        assert_eq!(macro_nulls_param_indices(&both, "SAFE_FREE"), vec![0]);
+        assert_eq!(
+            macro_nulls_param_indices(&both, "SAFE_FREE", Live::All),
+            vec![0]
+        );
     }
 
     #[test]
@@ -3274,7 +3332,10 @@ mod tests {
             "#define for_each_link(partner, self) if (0)\n",
             "#endif\n",
         ));
-        assert_eq!(macro_output_param_indices(&t, "for_each_link"), vec![0]);
+        assert_eq!(
+            macro_output_param_indices(&t, "for_each_link", Live::All),
+            vec![0]
+        );
         // A definition that reads the argument instead still undoes it.
         let reads = table(concat!(
             "#ifdef FAST\n",
@@ -3283,7 +3344,7 @@ mod tests {
             "#define FETCH(out, v) log_value((out), (v))\n",
             "#endif\n",
         ));
-        assert!(macro_output_param_indices(&reads, "FETCH").is_empty());
+        assert!(macro_output_param_indices(&reads, "FETCH", Live::All).is_empty());
     }
 
     #[test]
@@ -3295,8 +3356,8 @@ mod tests {
             "#define SET(out, v) ((out) = (v))\n",
             "#endif\n",
         ));
-        assert!(macro_output_param_indices(&t, "SET").is_empty());
-        assert!(macro_writes_param_indices(&t, "SET").is_empty());
+        assert!(macro_output_param_indices(&t, "SET", Live::All).is_empty());
+        assert!(macro_writes_param_indices(&t, "SET", Live::All).is_empty());
         let frees = table(concat!(
             "#ifdef VARIADIC\n",
             "#define DROP(p, ...) free(p)\n",
@@ -3304,7 +3365,11 @@ mod tests {
             "#define DROP(p) free(p)\n",
             "#endif\n",
         ));
-        assert_eq!(macro_frees_param_indices(&frees, "DROP"), vec![0]);
+        assert_eq!(
+            macro_frees_param_indices(&frees, "DROP", Live::Any),
+            vec![0]
+        );
+        assert!(macro_frees_param_indices(&frees, "DROP", Live::All).is_empty());
     }
 
     #[test]
@@ -3319,7 +3384,10 @@ mod tests {
             "#endif\n",
         ));
         assert!(t["SAFE_FREE"].alternatives.is_empty());
-        assert_eq!(macro_nulls_param_indices(&t, "SAFE_FREE"), vec![0]);
+        assert_eq!(
+            macro_nulls_param_indices(&t, "SAFE_FREE", Live::All),
+            vec![0]
+        );
     }
 
     #[test]
@@ -3337,8 +3405,8 @@ mod tests {
         b.absorb(nulls.clone());
         for merged in [a, b] {
             let t: HashMap<String, FunctionMacro> = [("F".to_string(), merged)].into();
-            assert!(macro_nulls_param_indices(&t, "F").is_empty());
-            assert_eq!(macro_frees_param_indices(&t, "F"), vec![0]);
+            assert!(macro_nulls_param_indices(&t, "F", Live::All).is_empty());
+            assert_eq!(macro_frees_param_indices(&t, "F", Live::Any), vec![0]);
         }
         let mut same = frees.clone();
         same.absorb(m(&["y"], "free(y)"));
@@ -3348,14 +3416,17 @@ mod tests {
     #[test]
     fn nulls_param_zero_literal() {
         let t = table("#define SAFE_FREE(x) do { free(x); (x) = 0; } while(0)\n");
-        assert_eq!(macro_nulls_param_indices(&t, "SAFE_FREE"), vec![0]);
+        assert_eq!(
+            macro_nulls_param_indices(&t, "SAFE_FREE", Live::All),
+            vec![0]
+        );
     }
 
     #[test]
     fn nulls_param_excludes_plain_free_no_null() {
         // A free wrapper that does NOT null its arg must not be reported.
         let t = table("#define just_free(p) free(p)\n");
-        assert!(macro_nulls_param_indices(&t, "just_free").is_empty());
+        assert!(macro_nulls_param_indices(&t, "just_free", Live::All).is_empty());
     }
 
     #[test]
@@ -3365,15 +3436,15 @@ mod tests {
             "#define SETONE(x) do { (x) = 1; } while(0)\n\
              #define CLEARF(p) do { (p)->next = NULL; } while(0)\n",
         );
-        assert!(macro_nulls_param_indices(&t, "SETONE").is_empty());
-        assert!(macro_nulls_param_indices(&t, "CLEARF").is_empty());
+        assert!(macro_nulls_param_indices(&t, "SETONE", Live::All).is_empty());
+        assert!(macro_nulls_param_indices(&t, "CLEARF", Live::All).is_empty());
     }
 
     #[test]
     fn nulls_param_only_nulled_arg() {
         // Frees a, nulls b — only b is the nulled param.
         let t = table("#define FN(a, b) do { free(a); (b) = NULL; } while(0)\n");
-        assert_eq!(macro_nulls_param_indices(&t, "FN"), vec![1]);
+        assert_eq!(macro_nulls_param_indices(&t, "FN", Live::All), vec![1]);
     }
 
     // ── Case-label macro detection ──────────────────────────────────────────
@@ -3408,19 +3479,29 @@ mod tests {
     #[test]
     fn frees_param_simple_fclose_wrapper() {
         let t = table("#define SAFE_FCLOSE(f) fclose(f)\n");
-        assert_eq!(macro_frees_param_indices(&t, "SAFE_FCLOSE"), vec![0]);
+        assert_eq!(
+            macro_frees_param_indices(&t, "SAFE_FCLOSE", Live::All),
+            vec![0]
+        );
     }
 
     #[test]
     fn frees_param_safe_free_shape() {
         let t = table("#define SAFE_FREE(x) do { free(x); (x) = NULL; } while(0)\n");
-        assert_eq!(macro_frees_param_indices(&t, "SAFE_FREE"), vec![0]);
+        assert_eq!(
+            macro_frees_param_indices(&t, "SAFE_FREE", Live::All),
+            vec![0]
+        );
+        assert_eq!(
+            macro_nulls_param_indices(&t, "SAFE_FREE", Live::Any),
+            vec![0]
+        );
     }
 
     #[test]
     fn frees_param_unrelated_macro_is_empty() {
         let t = table("#define MIN(x,y) (((x) < (y)) ? (x) : (y))\n");
-        assert!(macro_frees_param_indices(&t, "MIN").is_empty());
+        assert!(macro_frees_param_indices(&t, "MIN", Live::All).is_empty());
     }
 
     /// curl's `Curl_safefree` frees through `curlx_free`, a name the fixed
@@ -3441,25 +3522,27 @@ mod tests {
         );
         let is_free = |name: &str| name == "curlx_free" || name == "free";
         assert_eq!(
-            macro_param_indices_released_by(&t, "CAST_FREE", is_free),
+            macro_param_indices_released_by(&t, "CAST_FREE", is_free, Live::All),
             vec![0]
         );
-        assert!(macro_param_indices_released_by(&t, "TABLE_FREE", is_free).is_empty());
-        assert!(macro_frees_param_indices(&t, "Curl_safefree").is_empty());
+        assert!(macro_param_indices_released_by(&t, "TABLE_FREE", is_free, Live::All).is_empty());
+        assert!(macro_frees_param_indices(&t, "Curl_safefree", Live::All).is_empty());
         assert_eq!(
-            macro_param_indices_released_by(&t, "Curl_safefree", is_free),
+            macro_param_indices_released_by(&t, "Curl_safefree", is_free, Live::All),
             vec![0]
         );
         assert_eq!(
-            macro_param_indices_released_by(&t, "PAIR_FREE", is_free),
+            macro_param_indices_released_by(&t, "PAIR_FREE", is_free, Live::All),
             vec![1]
         );
         assert_eq!(
-            macro_param_indices_released_by(&t, "SWAP_FREE", is_free),
+            macro_param_indices_released_by(&t, "SWAP_FREE", is_free, Live::All),
             vec![0]
         );
-        assert!(macro_param_indices_released_by(&t, "Curl_safefree", |_| false).is_empty());
-        assert!(macro_param_indices_released_by(&t, "NOPE", is_free).is_empty());
+        assert!(
+            macro_param_indices_released_by(&t, "Curl_safefree", |_| false, Live::All).is_empty()
+        );
+        assert!(macro_param_indices_released_by(&t, "NOPE", is_free, Live::All).is_empty());
     }
 
     /// hostap's `os_memset` shape: the destination parameter, and only it,
@@ -3469,13 +3552,19 @@ mod tests {
     #[test]
     fn clears_param_only_the_destination() {
         let t = table("#define os_memset(s, c, n) memset(s, c, n)\n");
-        assert_eq!(macro_clears_param_indices(&t, "os_memset"), vec![0]);
+        assert_eq!(
+            macro_clears_param_indices(&t, "os_memset", Live::All),
+            vec![0]
+        );
         let t = table("#define ZERO_INTO(dst, src, n) memset((void *)(dst), 0, (n))\n");
-        assert_eq!(macro_clears_param_indices(&t, "ZERO_INTO"), vec![0]);
+        assert_eq!(
+            macro_clears_param_indices(&t, "ZERO_INTO", Live::All),
+            vec![0]
+        );
         let t = table("#define COPY(dst, src, n) memcpy(dst, src, n)\n");
-        assert!(macro_clears_param_indices(&t, "COPY").is_empty());
+        assert!(macro_clears_param_indices(&t, "COPY", Live::All).is_empty());
         let t = table("#define ZERO_LEN(buf, n) memset(scratch, 0, n)\n");
-        assert!(macro_clears_param_indices(&t, "ZERO_LEN").is_empty());
+        assert!(macro_clears_param_indices(&t, "ZERO_LEN", Live::All).is_empty());
     }
 
     #[test]

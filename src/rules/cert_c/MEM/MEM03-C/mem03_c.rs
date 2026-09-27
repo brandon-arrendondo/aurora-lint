@@ -106,7 +106,11 @@ impl Mem03C {
             return vec![0];
         }
         let macros = self.function_macros.borrow();
-        let via_macro = macro_expand::macro_clears_param_indices(&macros, spelled_name);
+        let via_macro = macro_expand::macro_clears_param_indices(
+            &macros,
+            spelled_name,
+            macro_expand::Live::All,
+        );
         if !via_macro.is_empty() {
             return via_macro;
         }

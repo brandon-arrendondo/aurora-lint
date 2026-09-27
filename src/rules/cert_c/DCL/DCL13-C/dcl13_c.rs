@@ -468,7 +468,7 @@ fn macro_writes_param_lvalue(
     if !macros.contains_key(&name) {
         return false;
     }
-    let written = macro_expand::macro_writes_param_indices(macros, &name);
+    let written = macro_expand::macro_writes_param_indices(macros, &name, macro_expand::Live::All);
     if written.is_empty() {
         return false;
     }

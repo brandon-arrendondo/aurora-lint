@@ -218,7 +218,11 @@ impl CertRule for Exp34C {
                     let mut write_params = HashMap::new();
                     let mut null_params = HashMap::new();
                     for name in invoked {
-                        let idx = macro_expand::macro_writes_param_indices(&all_macros, &name);
+                        let idx = macro_expand::macro_writes_param_indices(
+                            &all_macros,
+                            &name,
+                            macro_expand::Live::All,
+                        );
                         if !idx.is_empty() {
                             write_params.insert(name.clone(), idx);
                         }
@@ -226,7 +230,13 @@ impl CertRule for Exp34C {
                         // SAFE_FREE): a bare invocation has no visible
                         // `= NULL` for the dataflow to see, so synthesize the
                         // fact the same way as the write-through case above.
-                        let null_idx = macro_expand::macro_nulls_param_indices(&all_macros, &name);
+                        // Accusing: the argument is DefinitelyNull afterwards in
+                        // any build whose definition nulls it.
+                        let null_idx = macro_expand::macro_nulls_param_indices(
+                            &all_macros,
+                            &name,
+                            macro_expand::Live::Any,
+                        );
                         if !null_idx.is_empty() {
                             null_params.insert(name, null_idx);
                         }
@@ -891,7 +901,8 @@ fn is_null_safe_callee(
 /// already-null/possibly-null pointer to the free macro itself look like an
 /// unchecked-NULL-argument violation — which it structurally cannot be.
 fn is_safe_free_macro(name: &str, macros: &HashMap<String, FunctionMacro>) -> bool {
-    !macro_expand::macro_nulls_param_indices(macros, name).is_empty()
+    // Suppressive: every build's definition must null the argument.
+    !macro_expand::macro_nulls_param_indices(macros, name, macro_expand::Live::All).is_empty()
 }
 
 /// Functions that safely handle NULL arguments (no dereference concern).
