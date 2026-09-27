@@ -184,6 +184,15 @@ pub struct ProjectContext {
     /// [`crate::analyze::macro_expand::collect_macro_operand_params`].
     #[serde(default)]
     pub macro_operand_params: Arc<HashMap<String, crate::analyze::macro_expand::OperandParams>>,
+    /// Every function-like `#define` across all scanned files (incl.
+    /// headers), one entry per distinct definition: every preprocessor
+    /// branch, variadic and `#`/`##` arms included (unlike
+    /// `function_macros`, which keeps one expandable definition per name).
+    /// For a question about every definition a call may expand to, such as
+    /// how many times it evaluates an argument. See
+    /// [`crate::analyze::macro_expand::collect_function_macro_arms`].
+    #[serde(default)]
+    pub function_macro_arms: Arc<HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>>,
     /// Names of every object-like `#define` whose replacement text is an
     /// unused-attribute annotation — `__attribute__((unused))`,
     /// `[[maybe_unused]]`, and the reserved spellings — collected across all

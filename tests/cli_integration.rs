@@ -2590,3 +2590,45 @@ fn a_definition_in_another_file_that_returns_keeps_the_path() {
     );
     assert_eq!(found.len(), 1, "{found:?}");
 }
+
+fn manifest_pre31() -> PathBuf {
+    fixtures().join("manifest_pre31.toml")
+}
+
+/// PRE31-C findings for `main.c` in one `crossfile_pre31` project, whose
+/// macro is defined in a header the prescan reads.
+fn pre31_crossfile_violations(case: &str) -> Vec<serde_json::Value> {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let project = fixtures().join("crossfile_pre31").join(case);
+
+    let (code, _, _) = run_aurora_lint(&[
+        project.join("main.c").to_str().unwrap(),
+        "-m",
+        manifest_pre31().to_str().unwrap(),
+        "-d",
+        project.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap()
+}
+
+/// A header's macro is judged by every `#if` arm it has, as one defined in
+/// the calling file is: `DBG_COUNT`'s first arm evaluates its argument once,
+/// but the release arm drops it, so `DBG_COUNT(n++)` is reportable.
+#[test]
+fn pre31_header_macro_judged_by_every_arm() {
+    let violations = pre31_crossfile_violations("dropped_in_one_arm");
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+    assert_eq!(violations[0]["rule_id"], "PRE31-C");
+}
+
+/// The control: every arm of the header's macro evaluates its argument
+/// exactly once.
+#[test]
+fn pre31_header_macro_evaluating_once_in_every_arm_is_clean() {
+    let violations = pre31_crossfile_violations("once_in_every_arm");
+    assert!(violations.is_empty(), "{:?}", violations);
+}

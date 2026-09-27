@@ -23,6 +23,10 @@ pub struct Pre31C {
     /// `DEBUGF`/`CURL_UNCONST` in `curl_setup.h`), not the file a call site
     /// sits in.
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
+    /// Every definition of every function-like macro across the scanned
+    /// files (`ProjectContext::function_macro_arms`): a header's `#ifdef`
+    /// alternatives, which `function_macros` reduces to one.
+    function_macro_arms: RefCell<Arc<HashMap<String, Vec<MacroArm>>>>,
     /// Every function-like macro name across the scanned files
     /// (`ProjectContext::function_macro_names`): what makes a call a macro
     /// invocation at all, whatever its spelling.
@@ -43,6 +47,7 @@ impl Pre31C {
     pub fn new() -> Self {
         Self {
             function_macros: RefCell::new(Arc::new(HashMap::new())),
+            function_macro_arms: RefCell::new(Arc::new(HashMap::new())),
             function_macro_names: RefCell::new(Arc::new(HashSet::new())),
             macro_aliases: RefCell::new(Arc::new(HashMap::new())),
             function_summaries: RefCell::default(),
@@ -77,6 +82,7 @@ impl CertRule for Pre31C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_macros.borrow_mut() = context.function_macros.clone();
+        *self.function_macro_arms.borrow_mut() = context.function_macro_arms.clone();
         *self.function_macro_names.borrow_mut() = context.function_macro_names.clone();
         *self.macro_aliases.borrow_mut() = context.macro_aliases.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
@@ -114,6 +120,7 @@ impl CertRule for Pre31C {
             names: &macro_names,
             first: &function_macros,
             arms: &macro_expand::collect_function_macro_arms(source),
+            project_arms: &self.function_macro_arms.borrow(),
             aliases: &merged_macro_aliases(&self.macro_aliases.borrow(), node, source),
             local_functions: &local_functions,
             summaries: &summaries,
@@ -183,6 +190,8 @@ struct Ctx<'a> {
     /// This file's definitions, every preprocessor branch, variadic and
     /// `#`/`##` arms included.
     arms: &'a HashMap<String, Vec<MacroArm>>,
+    /// Every scanned file's and header's definitions, the same way.
+    project_arms: &'a HashMap<String, Vec<MacroArm>>,
     aliases: &'a HashMap<String, String>,
     /// This file's function definitions, by name: every `#if` arm's.
     local_functions: &'a HashMap<String, Vec<Node<'a>>>,
@@ -207,17 +216,20 @@ struct Ctx<'a> {
 
 impl<'a> Ctx<'a> {
     /// The definitions a call to `name` may expand to: every arm in this
-    /// file, else the project's one.
+    /// file, else every arm the project has, else the one expandable
+    /// definition the project keeps.
     fn definitions(&self, name: &str) -> Vec<MacroArm> {
-        match self.arms.get(name) {
-            Some(arms) if !arms.is_empty() => arms.clone(),
-            _ => self
-                .first
-                .get(name)
-                .map(MacroArm::from)
-                .into_iter()
-                .collect(),
-        }
+        [self.arms, self.project_arms]
+            .into_iter()
+            .find_map(|table| table.get(name).filter(|arms| !arms.is_empty()))
+            .cloned()
+            .unwrap_or_else(|| {
+                self.first
+                    .get(name)
+                    .map(MacroArm::from)
+                    .into_iter()
+                    .collect()
+            })
     }
 
     /// The name a call's callee spelling denotes: a function-like macro's own
@@ -668,8 +680,8 @@ impl Pre31C {
         // A macro this file defines is judged by every arm it has, since any
         // one may be the one compiled; a C library macro by what the standard
         // permits (the libc header the prescan read is one implementation);
-        // a project macro defined elsewhere by the project's definition; a
-        // macro whose body nobody can read at every position.
+        // a project macro defined elsewhere by every definition the project
+        // has; a macro whose body nobody can read at every position.
         let unsafe_at: Box<dyn Fn(usize) -> bool> = if let Some(arms) = arms {
             let arms = arms.clone();
             Box::new(move |i| {
