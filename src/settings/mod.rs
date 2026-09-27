@@ -196,8 +196,9 @@ pub static OPTIONS: &[OptionSpec] = &[
         oracle_tag: "call-side-effect-unproven",
         summary: "PRE31-C: a call, in an argument an unsafe macro may evaluate other than once, \
                   to a function with no definition in the scanned files and no library \
-                  contract is not treated as a side effect. A callee shown to have one is \
-                  reported either way.",
+                  contract, or to strerror/inet_ntoa (whose only effect is the static buffer \
+                  they return), is not treated as a side effect. A callee shown to have one \
+                  is reported either way.",
         basis: "C11 5.1.2.3p2 (which CERT quotes) makes a call a side effect only when the \
                 function does one. cppcheck's assertWithSideEffect and Polyspace's MISRA C:2012 \
                 Rule 13.5 flag only callees they can show are impure. clang-tidy's \

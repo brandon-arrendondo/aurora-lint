@@ -156,7 +156,8 @@ enum Effect {
     /// callees proven pure (PRE31-C-EX1).
     None,
     /// A call to a function no scanned file defines and no library contract
-    /// covers (or one through a pointer).
+    /// covers (or one through a pointer), or to a library function whose only
+    /// effect is the static buffer it returns (`strerror`, `inet_ntoa`).
     Unknown,
     /// A call to a function another scanned file defines. Its body is in the
     /// scan but no cross-file side-effect summary exists yet, so it is not
@@ -384,6 +385,9 @@ impl<'a> Ctx<'a> {
             match library_call_effect(name) {
                 Some(LibraryEffect::Pure) => return Effect::None,
                 Some(LibraryEffect::SideEffect) => return Effect::Definite,
+                // Only its own returned buffer changes: relaxed with the
+                // unknown-callee bucket (default), reported under strict.
+                Some(LibraryEffect::OwnBufferOnly) => return Effect::Unknown,
                 None => {}
             }
         }

@@ -20,6 +20,12 @@ pub enum LibraryEffect {
     /// Modifies no object, touches no stream, keeps no hidden state and never
     /// sets `errno`.
     Pure,
+    /// Its only side effect is on the static result buffer it returns (and,
+    /// for `strerror`, `errno` on an invalid code): evaluating it zero times
+    /// or twice changes nothing a caller observes beyond that buffer. A policy
+    /// may relax these (PRE31-C's `pre31_unknown_call_pure`); the contract as
+    /// written still counts them.
+    OwnBufferOnly,
     /// Has some side effect: writes through an argument, sets `errno`, does
     /// I/O, allocates, or updates hidden state (`rand`, `strtok`).
     SideEffect,
@@ -138,6 +144,12 @@ const PURE_LIBRARY_FUNCTIONS: &[&str] = &[
     "signbit",
 ];
 
+/// Functions whose only side effect is the static buffer they return: C11
+/// 7.24.6.2 lets a later strerror call overwrite its string (and POSIX lets
+/// it set errno for an invalid code); POSIX inet_ntoa returns a static
+/// buffer overwritten by the next call.
+const OWN_BUFFER_ONLY_FUNCTIONS: &[&str] = &["strerror", "inet_ntoa"];
+
 /// The contract's verdict on a call to `name`, or `None` when `name` is not
 /// an ISO C or POSIX function the tool knows (a project function, a Windows
 /// API, or a library it has no table for). Classify the resolved name (`resolve_macro_alias`),
@@ -146,6 +158,8 @@ const PURE_LIBRARY_FUNCTIONS: &[&str] = &[
 pub fn library_call_effect(name: &str) -> Option<LibraryEffect> {
     if PURE_LIBRARY_FUNCTIONS.contains(&name) {
         Some(LibraryEffect::Pure)
+    } else if OWN_BUFFER_ONLY_FUNCTIONS.contains(&name) {
+        Some(LibraryEffect::OwnBufferOnly)
     } else if is_iso_c_or_posix_function(name) {
         Some(LibraryEffect::SideEffect)
     } else {

@@ -43,7 +43,7 @@ Policy options
    - Basis: C11 6.7.4p8, 7.23; C23 6.7.13.7. A GNU noreturn attribute, [[gnu::noreturn]] included, is proof under neither policy.
 
 ``pre31_unknown_call_pure``
-   PRE31-C: a call, in an argument an unsafe macro may evaluate other than once, to a function with no definition in the scanned files and no library contract is not treated as a side effect. A callee shown to have one is reported either way.
+   PRE31-C: a call, in an argument an unsafe macro may evaluate other than once, to a function with no definition in the scanned files and no library contract, or to strerror/inet_ntoa (whose only effect is the static buffer they return), is not treated as a side effect. A callee shown to have one is reported either way.
 
    - Default preset: ``true``; strict preset: ``false``
    - Scope: PRE31-C
