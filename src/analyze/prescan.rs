@@ -6402,13 +6402,6 @@ pub fn resolve_includes(
     // Queue of (include_path, source_dir) pairs to resolve — supports transitive includes
     let mut queue: Vec<(String, Option<PathBuf>)> = Vec::new();
 
-    // A forced include (cl's `/FI`) is an `#include` ahead of every TU's first
-    // line: resolved against the search paths like any other, with no
-    // including directory of its own beyond an already-absolute spelling.
-    for header in forced_includes {
-        queue.push((header.clone(), None));
-    }
-
     // Seed the queue with #include directives from source files
     for file_path in source_files {
         if let Ok((tree, source)) = parser.parse_file(file_path) {
@@ -6418,6 +6411,16 @@ pub fn resolve_includes(
                 queue.push((inc, source_dir.clone()));
             }
         }
+    }
+
+    // A forced include (cl's `/FI`) is an `#include` on the first line of
+    // every TU, so it is resolved before any header a source names, and in
+    // command-line order. The queue pops from the back: pushing the list
+    // reversed, after the sources' own includes, pops it first and in order.
+    // Like any other header it is looked up on the search paths, unless it is
+    // already an absolute path (see `resolve_header`).
+    for header in forced_includes.iter().rev() {
+        queue.push((header.clone(), None));
     }
 
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
@@ -6700,13 +6703,23 @@ fn extract_includes_recursive(node: &Node, source: &str, directives: &mut Vec<St
 
 /// Resolve an include path against search directories.
 ///
-/// Search order: (1) source file's directory (if available), (2) each `-I`
-/// path in order. Returns the first match where the candidate is a file.
+/// An absolute `include_path` is taken as written. Otherwise the search order
+/// is (1) the source file's directory (if available), (2) each `-I` path in
+/// order. Returns the first match where the candidate is a file.
 pub(crate) fn resolve_header(
     include_path: &str,
     source_dir: Option<&Path>,
     include_search_paths: &[String],
 ) -> Option<PathBuf> {
+    // An absolute path names its file outright. Joining it onto a directory
+    // below would give the same path, but only when there is a directory to
+    // join onto: a forced include has no including file, and a build may pass
+    // no search path at all.
+    let as_written = Path::new(include_path);
+    if as_written.is_absolute() {
+        return as_written.is_file().then(|| as_written.to_path_buf());
+    }
+
     // First: try relative to the source file's directory
     if let Some(dir) = source_dir {
         let candidate = dir.join(include_path);

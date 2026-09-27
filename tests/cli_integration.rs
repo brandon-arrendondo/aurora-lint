@@ -2185,6 +2185,14 @@ fn msvc_forced_include_gates_a_finding() {
     assert!(names_index_8(&with), "{with:?}");
 }
 
+/// The same forced include with no `/I` at all: the header sits beside the
+/// build, named by a path relative to the entry's directory.
+#[test]
+fn msvc_forced_include_resolves_with_no_include_path() {
+    let with = arr30_messages_with_msvc_cdb("forced.c", Some("/FI../sdk/msvc_idx.h"));
+    assert!(names_index_8(&with), "{with:?}");
+}
+
 #[test]
 fn msvc_undefine_removes_a_define() {
     let msgs = arr30_messages_with_msvc_cdb("define.c", Some("/DIDX=8 /UIDX"));

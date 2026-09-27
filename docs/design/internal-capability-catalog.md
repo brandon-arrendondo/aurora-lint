@@ -278,6 +278,24 @@ redefinition to arbitrate) nor into `suppression.rs`'s finding filter, which
 stays on the unseeded `dead_code_ranges` — silencing every finding inside an
 `#ifdef _WIN32` block corpus-wide is a separate policy decision.
 
+## Build configuration (compile databases)
+
+### `src/analyze/compile_commands.rs`
+**Problem solved:** reading a build's command lines without running its
+compiler: the include search paths, `-D`/`-U` macro state and forced includes
+a `compile_commands.json` records. GCC-style and MSVC-style (`cl`,
+`clang-cl`) command lines are both read, each with its own quoting and flag
+syntax. `docs/cli-usage.rst` describes the user-facing behaviour.
+
+| Item | Signature | Description |
+|---|---|---|
+| `CompileDb::load` | `(path: &Path) -> Result<CompileDb>` | The distilled database: `include_paths`, `defines`, `undefines`, `forced_includes` (cl's `/FI`), `compilers`, `configured_sources`. Flags are unioned across entries, not scoped per TU. |
+| `split_command` | `(cmd: &str) -> Vec<String>` | POSIX-shell-ish argv split: single and double quotes, backslash escapes. |
+| `split_command_windows` | `(cmd: &str) -> Vec<String>` | The MSVC C runtime's argv split: backslashes are literal except before `"` (`2n` then `"` gives `n` and toggles quoting, `2n+1` gives `n` and a literal quote), `""` inside quotes is a literal quote, and only space, tab and line breaks separate. Use it for any Windows-written command line or response file. The POSIX split turns `C:\src\inc` into `C:srcinc`. |
+| `split_command_for_host` | `(cmd: &str) -> Vec<String>` | Picks one of the two splits by the driver word (looking past a compiler launcher): a Windows path or an `.exe` means the Windows split. |
+| `is_msvc_driver` | `(argv: &[String]) -> bool` | Whether an entry's driver is `cl`/`clang-cl` (behind a `ccache`/`sccache`/… launcher too) or is given `--driver-mode=cl`. This gates every `/`-spelled flag, so a POSIX path such as `/Users/x` is never read as `/U`. |
+| `expand_response_files` | `(argv, base: &Path, msvc: bool) -> Vec<String>` | Splices `@file` arguments in place, resolved against the entry directory. It decodes UTF-8, UTF-16LE (with or without a BOM) and UTF-16BE, cuts cycles, bounds nesting, and drops an unreadable file. |
+
 ## Declaration / type / declarator resolution
 
 ### `src/utility/cert_c/ast_utils.rs` (declaration/declarator subset)

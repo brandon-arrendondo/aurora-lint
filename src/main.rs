@@ -335,7 +335,7 @@ fn run() -> Result<i32> {
             );
             if !db.forced_includes.is_empty() {
                 eprintln!(
-                    "  plus {} forced include(s) (/FI), resolved ahead of every source file",
+                    "  plus {} forced include(s) (/FI), resolved before the headers sources include",
                     db.forced_includes.len(),
                 );
             }

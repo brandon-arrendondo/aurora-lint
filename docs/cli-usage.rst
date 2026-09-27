@@ -185,11 +185,13 @@ always had, and the ``PRE*`` rules still audit macros as written.
 a driver given ``--driver-mode=cl`` is read with cl's own syntax. Options may be
 spelled with ``/`` or ``-``: ``/D`` (including cl's ``NAME#VALUE`` form),
 ``/U``, ``/I``, ``/imsvc`` and ``/external:I``, each attached or as a separate
-argument. ``/FI`` forced includes are resolved as if every file began with that
-``#include``. Arguments after ``/link`` are ignored, as are cl options that do
-not affect headers or macros. A ``command`` string written on Windows is split
-with Windows quoting rules, and ``@file`` response files (UTF-8 or UTF-16) are
-expanded for any driver. For every other driver the ``/`` spellings are not
+argument. ``/FI`` forced includes are resolved before any header the sources
+include, in command-line order. Arguments after ``/link`` or clang-cl's ``--``
+are ignored, as are cl options that do not affect headers or macros. The driver
+is recognised behind a compiler launcher (``sccache``, ``ccache``, …). A
+``command`` string written on Windows is split with the MSVC C runtime's
+quoting rules, and ``@file`` response files (UTF-8 or UTF-16) are expanded for
+any driver. For every other driver the ``/`` spellings are not
 read, so a POSIX path such as ``/Users/me/a.c`` is never taken for ``/U``.
 
 cl finds the Windows SDK and CRT headers through the ``INCLUDE`` environment

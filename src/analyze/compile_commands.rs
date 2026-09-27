@@ -49,17 +49,20 @@
 //!
 //! # MSVC command lines
 //!
-//! An entry whose driver is MSVC-like (`cl`, `clang-cl`, or any driver given
-//! `--driver-mode=cl`) is read with cl.exe's own syntax: every option may be
+//! An entry whose driver is MSVC-like (`cl` or `clang-cl`, also behind a
+//! compiler launcher such as `sccache`, or any driver given `--driver-mode=cl`,
+//! even from a response file) is read with cl.exe's own syntax: every option may be
 //! spelled with `/` or `-`, so `/DNAME=1`, `/D NAME`, `/Ipath`, `/I path`,
-//! `/UNAME` and `/FIheader.h` (forced include) are recognised alongside
+//! `/UNAME` and `/FIheader.h` (forced include, resolved before any header a
+//! source includes, in command-line order) are recognised alongside
 //! `-D`/`-I`, as are clang-cl's `/imsvc` and cl's `/external:I` system-header
-//! directories. `/DNAME#VALUE` is cl's alternative to `=`, and everything after
-//! `/link` belongs to the linker. The `/` spellings are deliberately *not*
+//! directories. `/DNAME#VALUE` is cl's alternative to `=`, everything after
+//! `/link` belongs to the linker, and everything after clang-cl's `--` is an
+//! input file. The `/` spellings are deliberately *not*
 //! recognised for any other driver: a POSIX absolute path such as
 //! `/Users/me/a.c` or `/Include/x.c` would otherwise read as `/U` or `/I`.
 //!
-//! A `command` string is split with Windows command-line rules (backslashes are
+//! A `command` string is split with the MSVC C runtime's rules (backslashes are
 //! literal unless they precede a `"`) when its first word is a Windows path or
 //! an `.exe`, since that is the quoting the build that wrote it used; the POSIX
 //! rules would turn `C:\src\inc` into `C:srcinc`. `@file` response files, which
@@ -218,8 +221,15 @@ impl CompileDb {
             if seen_compilers.insert(argv[0].clone()) {
                 db.compilers.push(argv[0].clone());
             }
-            let msvc = is_msvc_driver(&argv);
-            let argv = expand_response_files(argv, base, msvc);
+            let mut msvc = is_msvc_driver(&argv);
+            let mut expanded = expand_response_files(argv.clone(), base, msvc);
+            // `--driver-mode=cl` may itself sit in a response file; the files
+            // are then re-read with cl's quoting.
+            if !msvc && is_msvc_driver(&expanded) {
+                msvc = true;
+                expanded = expand_response_files(argv, base, msvc);
+            }
+            let argv = expanded;
 
             if let Some(file) = &entry.file {
                 db.configured_sources
@@ -440,17 +450,27 @@ const MSVC_DIR_FLAGS: &[&str] = &["/I", "-I", "/imsvc", "-imsvc", "/external:I",
 
 /// Whether an entry was compiled by an MSVC-style driver, whose command line
 /// is read with cl.exe's syntax (see the module docs).
-fn is_msvc_driver(argv: &[String]) -> bool {
+pub(crate) fn is_msvc_driver(argv: &[String]) -> bool {
     if argv.iter().any(|a| a == "--driver-mode=cl") {
         return true;
     }
-    let Some(driver) = argv.first() else {
-        return false;
-    };
-    let base = driver.rsplit(['/', '\\']).next().unwrap_or(driver);
+    // A compiler launcher (`CMAKE_C_COMPILER_LAUNCHER`) comes first and names
+    // the real driver as its first argument: `sccache cl.exe /c ...`.
+    let driver = argv
+        .iter()
+        .map(|a| executable_stem(a))
+        .find(|stem| !COMPILER_LAUNCHERS.contains(&stem.as_str()));
+    matches!(driver.as_deref(), Some("cl" | "clang-cl"))
+}
+
+/// Programs that run the compiler named by their first argument.
+const COMPILER_LAUNCHERS: &[&str] = &["ccache", "sccache", "buildcache", "distcc", "icecc"];
+
+/// An executable's file name, lowercased, without directories or `.exe`.
+fn executable_stem(path: &str) -> String {
+    let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
     let base = base.to_ascii_lowercase();
-    let base = base.strip_suffix(".exe").unwrap_or(&base);
-    matches!(base, "cl" | "clang-cl")
+    base.strip_suffix(".exe").unwrap_or(&base).to_string()
 }
 
 /// The flag in `flags` that `arg` starts with, preferring the longest so that
@@ -474,8 +494,11 @@ fn parse_flags(argv: &[String], msvc: bool) -> Vec<Flag> {
         i += 1;
 
         if msvc {
-            // Everything after /link is the linker's.
-            if arg.eq_ignore_ascii_case("/link") || arg.eq_ignore_ascii_case("-link") {
+            // Everything after /link is the linker's, and everything after
+            // clang-cl's `--` is an input file: CMake writes `-- <SOURCE>`
+            // precisely so a POSIX path is not read as `/U` or `/I`.
+            if arg.eq_ignore_ascii_case("/link") || arg.eq_ignore_ascii_case("-link") || arg == "--"
+            {
                 break;
             }
             if let Some(rest) = arg.strip_prefix("/D") {
@@ -614,7 +637,7 @@ fn absolutize(base: &Path, dir: &str) -> PathBuf {
 /// shell string rather than a token list. Builds that quote nontrivially
 /// (`-DVERSION=\"1.2\"`, paths with spaces) are common enough that a naive
 /// `split_whitespace` mangles them.
-fn split_command(cmd: &str) -> Vec<String> {
+pub(crate) fn split_command(cmd: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut has_token = false;
@@ -680,11 +703,17 @@ fn is_windows_absolute(p: &str) -> bool {
 }
 
 /// Split a `command` string with the quoting rules of the host that wrote it:
-/// Windows rules when its first word is a Windows path or an `.exe`, POSIX
-/// rules otherwise.
-fn split_command_for_host(cmd: &str) -> Vec<String> {
+/// Windows rules when its driver (its first word, or the word after a compiler
+/// launcher) is a Windows path or an `.exe`, POSIX rules otherwise.
+pub(crate) fn split_command_for_host(cmd: &str) -> Vec<String> {
     let windows = split_command_windows(cmd);
-    let first = windows.first().map(String::as_str).unwrap_or("");
+    // Look past a compiler launcher to the driver it runs.
+    let first = windows
+        .iter()
+        .find(|a| !COMPILER_LAUNCHERS.contains(&executable_stem(a).as_str()))
+        .or(windows.first())
+        .map(String::as_str)
+        .unwrap_or("");
     if is_windows_absolute(first) || first.to_ascii_lowercase().ends_with(".exe") {
         windows
     } else {
@@ -692,11 +721,13 @@ fn split_command_for_host(cmd: &str) -> Vec<String> {
     }
 }
 
-/// Split a command line the way the Microsoft C runtime (`CommandLineToArgvW`)
-/// does. Backslashes are literal except before a `"`: `2n` of them there
-/// yield `n` and the quote toggles quoting, `2n+1` yield `n` and a literal
-/// `"`. Inside quotes, `""` is a literal `"`.
-fn split_command_windows(cmd: &str) -> Vec<String> {
+/// Split a command line the way the MSVC C runtime splits one into `argv`.
+/// Backslashes are literal except before a `"`: `2n` of them there yield `n`
+/// and the quote toggles quoting, `2n+1` yield `n` and a literal `"`. Inside
+/// quotes, `""` is a literal `"` (the CRT's rule since 2008;
+/// `CommandLineToArgvW` differs here). Arguments are separated by spaces and
+/// tabs only, plus line breaks, which separate arguments in a response file.
+pub(crate) fn split_command_windows(cmd: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut has_token = false;
@@ -733,7 +764,7 @@ fn split_command_windows(cmd: &str) -> Vec<String> {
                 }
                 in_quotes = !in_quotes;
             }
-            c if c.is_whitespace() && !in_quotes => {
+            ' ' | '\t' | '\r' | '\n' if !in_quotes => {
                 if has_token {
                     out.push(std::mem::take(&mut cur));
                     has_token = false;
@@ -753,22 +784,34 @@ fn split_command_windows(cmd: &str) -> Vec<String> {
 }
 
 /// Nesting limit for `@file` response files, which may name further response
-/// files; a cycle would otherwise never end.
+/// files.
 const MAX_RESPONSE_FILE_DEPTH: usize = 8;
 
 /// Replace each `@file` argument (after the driver) with the arguments the
 /// file holds, resolved against the entry's directory. A response file that
 /// cannot be read is dropped -- the same skip-don't-fail stance the loader
-/// takes toward any entry it cannot understand.
-fn expand_response_files(argv: Vec<String>, base: &Path, msvc: bool) -> Vec<String> {
-    fn expand(args: Vec<String>, base: &Path, msvc: bool, depth: usize, out: &mut Vec<String>) {
+/// takes toward any entry it cannot understand -- and so is one already being
+/// expanded further up, which would otherwise repeat until the depth limit.
+pub(crate) fn expand_response_files(argv: Vec<String>, base: &Path, msvc: bool) -> Vec<String> {
+    fn expand(
+        args: Vec<String>,
+        base: &Path,
+        msvc: bool,
+        open: &mut Vec<PathBuf>,
+        out: &mut Vec<String>,
+    ) {
         for arg in args {
             match arg.strip_prefix('@') {
                 Some(file) if !file.is_empty() => {
-                    if depth >= MAX_RESPONSE_FILE_DEPTH {
+                    if open.len() >= MAX_RESPONSE_FILE_DEPTH {
                         continue;
                     }
-                    let Some(text) = read_response_file(&absolutize(base, file)) else {
+                    let path = absolutize(base, file);
+                    let path = std::fs::canonicalize(&path).unwrap_or(path);
+                    if open.contains(&path) {
+                        continue;
+                    }
+                    let Some(text) = read_response_file(&path) else {
                         continue;
                     };
                     let inner = if msvc {
@@ -776,7 +819,9 @@ fn expand_response_files(argv: Vec<String>, base: &Path, msvc: bool) -> Vec<Stri
                     } else {
                         split_command(&text)
                     };
-                    expand(inner, base, msvc, depth + 1, out);
+                    open.push(path);
+                    expand(inner, base, msvc, open, out);
+                    open.pop();
                 }
                 _ => out.push(arg),
             }
@@ -787,20 +832,28 @@ fn expand_response_files(argv: Vec<String>, base: &Path, msvc: bool) -> Vec<Stri
     if let Some(driver) = args.next() {
         out.push(driver);
     }
-    expand(args.collect(), base, msvc, 0, &mut out);
+    expand(args.collect(), base, msvc, &mut Vec::new(), &mut out);
     out
 }
 
-/// Read a response file as text. cl writes them as UTF-16LE with a byte-order
-/// mark as often as UTF-8, so both are decoded.
+/// Read a response file as text. cl's tools write them as UTF-16 as often as
+/// UTF-8: a byte-order mark says which, and without one, NUL bytes in the
+/// odd positions give away UTF-16LE (no command-line text contains a NUL).
 fn read_response_file(path: &Path) -> Option<String> {
     let bytes = std::fs::read(path).ok()?;
+    let utf16 = |data: &[u8], from: fn([u8; 2]) -> u16| {
+        let units: Vec<u16> = data.chunks_exact(2).map(|c| from([c[0], c[1]])).collect();
+        String::from_utf16(&units).ok()
+    };
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
-        let units: Vec<u16> = rest
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
-        return String::from_utf16(&units).ok();
+        return utf16(rest, u16::from_le_bytes);
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        return utf16(rest, u16::from_be_bytes);
+    }
+    if bytes.len() >= 2 && bytes.len() % 2 == 0 && bytes.iter().skip(1).step_by(2).all(|&b| b == 0)
+    {
+        return utf16(&bytes, u16::from_le_bytes);
     }
     let rest = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes);
     String::from_utf8(rest.to_vec()).ok()
@@ -1583,5 +1636,180 @@ mod tests {
         assert!(!is_windows_absolute("C:x"));
         assert!(!is_windows_absolute("inc"));
         assert!(!is_windows_absolute("/usr/include"));
+    }
+
+    // ---- review follow-ups ------------------------------------------------
+
+    fn resolve_with(db: &CompileDb, root: &Path, sources: &[&Path]) -> ProjectContext {
+        let mut ctx = ProjectContext::new();
+        let sources: Vec<String> = sources
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        super::super::prescan::resolve_includes(
+            &sources,
+            &db.forced_includes,
+            &db.include_paths,
+            &[root.to_string_lossy().to_string()],
+            &mut ctx,
+            None,
+            false,
+        )
+        .unwrap();
+        ctx
+    }
+
+    /// `cl /FIcfg.h` with the header beside the build and no `/I` at all: the
+    /// forced include is absolute, and must still be opened.
+    #[test]
+    fn forced_include_beside_the_entry_resolves_with_no_search_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("cfg.h"), "#define IDX 8\n").unwrap();
+        let c_file = root.join("a.c");
+        std::fs::write(&c_file, "static int t[8];\n").unwrap();
+        let db = CompileDb::from_entries(&[entry(
+            &root.to_string_lossy(),
+            Some("cl /FIcfg.h -c a.c"),
+            None,
+        )]);
+        assert!(db.include_paths.is_empty());
+        let ctx = resolve_with(&db, root, &[&c_file]);
+        assert_eq!(ctx.macro_constants.get("IDX"), Some(&8));
+    }
+
+    /// Forced includes come first and in command-line order, the way cl
+    /// reads them; a header a source includes comes after them, so a later
+    /// definition of the same constant is the one kept, as in the TU's text.
+    #[test]
+    fn forced_includes_resolve_first_and_in_command_line_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("one.h"), "#define ORDER 1\n").unwrap();
+        std::fs::write(root.join("two.h"), "#define ORDER 2\n").unwrap();
+        std::fs::write(root.join("three.h"), "#define ORDER 3\n").unwrap();
+        let plain = root.join("plain.c");
+        std::fs::write(&plain, "int x;\n").unwrap();
+        let includes = root.join("includes.c");
+        std::fs::write(&includes, "#include \"three.h\"\nint y;\n").unwrap();
+        let db = CompileDb::from_entries(&[entry(
+            &root.to_string_lossy(),
+            Some("cl /FIone.h /FItwo.h -c plain.c"),
+            None,
+        )]);
+
+        let ctx = resolve_with(&db, root, &[&plain]);
+        assert_eq!(
+            ctx.macro_constants.get("ORDER"),
+            Some(&2),
+            "two.h follows one.h"
+        );
+
+        let ctx = resolve_with(&db, root, &[&includes]);
+        assert_eq!(
+            ctx.macro_constants.get("ORDER"),
+            Some(&3),
+            "a source's own #include follows every forced include"
+        );
+    }
+
+    #[test]
+    fn msvc_parsing_stops_at_double_dash() {
+        // CMake writes `-- <SOURCE>` for clang-cl so a POSIX source path is
+        // not read as /I or /D.
+        let flags = parse_flags(
+            &argv(&["clang-cl", "/DX", "-c", "--", "/Include/a.c", "/Data/b.c"]),
+            true,
+        );
+        assert_eq!(flags, vec![Flag::Define("X".into(), String::new())]);
+    }
+
+    #[test]
+    fn msvc_driver_is_found_behind_a_compiler_launcher() {
+        assert!(is_msvc_driver(&argv(&["sccache", "cl.exe", "/c", "a.c"])));
+        assert!(is_msvc_driver(&argv(&[
+            r"C:\tools\sccache.exe",
+            r"C:\VS\cl.exe",
+            "/c",
+            "a.c"
+        ])));
+        assert!(is_msvc_driver(&argv(&["ccache", "clang-cl", "/c", "a.c"])));
+        assert!(!is_msvc_driver(&argv(&["ccache", "gcc", "-c", "a.c"])));
+        assert!(!is_msvc_driver(&argv(&["ccache"])));
+        assert_eq!(
+            split_command_for_host(r"sccache C:\VS\cl.exe /IC:\src\inc -c a.c"),
+            argv(&["sccache", r"C:\VS\cl.exe", r"/IC:\src\inc", "-c", "a.c"])
+        );
+        let db = CompileDb::from_entries(&[entry(
+            "/p",
+            Some(r"sccache C:\VS\cl.exe /DFROM_CL /IC:\src\inc -c a.c"),
+            None,
+        )]);
+        assert_eq!(db.defines[0].name(), "FROM_CL");
+        assert_eq!(db.include_paths, vec![r"C:\src\inc"]);
+    }
+
+    #[test]
+    fn driver_mode_in_a_response_file_selects_msvc_syntax() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("opts.rsp"),
+            r"--driver-mode=cl /DFROM_RSP /IC:\sdk\um",
+        )
+        .unwrap();
+        let db = CompileDb::from_entries(&[entry(
+            &dir.path().to_string_lossy(),
+            None,
+            Some(&["clang", "@opts.rsp", "-c", "a.c"]),
+        )]);
+        assert_eq!(db.defines[0].name(), "FROM_RSP");
+        // Re-read with cl's quoting, so the backslashes survive.
+        assert_eq!(db.include_paths, vec![r"C:\sdk\um"]);
+    }
+
+    #[test]
+    fn response_file_cycles_are_cut_not_repeated() {
+        let dir = tempfile::tempdir().unwrap();
+        // Ten self-references would be 10^8 reads if only depth bounded it.
+        std::fs::write(
+            dir.path().join("self.rsp"),
+            format!("{} /DSELF", "@self.rsp ".repeat(10)),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("a.rsp"), "/DA @b.rsp").unwrap();
+        std::fs::write(dir.path().join("b.rsp"), "/DB @a.rsp").unwrap();
+        let started = std::time::Instant::now();
+        let expanded = expand_response_files(
+            argv(&["cl", "@self.rsp", "@a.rsp", "@self.rsp"]),
+            dir.path(),
+            true,
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(expanded, argv(&["cl", "/DSELF", "/DA", "/DB", "/DSELF"]));
+    }
+
+    #[test]
+    fn utf16_response_files_decode_without_a_bom_and_big_endian() {
+        let dir = tempfile::tempdir().unwrap();
+        let le: Vec<u8> = "/DLE_NO_BOM"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        std::fs::write(dir.path().join("le.rsp"), le).unwrap();
+        let mut be = vec![0xFE, 0xFF];
+        be.extend("/DBE_BOM".encode_utf16().flat_map(u16::to_be_bytes));
+        std::fs::write(dir.path().join("be.rsp"), be).unwrap();
+        let expanded = expand_response_files(argv(&["cl", "@le.rsp", "@be.rsp"]), dir.path(), true);
+        assert_eq!(expanded, argv(&["cl", "/DLE_NO_BOM", "/DBE_BOM"]));
+    }
+
+    #[test]
+    fn split_command_windows_separates_on_crt_whitespace_only() {
+        // A no-break space or a vertical tab is part of an argument to the
+        // CRT; spaces, tabs and response-file line breaks separate.
+        assert_eq!(
+            split_command_windows("cl /DA\u{a0}B\t/DC\u{b}D\r\n/DE"),
+            argv(&["cl", "/DA\u{a0}B", "/DC\u{b}D", "/DE"])
+        );
     }
 }
