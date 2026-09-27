@@ -184,9 +184,11 @@ pub struct ProjectContext {
     /// [`crate::analyze::macro_expand::collect_macro_operand_params`].
     #[serde(default)]
     pub macro_operand_params: Arc<HashMap<String, crate::analyze::macro_expand::OperandParams>>,
-    /// Every function-like `#define` across all scanned files (incl.
-    /// headers), one entry per distinct definition: every preprocessor
-    /// branch, variadic and `#`/`##` arms included (unlike
+    /// Every function-like `#define` across the scanned headers (and any .c
+    /// file another file `#include`s: a `.c` file's own macros are live only
+    /// in its translation unit), one entry per distinct definition: every
+    /// preprocessor branch not proven dead, variadic and `#`/`##` arms
+    /// included (unlike
     /// `function_macros`, which keeps one expandable definition per name).
     /// For a question about every definition a call may expand to, such as
     /// how many times it evaluates an argument. See

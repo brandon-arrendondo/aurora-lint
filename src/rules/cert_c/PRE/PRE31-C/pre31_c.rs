@@ -24,7 +24,7 @@ pub struct Pre31C {
     /// sits in.
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     /// Every definition of every function-like macro across the scanned
-    /// files (`ProjectContext::function_macro_arms`): a header's `#ifdef`
+    /// headers (`ProjectContext::function_macro_arms`): a header's `#ifdef`
     /// alternatives, which `function_macros` reduces to one.
     function_macro_arms: RefCell<Arc<HashMap<String, Vec<MacroArm>>>>,
     /// Every function-like macro name across the scanned files
@@ -190,7 +190,7 @@ struct Ctx<'a> {
     /// This file's definitions, every preprocessor branch, variadic and
     /// `#`/`##` arms included.
     arms: &'a HashMap<String, Vec<MacroArm>>,
-    /// Every scanned file's and header's definitions, the same way.
+    /// Every scanned header's definitions, the same way.
     project_arms: &'a HashMap<String, Vec<MacroArm>>,
     aliases: &'a HashMap<String, String>,
     /// This file's function definitions, by name: every `#if` arm's.

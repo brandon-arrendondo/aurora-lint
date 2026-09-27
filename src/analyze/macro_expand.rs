@@ -600,8 +600,9 @@ pub enum ArgEvaluation {
 }
 
 /// Every arm's definition of every function-like macro in `source`, one per
-/// preprocessor branch, variadic and `#`/`##` arms included (compare
-/// [`collect_function_macro_alternatives`], which skips them).
+/// preprocessor branch the file does not prove dead, variadic and `#`/`##`
+/// arms included (compare [`collect_function_macro_alternatives`], which
+/// skips them).
 pub fn collect_function_macro_arms(source: &str) -> HashMap<String, Vec<MacroArm>> {
     let mut out = HashMap::new();
     extend_function_macro_arms(source, &mut out);
@@ -610,13 +611,25 @@ pub fn collect_function_macro_arms(source: &str) -> HashMap<String, Vec<MacroArm
 
 /// Add every arm [`collect_function_macro_arms`] finds in `source` to `out`,
 /// each distinct definition of a name once: how the prescan builds
-/// `ProjectContext::function_macro_arms` across files and headers.
+/// `ProjectContext::function_macro_arms` across headers. An arm in a region
+/// the file itself proves dead (`#if 0`) is no build's, and is skipped.
 pub fn extend_function_macro_arms(source: &str, out: &mut HashMap<String, Vec<MacroArm>>) {
+    let dead: Vec<(usize, usize)> = lang_parsing_substrate::dead_code_ranges(source)
+        .into_iter()
+        .map(|r| (r.start_line, r.end_line))
+        .collect();
     let lines: Vec<&str> = source.lines().collect();
     let mut i = 0;
     while i < lines.len() {
+        let first_line = i + 1;
         let (logical, next) = join_continuation(&lines, i);
         i = next;
+        if dead
+            .iter()
+            .any(|&(start, end)| first_line >= start && first_line <= end)
+        {
+            continue;
+        }
         if let Some((name, arm)) = parse_define_arm(&logical) {
             push_arm(out, name, arm);
         }
@@ -3211,11 +3224,13 @@ mod tests {
                       #define DBG(x) ((void)0)\n\
                       #endif\n\
                       #define LOG(fmt, ...) log_(#fmt, __VA_ARGS__)\n";
-        let other = "#define DBG(x) record(x)\n#define DBG(y) note(y)\n";
+        let other = "#define DBG(x) record(x)\n#define DBG(y) note(y)\n\
+                     #if 0\n#define DBG(z) never(z)\n#endif\n";
         let mut project = HashMap::new();
         extend_function_macro_arms(header, &mut project);
         merge_function_macro_arms(&mut project, collect_function_macro_arms(other));
         let bodies: Vec<&str> = project["DBG"].iter().map(|a| a.body.as_str()).collect();
+        // An `#if 0` arm is no build's.
         assert_eq!(bodies, ["record(x)", "((void)0)", "note(y)"]);
         assert_eq!(
             project["LOG"][0].variadic,
