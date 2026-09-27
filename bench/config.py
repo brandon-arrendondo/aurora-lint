@@ -155,18 +155,24 @@ def compile_db_for(path) -> Path | None:
 DEFAULT_PROFILE = "default"
 PROFILES = ("default", "strict")
 
+# What a Juliet testcase set is, declared on every Juliet scan: a closed
+# program, which nothing outside links against or loads (the binary's
+# `closed_program` option; ADR-0011). Real-world scans declare nothing.
+JULIET_SETTING_OVERRIDES = ("closed_program=true",)
 
-def resolve_settings(profile: str) -> dict:
-    """The settings `profile` resolves to, exactly as the binary reports them
-    (`aurora-lint --list-options json`): the resolved values, the preset they
-    equal (None for neither) and their SHA-256 `hash`, which the binary
-    computes over their canonical JSON so SARIF and this harness never
-    disagree about it."""
+
+def resolve_settings(profile: str, overrides: tuple[str, ...] = ()) -> dict:
+    """The settings `profile` (plus each `--set NAME=VALUE` in `overrides`)
+    resolves to, exactly as the binary reports them (`aurora-lint
+    --list-options json`): the resolved values, the preset they equal (None
+    for neither) and their SHA-256 `hash`, which the binary computes over
+    their canonical JSON so SARIF and this harness never disagree about it."""
     if profile not in PROFILES:
         raise ValueError(f"unknown profile '{profile}'; one of: {', '.join(PROFILES)}")
-    out = subprocess.run(
-        [str(SQC_BIN), "--list-options", "json", "--profile", profile],
-        capture_output=True, text=True, check=True)
+    cmd = [str(SQC_BIN), "--list-options", "json", "--profile", profile]
+    for o in overrides:
+        cmd.extend(["--set", o])
+    out = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return json.loads(out.stdout)["current"]
 
 

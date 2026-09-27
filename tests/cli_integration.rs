@@ -626,21 +626,27 @@ fn manifest_exp33() -> PathBuf {
 }
 
 /// EXP33-C findings in `use.c` when the whole fixture directory is
-/// prescanned with `-d`: the branch on the flag is pruned only when the
-/// flag is a proven constant.
-fn exp33_findings_in_use_c(fixture: &str) -> usize {
+/// prescanned with `-d`, optionally declaring the scan a closed program: the
+/// branch on the flag is pruned only when the flag is a proven constant.
+fn exp33_findings_in_use_c(fixture: &str, closed_program: bool) -> usize {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
     let fixture_dir = fixtures().join(fixture);
-    let (code, _, _) = run_aurora_lint(&[
-        fixture_dir.join("use.c").to_str().unwrap(),
+    let use_c = fixture_dir.join("use.c");
+    let manifest = manifest_exp33();
+    let mut args = vec![
+        use_c.to_str().unwrap(),
         "-m",
-        manifest_exp33().to_str().unwrap(),
+        manifest.to_str().unwrap(),
         "-d",
         fixture_dir.to_str().unwrap(),
         "-e",
         out.to_str().unwrap(),
-    ]);
+    ];
+    if closed_program {
+        args.extend(["--set", "closed_program=true"]);
+    }
+    let (code, _, _) = run_aurora_lint(&args);
     assert_eq!(code, 0);
     let content = std::fs::read_to_string(&out).unwrap();
     let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
@@ -650,32 +656,72 @@ fn exp33_findings_in_use_c(fixture: &str) -> usize {
         .count()
 }
 
-/// Juliet's shape: a non-static flag no scanned file writes folds, and the
-/// branch it guards is dead.
+/// Juliet's shape: in a declared closed program, a non-static flag no
+/// scanned file writes folds, and the branch it guards is dead.
 #[test]
-fn exp33_never_written_global_prunes_its_branch() {
-    assert_eq!(exp33_findings_in_use_c("exp33_global_never_written"), 0);
+fn exp33_never_written_global_prunes_its_branch_in_a_closed_program() {
+    assert_eq!(
+        exp33_findings_in_use_c("exp33_global_never_written", true),
+        0
+    );
+}
+
+/// Undeclared, the scan may be a library another translation unit writes
+/// the flag from (ADR-0011), so it is not folded.
+#[test]
+fn exp33_never_written_global_is_not_folded_unless_the_program_is_closed() {
+    assert_eq!(
+        exp33_findings_in_use_c("exp33_global_never_written", false),
+        1
+    );
+}
+
+/// A non-static function that only returns a literal folds in a closed
+/// program; otherwise another translation unit may interpose it.
+#[test]
+fn exp33_constant_returning_function_folds_only_in_a_closed_program() {
+    assert_eq!(
+        exp33_findings_in_use_c("exp33_constant_returning_function", true),
+        0
+    );
+    assert_eq!(
+        exp33_findings_in_use_c("exp33_constant_returning_function", false),
+        1
+    );
 }
 
 /// Another file writes the flag through its extern declaration, so it is
-/// not a constant and the branch runs.
+/// not a constant and the branch runs, closed program or not.
 #[test]
 fn exp33_global_written_in_another_file_does_not_prune() {
-    assert_eq!(exp33_findings_in_use_c("exp33_global_written_elsewhere"), 1);
+    assert_eq!(
+        exp33_findings_in_use_c("exp33_global_written_elsewhere", true),
+        1
+    );
+    assert_eq!(
+        exp33_findings_in_use_c("exp33_global_written_elsewhere", false),
+        1
+    );
 }
 
 /// Two #if arms define the flag with different values: no one value holds,
 /// so neither is folded (the last definition merged used to win).
 #[test]
 fn exp33_global_defined_differently_per_configuration_does_not_prune() {
-    assert_eq!(exp33_findings_in_use_c("exp33_global_conflicting_arms"), 1);
+    assert_eq!(
+        exp33_findings_in_use_c("exp33_global_conflicting_arms", true),
+        1
+    );
 }
 
 /// A never-written static in one file is not the same-named, written static
 /// in another (ADR-0006): it must not fold that file's branch.
 #[test]
 fn exp33_static_in_one_file_does_not_fold_another_files_static() {
-    assert_eq!(exp33_findings_in_use_c("exp33_static_scoped_per_file"), 1);
+    assert_eq!(
+        exp33_findings_in_use_c("exp33_static_scoped_per_file", true),
+        1
+    );
 }
 
 /// A variable written by a function-like *output* macro (the macro body assigns

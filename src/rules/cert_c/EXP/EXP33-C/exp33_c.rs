@@ -50,8 +50,13 @@ pub struct Exp33C {
     /// (`ProjectContext::conditional_macro_names`).
     conditional_macro_names: RefCell<Arc<HashSet<String>>>,
     /// The run's policy and environment settings: whether static storage is
-    /// zeroed before `main` (`static_zero_init`).
+    /// zeroed before `main` (`static_zero_init`), and whether the scan is a
+    /// closed program (`closed_program`).
     settings: RefCell<Arc<AnalysisSettings>>,
+    /// Names that are constants only in a closed program (prescan's
+    /// `closure_dependent_constants`): withheld from folding otherwise, in
+    /// this file's own constant functions as well as the project's.
+    closure_dependent_constants: RefCell<Arc<HashSet<String>>>,
 }
 
 impl Exp33C {
@@ -68,6 +73,7 @@ impl Exp33C {
             macro_untouched_params: RefCell::new(HashMap::new()),
             conditional_macro_names: RefCell::default(),
             settings: RefCell::default(),
+            closure_dependent_constants: RefCell::default(),
         }
     }
 
@@ -266,7 +272,15 @@ impl CertRule for Exp33C {
         // Merge prescan global constants into file-scope constants.
         // File-scope constants (set later during check()) take precedence.
         let mut constants = self.file_scope_constants.borrow_mut();
+        // A non-const global or a literal-returning function is a constant
+        // only when the user declares the scan a closed program (ADR-0011).
+        let closed = self.settings.borrow().flag("closed_program");
+        *self.closure_dependent_constants.borrow_mut() =
+            Arc::clone(&context.closure_dependent_constants);
         for (k, v) in &context.global_constants {
+            if !closed && context.closure_dependent_constants.contains(k) {
+                continue;
+            }
             constants.entry(k.clone()).or_insert(*v);
         }
         // Also include prescan macro constants (from #define directives),
@@ -305,7 +319,11 @@ impl CertRule for Exp33C {
                 // Merge with prescan global constants (file-scope wins on conflict).
                 let file_constants = init_state::collect_file_scope_constants(node, source);
                 // Also collect zero-arg constant-return functions (e.g., staticReturnsTrue()).
-                let fn_constants = init_state::collect_constant_functions(node, source);
+                let mut fn_constants = init_state::collect_constant_functions(node, source);
+                if !self.settings.borrow().flag("closed_program") {
+                    let open = self.closure_dependent_constants.borrow();
+                    fn_constants.retain(|name, _| !open.contains(name));
+                }
                 {
                     let mut constants = self.file_scope_constants.borrow_mut();
                     // File-scope constants and constant functions override prescan globals

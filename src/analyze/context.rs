@@ -103,6 +103,13 @@ pub struct ProjectContext {
     /// Used by init-state analysis for dead-branch elimination.
     #[serde(default)]
     pub global_constants: HashMap<String, i64>,
+    /// The names in `global_constants` that are constants only in a closed
+    /// program (the `closed_program` setting): a non-`const` global with
+    /// external linkage, or a non-static function that returns a literal.
+    /// Outside a closed program another translation unit may write the one
+    /// or interpose the other (ADR-0011).
+    #[serde(default)]
+    pub closure_dependent_constants: Arc<HashSet<String>>,
     /// Global pointer variable null states from across all scanned files.
     /// Maps variable name to its joined null state across all assignment sites.
     /// Used by EXP34-C to resolve `extern` pointer globals declared in other

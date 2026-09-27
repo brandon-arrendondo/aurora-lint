@@ -88,6 +88,9 @@ struct FilePrescanResult {
     /// definition or arm: two different values for one name are a conflict
     /// the merge resolves by dropping the name.
     global_constants: Vec<(String, i64)>,
+    /// The subset of `global_constants` that is a constant only in a closed
+    /// program: a non-`const` object, or a function returning a literal.
+    closure_dependent_constants: HashSet<String>,
     /// Every name this file may write as a file-scope object
     /// (`const_eval::file_scope_written_names`).
     file_scope_writes: HashSet<String>,
@@ -157,6 +160,7 @@ impl FilePrescanResult {
             value_position_identifiers: HashSet::new(),
             included_c_files: HashSet::new(),
             global_constants: Vec::new(),
+            closure_dependent_constants: HashSet::new(),
             file_scope_writes: HashSet::new(),
             global_var_null_states: HashMap::new(),
             global_writers: HashMap::new(),
@@ -316,8 +320,20 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
             &mut result.unused_attribute_macros,
         );
 
-        collect_global_constants(&root, &source, &mut result.global_constants);
-        collect_constant_return_functions(&root, &source, &mut result.global_constants);
+        collect_global_constants(
+            &root,
+            &source,
+            &mut result.global_constants,
+            &mut result.closure_dependent_constants,
+        );
+        // Another translation unit may interpose a non-static function, so a
+        // literal-returning one is a constant only in a closed program too.
+        let mut returning: Vec<(String, i64)> = Vec::new();
+        collect_constant_return_functions(&root, &source, &mut returning);
+        result
+            .closure_dependent_constants
+            .extend(returning.iter().map(|(n, _)| n.clone()));
+        result.global_constants.extend(returning);
         result.file_scope_writes = const_eval::file_scope_written_names(&root, &source);
 
         // Runs for both headers and .c files: an extern forward-declaration
@@ -563,6 +579,7 @@ fn prescan_file_list(
     let mut included_c_files: HashSet<String> = HashSet::new();
     let mut global_constants: HashMap<String, i64> = HashMap::new();
     let mut global_constant_conflicts: HashSet<String> = HashSet::new();
+    let mut closure_dependent_constants: HashSet<String> = HashSet::new();
     let mut file_scope_writes: HashSet<String> = HashSet::new();
     let mut global_var_null_states: HashMap<String, NullState> = HashMap::new();
     let mut global_writers: HashMap<String, HashSet<String>> = HashMap::new();
@@ -872,6 +889,7 @@ fn prescan_file_list(
             }
         }
         file_scope_writes.extend(r.file_scope_writes);
+        closure_dependent_constants.extend(r.closure_dependent_constants);
         // One object per name: these are the non-static pointer globals, so
         // a name defined in several files is one variable, and its states
         // are joined as converging paths would be. Keeping the last file's
@@ -1261,6 +1279,7 @@ fn prescan_file_list(
         macro_operand_params: Arc::new(macro_operand_params),
         unused_attribute_macros: Arc::new(unused_attribute_macros),
         global_constants,
+        closure_dependent_constants: Arc::new(closure_dependent_constants),
         global_var_null_states: Arc::new(global_var_null_states),
         global_writers: Arc::new(global_writers),
         dispatch_table_callbacks,
@@ -5694,7 +5713,12 @@ fn has_pointer_in_declarator(node: &Node) -> bool {
 /// Collect global constants (`[const] TYPE NAME = VALUE;`) from file-scope declarations.
 /// Only collects non-static constants (static ones are file-local and handled by
 /// `init_state::collect_file_scope_constants` within each file).
-fn collect_global_constants(root: &Node, source: &str, constants: &mut Vec<(String, i64)>) {
+fn collect_global_constants(
+    root: &Node,
+    source: &str,
+    constants: &mut Vec<(String, i64)>,
+    closure_dependent: &mut HashSet<String>,
+) {
     for i in 0..root.child_count() {
         if let Some(child) = root.child(i) {
             match child.kind() {
@@ -5735,6 +5759,11 @@ fn collect_global_constants(root: &Node, source: &str, constants: &mut Vec<(Stri
                                     if let Some(val) =
                                         const_eval::try_evaluate_expr(&value, source, &empty_macros)
                                     {
+                                        // A `const` object cannot be written by
+                                        // any translation unit; a plain one can.
+                                        if !type_text.contains("const") {
+                                            closure_dependent.insert(name.clone());
+                                        }
                                         constants.push((name, val));
                                     }
                                 }
@@ -5744,7 +5773,7 @@ fn collect_global_constants(root: &Node, source: &str, constants: &mut Vec<(Stri
                 }
                 "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
                 | "preproc_elifdef" => {
-                    collect_global_constants(&child, source, constants);
+                    collect_global_constants(&child, source, constants, closure_dependent);
                 }
                 _ => {}
             }

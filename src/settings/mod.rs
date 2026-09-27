@@ -124,6 +124,9 @@ pub enum Source {
     /// A language guarantee that only a nonconforming environment breaks:
     /// holds unless overridden.
     Language,
+    /// A fact about the scanned program that only its user can declare,
+    /// under either preset: false unless overridden.
+    Declared,
 }
 
 /// One named option: a relaxation or a contract the analyzer may assume.
@@ -222,6 +225,25 @@ pub static OPTIONS: &[OptionSpec] = &[
                 Rule 13.5 flag only callees they can show are impure. clang-tidy's \
                 bugprone-assert-side-effect ignores calls by default. PC-lint and Parasoft's \
                 CERT_C-PRE31-c count every call, as the strict policy does.",
+    },
+    OptionSpec {
+        name: "closed_program",
+        axis: Axis::Environment,
+        scope: Scope::RuleSpecific("EXP33-C"),
+        source: Source::Declared,
+        oracle_tag: "contract:closed_program",
+        summary: "The scanned files are the whole program: nothing outside them links \
+                  against it, dlopens it, or loads into it. Then a non-static, non-const \
+                  global that no scanned file writes, and a non-static function that only \
+                  returns a literal, are constants EXP33-C may fold to prune a branch. \
+                  Undeclared, another translation unit may write the global or interpose \
+                  the function, so neither is folded.",
+        basis: "ADR-0011: libraries count as external, and an executable that exports its \
+                symbols (-rdynamic, dlopen'ed plugins) is a library too, so in-tree writes \
+                prove nothing about a global with external linkage. C11 6.2.2p2: every \
+                declaration of an identifier with external linkage, in any translation \
+                unit, denotes the same object. Declared by the user, never assumed: a \
+                Juliet testcase set is a closed program; a library is not.",
     },
     OptionSpec {
         name: "free_null_is_noop",
@@ -501,6 +523,7 @@ impl AnalysisSettings {
                 Source::Hosted => environment == EnvironmentKind::Hosted,
                 Source::Library(libcs) => libc.is_some_and(|l| libcs.contains(&l)),
                 Source::Language => true,
+                Source::Declared => false,
             };
             values.insert(o.name, v);
         }
