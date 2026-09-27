@@ -142,6 +142,124 @@ impl MacroLookup for WithDefinition<'_> {
     }
 }
 
+/// A table in which some names resolve to a chosen definition and the names
+/// in `hidden` to none at all (left as calls in an expansion); every other
+/// name resolves as before.
+struct WithDefinitions<'a> {
+    table: &'a HashMap<String, FunctionMacro>,
+    chosen: HashMap<&'a str, &'a FunctionMacro>,
+    hidden: &'a HashSet<String>,
+}
+
+impl MacroLookup for WithDefinitions<'_> {
+    fn lookup(&self, name: &str) -> Option<&FunctionMacro> {
+        if let Some(d) = self.chosen.get(name) {
+            return Some(d);
+        }
+        if self.hidden.contains(name) {
+            return None;
+        }
+        self.table.get(name)
+    }
+}
+
+/// Most combinations of nested macros' definitions an intersected fact is
+/// evaluated over; past it the fact is not trusted.
+const MAX_NESTED_BUILDS: usize = 32;
+
+/// The macros with more than one live definition that `definition`
+/// expands through, at any depth and through any of their definitions,
+/// outside `hidden`; and every combination of their definitions, one empty
+/// combination when there are none. The combinations are `None` when one of
+/// those macros has a definition the expander cannot read, or there are
+/// more than [`MAX_NESTED_BUILDS`] of them: an expansion that picks one
+/// definition of a nested macro holds in that build alone.
+type NestedBuilds<'a> = (
+    HashSet<String>,
+    Option<Vec<HashMap<&'a str, &'a FunctionMacro>>>,
+);
+
+fn nested_builds<'a>(
+    table: &'a HashMap<String, FunctionMacro>,
+    name: &str,
+    definition: &'a FunctionMacro,
+    hidden: &HashSet<String>,
+) -> NestedBuilds<'a> {
+    let mut seen: HashSet<&str> = HashSet::from([name]);
+    let mut multi: Vec<(&'a str, Vec<&'a FunctionMacro>)> = Vec::new();
+    let mut readable = true;
+    let mut stack: Vec<&'a FunctionMacro> = vec![definition];
+    while let Some(d) = stack.pop() {
+        for ident in identifiers_in(&d.body) {
+            let Some((key, inner)) = table.get_key_value(ident) else {
+                continue;
+            };
+            if hidden.contains(ident) || !seen.insert(key.as_str()) {
+                continue;
+            }
+            if inner.alternatives.is_empty() {
+                stack.push(inner);
+                continue;
+            }
+            let mut defs = Vec::new();
+            for alt in &inner.alternatives {
+                match alt
+                    .as_ref()
+                    .filter(|a| a.params.len() == inner.params.len())
+                {
+                    Some(alt) => {
+                        defs.push(alt);
+                        stack.push(alt);
+                    }
+                    None => readable = false,
+                }
+            }
+            multi.push((key.as_str(), defs));
+        }
+    }
+    let names = multi.iter().map(|(n, _)| n.to_string()).collect();
+    if !readable {
+        return (names, None);
+    }
+    let mut builds: Vec<HashMap<&'a str, &'a FunctionMacro>> = vec![HashMap::new()];
+    for (inner, defs) in multi {
+        if builds.len() * defs.len() > MAX_NESTED_BUILDS {
+            return (names, None);
+        }
+        builds = builds
+            .iter()
+            .flat_map(|b| {
+                defs.iter().map(move |d| {
+                    let mut b = b.clone();
+                    b.insert(inner, *d);
+                    b
+                })
+            })
+            .collect();
+    }
+    (names, Some(builds))
+}
+
+/// The identifiers in `text`, in order, each once per occurrence.
+fn identifiers_in(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if is_ident_start(c) && (i == 0 || !is_ident_char(bytes[i - 1] as char)) {
+            let start = i;
+            while i < bytes.len() && is_ident_char(bytes[i] as char) {
+                i += 1;
+            }
+            out.push(&text[start..i]);
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Which live definitions of a macro a consumer needs to agree before it
 /// acts on a parameter fact (ADR-0010 D1, merged toward the finding per
 /// consumer). A consumer the fact ACCUSES through -- EXP34-C reading a
@@ -219,16 +337,23 @@ fn over_live_definitions(
     let Some(m) = table.get(name) else {
         return Vec::new();
     };
-    if m.alternatives.is_empty() {
+    if merge == Merge::Union && m.alternatives.is_empty() {
         return fact(table, name);
     }
     let arity = m.params.len();
+    let own = [Some(m.clone())];
+    let definitions: &[Option<FunctionMacro>] = if m.alternatives.is_empty() {
+        &own
+    } else {
+        &m.alternatives
+    };
+    let none = HashSet::new();
     // Per index: whether every definition that counts for it has the fact,
     // and whether any definition counted at all.
     let mut holds = vec![true; arity];
     let mut voted = vec![false; arity];
     let mut union: BTreeSet<usize> = BTreeSet::new();
-    for alt in &m.alternatives {
+    for alt in definitions {
         let definition = match alt {
             Some(d) if d.params.len() == arity => d,
             _ => match merge {
@@ -236,25 +361,47 @@ fn over_live_definitions(
                 Merge::Intersect | Merge::IntersectExceptDeadHeader => return Vec::new(),
             },
         };
-        let view = WithDefinition {
-            table,
-            name,
-            definition,
-        };
-        let found: BTreeSet<usize> = fact(&view, name).into_iter().collect();
         if merge == Merge::Union {
-            union.extend(found);
+            let view = WithDefinition {
+                table,
+                name,
+                definition,
+            };
+            union.extend(fact(&view, name));
             continue;
         }
-        for i in 0..arity {
-            if merge == Merge::IntersectExceptDeadHeader
+        // Every build must agree, including every build of a macro this one
+        // expands through; an expansion otherwise sees only its first. A fact
+        // is one matching occurrence, which another build of a nested macro
+        // can add to but not take away, so what holds with those macros left
+        // unexpanded holds in all of them. The rest must hold in each
+        // combination of their definitions.
+        let (nested, builds) = nested_builds(table, name, definition, &none);
+        let view = |chosen: HashMap<&str, &FunctionMacro>, hidden: &HashSet<String>| {
+            let mut chosen = chosen;
+            chosen.insert(name, definition);
+            let view = WithDefinitions {
+                table,
+                chosen,
+                hidden,
+            };
+            fact(&view, name).into_iter().collect::<BTreeSet<usize>>()
+        };
+        let own = view(HashMap::new(), &nested);
+        let in_every_build = |i: usize| {
+            own.contains(&i)
+                || builds
+                    .as_ref()
+                    .is_some_and(|bs| bs.iter().all(|b| view(b.clone(), &none).contains(&i)))
+        };
+        let skips_header = |i: usize| {
+            merge == Merge::IntersectExceptDeadHeader
                 && !contains_whole_ident(&definition.body, &definition.params[i])
                 && is_constant_false_header(&definition.body)
-            {
-                continue;
-            }
+        };
+        for i in (0..arity).filter(|&i| !skips_header(i)) {
             voted[i] = true;
-            holds[i] &= found.contains(&i);
+            holds[i] &= in_every_build(i);
         }
     }
     if merge == Merge::Union {
@@ -2034,16 +2181,27 @@ fn output_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
 
 /// Parameter indices of `name` that some live definition drops -- its full
 /// expansion never mentions the argument -- while every other live definition
-/// either drops it too or assigns it whole. At the invocation such an argument
-/// is untouched: no build reads it there, and not every build writes it. A
-/// read of the variable later is where an uninitialized use shows (EXP33-C
-/// reports `use(v)` after `GET(v)`, not `GET(v)`, when one build's `GET` is
-/// `0`). A definition that reads the argument, or one the expander cannot
-/// read, keeps the invocation a read.
+/// either drops it too or only assigns it whole, never reading it (`(v) =
+/// g(v)` reads it). At the invocation such an argument is untouched: no build
+/// reads it there, and not every build writes it. A read of the variable
+/// later is where an uninitialized use shows (EXP33-C reports `use(v)` after
+/// `GET(v)`, not `GET(v)`, when one build's `GET` is `0`).
+///
+/// Every doubt keeps the invocation a read: a definition that reads the
+/// argument or that the expander cannot read, a name in `conditional` (some
+/// build does not define it as a macro, and a real function there reads its
+/// arguments), and a definition that passes the argument to a macro it
+/// expands through that is conditional or has several definitions.
 pub fn macro_untouched_param_indices(
     table: &HashMap<String, FunctionMacro>,
     name: &str,
+    conditional: &HashSet<String>,
 ) -> Vec<usize> {
+    // A name some build leaves undefined may be a real function there, which
+    // reads its arguments.
+    if conditional.contains(name) {
+        return Vec::new();
+    }
     let Some(m) = table.get(name) else {
         return Vec::new();
     };
@@ -2063,10 +2221,15 @@ pub fn macro_untouched_param_indices(
         let Some(definition) = definition.filter(|d| d.params.len() == arity) else {
             return Vec::new();
         };
-        let view = WithDefinition {
+        // A macro this one expands through that is conditional or has
+        // several definitions stays a call: passing it the argument is
+        // then a read, whatever its builds do.
+        let (mut hidden, _) = nested_builds(table, name, definition, conditional);
+        hidden.extend(conditional.iter().cloned());
+        let view = WithDefinitions {
             table,
-            name,
-            definition,
+            chosen: HashMap::from([(name, definition)]),
+            hidden: &hidden,
         };
         let Some(expanded) = expand_in(&view, name, &sentinels) else {
             return Vec::new();
@@ -2074,7 +2237,7 @@ pub fn macro_untouched_param_indices(
         for (i, sent) in sentinels.iter().enumerate() {
             if !contains_whole_ident(&expanded, sent) {
                 dropped[i] = true;
-            } else if !is_whole_assignment_target(&expanded, sent) {
+            } else if !only_assigned_whole(&expanded, sent) {
                 settled[i] = false;
             }
         }
@@ -2859,6 +3022,32 @@ fn rhs_is_null_constant(chars: &[char], start: usize) -> bool {
     false
 }
 
+/// True if `ident` occurs in `text` and every occurrence is a whole-object
+/// assignment target: the text writes it and never reads it. `(v) = g(v)`
+/// reads `v` before writing it, so it does not qualify.
+fn only_assigned_whole(text: &str, ident: &str) -> bool {
+    let occurrences = count_whole_ident(text, ident);
+    occurrences > 0 && count_assignment_targets(text, ident, |_| true) == occurrences
+}
+
+/// How many times `ident` appears in `text` as a whole token.
+fn count_whole_ident(text: &str, ident: &str) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let id: Vec<char> = ident.chars().collect();
+    let (n, m) = (chars.len(), id.len());
+    if m == 0 {
+        return 0;
+    }
+    (0..=n.saturating_sub(m))
+        .filter(|&i| {
+            i + m <= n
+                && chars[i..i + m] == id[..]
+                && (i == 0 || !is_ident_char(chars[i - 1]))
+                && (i + m >= n || !is_ident_char(chars[i + m]))
+        })
+        .count()
+}
+
 /// True if identifier `ident` appears in `text` as the target of a whole-object
 /// assignment: `ident =` or `(ident) =` (any number of wrapping parens),
 /// excluding compound assignment (`+=`/`==`/…), field/element/deref writes, and
@@ -2940,11 +3129,18 @@ fn is_null_assignment_target(text: &str, ident: &str) -> bool {
 /// [`is_whole_assignment_target`]). For each candidate, call `rhs_ok` with the
 /// char index just past the `=`; return true on the first that passes.
 fn find_assignment_targets(text: &str, ident: &str, rhs_ok: impl Fn(usize) -> bool) -> bool {
+    count_assignment_targets(text, ident, rhs_ok) > 0
+}
+
+/// How many whole-token occurrences of `ident` in `text` are whole-object
+/// assignment targets whose right-hand side starts where `rhs_ok` accepts.
+fn count_assignment_targets(text: &str, ident: &str, rhs_ok: impl Fn(usize) -> bool) -> usize {
+    let mut found = 0;
     let chars: Vec<char> = text.chars().collect();
     let id: Vec<char> = ident.chars().collect();
     let (n, m) = (chars.len(), id.len());
     if m == 0 {
-        return false;
+        return 0;
     }
     let mut i = 0;
     while i + m <= n {
@@ -2970,13 +3166,13 @@ fn find_assignment_targets(text: &str, ident: &str, rhs_ok: impl Fn(usize) -> bo
                 // A single `=` (not `==`) immediately follows → assignment target.
                 if j < n && chars[j] == '=' && (j + 1 >= n || chars[j + 1] != '=') && rhs_ok(j + 1)
                 {
-                    return true;
+                    found += 1;
                 }
             }
         }
         i += 1;
     }
-    false
+    found
 }
 
 #[cfg(test)]
@@ -3454,7 +3650,54 @@ mod tests {
     }
 
     #[test]
+    fn a_fact_through_a_nested_macro_with_two_definitions_holds_in_one_build_only() {
+        let t = table(concat!(
+            "#ifdef X\n",
+            "#define INNER(v) ((v) = 1)\n",
+            "#else\n",
+            "#define INNER(v) log_value(v)\n",
+            "#endif\n",
+            "#define OUTER(v) INNER(v)\n",
+        ));
+        assert!(macro_output_param_indices(&t, "OUTER", Live::All).is_empty());
+        assert!(macro_writes_param_indices(&t, "OUTER", Live::All).is_empty());
+        // Accusing consumers keep what the expanded build shows.
+        assert_eq!(macro_output_param_indices(&t, "OUTER", Live::Any), vec![0]);
+
+        // A write the outer body makes itself holds in every build of a
+        // nested macro, even one the argument is passed to (curl's
+        // CF_DATA_SAVE and its DEBUGASSERT).
+        let save = table(concat!(
+            "#ifdef DEBUGBUILD\n",
+            "#define CHECK(x) assert(x)\n",
+            "#else\n",
+            "#define CHECK(x) do {} while(0)\n",
+            "#endif\n",
+            "#define SAVE(s, c) do { (s) = (c); CHECK((s).depth > 0); } while(0)\n",
+        ));
+        assert_eq!(
+            macro_output_param_indices(&save, "SAVE", Live::All),
+            vec![0]
+        );
+        // So it does when a nested macro has a definition the expander
+        // cannot read.
+        let unreadable = table(concat!(
+            "#ifdef DEBUGBUILD\n",
+            "#define CHECK(x, ...) assert(x)\n",
+            "#else\n",
+            "#define CHECK(x) do {} while(0)\n",
+            "#endif\n",
+            "#define SAVE(s, c) do { (s) = (c); CHECK((s).depth > 0); } while(0)\n",
+        ));
+        assert_eq!(
+            macro_output_param_indices(&unreadable, "SAVE", Live::All),
+            vec![0]
+        );
+    }
+
+    #[test]
     fn an_argument_one_build_drops_and_the_other_writes_is_untouched() {
+        let none = HashSet::new();
         let drops = table(concat!(
             "#ifdef X\n",
             "#define GET(v) ((v) = f())\n",
@@ -3462,10 +3705,13 @@ mod tests {
             "#define GET(v) 0\n",
             "#endif\n",
         ));
-        assert_eq!(macro_untouched_param_indices(&drops, "GET"), vec![0]);
+        assert_eq!(macro_untouched_param_indices(&drops, "GET", &none), vec![0]);
         // One definition, and it drops the argument.
         let only = table("#define IGNORE(v) 0\n");
-        assert_eq!(macro_untouched_param_indices(&only, "IGNORE"), vec![0]);
+        assert_eq!(
+            macro_untouched_param_indices(&only, "IGNORE", &none),
+            vec![0]
+        );
         // A build that reads the argument keeps the invocation a read.
         let reads = table(concat!(
             "#ifdef X\n",
@@ -3474,10 +3720,10 @@ mod tests {
             "#define LOG(v) 0\n",
             "#endif\n",
         ));
-        assert!(macro_untouched_param_indices(&reads, "LOG").is_empty());
+        assert!(macro_untouched_param_indices(&reads, "LOG", &none).is_empty());
         // Every build writes it: an output, not untouched.
         let writes = table("#define SET(v) ((v) = 1)\n");
-        assert!(macro_untouched_param_indices(&writes, "SET").is_empty());
+        assert!(macro_untouched_param_indices(&writes, "SET", &none).is_empty());
         // A build the expander cannot read proves nothing.
         let unreadable = table(concat!(
             "#ifdef X\n",
@@ -3486,7 +3732,41 @@ mod tests {
             "#define GET2(v) 0\n",
             "#endif\n",
         ));
-        assert!(macro_untouched_param_indices(&unreadable, "GET2").is_empty());
+        assert!(macro_untouched_param_indices(&unreadable, "GET2", &none).is_empty());
+        // A build that reads the argument before assigning it reads it.
+        let bumps = table(concat!(
+            "#ifdef X\n",
+            "#define BUMP(v) ((v) = g(v))\n",
+            "#else\n",
+            "#define BUMP(v) 0\n",
+            "#endif\n",
+        ));
+        assert!(macro_untouched_param_indices(&bumps, "BUMP", &none).is_empty());
+        // A name some build does not define may be a function that reads it.
+        let conditional = HashSet::from(["IGNORE".to_string()]);
+        assert!(macro_untouched_param_indices(&only, "IGNORE", &conditional).is_empty());
+        // Expanding through a macro with two definitions sees only the first.
+        let nested = table(concat!(
+            "#ifdef X\n",
+            "#define INNER(v) 0\n",
+            "#else\n",
+            "#define INNER(v) log_value(v)\n",
+            "#endif\n",
+            "#define OUTER(v) INNER(v)\n",
+        ));
+        assert!(macro_untouched_param_indices(&nested, "OUTER", &none).is_empty());
+        // Passing it to a macro some build leaves undefined is a read there.
+        let through = table(concat!(
+            "#define LOGV(v) 0\n",
+            "#define OUTER2(v) LOGV(v)\n",
+            "#define OUTER3(v, w) LOGV(w)\n",
+        ));
+        let logv = HashSet::from(["LOGV".to_string()]);
+        assert!(macro_untouched_param_indices(&through, "OUTER2", &logv).is_empty());
+        assert_eq!(
+            macro_untouched_param_indices(&through, "OUTER3", &logv),
+            vec![0]
+        );
     }
 
     #[test]

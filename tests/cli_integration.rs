@@ -2472,6 +2472,24 @@ fn scan_project(files: &[(&str, &str)], rules: &str) -> Vec<String> {
 }
 
 #[test]
+fn a_files_own_macro_decides_whether_it_reads_an_argument() {
+    // a.c's TRACE drops its argument; b.c's reads it. In b.c, TRACE(w)
+    // reads the uninitialized w whichever file the prescan met first.
+    for (first, second) in [("a.c", "b.c"), ("b.c", "a.c")] {
+        let dropping = "#define TRACE(v) 0\nvoid f(void) { int u = 0; TRACE(u); }\n";
+        let reading =
+            "void log_int(int);\n#define TRACE(v) log_int(v)\nvoid g(void) { int w; TRACE(w); }\n";
+        let found = scan_project(&[(first, dropping), (second, reading)], "EXP33-C");
+        assert!(
+            found
+                .iter()
+                .any(|l| l.contains(second) && l.contains("'w'")),
+            "{found:?}"
+        );
+    }
+}
+
+#[test]
 fn a_c_files_private_macro_is_not_another_files_alternative() {
     // Each .c file defines GET privately; b.c's is not a build of a.c's,
     // so a.c's GET still writes `v`.

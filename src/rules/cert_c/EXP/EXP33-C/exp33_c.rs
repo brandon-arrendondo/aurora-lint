@@ -46,6 +46,9 @@ pub struct Exp33C {
     macro_output_params: RefCell<HashMap<String, Vec<usize>>>,
     /// Invoked macros' argument indices that no build reads at the invocation.
     macro_untouched_params: RefCell<HashMap<String, Vec<usize>>>,
+    /// Names some configuration leaves without a macro definition
+    /// (`ProjectContext::conditional_macro_names`).
+    conditional_macro_names: RefCell<Arc<HashSet<String>>>,
     /// The run's policy and environment settings: whether static storage is
     /// zeroed before `main` (`static_zero_init`).
     settings: RefCell<Arc<AnalysisSettings>>,
@@ -63,6 +66,7 @@ impl Exp33C {
             function_macros: RefCell::new(Arc::new(HashMap::new())),
             macro_output_params: RefCell::new(HashMap::new()),
             macro_untouched_params: RefCell::new(HashMap::new()),
+            conditional_macro_names: RefCell::default(),
             settings: RefCell::default(),
         }
     }
@@ -95,6 +99,31 @@ impl Exp33C {
     /// be general points-to/alias analysis for function pointers, which the
     /// design doc explicitly declines (piece (c), same precedent as
     /// `docs/design/cfg-substrate-adoption-decision.md`).
+    /// Invoked macros' arguments no build reads at the invocation. The
+    /// file's own definitions win over another file's of the same name, and
+    /// a name either defines conditionally keeps its reads.
+    fn untouched_macro_params(&self, node: &Node, source: &str) -> HashMap<String, Vec<usize>> {
+        let mut macros = HashMap::clone(&self.function_macros.borrow());
+        macros.extend(crate::analyze::macro_expand::collect_function_macros(
+            node, source,
+        ));
+        let mut conditional = HashSet::clone(&self.conditional_macro_names.borrow());
+        conditional.extend(crate::analyze::check_macros::collect_conditional_macro_names(source));
+        let mut invoked = HashSet::new();
+        collect_invoked_macro_names(node, source, &macros, &mut invoked);
+        invoked
+            .into_iter()
+            .filter_map(|name| {
+                let untouched = crate::analyze::macro_expand::macro_untouched_param_indices(
+                    &macros,
+                    &name,
+                    &conditional,
+                );
+                (!untouched.is_empty()).then_some((name, untouched))
+            })
+            .collect()
+    }
+
     fn build_read_only_deref_fns(&self) -> HashMap<String, HashSet<usize>> {
         let summaries = self.cross_file_summaries.borrow();
         let mut result = HashMap::new();
@@ -237,6 +266,7 @@ impl CertRule for Exp33C {
         drop(constants);
         // Function-like macro definitions (for macro output-arg recognition).
         *self.function_macros.borrow_mut() = context.function_macros.clone();
+        *self.conditional_macro_names.borrow_mut() = context.conditional_macro_names.clone();
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -290,15 +320,8 @@ impl CertRule for Exp33C {
                     let mut invoked = HashSet::new();
                     collect_invoked_macro_names(node, source, &macros, &mut invoked);
                     let mut out_params = HashMap::new();
-                    let mut untouched_params = HashMap::new();
                     let cross_file_summaries = self.cross_file_summaries.borrow();
                     for name in invoked {
-                        let untouched = crate::analyze::macro_expand::macro_untouched_param_indices(
-                            &macros, &name,
-                        );
-                        if !untouched.is_empty() {
-                            untouched_params.insert(name.clone(), untouched);
-                        }
                         let mut idx = crate::analyze::macro_expand::macro_output_param_indices(
                             &macros,
                             &name,
@@ -335,8 +358,11 @@ impl CertRule for Exp33C {
                     }
                     drop(cross_file_summaries);
                     *self.macro_output_params.borrow_mut() = out_params;
-                    *self.macro_untouched_params.borrow_mut() = untouched_params;
                 }
+                drop(macros);
+
+                *self.macro_untouched_params.borrow_mut() =
+                    self.untouched_macro_params(node, source);
             }
 
             if node.kind() == "function_definition" {
