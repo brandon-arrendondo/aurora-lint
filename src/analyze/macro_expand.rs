@@ -321,8 +321,10 @@ fn tokenize_body(chars: &[char]) -> Vec<BodyToken> {
             }
             i += 1;
         } else if is_ident_start(c) || c.is_ascii_digit() {
+            // Only a pp-number absorbs `.` (`1.5e3`); `s.x` is three tokens.
+            let number = c.is_ascii_digit();
             let start = i;
-            while i < chars.len() && (is_ident_char(chars[i]) || chars[i] == '.') {
+            while i < chars.len() && (is_ident_char(chars[i]) || (number && chars[i] == '.')) {
                 i += 1;
             }
             out.push(BodyToken {
@@ -503,17 +505,10 @@ pub fn macro_body_effects(arm: &MacroArm) -> (bool, Vec<String>) {
                     && prev.is_some_and(|p| matches!(p, "<" | ">") && tokens[j - 2].text == p);
                 let comparison = matches!(prev, Some("=" | "<" | ">" | "!")) && !shift;
                 let equality_next = next == Some("=") && glued(j);
-                // `T name = init` / `__typeof(x) name = init` declares an
-                // object the body owns: an initializer, not a write.
-                let is_ident = |k: usize| tokens[k].text.chars().next().is_some_and(is_ident_start);
-                let initializer = j >= 2
-                    && is_ident(j - 1)
-                    && (closes_typeof(&tokens, j - 2)
-                        || (is_ident(j - 2)
-                            && !matches!(
-                                tokens[j - 2].text.as_str(),
-                                "return" | "case" | "else" | "do"
-                            )));
+                // `T name = init`, `T *name = init`, `T name[N] = {...}` and
+                // `__typeof(x) name = init` declare an object the body owns:
+                // an initializer, not a write.
+                let initializer = declares_before(&tokens, j);
                 if !comparison && !equality_next && !initializer {
                     writes = true;
                 }
@@ -539,6 +534,62 @@ pub fn macro_body_effects(arm: &MacroArm) -> (bool, Vec<String>) {
         }
     }
     (writes, callees)
+}
+
+/// Whether the tokens before the `=` at `eq` are a declarator preceded by a
+/// type: `T name`, `T *name`, `T name[N]`, `__typeof(x) name`. An assignment
+/// target is preceded by `;`, `{`, `(`, `,` or an operator instead.
+fn declares_before(tokens: &[BodyToken], eq: usize) -> bool {
+    let is_ident = |k: usize| tokens[k].text.chars().next().is_some_and(is_ident_start);
+    let mut k = eq;
+    // Array bounds: `name[N]`.
+    while k > 0 && tokens[k - 1].text == "]" {
+        let mut depth = 0i32;
+        let mut open = None;
+        for m in (0..k).rev() {
+            match tokens[m].text.as_str() {
+                "]" => depth += 1,
+                "[" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        open = Some(m);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        match open {
+            Some(m) => k = m,
+            None => return false,
+        }
+    }
+    // The declared name.
+    if k == 0 || !is_ident(k - 1) {
+        return false;
+    }
+    k -= 1;
+    // Pointer stars and their qualifiers. `*p = x` after `;` or `{` is a
+    // write through p; only a type word before the stars makes it a
+    // declaration.
+    while k > 0
+        && matches!(
+            tokens[k - 1].text.as_str(),
+            "*" | "const" | "volatile" | "restrict"
+        )
+    {
+        k -= 1;
+    }
+    if k == 0 {
+        return false;
+    }
+    let before = &tokens[k - 1].text;
+    let type_word = is_ident(k - 1)
+        && !matches!(
+            before.as_str(),
+            "return" | "case" | "else" | "do" | "sizeof"
+        );
+    type_word || closes_typeof(tokens, k - 1)
 }
 
 /// Whether `tokens[close]` is the `)` of a `typeof(...)`-family operator.
@@ -3408,5 +3459,25 @@ mod macro_write_tests {
         assert!(macro_body_effects(&shift).0);
         let compare = arm(&["a", "b"], "((a) <= (b) && (a) != 0)");
         assert!(!macro_body_effects(&compare).0);
+    }
+
+    #[test]
+    fn member_access_in_body_is_an_evaluation() {
+        let getx = arm(&["s"], "s.x");
+        assert_eq!(argument_evaluation(&getx, 0), ArgEvaluation::Once);
+        let number = arm(&["v"], "((v) * 1.5e3)");
+        assert_eq!(argument_evaluation(&number, 0), ArgEvaluation::Once);
+    }
+
+    #[test]
+    fn pointer_and_array_declarations_are_initializers() {
+        let ptr = arm(&["x"], "({ const int *q_ = &(x); *q_; })");
+        assert!(!macro_body_effects(&ptr).0);
+        let array = arm(&["x"], "({ int a_[2] = { (x), (x) }; a_[0]; })");
+        assert!(!macro_body_effects(&array).0);
+        let deref_write = arm(&["p"], "do { *p = 0; } while (0)");
+        assert!(macro_body_effects(&deref_write).0);
+        let element_write = arm(&["i"], "do { buf[i] = 0; } while (0)");
+        assert!(macro_body_effects(&element_write).0);
     }
 }

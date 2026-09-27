@@ -36,11 +36,11 @@ pub enum LibraryEffect {
 /// error reported through `errno` and no object they modify.
 const PURE_LIBRARY_FUNCTIONS: &[&str] = &[
     // <string.h> comparison and search (C11 7.24.4, 7.24.5; not strxfrm or
-    // strtok, which write), and strlen (7.24.6.3).
+    // strtok, which write, nor strcoll, which POSIX lets set errno to
+    // EINVAL), and strlen (7.24.6.3).
     "memcmp",
     "strcmp",
     "strncmp",
-    "strcoll",
     "memchr",
     "strchr",
     "strcspn",
@@ -57,7 +57,6 @@ const PURE_LIBRARY_FUNCTIONS: &[&str] = &[
     "wmemcmp",
     "wcscmp",
     "wcsncmp",
-    "wcscoll",
     "wmemchr",
     "wcschr",
     "wcscspn",
@@ -142,9 +141,26 @@ const PURE_LIBRARY_FUNCTIONS: &[&str] = &[
     "isnan",
     "isnormal",
     "signbit",
+    // Quiet comparison macros (C11 7.12.14: no floating-point exception,
+    // no errno) and nan (7.12.11.2, no error condition).
+    "isgreater",
+    "isgreaterequal",
+    "isless",
+    "islessequal",
+    "islessgreater",
+    "isunordered",
+    "nan",
+    "nanf",
+    "nanl",
+    // POSIX: getpid "shall always be successful"; pthread_self and
+    // pthread_equal report no errors.
+    "getpid",
+    "pthread_self",
+    "pthread_equal",
 ];
 
-/// Functions whose only side effect is the static buffer they return: C11
+/// Functions whose only side effect is the static buffer they return, a
+/// named exception (maintainer ruling on PRE31-C, 2026-09-27): C11
 /// 7.24.6.2 lets a later strerror call overwrite its string (and POSIX lets
 /// it set errno for an invalid code); POSIX inet_ntoa returns a static
 /// buffer overwritten by the next call.

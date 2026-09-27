@@ -194,11 +194,13 @@ pub static OPTIONS: &[OptionSpec] = &[
             strict: false,
         },
         oracle_tag: "call-side-effect-unproven",
-        summary: "PRE31-C: a call, in an argument an unsafe macro may evaluate other than once, \
-                  to a function with no definition in the scanned files and no library \
-                  contract, or to strerror/inet_ntoa (whose only effect is the static buffer \
-                  they return), is not treated as a side effect. A callee shown to have one \
-                  is reported either way.",
+        summary: "PRE31-C: an unproven call, in an argument an unsafe macro may evaluate other \
+                  than once, is not treated as a side effect: a call to a function with no \
+                  definition in the scanned files and no library contract, a call through a \
+                  pointer, a call to a function another scanned file defines that is not yet \
+                  proven pure or impure, or strerror/inet_ntoa (whose only effect is the \
+                  static buffer they return). A callee shown to have a side effect is \
+                  reported either way.",
         basis: "C11 5.1.2.3p2 (which CERT quotes) makes a call a side effect only when the \
                 function does one. cppcheck's assertWithSideEffect and Polyspace's MISRA C:2012 \
                 Rule 13.5 flag only callees they can show are impure. clang-tidy's \
@@ -249,7 +251,7 @@ pub static OPTIONS: &[OptionSpec] = &[
                   or POSIX function it knows has one (it sets errno, touches a stream, allocates, or \
                   keeps hidden state). Withdrawn, a library call is a call to an unknown \
                   function.",
-        basis: "C11 7.24 and 7.4: memcmp, strcmp, strncmp, strcoll, memchr, strchr, \
+        basis: "C11 7.24 and 7.4: memcmp, strcmp, strncmp, memchr, strchr, \
                 strcspn, strpbrk, strrchr, strspn, strstr, strlen and the character \
                 classification and case mapping functions modify no object; 7.22.1.4p8 and 7.12.1 (strtol and math functions report \
                 errors through errno); CERT PRE31-C-EX1: \"even changing errno is a side \
