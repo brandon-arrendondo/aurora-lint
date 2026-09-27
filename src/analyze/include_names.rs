@@ -143,33 +143,34 @@ impl HeaderLookup {
     }
 
     /// Find an absolute `include_path` (a forced include the database named
-    /// by full path).
+    /// by full path). Case-insensitive mode walks it from the root through
+    /// the index rather than asking the file system, which on a
+    /// case-insensitive one (macOS, drvfs) would accept a wrong spelling
+    /// without saying so.
     pub fn find_absolute(&self, include_path: &Path) -> Option<HeaderMatch> {
-        if include_path.is_file() {
-            return Some(HeaderMatch {
+        match self.mode {
+            IncludeNames::Exact => include_path.is_file().then(|| HeaderMatch {
                 path: include_path.to_path_buf(),
                 case_differs: false,
                 ambiguous_with: Vec::new(),
-            });
+            }),
+            IncludeNames::CaseInsensitive => {
+                let (root, rest) = split_root(include_path);
+                self.walk_folded(&root, &rest, Want::File)
+            }
         }
-        if self.mode == IncludeNames::Exact {
-            return None;
-        }
-        let (root, rest) = split_root(include_path);
-        self.walk_folded(&root, &rest, Want::File)
     }
 
-    /// `dir` as it exists on disk: itself when it does, otherwise, for an
-    /// absolute path, the directory its components name ignoring case.
+    /// `dir` as spelled on disk. An absolute path is walked through the
+    /// index, for the same reason as in [`find_absolute`](Self::find_absolute);
+    /// a relative one, which has no root to walk from, is taken as written
+    /// when it exists.
     fn search_dir(&self, dir: &Path) -> Option<PathBuf> {
-        if dir.is_dir() {
-            return Some(dir.to_path_buf());
+        if dir.is_absolute() {
+            let (root, rest) = split_root(dir);
+            return self.walk_folded(&root, &rest, Want::Dir).map(|m| m.path);
         }
-        if !dir.is_absolute() {
-            return None;
-        }
-        let (root, rest) = split_root(dir);
-        self.walk_folded(&root, &rest, Want::Dir).map(|m| m.path)
+        dir.is_dir().then(|| dir.to_path_buf())
     }
 
     /// Follow `include_path` down from `dir` one component at a time,
@@ -284,10 +285,38 @@ fn fold(name: &str) -> String {
         .collect()
 }
 
+/// Whether the file system temporary directories live on ignores case:
+/// probed once, by creating `A` and looking for `a`.
+#[cfg(test)]
+pub(crate) fn temp_fs_ignores_case() -> bool {
+    static IGNORES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *IGNORES.get_or_init(|| {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        std::fs::write(dir.path().join("A"), "").expect("a probe file");
+        dir.path().join("a").exists()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+
+    /// Whether the file system temporary directories live on ignores case
+    /// (macOS APFS, drvfs), where two names differing only in case are one
+    /// file and an exact-case lookup finds any spelling. Tests that need
+    /// either to be otherwise skip there, saying so.
+    fn temp_fs_ignores_case() -> bool {
+        super::temp_fs_ignores_case()
+    }
+
+    fn skip(test: &str) -> bool {
+        let ignores = temp_fs_ignores_case();
+        if ignores {
+            eprintln!("{test}: skipped, the temporary directory's file system ignores case");
+        }
+        ignores
+    }
 
     fn tree(files: &[&str]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -303,7 +332,11 @@ mod tests {
     fn exact_mode_needs_the_exact_name() {
         let dir = tree(&["ShlObj.h"]);
         let lookup = HeaderLookup::new(IncludeNames::Exact);
-        assert!(lookup.find_in(dir.path(), "Shlobj.h").is_none());
+        // Exact matching takes the file system's answer, which on a
+        // case-insensitive one accepts any spelling.
+        if !skip("exact_mode_needs_the_exact_name: the miss") {
+            assert!(lookup.find_in(dir.path(), "Shlobj.h").is_none());
+        }
         let hit = lookup.find_in(dir.path(), "ShlObj.h").unwrap();
         assert!(!hit.case_differs);
     }
@@ -349,6 +382,10 @@ mod tests {
 
     #[test]
     fn an_exact_entry_wins_over_case_variants() {
+        // Needs two entries whose names differ only in case.
+        if skip("an_exact_entry_wins_over_case_variants") {
+            return;
+        }
         let dir = tree(&["config.h", "Config.h"]);
         let lookup = HeaderLookup::new(IncludeNames::CaseInsensitive);
         let hit = lookup.find_in(dir.path(), "Config.h").unwrap();
@@ -359,6 +396,10 @@ mod tests {
 
     #[test]
     fn different_files_differing_only_in_case_are_ambiguous_and_the_pick_is_stable() {
+        // Needs two entries whose names differ only in case.
+        if skip("different_files_differing_only_in_case_are_ambiguous_and_the_pick_is_stable") {
+            return;
+        }
         let dir = tree(&["config.h", "Config.h"]);
         let lookup = HeaderLookup::new(IncludeNames::CaseInsensitive);
         let hit = lookup.find_in(dir.path(), "CONFIG.H").unwrap();
@@ -371,6 +412,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn case_variants_that_are_one_file_are_not_ambiguous() {
+        // Needs two entries whose names differ only in case.
+        if skip("case_variants_that_are_one_file_are_not_ambiguous") {
+            return;
+        }
         // xwin's layout: the real mixed-case header plus a lowercase symlink.
         let dir = tree(&["ShlObj.h"]);
         std::os::unix::fs::symlink("ShlObj.h", dir.path().join("shlobj.h")).unwrap();
@@ -387,9 +432,11 @@ mod tests {
         let written = dir.path().join("sdk").join("IDX.h");
         let hit = lookup.find_absolute(&written).unwrap();
         assert_eq!(hit.path, dir.path().join("Sdk").join("Idx.h"));
-        assert!(HeaderLookup::new(IncludeNames::Exact)
-            .find_absolute(&written)
-            .is_none());
+        if !skip("absolute_names_fold_from_the_root: the exact miss") {
+            assert!(HeaderLookup::new(IncludeNames::Exact)
+                .find_absolute(&written)
+                .is_none());
+        }
     }
 
     #[test]
@@ -410,12 +457,18 @@ mod tests {
         assert!(ci.dir_exists(&dir.path().join("include"), Path::new("Object")));
         assert!(!ci.dir_exists(&dir.path().join("include"), Path::new("object/a.h")));
         let exact = HeaderLookup::new(IncludeNames::Exact);
-        assert!(!exact.dir_exists(&dir.path().join("include"), Path::new("Object")));
+        if !skip("directories_are_found_for_the_missing_header_check: the exact miss") {
+            assert!(!exact.dir_exists(&dir.path().join("include"), Path::new("Object")));
+        }
         assert!(exact.dir_exists(&dir.path().join("include"), Path::new("object")));
     }
 
     #[test]
     fn an_entry_of_the_wrong_kind_does_not_hide_the_header() {
+        // Needs two entries whose names differ only in case.
+        if skip("an_entry_of_the_wrong_kind_does_not_hide_the_header") {
+            return;
+        }
         // A directory `Config.h/` sorts before the file `config.h`.
         let dir = tree(&["Config.h/x", "config.h"]);
         let lookup = HeaderLookup::new(IncludeNames::CaseInsensitive);
@@ -426,14 +479,21 @@ mod tests {
 
     #[test]
     fn directories_differing_only_in_case_are_searched_as_one() {
+        // Needs two entries whose names differ only in case.
+        if skip("directories_differing_only_in_case_are_searched_as_one") {
+            return;
+        }
         // On a Windows checkout `Sdk/` and `sdk/` are one directory.
         let dir = tree(&["Sdk/other.h", "sdk/c.h"]);
         let lookup = HeaderLookup::new(IncludeNames::CaseInsensitive);
         let hit = lookup.find_in(dir.path(), "SDK/c.h").unwrap();
         assert_eq!(hit.path, dir.path().join("sdk").join("c.h"));
         assert!(hit.ambiguous_with.is_empty());
-        // The same name under both is ambiguous, and names the files.
+        // The same name under both is ambiguous, and names the files. A
+        // fresh lookup: the first one's index of the temporary directory's
+        // parent predates this tree.
         let dir = tree(&["Sdk/c.h", "sdk/c.h"]);
+        let lookup = HeaderLookup::new(IncludeNames::CaseInsensitive);
         let hit = lookup.find_in(dir.path(), "SDK/c.h").unwrap();
         assert_eq!(hit.path, dir.path().join("Sdk").join("c.h"));
         assert_eq!(hit.ambiguous_with, vec![dir.path().join("sdk").join("c.h")]);
@@ -457,9 +517,11 @@ mod tests {
             !hit.case_differs,
             "the command line's spelling is not the #include's"
         );
-        assert!(HeaderLookup::new(IncludeNames::Exact)
-            .find_in(&dir.path().join("inc"), "a.h")
-            .is_none());
+        if !skip("a_search_directory_spelled_in_another_case_is_found: the exact miss") {
+            assert!(HeaderLookup::new(IncludeNames::Exact)
+                .find_in(&dir.path().join("inc"), "a.h")
+                .is_none());
+        }
     }
 
     #[test]

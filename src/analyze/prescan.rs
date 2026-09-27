@@ -8084,12 +8084,21 @@ no_mem:
             ctx
         };
 
-        let exact = scan(IncludeNames::Exact);
-        assert!(!exact.macro_constants.contains_key("SHL_IDX"));
-        assert!(exact
-            .macro_gaps
-            .iter()
-            .any(|g| g.kind == MacroGapKind::UnresolvedInclude && g.name == "Shlobj.h"));
+        // Exact matching takes the file system's answer, which on a
+        // case-insensitive one (macOS, drvfs) accepts any spelling.
+        if crate::analyze::include_names::temp_fs_ignores_case() {
+            eprintln!(
+                "resolve_includes_matches_names_under_the_toolchain_rule: exact-mode miss \
+                 skipped, the temporary directory's file system ignores case"
+            );
+        } else {
+            let exact = scan(IncludeNames::Exact);
+            assert!(!exact.macro_constants.contains_key("SHL_IDX"));
+            assert!(exact
+                .macro_gaps
+                .iter()
+                .any(|g| g.kind == MacroGapKind::UnresolvedInclude && g.name == "Shlobj.h"));
+        }
 
         let cl = scan(IncludeNames::CaseInsensitive);
         assert_eq!(cl.macro_constants.get("SHL_IDX"), Some(&8));

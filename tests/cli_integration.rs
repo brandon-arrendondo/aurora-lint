@@ -2335,10 +2335,24 @@ fn msvc_database_matches_include_names_ignoring_case() {
         output.contains("spelled in a different case") && output.contains("MSVC_Idx.H"),
         "{output}"
     );
-    // An explicit setting wins over what the database implies.
+    // An explicit setting wins over what the database implies. Exact
+    // matching takes the file system's answer, so this half needs one that
+    // matches case (not macOS APFS or drvfs).
+    if temp_fs_ignores_case() {
+        eprintln!("exact-mode half skipped: the temporary directory's file system ignores case");
+        return;
+    }
     let (exact, _) =
         arr30_scan_with_msvc_cdb("case.c", Some("/I../sdk"), &["--include-names", "exact"]);
     assert!(!names_index_8(&exact), "{exact:?}");
+}
+
+/// Whether the file system temporary directories live on ignores case,
+/// probed by creating `A` and looking for `a`.
+fn temp_fs_ignores_case() -> bool {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("A"), "").unwrap();
+    dir.path().join("a").exists()
 }
 
 #[test]
