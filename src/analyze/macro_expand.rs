@@ -299,9 +299,13 @@ fn live_alternatives(
         }
         if let Some((name, outcome)) = classify_define_line(&logical) {
             push_alternative(out.entry(name).or_default(), outcome.ok());
+        } else if let Some(name) = object_like_define_name(&logical) {
+            // `#else #define RELEASE my_release`: the name is a macro there
+            // too, just not one the expander reads.
+            push_alternative(out.entry(name).or_default(), None);
         }
     }
-    out.retain(|_, alts| alts.len() > 1);
+    out.retain(|_, alts| alts.len() > 1 && alts.iter().any(Option::is_some));
     out
 }
 
@@ -1494,6 +1498,22 @@ pub fn scan_function_macro_defines(source: &str) -> Vec<ScannedDefine> {
         }
     }
     out
+}
+
+/// The name an object-like `#define NAME body` defines, if `line` is one.
+fn object_like_define_name(line: &str) -> Option<String> {
+    let s = line.trim_start().strip_prefix('#')?;
+    let s = s.trim_start().strip_prefix("define")?;
+    if !s.starts_with(|c: char| c.is_whitespace()) {
+        return None;
+    }
+    let s = s.trim_start();
+    let end = s.find(|c: char| !is_ident_char(c)).unwrap_or(s.len());
+    let name = &s[..end];
+    if name.is_empty() || !name.starts_with(is_ident_start) || s[end..].starts_with('(') {
+        return None;
+    }
+    Some(name.to_string())
 }
 
 /// Parse one logical line as a function-like `#define`. Returns `None` for
@@ -3370,6 +3390,22 @@ mod tests {
             vec![0]
         );
         assert!(macro_frees_param_indices(&frees, "DROP", Live::All).is_empty());
+    }
+
+    #[test]
+    fn an_object_like_definition_in_another_arm_is_unreadable() {
+        let t = table(concat!(
+            "#ifdef TRACK\n",
+            "#define SAFE_FREE(x) do { free(x); (x) = NULL; } while(0)\n",
+            "#else\n",
+            "#define SAFE_FREE my_safe_free\n",
+            "#endif\n",
+        ));
+        assert!(macro_nulls_param_indices(&t, "SAFE_FREE", Live::All).is_empty());
+        assert_eq!(
+            macro_nulls_param_indices(&t, "SAFE_FREE", Live::Any),
+            vec![0]
+        );
     }
 
     #[test]

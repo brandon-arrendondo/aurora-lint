@@ -298,12 +298,38 @@ pub fn arm_assumptions(node: &Node, source: &str) -> Vec<(String, bool)> {
 
 /// Whether 1-based `line` of `source` survives preprocessing with the macros
 /// in `assumptions` fixed. See [`arm_assumptions`].
+///
+/// A rule asks this for many calls in one file under a handful of
+/// assumption sets, so the regions are computed once per (file contents,
+/// assumption set) and kept per thread until a different file is asked
+/// about.
 pub fn line_compiles_under(source: &str, line: usize, assumptions: &[(String, bool)]) -> bool {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::hash::{Hash, Hasher};
+    /// The file the regions were computed for (hash, length), and the
+    /// regions per assumption set.
+    type Cache = (u64, usize, HashMap<Vec<(String, bool)>, DeadRegions>);
+    thread_local! {
+        static CACHE: RefCell<Cache> = RefCell::new((0, 0, HashMap::new()));
+    }
     if assumptions.is_empty() {
         return true;
     }
-    let table: PlatformAssumptions = assumptions.iter().cloned().collect();
-    !DeadRegions::under(source, &table).contains_line(line)
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut hasher);
+    let key = (hasher.finish(), source.len());
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if (cache.0, cache.1) != key {
+            *cache = (key.0, key.1, HashMap::new());
+        }
+        let regions = cache.2.entry(assumptions.to_vec()).or_insert_with(|| {
+            let table: PlatformAssumptions = assumptions.iter().cloned().collect();
+            DeadRegions::under(source, &table)
+        });
+        !regions.contains_line(line)
+    })
 }
 
 /// The `(name, defined)` terms a conditional's own condition asserts when

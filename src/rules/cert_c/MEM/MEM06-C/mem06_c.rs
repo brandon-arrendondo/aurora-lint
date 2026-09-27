@@ -350,7 +350,13 @@ impl Mem06C {
         let callee = self.callee_name(call, source)?;
         let args = call_args(call);
         let idx = match self.function_summaries.borrow().get(&callee) {
-            Some(s) => s.frees_params.iter().copied().min()?,
+            // Only the frees of definitions this call can link against.
+            Some(s) => s
+                .at(source, call.start_position().row + 1)
+                .frees_params
+                .iter()
+                .copied()
+                .min()?,
             None => credential_sinks::released_arg(&callee)?,
         };
         object_of(args.get(idx)?, source)

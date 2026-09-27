@@ -97,6 +97,9 @@ pub struct FunctionSummary {
     /// [`Self::free_arms`] for `stores_params`.
     #[serde(default)]
     pub store_arms: HashMap<usize, Vec<Vec<(String, bool)>>>,
+    /// [`Self::free_arms`] for `frees_param_pointees`.
+    #[serde(default)]
+    pub pointee_free_arms: HashMap<usize, ArmSets>,
     /// [`Self::free_arms`] for the parameters `frees_param_fields` covers.
     #[serde(default)]
     pub field_free_arms: HashMap<usize, Vec<Vec<(String, bool)>>>,
@@ -1330,6 +1333,13 @@ fn analyze_function(
         for &idx in &summary.stores_params {
             summary
                 .store_arms
+                .entry(idx)
+                .or_default()
+                .push(arms.clone());
+        }
+        for &idx in &summary.frees_param_pointees {
+            summary
+                .pointee_free_arms
                 .entry(idx)
                 .or_default()
                 .push(arms.clone());
@@ -3668,8 +3678,8 @@ impl FunctionSummary {
 
     /// The summary as a call on 1-based `line` of `source` sees it: every
     /// fact that records its definitions' arms ([`Self::free_arms`],
-    /// [`Self::store_arms`], [`Self::field_free_arms`],
-    /// [`Self::escape_arms`]) keeps only what a definition that can compile
+    /// [`Self::store_arms`], [`Self::pointee_free_arms`],
+    /// [`Self::field_free_arms`], [`Self::escape_arms`]) keeps only what a definition that can compile
     /// together with that line establishes. Borrowed when no definition is
     /// excluded, which is the common case.
     pub fn at(&self, source: &str, line: usize) -> std::borrow::Cow<'_, FunctionSummary> {
@@ -3687,6 +3697,12 @@ impl FunctionSummary {
             .copied()
             .filter(|idx| excluded(self.store_arms.get(idx)))
             .collect();
+        let pointees: HashSet<usize> = self
+            .frees_param_pointees
+            .iter()
+            .copied()
+            .filter(|idx| excluded(self.pointee_free_arms.get(idx)))
+            .collect();
         let fields: HashSet<usize> = self
             .frees_param_fields
             .keys()
@@ -3696,7 +3712,12 @@ impl FunctionSummary {
         let escape = self.returned_value_escapes
             && !self.escape_arms.is_empty()
             && excluded(Some(&self.escape_arms));
-        if frees.is_empty() && stores.is_empty() && fields.is_empty() && !escape {
+        if frees.is_empty()
+            && pointees.is_empty()
+            && stores.is_empty()
+            && fields.is_empty()
+            && !escape
+        {
             return Cow::Borrowed(self);
         }
         let mut seen = self.clone();
@@ -3704,6 +3725,8 @@ impl FunctionSummary {
         seen.unconditional_frees_params
             .retain(|idx| !frees.contains(idx));
         seen.frees_params_guessed.retain(|idx| !frees.contains(idx));
+        seen.frees_param_pointees
+            .retain(|idx| !pointees.contains(idx));
         seen.stores_params.retain(|idx| !stores.contains(idx));
         seen.frees_param_fields
             .retain(|idx, _| !fields.contains(idx));
@@ -3871,6 +3894,9 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
     }
     for (idx, arms) in summary.field_free_arms {
         merge_arms(existing.field_free_arms.entry(idx).or_default(), arms);
+    }
+    for (idx, arms) in summary.pointee_free_arms {
+        merge_arms(existing.pointee_free_arms.entry(idx).or_default(), arms);
     }
     for (idx, by_callee) in summary.passthrough_arms {
         let slot = existing.passthrough_arms.entry(idx).or_default();
