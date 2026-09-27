@@ -823,24 +823,132 @@ fn collect_non_const_static_defs(root: &Node, source: &str, defs: &mut Vec<(Stri
 /// local `x` shadowing the static, so the CFG pruned branches that run.
 /// A non-`static` object has external linkage and another file can write it;
 /// callers ask this only of `static` ones.
+///
+/// Conservative where the parse cannot see: the name anywhere in a
+/// `#define` body, or inside the arguments of a function-like macro this
+/// file defines, counts as a write, and a block-scope `extern` declaration
+/// of the name is the file-scope object, not another one.
 pub fn file_static_never_written(root: &Node, source: &str, name: &str) -> bool {
-    use crate::utility::cert_c::ast_utils::{resolve_identifier_binding, IdentifierBinding};
+    use crate::utility::cert_c::ast_utils::{
+        declaration_has_storage_class, resolve_identifier_binding, IdentifierBinding,
+    };
+    // A macro body is one token to the parser, so a write in it is
+    // invisible to the walk below: any mention of the name in a `#define`
+    // body counts as a write.
+    if name_in_a_define_body(source, name) {
+        return false;
+    }
+    let mut macro_callees: std::collections::HashMap<String, bool> =
+        std::collections::HashMap::new();
     let ids = lang_parsing_substrate::query::find_descendants_of_kind(*root, "identifier");
     for id in ids {
         if id.utf8_text(source.as_bytes()).unwrap_or("") != name {
             continue;
         }
-        if matches!(
-            resolve_identifier_binding(&id, name, source),
-            Some(IdentifierBinding::Local(_)) | Some(IdentifierBinding::Parameter(_))
-        ) {
-            continue;
+        match resolve_identifier_binding(&id, name, source) {
+            // A block-scope `extern int x;` names the file-scope object.
+            Some(IdentifierBinding::Local(decl))
+                if !declaration_has_storage_class(&decl, "extern", source) =>
+            {
+                continue
+            }
+            Some(IdentifierBinding::Parameter(_)) => continue,
+            _ => {}
         }
-        if is_write_context(&id) {
+        if is_write_context(&id) || is_function_macro_argument(&id, source, &mut macro_callees) {
             return false;
         }
     }
     true
+}
+
+/// Whether `name` appears as a whole token in the replacement list of any
+/// `#define` in `source` (continuation lines joined), in any arm.
+fn name_in_a_define_body(source: &str, name: &str) -> bool {
+    let mut lines = source.lines();
+    while let Some(line) = lines.next() {
+        let mut text = line.to_string();
+        while text.ends_with('\\') {
+            text.pop();
+            match lines.next() {
+                Some(next) => text.push_str(next),
+                None => break,
+            }
+        }
+        let Some(rest) = text.trim_start().strip_prefix('#') else {
+            continue;
+        };
+        let Some(rest) = rest.trim_start().strip_prefix("define") else {
+            continue;
+        };
+        if !rest.starts_with(|c: char| c.is_whitespace()) {
+            continue;
+        }
+        let rest = rest.trim_start();
+        let macro_name_len = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let body = &rest[macro_name_len..];
+        if contains_token(body, name) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `text` contains `name` bounded by non-identifier characters.
+fn contains_token(text: &str, name: &str) -> bool {
+    let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let bytes = text.as_bytes();
+    let mut from = 0;
+    while let Some(off) = text[from..].find(name) {
+        let start = from + off;
+        let end = start + name.len();
+        let before_ok = start == 0 || !is_ident(bytes[start - 1]);
+        let after_ok = end >= bytes.len() || !is_ident(bytes[end]);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+/// Whether `id` sits inside the arguments of a call to a name this file
+/// defines as a function-like macro, which may write it however its body
+/// says (`INC(x)` with `#define INC(v) ((v)++)`).
+fn is_function_macro_argument(
+    id: &Node,
+    source: &str,
+    cache: &mut std::collections::HashMap<String, bool>,
+) -> bool {
+    let mut node = *id;
+    while let Some(parent) = node.parent() {
+        if parent.kind() == "argument_list" {
+            let callee = parent
+                .parent()
+                .filter(|c| c.kind() == "call_expression")
+                .and_then(|c| c.child_by_field_name("function"))
+                .filter(|f| f.kind() == "identifier")
+                .and_then(|f| f.utf8_text(source.as_bytes()).ok());
+            if let Some(callee) = callee {
+                let is_macro = *cache.entry(callee.to_string()).or_insert_with(|| {
+                    crate::analyze::check_macros::defines_function_macro(source, callee)
+                });
+                if is_macro {
+                    return true;
+                }
+            }
+        }
+        if matches!(
+            parent.kind(),
+            "expression_statement" | "compound_statement" | "function_definition"
+        ) {
+            break;
+        }
+        node = parent;
+    }
+    false
 }
 
 /// Whether the expression `id` (looking through parentheses) is written or
@@ -2851,6 +2959,33 @@ fn parens_balanced(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn never_written(code: &str, name: &str) -> bool {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+        file_static_never_written(&tree.root_node(), code, name)
+    }
+
+    #[test]
+    fn a_static_written_where_the_parse_cannot_see_is_written() {
+        assert!(never_written(
+            "static int d = 0;\nint f(void) { int d = 1; d = 2; return d; }\n",
+            "d"
+        ));
+        assert!(!never_written(
+            "static int v = 0;\n#define SET() (v = 1)\nvoid on(void) { SET(); }\n",
+            "v"
+        ));
+        assert!(!never_written(
+            "static int d = 0;\nvoid on(void) { extern int d; d = 1; }\n",
+            "d"
+        ));
+        assert!(!never_written(
+            "static int d = 0;\n#define INC(x) ((x)++)\nvoid on(void) { INC(d); }\n",
+            "d"
+        ));
+    }
 
     #[test]
     fn shr_range_is_monotone_and_refuses_unsound_operands() {
