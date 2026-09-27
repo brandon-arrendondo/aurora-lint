@@ -84,7 +84,13 @@ struct FilePrescanResult {
     /// File names of `.c` files this file `#include`s -- a static defined in
     /// one of those is visible to the includer too.
     included_c_files: HashSet<String>,
-    global_constants: HashMap<String, i64>,
+    /// Every `(name, value)` this file offers as a global constant, one per
+    /// definition or arm: two different values for one name are a conflict
+    /// the merge resolves by dropping the name.
+    global_constants: Vec<(String, i64)>,
+    /// Every name this file may write as a file-scope object
+    /// (`const_eval::file_scope_written_names`).
+    file_scope_writes: HashSet<String>,
     global_var_null_states: HashMap<String, NullState>,
     global_writers: HashMap<String, HashSet<String>>,
     callsite_args: HashMap<String, Vec<Vec<NullState>>>,
@@ -150,7 +156,8 @@ impl FilePrescanResult {
             initializer_function_refs: HashSet::new(),
             value_position_identifiers: HashSet::new(),
             included_c_files: HashSet::new(),
-            global_constants: HashMap::new(),
+            global_constants: Vec::new(),
+            file_scope_writes: HashSet::new(),
             global_var_null_states: HashMap::new(),
             global_writers: HashMap::new(),
             callsite_args: HashMap::new(),
@@ -204,7 +211,20 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         }
 
         let file_macros = const_eval::collect_macro_constants(&root, &source);
-        result.macro_constants.extend(file_macros.clone());
+        // A `.c` file's own statics are its alone: exported project-wide they
+        // would fold a same-named, written static in another file (ADR-0006).
+        // A header's statics are compiled into every includer, so they stay.
+        let own_statics = if is_header {
+            HashSet::new()
+        } else {
+            const_eval::file_scope_static_names(&root, &source)
+        };
+        result.macro_constants.extend(
+            file_macros
+                .iter()
+                .filter(|(name, _)| !own_statics.contains(*name))
+                .map(|(k, v)| (k.clone(), *v)),
+        );
 
         result.macro_alias_alternatives =
             const_eval::collect_macro_alias_alternatives(&root, &source);
@@ -298,6 +318,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
 
         collect_global_constants(&root, &source, &mut result.global_constants);
         collect_constant_return_functions(&root, &source, &mut result.global_constants);
+        result.file_scope_writes = const_eval::file_scope_written_names(&root, &source);
 
         // Runs for both headers and .c files: an extern forward-declaration
         // (typically in a header) and the real definition (typically in a
@@ -541,6 +562,8 @@ fn prescan_file_list(
     let mut value_positions_by_file: HashMap<String, HashSet<String>> = HashMap::new();
     let mut included_c_files: HashSet<String> = HashSet::new();
     let mut global_constants: HashMap<String, i64> = HashMap::new();
+    let mut global_constant_conflicts: HashSet<String> = HashSet::new();
+    let mut file_scope_writes: HashSet<String> = HashSet::new();
     let mut global_var_null_states: HashMap<String, NullState> = HashMap::new();
     let mut global_writers: HashMap<String, HashSet<String>> = HashMap::new();
     let mut callsite_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
@@ -834,7 +857,21 @@ fn prescan_file_list(
         }
         value_position_identifiers.extend(r.value_position_identifiers);
         included_c_files.extend(r.included_c_files);
-        global_constants.extend(r.global_constants);
+        // One object per name: two definitions (files, or #if arms) giving
+        // different values do not agree on a constant, so the name folds to
+        // nothing rather than to whichever file merged last.
+        for (name, value) in r.global_constants {
+            match global_constants.get(&name) {
+                Some(v) if *v != value => {
+                    global_constant_conflicts.insert(name);
+                }
+                Some(_) => {}
+                None => {
+                    global_constants.insert(name, value);
+                }
+            }
+        }
+        file_scope_writes.extend(r.file_scope_writes);
         // One object per name: these are the non-static pointer globals, so
         // a name defined in several files is one variable, and its states
         // are joined as converging paths would be. Keeping the last file's
@@ -1178,6 +1215,13 @@ fn prescan_file_list(
         }
         abort_check_noreturn.extend(names);
     }
+
+    // A non-static global is a constant only if no scanned file writes it
+    // (ADR-0011: proof in the scanned source) and every definition agrees
+    // on its value.
+    global_constants.retain(|name, _| {
+        !global_constant_conflicts.contains(name) && !file_scope_writes.contains(name)
+    });
 
     let abort_check_macros = abort_check_noreturn.map(|names| {
         Arc::new(crate::analyze::check_macros::abort_check_macros(
@@ -5650,7 +5694,7 @@ fn has_pointer_in_declarator(node: &Node) -> bool {
 /// Collect global constants (`[const] TYPE NAME = VALUE;`) from file-scope declarations.
 /// Only collects non-static constants (static ones are file-local and handled by
 /// `init_state::collect_file_scope_constants` within each file).
-fn collect_global_constants(root: &Node, source: &str, constants: &mut HashMap<String, i64>) {
+fn collect_global_constants(root: &Node, source: &str, constants: &mut Vec<(String, i64)>) {
     for i in 0..root.child_count() {
         if let Some(child) = root.child(i) {
             match child.kind() {
@@ -5691,14 +5735,15 @@ fn collect_global_constants(root: &Node, source: &str, constants: &mut HashMap<S
                                     if let Some(val) =
                                         const_eval::try_evaluate_expr(&value, source, &empty_macros)
                                     {
-                                        constants.insert(name, val);
+                                        constants.push((name, val));
                                     }
                                 }
                             }
                         }
                     }
                 }
-                "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif" => {
+                "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
+                | "preproc_elifdef" => {
                     collect_global_constants(&child, source, constants);
                 }
                 _ => {}
@@ -5713,7 +5758,7 @@ fn collect_global_constants(root: &Node, source: &str, constants: &mut HashMap<S
 fn collect_constant_return_functions(
     root: &Node,
     source: &str,
-    constants: &mut HashMap<String, i64>,
+    constants: &mut Vec<(String, i64)>,
 ) {
     for i in 0..root.child_count() {
         if let Some(child) = root.child(i) {
@@ -5722,7 +5767,7 @@ fn collect_constant_return_functions(
                     collect_one_constant_function(&child, source, constants);
                 }
                 "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
-                | "preproc_ifndef" => {
+                | "preproc_elifdef" => {
                     collect_constant_return_functions(&child, source, constants);
                 }
                 _ => {}
@@ -5734,7 +5779,7 @@ fn collect_constant_return_functions(
 fn collect_one_constant_function(
     func_node: &Node,
     source: &str,
-    constants: &mut HashMap<String, i64>,
+    constants: &mut Vec<(String, i64)>,
 ) {
     // Skip static functions (handled per-file by init_state)
     if let Some(type_node) = func_node.child_by_field_name("type") {
@@ -5818,7 +5863,7 @@ fn collect_one_constant_function(
 
     if non_return_stmts == 0 {
         if let Some(val) = return_val {
-            constants.insert(name, val);
+            constants.push((name, val));
         }
     }
 }

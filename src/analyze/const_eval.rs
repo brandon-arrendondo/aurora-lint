@@ -979,6 +979,118 @@ pub fn file_static_never_written(root: &Node, source: &str, name: &str) -> bool 
     true
 }
 
+/// Every name this translation unit may write as a FILE-SCOPE object, by
+/// the same evidence [`file_static_never_written`] reads for one name: an
+/// occurrence that does not bind to a local or parameter (a block-scope
+/// `extern` binds to the file-scope object) standing as an assignment
+/// target, a `++`/`--` operand, the operand of `&`, or inside the
+/// arguments of a function-like macro this file defines; plus every
+/// identifier in any `#define` body, which the parse cannot see into.
+///
+/// For an object with external linkage the union of this over every
+/// scanned file is the whole in-tree write set (ADR-0006: `extern int g;`
+/// in another file is the same object), so a name in none of them is never
+/// written by the scanned source.
+pub fn file_scope_written_names(root: &Node, source: &str) -> std::collections::HashSet<String> {
+    use crate::utility::cert_c::ast_utils::{
+        declaration_has_storage_class, resolve_identifier_binding, IdentifierBinding,
+    };
+    let mut out = define_body_identifiers(source);
+    let mut macro_callees: std::collections::HashMap<String, bool> =
+        std::collections::HashMap::new();
+    for id in lang_parsing_substrate::query::find_descendants_of_kind(*root, "identifier") {
+        let name = id.utf8_text(source.as_bytes()).unwrap_or("");
+        if name.is_empty() || out.contains(name) {
+            continue;
+        }
+        if !is_write_context(&id) && !is_function_macro_argument(&id, source, &mut macro_callees) {
+            continue;
+        }
+        match resolve_identifier_binding(&id, name, source) {
+            Some(IdentifierBinding::Local(decl))
+                if !declaration_has_storage_class(&decl, "extern", source) => {}
+            Some(IdentifierBinding::Parameter(_)) => {}
+            _ => {
+                out.insert(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Names this translation unit declares `static` at file scope (all
+/// preprocessor arms): objects and functions with internal linkage, which
+/// no other file's code can name.
+pub fn file_scope_static_names(root: &Node, source: &str) -> std::collections::HashSet<String> {
+    use crate::utility::cert_c::ast_utils::{
+        declaration_has_storage_class, get_identifier_from_declarator,
+    };
+    fn walk(n: &Node, source: &str, out: &mut std::collections::HashSet<String>) {
+        for i in 0..n.child_count() {
+            let Some(child) = n.child(i) else { continue };
+            match child.kind() {
+                "declaration" if declaration_has_storage_class(&child, "static", source) => {
+                    let mut cursor = child.walk();
+                    for d in child.children_by_field_name("declarator", &mut cursor) {
+                        // `static int flag = 0;` declares through an init_declarator.
+                        let d = if d.kind() == "init_declarator" {
+                            d.child_by_field_name("declarator").unwrap_or(d)
+                        } else {
+                            d
+                        };
+                        let name = get_identifier_from_declarator(&d, source);
+                        if !name.is_empty() {
+                            out.insert(name.to_string());
+                        }
+                    }
+                }
+                k if k.starts_with("preproc_") => walk(&child, source, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    walk(root, source, &mut out);
+    out
+}
+
+/// Every identifier token in the replacement list of any `#define` in
+/// `source` (continuation lines joined), in any arm.
+fn define_body_identifiers(source: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let mut lines = source.lines();
+    while let Some(line) = lines.next() {
+        let mut text = line.to_string();
+        while text.ends_with('\\') {
+            text.pop();
+            match lines.next() {
+                Some(next) => text.push_str(next),
+                None => break,
+            }
+        }
+        let Some(rest) = text.trim_start().strip_prefix('#') else {
+            continue;
+        };
+        let Some(rest) = rest.trim_start().strip_prefix("define") else {
+            continue;
+        };
+        if !rest.starts_with(|c: char| c.is_whitespace()) {
+            continue;
+        }
+        let rest = rest.trim_start();
+        let macro_name_len = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let body = &rest[macro_name_len..];
+        for token in body.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            if token.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+                out.insert(token.to_string());
+            }
+        }
+    }
+    out
+}
+
 /// Whether `name` appears as a whole token in the replacement list of any
 /// `#define` in `source` (continuation lines joined), in any arm.
 fn name_in_a_define_body(source: &str, name: &str) -> bool {

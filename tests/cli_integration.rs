@@ -625,6 +625,59 @@ fn manifest_exp33() -> PathBuf {
     fixtures().join("manifest_exp33.toml")
 }
 
+/// EXP33-C findings in `use.c` when the whole fixture directory is
+/// prescanned with `-d`: the branch on the flag is pruned only when the
+/// flag is a proven constant.
+fn exp33_findings_in_use_c(fixture: &str) -> usize {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let fixture_dir = fixtures().join(fixture);
+    let (code, _, _) = run_aurora_lint(&[
+        fixture_dir.join("use.c").to_str().unwrap(),
+        "-m",
+        manifest_exp33().to_str().unwrap(),
+        "-d",
+        fixture_dir.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    violations
+        .iter()
+        .filter(|v| v["rule_id"] == "EXP33-C")
+        .count()
+}
+
+/// Juliet's shape: a non-static flag no scanned file writes folds, and the
+/// branch it guards is dead.
+#[test]
+fn exp33_never_written_global_prunes_its_branch() {
+    assert_eq!(exp33_findings_in_use_c("exp33_global_never_written"), 0);
+}
+
+/// Another file writes the flag through its extern declaration, so it is
+/// not a constant and the branch runs.
+#[test]
+fn exp33_global_written_in_another_file_does_not_prune() {
+    assert_eq!(exp33_findings_in_use_c("exp33_global_written_elsewhere"), 1);
+}
+
+/// Two #if arms define the flag with different values: no one value holds,
+/// so neither is folded (the last definition merged used to win).
+#[test]
+fn exp33_global_defined_differently_per_configuration_does_not_prune() {
+    assert_eq!(exp33_findings_in_use_c("exp33_global_conflicting_arms"), 1);
+}
+
+/// A never-written static in one file is not the same-named, written static
+/// in another (ADR-0006): it must not fold that file's branch.
+#[test]
+fn exp33_static_in_one_file_does_not_fold_another_files_static() {
+    assert_eq!(exp33_findings_in_use_c("exp33_static_scoped_per_file"), 1);
+}
+
 /// A variable written by a function-like *output* macro (the macro body assigns
 /// it, e.g. curl's `CF_DATA_SAVE(save, …)`) must not be flagged by EXP33-C as
 /// "used uninitialized" — neither at the macro's output-argument position nor at
