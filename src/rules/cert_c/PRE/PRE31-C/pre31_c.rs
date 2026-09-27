@@ -2,10 +2,14 @@
 // Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 use super::super::{CertRule, RuleViolation};
-use crate::analyze::context::ProjectContext;
-use crate::analyze::macro_expand::{self, FunctionMacro};
+use crate::analyze::const_eval::{merged_macro_aliases, resolve_macro_alias};
+use crate::analyze::context::{ProjectContext, ScopedTable};
+use crate::analyze::function_summary::{extract_function_name, FunctionSummary};
+use crate::analyze::macro_expand::{self, ArgEvaluation, FunctionMacro, MacroArm};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::{self, get_node_text};
+use crate::settings::AnalysisSettings;
+use crate::utility::cert_c::ast_utils::{self, get_node_text, IdentifierBinding};
+use crate::utility::cert_c::library_effects::{library_call_effect, LibraryEffect};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -17,14 +21,19 @@ pub struct Pre31C {
     /// (`ProjectContext::function_macros`) — needed because an unsafe
     /// macro's own `#define` usually lives in a header (curl's
     /// `DEBUGF`/`CURL_UNCONST` in `curl_setup.h`), not the file a call site
-    /// sits in. A per-file-only `collect_function_macros` never saw those
-    /// bodies, so every single-evaluation-safe macro defined outside the
-    /// current file stayed (wrongly) flagged.
+    /// sits in.
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     /// Every function-like macro name across the scanned files
     /// (`ProjectContext::function_macro_names`): what makes a call a macro
     /// invocation at all, whatever its spelling.
     function_macro_names: RefCell<Arc<HashSet<String>>>,
+    /// Object-like aliases across the scanned files (`#define ASSERT assert`).
+    macro_aliases: RefCell<Arc<HashMap<String, String>>>,
+    /// Which functions some scanned file defines.
+    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
+    /// `pre31_unknown_call_pure` and `stdlib_call_effects` decide how a
+    /// call inside an argument is classified.
+    settings: RefCell<Arc<AnalysisSettings>>,
 }
 
 impl Pre31C {
@@ -32,6 +41,9 @@ impl Pre31C {
         Self {
             function_macros: RefCell::new(Arc::new(HashMap::new())),
             function_macro_names: RefCell::new(Arc::new(HashSet::new())),
+            macro_aliases: RefCell::new(Arc::new(HashMap::new())),
+            function_summaries: RefCell::default(),
+            settings: RefCell::new(Arc::new(AnalysisSettings::default())),
         }
     }
 }
@@ -62,68 +74,41 @@ impl CertRule for Pre31C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_macros.borrow_mut() = context.function_macros.clone();
         *self.function_macro_names.borrow_mut() = context.function_macro_names.clone();
+        *self.macro_aliases.borrow_mut() = context.macro_aliases.clone();
+        *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+    }
+
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        *self.settings.borrow_mut() = Arc::clone(settings);
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Real macro-body definitions (params + replacement text), collected the
-        // same way every other macro-aware rule does (see
-        // docs/design/internal-capability-catalog.md). Lets us prove a specific
-        // parameter is evaluated exactly once — the do-while(0)/passthrough
-        // idiom that the old _Generic/statement-expression-only check missed —
-        // instead of guessing from the definition's raw suffix text.
-        //
         // Cross-file (prescan) definitions first, then this file's own
         // `collect_function_macros` layered on top so a same-file
         // `#define` wins over a stale/differently-`#ifdef`'d cross-file one
-        // — the same "project-wide plus this file's own, per-file winning"
-        // idiom `merged_macro_aliases` uses (see the capability catalog).
+        // — the "project-wide plus this file's own, per-file winning" idiom
+        // `merged_macro_aliases` uses (see the capability catalog).
         let mut function_macros = HashMap::clone(&self.function_macros.borrow());
         function_macros.extend(macro_expand::collect_function_macros(node, source));
-        // Every definition of a name in this file, one per preprocessor
-        // branch: a parameter is evaluated exactly once only if it is in
-        // every branch, since any one of them may be the one compiled.
-        let alternatives = macro_expand::collect_function_macro_alternatives(source);
         let project_names = Arc::clone(&self.function_macro_names.borrow());
         let macro_names = macro_expand::FunctionMacroNames::new(source, &project_names);
-        let macros = MacroTables {
+        let local_functions = query::find_descendants_of_kind(*node, "function_definition")
+            .into_iter()
+            .filter_map(|f| extract_function_name(&f, source).map(|name| (name, f)))
+            .collect();
+        let settings = Arc::clone(&self.settings.borrow());
+        let summaries = self.function_summaries.borrow();
+        let ctx = Ctx {
+            source,
             names: &macro_names,
             first: &function_macros,
-            alternatives: &alternatives,
+            arms: &macro_expand::collect_function_macro_arms(source),
+            aliases: &merged_macro_aliases(&self.macro_aliases.borrow(), node, source),
+            local_functions: &local_functions,
+            summaries: &summaries,
+            settings: &settings,
+            purity: RefCell::new(HashMap::new()),
         };
-        self.check_node(node, source, &macros, violations);
-    }
-}
-
-/// What this file knows about function-like macros: which names are macros
-/// at all, and their definitions.
-struct MacroTables<'a> {
-    names: &'a macro_expand::FunctionMacroNames<'a>,
-    /// One definition per name (project-wide, this file's winning).
-    first: &'a HashMap<String, FunctionMacro>,
-    /// This file's definitions, every preprocessor branch.
-    alternatives: &'a HashMap<String, Vec<FunctionMacro>>,
-}
-
-impl MacroTables<'_> {
-    /// The definitions a call to `name` may expand to: every branch of this
-    /// file's own, else the project's one. Empty when no body is known
-    /// (variadic, `#`/`##`, or the library's own macros).
-    fn definitions(&self, name: &str) -> Vec<&FunctionMacro> {
-        match self.alternatives.get(name) {
-            Some(alts) if !alts.is_empty() => alts.iter().collect(),
-            _ => self.first.get(name).into_iter().collect(),
-        }
-    }
-}
-
-impl Pre31C {
-    fn check_node(
-        &self,
-        node: &Node,
-        source: &str,
-        macros: &MacroTables,
-        violations: &mut Vec<RuleViolation>,
-    ) {
         for call_node in query::find_descendants_of_kind(*node, "call_expression") {
             // `#if defined(MBEDTLS_KEY_EXCHANGE_RSA_ENABLED)` is not a macro
             // INVOCATION. When tree-sitter absorbs the directive into an ERROR,
@@ -133,593 +118,377 @@ impl Pre31C {
             if ast_utils::is_on_preproc_directive_line(source, call_node.start_byte()) {
                 continue;
             }
-            self.check_macro_call(&call_node, source, macros, violations);
+            self.check_macro_call(&call_node, &ctx, violations);
+        }
+    }
+}
+
+/// C library macros the standard lets evaluate an argument other than once,
+/// and which argument: `assert`'s under `NDEBUG` (C11 7.2), the stream of
+/// `getc`/`putc`/`getwc`/`putwc` (7.21.7.5, 7.21.7.8, 7.29.3.6, 7.29.3.9).
+/// C11 7.1.4 requires every other library macro to evaluate each argument
+/// exactly once.
+fn library_unsafe_argument(name: &str) -> Option<usize> {
+    match name {
+        "assert" | "getc" | "getwc" => Some(0),
+        "putc" | "putwc" => Some(1),
+        _ => None,
+    }
+}
+
+/// How an argument's evaluation can change program state, from least to
+/// most certain. The rule reports [`Effect::Definite`] and
+/// [`Effect::Unanalyzed`] under every policy, and [`Effect::Unknown`] only
+/// when `pre31_unknown_call_pure` is withdrawn (the strict policy).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Effect {
+    /// Shown to change nothing: operators that do not write, and calls to
+    /// callees proven pure (PRE31-C-EX1).
+    None,
+    /// A call to a function no scanned file defines and no library contract
+    /// covers (or one through a pointer).
+    Unknown,
+    /// A call to a function another scanned file defines. Its body is in the
+    /// scan but no cross-file side-effect summary exists yet, so it is not
+    /// proven pure and stays reported.
+    Unanalyzed,
+    /// A write (`=`, compound assignment, `++`/`--`), a volatile read, or a
+    /// call to a callee shown to have a side effect.
+    Definite,
+}
+
+/// Everything one file's scan needs to classify arguments.
+struct Ctx<'a> {
+    source: &'a str,
+    names: &'a macro_expand::FunctionMacroNames<'a>,
+    /// One definition per name (project-wide, this file's winning).
+    first: &'a HashMap<String, FunctionMacro>,
+    /// This file's definitions, every preprocessor branch, variadic and
+    /// `#`/`##` arms included.
+    arms: &'a HashMap<String, Vec<MacroArm>>,
+    aliases: &'a HashMap<String, String>,
+    /// This file's function definitions, by name.
+    local_functions: &'a HashMap<String, Node<'a>>,
+    summaries: &'a ScopedTable<FunctionSummary>,
+    settings: &'a AnalysisSettings,
+    /// Memoized verdicts on this file's functions. A function still being
+    /// judged reads as [`Effect::None`], so recursion does not make a pure
+    /// function impure.
+    purity: RefCell<HashMap<String, Effect>>,
+}
+
+impl<'a> Ctx<'a> {
+    /// The definitions a call to `name` may expand to: every arm in this
+    /// file, else the project's one.
+    fn definitions(&self, name: &str) -> Vec<MacroArm> {
+        match self.arms.get(name) {
+            Some(arms) if !arms.is_empty() => arms.clone(),
+            _ => self
+                .first
+                .get(name)
+                .map(MacroArm::from)
+                .into_iter()
+                .collect(),
         }
     }
 
-    fn check_macro_call(
-        &self,
-        node: &Node,
-        source: &str,
-        macros: &MacroTables,
-        violations: &mut Vec<RuleViolation>,
-    ) {
-        if let Some(function_node) = node.child_by_field_name("function") {
-            let function_name = get_node_text(&function_node, source);
-
-            // Check if this is a potentially unsafe macro
-            if self.is_unsafe_macro(function_name, macros) {
-                // Skip if the macro is defined with a safe pattern (_Generic or statement expr)
-                if self.is_safe_macro_definition(function_name, source) {
-                    return;
-                }
-
-                let definitions = macros.definitions(function_name);
-                let args = self.get_function_arguments(node, source);
-
-                // Check each argument for side effects
-                for (i, arg) in args.iter().enumerate() {
-                    // String literals have no side effects — skip them.
-                    let trimmed = arg.trim();
-                    if trimmed.starts_with('"') && trimmed.ends_with('"') {
-                        continue;
-                    }
-                    // A macro provably evaluates *this* parameter exactly once
-                    // when its name appears exactly once (whole-token) in the
-                    // macro's own replacement text — the single-evaluation
-                    // passthrough / do-while(0)-wrapper idiom (e.g.
-                    // `#define DEBUGF(x) x`), which is the majority shape of
-                    // real-world "safe" macros and was previously only
-                    // recognized via the narrower _Generic/statement-expr check.
-                    // A parameter referenced twice (MAX/CLAMP-style) or not at
-                    // all (a body that discards it, and its side effect)
-                    // stays flagged, matching CERT's intent.
-                    //
-                    // Guarded to bodies with no `&&`/`||`/`?:` at all: CERT's
-                    // concern isn't only "evaluated more than once" but also
-                    // "evaluated an unpredictable number of times" — a
-                    // single textual occurrence sitting inside a short-circuit
-                    // or ternary branch may run zero times on some calls, which
-                    // is exactly as surprising to a caller as running twice
-                    // (`IS_VALID_RANGE(x, low, high) = (x)>=(low) && (x)<=(high)`
-                    // always evaluates `low` but only conditionally `high`).
-                    //
-                    // With several definitions (one per `#if` branch), the
-                    // parameter must be evaluated exactly once in every one.
-                    if !definitions.is_empty()
-                        && definitions
-                            .iter()
-                            .all(|def| evaluates_param_exactly_once(def, i))
-                    {
-                        continue;
-                    }
-                    if self.has_side_effects(arg, node, source) {
-                        let start_point = node.start_position();
-
-                        let severity = if function_name == "assert" {
-                            Severity::Medium // assert is disabled in release builds
-                        } else {
-                            Severity::High
-                        };
-
-                        violations.push(RuleViolation {
-                            rule_id: self.rule_id().to_string(),
-                            severity,
-                            message: format!(
-                                "Unsafe macro '{}' called with side effect in argument {}: '{}'",
-                                function_name,
-                                i + 1,
-                                arg
-                            ),
-                            file_path: String::new(),
-                            line: start_point.row + 1,
-                            column: start_point.column + 1,
-                            suggestion: Some(
-                                "Move side effects outside macro call or use inline function"
-                                    .to_string(),
-                            ),
-                            ..Default::default()
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    /// Whether a call to `function_name` is a macro invocation this rule
-    /// concerns: a function-like macro defined in some branch of this or
-    /// any scanned file, or a C library name whose macro form may evaluate
-    /// an argument other than once. Decided from definitions, never from
-    /// spelling: `int FOO(int);` makes `FOO(i++)` a function call, and a
-    /// lowercase `#define` makes its calls macro invocations.
-    fn is_unsafe_macro(&self, function_name: &str, macros: &MacroTables) -> bool {
-        macro_expand::LIBRARY_MACROS_WITH_UNSAFE_ARGUMENTS.contains(&function_name)
-            || macros.names.contains(function_name)
-    }
-
-    /// Check if the source contains a safe definition of the macro
-    /// Safe definitions use _Generic or statement expressions
-    fn is_safe_macro_definition(&self, function_name: &str, source: &str) -> bool {
-        // Look for #define of this macro, word-boundary-anchored so e.g. "MIN"
-        // doesn't false-match a "#define MIN_VALUE ..." definition.
-        let Ok(re) = regex::Regex::new(&format!(
-            r"(?m)^\s*#\s*define\s+{}\b",
-            regex::escape(function_name)
-        )) else {
-            return false;
-        };
-        let Some(m) = re.find(source) else {
-            return false;
-        };
-        // Get the rest of the line/definition
-        let rest = &source[m.start()..];
-        // Check for safe patterns
-        // _Generic evaluates its controlling expression only once
-        if rest.contains("_Generic") {
-            return true;
-        }
-        // GNU statement expression: ({ ... }) ensures single evaluation
-        if rest.contains("({") {
-            return true;
-        }
-        false
-    }
-
-    /// Remove content inside string literals from an expression so that
-    /// function-call patterns inside strings don't trigger false positives.
-    /// e.g. `PR "mbedtls_ssl_write() timeout" PW` → `PR  PW`
-    fn strip_string_literals(&self, text: &str) -> String {
-        let mut result = String::with_capacity(text.len());
-        let mut in_string = false;
-        let mut escape_next = false;
-        for ch in text.chars() {
-            if escape_next {
-                escape_next = false;
-                continue;
-            }
-            if ch == '\\' && in_string {
-                escape_next = true;
-                continue;
-            }
-            if ch == '"' {
-                in_string = !in_string;
-                continue;
-            }
-            if !in_string {
-                result.push(ch);
-            }
-        }
-        result
-    }
-
-    fn has_side_effects(&self, arg: &str, context_node: &Node, source: &str) -> bool {
-        // Strip string literal content to avoid false positive function-call detection
-        // inside quoted text (e.g., NW_LOGE(PR "...func()..." PW, ...))
-        let stripped = self.strip_string_literals(arg);
-        let arg_check = stripped.as_str();
-
-        // Check for various types of side effects in the argument
-
-        // Direct side effect operators
-        if arg_check.contains("++")
-            || arg_check.contains("--")
-            || arg_check.contains("+=")
-            || arg_check.contains("-=")
-            || arg_check.contains("*=")
-            || arg_check.contains("/=")
-            || arg_check.contains("%=")
-            || arg_check.contains("&=")
-            || arg_check.contains("|=")
-            || arg_check.contains("^=")
-            || arg_check.contains("<<=")
-            || arg_check.contains(">>=")
-        {
-            return true;
-        }
-
-        // Assignment operator
-        if self.contains_assignment(arg_check) {
-            return true;
-        }
-
-        // Function calls that might have side effects
-        if self.contains_function_call_with_side_effects(arg_check) {
-            return true;
-        }
-
-        // Volatile access - check both direct keyword and via volatile variables in source
-        if arg_check.contains("volatile") {
-            return true;
-        }
-        // Check if any identifier in arg was declared as volatile in the source
-        if self.is_volatile_variable_access(arg_check, source) {
-            return true;
-        }
-
-        // I/O operations
-        if self.contains_io_operations(arg_check) {
-            return true;
-        }
-
-        // Check for more complex expressions using AST analysis
-        if let Some(arg_node) = self.find_argument_node(context_node, arg, source) {
-            return self.analyze_node_for_side_effects(&arg_node, source);
-        }
-
-        false
-    }
-
-    fn contains_assignment(&self, arg: &str) -> bool {
-        // Look for assignment that's not part of a comparison
-        let assignment_pos = arg.find('=');
-        if let Some(pos) = assignment_pos {
-            // Make sure it's not == or != or >= or <=
-            let before = if pos > 0 {
-                arg.chars().nth(pos - 1)
-            } else {
-                None
-            };
-            let after = arg.chars().nth(pos + 1);
-
-            !matches!(
-                (before, after),
-                (Some('!' | '=' | '<' | '>'), _) | (_, Some('='))
-            )
+    /// The name a call's callee spelling denotes: a function-like macro's own
+    /// name, else where its object-like alias chain ends.
+    fn resolve<'n>(&'n self, name: &'n str) -> &'n str {
+        if self.names.contains(name) {
+            name
         } else {
-            false
+            resolve_macro_alias(self.aliases, name)
         }
     }
 
-    fn contains_function_call_with_side_effects(&self, arg: &str) -> bool {
-        // Known functions that have side effects
-        let side_effect_functions = [
-            "printf", "fprintf", "sprintf", "scanf", "fscanf", "sscanf", "malloc", "calloc",
-            "realloc", "free", "fopen", "fclose", "fread", "fwrite", "fgetc", "fputc", "getchar",
-            "putchar", "gets", "puts", "rand", "srand", "time", "exit", "abort", "system",
-            // String functions that mutate a buffer or hold internal state.
-            // NOTE: strlen/strcmp/strncmp are deliberately NOT here — they only
-            // read their arguments and are listed as pure below instead.
-            "strcpy", "strncpy", "strcat", "strncat", "strtok", "strtol", "strtoul", "strtod",
-            "atoi", "atol", "atof", // Memory functions
-            "memcpy", "memmove", "memset", "memcmp",
-        ];
-
-        for func in &side_effect_functions {
-            if arg.contains(&format!("{}(", func)) {
-                return true;
-            }
+    /// Whether this report's policy counts `effect` as a side effect.
+    fn reported(&self, effect: Effect) -> bool {
+        match effect {
+            Effect::Definite | Effect::Unanalyzed => true,
+            Effect::Unknown => !self.settings.flag("pre31_unknown_call_pure"),
+            Effect::None => false,
         }
-
-        // Also check for any function call pattern: identifier followed by (
-        // This catches user-defined functions that might have side effects
-        self.contains_any_function_call(arg)
     }
 
-    fn contains_any_function_call(&self, arg: &str) -> bool {
-        // Look for function call pattern: identifier(
-        // But exclude known safe operations like type casts and pure functions
-        let chars: Vec<char> = arg.chars().collect();
-        let mut i = 0;
-
-        while i < chars.len() {
-            // Look for open paren
-            if chars[i] == '(' {
-                // Look backwards for identifier
-                let mut end = i;
-                // Skip whitespace
-                while end > 0 && chars[end - 1].is_whitespace() {
-                    end -= 1;
-                }
-                // Check if there's an identifier before the paren
-                let mut start = end;
-                while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
-                    start -= 1;
-                }
-                if start < end {
-                    let identifier: String = chars[start..end].iter().collect();
-                    // Filter out known safe constructs (type casts, sizeof, etc.)
-                    let safe_patterns = [
-                        "int",
-                        "char",
-                        "float",
-                        "double",
-                        "long",
-                        "short",
-                        "unsigned",
-                        "signed",
-                        "void",
-                        "size_t",
-                        "sizeof",
-                        "typeof",
-                        "__typeof__",
-                    ];
-                    // Pure functions that have no side effects (PRE31-C-EX1)
-                    // These functions only compute a value from their inputs
-                    let pure_functions = [
-                        "strlen",
-                        "strcmp",
-                        "strncmp",
-                        "abs",
-                        "labs",
-                        "llabs",
-                        "fabs",
-                        "fabsf",
-                        "fabsl",
-                        "sqrt",
-                        "sqrtf",
-                        "sqrtl",
-                        "cbrt",
-                        "cbrtf",
-                        "cbrtl",
-                        "sin",
-                        "cos",
-                        "tan",
-                        "asin",
-                        "acos",
-                        "atan",
-                        "atan2",
-                        "sinh",
-                        "cosh",
-                        "tanh",
-                        "asinh",
-                        "acosh",
-                        "atanh",
-                        "exp",
-                        "exp2",
-                        "expm1",
-                        "log",
-                        "log2",
-                        "log10",
-                        "log1p",
-                        "pow",
-                        "hypot",
-                        "ceil",
-                        "floor",
-                        "round",
-                        "trunc",
-                        "fmod",
-                        "remainder",
-                        "fmax",
-                        "fmin",
-                        "isnan",
-                        "isinf",
-                        "isfinite",
-                        "isnormal",
-                        "square", // Common user-defined pure function
-                        "negate",
-                        "negative",
-                        "positive",
-                    ];
-                    if !safe_patterns.contains(&identifier.as_str())
-                        && !identifier.starts_with("_Generic")
-                        && !pure_functions.contains(&identifier.as_str())
-                    {
-                        return true;
-                    }
-                }
-            }
-            i += 1;
-        }
-        false
-    }
-
-    fn contains_io_operations(&self, arg: &str) -> bool {
-        // Look for I/O related operations
-        arg.contains("printf")
-            || arg.contains("scanf")
-            || arg.contains("getc")
-            || arg.contains("putc")
-            || arg.contains("fread")
-            || arg.contains("fwrite")
-            || arg.contains("cout")
-            || arg.contains("cin") // C++ style I/O
-    }
-
-    fn find_argument_node<'a>(
-        &self,
-        call_node: &'a Node<'a>,
-        arg_text: &str,
-        source: &str,
-    ) -> Option<Node<'a>> {
-        // Try to find the AST node corresponding to this argument. Only named
-        // nodes are real argument expressions — the `argument_list`'s own
-        // literal `(`/`)`/`,` tokens are anonymous children and must be
-        // skipped, not just `,` (an unfiltered `(`/`)` would otherwise count
-        // as a spurious extra "argument", shifting every real argument's
-        // index by one — see `get_function_arguments`).
-        if let Some(arguments) = call_node.child_by_field_name("arguments") {
-            for i in 0..arguments.child_count() {
-                if let Some(child) = arguments.child(i) {
-                    if child.is_named() {
-                        let node_text = get_node_text(&child, source);
-                        if node_text.trim() == arg_text.trim() {
-                            return Some(child);
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn analyze_node_for_side_effects(&self, node: &Node, source: &str) -> bool {
+    /// The side effect evaluating `node` may have.
+    fn expression_effect(&self, node: &Node<'a>) -> Effect {
         match node.kind() {
-            "update_expression" => true,     // ++, --
-            "assignment_expression" => true, // =, +=, etc.
-            "call_expression" => {
-                // Check if it's a function call that might have side effects
-                if let Some(func_node) = node.child_by_field_name("function") {
-                    let func_name = get_node_text(&func_node, source);
-                    self.contains_function_call_with_side_effects(func_name)
+            "update_expression" | "assignment_expression" => Effect::Definite,
+            // Operands C11 leaves unevaluated (a VLA `sizeof` aside).
+            "sizeof_expression" | "alignof_expression" | "string_literal" | "char_literal" => {
+                Effect::None
+            }
+            "identifier" => {
+                if self.is_volatile(node) {
+                    Effect::Definite
                 } else {
-                    false
+                    Effect::None
                 }
             }
-            _ => {
-                // Recursively check child nodes
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if self.analyze_node_for_side_effects(&child, source) {
-                            return true;
-                        }
+            "call_expression" => {
+                let callee = match node.child_by_field_name("function") {
+                    Some(f) if f.kind() == "identifier" => {
+                        self.callee_effect(get_node_text(&f, self.source), 0)
                     }
-                }
-                false
+                    // Through a pointer or a member: nothing names the body,
+                    // and the callee expression may itself have effects.
+                    Some(f) => self.expression_effect(&f).max(Effect::Unknown),
+                    None => Effect::Unknown,
+                };
+                let args = node
+                    .child_by_field_name("arguments")
+                    .map_or(Effect::None, |a| self.children_effect(&a));
+                callee.max(args)
             }
+            _ => self.children_effect(node),
         }
     }
 
-    fn get_function_arguments(&self, node: &Node, source: &str) -> Vec<String> {
-        let mut args = Vec::new();
+    fn children_effect(&self, node: &Node<'a>) -> Effect {
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .map(|c| self.expression_effect(&c))
+            .max()
+            .unwrap_or(Effect::None)
+    }
 
-        if let Some(arguments) = node.child_by_field_name("arguments") {
-            for i in 0..arguments.child_count() {
-                if let Some(child) = arguments.child(i) {
-                    // Only named children are real argument expressions — the
-                    // `argument_list`'s own literal `(`/`)` tokens are
-                    // anonymous and were previously counted as spurious extra
-                    // "arguments" alongside `,` (an off-by-one that shifted
-                    // every real argument's reported index and broke
-                    // positional macro-parameter lookups).
-                    if child.is_named() {
-                        let arg_text = get_node_text(&child, source).to_string();
-                        args.push(arg_text.trim().to_string());
+    /// Whether an identifier occurrence names an object declared `volatile`,
+    /// resolved to its declaration (ADR-0006), never matched by spelling.
+    fn is_volatile(&self, ident: &Node<'a>) -> bool {
+        let name = get_node_text(ident, self.source);
+        ast_utils::resolve_identifier_declarator(ident, name, self.source).is_some_and(
+            |(decl, _)| ast_utils::declaration_has_qualifier(&decl, "volatile", self.source),
+        )
+    }
+
+    /// The side effect of calling `name` (as spelled at the call site).
+    fn callee_effect(&self, name: &str, depth: usize) -> Effect {
+        if depth > 4 {
+            return Effect::Unknown;
+        }
+        let name = self.resolve(name);
+        if self.names.contains(name) {
+            return self.macro_effect(name, depth);
+        }
+        if let Some(def) = self.local_functions.get(name) {
+            return self.function_effect(name, def);
+        }
+        if self.summaries.contains_key(name) {
+            return Effect::Unanalyzed;
+        }
+        if self.settings.flag("stdlib_call_effects") {
+            match library_call_effect(name) {
+                Some(LibraryEffect::Pure) => return Effect::None,
+                Some(LibraryEffect::SideEffect) => return Effect::Definite,
+                None => {}
+            }
+        }
+        Effect::Unknown
+    }
+
+    /// A function-like macro invoked inside the argument: its body is its
+    /// only definition, so judge what the body writes and calls.
+    fn macro_effect(&self, name: &str, depth: usize) -> Effect {
+        let defs = self.definitions(name);
+        if defs.is_empty() {
+            return Effect::Unknown;
+        }
+        defs.iter()
+            .map(|arm| {
+                let (writes, callees) = macro_expand::macro_body_effects(arm);
+                if writes {
+                    return Effect::Definite;
+                }
+                callees
+                    .iter()
+                    .map(|c| self.callee_effect(c, depth + 1))
+                    .max()
+                    .unwrap_or(Effect::None)
+            })
+            .max()
+            .unwrap_or(Effect::None)
+    }
+
+    /// The side effect of calling a function this file defines: a write to
+    /// anything but its own automatic objects, a volatile read, or a call
+    /// with one (PRE31-C-EX1's "does nothing but perform a computation").
+    fn function_effect(&self, name: &str, def: &Node<'a>) -> Effect {
+        if let Some(e) = self.purity.borrow().get(name) {
+            return *e;
+        }
+        self.purity
+            .borrow_mut()
+            .insert(name.to_string(), Effect::None);
+        let effect = def
+            .child_by_field_name("body")
+            .map_or(Effect::Unknown, |body| self.body_effect(&body));
+        self.purity.borrow_mut().insert(name.to_string(), effect);
+        effect
+    }
+
+    fn body_effect(&self, node: &Node<'a>) -> Effect {
+        match node.kind() {
+            "assignment_expression" | "update_expression" => {
+                let target = node
+                    .child_by_field_name("left")
+                    .or_else(|| node.child_by_field_name("argument"));
+                let write = match target {
+                    Some(t) if self.is_automatic_lvalue(&t) => Effect::None,
+                    _ => Effect::Definite,
+                };
+                write.max(self.body_children_effect(node))
+            }
+            "identifier" => {
+                if self.is_volatile(node) {
+                    Effect::Definite
+                } else {
+                    Effect::None
+                }
+            }
+            "call_expression" => {
+                let callee = match node.child_by_field_name("function") {
+                    Some(f) if f.kind() == "identifier" => {
+                        self.callee_effect(get_node_text(&f, self.source), 0)
                     }
-                }
+                    Some(f) => self.body_effect(&f).max(Effect::Unknown),
+                    None => Effect::Unknown,
+                };
+                let args = node
+                    .child_by_field_name("arguments")
+                    .map_or(Effect::None, |a| self.body_children_effect(&a));
+                callee.max(args)
             }
+            "gnu_asm_expression" => Effect::Unknown,
+            "sizeof_expression" | "alignof_expression" | "string_literal" | "char_literal" => {
+                Effect::None
+            }
+            _ => self.body_children_effect(node),
         }
-
-        args
     }
 
-    /// Check if the argument contains access to a volatile variable
-    fn is_volatile_variable_access(&self, arg: &str, source: &str) -> bool {
-        // Extract identifiers from the argument
-        let identifiers = self.extract_identifiers(arg);
-
-        // Look for "volatile [type] <id>" (or "<type> volatile <id>") with <id>
-        // ending on a real identifier boundary — a plain `source.contains(...)`
-        // substring check would (and did) match a short id like "i" inside an
-        // unrelated declaration's own trailing text, e.g. "volatile int i" is a
-        // substring of "volatile int in;".
-        const PREFIXES: &[&str] = &[
-            "volatile int ",
-            "volatile unsigned ",
-            "volatile char ",
-            "volatile short ",
-            "volatile long ",
-            "int volatile ",
-            "volatile ",
-        ];
-        for id in identifiers {
-            for prefix in PREFIXES {
-                if contains_ident_after(source, prefix, &id) {
-                    return true;
-                }
-            }
-        }
-        false
+    fn body_children_effect(&self, node: &Node<'a>) -> Effect {
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .map(|c| self.body_effect(&c))
+            .max()
+            .unwrap_or(Effect::None)
     }
 
-    /// Extract all identifiers from an expression
-    fn extract_identifiers(&self, expr: &str) -> Vec<String> {
-        let mut identifiers = Vec::new();
-        let chars: Vec<char> = expr.chars().collect();
-        let mut i = 0;
+    /// Whether an lvalue designates storage the function owns and discards
+    /// on return: a parameter itself, a non-static local, or an element or
+    /// member of a local array or struct (not reached through a pointer).
+    fn is_automatic_lvalue(&self, lvalue: &Node<'a>) -> bool {
+        match lvalue.kind() {
+            "parenthesized_expression" => lvalue
+                .named_child(0)
+                .is_some_and(|inner| self.is_automatic_lvalue(&inner)),
+            "identifier" => self.is_automatic_object(lvalue, false),
+            "subscript_expression" => lvalue.child_by_field_name("argument").is_some_and(|base| {
+                base.kind() == "identifier" && self.is_automatic_object(&base, true)
+            }),
+            "field_expression" => {
+                let through_pointer = lvalue
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| get_node_text(&op, self.source) == "->");
+                !through_pointer
+                    && lvalue
+                        .child_by_field_name("argument")
+                        .is_some_and(|base| self.is_automatic_lvalue(&base))
+            }
+            _ => false,
+        }
+    }
 
-        while i < chars.len() {
-            // Look for start of identifier
-            if chars[i].is_alphabetic() || chars[i] == '_' {
-                let start = i;
-                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
-                    i += 1;
-                }
-                let id: String = chars[start..i].iter().collect();
-                // Filter out keywords
-                let keywords = [
-                    "if", "else", "while", "for", "return", "int", "char", "void", "float",
-                    "double", "long", "short", "unsigned", "signed", "const", "volatile", "static",
-                    "extern", "sizeof",
-                ];
-                if !keywords.contains(&id.as_str()) {
-                    identifiers.push(id);
-                }
+    /// Whether an identifier resolves to a parameter or a non-static local.
+    /// `element_access`: the lvalue indexes it, so it must be a local array
+    /// (a parameter "array" is a pointer to the caller's storage).
+    fn is_automatic_object(&self, ident: &Node<'a>, element_access: bool) -> bool {
+        let name = get_node_text(ident, self.source);
+        match ast_utils::resolve_identifier_binding(ident, name, self.source) {
+            Some(IdentifierBinding::Parameter(_)) => !element_access,
+            Some(IdentifierBinding::Local(decl)) => {
+                !ast_utils::declaration_has_storage_class(&decl, "static", self.source)
+                    && (!element_access
+                        || ast_utils::declaration_declarator_for(&decl, name, self.source)
+                            .is_some_and(|d| d.kind() == "array_declarator"))
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Pre31C {
+    fn check_macro_call(&self, node: &Node, ctx: &Ctx, violations: &mut Vec<RuleViolation>) {
+        let Some(function_node) = node.child_by_field_name("function") else {
+            return;
+        };
+        let spelled = get_node_text(&function_node, ctx.source);
+        let macro_name = ctx.resolve(spelled);
+        let arms = ctx.arms.get(macro_name).filter(|a| !a.is_empty());
+
+        // Which argument positions this macro may evaluate other than once.
+        // A macro this file defines is judged by every arm it has, since any
+        // one may be the one compiled; a C library macro by what the standard
+        // permits (the libc header the prescan read is one implementation);
+        // a project macro defined elsewhere by the project's definition; a
+        // macro whose body nobody can read at every position.
+        let unsafe_at: Box<dyn Fn(usize) -> bool> = if let Some(arms) = arms {
+            let arms = arms.clone();
+            Box::new(move |i| {
+                arms.iter()
+                    .any(|a| macro_expand::argument_evaluation(a, i) != ArgEvaluation::Once)
+            })
+        } else if let Some(k) = library_unsafe_argument(macro_name) {
+            Box::new(move |i| i == k)
+        } else if ctx.names.contains(macro_name) {
+            let defs = ctx.definitions(macro_name);
+            if defs.is_empty() {
+                Box::new(|_| true)
             } else {
-                i += 1;
+                Box::new(move |i| {
+                    defs.iter()
+                        .any(|a| macro_expand::argument_evaluation(a, i) != ArgEvaluation::Once)
+                })
             }
-        }
-        identifiers
-    }
-}
+        } else {
+            return;
+        };
 
-/// Count occurrences of `ident` in `text` as a whole token (not a substring of
-/// a longer identifier) — used to prove a macro parameter is evaluated at most
-/// once from its own replacement text.
-fn count_whole_ident_occurrences(text: &str, ident: &str) -> usize {
-    let chars: Vec<char> = text.chars().collect();
-    let id: Vec<char> = ident.chars().collect();
-    let (n, m) = (chars.len(), id.len());
-    if m == 0 {
-        return 0;
-    }
-    let mut count = 0;
-    let mut i = 0;
-    while i + m <= n {
-        if chars[i..i + m] == id[..] {
-            let prev_ok = i == 0 || !is_ident_char(chars[i - 1]);
-            let next_ok = i + m >= n || !is_ident_char(chars[i + m]);
-            if prev_ok && next_ok {
-                count += 1;
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+        let mut cursor = arguments.walk();
+        let args = arguments
+            .named_children(&mut cursor)
+            .filter(|a| a.kind() != "comment");
+        for (i, arg) in args.enumerate() {
+            if !unsafe_at(i) || !ctx.reported(ctx.expression_effect(&arg)) {
+                continue;
             }
-        }
-        i += 1;
-    }
-    count
-}
-
-fn is_ident_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
-/// Whether `def` evaluates its parameter at position `index` exactly once:
-/// the parameter appears exactly once in a body with no `&&`/`||`/`?:` that
-/// could skip it. Zero is unsafe too: a body that drops the argument
-/// (`#define DEBUGF(x)` in a release build) drops its side effect with it.
-fn evaluates_param_exactly_once(def: &FunctionMacro, index: usize) -> bool {
-    !body_has_conditional_evaluation(&def.body)
-        && def
-            .params
-            .get(index)
-            .is_some_and(|param| count_whole_ident_occurrences(&def.body, param) == 1)
-}
-
-/// True if a macro's replacement text contains a short-circuit (`&&`/`||`) or
-/// ternary (`?:`) operator anywhere — i.e. some part of the body is only
-/// conditionally evaluated, so a bare occurrence count can't prove a
-/// parameter always runs exactly once.
-fn body_has_conditional_evaluation(body: &str) -> bool {
-    body.contains("&&") || body.contains("||") || body.contains('?')
-}
-
-/// True if `source` contains `prefix` immediately followed by `id` ending on a
-/// real identifier boundary (not a prefix of a longer identifier).
-fn contains_ident_after(source: &str, prefix: &str, id: &str) -> bool {
-    let needle = format!("{prefix}{id}");
-    let mut search_start = 0;
-    while let Some(rel) = source[search_start..].find(needle.as_str()) {
-        let match_start = search_start + rel;
-        let after = match_start + needle.len();
-        let boundary_ok = source[after..]
-            .chars()
-            .next()
-            .is_none_or(|c| !is_ident_char(c));
-        if boundary_ok {
-            return true;
-        }
-        search_start = match_start + 1;
-        if search_start > source.len() {
-            break;
+            let start_point = node.start_position();
+            let severity = if macro_name == "assert" {
+                Severity::Medium // assert is disabled in release builds
+            } else {
+                Severity::High
+            };
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                severity,
+                message: format!(
+                    "Unsafe macro '{}' called with side effect in argument {}: '{}'",
+                    spelled,
+                    i + 1,
+                    get_node_text(&arg, ctx.source).trim()
+                ),
+                file_path: String::new(),
+                line: start_point.row + 1,
+                column: start_point.column + 1,
+                suggestion: Some(
+                    "Move side effects outside macro call or use inline function".to_string(),
+                ),
+                ..Default::default()
+            });
         }
     }
-    false
 }

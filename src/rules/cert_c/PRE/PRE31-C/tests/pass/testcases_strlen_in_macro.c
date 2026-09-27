@@ -2,6 +2,10 @@
  * Rule: PRE31-C
  * Source: testcases
  * Status: PASS - Should NOT trigger PRE31-C violation
+ * Expect: default=clean strict=violation
+ * strlen/strcmp/strncmp are free of side effects by the stdlib_call_effects
+ * contract, which a freestanding environment (the strict preset) withdraws;
+ * there they are calls to unknown functions, which strict reports.
  */
 
 /*
