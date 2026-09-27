@@ -2013,6 +2013,112 @@ pub fn in_expression_branch_outside(step: &Node, target: &Node) -> bool {
     false
 }
 
+/// One `#if`/`#ifdef` chain enclosing a step, as its arms' byte ranges in
+/// order (the first arm, each `#elif`, the `#else`). `complete` says the
+/// chain ends in an `#else`, so every configuration compiles one arm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreprocChoice {
+    /// Each arm's `(start, end)` byte range, in source order.
+    pub arms: Vec<(usize, usize)>,
+    /// The chain ends in an `#else`.
+    pub complete: bool,
+}
+
+const PREPROC_IF_LIKE: &[&str] = &[
+    "preproc_if",
+    "preproc_ifdef",
+    "preproc_elif",
+    "preproc_elifdef",
+];
+
+/// Every preprocessor chain whose arm holds `step` but not `target`: the
+/// build configurations in which `step` is compiled out while `target`
+/// stays (ADR-0010: arms are configurations, and each one is judged).
+/// [`runs_before_on_every_path`] deliberately treats an arm as
+/// unconditional, since within one configuration it is; a caller that must
+/// hold in EVERY configuration asks this too and requires its guarantee in
+/// each arm of each chain. A file's include guard is not a configuration
+/// and is skipped. Only the chains enclosing `step` are named; a chain
+/// nested inside another arm is that arm's own business.
+pub fn preproc_choices_outside(step: &Node, target: &Node, source: &str) -> Vec<PreprocChoice> {
+    let encloses = |(s, e): (usize, usize)| s <= target.start_byte() && target.end_byte() <= e;
+    let mut out = Vec::new();
+    let mut cur = *step;
+    while let Some(parent) = cur.parent() {
+        if parent.kind() == "function_definition" || parent.kind() == "translation_unit" {
+            break;
+        }
+        let in_arm = match parent.kind() {
+            "preproc_else" => true,
+            k if PREPROC_IF_LIKE.contains(&k) => {
+                let field_is = |f: &str| {
+                    parent
+                        .child_by_field_name(f)
+                        .is_some_and(|c| c.id() == cur.id())
+                };
+                !field_is("alternative") && !field_is("condition") && !field_is("name")
+            }
+            _ => false,
+        };
+        if in_arm {
+            let mut root = parent;
+            while let Some(up) = root.parent() {
+                let is_alt = PREPROC_IF_LIKE.contains(&up.kind())
+                    && up
+                        .child_by_field_name("alternative")
+                        .is_some_and(|a| a.id() == root.id());
+                if !is_alt {
+                    break;
+                }
+                root = up;
+            }
+            if !crate::utility::cert_c::ast_utils::is_include_guard(&root, source) {
+                let choice = preproc_chain(&root);
+                let own = choice
+                    .arms
+                    .iter()
+                    .copied()
+                    .find(|&(s, e)| s <= step.start_byte() && step.start_byte() < e);
+                if !own.is_some_and(encloses) {
+                    out.push(choice);
+                }
+            }
+        }
+        cur = parent;
+    }
+    out
+}
+
+fn preproc_chain(root: &Node) -> PreprocChoice {
+    let mut arms = Vec::new();
+    let mut node = *root;
+    loop {
+        if node.kind() == "preproc_else" {
+            arms.push((node.start_byte(), node.end_byte()));
+            return PreprocChoice {
+                arms,
+                complete: true,
+            };
+        }
+        let head_end = node
+            .child_by_field_name("condition")
+            .or_else(|| node.child_by_field_name("name"))
+            .map_or(node.start_byte(), |c| c.end_byte());
+        let alternative = node.child_by_field_name("alternative");
+        let arm_end = alternative.map_or(node.end_byte(), |a| a.start_byte());
+        arms.push((head_end, arm_end));
+        match alternative {
+            Some(a) => node = a,
+            None => {
+                return PreprocChoice {
+                    arms,
+                    complete: false,
+                }
+            }
+        }
+    }
+}
+
 /// Walk from `node` to its function, and whenever it sits in a conditional
 /// part of an ancestor, require `allowed(part)`.
 fn escapes_no_conditional_part(node: &Node, allowed: impl Fn(&Node) -> bool) -> bool {
@@ -2705,5 +2811,58 @@ mod tests {
             "void f(int c) { from(); if (c) goto out; out: step(); }"
         ));
         assert!(!runs_from("void f(void) { step(); from(); }"));
+    }
+
+    /// `preproc_choices_outside` over the `step()` and `target()` calls.
+    fn choices(src: &str) -> Vec<PreprocChoice> {
+        let tree = parse_c_code(src);
+        let call = |name: &str| {
+            query::find_descendants_of_kind(tree.root_node(), "call_expression")
+                .into_iter()
+                .find(|c| {
+                    c.child_by_field_name("function")
+                        .is_some_and(|f| f.utf8_text(src.as_bytes()).unwrap() == name)
+                })
+                .unwrap()
+        };
+        preproc_choices_outside(&call("step"), &call("target"), src)
+    }
+
+    #[test]
+    fn an_ifdef_else_pair_is_one_complete_two_arm_choice() {
+        let got = choices(
+            "void f(void) {\n#ifdef _WIN32\n    step();\n#else\n    other();\n#endif\n    target();\n}\n",
+        );
+        assert_eq!(got.len(), 1);
+        assert!(got[0].complete);
+        assert_eq!(got[0].arms.len(), 2);
+    }
+
+    #[test]
+    fn an_ifdef_without_else_is_incomplete() {
+        let got =
+            choices("void f(void) {\n#ifdef USE_LOCK\n    step();\n#endif\n    target();\n}\n");
+        assert_eq!(got.len(), 1);
+        assert!(!got[0].complete);
+        assert_eq!(got[0].arms.len(), 1);
+    }
+
+    #[test]
+    fn an_if_elif_else_chain_has_three_arms_whichever_holds_the_step() {
+        let src = "void f(void) {\n#if A\n    a();\n#elif B\n    step();\n#else\n    c();\n#endif\n    target();\n}\n";
+        let got = choices(src);
+        assert_eq!(got.len(), 1);
+        assert!(got[0].complete);
+        assert_eq!(got[0].arms.len(), 3);
+        let step_at = src.find("step").unwrap();
+        assert!(got[0].arms[1].0 <= step_at && step_at < got[0].arms[1].1);
+    }
+
+    #[test]
+    fn a_step_and_target_in_one_arm_is_no_choice() {
+        assert!(
+            choices("void f(void) {\n#ifdef X\n    step();\n    target();\n#endif\n}\n").is_empty()
+        );
+        assert!(choices("void f(void) { step(); target(); }").is_empty());
     }
 }

@@ -67,7 +67,7 @@ use crate::utility::cert_c::ast_utils::{
     get_identifier_from_declarator, get_node_text, resolve_identifier_declarator,
 };
 use crate::utility::cert_c::guard_dominance::{
-    in_expression_branch_outside, runs_before_on_every_path,
+    in_expression_branch_outside, preproc_choices_outside, runs_before_on_every_path,
 };
 use crate::utility::cert_c::{call_roles, credential_sinks};
 use lang_parsing_substrate::query;
@@ -234,11 +234,14 @@ impl Mem06C {
             // the secret another arm writes unlocked. Either kind of cover
             // will do for each store -- one arm may lock the block while the
             // other protects the whole process.
+            let is_lock = |call: &Node| {
+                call.start_byte() > origin.at && self.is_lock_of(call, source, |o| holds(o, call))
+            };
             let covered = bounds.iter().all(|bound| {
                 calls.iter().any(|call| {
-                    call.start_byte() > origin.at
-                        && self.is_lock_of(call, source, |o| holds(o, call))
+                    is_lock(call)
                         && precedes(call, bound)
+                        && in_every_configuration(call, bound, &calls, source, &is_lock, &precedes)
                 }) || self.protected_locally(&calls, bound, source, &precedes)
             });
             if covered || self.protected_by_program(func, source, program) {
@@ -493,10 +496,7 @@ impl Mem06C {
         source: &str,
         precedes: &dyn Fn(&Node, &Node) -> bool,
     ) -> bool {
-        calls.iter().any(|call| {
-            if !precedes(call, bound) {
-                return false;
-            }
+        let protects = |call: &Node| {
             let Some(callee) = self.callee_name(call, source) else {
                 return false;
             };
@@ -505,6 +505,11 @@ impl Mem06C {
             }
             callee == "mlockall"
                 || (callee == "setrlimit" && sets_zero_core_limit(call, &call_args(call), source))
+        };
+        calls.iter().any(|call| {
+            precedes(call, bound)
+                && protects(call)
+                && in_every_configuration(call, bound, calls, source, &protects, precedes)
         })
     }
 
@@ -566,6 +571,33 @@ impl Mem06C {
             unprotected: reach(&sequence[..point]),
         }
     }
+}
+
+/// Whether the guarantee `step` gives `bound` holds in every build
+/// configuration (ADR-0010): for each `#if` chain that compiles `step` but
+/// not necessarily `bound`, the chain has an `#else` and every arm holds a
+/// call that `is_guard` accepts and that precedes `bound`. So
+/// `#ifdef _WIN32 VirtualLock(..) #else mlock(..) #endif` covers the store,
+/// while an `#ifdef USE_MLOCK` with no `#else` leaves the other build
+/// unprotected. A chain nested inside another arm is not looked into.
+fn in_every_configuration(
+    step: &Node,
+    bound: &Node,
+    calls: &[Node],
+    source: &str,
+    is_guard: &dyn Fn(&Node) -> bool,
+    precedes: &dyn Fn(&Node, &Node) -> bool,
+) -> bool {
+    preproc_choices_outside(step, bound, source)
+        .iter()
+        .all(|choice| {
+            choice.complete
+                && choice.arms.iter().all(|&(s, e)| {
+                    calls.iter().any(|c| {
+                        (s..e).contains(&c.start_byte()) && is_guard(c) && precedes(c, bound)
+                    })
+                })
+        })
 }
 
 /// Whether `step` dominates `target` in the function's CFG: every path from
