@@ -3,6 +3,7 @@
 // registration call is given rather than by what a function is named.
 
 use crate::analyze::const_eval::collect_macro_aliases;
+use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::collect_function_macros;
 use crate::utility::cert_c::ast_utils::{
     declaration_declarator_for, file_scope_descendants_of_kinds,
@@ -100,18 +101,58 @@ pub struct HandlerRegistration {
 /// so is a function-like macro whose body calls `signal`/`sigaction`/
 /// `atexit` with its parameters (`#define SIGNAL(s, h) signal(s, h)`).
 ///
-/// Registration through another translation unit's wrapper, or of a handler
-/// named only in another file, is out of reach of a per-file pass.
+/// A handler named here but declared only in another file (a header,
+/// typically) is identified through the prescan's project-wide function
+/// sets when [`Self::collect_in`] is given the project context. Registration
+/// through another translation unit's wrapper is out of reach of a per-file
+/// pass.
 #[derive(Debug, Clone, Default)]
 pub struct RegisteredHandlers {
     /// Every registration found, in source order.
     pub registrations: Vec<HandlerRegistration>,
+    /// Registering calls whose handler is a parameter of the enclosing
+    /// function: they install whatever handler the caller passes, including
+    /// callers outside this file (`void set_handler(int s, void (*h)(int))
+    /// { signal(s, h); }`). No handler is named, so they are not in
+    /// `registrations`; a rule about the registering call itself (SIG00-C,
+    /// SIG01-C) still has a call to judge.
+    pub caller_supplied: Vec<CallerSuppliedSite>,
 }
+
+/// A registering call that installs a caller-supplied handler.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallerSuppliedSite {
+    /// Which API registers it.
+    pub kind: RegistrationKind,
+    /// For `sigaction`: what the struct's `sa_mask` holds at the call (see
+    /// [`HandlerRegistration::mask`]).
+    pub mask: Vec<String>,
+    /// 1-based line and column of the registering call.
+    pub api_line: usize,
+    /// See `api_line`.
+    pub api_column: usize,
+}
+
+/// The four registering APIs. A file that names none of them (in its text,
+/// macros included) registers nothing, which lets most files skip the walk.
+const API_NAMES: [&str; 4] = ["signal", "sigaction", "atexit", "at_quick_exit"];
 
 impl RegisteredHandlers {
     /// Collect every registration in the translation unit rooted at `root`.
     pub fn collect(root: &Node, source: &str) -> Self {
-        Collector::new(root, source).run()
+        Self::collect_in(root, source, None)
+    }
+
+    /// [`Self::collect`], with the prescan's project context: a handler
+    /// name that resolves to nothing in this file still counts when the
+    /// project declares a function by that name (a header prototype, or a
+    /// definition in another file). Without it such a registration is
+    /// dropped as unidentified.
+    pub fn collect_in(root: &Node, source: &str, project: Option<&ProjectContext>) -> Self {
+        if !API_NAMES.iter().any(|api| source.contains(api)) {
+            return Self::default();
+        }
+        Collector::new(root, source, project).run()
     }
 
     /// Names of every function registered to run on a signal.
@@ -185,19 +226,23 @@ enum HandlerRef {
     Nothing,
 }
 
-struct Collector<'a, 's> {
+struct Collector<'a, 's, 'p> {
     root: Node<'a>,
     source: &'s str,
+    project: Option<&'p ProjectContext>,
     functions_defined: HashSet<String>,
     functions_declared: HashSet<String>,
     fn_ptrs: HashMap<String, Vec<String>>,
     aliases: HashMap<String, String>,
-    forwarders: HashMap<String, Forwarder>,
+    /// Every registering call a wrapper makes on its parameters: a wrapper
+    /// may register the same handler for several signals.
+    forwarders: HashMap<String, Vec<Forwarder>>,
     out: Vec<HandlerRegistration>,
+    caller_supplied: Vec<CallerSuppliedSite>,
 }
 
-impl<'a, 's> Collector<'a, 's> {
-    fn new(root: &Node<'a>, source: &'s str) -> Self {
+impl<'a, 's, 'p> Collector<'a, 's, 'p> {
+    fn new(root: &Node<'a>, source: &'s str, project: Option<&'p ProjectContext>) -> Self {
         let mut functions_defined = HashSet::new();
         // C has no nested functions, and file_scope_descendants_of_kinds
         // prunes AT function_definition, so it can't return one.
@@ -225,8 +270,15 @@ impl<'a, 's> Collector<'a, 's> {
         for err in query::find_descendants_of_kind(*root, "ERROR") {
             functions_declared.extend(function_names_in_error_declaration(&err, source));
             let mut cursor = err.walk();
-            for child in err.children(&mut cursor) {
-                if child.kind() != "function_declarator" {
+            let children: Vec<Node> = err.children(&mut cursor).collect();
+            for (i, child) in children.iter().enumerate() {
+                // A definition: the declarator followed by its body's `{`.
+                // That is the guard function_names_in_error_declaration's
+                // specifier run provides, and what keeps a misparsed call
+                // (`f(x)` with no body) out of the declared set.
+                if child.kind() != "function_declarator"
+                    || children.get(i + 1).map(|n| n.kind()) != Some("{")
+                {
                     continue;
                 }
                 if let Some(name) = child.child_by_field_name("declarator") {
@@ -243,12 +295,14 @@ impl<'a, 's> Collector<'a, 's> {
         Collector {
             root: *root,
             source,
+            project,
             functions_defined,
             functions_declared,
             fn_ptrs: file_scope_function_pointer_bindings(root, source),
             aliases,
             forwarders: HashMap::new(),
             out: Vec::new(),
+            caller_supplied: Vec::new(),
         }
     }
 
@@ -257,12 +311,13 @@ impl<'a, 's> Collector<'a, 's> {
         let calls = query::find_descendants_of_kind(self.root, "call_expression");
         // Wrappers of wrappers: find forwarders until none is new, bounded
         // so a pathological file can't loop.
+        let count = |f: &HashMap<String, Vec<Forwarder>>| f.values().map(Vec::len).sum::<usize>();
         for _ in 0..4 {
-            let before = self.forwarders.len();
+            let before = count(&self.forwarders);
             for call in &calls {
                 self.visit(call, true);
             }
-            if self.forwarders.len() == before {
+            if count(&self.forwarders) == before {
                 break;
             }
         }
@@ -272,8 +327,12 @@ impl<'a, 's> Collector<'a, 's> {
         self.out
             .sort_by(|a, b| (a.line, a.column, &a.handler).cmp(&(b.line, b.column, &b.handler)));
         self.out.dedup();
+        self.caller_supplied
+            .sort_by_key(|s| (s.api_line, s.api_column));
+        self.caller_supplied.dedup();
         RegisteredHandlers {
             registrations: self.out,
+            caller_supplied: self.caller_supplied,
         }
     }
 
@@ -292,46 +351,9 @@ impl<'a, 's> Collector<'a, 's> {
             call.start_position().column + 1,
         );
 
-        if let Some(fwd) = self.forwarders.get(&callee).cloned() {
-            if forwarders_only {
-                // A wrapper calling a wrapper with its own parameter.
-                if let Some(h) = args.get(fwd.handler_param) {
-                    if let HandlerRef::Parameter(p) = self.resolve_handler(h) {
-                        let sig = fwd.signal_param.and_then(|i| args.get(i));
-                        self.record_forwarder(
-                            call,
-                            Forwarder {
-                                handler_param: p,
-                                signal_param: sig.and_then(|s| self.parameter_index(s)),
-                                fixed_signal: match fwd.signal_param {
-                                    Some(i) => args.get(i).map(|s| self.text(s)),
-                                    None => fwd.fixed_signal.clone(),
-                                },
-                                ..fwd
-                            },
-                        );
-                    }
-                }
-                return;
-            }
-            if let Some(h) = args.get(fwd.handler_param) {
-                if let HandlerRef::Functions(names) = self.resolve_handler(h) {
-                    let signal = match fwd.signal_param {
-                        Some(i) => args.get(i).map(|s| self.text(s)),
-                        None => fwd.fixed_signal.clone(),
-                    };
-                    for name in names {
-                        self.push(
-                            name,
-                            signal.clone(),
-                            kind_of(fwd.api, fwd.siginfo),
-                            fwd.mask.clone(),
-                            site,
-                            fwd.api_site,
-                            Some(callee.clone()),
-                        );
-                    }
-                }
+        if let Some(fwds) = self.forwarders.get(&callee).cloned() {
+            for fwd in fwds {
+                self.visit_forwarder_call(call, &callee, &args, site, fwd, forwarders_only);
             }
             return;
         }
@@ -381,7 +403,13 @@ impl<'a, 's> Collector<'a, 's> {
                 let Some(var) = address_of_variable(act, self.source) else {
                     return;
                 };
-                let setup = self.sigaction_setup(call, &var);
+                let file_scope = strip_to_identifier(act).is_some_and(|id| {
+                    matches!(
+                        resolve_identifier_binding(&id, &var, self.source),
+                        Some(IdentifierBinding::Global(_))
+                    )
+                });
+                let setup = self.sigaction_setup(call, &var, file_scope);
                 self.register(
                     call,
                     api,
@@ -394,6 +422,54 @@ impl<'a, 's> Collector<'a, 's> {
                     forwarders_only,
                 );
             }
+        }
+    }
+
+    /// One call of a wrapper, for one of the registering calls it makes.
+    fn visit_forwarder_call(
+        &mut self,
+        call: &Node<'a>,
+        callee: &str,
+        args: &[Node<'a>],
+        site: (usize, usize),
+        fwd: Forwarder,
+        forwarders_only: bool,
+    ) {
+        let Some(h) = args.get(fwd.handler_param) else {
+            return;
+        };
+        let signal = match fwd.signal_param {
+            Some(i) => args.get(i).map(|s| self.text(s)),
+            None => fwd.fixed_signal.clone(),
+        };
+        match self.resolve_handler(h) {
+            // A wrapper calling a wrapper with its own parameter.
+            HandlerRef::Parameter(p) if forwarders_only => {
+                let sig = fwd.signal_param.and_then(|i| args.get(i));
+                self.record_forwarder(
+                    call,
+                    Forwarder {
+                        handler_param: p,
+                        signal_param: sig.and_then(|s| self.parameter_index(s)),
+                        fixed_signal: signal,
+                        ..fwd
+                    },
+                );
+            }
+            HandlerRef::Functions(names) if !forwarders_only => {
+                for name in names {
+                    self.push(
+                        name,
+                        signal.clone(),
+                        kind_of(fwd.api, fwd.siginfo),
+                        fwd.mask.clone(),
+                        site,
+                        fwd.api_site,
+                        Some(callee.to_string()),
+                    );
+                }
+            }
+            _ => {}
         }
     }
 
@@ -429,6 +505,14 @@ impl<'a, 's> Collector<'a, 's> {
                         );
                     }
                 }
+                HandlerRef::Parameter(_) if !forwarders_only => {
+                    self.caller_supplied.push(CallerSuppliedSite {
+                        kind: kind_of(api, siginfo),
+                        mask: mask.clone(),
+                        api_line: site.0,
+                        api_column: site.1,
+                    });
+                }
                 HandlerRef::Parameter(p) if forwarders_only => {
                     let signal_param = if is_exit {
                         None
@@ -462,7 +546,15 @@ impl<'a, 's> Collector<'a, 's> {
             return;
         };
         let name = get_identifier_from_declarator(&d, self.source);
-        self.forwarders.entry(name).or_insert(fwd);
+        let list = self.forwarders.entry(name).or_default();
+        let same = |f: &Forwarder| {
+            f.api_site == fwd.api_site
+                && f.handler_param == fwd.handler_param
+                && f.signal_param == fwd.signal_param
+        };
+        if !list.iter().any(same) {
+            list.push(fwd);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -505,7 +597,9 @@ impl<'a, 's> Collector<'a, 's> {
             return HandlerRef::Nothing;
         }
         match resolve_identifier_binding(&ident, name, self.source) {
-            Some(IdentifierBinding::Local(_)) => HandlerRef::Nothing,
+            // A local is a saved disposition being put back, unless it is a
+            // function pointer this function binds to a function.
+            Some(IdentifierBinding::Local(decl)) => self.local_fn_ptr_targets(&ident, &decl, name),
             Some(IdentifierBinding::Parameter(_)) => match self.parameter_index(&ident) {
                 Some(i) => HandlerRef::Parameter(i),
                 None => HandlerRef::Nothing,
@@ -528,10 +622,74 @@ impl<'a, 's> Collector<'a, 's> {
     }
 
     fn function_named(&self, name: &str) -> HandlerRef {
-        if self.functions_defined.contains(name) || self.functions_declared.contains(name) {
+        let in_project = self
+            .project
+            .is_some_and(|p| p.is_known_function(name) || p.is_header_declared(name));
+        if self.functions_defined.contains(name)
+            || self.functions_declared.contains(name)
+            || in_project
+        {
             HandlerRef::Functions(vec![name.to_string()])
         } else {
             HandlerRef::Nothing
+        }
+    }
+
+    /// The functions a local function pointer holds where `use_site` reads
+    /// it: its initializer and every plain assignment to it earlier in the
+    /// function, each counted when it names a function (every binding, not
+    /// the last: ADR-0010 arms). `void (*old)(int) = signal(...)` binds
+    /// none, so a restore still registers nothing.
+    fn local_fn_ptr_targets(&self, use_site: &Node<'a>, decl: &Node<'a>, name: &str) -> HandlerRef {
+        let Some(d) = declaration_declarator_for(decl, name, self.source) else {
+            return HandlerRef::Nothing;
+        };
+        let mut values = Vec::new();
+        // The declarator found is the name's own; its initializer hangs off
+        // the enclosing init_declarator.
+        let init = std::iter::successors(Some(d), |n| n.parent())
+            .take_while(|n| n.id() != decl.id())
+            .find(|n| n.kind() == "init_declarator");
+        if let Some(init) = init {
+            values.extend(init.child_by_field_name("value"));
+        }
+        if let Some(func) = query::nearest_ancestor_of_kind(*use_site, "function_definition") {
+            for assign in query::find_descendants_of_kind(func, "assignment_expression") {
+                if assign.start_byte() >= use_site.start_byte() {
+                    continue;
+                }
+                let (Some(left), Some(right)) = (
+                    assign.child_by_field_name("left"),
+                    assign.child_by_field_name("right"),
+                ) else {
+                    continue;
+                };
+                if left.kind() == "identifier" && get_node_text(&left, self.source) == name {
+                    values.push(right);
+                }
+            }
+        }
+        let mut targets = Vec::new();
+        for v in values {
+            let Some(id) = strip_to_identifier(&v) else {
+                continue;
+            };
+            let target = get_node_text(&id, self.source);
+            if target == name {
+                continue;
+            }
+            if let HandlerRef::Functions(names) = self.function_named(target) {
+                for n in names {
+                    if !targets.contains(&n) {
+                        targets.push(n);
+                    }
+                }
+            }
+        }
+        if targets.is_empty() {
+            HandlerRef::Nothing
+        } else {
+            HandlerRef::Functions(targets)
         }
     }
 
@@ -574,13 +732,23 @@ impl<'a, 's> Collector<'a, 's> {
     /// `if`/`switch`/loop/`#if` arm the call is not also in), so reusing one
     /// struct for two signals gives each call only its own handler. Writes in
     /// alternative arms all survive (ADR-0010: arms are alternatives).
-    fn sigaction_setup(&self, call: &Node<'a>, var: &str) -> SigactionSetup<'a> {
+    ///
+    /// `file_scope`: `var` at the call is a file-scope struct, so its own
+    /// initializer (`static const struct sigaction sa = { .sa_handler = h };`)
+    /// is read too, before the function's writes.
+    fn sigaction_setup(&self, call: &Node<'a>, var: &str, file_scope: bool) -> SigactionSetup<'a> {
         let scope =
             query::nearest_ancestor_of_kind(*call, "function_definition").unwrap_or(self.root);
         let end = call.start_byte();
         let mut writes: Vec<StructWrite<'a>> = Vec::new();
 
-        for init in query::find_descendants_of_kind(scope, "init_declarator") {
+        let mut inits = query::find_descendants_of_kind(scope, "init_declarator");
+        if file_scope && scope != self.root {
+            for decl in file_scope_descendants_of_kinds(self.root, &["declaration"]) {
+                inits.extend(query::find_descendants_of_kind(decl, "init_declarator"));
+            }
+        }
+        for init in inits {
             if init.start_byte() >= end {
                 continue;
             }
@@ -770,16 +938,19 @@ impl<'a, 's> Collector<'a, 's> {
                     (Some(i), None) => args.get(i).map(|s| s.trim().to_string()),
                     _ => None,
                 };
-                self.forwarders.entry(name.clone()).or_insert(Forwarder {
-                    api,
-                    handler_param,
-                    signal_param,
-                    fixed_signal,
-                    siginfo: false,
-                    mask: Vec::new(),
-                    // A macro has no call of its own: the invocation is the site.
-                    api_site: (0, 0),
-                });
+                self.forwarders
+                    .entry(name.clone())
+                    .or_default()
+                    .push(Forwarder {
+                        api,
+                        handler_param,
+                        signal_param,
+                        fixed_signal,
+                        siginfo: false,
+                        mask: Vec::new(),
+                        // A macro has no call of its own: the invocation is the site.
+                        api_site: (0, 0),
+                    });
             }
         }
     }
@@ -1186,6 +1357,79 @@ mod tests {
         let src = "struct s {\n int a;\nstatic void h(int sig)\n{\n abort();\n}\n\
                    int f(void) { signal(SIGSEGV, h); return 0; }\n";
         assert_eq!(handlers(src), vec![("h".into(), Some("SIGSEGV".into()))]);
+    }
+
+    fn collect_with_project(src: &str, header_declared: &[&str]) -> RegisteredHandlers {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let mut ctx = ProjectContext::new();
+        ctx.header_declared_functions =
+            std::sync::Arc::new(header_declared.iter().map(|s| s.to_string()).collect());
+        RegisteredHandlers::collect_in(&tree.root_node(), src, Some(&ctx))
+    }
+
+    #[test]
+    fn a_handler_declared_only_in_a_header_counts_with_the_project_context() {
+        // handlers.h (not in this translation unit) declares on_int.
+        let src = "#include \"handlers.h\"\nint main(void) { signal(SIGINT, on_int); return 0; }\n";
+        let r = collect_with_project(src, &["on_int"]);
+        assert_eq!(r.registrations.len(), 1);
+        assert_eq!(r.registrations[0].handler, "on_int");
+        assert!(!r.registrations[0].defined_here);
+        // Without the project, the name is unidentified and dropped.
+        assert!(collect(src).registrations.is_empty());
+    }
+
+    #[test]
+    fn a_wrapper_registering_one_handler_for_two_signals_keeps_both() {
+        let src = "#include <signal.h>\nstatic void install(void (*h)(int)) { signal(SIGINT, h); signal(SIGSEGV, h); }\n\
+                   static void on(int s) { (void)s; }\nint main(void) { install(on); return 0; }\n";
+        assert_eq!(
+            handlers(src),
+            vec![
+                ("on".into(), Some("SIGINT".into())),
+                ("on".into(), Some("SIGSEGV".into()))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_registering_wrapper_with_no_caller_is_a_caller_supplied_site() {
+        let src =
+            "#include <signal.h>\nvoid set_handler(int s, void (*h)(int)) { signal(s, h); }\n";
+        let r = collect(src);
+        assert!(r.registrations.is_empty());
+        assert_eq!(r.caller_supplied.len(), 1);
+        assert_eq!(r.caller_supplied[0].kind, RegistrationKind::Signal);
+        assert_eq!(r.caller_supplied[0].api_line, 2);
+    }
+
+    #[test]
+    fn a_local_function_pointer_registers_what_it_holds() {
+        let src = "#include <signal.h>\nvoid on_int(int s) {}\nvoid on_term(int s) {}\n\
+                   void f(int x) { void (*h)(int) = on_int; if (x) h = on_term; signal(SIGINT, h); }\n";
+        assert_eq!(
+            handlers(src),
+            vec![
+                ("on_int".into(), Some("SIGINT".into())),
+                ("on_term".into(), Some("SIGINT".into()))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_scope_sigaction_initializer_is_read() {
+        let src = "#include <signal.h>\nstatic void h(int s) {}\n\
+                   static const struct sigaction sa = { .sa_handler = h };\n\
+                   void f(void) { sigaction(SIGINT, &sa, 0); }\n";
+        assert_eq!(handlers(src), vec![("h".into(), Some("SIGINT".into()))]);
+    }
+
+    #[test]
+    fn a_file_naming_no_registering_api_registers_nothing() {
+        let r = collect("void f(void) { g(); }\n");
+        assert!(r.registrations.is_empty() && r.caller_supplied.is_empty());
     }
 
     #[test]

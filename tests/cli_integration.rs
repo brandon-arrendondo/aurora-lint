@@ -1893,6 +1893,50 @@ fn crossfile_header_declared_suppresses_dcl15c() {
     );
 }
 
+fn manifest_sig01() -> PathBuf {
+    fixtures().join("manifest_sig01.toml")
+}
+
+#[test]
+fn crossfile_header_declared_signal_handler_is_registered() {
+    // main.c passes on_int to signal(); on_int is only declared, in
+    // handlers.h, and defined in handlers.c. The handler resolves through
+    // the project's header declarations, so SIG01-C sees the registration.
+    // Before that, a handler with no declaration in the scanned file
+    // registered nothing and the signal() call was dark.
+    let fixture_dir = fixtures().join("crossfile_signal_handler");
+    for with_d in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.json");
+        let mut args = vec![
+            fixture_dir.join("main.c").to_str().unwrap().to_string(),
+            "-m".to_string(),
+            manifest_sig01().to_str().unwrap().to_string(),
+            "-e".to_string(),
+            out.to_str().unwrap().to_string(),
+        ];
+        if with_d {
+            args.push("-d".to_string());
+            args.push(fixture_dir.to_str().unwrap().to_string());
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let (code, _, _) = run_aurora_lint(&args);
+        assert_eq!(code, 0);
+
+        let content = std::fs::read_to_string(&out).unwrap();
+        let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+        let sig01: Vec<_> = violations
+            .iter()
+            .filter(|v| v["rule_id"] == "SIG01-C" && v["line"] == 5)
+            .collect();
+        assert_eq!(
+            sig01.len(),
+            1,
+            "signal(SIGINT, on_int) with a header-declared handler (with_d={with_d})"
+        );
+    }
+}
+
 #[test]
 fn crossfile_sibling_header_suppresses_public_api_without_d_flag() {
     // aurora-lint auto-scans sibling .h files even without -d, so public API functions

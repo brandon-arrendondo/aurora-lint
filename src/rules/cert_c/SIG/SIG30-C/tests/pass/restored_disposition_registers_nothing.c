@@ -7,13 +7,15 @@
 #include <signal.h>
 #include <stdio.h>
 
-static void report(int n) {
+/* Shares its name with main()'s saved disposition. A name match would
+ * register it; resolving the declaration finds the local pointer. */
+static void saved(int n) {
     printf("%d\n", n);
 }
 
 int main(void) {
-    void (*old)(int) = signal(SIGINT, SIG_IGN);
-    report(1);
-    signal(SIGINT, old);
+    void (*saved)(int) = signal(SIGINT, SIG_IGN);
+    printf("working\n");
+    signal(SIGINT, saved);
     return 0;
 }

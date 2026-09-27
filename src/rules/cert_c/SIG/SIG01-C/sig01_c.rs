@@ -39,13 +39,33 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
 use crate::utility::cert_c::signal_handlers::{RegisteredHandlers, RegistrationKind};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
-pub struct Sig01C;
+pub struct Sig01C {
+    /// The prescan's context, so a handler declared only in a header is
+    /// still identified (see `RegisteredHandlers::collect_in`).
+    project: RefCell<Option<ProjectContext>>,
+}
+
+impl Sig01C {
+    pub fn new() -> Self {
+        Self {
+            project: RefCell::new(None),
+        }
+    }
+}
+
+impl Default for Sig01C {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CertRule for Sig01C {
     fn rule_id(&self) -> &'static str {
@@ -64,6 +84,10 @@ impl CertRule for Sig01C {
         "SIG01-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = Some(context.clone());
+    }
+
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.check_node(node, source, violations);
     }
@@ -73,11 +97,21 @@ impl Sig01C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // A signal() call that installs a handler, by declaration: not
         // SIG_IGN/SIG_DFL, and not a saved disposition being restored.
-        let sites: HashSet<(usize, usize)> = RegisteredHandlers::collect(node, source)
+        // A wrapper's signal() on its parameter installs the caller's
+        // handler, so it counts too.
+        let found = RegisteredHandlers::collect_in(node, source, self.project.borrow().as_ref());
+        let sites: HashSet<(usize, usize)> = found
             .registrations
-            .into_iter()
+            .iter()
             .filter(|r| r.kind == RegistrationKind::Signal)
             .map(|r| (r.api_line, r.api_column))
+            .chain(
+                found
+                    .caller_supplied
+                    .iter()
+                    .filter(|s| s.kind == RegistrationKind::Signal)
+                    .map(|s| (s.api_line, s.api_column)),
+            )
             .collect();
         for call in query::find_descendants_of_kind(*node, "call_expression") {
             let line = call.start_position().row + 1;

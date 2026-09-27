@@ -30,18 +30,26 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::signal_handlers::{RegisteredHandlers, RegistrationKind};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
-pub struct Sig00C;
+pub struct Sig00C {
+    /// The prescan's context, so a handler declared only in a header is
+    /// still identified (see `RegisteredHandlers::collect_in`).
+    project: RefCell<Option<ProjectContext>>,
+}
 
 impl Sig00C {
     pub fn new() -> Self {
-        Self
+        Self {
+            project: RefCell::new(None),
+        }
     }
 
     /// Check for calls to signal() function
@@ -106,6 +114,10 @@ impl CertRule for Sig00C {
         "SIG00-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = Some(context.clone());
+    }
+
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.check_node(node, source, violations);
     }
@@ -117,18 +129,29 @@ impl Sig00C {
         // SIG_IGN) masks nothing because nothing runs. The resolver ties each
         // registration to the signal()/sigaction() call that performs it, and
         // knows the mask of the struct sigaction that call is given.
-        let registrations = RegisteredHandlers::collect(node, source).registrations;
+        let found = RegisteredHandlers::collect_in(node, source, self.project.borrow().as_ref());
         let mut signal_sites = HashSet::new();
         let mut sigaction_masked: HashMap<(usize, usize), bool> = HashMap::new();
-        for r in &registrations {
-            let site = (r.api_line, r.api_column);
-            match r.kind {
+        // A registering call whose handler is the caller's (a wrapper's
+        // parameter) installs a handler too, whoever supplies it.
+        let sites = found
+            .registrations
+            .iter()
+            .map(|r| (&r.kind, &r.mask, (r.api_line, r.api_column)))
+            .chain(
+                found
+                    .caller_supplied
+                    .iter()
+                    .map(|s| (&s.kind, &s.mask, (s.api_line, s.api_column))),
+            );
+        for (kind, mask, site) in sites {
+            match kind {
                 RegistrationKind::Signal => {
                     signal_sites.insert(site);
                 }
                 RegistrationKind::Sigaction { .. } => {
                     let masked = sigaction_masked.entry(site).or_insert(true);
-                    *masked &= !r.mask.is_empty();
+                    *masked &= !mask.is_empty();
                 }
                 _ => {}
             }
