@@ -2413,3 +2413,43 @@ fn case_mismatch_is_reported_without_any_search_path() {
     let exact = scan("exact");
     assert!(!exact.contains("spelled in a different case"), "{exact}");
 }
+
+/// Scan a project of `files` (name, contents) written to a fresh directory,
+/// with the project prescan (`-d`) over the same directory, under `rules`;
+/// return the finding lines.
+fn scan_project(files: &[(&str, &str)], rules: &str) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, contents) in files {
+        std::fs::write(dir.path().join(name), contents).unwrap();
+    }
+    let root = dir.path().to_str().unwrap();
+    let (_, stdout, stderr) = run_aurora_lint(&[root, "-d", root, "--rules", rules]);
+    assert!(!stderr.contains("error"), "stderr: {stderr}");
+    stdout
+        .lines()
+        .filter(|l| l.contains("] ") && l.contains("-C: "))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn a_c_files_private_macro_is_not_another_files_alternative() {
+    // Each .c file defines GET privately; b.c's is not a build of a.c's,
+    // so a.c's GET still writes `v`.
+    let found = scan_project(
+        &[
+            (
+                "a.c",
+                "int read_val(void);\n#define GET(out) ((out) = read_val())\n\
+                 int f(void) { int v; GET(v); return v; }\n",
+            ),
+            (
+                "b.c",
+                "void log_get(int);\n#define GET(out) log_get(out)\n\
+                 void g(void) { int w = 0; GET(w); }\n",
+            ),
+        ],
+        "EXP33-C",
+    );
+    assert!(found.is_empty(), "{found:?}");
+}

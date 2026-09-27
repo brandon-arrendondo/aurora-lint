@@ -707,9 +707,23 @@ fn prescan_file_list(
                                 .unwrap_or("another file"),
                         ));
                     }
-                    // The expansion keeps the first file's body; the
-                    // parameter facts see every file's.
-                    e.get_mut().absorb(m);
+                    // Only headers are shared: two .c files that each
+                    // privately define a name are two programs' macros, not
+                    // two builds of one. A header's definition is what every
+                    // other file sees, so it replaces a .c file's; two
+                    // headers' definitions are alternatives, whose parameter
+                    // facts see both (the expansion keeps the first body).
+                    let kept_in_header = function_macro_origin
+                        .get(e.key())
+                        .is_some_and(|origin| is_header_path(origin));
+                    if is_header_path(&file_display) {
+                        if kept_in_header {
+                            e.get_mut().absorb(m);
+                        } else {
+                            function_macro_origin.insert(e.key().clone(), file_display.clone());
+                            e.insert(m);
+                        }
+                    }
                 }
             }
         }
@@ -1609,6 +1623,14 @@ pub(crate) fn mark_address_taken_scoped(
             summary.address_taken = true;
         }
     }
+}
+
+/// Whether `path` names a header, whose definitions every file that
+/// includes it sees.
+fn is_header_path(path: &str) -> bool {
+    [".h", ".hh", ".hpp", ".hxx"]
+        .iter()
+        .any(|ext| path.ends_with(ext))
 }
 
 /// The last path component of `path`, `/` or `\\` separated.
