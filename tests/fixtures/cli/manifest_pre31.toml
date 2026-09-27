@@ -1,0 +1,8 @@
+[metadata]
+name = "CLI Integration Test - PRE31-C only"
+version = "1.0.0"
+description = "Minimal manifest for PRE31-C cross-file tests"
+cert_version = "2016"
+
+[rules.cert_c.PRE31-C]
+enabled = true

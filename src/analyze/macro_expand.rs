@@ -560,7 +560,7 @@ pub fn collect_function_macro_alternatives(source: &str) -> HashMap<String, Vec<
 /// that use `#`/`##`. A question about how often a macro evaluates an
 /// argument must see those arms too, since `#define LOG(...)` in a release
 /// branch is exactly the arm that drops the argument.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MacroArm {
     /// Named parameters in order, not counting the variadic one.
     pub params: Vec<String>,
@@ -603,20 +603,44 @@ pub enum ArgEvaluation {
 /// preprocessor branch, variadic and `#`/`##` arms included (compare
 /// [`collect_function_macro_alternatives`], which skips them).
 pub fn collect_function_macro_arms(source: &str) -> HashMap<String, Vec<MacroArm>> {
+    let mut out = HashMap::new();
+    extend_function_macro_arms(source, &mut out);
+    out
+}
+
+/// Add every arm [`collect_function_macro_arms`] finds in `source` to `out`,
+/// each distinct definition of a name once: how the prescan builds
+/// `ProjectContext::function_macro_arms` across files and headers.
+pub fn extend_function_macro_arms(source: &str, out: &mut HashMap<String, Vec<MacroArm>>) {
     let lines: Vec<&str> = source.lines().collect();
-    let mut out: HashMap<String, Vec<MacroArm>> = HashMap::new();
     let mut i = 0;
     while i < lines.len() {
         let (logical, next) = join_continuation(&lines, i);
         i = next;
         if let Some((name, arm)) = parse_define_arm(&logical) {
-            let arms = out.entry(name).or_default();
-            if !arms.contains(&arm) {
-                arms.push(arm);
-            }
+            push_arm(out, name, arm);
         }
     }
-    out
+}
+
+/// Fold one file's arms into the project-wide table, keeping each distinct
+/// definition of a name once.
+pub fn merge_function_macro_arms(
+    into: &mut HashMap<String, Vec<MacroArm>>,
+    from: HashMap<String, Vec<MacroArm>>,
+) {
+    for (name, arms) in from {
+        for arm in arms {
+            push_arm(into, name.clone(), arm);
+        }
+    }
+}
+
+fn push_arm(out: &mut HashMap<String, Vec<MacroArm>>, name: String, arm: MacroArm) {
+    let arms = out.entry(name).or_default();
+    if !arms.contains(&arm) {
+        arms.push(arm);
+    }
 }
 
 /// Parse one logical line as a function-like `#define`, keeping variadic
@@ -3178,6 +3202,26 @@ fn count_assignment_targets(text: &str, ident: &str, rhs_ok: impl Fn(usize) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn function_macro_arms_merge_across_files_once_each() {
+        let header = "#ifndef NDEBUG\n\
+                      #define DBG(x) record(x)\n\
+                      #else\n\
+                      #define DBG(x) ((void)0)\n\
+                      #endif\n\
+                      #define LOG(fmt, ...) log_(#fmt, __VA_ARGS__)\n";
+        let other = "#define DBG(x) record(x)\n#define DBG(y) note(y)\n";
+        let mut project = HashMap::new();
+        extend_function_macro_arms(header, &mut project);
+        merge_function_macro_arms(&mut project, collect_function_macro_arms(other));
+        let bodies: Vec<&str> = project["DBG"].iter().map(|a| a.body.as_str()).collect();
+        assert_eq!(bodies, ["record(x)", "((void)0)", "note(y)"]);
+        assert_eq!(
+            project["LOG"][0].variadic,
+            Some((1, "__VA_ARGS__".to_string()))
+        );
+    }
 
     #[test]
     fn operand_params_are_the_stringized_and_pasted_ones() {
