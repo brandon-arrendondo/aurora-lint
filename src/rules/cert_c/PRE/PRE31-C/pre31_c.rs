@@ -122,6 +122,7 @@ impl CertRule for Pre31C {
             purity: RefCell::new(HashMap::new()),
             in_progress: RefCell::new(Vec::new()),
             lowest_reentered: std::cell::Cell::new(usize::MAX),
+            provisional: RefCell::new(Vec::new()),
         };
         for call_node in query::find_descendants_of_kind(*node, "call_expression") {
             // `#if defined(MBEDTLS_KEY_EXCHANGE_RSA_ENABLED)` is not a macro
@@ -195,8 +196,13 @@ struct Ctx<'a> {
     in_progress: RefCell<Vec<String>>,
     /// The lowest `in_progress` position re-entered since the current
     /// judgment began: a verdict that leaned on an enclosing function's
-    /// unfinished one is provisional and must not be memoized.
+    /// unfinished one is provisional until that function finishes.
     lowest_reentered: std::cell::Cell<usize>,
+    /// Finished judgments still waiting on an enclosing unfinished one (the
+    /// open members of a recursive group), in completion order, with the
+    /// lowest position each re-entered. Reused, not recomputed, until the
+    /// group's head finishes and hands every member its verdict.
+    provisional: RefCell<Vec<(String, Effect, usize)>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -447,9 +453,13 @@ impl<'a> Ctx<'a> {
     /// anything but its own automatic objects, a volatile read, or a call
     /// with one (PRE31-C-EX1's "does nothing but perform a computation").
     /// With several `#if` definitions, the worst of them: this use accuses,
-    /// so an effect in any configuration counts. Mutual recursion is judged
-    /// as a whole: only a verdict that did not lean on an enclosing
-    /// unfinished judgment is memoized.
+    /// so an effect in any configuration counts.
+    ///
+    /// Mutually recursive functions share one verdict, found with Tarjan's
+    /// strongly connected components: each body is walked once, a finished
+    /// member of a group whose head is still being judged is reused from
+    /// `provisional`, and when the head finishes every member gets the
+    /// head's verdict, which by then covers all of their bodies.
     fn function_effect(&self, name: &str, defs: &[Node<'a>]) -> Effect {
         if let Some(e) = self.purity.borrow().get(name) {
             return *e;
@@ -459,7 +469,19 @@ impl<'a> Ctx<'a> {
                 .set(self.lowest_reentered.get().min(pos));
             return Effect::None;
         }
+        let open = self
+            .provisional
+            .borrow()
+            .iter()
+            .find(|(n, _, _)| n == name)
+            .map(|(_, e, low)| (*e, *low));
+        if let Some((effect, low)) = open {
+            self.lowest_reentered
+                .set(self.lowest_reentered.get().min(low));
+            return effect;
+        }
         let depth = self.in_progress.borrow().len();
+        let mark = self.provisional.borrow().len();
         self.in_progress.borrow_mut().push(name.to_string());
         let outer_lowest = self.lowest_reentered.replace(usize::MAX);
         let effect = defs
@@ -473,9 +495,17 @@ impl<'a> Ctx<'a> {
         self.in_progress.borrow_mut().pop();
         let lowest = self.lowest_reentered.get();
         if lowest >= depth {
-            // Every re-entry was of this function or deeper ones, all now
-            // finished: the verdict is final.
-            self.purity.borrow_mut().insert(name.to_string(), effect);
+            // This function heads its group: the group is complete.
+            let members = self.provisional.borrow_mut().split_off(mark);
+            let mut purity = self.purity.borrow_mut();
+            for (member, _, _) in members {
+                purity.insert(member, effect);
+            }
+            purity.insert(name.to_string(), effect);
+        } else {
+            self.provisional
+                .borrow_mut()
+                .push((name.to_string(), effect, lowest));
         }
         self.lowest_reentered.set(outer_lowest.min(lowest));
         effect

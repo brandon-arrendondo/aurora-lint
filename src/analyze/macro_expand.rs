@@ -490,6 +490,7 @@ pub fn macro_body_effects(arm: &MacroArm) -> (bool, Vec<String>) {
     let mut callees = Vec::new();
     for (j, t) in tokens.iter().enumerate() {
         let next = tokens.get(j + 1).map(|t| t.text.as_str());
+        let after_member = j > 0 && matches!(tokens[j - 1].text.as_str(), "." | "->");
         match t.text.as_str() {
             "++" | "--" => writes = true,
             "=" => {
@@ -526,7 +527,9 @@ pub fn macro_body_effects(arm: &MacroArm) -> (bool, Vec<String>) {
                         | "__extension__"
                         | "__attribute__"
                 )
-                && !arm.params.iter().any(|p| p == w) =>
+                && !arm.params.iter().any(|p| p == w)
+                // `ops.strlen(x)` / `p->strlen(x)` calls through a member.
+                && !after_member =>
             {
                 callees.push(w.to_string());
             }
@@ -3479,5 +3482,11 @@ mod macro_write_tests {
         assert!(macro_body_effects(&deref_write).0);
         let element_write = arm(&["i"], "do { buf[i] = 0; } while (0)");
         assert!(macro_body_effects(&element_write).0);
+    }
+
+    #[test]
+    fn member_call_in_body_is_not_a_named_callee() {
+        let a = arm(&["x"], "(ops.strlen(x) + p->len(x) + strlen(x))");
+        assert_eq!(macro_body_effects(&a).1, vec!["strlen".to_string()]);
     }
 }
