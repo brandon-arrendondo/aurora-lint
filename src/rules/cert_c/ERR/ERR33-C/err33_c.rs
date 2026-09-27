@@ -3,32 +3,31 @@
 
 //! ERR33-C: Detect and handle standard library errors
 //!
-//! This rule ensures that return values from standard library functions that can indicate
-//! errors are properly checked. The implementation uses AST analysis to detect:
+//! A standard library function whose return value signals failure has to
+//! have that value checked. Three shapes are examined:
 //!
-//! 1. Assignment patterns: `ptr = malloc(size)` followed by `if (ptr == NULL)`
-//! 2. Direct usage patterns: `if (fopen("file", "r") != NULL)`
-//! 3. Ignored return values: `malloc(size);` (standalone call)
+//! 1. A stored result: `p = malloc(n)` or `size_t n = fread(...)`. It counts
+//!    as checked when a later expression tests the same object against the
+//!    function's own error value (NULL, EOF, a negative value, `(T)-1`, a
+//!    short count, `SIG_ERR`, `errno` for `strto*`) before the object is
+//!    written again. That is decided by the AST in
+//!    `result_checks::stored_result_is_tested`: the operand is resolved by
+//!    declaration, not by spelling (ADR-0006); a comparison inside
+//!    `assert(...)` does not count (ADR-0010); and `n == 0` does not detect a
+//!    negative result. `p = realloc(p, n)` is reported as the leak it is.
+//! 2. A call used directly: `if (fopen(...) != NULL)`, a call inside a
+//!    condition, a `return`, a comma expression or another call's argument
+//!    is consumed. A direct comparison against the wrong value
+//!    (`if (fgetc(f) == 0)`) is reported as an incorrect check (CWE-253).
+//! 3. A discarded result: a standalone `malloc(n);`. `(void)f()` is an
+//!    explicit discard and is not reported. The printf/puts/fputs/putc
+//!    family, `signal(s, SIG_IGN/SIG_DFL)`, and `time(&t)` with an output
+//!    argument are not reported as discarded. `snprintf`/`vsnprintf` are:
+//!    their result says whether the output was truncated.
 //!
-//! ## Supported Error Patterns:
-//! - NULL pointer returns: malloc, calloc, fopen, fgets, etc.
-//! - Non-zero error codes: fseek, fclose, etc.
-//! - Negative error indicators: printf, snprintf, etc.
-//! - Special cases: strtol (errno checking), etc.
-//!
-//! ## Context-Aware Exceptions:
-//! - Signal handlers: printf/fprintf return values often not checked in signal handlers
-//! - Error handling blocks: printf/fprintf used for error logging are typically acceptable
-//!
-//! `fclose()` gets no context exception. ERR33-C-EX1 lists the functions whose
-//! return values need not be checked and `fclose()` is not among them; an
-//! `fclose()` on an error/cleanup path can still fail (EOF, errno set) and the
-//! compliant way to discard that is an explicit `(void)fclose(fp)`. An earlier
-//! "cleanup context" heuristic suppressed exactly that shape and hid real
-//! findings (13 hand-verified sites in one file).
-//!
-//! The rule uses forward-looking AST analysis to find error checking patterns in subsequent
-//! statements after assignment, with sophisticated context detection to minimize false positives.
+//! `fclose()` gets no exception. ERR33-C-EX1 does not list it, and a failing
+//! `fclose()` on a cleanup path is still a failure; the compliant way to
+//! discard it is `(void)fclose(fp)`.
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval;

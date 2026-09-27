@@ -451,14 +451,17 @@ fn occurrence_tests(
                 return match op {
                     "&&" | "||" => truthiness_counts(signal),
                     "==" | "!=" | "<" | ">" | "<=" | ">=" => {
-                        let other = if parent
+                        let on_left = parent
                             .child_by_field_name("left")
-                            .is_some_and(|l| l.id() == current.id())
-                        {
+                            .is_some_and(|l| l.id() == current.id());
+                        let other = if on_left {
                             parent.child_by_field_name("right")
                         } else {
                             parent.child_by_field_name("left")
                         };
+                        // `0 < n` is `n > 0`: judge the result as the left
+                        // operand, whichever side it was written on.
+                        let op = if on_left { op } else { mirrored(op) };
                         other.is_some_and(|o| {
                             comparison_counts(signal, op, &o, unsigned, requested, source)
                         })
@@ -544,6 +547,17 @@ fn is_unsigned_type_text(text: &str) -> bool {
                 || matches!(tok, "size_t" | "uintptr_t" | "uintmax_t")
                 || (tok.starts_with("uint") && tok.ends_with("_t"))
         })
+}
+
+/// The operator that states the same comparison with its operands swapped.
+fn mirrored(op: &str) -> &str {
+    match op {
+        "<" => ">",
+        ">" => "<",
+        "<=" => ">=",
+        ">=" => "<=",
+        other => other,
+    }
 }
 
 /// Whether `value <op> other` detects `signal`'s failure. `unsigned` says the
@@ -848,6 +862,16 @@ mod tests {
         ));
         assert!(!tested(
             "void f(int len, FILE *fp, char *b) { size_t n = fread(b, 1, 4, fp); if (len == 0) return; }"
+        ));
+    }
+
+    #[test]
+    fn a_result_on_the_right_of_a_comparison_is_mirrored() {
+        assert!(tested(
+            "void f(FILE *fp, char *b) { size_t n = fread(b, 1, 64, fp); if (0 < n) b[n - 1] = 0; }"
+        ));
+        assert!(!tested(
+            "void f(FILE *fp, char *b) { size_t n = fread(b, 1, 64, fp); if (0 > n) return; }"
         ));
     }
 
