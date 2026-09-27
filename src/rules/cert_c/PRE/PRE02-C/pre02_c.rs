@@ -40,11 +40,23 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::pp_tokens::{
+    define_at, lex_replacement_list, mask_literals_and_comments,
+};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pre02C;
+
+/// The replacement list as written, from its first token to its last:
+/// comments inside it kept, a trailing one dropped.
+fn as_written(body: &str, function_like: bool) -> &str {
+    let tokens = lex_replacement_list(body, function_like);
+    match (tokens.first(), tokens.last()) {
+        (Some(first), Some(last)) => &body[first.start..last.start + last.text.len()],
+        _ => "",
+    }
+}
 
 impl Pre02C {
     pub fn new() -> Self {
@@ -202,19 +214,18 @@ impl Pre02C {
             return;
         }
 
-        // Get the replacement/value text
-        let value_node = match node.child_by_field_name("value") {
-            Some(v) => v,
-            None => return, // No replacement text
+        // The replacement list with its literals and comments blanked, so an
+        // operator or parenthesis inside `"a + b"`, `')'` or a comment is
+        // not read as code.
+        let Some(define) = define_at(node, source) else {
+            return;
         };
-
-        let raw_value_text = get_node_text(&value_node, source);
-
-        // Strip trailing line comments — tree-sitter may include `// ...` in preproc_def value
-        let value_text: &str = match raw_value_text.find("//") {
-            Some(pos) => raw_value_text[..pos].trim_end(),
-            None => raw_value_text,
-        };
+        let body = define.body;
+        if body.is_empty() {
+            return; // No replacement text
+        }
+        let masked = mask_literals_and_comments(body);
+        let value_text = masked.trim();
 
         // Check if it contains operators
         if !self.contains_operators(&value_text) {
@@ -254,7 +265,7 @@ impl Pre02C {
             column: node.start_position().column + 1,
             suggestion: Some(format!(
                 "Wrap the entire replacement list in parentheses: ({})",
-                value_text.trim()
+                as_written(body, define.params.is_some())
             )),
             ..Default::default()
         });
