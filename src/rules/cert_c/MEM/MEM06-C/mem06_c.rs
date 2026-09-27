@@ -203,18 +203,17 @@ impl Mem06C {
                 self.stores(&calls, &body, &origin, &copies, first_sink, source)
             };
             // Every store must be covered: a lock on one arm does not protect
-            // the secret another arm writes unlocked.
-            let locked = bounds.iter().all(|bound| {
+            // the secret another arm writes unlocked. Either kind of cover
+            // will do for each store -- one arm may lock the block while the
+            // other protects the whole process.
+            let covered = bounds.iter().all(|bound| {
                 calls.iter().any(|call| {
                     call.start_byte() > origin.at
                         && self.is_lock_of(call, source, |o| holds(o, call))
                         && precedes(call, bound)
-                })
+                }) || self.protected_locally(&calls, bound, source, &precedes)
             });
-            let protected_here = bounds
-                .iter()
-                .all(|bound| self.protected_locally(&calls, bound, source, &precedes));
-            if locked || protected_here || self.protected_by_program(func, source, program) {
+            if covered || self.protected_by_program(func, source, program) {
                 continue;
             }
 
