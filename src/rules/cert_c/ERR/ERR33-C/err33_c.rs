@@ -54,6 +54,7 @@ use crate::analyze::const_eval;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
 use crate::utility::cert_c::result_checks;
@@ -82,6 +83,10 @@ pub struct Err33C {
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     project_aliases: RefCell<Arc<HashMap<String, String>>>,
     current_aliases: RefCell<HashMap<String, String>>,
+    /// Function-like macros: the project's, with this file's own on top. A
+    /// result passed to one is tested when the expansion tests it.
+    project_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
+    current_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
 }
 
 impl Err33C {
@@ -90,6 +95,8 @@ impl Err33C {
             function_summaries: RefCell::default(),
             project_aliases: RefCell::new(Arc::new(HashMap::new())),
             current_aliases: RefCell::new(HashMap::new()),
+            project_macros: RefCell::default(),
+            current_macros: RefCell::default(),
         }
     }
 }
@@ -114,12 +121,19 @@ impl CertRule for Err33C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
+        *self.project_macros.borrow_mut() = context.function_macros.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         // Merge project-level aliases with per-file aliases (per-file wins)
         *self.current_aliases.borrow_mut() =
             const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
+        let file_macros = macro_expand::collect_function_macros(node, source);
+        let mut macros = self.project_macros.borrow().clone();
+        if !file_macros.is_empty() {
+            Arc::make_mut(&mut macros).extend(file_macros);
+        }
+        *self.current_macros.borrow_mut() = macros;
 
         let mut violations = Vec::new();
         self.check_node(node, source, &mut violations);
@@ -855,7 +869,8 @@ impl Err33C {
     ) -> bool {
         let signal = result_checks::error_signal_for(function_name)
             .unwrap_or(result_checks::ErrorSignal::Any);
-        result_checks::stored_result_is_tested(store, target, call, signal, source)
+        let macros = self.current_macros.borrow();
+        result_checks::stored_result_is_tested(store, target, call, signal, source, &macros)
     }
 
     /// The identifier a declarator declares (`*p`, `p[4]`, `(*p)` -> `p`).

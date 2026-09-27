@@ -24,15 +24,23 @@
 //! - **Before it is overwritten.** Only occurrences between the store and the
 //!   next write to the same object are about the stored result.
 //!
+//! - **Through a macro.** A result passed whole to a function-like macro is
+//!   tested when the macro's expansion tests it: `REQUIRE(p)` for
+//!   `#define REQUIRE(x) do { if (!(x)) die(); } while (0)`.
+//!
 //! "On a path" is approximated by source order inside the enclosing function,
 //! like the rest of the AST-level guard queries: a test that follows the
-//! store and precedes any rewrite is taken to be reachable from it.
+//! store and precedes any rewrite is taken to be reachable from it. The one
+//! back edge taken is a loop's: a store in a `while`/`for` body or `for`
+//! update is followed by that loop's condition.
 
+use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::utility::cert_c::ast_utils::{
     declaration_declarator_for, declaration_type_text, find_containing_function, get_node_text,
     resolve_identifier_declarator,
 };
 use lang_parsing_substrate::query;
+use std::collections::HashMap;
 use tree_sitter::Node;
 
 /// How a standard library function signals failure through its return value
@@ -43,8 +51,12 @@ pub enum ErrorSignal {
     Null,
     /// Nonzero: `fseek`, `remove`, `rename`, `atexit`, ...
     NonZero,
-    /// `EOF` (or a count short of the conversions, for the scanf family).
+    /// `EOF`: `fgetc`, `fputs`, `ungetc`, ... Only `EOF` (or another
+    /// negative constant) or an ordering test sees it: `c == '\n'` does not.
     Eof,
+    /// `EOF`, or a count short of the conversions asked for: the scanf
+    /// family, where `n == 2` against the expected count is a check.
+    Conversions,
     /// A negative value: the printf family (`snprintf` also signals
     /// truncation with a value `>= n`, which any ordering test reads).
     Negative,
@@ -74,8 +86,9 @@ pub fn error_signal_for(function_name: &str) -> Option<ErrorSignal> {
         "fseek" | "fsetpos" | "fgetpos" | "remove" | "rename" | "atexit" | "raise" | "fclose"
         | "fflush" => ErrorSignal::NonZero,
         "fputs" | "fgetc" | "getc" | "getchar" | "fputc" | "putc" | "putchar" | "puts"
-        | "ungetc" | "scanf" | "fscanf" | "sscanf" | "vscanf" | "vfscanf" | "vsscanf" => {
-            ErrorSignal::Eof
+        | "ungetc" => ErrorSignal::Eof,
+        "scanf" | "fscanf" | "sscanf" | "vscanf" | "vfscanf" | "vsscanf" => {
+            ErrorSignal::Conversions
         }
         "printf" | "fprintf" | "sprintf" | "snprintf" | "vprintf" | "vfprintf" | "vsprintf"
         | "vsnprintf" => ErrorSignal::Negative,
@@ -100,14 +113,30 @@ pub fn error_signal_for(function_name: &str) -> Option<ErrorSignal> {
 ///
 /// The store's own controlling expression counts too:
 /// `if ((p = malloc(n)) == NULL)` tests the assignment's value in place.
+///
+/// `macros` is the function-like macro table in view: a result passed whole
+/// to a macro (`REQUIRE(p)`) is tested when the macro's expansion tests it.
 pub fn stored_result_is_tested(
     store: &Node,
     target: &Node,
     call: &Node,
     signal: ErrorSignal,
     source: &str,
+    macros: &HashMap<String, FunctionMacro>,
 ) -> bool {
-    tested_from(store, target, call, signal, source, MAX_COPY_HOPS)
+    let cx = Cx {
+        signal,
+        source,
+        macros,
+    };
+    tested_from(store, target, call, &cx, MAX_COPY_HOPS)
+}
+
+/// What every step of one [`stored_result_is_tested`] query shares.
+struct Cx<'s> {
+    signal: ErrorSignal,
+    source: &'s str,
+    macros: &'s HashMap<String, FunctionMacro>,
 }
 
 /// How many plain copies (`*out = (int)count;`) a result is followed
@@ -117,23 +146,15 @@ const MAX_COPY_HOPS: usize = 2;
 /// [`stored_result_is_tested`], following a plain copy of the result into
 /// another object (`foc = fb;`, `*dataSize = (int)count;`) at most `hops`
 /// times: the copy's own test is a test of the result.
-fn tested_from(
-    store: &Node,
-    target: &Node,
-    call: &Node,
-    signal: ErrorSignal,
-    source: &str,
-    hops: usize,
-) -> bool {
-    if signal != ErrorSignal::ErrnoOrEnd
-        && store.kind() == "assignment_expression"
-        && occurrence_tests(
-            store,
-            signal,
-            stored_as_unsigned(store, target, source),
-            requested_count(call, source).as_deref(),
-            source,
-        )
+fn tested_from(store: &Node, target: &Node, call: &Node, cx: &Cx, hops: usize) -> bool {
+    let (signal, source) = (cx.signal, cx.source);
+    let unsigned = stored_as_unsigned(store, target, source);
+    let requested = requested_count(call, source);
+    let judge = |occ: &Node| {
+        occurrence_tests(occ, signal, unsigned, requested.as_deref(), source)
+            || macro_argument_tests(occ, cx, unsigned, requested.as_deref())
+    };
+    if signal != ErrorSignal::ErrnoOrEnd && store.kind() == "assignment_expression" && judge(store)
     {
         return true;
     }
@@ -144,23 +165,13 @@ fn tested_from(
         return false;
     };
     let after = store.end_byte();
-    let until = next_write(&body, store, target, after, source).unwrap_or(usize::MAX);
-    let in_window = |n: &Node| n.start_byte() >= after && n.start_byte() < until;
 
     if signal == ErrorSignal::ErrnoOrEnd {
-        let end_ptr = end_pointer_argument(call);
-        return query::find_descendants_of_kind(body, "identifier")
-            .into_iter()
-            .filter(|id| id.start_byte() >= after && !in_exclusive_branches(store, id))
-            .any(|id| {
-                let is_errno = get_node_text(&id, source) == "errno";
-                let is_end = end_ptr.is_some_and(|e| same_lvalue(&id, &e, source));
-                (is_errno || is_end) && inside_test(&id, source)
-            });
+        return strto_result_is_tested(store, call, &body, source);
     }
 
-    let unsigned = stored_as_unsigned(store, target, source);
-    let requested = requested_count(call, source);
+    let until = next_write(&body, store, target, after, source).unwrap_or(usize::MAX);
+    let in_window = |n: &&Node| n.start_byte() >= after && n.start_byte() < until;
     // For a result that is unusable when it signals failure -- a null
     // pointer, a negative length, `(T)-1` -- the test has to come before the
     // value is first used: `p = malloc(n); memset(p, 0, n); if (!p)` tests a
@@ -170,28 +181,213 @@ fn tested_from(
         signal,
         ErrorSignal::Null | ErrorSignal::Negative | ErrorSignal::MinusOne
     );
-    for occ in candidate_occurrences(&body, target, source)
-        .into_iter()
-        .filter(in_window)
-    {
-        if inside_assert(&occ, source) || in_exclusive_branches(store, &occ) {
+    let occurrences = candidate_occurrences(&body, target, source);
+    for occ in occurrences.iter().filter(in_window) {
+        if inside_assert(occ, source) || in_exclusive_branches(store, occ) {
             continue;
         }
-        if occurrence_tests(&occ, signal, unsigned, requested.as_deref(), source) {
+        if judge(occ) {
             return true;
         }
         if hops > 0 {
-            if let Some((copy_store, copy_target)) = copy_destination(&occ) {
-                if tested_from(&copy_store, &copy_target, call, signal, source, hops - 1) {
+            if let Some((copy_store, copy_target)) = copy_destination(occ) {
+                if tested_from(&copy_store, &copy_target, call, cx, hops - 1) {
                     return true;
                 }
             }
         }
         // A comparison that does not look for the error value is still a
         // test, not a use: `t != (time_t)(l_timet)t || t == (time_t)(-1)`
-        // reaches its real check a conjunct later.
-        if test_first && !inside_test(&occ, source) && !is_plain_copy(&occ) {
+        // reaches its real check a conjunct later. Anything that reads
+        // through the value first is a use: `p->len > 0`, `strcmp(p, s)`.
+        if test_first && !is_test_operand(occ) && !is_plain_copy(occ) {
             return false;
+        }
+    }
+    // A store in a loop's body or `for` update is followed by the loop's
+    // condition, which sits before it in source order:
+    // `for (c = fgetc(f); c != EOF; c = fgetc(f))`, or a priming read
+    // `l = fgets(...)` at the bottom of `while (l != NULL) { ... }`.
+    if let Some((condition, region_end)) = loop_condition_after(store) {
+        if until >= region_end {
+            return occurrences
+                .iter()
+                .filter(|o| within(&condition, o) && !inside_assert(o, source))
+                .any(judge);
+        }
+    }
+    false
+}
+
+/// Whether `inner` lies inside `outer`'s byte span.
+fn within(outer: &Node, inner: &Node) -> bool {
+    outer.start_byte() <= inner.start_byte() && inner.end_byte() <= outer.end_byte()
+}
+
+/// The condition of the nearest `while`/`for` loop whose body or `for`
+/// update holds `store`, and the end of the stretch that runs between the
+/// store and that condition: the rest of the body, or nothing for an
+/// update. `None` when `store` is in no such position.
+fn loop_condition_after<'a>(store: &Node<'a>) -> Option<(Node<'a>, usize)> {
+    let mut current = *store;
+    while let Some(parent) = current.parent() {
+        match parent.kind() {
+            "while_statement" | "for_statement" => {
+                let is = |field: &str| {
+                    parent
+                        .child_by_field_name(field)
+                        .is_some_and(|n| n.id() == current.id())
+                };
+                let region_end = if is("body") {
+                    current.end_byte()
+                } else if parent.kind() == "for_statement" && is("update") {
+                    store.end_byte()
+                } else {
+                    return None;
+                };
+                return Some((parent.child_by_field_name("condition")?, region_end));
+            }
+            "function_definition" => return None,
+            _ => current = parent,
+        }
+    }
+    None
+}
+
+/// For the `strto*` family: whether `errno`, or the end pointer passed as
+/// `&end`, is tested after `store` and before a later `errno = ...` or a
+/// later call handed the same end pointer overwrites what this call left
+/// there.
+fn strto_result_is_tested(store: &Node, call: &Node, body: &Node, source: &str) -> bool {
+    let after = store.end_byte();
+    let end_ptr = end_pointer_argument(call);
+    let errno_reset = query::find_descendants_of_kind(*body, "assignment_expression")
+        .into_iter()
+        .filter(|a| {
+            a.child_by_field_name("left")
+                .is_some_and(|l| get_node_text(&strip_parens(l), source) == "errno")
+        })
+        .map(|a| a.start_byte());
+    let end_reused = query::find_descendants_of_kind(*body, "call_expression")
+        .into_iter()
+        .filter(|c| {
+            end_ptr.is_some_and(|e| {
+                end_pointer_argument(c).is_some_and(|x| same_lvalue(&x, &e, source))
+            })
+        })
+        .map(|c| c.start_byte());
+    let until = errno_reset
+        .chain(end_reused)
+        .filter(|&start| start >= after)
+        .min()
+        .unwrap_or(usize::MAX);
+    query::find_descendants_of_kind(*body, "identifier")
+        .into_iter()
+        .filter(|id| id.start_byte() >= after && id.start_byte() < until)
+        .filter(|id| !in_exclusive_branches(store, id))
+        .any(|id| {
+            let is_errno = get_node_text(&id, source) == "errno";
+            let is_end = end_ptr.is_some_and(|e| same_lvalue(&id, &e, source));
+            (is_errno || is_end) && inside_test(&id, source)
+        })
+}
+
+/// Whether `occ` is passed whole to a function-like macro whose expansion
+/// tests it: `REQUIRE(p)` for `#define REQUIRE(x) do { if (!(x)) die(); }
+/// while (0)`. The argument is replaced by a placeholder, the invocation
+/// expanded, and the placeholder judged in the expansion as `occ` would be
+/// judged in place.
+fn macro_argument_tests(occ: &Node, cx: &Cx, unsigned: bool, requested: Option<&str>) -> bool {
+    const PLACEHOLDER: &str = "__sqc_stored_result__";
+    let mut current = *occ;
+    while let Some(parent) = current.parent() {
+        if !matches!(
+            parent.kind(),
+            "parenthesized_expression" | "cast_expression"
+        ) {
+            break;
+        }
+        current = parent;
+    }
+    let Some(args) = current.parent().filter(|a| a.kind() == "argument_list") else {
+        return false;
+    };
+    let Some(callee) = args
+        .parent()
+        .and_then(|c| c.child_by_field_name("function"))
+        .filter(|f| f.kind() == "identifier")
+    else {
+        return false;
+    };
+    let name = get_node_text(&callee, cx.source);
+    if !cx.macros.contains_key(name) {
+        return false;
+    }
+    let mut cursor = args.walk();
+    let actuals: Vec<String> = args
+        .named_children(&mut cursor)
+        .filter(|a| a.kind() != "comment")
+        .map(|a| {
+            if a.id() == current.id() {
+                PLACEHOLDER.to_string()
+            } else {
+                get_node_text(&a, cx.source).to_string()
+            }
+        })
+        .collect();
+    if !actuals.iter().any(|a| a == PLACEHOLDER) {
+        return false;
+    }
+    let Some(expanded) = macro_expand::expand_invocation(cx.macros, name, &actuals) else {
+        return false;
+    };
+    let text = format!("void __sqc_expansion(void) {{ {expanded}; }}");
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&crate::parser::c_language()).is_err() {
+        return false;
+    }
+    let Some(tree) = parser.parse(&text, None) else {
+        return false;
+    };
+    query::find_descendants_of_kind(tree.root_node(), "identifier")
+        .into_iter()
+        .filter(|id| get_node_text(id, &text) == PLACEHOLDER)
+        .any(|id| occurrence_tests(&id, cx.signal, unsigned, requested, &text))
+}
+
+/// Whether `occ` is itself an operand of a test, through parentheses and
+/// casts only: compared, negated, joined by `&&`/`||`, or a controlling
+/// expression. `p->len > 0` and `strcmp(p, s) == 0` read through `p` on the
+/// way and are uses of it, not tests.
+fn is_test_operand(occ: &Node) -> bool {
+    let mut current = *occ;
+    while let Some(parent) = current.parent() {
+        match parent.kind() {
+            "parenthesized_expression" | "cast_expression" => current = parent,
+            "binary_expression" => {
+                return parent.child_by_field_name("operator").is_some_and(|o| {
+                    matches!(
+                        o.kind(),
+                        "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||"
+                    )
+                });
+            }
+            "unary_expression" => {
+                return parent
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "!");
+            }
+            "if_statement"
+            | "while_statement"
+            | "do_statement"
+            | "for_statement"
+            | "switch_statement"
+            | "conditional_expression" => {
+                return parent
+                    .child_by_field_name("condition")
+                    .is_some_and(|c| c.id() == current.id());
+            }
+            _ => return false,
         }
     }
     false
@@ -489,7 +685,13 @@ fn occurrence_tests(
                 let controls = parent
                     .child_by_field_name("condition")
                     .is_some_and(|c| c.id() == current.id());
-                return controls && signal != ErrorSignal::Null;
+                return controls
+                    && match signal {
+                        ErrorSignal::Null => false,
+                        // `switch (c)` sees EOF only through a case for it.
+                        ErrorSignal::Eof => switch_has_eof_case(&parent, source),
+                        _ => true,
+                    };
             }
             _ => return false,
         }
@@ -579,18 +781,36 @@ fn comparison_counts(
         && (o == "0" || is_negative_one(&o))
         && matches!(
             signal,
-            ErrorSignal::MinusOne | ErrorSignal::Negative | ErrorSignal::Eof | ErrorSignal::NonZero
+            ErrorSignal::MinusOne
+                | ErrorSignal::Negative
+                | ErrorSignal::Eof
+                | ErrorSignal::Conversions
+                | ErrorSignal::NonZero
         )
     {
         return false;
     }
     match signal {
         ErrorSignal::Null => equality && is_null_constant(&o),
-        ErrorSignal::NonZero => o == "0" || is_negative_one(&o),
-        // `== 0` misses both EOF and a negative result (the incorrect checks
+        // Failure is nonzero and, for `fclose`/`fflush`, EOF: an equality
+        // with 0 or a negative constant, or an ordering that puts the
+        // negative values on the failing side (`r < 0`, `r >= 0`). `r > 0`
+        // never sees EOF.
+        ErrorSignal::NonZero => {
+            if equality {
+                o == "0" || is_negative_one(&o)
+            } else {
+                matches!((op, o.as_str()), ("<", "0") | (">=", "0"))
+                    || (is_negative_one(&o) && matches!(op, "<=" | ">"))
+            }
+        }
+        // EOF is seen by an ordering test or an equality with EOF or another
+        // negative constant; `c == '\n'` and `c != 0` do not see it.
+        ErrorSignal::Eof => !equality || is_negative_constant(&o) || o == "WEOF",
+        // `== 0` misses both EOF and a short count (the incorrect checks
         // ERR33-C's CWE-253 half reports); any other comparison reads the
         // value's range or its expected count.
-        ErrorSignal::Eof => !(equality && o == "0"),
+        ErrorSignal::Conversions => !(equality && o == "0"),
         // Only a comparison that can see a negative value: any ordering
         // test, or equality with a negative constant. `n != len` against a
         // length compares the result with another quantity and does not.
@@ -628,7 +848,7 @@ fn constant_text(other: &Node, source: &str) -> String {
                 Some(v) => n = strip_parens(v),
                 None => break,
             },
-            "call_expression" => match typedef_cast_operand(&n) {
+            "call_expression" => match typedef_cast_operand(&n, source) {
                 Some(v) => n = strip_parens(v),
                 None => break,
             },
@@ -639,7 +859,8 @@ fn constant_text(other: &Node, source: &str) -> String {
                     .is_some_and(|o| o.kind() == "-")
                     && n.child_by_field_name("left").is_some_and(|l| {
                         l.kind() == "parenthesized_expression"
-                            && l.named_child(0).is_some_and(|i| i.kind() == "identifier")
+                            && l.named_child(0)
+                                .is_some_and(|i| names_no_object(&i, source))
                     }) =>
             {
                 return n
@@ -655,10 +876,12 @@ fn constant_text(other: &Node, source: &str) -> String {
 
 /// The operand of `(T)(x)` misparsed as a call: a parenthesized lone
 /// identifier as the callee, and exactly one argument.
-fn typedef_cast_operand<'a>(call: &Node<'a>) -> Option<Node<'a>> {
+fn typedef_cast_operand<'a>(call: &Node<'a>, source: &str) -> Option<Node<'a>> {
     let callee = call.child_by_field_name("function")?;
     if callee.kind() != "parenthesized_expression"
-        || callee.named_child(0).map(|c| c.kind()) != Some("identifier")
+        || !callee
+            .named_child(0)
+            .is_some_and(|c| names_no_object(&c, source))
     {
         return None;
     }
@@ -672,6 +895,42 @@ fn typedef_cast_operand<'a>(call: &Node<'a>) -> Option<Node<'a>> {
         [only] => Some(*only),
         _ => None,
     }
+}
+
+/// Whether `n` is an identifier that no declaration in view binds as an
+/// object, so `(n)` in front of an operand can be the cast to a type name
+/// the parser does not know: `(time_t) -1` is a cast, `(len) - 1` with a
+/// local `len` is a subtraction. A type name declared by `typedef` is not
+/// an object declaration and does not resolve.
+fn names_no_object(n: &Node, source: &str) -> bool {
+    n.kind() == "identifier"
+        && resolve_identifier_declarator(n, get_node_text(n, source), source).is_none()
+}
+
+/// Whether a `case` of `switch_node` (its own, not a nested switch's) is
+/// labelled EOF or a negative constant.
+fn switch_has_eof_case(switch_node: &Node, source: &str) -> bool {
+    query::find_descendants_of_kind(*switch_node, "case_statement")
+        .into_iter()
+        .filter(|c| {
+            let mut p = c.parent();
+            while let Some(n) = p {
+                if n.kind() == "switch_statement" {
+                    return n.id() == switch_node.id();
+                }
+                p = n.parent();
+            }
+            false
+        })
+        .filter_map(|c| c.child_by_field_name("value"))
+        .any(|v| {
+            let o = constant_text(&v, source);
+            is_negative_constant(&o) || o == "WEOF"
+        })
+}
+
+fn is_negative_constant(text: &str) -> bool {
+    is_negative_one(text) || (text.starts_with('-') && is_integer_literal(text))
 }
 
 fn is_integer_literal(text: &str) -> bool {
@@ -836,7 +1095,8 @@ mod tests {
         };
         let name = get_node_text(&call.child_by_field_name("function").unwrap(), code);
         let signal = error_signal_for(name).unwrap_or(ErrorSignal::Any);
-        stored_result_is_tested(&store, &target, &call, signal, code)
+        let macros = macro_expand::collect_function_macros(&root, code);
+        stored_result_is_tested(&store, &target, &call, signal, code, &macros)
     }
 
     #[test]
