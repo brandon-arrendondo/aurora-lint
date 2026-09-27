@@ -168,6 +168,356 @@ pub fn collect_function_macro_alternatives(source: &str) -> HashMap<String, Vec<
     out
 }
 
+/// One preprocessor arm's definition of a function-like macro, including the
+/// shapes the expansion tables skip: variadic parameter lists and bodies
+/// that use `#`/`##`. A question about how often a macro evaluates an
+/// argument must see those arms too, since `#define LOG(...)` in a release
+/// branch is exactly the arm that drops the argument.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacroArm {
+    /// Named parameters in order, not counting the variadic one.
+    pub params: Vec<String>,
+    /// When the macro is variadic: the position its variadic arguments start
+    /// at, and how the body spells them (`__VA_ARGS__`, or `args` for the
+    /// GNU `args...` form).
+    pub variadic: Option<(usize, String)>,
+    /// Replacement-list text, comments removed.
+    pub body: String,
+}
+
+impl From<&FunctionMacro> for MacroArm {
+    fn from(m: &FunctionMacro) -> Self {
+        Self {
+            params: m.params.clone(),
+            variadic: None,
+            body: m.body.clone(),
+        }
+    }
+}
+
+/// How many times a macro arm's expansion evaluates one argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArgEvaluation {
+    /// Never: the parameter is absent, or used only as a `#`/`##` operand
+    /// or inside an operand C11 leaves unevaluated (`sizeof`, `_Alignof`,
+    /// `typeof`, a `_Generic` controlling expression).
+    Never,
+    /// Exactly once, on every path through the expansion.
+    Once,
+    /// More than once, or a number of times that depends on a condition
+    /// (a `?:`/`&&`/`||` operand, an `if`/`else` branch, a loop).
+    Unpredictable,
+}
+
+/// Every arm's definition of every function-like macro in `source`, one per
+/// preprocessor branch, variadic and `#`/`##` arms included (compare
+/// [`collect_function_macro_alternatives`], which skips them).
+pub fn collect_function_macro_arms(source: &str) -> HashMap<String, Vec<MacroArm>> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut out: HashMap<String, Vec<MacroArm>> = HashMap::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let (logical, next) = join_continuation(&lines, i);
+        i = next;
+        if let Some((name, arm)) = parse_define_arm(&logical) {
+            let arms = out.entry(name).or_default();
+            if !arms.contains(&arm) {
+                arms.push(arm);
+            }
+        }
+    }
+    out
+}
+
+/// Parse one logical line as a function-like `#define`, keeping variadic
+/// and `#`/`##` definitions.
+fn parse_define_arm(line: &str) -> Option<(String, MacroArm)> {
+    let s = line.trim_start().strip_prefix('#')?.trim_start();
+    let s = s.strip_prefix("define")?;
+    if !s.starts_with(|c: char| c.is_whitespace()) {
+        return None;
+    }
+    let chars: Vec<char> = s.trim_start().chars().collect();
+    if chars.is_empty() || !is_ident_start(chars[0]) {
+        return None;
+    }
+    let mut k = 0;
+    while k < chars.len() && is_ident_char(chars[k]) {
+        k += 1;
+    }
+    let name: String = chars[..k].iter().collect();
+    if chars.get(k) != Some(&'(') {
+        return None;
+    }
+    let close = k + chars[k..].iter().position(|&c| c == ')')?;
+    let list: String = chars[k + 1..close].iter().collect();
+    let mut params = Vec::new();
+    let mut variadic = None;
+    for p in list.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        if let Some(named) = p.strip_suffix("...") {
+            let spelling = match named.trim() {
+                "" => "__VA_ARGS__".to_string(),
+                n => n.to_string(),
+            };
+            variadic = Some((params.len(), spelling));
+        } else {
+            params.push(p.to_string());
+        }
+    }
+    let body_raw: String = chars[close + 1..].iter().collect();
+    let body = strip_comments(&body_raw).trim().to_string();
+    Some((
+        name,
+        MacroArm {
+            params,
+            variadic,
+            body,
+        },
+    ))
+}
+
+/// Operators whose operand C11 does not evaluate (6.5.3.4p2, 6.7.2.5 in C23
+/// for `typeof`), plus their GNU spellings. A VLA operand of `sizeof` is the
+/// one exception; a macro parameter used as one is not worth modelling.
+const UNEVALUATED_OPERATORS: &[&str] = &[
+    "sizeof",
+    "_Alignof",
+    "alignof",
+    "__alignof__",
+    "__alignof",
+    "typeof",
+    "__typeof__",
+    "__typeof",
+    "typeof_unqual",
+    "__typeof_unqual__",
+];
+
+/// One preprocessing token of a macro body, by position in its characters.
+struct BodyToken {
+    text: String,
+    start: usize,
+}
+
+/// Split a replacement list into identifiers, pp-numbers and punctuators,
+/// with string and character literals dropped (a parameter spelled inside a
+/// literal is not a use of it).
+fn tokenize_body(chars: &[char]) -> Vec<BodyToken> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c.is_whitespace() {
+            i += 1;
+        } else if c == '"' || c == '\'' {
+            i += 1;
+            while i < chars.len() && chars[i] != c {
+                if chars[i] == '\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            i += 1;
+        } else if is_ident_start(c) || c.is_ascii_digit() {
+            let start = i;
+            while i < chars.len() && (is_ident_char(chars[i]) || chars[i] == '.') {
+                i += 1;
+            }
+            out.push(BodyToken {
+                text: chars[start..i].iter().collect(),
+                start,
+            });
+        } else {
+            let two: String = chars[i..(i + 2).min(chars.len())].iter().collect();
+            let len = if matches!(two.as_str(), "##" | "&&" | "||" | "++" | "--" | "->") {
+                2
+            } else {
+                1
+            };
+            out.push(BodyToken {
+                text: chars[i..i + len].iter().collect(),
+                start: i,
+            });
+            i += len;
+        }
+    }
+    out
+}
+
+/// Index of the token closing the bracket opened at `open`.
+fn matching_close(tokens: &[BodyToken], open: usize) -> usize {
+    let mut depth = 0i32;
+    for (j, t) in tokens.iter().enumerate().skip(open) {
+        match t.text.as_str() {
+            "(" | "[" | "{" => depth += 1,
+            ")" | "]" | "}" => {
+                depth -= 1;
+                if depth == 0 {
+                    return j;
+                }
+            }
+            _ => {}
+        }
+    }
+    tokens.len().saturating_sub(1)
+}
+
+/// How many times `arm` evaluates the argument at position `arg` (PRE31-C's
+/// question: an unsafe macro evaluates one "more than once or not at all").
+/// An argument past the arm's arity, with no variadic parameter to absorb
+/// it, cannot be judged and comes back [`ArgEvaluation::Unpredictable`].
+pub fn argument_evaluation(arm: &MacroArm, arg: usize) -> ArgEvaluation {
+    let target = match &arm.variadic {
+        Some((at, spelling)) if arg >= *at => spelling.as_str(),
+        _ => match arm.params.get(arg) {
+            Some(p) => p.as_str(),
+            None => return ArgEvaluation::Unpredictable,
+        },
+    };
+    let chars: Vec<char> = arm.body.chars().collect();
+    let governed = conditional_regions(&chars);
+    let tokens = tokenize_body(&chars);
+    let n = tokens.len();
+
+    // Tokens C11 does not evaluate, and tokens a loop may evaluate
+    // repeatedly (a `while`/`for` header; `while (0)` holds no parameter).
+    let mut unevaluated = vec![false; n];
+    let mut looped = vec![false; n];
+    for j in 0..n {
+        let next_is_open = tokens.get(j + 1).is_some_and(|t| t.text == "(");
+        let word = tokens[j].text.as_str();
+        if UNEVALUATED_OPERATORS.contains(&word) {
+            if next_is_open {
+                let close = matching_close(&tokens, j + 1);
+                unevaluated[j + 1..=close]
+                    .iter_mut()
+                    .for_each(|u| *u = true);
+            } else if j + 1 < n {
+                unevaluated[j + 1] = true;
+            }
+        } else if word == "_Generic" && next_is_open {
+            // The controlling expression runs to the first top-level comma.
+            let close = matching_close(&tokens, j + 1);
+            let mut depth = 0i32;
+            for k in j + 2..close {
+                match tokens[k].text.as_str() {
+                    "(" | "[" | "{" => depth += 1,
+                    ")" | "]" | "}" => depth -= 1,
+                    "," if depth == 0 => break,
+                    _ => {}
+                }
+                unevaluated[k] = true;
+            }
+        } else if matches!(word, "while" | "for") && next_is_open {
+            let close = matching_close(&tokens, j + 1);
+            looped[j + 1..=close].iter_mut().for_each(|l| *l = true);
+        }
+    }
+
+    // Walk the tokens tracking, per bracket level, whether the current
+    // position is a conditionally evaluated operand: right of `&&`/`||`, or
+    // an arm of `?:`. A `,` or `;` at the same level starts a new operand.
+    struct Level {
+        inherited: bool,
+        conditional: bool,
+        saw_question: bool,
+    }
+    let mut levels = vec![Level {
+        inherited: false,
+        conditional: false,
+        saw_question: false,
+    }];
+    let (mut evaluations, mut conditional) = (0usize, false);
+    for j in 0..n {
+        let nested = levels.len() > 1;
+        let top = levels
+            .last_mut()
+            .expect("the outermost level is never popped");
+        match tokens[j].text.as_str() {
+            "(" | "[" | "{" => {
+                let c = top.conditional;
+                levels.push(Level {
+                    inherited: c,
+                    conditional: c,
+                    saw_question: false,
+                });
+            }
+            ")" | "]" | "}" if nested => {
+                levels.pop();
+            }
+            "?" => {
+                top.conditional = true;
+                top.saw_question = true;
+            }
+            ":" if top.saw_question => top.conditional = true,
+            "&&" | "||" => top.conditional = true,
+            "," | ";" => {
+                top.conditional = top.inherited;
+                top.saw_question = false;
+            }
+            t if t == target => {
+                let stringized = j > 0 && tokens[j - 1].text == "#";
+                let pasted = (j > 0 && tokens[j - 1].text == "##")
+                    || tokens.get(j + 1).is_some_and(|t| t.text == "##");
+                if !(stringized || pasted || unevaluated[j]) {
+                    evaluations += 1;
+                    conditional |= top.conditional || governed[tokens[j].start] || looped[j];
+                }
+            }
+            _ => {}
+        }
+    }
+    match (evaluations, conditional) {
+        (0, _) => ArgEvaluation::Never,
+        (1, false) => ArgEvaluation::Once,
+        _ => ArgEvaluation::Unpredictable,
+    }
+}
+
+/// What a macro arm's body does by itself, apart from its parameters: whether
+/// it writes (`=`, a compound assignment, `++`/`--`) and which names it calls
+/// (`name(`, not a parameter and not an unevaluated operator). Lets a rule
+/// judge a macro invoked inside another macro's argument, where the body is
+/// the only definition there is.
+pub fn macro_body_effects(arm: &MacroArm) -> (bool, Vec<String>) {
+    let chars: Vec<char> = arm.body.chars().collect();
+    let tokens = tokenize_body(&chars);
+    let mut writes = false;
+    let mut callees = Vec::new();
+    for (j, t) in tokens.iter().enumerate() {
+        let next = tokens.get(j + 1).map(|t| t.text.as_str());
+        match t.text.as_str() {
+            "++" | "--" => writes = true,
+            "=" => {
+                // `==`, `<=`, `>=`, `!=` tokenize as two single characters;
+                // `<<=`/`>>=` (a write) as three.
+                let glued = |k: usize| tokens[k].start + 1 == tokens[k + 1].start;
+                let prev = j
+                    .checked_sub(1)
+                    .filter(|&p| glued(p))
+                    .map(|p| tokens[p].text.as_str());
+                let shift = j >= 2
+                    && glued(j - 2)
+                    && prev.is_some_and(|p| matches!(p, "<" | ">") && tokens[j - 2].text == p);
+                let comparison = matches!(prev, Some("=" | "<" | ">" | "!")) && !shift;
+                let equality_next = next == Some("=") && glued(j);
+                if !comparison && !equality_next {
+                    writes = true;
+                }
+            }
+            w if next == Some("(")
+                && is_ident_start(w.chars().next().unwrap_or(' '))
+                && !UNEVALUATED_OPERATORS.contains(&w)
+                && !matches!(w, "if" | "while" | "for" | "switch" | "return" | "_Generic")
+                && !arm.params.iter().any(|p| p == w) =>
+            {
+                callees.push(w.to_string());
+            }
+            _ => {}
+        }
+    }
+    (writes, callees)
+}
+
 /// Add the name of every function-like `#define` in `source` to `out`, in
 /// every preprocessor branch, including the ones the expansion tables skip
 /// (variadic, `#`/`##`).

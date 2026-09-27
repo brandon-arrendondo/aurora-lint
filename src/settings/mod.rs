@@ -186,6 +186,25 @@ pub static OPTIONS: &[OptionSpec] = &[
                 included, is proof under neither policy.",
     },
     OptionSpec {
+        name: "pre31_unknown_call_pure",
+        axis: Axis::Policy,
+        scope: Scope::RuleSpecific("PRE31-C"),
+        source: Source::Policy {
+            default: true,
+            strict: false,
+        },
+        oracle_tag: "call-side-effect-unproven",
+        summary: "PRE31-C: a call, in an argument an unsafe macro may evaluate other than once, \
+                  to a function with no definition in the scanned files and no library \
+                  contract is not treated as a side effect. A callee shown to have one is \
+                  reported either way.",
+        basis: "C11 5.1.2.3p2 (which CERT quotes) makes a call a side effect only when the \
+                function does one. cppcheck's assertWithSideEffect and Polyspace's MISRA C:2012 \
+                Rule 13.5 flag only callees they can show are impure. clang-tidy's \
+                bugprone-assert-side-effect ignores calls by default. PC-lint and Parasoft's \
+                CERT_C-PRE31-c count every call, as the strict policy does.",
+    },
+    OptionSpec {
         name: "free_null_is_noop",
         axis: Axis::Environment,
         scope: Scope::Contract,
@@ -217,6 +236,23 @@ pub static OPTIONS: &[OptionSpec] = &[
                 cross-file summaries built by the prescan (a parameter's null state after \
                 `if (!p) exit(1);`, and whether a function never returns) still credit \
                 these calls whatever this option says.",
+    },
+    OptionSpec {
+        name: "stdlib_call_effects",
+        axis: Axis::Environment,
+        scope: Scope::Contract,
+        source: Source::Library(CONFORMING_LIBCS),
+        oracle_tag: "contract:stdlib_call_effects",
+        summary: "The ISO C and POSIX functions the tool lists as free of side effects \
+                  (strlen, memcmp, isdigit, fabs, ...) have none, and every other standard \
+                  function it knows has one (it sets errno, touches a stream, allocates, or \
+                  keeps hidden state). Withdrawn, a library call is a call to an unknown \
+                  function.",
+        basis: "C11 7.24 and 7.4: memcmp, strcmp, strncmp, strcoll, memchr, strchr, \
+                strcspn, strpbrk, strrchr, strspn, strstr, strlen and the character \
+                classification and case mapping functions modify no object; 7.22.1.4p8 and 7.12.1 (strtol and math functions report \
+                errors through errno); CERT PRE31-C-EX1: \"even changing errno is a side \
+                effect\".",
     },
     OptionSpec {
         name: "main_argv_guarantees",
