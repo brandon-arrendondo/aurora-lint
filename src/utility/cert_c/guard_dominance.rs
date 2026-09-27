@@ -2014,13 +2014,20 @@ pub fn in_expression_branch_outside(step: &Node, target: &Node) -> bool {
 }
 
 /// One `#if`/`#ifdef` chain enclosing a step, as its arms' byte ranges in
-/// order (the first arm, each `#elif`, the `#else`). `complete` says the
-/// chain ends in an `#else`, so every configuration compiles one arm.
+/// order (the first arm, each `#elif`, the `#else`). `complete` says every
+/// configuration compiles one arm: the chain ends in an `#else`, or an arm
+/// is `#if 1`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreprocChoice {
     /// Each arm's `(start, end)` byte range, in source order.
     pub arms: Vec<(usize, usize)>,
-    /// The chain ends in an `#else`.
+    /// Per arm: no configuration compiles it, read off literal conditions
+    /// only -- its own condition is `0`, or an earlier arm's is a nonzero
+    /// literal. A condition naming a macro (`__cplusplus`, `_WIN32`) is
+    /// never dead here: which configurations exist is not this walk's to
+    /// assume (ADR-0010).
+    pub dead: Vec<bool>,
+    /// Every configuration compiles one arm.
     pub complete: bool,
 }
 
@@ -2074,7 +2081,7 @@ pub fn preproc_choices_outside(step: &Node, target: &Node, source: &str) -> Vec<
                 root = up;
             }
             if !crate::utility::cert_c::ast_utils::is_include_guard(&root, source) {
-                let choice = preproc_chain(&root);
+                let choice = preproc_chain(&root, source);
                 let own = choice
                     .arms
                     .iter()
@@ -2090,30 +2097,46 @@ pub fn preproc_choices_outside(step: &Node, target: &Node, source: &str) -> Vec<
     out
 }
 
-fn preproc_chain(root: &Node) -> PreprocChoice {
+fn preproc_chain(root: &Node, source: &str) -> PreprocChoice {
+    // A literal integer condition, looking through parentheses.
+    let literal = |cond: Node| -> Option<i64> {
+        let mut t = cond.utf8_text(source.as_bytes()).unwrap_or("").trim();
+        while let Some(inner) = t.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+            t = inner.trim();
+        }
+        t.trim_end_matches(['u', 'U', 'l', 'L']).parse::<i64>().ok()
+    };
     let mut arms = Vec::new();
+    let mut dead = Vec::new();
+    let mut taken = false;
     let mut node = *root;
     loop {
         if node.kind() == "preproc_else" {
             arms.push((node.start_byte(), node.end_byte()));
+            dead.push(taken);
             return PreprocChoice {
                 arms,
+                dead,
                 complete: true,
             };
         }
-        let head_end = node
-            .child_by_field_name("condition")
+        let condition = node.child_by_field_name("condition");
+        let head_end = condition
             .or_else(|| node.child_by_field_name("name"))
             .map_or(node.start_byte(), |c| c.end_byte());
         let alternative = node.child_by_field_name("alternative");
         let arm_end = alternative.map_or(node.end_byte(), |a| a.start_byte());
         arms.push((head_end, arm_end));
+        let value = condition.and_then(literal);
+        dead.push(taken || value == Some(0));
+        taken |= value.is_some_and(|v| v != 0);
         match alternative {
             Some(a) => node = a,
             None => {
                 return PreprocChoice {
                     arms,
-                    complete: false,
+                    dead,
+                    complete: taken,
                 }
             }
         }
@@ -2857,6 +2880,25 @@ mod tests {
         assert_eq!(got[0].arms.len(), 3);
         let step_at = src.find("step").unwrap();
         assert!(got[0].arms[1].0 <= step_at && step_at < got[0].arms[1].1);
+    }
+
+    #[test]
+    fn a_literal_condition_marks_the_arms_it_rules_out() {
+        let got = choices(
+            "void f(void) {\n#if 0\n    other();\n#else\n    step();\n#endif\n    target();\n}\n",
+        );
+        assert_eq!(got[0].dead, vec![true, false]);
+        let got = choices("void f(void) {\n#if 1\n    step();\n#endif\n    target();\n}\n");
+        assert!(
+            got[0].complete,
+            "#if 1 compiles its arm in every configuration"
+        );
+        let got = choices("void f(void) {\n#ifdef __cplusplus\n    other();\n#else\n    step();\n#endif\n    target();\n}\n");
+        assert_eq!(
+            got[0].dead,
+            vec![false, false],
+            "a macro condition is never dead here"
+        );
     }
 
     #[test]

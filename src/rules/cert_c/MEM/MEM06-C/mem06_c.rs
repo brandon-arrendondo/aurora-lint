@@ -575,15 +575,14 @@ impl Mem06C {
 
 /// Whether the guarantee `step` gives `bound` holds in every build
 /// configuration (ADR-0010): for each `#if` chain that compiles `step` but
-/// not necessarily `bound`, the chain has an `#else` and every live arm
-/// holds a call that `is_guard` accepts, that precedes `bound`, and whose
-/// own guarantee holds in every configuration of the chains nested inside
-/// that arm. So `#ifdef _WIN32 VirtualLock(..) #else mlock(..) #endif`
-/// covers the store, while an `#ifdef USE_MLOCK` with no `#else`, or an
-/// `#else` whose `mlock` sits under an inner `#ifdef HAVE_MLOCK`, leaves a
-/// build unprotected. An arm the file itself proves dead (`#if 0`, by
-/// `dead_code_ranges`' file-only evidence, never a platform assumption) is
-/// no configuration.
+/// not necessarily `bound`, every configuration compiles one of its arms
+/// (an `#else`, or an `#if 1`), and every live arm holds a call that
+/// `is_guard` accepts, that precedes `bound`, and whose own guarantee holds
+/// in every configuration of the chains nested inside that arm. So
+/// `#ifdef _WIN32 VirtualLock(..) #else mlock(..) #endif` covers the store,
+/// while an `#ifdef USE_MLOCK` with no `#else`, or an `#else` whose `mlock`
+/// sits under an inner `#ifdef HAVE_MLOCK`, leaves a build unprotected. An
+/// arm only a literal condition rules out (`#if 0`) is no configuration.
 fn in_every_configuration(
     step: &Node,
     bound: &Node,
@@ -596,19 +595,21 @@ fn in_every_configuration(
     if choices.is_empty() {
         return true;
     }
-    let dead: Vec<(usize, usize)> = lang_parsing_substrate::dead_code_ranges(source)
-        .into_iter()
-        .map(|r| (r.start_line, r.end_line))
-        .collect();
+    let memo = RefCell::new(HashMap::new());
     covered_within(
-        &choices, None, bound, calls, source, &dead, is_guard, precedes,
+        &choices, None, bound, calls, source, is_guard, precedes, &memo,
     )
 }
 
+/// `covered_within`'s answers, keyed by (guard start byte, arm range).
+type ArmMemo = RefCell<HashMap<(usize, (usize, usize)), bool>>;
+
 /// The recursive step of [`in_every_configuration`]: every chain in
-/// `choices` lying inside `within` (all of them when `None`) is complete and
-/// each of its live arms holds a guard covered by the chains nested inside
-/// that arm. Each level only looks strictly inside an arm, so it ends.
+/// `choices` lying inside `within` (all of them when `None`) compiles an arm
+/// in every configuration, and each live arm holds a guard covered by the
+/// chains nested inside that arm. Each level only looks strictly inside an
+/// arm, so it ends; `memo` keeps a (guard, arm) answer from being rederived
+/// by every outer arm that reaches it.
 #[allow(clippy::too_many_arguments)]
 fn covered_within(
     choices: &[PreprocChoice],
@@ -616,38 +617,39 @@ fn covered_within(
     bound: &Node,
     calls: &[Node],
     source: &str,
-    dead: &[(usize, usize)],
     is_guard: &dyn Fn(&Node) -> bool,
     precedes: &dyn Fn(&Node, &Node) -> bool,
+    memo: &ArmMemo,
 ) -> bool {
-    let line_of = |byte: usize| source[..byte.min(source.len())].matches('\n').count() + 1;
-    let arm_is_dead = |(s, e): (usize, usize)| {
-        let first = line_of(s) + 1;
-        let last = line_of(e.saturating_sub(1)).max(first);
-        dead.iter().any(|&(ds, de)| ds <= first && last <= de)
+    let guard_covers = |c: &Node, arm: (usize, usize)| {
+        let key = (c.start_byte(), arm);
+        if let Some(&v) = memo.borrow().get(&key) {
+            return v;
+        }
+        let v = is_guard(c)
+            && precedes(c, bound)
+            && covered_within(
+                &preproc_choices_outside(c, bound, source),
+                Some(arm),
+                bound,
+                calls,
+                source,
+                is_guard,
+                precedes,
+                memo,
+            );
+        memo.borrow_mut().insert(key, v);
+        v
     };
     choices
         .iter()
         .filter(|c| within.is_none_or(|(ws, we)| c.arms.iter().all(|&(s, e)| ws <= s && e <= we)))
         .all(|choice| {
             choice.complete
-                && choice.arms.iter().all(|&arm| {
-                    arm_is_dead(arm)
-                        || calls.iter().any(|c| {
-                            (arm.0..arm.1).contains(&c.start_byte())
-                                && is_guard(c)
-                                && precedes(c, bound)
-                                && covered_within(
-                                    &preproc_choices_outside(c, bound, source),
-                                    Some(arm),
-                                    bound,
-                                    calls,
-                                    source,
-                                    dead,
-                                    is_guard,
-                                    precedes,
-                                )
-                        })
+                && choice.arms.iter().zip(&choice.dead).all(|(&arm, &dead)| {
+                    dead || calls
+                        .iter()
+                        .any(|c| (arm.0..arm.1).contains(&c.start_byte()) && guard_covers(c, arm))
                 })
         })
 }
