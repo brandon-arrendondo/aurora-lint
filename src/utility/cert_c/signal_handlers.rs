@@ -90,9 +90,11 @@ pub struct HandlerRegistration {
 ///
 /// **Every registration, not the last one.** A `struct sigaction` whose
 /// `sa_handler` is assigned in two arms of an `#if` registers both
-/// handlers (ADR-0010: arms are alternatives). The binding is per struct
-/// variable, so two `sigaction` calls in one function don't share
-/// handlers.
+/// handlers (ADR-0010: arms are alternatives). A `sigaction` call sees the
+/// struct as it is at that call: a later straight-line `sa.sa_handler = g`
+/// overrides an earlier `f`, so one struct reused for two signals gives
+/// each call only the handler assigned for it, and two struct variables
+/// never share handlers.
 ///
 /// Macros: an object-like alias (`#define xsignal signal`) is followed, and
 /// so is a function-like macro whose body calls `signal`/`sigaction`/
@@ -564,11 +566,19 @@ impl<'a, 's> Collector<'a, 's> {
     /// The handler values, `SA_SIGINFO` and mask a `struct sigaction`
     /// variable carries into one `sigaction` call: its initializer, and every
     /// assignment in the enclosing function that comes before the call.
+    /// The struct state `sigaction(…, &var, …)` sees at `call`: the handler,
+    /// `SA_SIGINFO` flag and mask written to `var` earlier in the enclosing
+    /// function, minus every write a later one overrides on the way to the
+    /// call. A write is overridden by a later write of the same field that
+    /// reaches the call unconditionally (straight-line code: not inside an
+    /// `if`/`switch`/loop/`#if` arm the call is not also in), so reusing one
+    /// struct for two signals gives each call only its own handler. Writes in
+    /// alternative arms all survive (ADR-0010: arms are alternatives).
     fn sigaction_setup(&self, call: &Node<'a>, var: &str) -> SigactionSetup<'a> {
-        let mut setup = SigactionSetup::default();
         let scope =
             query::nearest_ancestor_of_kind(*call, "function_definition").unwrap_or(self.root);
         let end = call.start_byte();
+        let mut writes: Vec<StructWrite<'a>> = Vec::new();
 
         for init in query::find_descendants_of_kind(scope, "init_declarator") {
             if init.start_byte() >= end {
@@ -583,13 +593,10 @@ impl<'a, 's> Collector<'a, 's> {
             if get_identifier_from_declarator(&d, self.source) != var {
                 continue;
             }
-            for pair in query::find_descendants_of_kind(value, "initializer_pair") {
-                let field = designator_field(&pair, self.source);
-                let Some(v) = pair.child_by_field_name("value") else {
-                    continue;
-                };
-                self.apply_field(&mut setup, field.as_deref(), &v);
-            }
+            writes.push(StructWrite {
+                anchor: init,
+                effect: WriteEffect::Initializer(value),
+            });
         }
 
         for assign in query::find_descendants_of_kind(scope, "assignment_expression") {
@@ -602,9 +609,27 @@ impl<'a, 's> Collector<'a, 's> {
             ) else {
                 continue;
             };
-            if let Some(field) = member_of(&left, var, self.source) {
-                self.apply_field(&mut setup, Some(field), &right);
-            }
+            let Some(field) = member_of(&left, var, self.source) else {
+                continue;
+            };
+            let plain = assign
+                .child_by_field_name("operator")
+                .is_none_or(|op| get_node_text(&op, self.source) == "=");
+            let effect = match field {
+                "sa_handler" | "sa_sigaction" => WriteEffect::Handler {
+                    value: right,
+                    siginfo: field == "sa_sigaction",
+                },
+                "sa_flags" => WriteEffect::Flags {
+                    value: right,
+                    replaces: plain,
+                },
+                _ => continue,
+            };
+            writes.push(StructWrite {
+                anchor: assign,
+                effect,
+            });
         }
 
         for c in query::find_descendants_of_kind(scope, "call_expression") {
@@ -615,7 +640,7 @@ impl<'a, 's> Collector<'a, 's> {
                 continue;
             };
             let fname = get_node_text(&f, self.source);
-            if fname != "sigaddset" && fname != "sigfillset" {
+            if !matches!(fname, "sigaddset" | "sigfillset" | "sigemptyset") {
                 continue;
             }
             let a = call_args(&c);
@@ -633,10 +658,67 @@ impl<'a, 's> Collector<'a, 's> {
             if !mask_of_var {
                 continue;
             }
-            if fname == "sigfillset" {
-                setup.mask.push("*".to_string());
-            } else if let Some(sig) = a.get(1) {
-                setup.mask.push(self.text(sig));
+            let effect = match fname {
+                "sigemptyset" => WriteEffect::Mask(None),
+                "sigfillset" => WriteEffect::Mask(Some("*".to_string())),
+                _ => match a.get(1) {
+                    Some(sig) => WriteEffect::Mask(Some(self.text(sig))),
+                    None => continue,
+                },
+            };
+            writes.push(StructWrite { anchor: c, effect });
+        }
+
+        writes.sort_by_key(|w| w.anchor.start_byte());
+        let call_ancestors: HashSet<usize> = std::iter::successors(Some(*call), |n| n.parent())
+            .map(|n| n.id())
+            .collect();
+        let killers: Vec<&StructWrite<'a>> = writes
+            .iter()
+            .filter(|w| reaches_unconditionally(&w.anchor, &call_ancestors))
+            .collect();
+        let overridden = |w: &StructWrite<'a>, field: Field| {
+            killers
+                .iter()
+                .any(|k| k.anchor.start_byte() >= w.anchor.end_byte() && k.effect.replaces(field))
+        };
+
+        let mut setup = SigactionSetup::default();
+        for w in &writes {
+            match &w.effect {
+                WriteEffect::Initializer(value) => {
+                    for pair in query::find_descendants_of_kind(*value, "initializer_pair") {
+                        let field = designator_field(&pair, self.source);
+                        let Some(v) = pair.child_by_field_name("value") else {
+                            continue;
+                        };
+                        let f = match field.as_deref() {
+                            Some("sa_handler") | Some("sa_sigaction") => Field::Handler,
+                            Some("sa_flags") => Field::Flags,
+                            _ => continue,
+                        };
+                        if !overridden(w, f) {
+                            self.apply_field(&mut setup, field.as_deref(), &v);
+                        }
+                    }
+                }
+                WriteEffect::Handler { value, siginfo } => {
+                    if !overridden(w, Field::Handler) {
+                        setup.handlers.push(*value);
+                        setup.siginfo |= *siginfo;
+                    }
+                }
+                WriteEffect::Flags { value, .. } => {
+                    if !overridden(w, Field::Flags) && self.text(value).contains("SA_SIGINFO") {
+                        setup.siginfo = true;
+                    }
+                }
+                WriteEffect::Mask(Some(sig)) => {
+                    if !overridden(w, Field::Mask) {
+                        setup.mask.push(sig.clone());
+                    }
+                }
+                WriteEffect::Mask(None) => {}
             }
         }
         setup
@@ -712,6 +794,69 @@ struct SigactionSetup<'a> {
     handlers: Vec<Node<'a>>,
     siginfo: bool,
     mask: Vec<String>,
+}
+
+/// One write to a `struct sigaction` variable before a `sigaction` call.
+struct StructWrite<'a> {
+    /// The initializer, assignment or `sig*set` call that writes.
+    anchor: Node<'a>,
+    effect: WriteEffect<'a>,
+}
+
+enum WriteEffect<'a> {
+    /// `struct sigaction sa = { ... };`: every field, unnamed ones zeroed.
+    Initializer(Node<'a>),
+    /// `sa.sa_handler = v` / `sa.sa_sigaction = v` (one union).
+    Handler { value: Node<'a>, siginfo: bool },
+    /// `sa.sa_flags = v` (`replaces`) or `sa.sa_flags |= v`.
+    Flags { value: Node<'a>, replaces: bool },
+    /// `sigaddset`/`sigfillset` (`Some`) or `sigemptyset` (`None`).
+    Mask(Option<String>),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Field {
+    Handler,
+    Flags,
+    Mask,
+}
+
+impl WriteEffect<'_> {
+    /// Whether this write discards what an earlier write put in `field`.
+    fn replaces(&self, field: Field) -> bool {
+        match self {
+            WriteEffect::Initializer(_) => true,
+            WriteEffect::Handler { .. } => field == Field::Handler,
+            WriteEffect::Flags { replaces, .. } => *replaces && field == Field::Flags,
+            WriteEffect::Mask(None) => field == Field::Mask,
+            WriteEffect::Mask(Some(sig)) => sig == "*" && field == Field::Mask,
+        }
+    }
+}
+
+/// Whether `write` runs on every path that reaches the call whose ancestor
+/// ids are `call_ancestors`: between the write and the lowest ancestor it
+/// shares with the call there is only straight-line structure, no branch,
+/// loop or preprocessor arm.
+fn reaches_unconditionally(write: &Node, call_ancestors: &HashSet<usize>) -> bool {
+    let mut cur = write.parent();
+    while let Some(n) = cur {
+        if call_ancestors.contains(&n.id()) {
+            return true;
+        }
+        if !matches!(
+            n.kind(),
+            "expression_statement"
+                | "compound_statement"
+                | "comma_expression"
+                | "parenthesized_expression"
+                | "declaration"
+        ) {
+            return false;
+        }
+        cur = n.parent();
+    }
+    false
 }
 
 fn kind_of(api: Api, siginfo: bool) -> RegistrationKind {
@@ -919,6 +1064,44 @@ mod tests {
         assert_eq!(r[1].handler, "info");
         assert_eq!(r[1].signal.as_deref(), Some("SIGSEGV"));
         assert_eq!(r[1].kind, RegistrationKind::Sigaction { siginfo: true });
+    }
+
+    #[test]
+    fn a_reused_sigaction_struct_gives_each_call_its_own_handler() {
+        let src = "#include <signal.h>\nvoid term(int s) {}\nvoid segv(int s) {}\n\
+                   void f(void) { struct sigaction sa; sigemptyset(&sa.sa_mask);\n\
+                   sa.sa_handler = term; sigaction(SIGTERM, &sa, 0);\n\
+                   sa.sa_handler = segv; sigaction(SIGSEGV, &sa, 0);\n\
+                   sa.sa_handler = SIG_IGN; sigaction(SIGPIPE, &sa, 0); }\n";
+        assert_eq!(
+            handlers(src),
+            vec![
+                ("term".into(), Some("SIGTERM".into())),
+                ("segv".into(), Some("SIGSEGV".into()))
+            ]
+        );
+    }
+
+    #[test]
+    fn handlers_in_alternative_arms_both_reach_the_call() {
+        let src = "#include <signal.h>\nvoid a(int s) {}\nvoid b(int s) {}\nvoid c(int s) {}\n\
+                   void f(int x) { struct sigaction sa; sa.sa_handler = c;\n\
+                   #ifdef X\n sa.sa_handler = a;\n#else\n sa.sa_handler = b;\n#endif\n\
+                   sigaction(SIGINT, &sa, 0);\n\
+                   if (x) sa.sa_handler = c; sigaction(SIGTERM, &sa, 0); }\n";
+        assert_eq!(
+            handlers(src),
+            vec![
+                ("a".into(), Some("SIGINT".into())),
+                ("b".into(), Some("SIGINT".into())),
+                // Neither arm alone overrides `c`; an arm-complete override
+                // is not tracked, which keeps a superset.
+                ("c".into(), Some("SIGINT".into())),
+                ("a".into(), Some("SIGTERM".into())),
+                ("b".into(), Some("SIGTERM".into())),
+                ("c".into(), Some("SIGTERM".into()))
+            ]
+        );
     }
 
     #[test]

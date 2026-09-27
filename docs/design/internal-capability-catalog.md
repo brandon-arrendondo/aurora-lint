@@ -360,6 +360,31 @@ pointer-returning *prototype* shares with a function-pointer variable
 (`char *decc$getenv(const char *)` vs `char *(*l_getenv)(const char *)`) is
 told apart on the declarator one level in, not on the name.
 
+### `src/utility/cert_c/signal_handlers.rs`
+**Problem solved:** which functions a translation unit registers as signal
+or exit handlers, found from what `signal`/`sigaction`/`atexit`/
+`at_quick_exit` is handed rather than from a function's name or signature
+(ADR-0006). A handler argument counts only when it resolves to a function
+(directly, or through a file-scope function pointer's bindings);
+`SIG_IGN`/`SIG_DFL`/`NULL` and a local holding a saved disposition register
+nothing. An argument that binds to a parameter makes the enclosing function
+(or a function-like macro) a registration wrapper, and each call of it
+registers what it is passed. A `sigaction` call sees its struct as it is at
+that call: a later straight-line `sa.sa_handler = g` overrides `f`, while
+writes in alternative `if`/`#if` arms all count (ADR-0010).
+
+| Item | Signature | Description |
+|---|---|---|
+| `RegisteredHandlers::collect` | `(root: &Node, source: &str) -> RegisteredHandlers` | Every registration in the translation unit, in source order. |
+| `RegisteredHandlers::signal_handler_names` / `exit_handler_names` | `(&self) -> HashSet<String>` | Names registered for a signal, or with `atexit`/`at_quick_exit`. |
+| `RegisteredHandlers::of` | `(&self, handler: &str) -> impl Iterator<Item = &HandlerRegistration>` | Every registration of one handler. |
+| `HandlerRegistration` | struct | `handler`, `signal` (argument text, `None` for exit handlers), `kind` (`RegistrationKind`: `Signal`, `Sigaction { siginfo }`, `Atexit`, `AtQuickExit`), `mask` (`sigaddset` signals, `["*"]` for `sigfillset`), call-site and API-call positions, `via` (wrapper/macro name) and `defined_here`. |
+
+Per-file only: a handler registered through another translation unit's
+wrapper, or named only in another file, is out of reach. Used by SIG00-C,
+SIG01-C, SIG30-C, SIG31-C, SIG34-C, SIG35-C, ERR32-C, ENV32-C and
+`concurrency_roots`.
+
 ## Call-role classification (allocator / printf-family / scanf-family)
 
 ### `src/utility/cert_c/call_roles.rs`
@@ -1190,7 +1215,7 @@ macro-synthesized ones).
 | `function_summaries` | `ScopedTable<FunctionSummary>` | Cross-file function summaries (see above) — access via `context.get_function_summary(name)`. Scoped per file for names several files define `static` (see above). |
 | `call_graph` | `HashMap<String, HashSet<String>>` | Function name → set of functions it calls. |
 | `callers` | `HashMap<String, HashSet<String>>` | The inverse: function name → set of functions that call it. A scoped static caller is named by its (file, name) key; a scoped static callee is filed under its key (its own file's callers) and under the bare name (the union over every same-named static — deliberately over-approximate). Computed once at prescan; INT30/31/32-C, STR02-C, ENV03-C and ENV33-C read it. |
-| `concurrency_reachable` | `HashSet<String>` | Every function reachable over `call_graph` from a concurrency root: an ISR, a thread-spawn entry point, a `signal()` handler (`concurrency_roots::collect_concurrency_roots`), and every function whose caller set is open (`concurrency_roots::open_caller_set_roots`) except `main`. Code outside the scanned source calls an open function from whatever thread it likes, so "no thread root in the tree reaches it" proves nothing about it (ADR-0011); `main` is called once, at startup, before any thread the program creates (C11 5.1.2.2). Read by CON03-C and CON07-C as "may run concurrently". |
+| `concurrency_reachable` | `HashSet<String>` | Every function reachable over `call_graph` from a concurrency root: an ISR, a thread-spawn entry point, a registered signal handler (`signal`/`sigaction`, via `RegisteredHandlers`; `concurrency_roots::collect_concurrency_roots`), and every function whose caller set is open (`concurrency_roots::open_caller_set_roots`) except `main`. Code outside the scanned source calls an open function from whatever thread it likes, so "no thread root in the tree reaches it" proves nothing about it (ADR-0011); `main` is called once, at startup, before any thread the program creates (C11 5.1.2.2). Read by CON03-C and CON07-C as "may run concurrently". |
 | `scoped_names_by_file` | `HashMap<String, Arc<HashSet<String>>>` | Canonical file path → the names that file defines `static` while another scanned file does too. It is what `as_seen_from` scopes by; empty when no name is multiply defined. |
 | `macro_constants` | `HashMap<String, i64>` | `#define` constants collected across all scanned files. |
 | `macro_aliases` | `HashMap<String, String>` | `#define ALIAS identifier` function-name aliases (e.g. `SYSTEM` → `system`). |
