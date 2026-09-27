@@ -206,7 +206,26 @@ impl Mem06C {
             let bounds = if origin.initialized {
                 vec![origin.node]
             } else {
-                self.stores(&calls, &body, &origin, &copies, first_sink, source)
+                // A store on a path that leaves before any sink never puts
+                // the secret there: `if (m) { strcpy(p, "x"); return; }`.
+                let origin_sinks: Vec<&Node> = sinks
+                    .iter()
+                    .filter(|(call, _, object)| {
+                        call.start_byte() > origin.at && holds(*object, call)
+                    })
+                    .map(|(call, _, _)| call)
+                    .collect();
+                let graph = cfg
+                    .get_or_init(|| build_function_cfg(func, source))
+                    .as_ref();
+                let mut stores = self.stores(&calls, &body, &origin, &copies, first_sink, source);
+                if let Some(g) = graph {
+                    stores.retain(|s| origin_sinks.iter().any(|k| cfg_reaches(g, s, k)));
+                }
+                if stores.is_empty() {
+                    stores.push(*first_sink);
+                }
+                stores
             };
             // Every store must be covered: a lock on one arm does not protect
             // the secret another arm writes unlocked. Either kind of cover
@@ -547,22 +566,10 @@ impl Mem06C {
 /// entry to `target`'s block passes `step`'s block, or both sit in one block
 /// with `step` first. A node outside every block answers `false`.
 fn cfg_dominates(cfg: &FunctionCfg, step: &Node, target: &Node) -> bool {
-    let block_of = |pos: usize| {
-        cfg.blocks
-            .iter()
-            .flat_map(|b| {
-                b.statements
-                    .iter()
-                    .copied()
-                    .chain(b.condition_range)
-                    .filter(move |&(s, e)| s <= pos && pos < e)
-                    .map(move |(s, e)| (e - s, b.id))
-            })
-            .min()
-            .map(|(_, id)| id)
-    };
-    let (Some(from), Some(to)) = (block_of(step.start_byte()), block_of(target.start_byte()))
-    else {
+    let (Some(from), Some(to)) = (
+        block_of(cfg, step.start_byte()),
+        block_of(cfg, target.start_byte()),
+    ) else {
         return false;
     };
     if from == to {
@@ -580,6 +587,47 @@ fn cfg_dominates(cfg: &FunctionCfg, step: &Node, target: &Node) -> bool {
         queue.extend(cfg.successors(b).into_iter().map(|(n, _)| n));
     }
     true
+}
+
+/// The innermost CFG block holding byte `pos`, if any.
+fn block_of(cfg: &FunctionCfg, pos: usize) -> Option<usize> {
+    cfg.blocks
+        .iter()
+        .flat_map(|b| {
+            b.statements
+                .iter()
+                .copied()
+                .chain(b.condition_range)
+                .filter(move |&(s, e)| s <= pos && pos < e)
+                .map(move |(s, e)| (e - s, b.id))
+        })
+        .min()
+        .map(|(_, id)| id)
+}
+
+/// Whether some CFG path leads from `from` on to `to`. A node outside every
+/// block answers `true`: an unplaced store is kept, never dropped.
+fn cfg_reaches(cfg: &FunctionCfg, from: &Node, to: &Node) -> bool {
+    let (Some(a), Some(b)) = (
+        block_of(cfg, from.start_byte()),
+        block_of(cfg, to.start_byte()),
+    ) else {
+        return true;
+    };
+    if a == b && from.start_byte() < to.start_byte() {
+        return true;
+    }
+    let mut seen: HashSet<usize> = HashSet::new();
+    let mut queue: VecDeque<usize> = cfg.successors(a).into_iter().map(|(n, _)| n).collect();
+    while let Some(n) = queue.pop_front() {
+        if n == b {
+            return true;
+        }
+        if seen.insert(n) {
+            queue.extend(cfg.successors(n).into_iter().map(|(m, _)| m));
+        }
+    }
+    false
 }
 
 /// The variables that may hold `origin`'s block when `site` runs: the first
