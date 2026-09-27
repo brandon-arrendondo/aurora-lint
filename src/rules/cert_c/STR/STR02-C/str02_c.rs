@@ -126,6 +126,19 @@ const TAINT_PROPAGATORS: &[&str] = &[
     "wcsncpy", "wcscat", "wcsncat", "swprintf",
 ];
 
+/// A callee an alias can reach for this rule to report: a source of
+/// tainted data, a function that passes it on, or a command/query sink.
+fn accused_callee(name: &str) -> bool {
+    TAINT_SOURCES.contains(&name)
+        || TAINT_PROPAGATORS.contains(&name)
+        || matches!(
+            name,
+            "system" | "popen" | "sqlite3_exec" | "mysql_query" | "mysql_real_query" | "PQexec"
+        )
+        || name.starts_with("exec")
+        || name.starts_with("_exec")
+}
+
 /// The subset of `TAINT_PROPAGATORS` that *overwrite* dest from scratch
 /// (as opposed to `strcat`/`wcscat`-style append, which layers onto
 /// dest's existing content and so can't launder prior taint). When one of
@@ -148,6 +161,10 @@ pub struct Str02C {
     /// Those plus the file being scanned's own; set per file.
     static_macros: RefCell<HashSet<String>>,
     project_aliases: RefCell<Arc<HashMap<String, String>>>,
+    /// Every live target of each project alias
+    /// (`ProjectContext::macro_alias_alternatives`), for the names an alias
+    /// accuses through in some build.
+    project_alias_alternatives: RefCell<Arc<HashMap<String, Vec<String>>>>,
     current_aliases: RefCell<HashMap<String, String>>,
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// Reverse call graph: callee_name → set of caller names. Built from
@@ -166,6 +183,7 @@ impl Str02C {
             project_static_macros: RefCell::new(Arc::new(HashSet::new())),
             static_macros: RefCell::new(HashSet::new()),
             project_aliases: RefCell::new(Arc::new(HashMap::new())),
+            project_alias_alternatives: RefCell::new(Arc::new(HashMap::new())),
             current_aliases: RefCell::new(HashMap::new()),
             function_summaries: RefCell::default(),
             callers: RefCell::default(),
@@ -1204,6 +1222,7 @@ impl CertRule for Str02C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_static_macros.borrow_mut() = context.static_macro_names.clone();
         *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
+        *self.project_alias_alternatives.borrow_mut() = context.macro_alias_alternatives.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
 
         // Invert the forward call_graph (caller → callees) into a reverse
@@ -1215,8 +1234,17 @@ impl CertRule for Str02C {
         *self.static_macros.borrow_mut() =
             static_macro_names_in_scope(source, &self.project_static_macros.borrow());
         // Merge project-level aliases with per-file aliases (per-file wins)
-        *self.current_aliases.borrow_mut() =
+        let mut aliases =
             const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
+        // An alias defined more than one way reaches the callee this rule
+        // looks for if any live definition does (ADR-0010 D1).
+        let alternatives = const_eval::merged_macro_alias_alternatives(
+            &self.project_alias_alternatives.borrow(),
+            node,
+            source,
+        );
+        const_eval::with_accusing_alias_targets(&mut aliases, &alternatives, accused_callee);
+        *self.current_aliases.borrow_mut() = aliases;
         *self.literal_only_params.borrow_mut() =
             self.collect_literal_only_static_params(node, source);
 

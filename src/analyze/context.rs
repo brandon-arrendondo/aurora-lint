@@ -63,6 +63,12 @@ pub struct ProjectContext {
     /// Macro aliases: `#define ALIAS identifier` patterns (e.g., `SYSTEM` → `system`).
     /// Used by rules to resolve function calls through macro indirection.
     pub macro_aliases: Arc<HashMap<String, String>>,
+    /// Every live target of each `#define ALIAS identifier` across the
+    /// scanned files; `macro_aliases` holds only the names with one target.
+    /// Read through `const_eval::resolve_macro_alias_where` by a rule the
+    /// alias accuses through.
+    #[serde(default)]
+    pub macro_alias_alternatives: Arc<HashMap<String, Vec<String>>>,
     /// Struct field types: maps `struct_name -> field_name -> type_text`.
     /// Enables resolving types of `field_expression` nodes (e.g., `s->count` → "int").
     pub struct_field_types: Arc<HashMap<String, HashMap<String, String>>>,

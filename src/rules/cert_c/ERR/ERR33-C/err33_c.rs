@@ -84,6 +84,10 @@ enum ErrorReturnKind {
 pub struct Err33C {
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     project_aliases: RefCell<Arc<HashMap<String, String>>>,
+    /// Every live target of each project alias
+    /// (`ProjectContext::macro_alias_alternatives`), for the names an alias
+    /// accuses through in some build.
+    project_alias_alternatives: RefCell<Arc<HashMap<String, Vec<String>>>>,
     current_aliases: RefCell<HashMap<String, String>>,
     /// Every macro definition and conditionally defined name: the prescan's,
     /// and this file's (set by `check`). A result passed to a function-like
@@ -100,6 +104,7 @@ impl Err33C {
         Self {
             function_summaries: RefCell::default(),
             project_aliases: RefCell::new(Arc::new(HashMap::new())),
+            project_alias_alternatives: RefCell::new(Arc::new(HashMap::new())),
             current_aliases: RefCell::new(HashMap::new()),
             project_macros: RefCell::default(),
             file_macros: RefCell::default(),
@@ -132,12 +137,24 @@ impl CertRule for Err33C {
             context.macro_definitions.clone(),
             context.conditional_macro_names.clone(),
         );
+        *self.project_alias_alternatives.borrow_mut() = context.macro_alias_alternatives.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         // Merge project-level aliases with per-file aliases (per-file wins)
-        *self.current_aliases.borrow_mut() =
+        let mut aliases =
             const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
+        // An alias defined more than one way reaches the callee this rule
+        // looks for if any live definition does (ADR-0010 D1).
+        let alternatives = const_eval::merged_macro_alias_alternatives(
+            &self.project_alias_alternatives.borrow(),
+            node,
+            source,
+        );
+        const_eval::with_accusing_alias_targets(&mut aliases, &alternatives, |t| {
+            self.is_error_returning_function(t) || self.get_error_return_kind(t).is_some()
+        });
+        *self.current_aliases.borrow_mut() = aliases;
         *self.file_macros.borrow_mut() = (
             check_macros::collect_macro_definitions(source),
             check_macros::collect_conditional_macro_names(source),

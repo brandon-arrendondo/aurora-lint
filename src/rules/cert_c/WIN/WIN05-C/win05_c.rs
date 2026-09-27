@@ -20,7 +20,10 @@
 //! (`#define REGKEY_HKLM HKEY_LOCAL_MACHINE`) the same way.
 
 use super::super::{CertRule, RuleViolation};
-use crate::analyze::const_eval::{merged_macro_aliases, resolve_macro_alias};
+use crate::analyze::const_eval::{
+    merged_macro_alias_alternatives, merged_macro_aliases, resolve_macro_alias,
+    with_accusing_alias_targets,
+};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
@@ -76,6 +79,9 @@ pub struct Win05C {
     /// Project object-like aliases (`#define REGKEY_HKLM HKEY_LOCAL_MACHINE`);
     /// merged with the scanned file's own in `check_node`.
     macro_aliases: RefCell<Arc<HashMap<String, String>>>,
+    /// Every live target of each project alias: a root-key alias that names
+    /// a privileged key in one build is that key there.
+    macro_alias_alternatives: RefCell<Arc<HashMap<String, Vec<String>>>>,
 }
 
 impl Default for Win05C {
@@ -90,11 +96,19 @@ impl Win05C {
             function_summaries: RefCell::default(),
             function_macros: RefCell::new(Arc::new(HashMap::new())),
             macro_aliases: RefCell::new(Arc::new(HashMap::new())),
+            macro_alias_alternatives: RefCell::new(Arc::new(HashMap::new())),
         }
     }
 
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        let aliases = merged_macro_aliases(&self.macro_aliases.borrow(), node, source);
+        let mut aliases = merged_macro_aliases(&self.macro_aliases.borrow(), node, source);
+        // A key alias that is privileged in one build is reported for that
+        // build (ADR-0010 D1).
+        with_accusing_alias_targets(
+            &mut aliases,
+            &merged_macro_alias_alternatives(&self.macro_alias_alternatives.borrow(), node, source),
+            |t| PRIVILEGED_ROOT_KEYS.contains(&t),
+        );
         for call in query::find_descendants_of_kind(*node, "call_expression") {
             self.check_call(&call, source, &aliases, violations);
         }
@@ -355,5 +369,6 @@ impl CertRule for Win05C {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.function_macros.borrow_mut() = context.function_macros.clone();
         *self.macro_aliases.borrow_mut() = context.macro_aliases.clone();
+        *self.macro_alias_alternatives.borrow_mut() = context.macro_alias_alternatives.clone();
     }
 }

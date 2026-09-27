@@ -35,6 +35,9 @@ struct FilePrescanResult {
     local_static_functions: HashSet<String>,
     macro_constants: HashMap<String, i64>,
     macro_aliases: HashMap<String, String>,
+    /// Every live target of each object-like alias this file defines
+    /// (`const_eval::collect_macro_alias_alternatives`).
+    macro_alias_alternatives: HashMap<String, Vec<String>>,
     function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     /// Every `#define` in this file, all arms (see
     /// `ProjectContext::macro_definitions`).
@@ -119,6 +122,7 @@ impl FilePrescanResult {
             local_static_functions: HashSet::new(),
             macro_constants: HashMap::new(),
             macro_aliases: HashMap::new(),
+            macro_alias_alternatives: HashMap::new(),
             function_macros: HashMap::new(),
             macro_definitions: HashMap::new(),
             conditional_macro_names: HashSet::new(),
@@ -202,7 +206,9 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         let file_macros = const_eval::collect_macro_constants(&root, &source);
         result.macro_constants.extend(file_macros.clone());
 
-        let file_aliases = const_eval::collect_macro_aliases(&root, &source);
+        result.macro_alias_alternatives =
+            const_eval::collect_macro_alias_alternatives(&root, &source);
+        let file_aliases = const_eval::settled_aliases(&result.macro_alias_alternatives);
         let file_taint_aliases: Vec<String> = file_aliases
             .iter()
             .filter(|(_, target)| {
@@ -495,7 +501,7 @@ fn prescan_file_list(
     let mut ambiguous_call_targets: HashSet<String> = HashSet::new();
     let mut static_defining_files: HashMap<String, HashSet<PathBuf>> = HashMap::new();
     let mut macro_constants: HashMap<String, i64> = HashMap::new();
-    let mut macro_aliases: HashMap<String, String> = HashMap::new();
+    let mut macro_alias_alternatives: HashMap<String, Vec<String>> = HashMap::new();
     let mut function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro> =
         HashMap::new();
     let mut macro_definitions: HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>> =
@@ -687,7 +693,10 @@ fn prescan_file_list(
         }
 
         macro_constants.extend(r.macro_constants);
-        macro_aliases.extend(r.macro_aliases);
+        const_eval::merge_macro_alias_alternatives(
+            &mut macro_alias_alternatives,
+            r.macro_alias_alternatives,
+        );
         let file_display = r.display_path.clone();
         for (name, m) in r.function_macros {
             match function_macros.entry(name) {
@@ -1036,6 +1045,10 @@ fn prescan_file_list(
 
     function_summary::propagate_transitive_modifies(&mut function_summaries);
     function_summary::propagate_forwards_to_indirect_call(&mut function_summaries);
+    // An alias the project defines more than one way is not settled: it
+    // resolves to itself, and a consumer it accuses through asks the
+    // alternatives (`const_eval::resolve_macro_alias_where`).
+    let macro_aliases = const_eval::settled_aliases(&macro_alias_alternatives);
     function_summary::propagate_transitive_frees(&mut function_summaries, &macro_aliases);
     function_summary::propagate_transitive_stores(&mut function_summaries, &macro_aliases);
     function_summary::propagate_returns_allocation(&mut function_summaries);
@@ -1163,6 +1176,7 @@ fn prescan_file_list(
         ambiguous_call_targets: Arc::new(ambiguous_call_targets),
         macro_constants: Arc::new(macro_constants),
         macro_aliases: Arc::new(macro_aliases),
+        macro_alias_alternatives: Arc::new(macro_alias_alternatives),
         function_macros: Arc::new(function_macros),
         macro_definitions: Arc::new(macro_definitions),
         conditional_macro_names: Arc::new(conditional_macro_names),
@@ -6548,7 +6562,9 @@ pub fn resolve_includes(
                 let header_macros = const_eval::collect_macro_constants(&root, &hsource);
                 Arc::make_mut(&mut context.macro_constants).extend(header_macros.clone());
 
-                let header_aliases = const_eval::collect_macro_aliases(&root, &hsource);
+                let header_alias_alternatives =
+                    const_eval::collect_macro_alias_alternatives(&root, &hsource);
+                let header_aliases = const_eval::settled_aliases(&header_alias_alternatives);
                 let header_taint_aliases: Vec<String> = header_aliases
                     .iter()
                     .filter(|(_, target)| {
@@ -6573,7 +6589,20 @@ pub fn resolve_includes(
                 for (name, summary) in file_summaries {
                     context.function_summaries.make_mut().insert(name, summary);
                 }
-                Arc::make_mut(&mut context.macro_aliases).extend(header_aliases);
+                let names: Vec<String> = header_alias_alternatives.keys().cloned().collect();
+                const_eval::merge_macro_alias_alternatives(
+                    Arc::make_mut(&mut context.macro_alias_alternatives),
+                    header_alias_alternatives,
+                );
+                for name in names {
+                    let targets = &context.macro_alias_alternatives[&name];
+                    let aliases = Arc::make_mut(&mut context.macro_aliases);
+                    if let [target] = targets.as_slice() {
+                        aliases.insert(name, target.clone());
+                    } else {
+                        aliases.remove(&name);
+                    }
+                }
                 let header_audit =
                     crate::analyze::macro_gaps::audit_definitions(&hsource, &header_path);
                 for (name, indices) in ast_utils::restrict_parameter_indices(&root, &hsource) {

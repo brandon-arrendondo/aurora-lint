@@ -40,6 +40,10 @@ pub struct Mem30C {
     /// expands to rather than through the name-contains-FREE guess
     /// .
     project_aliases: RefCell<Arc<HashMap<String, String>>>,
+    /// Every live target of each project alias
+    /// (`ProjectContext::macro_alias_alternatives`): a name that is `free`
+    /// or `realloc` in one build dispatches as that call.
+    project_alias_alternatives: RefCell<Arc<HashMap<String, Vec<String>>>>,
     /// Function-like macros the prescan found defined more than one way in a
     /// single file under conditions the platform profile cannot settle
     /// (`macro_gaps::MacroGapKind::AmbiguousDefinition`). Merged in `check`
@@ -97,6 +101,7 @@ impl CertRule for Mem30C {
         *self.function_macros.borrow_mut() = context.function_macros.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
+        *self.project_alias_alternatives.borrow_mut() = context.macro_alias_alternatives.clone();
         *self.noreturn_functions.borrow_mut() = context.noreturn_functions.clone();
         *self.pointer_typedef_names.borrow_mut() = context.pointer_typedef_names.clone();
         *self.project_typedef_types.borrow_mut() = context.typedef_types.clone();
@@ -180,8 +185,19 @@ impl CertRule for Mem30C {
         let mut union_typedef_names = HashSet::new();
         collect_union_typedef_names(node, source, &mut union_typedef_names);
 
-        let macro_aliases =
+        let mut macro_aliases =
             const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
+        // A free or realloc in one build starts the finding in that build
+        // (ADR-0010 D1), whatever the alias is in the others.
+        const_eval::with_accusing_alias_targets(
+            &mut macro_aliases,
+            &const_eval::merged_macro_alias_alternatives(
+                &self.project_alias_alternatives.borrow(),
+                node,
+                source,
+            ),
+            |t| t == "free" || t == "realloc",
+        );
 
         // Function-like macros this file defines more than one way under a
         // condition the platform profile cannot settle -- curl's

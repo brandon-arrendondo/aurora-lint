@@ -60,6 +60,10 @@ use tree_sitter::Node;
 
 pub struct Env33C {
     project_aliases: RefCell<Arc<HashMap<String, String>>>,
+    /// Every live target of each project alias
+    /// (`ProjectContext::macro_alias_alternatives`), for the names an alias
+    /// accuses through in some build.
+    project_alias_alternatives: RefCell<Arc<HashMap<String, Vec<String>>>>,
     current_aliases: RefCell<HashMap<String, String>>,
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// Reverse call graph: callee_name → caller names.
@@ -70,6 +74,7 @@ impl Env33C {
     pub fn new() -> Self {
         Self {
             project_aliases: RefCell::new(Arc::new(HashMap::new())),
+            project_alias_alternatives: RefCell::new(Arc::new(HashMap::new())),
             current_aliases: RefCell::new(HashMap::new()),
             function_summaries: RefCell::default(),
             callers: RefCell::default(),
@@ -102,6 +107,7 @@ impl CertRule for Env33C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
+        *self.project_alias_alternatives.borrow_mut() = context.macro_alias_alternatives.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
 
         *self.callers.borrow_mut() = context.callers.clone();
@@ -109,8 +115,19 @@ impl CertRule for Env33C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         // Merge project-level aliases with per-file aliases (per-file wins)
-        *self.current_aliases.borrow_mut() =
+        let mut aliases =
             const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
+        // An alias defined more than one way reaches the callee this rule
+        // looks for if any live definition does (ADR-0010 D1).
+        let alternatives = const_eval::merged_macro_alias_alternatives(
+            &self.project_alias_alternatives.borrow(),
+            node,
+            source,
+        );
+        const_eval::with_accusing_alias_targets(&mut aliases, &alternatives, |t| {
+            Self::accused_callee(t)
+        });
+        *self.current_aliases.borrow_mut() = aliases;
 
         let mut violations = Vec::new();
         self.check_node(node, source, &mut violations);
@@ -337,7 +354,17 @@ impl Env33C {
     }
 
     /// Check if function is a dangerous command processor invocation
+    /// A callee an alias can reach for this rule to report: a command
+    /// runner, or a source of the data it tracks.
+    fn accused_callee(name: &str) -> bool {
+        Self::dangerous_function(name) || TAINTED_SOURCE_FUNCTIONS.contains(&name)
+    }
+
     fn is_dangerous_function(&self, name: &str) -> bool {
+        Self::dangerous_function(name)
+    }
+
+    fn dangerous_function(name: &str) -> bool {
         matches!(
             name,
             "system"

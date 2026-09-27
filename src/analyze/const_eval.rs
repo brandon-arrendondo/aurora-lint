@@ -419,11 +419,23 @@ pub fn is_safe_command_macro(string_macros: &HashMap<String, String>, name: &str
 /// Collect `#define ALIAS func_name` patterns where the value is a single C identifier.
 /// These represent macro aliases for function names (e.g., `#define SYSTEM system`).
 /// Returns a map from alias → target identifier.
+///
+/// Only a SETTLED alias is returned: one every live definition in the file
+/// points at the same target. raylib's `CHDIR` is `_chdir` in one arm and
+/// `chdir` in the other, and which definition was met last used to decide
+/// what every call to it was; such a name is left to resolve to itself, and
+/// [`collect_macro_alias_alternatives`] keeps all of its targets.
 pub fn collect_macro_aliases(root: &Node, source: &str) -> HashMap<String, String> {
+    settled_aliases(&collect_macro_alias_alternatives(root, source))
+}
+
+/// Every live target of each `#define ALIAS target` in the file, in file
+/// order, each distinct target once. See [`collect_macro_aliases`].
+pub fn collect_macro_alias_alternatives(root: &Node, source: &str) -> HashMap<String, Vec<String>> {
     let mut raw_defs: Vec<(String, String)> = Vec::new();
     collect_preproc_defs(root, source, &mut raw_defs);
 
-    let mut aliases = HashMap::new();
+    let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
     for (name, value) in &raw_defs {
         let v = value.trim();
         // A function alias is a single C identifier (no operators, parens, digits-only, etc.)
@@ -434,10 +446,106 @@ pub fn collect_macro_aliases(root: &Node, source: &str) -> HashMap<String, Strin
             // Skip pure integer strings (they're constants, not function aliases)
             && v.parse::<i64>().is_err()
         {
-            aliases.insert(name.clone(), v.to_string());
+            let targets = aliases.entry(name.clone()).or_default();
+            if !targets.iter().any(|t| t == v) {
+                targets.push(v.to_string());
+            }
         }
     }
     aliases
+}
+
+/// The aliases among `alternatives` that have exactly one target.
+pub fn settled_aliases(alternatives: &HashMap<String, Vec<String>>) -> HashMap<String, String> {
+    alternatives
+        .iter()
+        .filter(|(_, targets)| targets.len() == 1)
+        .map(|(name, targets)| (name.clone(), targets[0].clone()))
+        .collect()
+}
+
+/// Fold one file's alias targets into the project-wide alternatives, each
+/// distinct target once.
+pub fn merge_macro_alias_alternatives(
+    into: &mut HashMap<String, Vec<String>>,
+    from: HashMap<String, Vec<String>>,
+) {
+    for (name, targets) in from {
+        let slot = into.entry(name).or_default();
+        for target in targets {
+            if !slot.contains(&target) {
+                slot.push(target);
+            }
+        }
+    }
+}
+
+/// [`merged_macro_aliases`] for the alternatives: the project's, with each
+/// name the current file defines replaced by the file's own targets.
+pub fn merged_macro_alias_alternatives(
+    project: &HashMap<String, Vec<String>>,
+    root: &Node,
+    source: &str,
+) -> HashMap<String, Vec<String>> {
+    let mut alternatives = project.clone();
+    alternatives.extend(collect_macro_alias_alternatives(root, source));
+    alternatives
+}
+
+/// Add to `aliases` each name that `alternatives` does not settle but that
+/// some live definition resolves to an identifier `accept` takes, mapped to
+/// that identifier. For a rule an alias accuses through (ADR-0010 D1, per
+/// consumer): it keeps resolving names through its one map, and the build in
+/// which the alias IS the callee it looks for still reaches it.
+pub fn with_accusing_alias_targets(
+    aliases: &mut HashMap<String, String>,
+    alternatives: &HashMap<String, Vec<String>>,
+    accept: impl Fn(&str) -> bool,
+) {
+    for (name, targets) in alternatives {
+        if targets.len() < 2 || aliases.contains_key(name) {
+            continue;
+        }
+        if let Some(target) = resolve_macro_alias_where(alternatives, name, &accept) {
+            if target != *name {
+                aliases.insert(name.clone(), target);
+            }
+        }
+    }
+}
+
+/// The first identifier reachable from `name` through any live alias
+/// definition (`alternatives`) that `accept` takes, trying `name` itself
+/// first; `None` when no chain reaches one. For a consumer an alias ACCUSES
+/// through (ADR-0010 D1, per consumer): a build in which `CHDIR` is `chdir`
+/// is enough for a finding about `chdir`, whatever the other arms say.
+/// Breadth-first in file order, bounded like [`resolve_macro_alias`].
+pub fn resolve_macro_alias_where(
+    alternatives: &HashMap<String, Vec<String>>,
+    name: &str,
+    accept: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let mut frontier = vec![name.to_string()];
+    let mut seen: HashSet<String> = HashSet::new();
+    for _ in 0..8 {
+        let mut next = Vec::new();
+        for current in frontier {
+            if !seen.insert(current.clone()) {
+                continue;
+            }
+            if accept(&current) {
+                return Some(current);
+            }
+            if let Some(targets) = alternatives.get(&current) {
+                next.extend(targets.iter().cloned());
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    None
 }
 
 /// Follow `#define ALIAS target` chains from `name` to the identifier they
@@ -473,7 +581,16 @@ pub fn merged_macro_aliases(
     source: &str,
 ) -> HashMap<String, String> {
     let mut aliases = project.clone();
-    aliases.extend(collect_macro_aliases(root, source));
+    for (name, targets) in collect_macro_alias_alternatives(root, source) {
+        // The file's own definitions decide, and a name it defines more
+        // than one way resolves to itself here even when the project
+        // settled it.
+        if let [target] = targets.as_slice() {
+            aliases.insert(name, target.clone());
+        } else {
+            aliases.remove(&name);
+        }
+    }
     aliases
 }
 
@@ -3258,6 +3375,45 @@ int f(unsigned long s) { return LINEBITS(s); }
         let macros = collect_macro_constants(&tree.root_node(), code);
         assert_eq!(macros.get("MY_CONST"), Some(&42));
         assert_eq!(macros.get("DOUBLE_CONST"), Some(&84));
+    }
+
+    #[test]
+    fn an_alias_defined_two_ways_is_unsettled_and_keeps_both_targets() {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let code = "#ifdef USE_WIDE
+                    #define CHDIR _wchdir
+                    #else
+                    #define CHDIR chdir
+                    #endif
+                    #define RUN system
+";
+        let tree = parser.parse(code, None).unwrap();
+        let root = tree.root_node();
+        let aliases = collect_macro_aliases(&root, code);
+        assert_eq!(aliases.get("CHDIR"), None);
+        assert_eq!(aliases.get("RUN").map(String::as_str), Some("system"));
+        let alternatives = collect_macro_alias_alternatives(&root, code);
+        assert_eq!(alternatives["CHDIR"], vec!["_wchdir", "chdir"]);
+        assert_eq!(
+            resolve_macro_alias_where(&alternatives, "CHDIR", |t| t == "chdir").as_deref(),
+            Some("chdir")
+        );
+        assert_eq!(
+            resolve_macro_alias_where(&alternatives, "CHDIR", |t| t == "rmdir"),
+            None
+        );
+        // The file's own definitions override a name the project settled.
+        let project: HashMap<String, String> = [("CHDIR".to_string(), "chdir".to_string())].into();
+        assert_eq!(
+            merged_macro_aliases(&project, &root, code).get("CHDIR"),
+            None
+        );
+        // An accusing consumer maps the unsettled name to the target it
+        // looks for.
+        let mut accusing = aliases.clone();
+        with_accusing_alias_targets(&mut accusing, &alternatives, |t| t == "chdir");
+        assert_eq!(accusing.get("CHDIR").map(String::as_str), Some("chdir"));
     }
 
     #[test]
