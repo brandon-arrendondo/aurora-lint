@@ -127,10 +127,13 @@ const TAINT_PROPAGATORS: &[&str] = &[
 ];
 
 /// A callee an alias can reach for this rule to report: a source of
-/// tainted data, a function that passes it on, or a command/query sink.
+/// tainted data, a function that passes it on, or a command/query sink. An
+/// overwriting copy (`TAINT_OVERWRITE_PROPAGATORS`) is left out: with a clean
+/// source it clears the destination's taint, which only an alias that is
+/// such a copy in every build may do.
 fn accused_callee(name: &str) -> bool {
     TAINT_SOURCES.contains(&name)
-        || TAINT_PROPAGATORS.contains(&name)
+        || (TAINT_PROPAGATORS.contains(&name) && !TAINT_OVERWRITE_PROPAGATORS.contains(&name))
         || matches!(
             name,
             "system" | "popen" | "sqlite3_exec" | "mysql_query" | "mysql_real_query" | "PQexec"
@@ -1244,6 +1247,17 @@ impl CertRule for Str02C {
             source,
         );
         const_eval::with_accusing_alias_targets(&mut aliases, &alternatives, accused_callee);
+        for (name, targets) in &alternatives {
+            if !aliases.contains_key(name)
+                && targets
+                    .iter()
+                    .all(|t| TAINT_OVERWRITE_PROPAGATORS.contains(&t.as_str()))
+            {
+                if let Some(first) = targets.first() {
+                    aliases.insert(name.clone(), first.clone());
+                }
+            }
+        }
         *self.current_aliases.borrow_mut() = aliases;
         *self.literal_only_params.borrow_mut() =
             self.collect_literal_only_static_params(node, source);

@@ -192,10 +192,15 @@ impl CertRule for Mem31C {
         );
         let mut macro_aliases =
             const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
+        let settled_aliases = macro_aliases.clone();
         // An allocation starts a leak finding, so an alias that is an
         // allocator in one build allocates there (ADR-0010 D1): mbedtls's
         // `mbedtls_calloc` is `calloc` unless MBEDTLS_PLATFORM_MEMORY. A free
-        // only suppresses one, and stays on the settled aliases.
+        // only suppresses one, and stays on the settled aliases. `realloc`
+        // does both: it allocates, and releases the pointer it is passed,
+        // which a later free makes a double free but which also stops that
+        // pointer leaking. Through such an alias it keeps the first two and
+        // not the third (`realloc_in_one_build`).
         const_eval::with_accusing_alias_targets(
             &mut macro_aliases,
             &const_eval::merged_macro_alias_alternatives(
@@ -205,6 +210,14 @@ impl CertRule for Mem31C {
             ),
             call_roles::is_allocator_call,
         );
+        let realloc_in_one_build: HashSet<String> = macro_aliases
+            .iter()
+            .filter(|(name, target)| {
+                target.as_str() == "realloc"
+                    && !const_eval::resolve_macro_alias(&settled_aliases, name).eq("realloc")
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
 
         // Analyze each function independently for memory leaks. A real C
         // file never nests one function_definition inside another, but
@@ -235,6 +248,7 @@ impl CertRule for Mem31C {
                 &noreturn_names,
                 &macro_aliases,
             );
+            analyzer.realloc_in_one_build = Some(&realloc_in_one_build);
             analyzer.analyze_function(&func, source, &mut violations);
         }
 
@@ -420,6 +434,13 @@ struct MemoryLeakAnalyzer<'a> {
     // `#define ALIAS target` map (project-wide plus this file); see
     // `callee_name`.
     macro_aliases: &'a HashMap<String, String>,
+    // Aliases that are `realloc` in some builds only: a call through one
+    // allocates and may release its argument, but does not prove it did.
+    realloc_in_one_build: Option<&'a HashSet<String>>,
+    // Where a call through one of `realloc_in_one_build` released each
+    // variable, so a double free it causes says so rather than naming a
+    // jump.
+    released_in_one_build: HashMap<String, (usize, usize)>,
 }
 
 #[derive(Debug, Clone)]
@@ -792,6 +813,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             function_macros,
             noreturn_names,
             macro_aliases,
+            realloc_in_one_build: None,
+            released_in_one_build: HashMap::new(),
         }
     }
 
@@ -2016,17 +2039,23 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         free_pos: tree_sitter::Point,
         call_name: &str,
     ) {
-        if let Some(&(freed_line, _)) = self
+        if let Some(&(freed_line, freed_column)) = self
             .maybe_freed
             .get(var_name)
             .filter(|_| !self.guess_forbids_double_free(var_name, call_name))
         {
+            let how =
+                if self.released_in_one_build.get(var_name) == Some(&(freed_line, freed_column)) {
+                    "by a call that is realloc in some builds"
+                } else {
+                    "on a path that jumps to this label"
+                };
             self.double_free_violations.push(RuleViolation {
                 rule_id: "MEM31-C".to_string(),
                 severity: Severity::High,
                 message: format!(
-                    "Possible double free: '{}' was already freed at line {} on a path that jumps to this label",
-                    var_name, freed_line
+                    "Possible double free: '{}' was already freed at line {} {}",
+                    var_name, freed_line, how
                 ),
                 file_path: String::new(),
                 line: free_pos.row + 1,
@@ -3370,7 +3399,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         if func_name == "free" {
             self.process_free_call(node, source);
         } else if func_name == "realloc" {
-            self.process_realloc_call(node, source);
+            let spelled = node
+                .child_by_field_name("function")
+                .map(|f| ast_utils::get_node_text(&f, source))
+                .unwrap_or_default();
+            let in_one_build = self
+                .realloc_in_one_build
+                .is_some_and(|names| names.contains(spelled));
+            self.process_realloc_call(node, source, in_one_build);
         } else {
             self.process_freeing_callee(node, source, &func_name);
             self.process_storing_callee(node, source, &func_name);
@@ -3973,7 +4009,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     }
 
     /// Handle a `realloc()` call: the first argument's old memory is freed.
-    fn process_realloc_call(&mut self, node: &Node, source: &str) {
+    /// Through an alias that is `realloc` in only some builds
+    /// (`in_one_build`) it is freed in those: a later free of it is a double
+    /// free there, but it still leaks where the alias is something else.
+    fn process_realloc_call(&mut self, node: &Node, source: &str, in_one_build: bool) {
         // realloc can be used to free memory (when new size is 0) or reallocate
         let Some(arguments) = node.child_by_field_name("arguments") else {
             return;
@@ -3993,7 +4032,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
         }
 
-        if !first_arg.is_empty() {
+        if !first_arg.is_empty() && in_one_build {
+            let pos = (free_pos.row + 1, free_pos.column + 1);
+            self.released_in_one_build.insert(first_arg.clone(), pos);
+            self.maybe_freed.insert(first_arg, pos);
+        } else if !first_arg.is_empty() {
             // realloc frees the old memory and allocates new
             self.freed_by_guess.remove(&first_arg);
             self.freed_memory
