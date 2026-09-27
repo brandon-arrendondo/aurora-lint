@@ -128,9 +128,12 @@ pub fn merge_macro_definitions(
 /// absent, and when no other arm supplies one the name is not a macro there
 /// at all: sqlite's `sqliteInt.h` defines `memcpy(D,S,N)` as a `{ }` block
 /// only under `#ifdef SQLITE_INLINE_MEMCPY`, and every other build calls the
-/// library function (ADR-0010). An include guard is not a configuration and
-/// does not count; neither does a region the file itself proves dead, whose
-/// definitions no build sees.
+/// library function (ADR-0010). A name every live arm of an `#if` ...
+/// `#else` group defines is not conditional, and neither is one the file also
+/// defines outside any conditional: every configuration has a definition, and
+/// a consumer still has to agree with each of them. An include guard is not
+/// a configuration and does not count; neither does a region the file itself
+/// proves dead, whose definitions no build sees.
 pub fn collect_conditional_macro_names(source: &str) -> HashSet<String> {
     let dead: Vec<(usize, usize)> = lang_parsing_substrate::dead_code_ranges(source)
         .into_iter()
@@ -181,9 +184,31 @@ pub fn collect_conditional_macro_names(source: &str) -> HashSet<String> {
         (!name.is_empty()).then_some(name)
     };
 
-    // One entry per open conditional: whether it is a file-level include guard.
-    let mut open: Vec<bool> = Vec::new();
-    let mut out = HashSet::new();
+    let is_dead = |line: usize| dead.iter().any(|&(s, e)| line >= s && line <= e);
+    // One entry per open conditional: whether it is a file-level include
+    // guard, whether an `#else` has been seen, and for each arm so far the
+    // names it defines in every configuration that reaches it (`None` for
+    // an arm the file proves dead, which no build takes).
+    struct Group {
+        guard: bool,
+        has_else: bool,
+        arms: Vec<Option<HashSet<String>>>,
+    }
+    let arm_at = |line: usize, k: usize| -> Option<HashSet<String>> {
+        // An arm with a body is dead when its first line is; an empty arm
+        // stays live, which only ever withholds coverage.
+        let has_body = directives.get(k + 1).is_none_or(|(next, d)| {
+            *next > line + 1
+                || !matches!(
+                    keyword(d).as_str(),
+                    "elif" | "elifdef" | "elifndef" | "else" | "endif"
+                )
+        });
+        (!(has_body && is_dead(line + 1))).then(HashSet::new)
+    };
+    let mut open: Vec<Group> = Vec::new();
+    let mut inside = HashSet::new();
+    let mut everywhere: HashSet<String> = HashSet::new();
     for (k, (line, d)) in directives.iter().enumerate() {
         match keyword(d).as_str() {
             "if" | "ifdef" | "ifndef" => {
@@ -201,23 +226,63 @@ pub fn collect_conditional_macro_names(source: &str) -> HashSet<String> {
                                 })
                         })
                     });
-                open.push(is_guard);
+                open.push(Group {
+                    guard: is_guard,
+                    has_else: false,
+                    arms: vec![arm_at(*line, k)],
+                });
+            }
+            kw @ ("elif" | "elifdef" | "elifndef" | "else") => {
+                if let Some(g) = open.last_mut() {
+                    g.has_else |= kw == "else";
+                    g.arms.push(arm_at(*line, k));
+                }
             }
             "endif" => {
-                open.pop();
+                let Some(g) = open.pop() else { continue };
+                // A group with an `#else` defines a name in every
+                // configuration when each live arm does.
+                let covered: HashSet<String> = if g.guard || !g.has_else {
+                    HashSet::new()
+                } else {
+                    let mut live = g.arms.into_iter().flatten();
+                    live.next()
+                        .map(|first| live.fold(first, |acc, arm| &acc & &arm))
+                        .unwrap_or_default()
+                };
+                match open.iter_mut().rev().find(|o| !o.guard) {
+                    Some(parent) => {
+                        if let Some(Some(arm)) = parent.arms.last_mut() {
+                            arm.extend(covered);
+                        }
+                    }
+                    None => everywhere.extend(covered),
+                }
             }
-            "define" if open.iter().any(|&g| !g) => {
-                if dead.iter().any(|&(s, e)| *line >= s && *line <= e) {
+            "define" => {
+                if is_dead(*line) {
                     continue;
                 }
-                if let Some((name, _)) = parse_define(&format!("#{d}")) {
-                    out.insert(name);
+                let Some((name, _)) = parse_define(&format!("#{d}")) else {
+                    continue;
+                };
+                match open.iter_mut().rev().find(|o| !o.guard) {
+                    Some(g) => {
+                        if let Some(Some(arm)) = g.arms.last_mut() {
+                            arm.insert(name.clone());
+                        }
+                        inside.insert(name);
+                    }
+                    None => {
+                        everywhere.insert(name);
+                    }
                 }
             }
             _ => {}
         }
     }
-    out
+    inside.retain(|n| !everywhere.contains(n));
+    inside
 }
 
 /// Whether `source` `#define`s `name` as a function-like macro in any
@@ -885,6 +950,49 @@ mod tests {
         let src = "#ifndef H_H\n#define H_H\n#define SWAP(a, b) { a = b; }\n#endif\n";
         assert!(collect_conditional_macro_names(src).is_empty());
         assert!(blocks(src, "SWAP"));
+    }
+
+    #[test]
+    fn a_name_every_arm_defines_is_not_conditional() {
+        let src = "#ifdef DEBUG\n#define CHECK(x) check(x)\n#elif defined(FAST)\n#define CHECK(x) fast(x)\n#else\n#define CHECK(x) ((void)(x))\n#endif\n";
+        assert!(collect_conditional_macro_names(src).is_empty());
+    }
+
+    #[test]
+    fn a_name_one_arm_leaves_undefined_is_conditional() {
+        // No `#else`: a build without DEBUG has no CHECK.
+        let lone = "#ifdef DEBUG\n#define CHECK(x) check(x)\n#endif\n";
+        assert!(collect_conditional_macro_names(lone).contains("CHECK"));
+        // An `#else` that defines it only when another name is set.
+        let nested = "#ifdef DEBUG\n#define CHECK(x) check(x)\n#else\n#ifdef FAST\n#define CHECK(x) fast(x)\n#endif\n#endif\n";
+        assert!(collect_conditional_macro_names(nested).contains("CHECK"));
+        // An `#elif` chain with no `#else`.
+        let elif = "#if A\n#define CHECK(x) a(x)\n#elif B\n#define CHECK(x) b(x)\n#endif\n";
+        assert!(collect_conditional_macro_names(elif).contains("CHECK"));
+    }
+
+    #[test]
+    fn a_nested_group_that_covers_its_arm_counts_for_the_arm() {
+        let src = "#ifdef DEBUG\n#define CHECK(x) check(x)\n#else\n#ifdef FAST\n#define CHECK(x) fast(x)\n#else\n#define CHECK(x) ((void)(x))\n#endif\n#endif\n";
+        assert!(collect_conditional_macro_names(src).is_empty());
+    }
+
+    #[test]
+    fn a_dead_arm_is_not_a_configuration() {
+        let src = "#if 0\n#define OLD 1\n#else\n#define CHECK(x) check(x)\n#endif\n";
+        assert!(collect_conditional_macro_names(src).is_empty());
+    }
+
+    #[test]
+    fn a_name_also_defined_unconditionally_is_not_conditional() {
+        let src = "#define CHECK(x) check(x)\n#ifdef FAST\n#undef CHECK\n#define CHECK(x) fast(x)\n#endif\n";
+        assert!(collect_conditional_macro_names(src).is_empty());
+    }
+
+    #[test]
+    fn a_covering_group_inside_an_include_guard_is_not_conditional() {
+        let src = "#ifndef H_H\n#define H_H\n#ifdef DEBUG\n#define CHECK(x) check(x)\n#else\n#define CHECK(x) ((void)(x))\n#endif\n#endif\n";
+        assert!(collect_conditional_macro_names(src).is_empty());
     }
 
     #[test]
