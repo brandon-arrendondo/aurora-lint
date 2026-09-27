@@ -271,6 +271,23 @@ all. The warning names how many scanned <code class="docutils literal notranslat
 cover. Scanning the sources your database compiles avoids it.</p>
 <p>Because the parse tree is untouched, every finding keeps the source location it
 always had, and the <code class="docutils literal notranslate"><span class="pre">PRE*</span></code> rules still audit macros as written.</p>
+<p><strong>Databases from an MSVC build.</strong> An entry compiled by <code class="docutils literal notranslate"><span class="pre">cl</span></code>, <code class="docutils literal notranslate"><span class="pre">clang-cl</span></code> or
+a driver given <code class="docutils literal notranslate"><span class="pre">--driver-mode=cl</span></code> is read with cl’s own syntax. Options may be
+spelled with <code class="docutils literal notranslate"><span class="pre">/</span></code> or <code class="docutils literal notranslate"><span class="pre">-</span></code>: <code class="docutils literal notranslate"><span class="pre">/D</span></code> (including cl’s <code class="docutils literal notranslate"><span class="pre">NAME#VALUE</span></code> form),
+<code class="docutils literal notranslate"><span class="pre">/U</span></code>, <code class="docutils literal notranslate"><span class="pre">/I</span></code>, <code class="docutils literal notranslate"><span class="pre">/imsvc</span></code> and <code class="docutils literal notranslate"><span class="pre">/external:I</span></code>, each attached or as a separate
+argument. <code class="docutils literal notranslate"><span class="pre">/FI</span></code> forced includes are resolved before any header the sources
+include, in command-line order. Arguments after <code class="docutils literal notranslate"><span class="pre">/link</span></code> or clang-cl’s <code class="docutils literal notranslate"><span class="pre">--</span></code>
+are ignored, as are cl options that do not affect headers or macros. The driver
+is recognised behind a compiler launcher (<code class="docutils literal notranslate"><span class="pre">sccache</span></code>, <code class="docutils literal notranslate"><span class="pre">ccache</span></code>, …). A
+<code class="docutils literal notranslate"><span class="pre">command</span></code> string written on Windows is split with the MSVC C runtime’s
+quoting rules, and <code class="docutils literal notranslate"><span class="pre">&#64;file</span></code> response files (UTF-8 or UTF-16) are expanded for
+any driver. For every other driver the <code class="docutils literal notranslate"><span class="pre">/</span></code> spellings are not
+read, so a POSIX path such as <code class="docutils literal notranslate"><span class="pre">/Users/me/a.c</span></code> is never taken for <code class="docutils literal notranslate"><span class="pre">/U</span></code>.</p>
+<p>cl finds the Windows SDK and CRT headers through the <code class="docutils literal notranslate"><span class="pre">INCLUDE</span></code> environment
+variable, not through flags, so a cl database lists none of them. Pass those
+directories with <code class="docutils literal notranslate"><span class="pre">-I</span></code>. The database also keeps the Windows paths it was
+written with: scanning from WSL or another host needs them remapped, and
+aurora-lint warns when its include paths do not exist.</p>
 </section>
 <section id="reaching-the-compiler-s-own-headers">
 <h2>Reaching the Compiler’s Own Headers<a class="headerlink" href="#reaching-the-compiler-s-own-headers" title="Link to this heading"></a></h2>
