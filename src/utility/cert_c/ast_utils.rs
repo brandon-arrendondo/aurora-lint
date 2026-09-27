@@ -431,11 +431,20 @@ pub fn resolve_identifier_declared_type(
 /// unit) or in an inner block (a function's map flattens its scopes) answers
 /// for this occurrence, and a file-scope variable, which the maps never
 /// record, is typed by some function's same-named local. When the occurrence
-/// resolves to a declaration in this file (a local, a parameter of its
-/// enclosing function, or a file-scope variable), that declaration is the
-/// answer -- `None` if the map spelling cannot express it (an enum or union
-/// type, a function), never the map's same-named entry. Only for a name this
-/// file does not declare does `type_map` answer.
+/// resolves to a declaration (a local, a parameter of its enclosing function,
+/// or a file-scope variable at the top level of the translation unit), that
+/// declaration is the answer -- `None` if the map spelling cannot express it
+/// (an enum or union type, a function), never the map's same-named entry.
+///
+/// `type_map` answers whenever the occurrence does not resolve, which is not
+/// the same as "the file never declares the name". A declaration that
+/// [`resolve_identifier_declarator`] cannot reach still falls through to the
+/// map: a global declared only in a header, a file-scope declaration nested
+/// in `#if`, or a parameter of a function whose header is an unexpanded macro
+/// (`SM_STATE(M, S) { ... }`). A map built from the whole translation unit
+/// can then still answer with another function's same-named local, exactly
+/// as it did before this primitive existed. That fallback keeps the old
+/// behaviour for those shapes; it does not make them right.
 pub fn identifier_type<'m>(
     ident: &Node,
     source: &str,
@@ -443,17 +452,18 @@ pub fn identifier_type<'m>(
 ) -> Option<std::borrow::Cow<'m, str>> {
     let name = get_node_text(ident, source);
     if let Some((decl, declarator)) = resolve_identifier_declarator(ident, name, source) {
-        return local_type_spelling(&decl, &declarator, source).map(std::borrow::Cow::Owned);
+        return declaration_type_spelling(&decl, &declarator, source).map(std::borrow::Cow::Owned);
     }
     type_map
         .get(name)
         .map(|t| std::borrow::Cow::Borrowed(t.as_str()))
 }
 
-/// The `{name -> type}` map spelling of `declarator` in `decl`. `None` for a
+/// The `{name -> type}` map spelling of `declarator` in `decl`, as
+/// [`identifier_type`] returns it for a resolved occurrence. `None` for a
 /// function or function pointer, and for a type specifier the maps do not
 /// record.
-fn local_type_spelling(decl: &Node, declarator: &Node, source: &str) -> Option<String> {
+pub fn declaration_type_spelling(decl: &Node, declarator: &Node, source: &str) -> Option<String> {
     let mut base = String::new();
     for i in 0..decl.child_count() {
         if let Some(child) = decl.child(i) {

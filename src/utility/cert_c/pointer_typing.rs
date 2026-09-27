@@ -135,16 +135,20 @@ pub fn expr_is_pointer(
             // Resolve the occurrence to its own declarator (ADR-0006): the
             // declarator's kind says whether the name decays to a pointer
             // here, for a local, a parameter or a file-scope variable alike.
-            let resolved = ast_utils::resolve_identifier_declarator(node, name, source)
-                .map(|(_, declarator)| declarator_decays_to_pointer(&declarator));
-            match ast_utils::identifier_type(node, source, type_map).as_deref() {
-                Some(t) if ast_utils::is_pointer_type(t) => true,
-                // A local or parameter the map spells as a non-pointer: only
-                // its own declarator can say otherwise (the array case).
-                Some(_) => resolved.unwrap_or(false),
-                // Not a local or parameter: its declarator if this file has
-                // one, else a file-scope declaration the collector saw.
-                None => resolved.unwrap_or_else(|| facts.file_scope_pointers.contains(name)),
+            match ast_utils::resolve_identifier_declarator(node, name, source) {
+                // The map spelling says pointer only for a pointer declarator;
+                // the declarator's own kind covers the array that decays.
+                Some((decl, declarator)) => {
+                    ast_utils::declaration_type_spelling(&decl, &declarator, source)
+                        .is_some_and(|t| ast_utils::is_pointer_type(&t))
+                        || declarator_decays_to_pointer(&declarator)
+                }
+                // Unresolved: the caller's map, else a file-scope declaration
+                // the collector saw.
+                None => match type_map.get(name) {
+                    Some(t) => ast_utils::is_pointer_type(t),
+                    None => facts.file_scope_pointers.contains(name),
+                },
             }
         }
         "field_expression" => {
