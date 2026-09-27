@@ -1194,6 +1194,38 @@ functions run as a fixed-point-ish pass over the resulting map, then the
 summaries are merged into `ProjectContext::function_summaries` for
 cross-file lookup via `context.get_function_summary(name)`.
 
+### `src/analyze/side_effects.rs`
+**Problem solved:** what calling a function can change, whichever scanned
+file defines it: the question behind "is this call pure" (PRE31-C-EX1,
+EXP44-C, EXP02-C), "do these two unsequenced calls conflict" (EXP30-C) and
+"does the callee write through parameter k" (ENV30-C, STR30-C, DCL13-C).
+Before it, PRE31-C judged only the functions of the file under check, and the
+other rules kept name lists. `function_summary::modifies_params` answers
+about parameters only, with no global or read set.
+
+| Item | Signature | Description |
+|---|---|---|
+| `DirectEffects` | struct, `FunctionSummary::effects` | What one body does by itself: `writes` (a set of `Loc`), `volatile_read`, `member_chains` (member reads resolved against the project struct tables later, for a `volatile` member), `calls` (callee name or `None` for a call through a pointer, plus an `ArgRoot` per argument), `opaque`. Collected per file in the prescan. Every definition of a name is folded in by union (`merge_summary_variant`): any `#if` or build-variant body may be the one compiled. |
+| `Loc` | `Global(name)` \| `Static(name)` \| `ParamPointee(k)` \| `Unknown` | Where a write lands. A function's own automatic storage (a parameter itself, a non-static local, an element or member of a local aggregate not reached through a pointer) is never recorded. |
+| `ArgRoot` | `Param(j)` \| `AddrOfLocal` \| `AddrOfGlobal(name)` \| `Other` | What an argument designates in the caller's frame, so a callee's `ParamPointee(k)` write maps to the caller's own location. `&p[i]` and `&p->f` of a parameter map to `Param(j)`. |
+| `collect_direct_effects` | `(func, source, arms, &FileScope) -> DirectEffects` | The per-body collector. A macro the file defines is expanded through `macro_expand::macro_body_effects` over every arm. A callee identifier declared as a parameter, a local or a function-pointer object is a call through a pointer, never a scanned function of the same spelling (ADR-0006). |
+| `FileScope::of` | `(root, source) -> FileScope` | Built once per file. It holds the file-scope declarations by name (the first direct child of the translation unit binding it, which is `ast_utils::find_global_declaration_for_identifier`'s answer) and the names any declaration qualifies `volatile`. That helper rescans the top level on every call, which made a body walk quadratic over a large single-header library. |
+| `ProjectContext::effects` | `(&self) -> EffectView` | The closed table as this context's file resolves names (its own `static`, else the shared one). Built lazily on first use and shared by every clone. It is never serialized, so the prescan cache holds only direct facts. Whatever changes `function_summaries` after it may have been built calls `invalidate_side_effects` (`resolve_includes` does). |
+| `EffectTable::build` | `(functions, &EffectInputs) -> EffectTable` | The closure over the call graph of the whole scanned set, with iterative Tarjan SCC (a call chain of any depth costs heap). A recursive group shares every flag, and its mapped write sets are iterated to a fixpoint. Header macros resolve through the project macro table, aliases through `macro_aliases`. `assert` and the pure compiler builtins count as nothing. `build_over(functions, inputs, base)` closes functions a finished table lacks, reading `base` for their other callees: the file under check when the prescan skipped it (a `-d` naming only include directories), or with no context at all. PRE31-C builds one per file for exactly those functions. |
+| `ClosedEffects` | struct | `writes` (mapped into the function's own frame), `writes_any` (any write before mapping: the conservative reading), `volatile_read`, `lib_side_effect` / `lib_own_buffer` / `lib_any` (library callees reached, by `library_effects` class), `opaque`. |
+| `ClosedEffects::proof` | `(&self, stdlib_contract: bool) -> Proof` | `Impure` for any write, a volatile read, or a library callee whose contract has an effect; `Unproven` for an opaque callee, an own-buffer library callee, or any library callee when the contract is withdrawn; else `Pure`. Pass `settings.flag("stdlib_call_effects")`. The library contract is applied here and never baked into the table (ADR-0015's environment axis). What a consumer does with `Unproven` is its own policy. |
+
+**Wiring pattern:** in `set_project_context`, keep `context.effects()`; ask
+`view.get(callee)` with the name as spelled at the call site, after resolving
+macro aliases. `None` means no scanned file defines the name, so go to
+`library_effects`, then the rule's unknown-callee policy. PRE31-C is the
+first consumer and reads `proof` (the conservative view, in which a callee
+writing through a pointer counts whatever the caller passed). The mapped
+`writes` set is for the consumers that need the precise view. Known limits:
+`member_chains` resolve against the project struct table, where the last
+definition read wins, and a callee reached only through a macro body has no
+separated arguments, so its parameter writes map to `Unknown`.
+
 ## Parse-error recovery (malformed/macro-decorated declarations)
 
 Already covered above under Macro detection: `embedded_js_blank.rs`

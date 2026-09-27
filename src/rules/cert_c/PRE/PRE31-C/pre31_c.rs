@@ -3,12 +3,16 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval::{merged_macro_aliases, resolve_macro_alias};
-use crate::analyze::context::{IncludeClosure, ProjectContext, ScopedTable, VisibleTypes};
-use crate::analyze::function_summary::{extract_function_name, FunctionSummary};
+use crate::analyze::context::{EffectView, IncludeClosure, ProjectContext, VisibleTypes};
+use crate::analyze::function_summary::extract_function_name;
 use crate::analyze::macro_expand::{self, ArgEvaluation, FunctionMacro, MacroArm, ProjectMacroArm};
+use crate::analyze::side_effects::{
+    collect_direct_effects, dereferences_applied, is_volatile_read, EffectInputs, EffectTable,
+    FileScope, Proof, PURE_BUILTINS,
+};
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
-use crate::utility::cert_c::ast_utils::{self, get_node_text, IdentifierBinding};
+use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::library_effects::{library_call_effect, LibraryEffect};
 use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
@@ -44,8 +48,9 @@ pub struct Pre31C {
     /// Names only a header outside the project defines: the C library's own
     /// macros, which C11 7.1.4 binds (`library_macros_evaluate_once`).
     outside_macros: RefCell<Arc<HashSet<String>>>,
-    /// Which functions some scanned file defines.
-    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
+    /// What calling each scanned function can change, closed over the call
+    /// graph of the whole scan. `None` when no prescan context was given.
+    effects: RefCell<Option<EffectView>>,
     /// Struct member and typedef types as this file sees them, for a read
     /// of a `volatile` member.
     types: RefCell<VisibleTypes>,
@@ -65,7 +70,7 @@ impl Pre31C {
             function_macro_names: RefCell::new(Arc::new(HashSet::new())),
             macro_aliases: RefCell::new(Arc::new(HashMap::new())),
             outside_macros: RefCell::new(Arc::new(HashSet::new())),
-            function_summaries: RefCell::default(),
+            effects: RefCell::default(),
             types: RefCell::default(),
             settings: RefCell::new(Arc::new(AnalysisSettings::default())),
         }
@@ -102,7 +107,7 @@ impl CertRule for Pre31C {
         *self.function_macro_names.borrow_mut() = context.function_macro_names.clone();
         *self.macro_aliases.borrow_mut() = context.macro_aliases.clone();
         *self.outside_macros.borrow_mut() = context.macros_defined_outside_project.clone();
-        *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.effects.borrow_mut() = Some(context.effects());
     }
 
     fn set_visible_types(&self, types: &VisibleTypes) {
@@ -127,36 +132,61 @@ impl CertRule for Pre31C {
         function_macros.extend(macro_expand::collect_function_macros(node, source));
         let project_names = Arc::clone(&self.function_macro_names.borrow());
         let macro_names = macro_expand::FunctionMacroNames::new(source, &project_names);
-        let mut local_functions: HashMap<String, Vec<Node>> = HashMap::new();
+        let settings = Arc::clone(&self.settings.borrow());
+        let arms = macro_expand::collect_function_macro_arms(source);
+        let aliases = merged_macro_aliases(&self.macro_aliases.borrow(), node, source);
+        let types = self.types.borrow();
+        // The file's own functions the scan's table does not hold -- all of
+        // them with no prescan context, or when the prescan read only the
+        // include directories -- closed here, their calls into the rest of
+        // the scan answered by the table.
+        let effects = self.effects.borrow().clone();
+        let file_scope = FileScope::of(node, source);
+        let mut direct: HashMap<String, crate::analyze::side_effects::DirectEffects> =
+            HashMap::new();
         for f in query::find_descendants_of_kind(*node, "function_definition") {
             if let Some(name) = extract_function_name(&f, source) {
-                local_functions.entry(name).or_default().push(f);
+                if effects.as_ref().is_some_and(|v| v.get(&name).is_some()) {
+                    continue;
+                }
+                direct
+                    .entry(name)
+                    .or_default()
+                    .merge(collect_direct_effects(&f, source, &arms, &file_scope));
             }
         }
-        let settings = Arc::clone(&self.settings.borrow());
-        let summaries = self.function_summaries.borrow();
-        let types = self.types.borrow();
         let include_edges = self.include_edges.borrow();
         let file_path = self.file_path.borrow();
+        let local_table = (!direct.is_empty()).then(|| {
+            let mut names: HashSet<String> = HashSet::clone(&project_names);
+            names.extend(function_macros.keys().cloned());
+            EffectTable::build_over(
+                direct.iter().map(|(k, v)| (k.clone(), v)),
+                &EffectInputs {
+                    function_macros: &function_macros,
+                    function_macro_names: &names,
+                    macro_aliases: &aliases,
+                    struct_field_types: &types.struct_field_types,
+                    typedef_types: &types.typedef_types,
+                },
+                &|name| effects.as_ref().and_then(|v| v.get(name).cloned()),
+            )
+        });
         let ctx = Ctx {
             source,
             names: &macro_names,
             first: &function_macros,
-            arms: &macro_expand::collect_function_macro_arms(source),
+            arms: &arms,
             project_arms: &self.function_macro_arms.borrow(),
             include_edges: &include_edges,
             file_path: file_path.as_deref(),
             include_closure: OnceCell::new(),
-            aliases: &merged_macro_aliases(&self.macro_aliases.borrow(), node, source),
+            aliases: &aliases,
             outside: &self.outside_macros.borrow(),
-            local_functions: &local_functions,
-            summaries: &summaries,
+            effects: effects.as_ref(),
+            local_table: local_table.as_ref(),
             types: &types,
             settings: &settings,
-            purity: RefCell::new(HashMap::new()),
-            in_progress: RefCell::new(Vec::new()),
-            lowest_reentered: std::cell::Cell::new(usize::MAX),
-            provisional: RefCell::new(Vec::new()),
         };
         for call_node in query::find_descendants_of_kind(*node, "call_expression") {
             // `#if defined(MBEDTLS_KEY_EXCHANGE_RSA_ENABLED)` is not a macro
@@ -187,22 +217,19 @@ fn library_unsafe_argument(name: &str) -> Option<usize> {
 
 /// How an argument's evaluation can change program state, from least to
 /// most certain. The rule reports [`Effect::Definite`] under every policy,
-/// and [`Effect::Unknown`] and [`Effect::Unanalyzed`] (an unproven call)
-/// only when `pre31_unknown_call_pure` is withdrawn (the strict policy).
+/// and [`Effect::Unknown`] (an unproven call) only when
+/// `pre31_unknown_call_pure` is withdrawn (the strict policy).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Effect {
     /// Shown to change nothing: operators that do not write, and calls to
     /// callees proven pure (PRE31-C-EX1).
     None,
-    /// A call to a function no scanned file defines and no library contract
-    /// covers (or one through a pointer), or to a library function whose only
-    /// effect is the static buffer it returns (`strerror`, `getenv`, ...).
+    /// A call nothing proves either way: to a function no scanned file
+    /// defines and no library contract covers, through a pointer, to a
+    /// library function whose only effect is the static buffer it returns
+    /// (`strerror`, `getenv`, ...), or to a scanned function that reaches
+    /// one of these and nothing worse.
     Unknown,
-    /// A call to a function another scanned file defines. Its body is in the
-    /// scan but no cross-file side-effect summary exists yet, so it is
-    /// neither proven pure nor proven impure: an unproven call, like
-    /// [`Effect::Unknown`].
-    Unanalyzed,
     /// A write (`=`, compound assignment, `++`/`--`), a volatile read, or a
     /// call to a callee shown to have a side effect.
     Definite,
@@ -229,25 +256,12 @@ struct Ctx<'a> {
     aliases: &'a HashMap<String, String>,
     /// `Pre31C::outside_macros`.
     outside: &'a HashSet<String>,
-    /// This file's function definitions, by name: every `#if` arm's.
-    local_functions: &'a HashMap<String, Vec<Node<'a>>>,
-    summaries: &'a ScopedTable<FunctionSummary>,
+    /// The scan's side-effect table, as this file resolves names.
+    effects: Option<&'a EffectView>,
+    /// This file's functions the scan's table does not hold.
+    local_table: Option<&'a EffectTable>,
     types: &'a VisibleTypes,
     settings: &'a AnalysisSettings,
-    /// Final verdicts on this file's functions.
-    purity: RefCell<HashMap<String, Effect>>,
-    /// Functions being judged, outermost first. Re-entering one reads as
-    /// [`Effect::None`] (its own body is being counted already).
-    in_progress: RefCell<Vec<String>>,
-    /// The lowest `in_progress` position re-entered since the current
-    /// judgment began: a verdict that leaned on an enclosing function's
-    /// unfinished one is provisional until that function finishes.
-    lowest_reentered: std::cell::Cell<usize>,
-    /// Finished judgments still waiting on an enclosing unfinished one (the
-    /// open members of a recursive group), in completion order, with the
-    /// lowest position each re-entered. Reused, not recomputed, until the
-    /// group's head finishes and hands every member its verdict.
-    provisional: RefCell<Vec<(String, Effect, usize)>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -312,7 +326,7 @@ impl<'a> Ctx<'a> {
     fn reported(&self, effect: Effect) -> bool {
         match effect {
             Effect::Definite => true,
-            Effect::Unknown | Effect::Unanalyzed => !self.settings.flag("pre31_unknown_call_pure"),
+            Effect::Unknown => !self.settings.flag("pre31_unknown_call_pure"),
             Effect::None => false,
         }
     }
@@ -326,7 +340,7 @@ impl<'a> Ctx<'a> {
                 Effect::None
             }
             "identifier" => {
-                if self.is_volatile(node) {
+                if is_volatile_read(node, self.source) {
                     Effect::Definite
                 } else {
                     Effect::None
@@ -367,45 +381,6 @@ impl<'a> Ctx<'a> {
             .map(|c| self.expression_effect(&c))
             .max()
             .unwrap_or(Effect::None)
-    }
-
-    /// Whether an identifier occurrence reads a volatile object, resolved to
-    /// its declaration (ADR-0006), never matched by spelling. A declaration's
-    /// own `volatile` qualifies what its pointers and arrays finally reach,
-    /// so `volatile T *p` makes `*p`, `p->f` and `p[i]` volatile reads and
-    /// `p` itself not; `T *volatile p` makes `p` one.
-    fn is_volatile(&self, ident: &Node<'a>) -> bool {
-        let name = get_node_text(ident, self.source);
-        let Some((decl, declarator)) =
-            ast_utils::resolve_identifier_declarator(ident, name, self.source)
-        else {
-            return false;
-        };
-        let mut levels = 0;
-        let mut own_qualifier = false;
-        let mut node = Some(declarator);
-        while let Some(d) = node {
-            match d.kind() {
-                "pointer_declarator" | "array_declarator" => {
-                    levels += 1;
-                    let inner = d.child_by_field_name("declarator");
-                    if d.kind() == "pointer_declarator"
-                        && inner.is_some_and(|i| i.kind() == "identifier")
-                        && ast_utils::declaration_has_qualifier(&d, "volatile", self.source)
-                    {
-                        own_qualifier = true;
-                    }
-                    node = inner;
-                }
-                _ => node = None,
-            }
-        }
-        let derefs = dereferences_applied(ident, self.source);
-        // `&x` takes the address; nothing is read.
-        derefs >= 0
-            && (own_qualifier
-                || (ast_utils::declaration_has_qualifier(&decl, "volatile", self.source)
-                    && derefs >= levels as isize))
     }
 
     /// Whether a member access reads a member declared `volatile`. Only a
@@ -485,13 +460,21 @@ impl<'a> Ctx<'a> {
         if self.names.contains(name) {
             return self.macro_effect(name, depth);
         }
-        if let Some(defs) = self.local_functions.get(name) {
-            return self.function_effect(name, defs);
+        let stdlib_contract = self.settings.flag("stdlib_call_effects");
+        let closed = self
+            .local_table
+            .and_then(|t| t.get(name))
+            .or_else(|| self.effects.and_then(|v| v.get(name)));
+        if let Some(closed) = closed {
+            // The conservative reading: a callee writing through a pointer it
+            // was handed counts, whatever the caller handed it.
+            return match closed.proof(stdlib_contract) {
+                Proof::Pure => Effect::None,
+                Proof::Unproven => Effect::Unknown,
+                Proof::Impure => Effect::Definite,
+            };
         }
-        if self.summaries.contains_key(name) {
-            return Effect::Unanalyzed;
-        }
-        if self.settings.flag("stdlib_call_effects") {
+        if stdlib_contract {
             match library_call_effect(name) {
                 Some(LibraryEffect::Pure) => return Effect::None,
                 Some(LibraryEffect::SideEffect) => return Effect::Definite,
@@ -526,212 +509,7 @@ impl<'a> Ctx<'a> {
             .max()
             .unwrap_or(Effect::None)
     }
-
-    /// The side effect of calling a function this file defines: a write to
-    /// anything but its own automatic objects, a volatile read, or a call
-    /// with one (PRE31-C-EX1's "does nothing but perform a computation").
-    /// With several `#if` definitions, the worst of them: this use accuses,
-    /// so an effect in any configuration counts.
-    ///
-    /// Mutually recursive functions share one verdict, found with Tarjan's
-    /// strongly connected components: each body is walked once, a finished
-    /// member of a group whose head is still being judged is reused from
-    /// `provisional`, and when the head finishes every member gets the
-    /// head's verdict, which by then covers all of their bodies.
-    fn function_effect(&self, name: &str, defs: &[Node<'a>]) -> Effect {
-        if let Some(e) = self.purity.borrow().get(name) {
-            return *e;
-        }
-        if let Some(pos) = self.in_progress.borrow().iter().position(|n| n == name) {
-            self.lowest_reentered
-                .set(self.lowest_reentered.get().min(pos));
-            return Effect::None;
-        }
-        let open = self
-            .provisional
-            .borrow()
-            .iter()
-            .find(|(n, _, _)| n == name)
-            .map(|(_, e, low)| (*e, *low));
-        if let Some((effect, low)) = open {
-            self.lowest_reentered
-                .set(self.lowest_reentered.get().min(low));
-            return effect;
-        }
-        let depth = self.in_progress.borrow().len();
-        let mark = self.provisional.borrow().len();
-        self.in_progress.borrow_mut().push(name.to_string());
-        let outer_lowest = self.lowest_reentered.replace(usize::MAX);
-        let effect = defs
-            .iter()
-            .map(|def| {
-                def.child_by_field_name("body")
-                    .map_or(Effect::Unknown, |body| self.body_effect(&body))
-            })
-            .max()
-            .unwrap_or(Effect::Unknown);
-        self.in_progress.borrow_mut().pop();
-        let lowest = self.lowest_reentered.get();
-        if lowest >= depth {
-            // This function heads its group: the group is complete.
-            let members = self.provisional.borrow_mut().split_off(mark);
-            let mut purity = self.purity.borrow_mut();
-            for (member, _, _) in members {
-                purity.insert(member, effect);
-            }
-            purity.insert(name.to_string(), effect);
-        } else {
-            self.provisional
-                .borrow_mut()
-                .push((name.to_string(), effect, lowest));
-        }
-        self.lowest_reentered.set(outer_lowest.min(lowest));
-        effect
-    }
-
-    fn body_effect(&self, node: &Node<'a>) -> Effect {
-        match node.kind() {
-            "assignment_expression" | "update_expression" => {
-                let target = node
-                    .child_by_field_name("left")
-                    .or_else(|| node.child_by_field_name("argument"));
-                let write = match target {
-                    Some(t) if self.is_automatic_lvalue(&t) => Effect::None,
-                    _ => Effect::Definite,
-                };
-                write.max(self.body_children_effect(node))
-            }
-            "identifier" => {
-                if self.is_volatile(node) {
-                    Effect::Definite
-                } else {
-                    Effect::None
-                }
-            }
-            "field_expression" if self.is_volatile_member(node) => Effect::Definite,
-            "call_expression" => {
-                let callee = match node.child_by_field_name("function") {
-                    Some(f) if f.kind() == "identifier" => {
-                        self.callee_effect(get_node_text(&f, self.source), 0)
-                    }
-                    Some(f) => self.body_effect(&f).max(Effect::Unknown),
-                    None => Effect::Unknown,
-                };
-                let args = node
-                    .child_by_field_name("arguments")
-                    .map_or(Effect::None, |a| self.body_children_effect(&a));
-                callee.max(args)
-            }
-            "gnu_asm_expression" => Effect::Unknown,
-            "sizeof_expression" | "alignof_expression" | "string_literal" | "char_literal" => {
-                Effect::None
-            }
-            _ => self.body_children_effect(node),
-        }
-    }
-
-    fn body_children_effect(&self, node: &Node<'a>) -> Effect {
-        let mut cursor = node.walk();
-        node.named_children(&mut cursor)
-            .map(|c| self.body_effect(&c))
-            .max()
-            .unwrap_or(Effect::None)
-    }
-
-    /// Whether an lvalue designates storage the function owns and discards
-    /// on return: a parameter itself, a non-static local, or an element or
-    /// member of a local array or struct (not reached through a pointer).
-    fn is_automatic_lvalue(&self, lvalue: &Node<'a>) -> bool {
-        match lvalue.kind() {
-            "parenthesized_expression" => lvalue
-                .named_child(0)
-                .is_some_and(|inner| self.is_automatic_lvalue(&inner)),
-            "identifier" => self.is_automatic_object(lvalue, false),
-            "subscript_expression" => lvalue.child_by_field_name("argument").is_some_and(|base| {
-                base.kind() == "identifier" && self.is_automatic_object(&base, true)
-            }),
-            "field_expression" => {
-                let through_pointer = lvalue
-                    .child_by_field_name("operator")
-                    .is_some_and(|op| get_node_text(&op, self.source) == "->");
-                !through_pointer
-                    && lvalue
-                        .child_by_field_name("argument")
-                        .is_some_and(|base| self.is_automatic_lvalue(&base))
-            }
-            _ => false,
-        }
-    }
-
-    /// Whether an identifier resolves to a parameter or a non-static local.
-    /// `element_access`: the lvalue indexes it, so it must be a local array
-    /// (a parameter "array" is a pointer to the caller's storage).
-    fn is_automatic_object(&self, ident: &Node<'a>, element_access: bool) -> bool {
-        let name = get_node_text(ident, self.source);
-        match ast_utils::resolve_identifier_binding(ident, name, self.source) {
-            Some(IdentifierBinding::Parameter(_)) => !element_access,
-            Some(IdentifierBinding::Local(decl)) => {
-                !ast_utils::declaration_has_storage_class(&decl, "static", self.source)
-                    && (!element_access
-                        || ast_utils::declaration_declarator_for(&decl, name, self.source)
-                            .is_some_and(|d| d.kind() == "array_declarator"))
-            }
-            _ => false,
-        }
-    }
 }
-
-/// How many dereferences the expression around a node applies to it:
-/// `*p`, `p[i]` and `p->f` one each, `&x` minus one. Negative when only the
-/// address is taken.
-fn dereferences_applied(node: &Node, source: &str) -> isize {
-    let mut depth: isize = 0;
-    let mut child = *node;
-    while let Some(parent) = child.parent() {
-        let is_operand = parent
-            .child_by_field_name("argument")
-            .is_some_and(|a| a.id() == child.id());
-        match parent.kind() {
-            "parenthesized_expression" => {}
-            "pointer_expression" if is_operand => {
-                match parent
-                    .child_by_field_name("operator")
-                    .map(|o| get_node_text(&o, source))
-                {
-                    Some("*") => depth += 1,
-                    Some("&") => depth -= 1,
-                    _ => break,
-                }
-            }
-            "subscript_expression" if is_operand => depth += 1,
-            "field_expression" if is_operand => {
-                if parent
-                    .child_by_field_name("operator")
-                    .is_some_and(|o| get_node_text(&o, source) == "->")
-                {
-                    depth += 1;
-                }
-            }
-            _ => break,
-        }
-        child = parent;
-    }
-    depth
-}
-
-/// Compiler builtins that compute a value and change nothing (GCC manual,
-/// "Other Built-in Functions"): `likely(x)` inside an assert is not an
-/// unknown call.
-const PURE_BUILTINS: &[&str] = &[
-    "__builtin_expect",
-    "__builtin_expect_with_probability",
-    "__builtin_constant_p",
-    "__builtin_types_compatible_p",
-    "__builtin_choose_expr",
-    "__builtin_offsetof",
-    "__builtin_object_size",
-    "__builtin_dynamic_object_size",
-];
 
 impl Pre31C {
     fn check_macro_call(&self, node: &Node, ctx: &Ctx, violations: &mut Vec<RuleViolation>) {

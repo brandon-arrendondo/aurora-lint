@@ -503,9 +503,46 @@ pub struct ProjectContext {
     /// that looks it up need not spell a path the same way.
     #[serde(default)]
     pub scoped_names_by_file: Arc<HashMap<String, Arc<HashSet<String>>>>,
+    /// Every function's side effects closed over the call graph, built on
+    /// first use from the tables above and shared by every clone. Never
+    /// serialized: it is derived, and rebuilding it costs less than storing
+    /// it. Anything that changes `function_summaries` after it may have
+    /// been built must call [`Self::invalidate_side_effects`].
+    #[serde(skip)]
+    pub(crate) side_effects:
+        Arc<std::sync::OnceLock<Arc<crate::analyze::side_effects::EffectTable>>>,
 }
 
 impl ProjectContext {
+    /// What calling each scanned function can change, as this context's
+    /// file sees the names ([`crate::analyze::side_effects`]).
+    pub fn effects(&self) -> EffectView {
+        let table = self.side_effects.get_or_init(|| {
+            let inputs = crate::analyze::side_effects::EffectInputs {
+                function_macros: &self.function_macros,
+                function_macro_names: &self.function_macro_names,
+                macro_aliases: &self.macro_aliases,
+                struct_field_types: &self.struct_field_types,
+                typedef_types: &self.typedef_types,
+            };
+            Arc::new(crate::analyze::side_effects::EffectTable::build(
+                self.function_summaries
+                    .raw_entries()
+                    .map(|(k, s)| (k, &s.effects)),
+                &inputs,
+            ))
+        });
+        EffectView {
+            table: Arc::clone(table),
+            summaries: self.function_summaries.clone(),
+        }
+    }
+
+    /// Drop a side-effect table built before `function_summaries` changed.
+    pub fn invalidate_side_effects(&mut self) {
+        self.side_effects = Arc::default();
+    }
+
     /// An empty context, as if nothing had been pre-scanned yet.
     pub fn new() -> Self {
         Self::default()
@@ -790,6 +827,37 @@ impl<V> ScopedTable<V> {
         }
     }
 
+    /// The storage key `name` resolves to from this scope: [`qualified_key`]
+    /// for a file's own `static`, else the bare name. `None` when nothing
+    /// answers.
+    pub fn resolve_key(&self, name: &str) -> Option<String> {
+        if let Some((file, bare)) = name.split_once('\0') {
+            return self
+                .by_file
+                .get(file)?
+                .contains_key(bare)
+                .then(|| name.to_string());
+        }
+        match &self.scope {
+            Some(scope) if scope.names.contains(name) => self
+                .by_file
+                .get(&*scope.file)?
+                .contains_key(name)
+                .then(|| qualified_key(&scope.file, name)),
+            _ => self.entries.contains_key(name).then(|| name.to_string()),
+        }
+    }
+
+    /// Every entry under its storage key, whatever the scope: bare names and
+    /// every file's qualified ones.
+    pub fn raw_entries(&self) -> impl Iterator<Item = (String, &V)> + '_ {
+        self.entries.iter().map(|(k, v)| (k.clone(), v)).chain(
+            self.by_file.iter().flat_map(|(file, names)| {
+                names.iter().map(move |(n, v)| (qualified_key(file, n), v))
+            }),
+        )
+    }
+
     /// Whether `name` resolves to an entry from this scope.
     pub fn contains_key(&self, name: &str) -> bool {
         self.get(name).is_some()
@@ -820,6 +888,22 @@ impl<V> ScopedTable<V> {
     /// How many entries [`Self::iter`] yields.
     pub fn len(&self) -> usize {
         self.iter().count()
+    }
+}
+
+/// The side-effect table as one file reads it: a callee name resolves to the
+/// definition that file's summary lookup would (its own `static`, else the
+/// shared one).
+#[derive(Debug, Clone, Default)]
+pub struct EffectView {
+    table: Arc<crate::analyze::side_effects::EffectTable>,
+    summaries: ScopedTable<FunctionSummary>,
+}
+
+impl EffectView {
+    /// What calling `name` can change, when a scanned file defines it.
+    pub fn get(&self, name: &str) -> Option<&crate::analyze::side_effects::ClosedEffects> {
+        self.table.get(&self.summaries.resolve_key(name)?)
     }
 }
 

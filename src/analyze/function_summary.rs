@@ -742,6 +742,11 @@ pub struct FunctionSummary {
     /// declarator is too unusual to be sure.
     #[serde(default)]
     pub declares_no_params: bool,
+    /// What the body writes, reads volatile and calls, before its callees
+    /// are known ([`crate::analyze::side_effects`]). Every definition of the
+    /// name is folded in, so the union governs.
+    #[serde(default)]
+    pub effects: crate::analyze::side_effects::DirectEffects,
 }
 
 impl FunctionSummary {
@@ -924,6 +929,10 @@ pub fn compute_summaries(
     let mut summaries = HashMap::new();
 
     let clearing_names = collect_clearing_names(root, source);
+    let effect_ctx = EffectContext {
+        arms: crate::analyze::macro_expand::collect_function_macro_arms(source),
+        scope: crate::analyze::side_effects::FileScope::of(root, source),
+    };
 
     collect_function_summaries(
         root,
@@ -934,10 +943,18 @@ pub fn compute_summaries(
         string_macros,
         function_macros,
         &clearing_names,
+        &effect_ctx,
         &mut summaries,
     );
 
     summaries
+}
+
+/// What [`crate::analyze::side_effects::collect_direct_effects`] needs from
+/// the file, computed once per file.
+struct EffectContext<'t> {
+    arms: HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>,
+    scope: crate::analyze::side_effects::FileScope<'t>,
 }
 
 /// The callee names that overwrite their first argument's pointee in this
@@ -997,6 +1014,7 @@ fn collect_function_summaries(
     string_macros: &HashMap<String, String>,
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     clearing_names: &HashSet<String>,
+    effect_ctx: &EffectContext<'_>,
     summaries: &mut HashMap<String, FunctionSummary>,
 ) {
     // Iterative pre-order rather than recursion, and the order is the same one
@@ -1015,7 +1033,7 @@ fn collect_function_summaries(
     while let Some(current) = stack.pop() {
         if current.kind() == "function_definition" && !is_macro_function_definition(&current) {
             if let Some(name) = extract_function_name(&current, source) {
-                let summary = analyze_function(
+                let mut summary = analyze_function(
                     &current,
                     source,
                     macros,
@@ -1024,6 +1042,12 @@ fn collect_function_summaries(
                     string_macros,
                     function_macros,
                     clearing_names,
+                );
+                summary.effects = crate::analyze::side_effects::collect_direct_effects(
+                    &current,
+                    source,
+                    &effect_ctx.arms,
+                    &effect_ctx.scope,
                 );
                 // Two definitions of one name in a single translation unit --
                 // the `#ifdef FEATURE` real implementation beside the `#else`
@@ -3816,7 +3840,10 @@ fn merge_arms(into: &mut Vec<Vec<(String, bool)>>, from: Vec<Vec<(String, bool)>
 /// unions -- if any definition might do the thing, callers must be prepared
 /// for it. A MUST fact intersects -- a guarantee holds only if every
 /// definition offers it. Read each field's own comment below.
-pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSummary) {
+pub fn merge_summary_variant(existing: &mut FunctionSummary, mut summary: FunctionSummary) {
+    // Any definition may be the one compiled: what calling the name can
+    // change is the union of what each can.
+    existing.effects.merge(std::mem::take(&mut summary.effects));
     existing.has_env03_taint_source |= summary.has_env03_taint_source;
     existing.returns_tainted |= summary.returns_tainted;
     existing.has_relative_command_write |= summary.has_relative_command_write;

@@ -1376,6 +1376,7 @@ fn prescan_file_list(
         settings: Default::default(),
         built_under: Default::default(),
         memory_declarations: crate::settings::memory::declared().clone(),
+        side_effects: Default::default(),
         known_functions: Arc::new(known_functions),
         header_declared_functions: Arc::new(header_declared_functions),
         function_summaries: function_summaries.into(),
@@ -1661,6 +1662,11 @@ fn scope_summary_callees(
         .into_iter()
         .map(|(c, i)| (scoped_callee(scoped, file, c), i))
         .collect();
+    for call in summary.effects.calls.iter_mut() {
+        if let Some(callee) = call.callee.as_mut() {
+            key(callee);
+        }
+    }
 }
 
 fn merge_documented_params(
@@ -7228,6 +7234,9 @@ pub fn resolve_includes(
             names,
         ))
     });
+    // Resolved headers may define functions, and every table the closure
+    // reads may have grown.
+    context.invalidate_side_effects();
 
     if let Some(reporter) = progress {
         reporter.report_include_resolve_complete(resolved_set.len());

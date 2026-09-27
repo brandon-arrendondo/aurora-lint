@@ -243,11 +243,11 @@ pub static OPTIONS: &[OptionSpec] = &[
         summary: "PRE31-C: an unproven call, in an argument an unsafe macro may evaluate other \
                   than once, is not treated as a side effect: a call to a function with no \
                   definition in the scanned files and no library contract, a call through a \
-                  pointer, a call to a function another scanned file defines that is not yet \
-                  proven pure or impure, or strerror, inet_ntoa, strsignal, gai_strerror, \
-                  getenv, gmtime and asctime (whose only effect is the static buffer they \
-                  return). A callee shown to have a side effect is \
-                  reported either way.",
+                  pointer, strerror, inet_ntoa, strsignal, gai_strerror, getenv, gmtime and \
+                  asctime (whose only effect is the static buffer they return), or a call to \
+                  a scanned function that reaches one of these and nothing shown to have a \
+                  side effect. A callee shown to have a side effect, in whichever scanned \
+                  file it is defined, is reported either way.",
         basis: "C11 5.1.2.3p2 (which CERT quotes) makes a call a side effect only when the \
                 function does one. cppcheck's assertWithSideEffect and Polyspace's MISRA C:2012 \
                 Rule 13.5 flag only callees they can show are impure. clang-tidy's \

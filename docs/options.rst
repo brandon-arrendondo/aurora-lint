@@ -43,7 +43,7 @@ Policy options
    - Basis: C11 6.7.4p8, 7.23; C23 6.7.13.7. A GNU noreturn attribute, [[gnu::noreturn]] included, is proof under neither policy.
 
 ``pre31_unknown_call_pure``
-   PRE31-C: an unproven call, in an argument an unsafe macro may evaluate other than once, is not treated as a side effect: a call to a function with no definition in the scanned files and no library contract, a call through a pointer, a call to a function another scanned file defines that is not yet proven pure or impure, or strerror, inet_ntoa, strsignal, gai_strerror, getenv, gmtime and asctime (whose only effect is the static buffer they return). A callee shown to have a side effect is reported either way.
+   PRE31-C: an unproven call, in an argument an unsafe macro may evaluate other than once, is not treated as a side effect: a call to a function with no definition in the scanned files and no library contract, a call through a pointer, strerror, inet_ntoa, strsignal, gai_strerror, getenv, gmtime and asctime (whose only effect is the static buffer they return), or a call to a scanned function that reaches one of these and nothing shown to have a side effect. A callee shown to have a side effect, in whichever scanned file it is defined, is reported either way.
 
    - Default preset: ``true``; strict preset: ``false``
    - Scope: PRE31-C
