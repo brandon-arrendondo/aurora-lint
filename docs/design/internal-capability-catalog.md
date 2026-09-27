@@ -87,6 +87,25 @@ alternative that matters is not the one it kept (ADR-0010).
 | `expands_to_block_everywhere` | `(defs: &[&HashMap<..>], conditional: &[&HashSet<..>], name) -> bool` | Whether an invocation of `name` is one `{ ... }` block in every configuration, over the union of several tables (project + one file). Adopted by EXP19-C, which counts such an invocation as a braced body. |
 | `defines_function_macro` | `(source: &str, name: &str) -> bool` | Whether the file `#define`s `name` as a function-like macro in any arm, including one the expander cannot use (`##`, variadic). "Is there a body to read?": `function_summary` makes no name-shaped free guess for such a callee (mbedtls's `LOCAL_INPUT_FREE` frees a `##`-pasted local copy, not its argument). |
 
+### `src/utility/cert_c/pp_tokens.rs`
+**Problem solved:** reading a `#define` body as text sees operators,
+parentheses and parameter names inside string and character literals and
+comments (`#define MSG "a + b"`, `printf("x=%d", x)`, `"http://"` cut as a
+`//` comment), and never sees the number literals in it (tree-sitter's
+`preproc_arg` is one opaque token). tree-sitter also stops that token at
+the first `/*`, even inside a literal, and can misparse a function-like
+`#define` whose body holds a comment, so take the body from `define_at`,
+not from the node's `value`. **Use this before writing any new scan of a
+replacement list.**
+
+| Function | Signature | Description |
+|---|---|---|
+| `lex_replacement_list` / `PpToken` / `PpKind` | `(text: &str, function_like: bool) -> Vec<PpToken>` | Preprocessing tokens (C11 6.4) up to the end of the directive (the first newline neither escaped nor in a block comment); comments and continuations skipped. Each token has its kind (identifier, pp-number with suffix and exponent sign, string/char literal with encoding prefix, longest-match punctuator), byte `start`, bracket `depth`, `stringized`/`pasted` (`#`/`##` operand) and `unevaluated` (inside a `sizeof`/`_Alignof`/`typeof` operand or a `_Generic` controlling expression). `PpToken::is(p)` normalizes digraphs; `is_plain_use_of(param)` is an expanded use. |
+| `parse_define_directive` / `define_at` / `DefineDirective` | `(text: &str)` / `(node, source)` -> `Option<DefineDirective>` | A `#define` split into name, parameter list (`None` when object-like; function-like only with no space before `(`; `...` or `args...` for the variadic one) and body, comments read as white space wherever they sit. `define_at` parses at a `preproc_def`/`preproc_function_def` node's `#`, with `body_start` a source offset. `DefineDirective::tokens()` lexes the body. |
+| `mask_literals_and_comments` | `(text: &str) -> String` | The directive's text with comments and literal contents blanked to spaces, same byte length and line breaks (quotes and prefixes kept): for porting an existing character-level heuristic without it reading literals or comments as code. |
+| `matching_close` | `(tokens: &[PpToken], open: usize) -> Option<usize>` | The bracket closing the one at `open`. |
+| `UNEVALUATED_OPERATORS` | `&[&str]` | `sizeof`, `_Alignof`/`alignof`, `typeof`/`typeof_unqual` and their GNU spellings. |
+
 ### `src/analyze/macro_semantics.rs`
 **Problem solved:** shared dataflow semantics for known *external*
 function-like macro families (utlist, uthash, BSD `<sys/queue.h>`) and a

@@ -40,6 +40,10 @@ pub mod overflow_helpers;
 /// INT30-C, INT31-C, INT32-C) stop reading pointer arithmetic as integer
 /// arithmetic.
 pub mod pointer_typing;
+/// Preprocessing tokens of a `#define` replacement list, literals and
+/// comments told apart from code, with `#`/`##`-operand and
+/// unevaluated-operand marks.
+pub mod pp_tokens;
 /// Whether a stored function result is tested against the value that
 /// signals the function's failure, by resolved identity and in a test
 /// context -- the question ERR33-C asks of every assigned result.
