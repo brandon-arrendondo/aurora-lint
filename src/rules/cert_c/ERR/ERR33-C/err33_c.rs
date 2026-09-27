@@ -20,10 +20,30 @@
 //!    is consumed. A direct comparison against the wrong value
 //!    (`if (fgetc(f) == 0)`) is reported as an incorrect check (CWE-253).
 //! 3. A discarded result: a standalone `malloc(n);`. `(void)f()` is an
-//!    explicit discard and is not reported. The printf/puts/fputs/putc
-//!    family, `signal(s, SIG_IGN/SIG_DFL)`, and `time(&t)` with an output
-//!    argument are not reported as discarded. `snprintf`/`vsnprintf` are:
-//!    their result says whether the output was truncated.
+//!    explicit discard and is not reported. Neither is a discard ERR33-C-EX1
+//!    permits, `signal(s, SIG_IGN/SIG_DFL)`, or `time(&t)` with an output
+//!    argument.
+//!
+//! ERR33-C-EX1 is applied as CERT writes it (SEI CERT C Coding Standard,
+//! ERR33-C, cmu-sei.github.io/secure-coding-standards, fetched 2026-09-27).
+//! Its table of "Functions for which Return Values Need Not Be Checked"
+//! names `putchar()`, `putwchar()`, `puts()`, `putws()`, `printf()`,
+//! `vprintf()`, `wprintf()` and `vwprintf()` (and functions with no error
+//! return: `kill_dependency()` and the `mem*`/`str*` copy and set
+//! functions), and then says:
+//!
+//! > The return value of a call to fprintf() or one of its variants
+//! > ( vfprintf() , wfprintf() , vwfprintf() ) or one of the file output
+//! > functions fputc() , fputwc() , fputs() , fputws() may be ignored if the
+//! > output is being directed to stdout or stderr . Otherwise, the return
+//! > value must be checked.
+//!
+//! So `fprintf(fp, ...)` to a file is reported, and `sprintf`, `vsprintf`,
+//! `putc` and `putwc`, which EX1 does not name, are never exempt.
+//! `wfprintf`/`vwfprintf` are CERT's spellings of the standard's `fwprintf`/
+//! `vfwprintf`; both spellings are accepted. `snprintf`/`vsnprintf` are not
+//! in EX1 either, and their result also says whether the output was
+//! truncated.
 //!
 //! `fclose()` gets no exception. ERR33-C-EX1 does not list it, and a failing
 //! `fclose()` on a cleanup path is still a failure; the compliant way to
@@ -234,34 +254,10 @@ impl Err33C {
             let function_name = get_node_text(&function_node, source);
 
             if self.is_error_returning_function(function_name) {
-                // Suppress formatted output functions.
-                // Checking return values of printf-family functions is
-                // impractical — failures are rare and unrecoverable.
-                // This applies to both stdout/stderr and file output:
-                // serialization code (e.g., config writers) calls fprintf
-                // hundreds of times; checking each is infeasible.
-                //
-                // snprintf/vsnprintf are NOT included here: unlike the rest
-                // of the family, their return value doesn't just signal a
-                // rare I/O error -- it signals whether the destination
-                // buffer was truncated (return >= size), which is the
-                // specific hazard ERR33-C calls out for these two
-                // functions (e.g. attacker-controlled width/precision
-                // producing a wider result than the buffer can hold).
-                if matches!(
-                    function_name,
-                    "printf"
-                        | "fprintf"
-                        | "sprintf"
-                        | "vprintf"
-                        | "vfprintf"
-                        | "vsprintf"
-                        | "puts"
-                        | "putchar"
-                        | "fputs"
-                        | "fputc"
-                        | "putc"
-                ) {
+                // ERR33-C-EX1, exactly as written (see the module doc):
+                // console output may be discarded, output to any other
+                // stream may not, and sprintf/vsprintf/putc are not in it.
+                if ex1_permits_discard(function_name, call_node, source) {
                     return;
                 }
 
@@ -1141,4 +1137,35 @@ impl Err33C {
 struct ErrorInfo {
     description: String,
     suggestion: String,
+}
+
+/// Whether ERR33-C-EX1 lets a call to `function_name` have its result
+/// discarded: always for the console functions in its table, and for the
+/// `fprintf` and file-output families only when the stream argument is
+/// `stdout` or `stderr`. A stream held in a variable is not followed: it may
+/// be a file, so the discard is reported.
+fn ex1_permits_discard(function_name: &str, call_node: &Node, source: &str) -> bool {
+    // Index of the stream among the call's arguments, for the functions EX1
+    // exempts only when writing to the console.
+    let stream_index = match function_name {
+        "putchar" | "putwchar" | "puts" | "putws" | "printf" | "vprintf" | "wprintf"
+        | "vwprintf" => return true,
+        "fprintf" | "vfprintf" | "fwprintf" | "vfwprintf" | "wfprintf" | "vwfprintf" => 0,
+        "fputc" | "fputwc" | "fputs" | "fputws" => 1,
+        _ => return false,
+    };
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let Some(mut stream) = args.named_children(&mut cursor).nth(stream_index) else {
+        return false;
+    };
+    while stream.kind() == "parenthesized_expression" {
+        match stream.named_child(0) {
+            Some(inner) => stream = inner,
+            None => return false,
+        }
+    }
+    matches!(get_node_text(&stream, source), "stdout" | "stderr")
 }
