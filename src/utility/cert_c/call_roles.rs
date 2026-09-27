@@ -205,6 +205,10 @@ const WRITES_THROUGH_POINTEE: &[(&str, usize)] = &[("getline", 0), ("getdelim", 
 /// argument `idx` points at: `getline`'s `&line`. The argument is the
 /// address of the pointer, not the pointer, so a caller resolves `&line`
 /// to `line` before asking what it holds.
+///
+/// Known gap: `getline`/`getdelim` may `realloc` the block when the line is
+/// longer, moving the data into a new one; a caller that tracks the block
+/// by its pointer does not see that move.
 pub fn writes_through_pointee_of_arg(name: &str, idx: usize) -> bool {
     WRITES_THROUGH_POINTEE
         .iter()

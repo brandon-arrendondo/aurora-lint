@@ -67,7 +67,7 @@ use crate::utility::cert_c::ast_utils::{
     get_identifier_from_declarator, get_node_text, resolve_identifier_declarator,
 };
 use crate::utility::cert_c::guard_dominance::{
-    in_expression_branch_outside, preproc_choices_outside, runs_before_on_every_path,
+    in_expression_branch_outside, preproc_choices_outside, runs_before_on_every_path, PreprocChoice,
 };
 use crate::utility::cert_c::{call_roles, credential_sinks};
 use lang_parsing_substrate::query;
@@ -575,11 +575,15 @@ impl Mem06C {
 
 /// Whether the guarantee `step` gives `bound` holds in every build
 /// configuration (ADR-0010): for each `#if` chain that compiles `step` but
-/// not necessarily `bound`, the chain has an `#else` and every arm holds a
-/// call that `is_guard` accepts and that precedes `bound`. So
-/// `#ifdef _WIN32 VirtualLock(..) #else mlock(..) #endif` covers the store,
-/// while an `#ifdef USE_MLOCK` with no `#else` leaves the other build
-/// unprotected. A chain nested inside another arm is not looked into.
+/// not necessarily `bound`, the chain has an `#else` and every live arm
+/// holds a call that `is_guard` accepts, that precedes `bound`, and whose
+/// own guarantee holds in every configuration of the chains nested inside
+/// that arm. So `#ifdef _WIN32 VirtualLock(..) #else mlock(..) #endif`
+/// covers the store, while an `#ifdef USE_MLOCK` with no `#else`, or an
+/// `#else` whose `mlock` sits under an inner `#ifdef HAVE_MLOCK`, leaves a
+/// build unprotected. An arm the file itself proves dead (`#if 0`, by
+/// `dead_code_ranges`' file-only evidence, never a platform assumption) is
+/// no configuration.
 fn in_every_configuration(
     step: &Node,
     bound: &Node,
@@ -588,14 +592,62 @@ fn in_every_configuration(
     is_guard: &dyn Fn(&Node) -> bool,
     precedes: &dyn Fn(&Node, &Node) -> bool,
 ) -> bool {
-    preproc_choices_outside(step, bound, source)
+    let choices = preproc_choices_outside(step, bound, source);
+    if choices.is_empty() {
+        return true;
+    }
+    let dead: Vec<(usize, usize)> = lang_parsing_substrate::dead_code_ranges(source)
+        .into_iter()
+        .map(|r| (r.start_line, r.end_line))
+        .collect();
+    covered_within(
+        &choices, None, bound, calls, source, &dead, is_guard, precedes,
+    )
+}
+
+/// The recursive step of [`in_every_configuration`]: every chain in
+/// `choices` lying inside `within` (all of them when `None`) is complete and
+/// each of its live arms holds a guard covered by the chains nested inside
+/// that arm. Each level only looks strictly inside an arm, so it ends.
+#[allow(clippy::too_many_arguments)]
+fn covered_within(
+    choices: &[PreprocChoice],
+    within: Option<(usize, usize)>,
+    bound: &Node,
+    calls: &[Node],
+    source: &str,
+    dead: &[(usize, usize)],
+    is_guard: &dyn Fn(&Node) -> bool,
+    precedes: &dyn Fn(&Node, &Node) -> bool,
+) -> bool {
+    let line_of = |byte: usize| source[..byte.min(source.len())].matches('\n').count() + 1;
+    let arm_is_dead = |(s, e): (usize, usize)| {
+        let first = line_of(s) + 1;
+        let last = line_of(e.saturating_sub(1)).max(first);
+        dead.iter().any(|&(ds, de)| ds <= first && last <= de)
+    };
+    choices
         .iter()
+        .filter(|c| within.is_none_or(|(ws, we)| c.arms.iter().all(|&(s, e)| ws <= s && e <= we)))
         .all(|choice| {
             choice.complete
-                && choice.arms.iter().all(|&(s, e)| {
-                    calls.iter().any(|c| {
-                        (s..e).contains(&c.start_byte()) && is_guard(c) && precedes(c, bound)
-                    })
+                && choice.arms.iter().all(|&arm| {
+                    arm_is_dead(arm)
+                        || calls.iter().any(|c| {
+                            (arm.0..arm.1).contains(&c.start_byte())
+                                && is_guard(c)
+                                && precedes(c, bound)
+                                && covered_within(
+                                    &preproc_choices_outside(c, bound, source),
+                                    Some(arm),
+                                    bound,
+                                    calls,
+                                    source,
+                                    dead,
+                                    is_guard,
+                                    precedes,
+                                )
+                        })
                 })
         })
 }

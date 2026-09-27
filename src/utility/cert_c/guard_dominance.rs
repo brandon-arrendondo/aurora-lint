@@ -2038,8 +2038,9 @@ const PREPROC_IF_LIKE: &[&str] = &[
 /// unconditional, since within one configuration it is; a caller that must
 /// hold in EVERY configuration asks this too and requires its guarantee in
 /// each arm of each chain. A file's include guard is not a configuration
-/// and is skipped. Only the chains enclosing `step` are named; a chain
-/// nested inside another arm is that arm's own business.
+/// and is skipped. Only the chains enclosing `step` are named: a guard found
+/// in another arm has its own nested chains, which the caller asks about by
+/// calling this again for that guard (MEM06-C's `in_every_configuration`).
 pub fn preproc_choices_outside(step: &Node, target: &Node, source: &str) -> Vec<PreprocChoice> {
     let encloses = |(s, e): (usize, usize)| s <= target.start_byte() && target.end_byte() <= e;
     let mut out = Vec::new();

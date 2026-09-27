@@ -1300,14 +1300,7 @@ fn analyze_function(
             summary.free_arms.entry(idx).or_default().push(arms.clone());
         }
         credit_clears_params(&sweep.calls, source, &params, clearing_names, &mut summary);
-        credit_credential_facts(
-            func_node,
-            &body,
-            &sweep.calls,
-            source,
-            &params,
-            &mut summary,
-        );
+        credit_credential_facts(func_node, &body, &sweep.calls, source, &mut summary);
 
         // Compute return value range for integer-returning functions (only when VRA is needed)
         if compute_return_ranges && !is_void_return && !is_pointer_return {
@@ -4129,7 +4122,6 @@ fn credit_credential_facts(
     body: &Node,
     calls: &[Node],
     source: &str,
-    params: &[String],
     summary: &mut FunctionSummary,
 ) {
     use crate::utility::cert_c::credential_sinks;
@@ -4142,6 +4134,12 @@ fn credit_credential_facts(
     // locks is known only once every summary is folded.
     let mut handed: Vec<(String, Node, String, usize)> = Vec::new();
     let mut sequence: Vec<(usize, String, bool)> = Vec::new();
+    // Each parameter keyed like `arg_object`, so a shadowing local of the
+    // same spelling is not taken for the parameter.
+    let param_keys: Vec<Option<String>> = parameter_identifiers(func_node)
+        .iter()
+        .map(|id| id.map(|id| object_key(&id, source)))
+        .collect();
     for &call in calls {
         let Some(function) = call.child_by_field_name("function") else {
             continue;
@@ -4158,12 +4156,9 @@ fn credit_credential_facts(
             .filter_map(|i| arguments.named_child(i))
             .filter(|a| a.kind() != "comment")
             .collect();
-        let arg_var = |i: usize| -> Option<String> {
-            let a = init_state::strip_arg_casts(args.get(i)?);
-            (a.kind() == "identifier").then(|| text(&a))
-        };
-        // The same argument keyed by the object it names (ADR-0006), for
-        // matching a lock or a hand-off to the block a return names.
+        // An argument keyed by the object it names (ADR-0006), for matching
+        // a lock, a hand-off or a sink argument to a parameter or to the
+        // block a return names.
         let arg_object = |i: usize| -> Option<String> {
             let a = init_state::strip_arg_casts(args.get(i)?);
             (a.kind() == "identifier").then(|| object_key(&a, source))
@@ -4176,9 +4171,11 @@ fn credit_credential_facts(
                 if row.when_arg.is_none() {
                     continue;
                 }
-                if let Some(idx) = arg_var(row.arg)
-                    .and_then(|v| params.iter().position(|p| !p.is_empty() && *p == v))
-                {
+                if let Some(idx) = arg_object(row.arg).and_then(|k| {
+                    param_keys
+                        .iter()
+                        .position(|p| p.as_deref() == Some(k.as_str()))
+                }) {
                     summary.conditional_sink_hits.push((name.clone(), idx));
                 }
             }
@@ -4328,6 +4325,39 @@ fn credit_returns_locked(
 
 fn credential_sinks_marker() -> String {
     PROTECTS_PROCESS_MARKER.to_string()
+}
+
+/// Each parameter's declared identifier, in order (`None` for an unnamed or
+/// `void` parameter).
+fn parameter_identifiers<'a>(func_node: &Node<'a>) -> Vec<Option<Node<'a>>> {
+    let Some(params) = func_node
+        .child_by_field_name("declarator")
+        .and_then(|d| {
+            lang_parsing_substrate::query::find_first_descendant(d, |n| {
+                n.kind() == "function_declarator"
+            })
+            .or_else(|| (d.kind() == "function_declarator").then_some(d))
+        })
+        .and_then(|f| f.child_by_field_name("parameters"))
+    else {
+        return Vec::new();
+    };
+    let mut cursor = params.walk();
+    params
+        .named_children(&mut cursor)
+        .filter(|p| p.kind() == "parameter_declaration")
+        .map(|p| {
+            p.child_by_field_name("declarator").and_then(|d| {
+                if d.kind() == "identifier" {
+                    Some(d)
+                } else {
+                    lang_parsing_substrate::query::find_first_descendant(d, |n| {
+                        n.kind() == "identifier"
+                    })
+                }
+            })
+        })
+        .collect()
 }
 
 /// The object an identifier occurrence names, as a key: its resolved
