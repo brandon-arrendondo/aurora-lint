@@ -171,14 +171,39 @@ enum Merge {
     /// frees nor clears it. A definition the expander cannot read proves
     /// nothing, so the fact is empty.
     Intersect,
-    /// Intersection over the definitions that mention the parameter
-    /// ([`Live::All`] for a write or a null): a definition that drops the argument entirely
-    /// (hostap's `for_each_mld_link(partner, self)` is `if (false)` without
-    /// CONFIG_IEEE80211BE) neither reads nor frees it in that build, so it
-    /// is no build in which the argument is left unwritten and then read,
-    /// or freed and left dangling. An unreadable definition still empties
-    /// the fact.
-    IntersectWhereUsed,
+    /// Intersection ([`Live::All`] for a write or a null), except over a
+    /// definition that never mentions the parameter AND expands to a
+    /// constant-false statement header (hostap's `for_each_mld_link(partner,
+    /// self)` is `if (false)` without CONFIG_IEEE80211BE). The caller's
+    /// statement under that header is dead in that build, so the reads of
+    /// the argument it holds are not reads there. A definition that merely
+    /// drops the argument (`#define GET(v) 0`) still leaves it unwritten for
+    /// what follows, and counts. An unreadable definition still empties the
+    /// fact.
+    IntersectExceptDeadHeader,
+}
+
+/// Whether a replacement list is nothing but an `if`/`while`/`for` header
+/// whose condition is constant false (`if (false)`, `while (0)`,
+/// `for (;0;)`): the statement written after the invocation is then never
+/// executed.
+fn is_constant_false_header(body: &str) -> bool {
+    let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+    let is_false = |cond: &str| matches!(cond, "0" | "false" | "0L" | "0U" | "(0)" | "(false)");
+    let inner = |prefix: &str| {
+        compact
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(')'))
+            .map(str::to_string)
+    };
+    if let Some(cond) = inner("if(").or_else(|| inner("while(")) {
+        return is_false(&cond);
+    }
+    if let Some(header) = inner("for(") {
+        let parts: Vec<&str> = header.split(';').collect();
+        return parts.len() == 3 && is_false(parts[1]);
+    }
+    false
 }
 
 /// `fact` of `name`, over every live definition `table` holds for it,
@@ -208,7 +233,7 @@ fn over_live_definitions(
             Some(d) if d.params.len() == arity => d,
             _ => match merge {
                 Merge::Union => continue,
-                Merge::Intersect | Merge::IntersectWhereUsed => return Vec::new(),
+                Merge::Intersect | Merge::IntersectExceptDeadHeader => return Vec::new(),
             },
         };
         let view = WithDefinition {
@@ -222,8 +247,9 @@ fn over_live_definitions(
             continue;
         }
         for i in 0..arity {
-            if merge == Merge::IntersectWhereUsed
+            if merge == Merge::IntersectExceptDeadHeader
                 && !contains_whole_ident(&definition.body, &definition.params[i])
+                && is_constant_false_header(&definition.body)
             {
                 continue;
             }
@@ -1974,7 +2000,7 @@ pub fn macro_output_param_indices(
 ) -> Vec<usize> {
     let merge = match live {
         Live::Any => Merge::Union,
-        Live::All => Merge::IntersectWhereUsed,
+        Live::All => Merge::IntersectExceptDeadHeader,
     };
     over_live_definitions(table, name, merge, output_param_indices_in)
 }
@@ -2049,7 +2075,7 @@ pub fn macro_nulls_param_indices(
 ) -> Vec<usize> {
     let merge = match live {
         Live::Any => Merge::Union,
-        Live::All => Merge::IntersectWhereUsed,
+        Live::All => Merge::IntersectExceptDeadHeader,
     };
     over_live_definitions(table, name, merge, nulls_param_indices_in)
 }
@@ -2102,7 +2128,7 @@ pub fn macro_writes_param_indices(
 ) -> Vec<usize> {
     let merge = match live {
         Live::Any => Merge::Union,
-        Live::All => Merge::IntersectWhereUsed,
+        Live::All => Merge::IntersectExceptDeadHeader,
     };
     over_live_definitions(table, name, merge, writes_param_indices_in)
 }
@@ -3342,7 +3368,7 @@ mod tests {
     }
 
     #[test]
-    fn a_definition_that_drops_the_argument_does_not_undo_a_write() {
+    fn a_constant_false_header_that_drops_the_argument_does_not_undo_a_write() {
         // hostap's for_each_mld_link: a list walk that assigns `partner`
         // with CONFIG_IEEE80211BE, `if (false)` without it.
         let t = table(concat!(
@@ -3356,6 +3382,16 @@ mod tests {
             macro_output_param_indices(&t, "for_each_link", Live::All),
             vec![0]
         );
+        // A definition that only drops the argument leaves it unwritten
+        // for what follows: no output every build agrees on.
+        let drops = table(concat!(
+            "#ifdef X\n",
+            "#define GET(v) ((v) = f())\n",
+            "#else\n",
+            "#define GET(v) 0\n",
+            "#endif\n",
+        ));
+        assert!(macro_output_param_indices(&drops, "GET", Live::All).is_empty());
         // A definition that reads the argument instead still undoes it.
         let reads = table(concat!(
             "#ifdef FAST\n",
