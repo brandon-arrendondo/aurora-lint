@@ -3,6 +3,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
+use crate::utility::cert_c::pp_tokens::define_at;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -30,43 +31,21 @@ impl CertRule for Pre12C {
 impl Pre12C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         for n in query::find_descendants(*node, |_| true) {
-            // Look for preprocessor macro definitions
-            if n.kind() == "preproc_function_def" {
-                let text = n.utf8_text(source.as_bytes()).unwrap_or("");
-
-                // Skip macros using __extension__ (GCC extension that handles evaluation correctly)
-                if !text.contains("__extension__") {
-                    // Check if macro uses parameters multiple times in definition
-                    // Extract parameter names from #define NAME(param1, param2)
-                    if let Some(params) = self.extract_macro_params(text) {
-                        let definition = text.split(')').skip(1).collect::<String>();
-
-                        // Check if any parameter appears more than once in the definition
-                        for param in params {
-                            // Count occurrences of parameter as standalone identifier
-                            let mut count = 0;
-                            for word in definition.split(|c: char| !c.is_alphanumeric() && c != '_')
-                            {
-                                if word == param {
-                                    count += 1;
-                                }
-                            }
-
-                            if count > 1 {
-                                violations.push(RuleViolation {
-                                    rule_id: self.rule_id().to_string(),
-                                    severity: self.severity(),
-                                    line: n.start_position().row + 1,
-                                    column: n.start_position().column + 1,
-                                    file_path: String::new(),
-                                    message: format!("Macro evaluates parameter '{}' multiple times; use inline function instead", param),
-                                    suggestion: Some("Replace macro with inline function to avoid multiple evaluation".to_string()),
-                                    requires_manual_review: None,
-                                });
-                                break; // Only report once per macro
-                            }
-                        }
-                    }
+            // Look for preprocessor macro definitions. A comment in a
+            // function-like macro's body can make tree-sitter read it as an
+            // object-like one, so the directive's own text decides.
+            if matches!(n.kind(), "preproc_function_def" | "preproc_def") {
+                if let Some(param) = self.parameter_evaluated_twice(&n, source) {
+                    violations.push(RuleViolation {
+                        rule_id: self.rule_id().to_string(),
+                        severity: self.severity(),
+                        line: n.start_position().row + 1,
+                        column: n.start_position().column + 1,
+                        file_path: String::new(),
+                        message: format!("Macro evaluates parameter '{}' multiple times; use inline function instead", param),
+                        suggestion: Some("Replace macro with inline function to avoid multiple evaluation".to_string()),
+                        requires_manual_review: None,
+                    });
                 }
             }
 
@@ -98,21 +77,30 @@ impl Pre12C {
         }
     }
 
-    fn extract_macro_params(&self, text: &str) -> Option<Vec<String>> {
-        // Extract params from #define NAME(param1, param2) definition
-        if let Some(start) = text.find('(') {
-            if let Some(end) = text.find(')') {
-                let params_str = &text[start + 1..end];
-                let params: Vec<String> = params_str
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if !params.is_empty() {
-                    return Some(params);
-                }
-            }
+    /// The first named parameter a function-like macro's body evaluates
+    /// more than once. Only a plain use is an evaluation: not one inside a
+    /// string or character literal or a comment, not the operand of `#` or
+    /// `##` (spelled into the expansion, never evaluated), and not one inside
+    /// `sizeof`, `_Alignof`, `typeof` or a `_Generic` controlling expression.
+    /// A body using `__extension__` is skipped (GCC statement expressions
+    /// that evaluate their arguments once).
+    fn parameter_evaluated_twice(&self, node: &Node, source: &str) -> Option<String> {
+        let define = define_at(node, source)?;
+        let params = define.params.as_ref()?;
+        let tokens = define.tokens();
+        if tokens.iter().any(|t| t.text == "__extension__") {
+            return None;
         }
-        None
+        params
+            .iter()
+            .filter(|p| !p.ends_with("..."))
+            .find(|p| {
+                tokens
+                    .iter()
+                    .filter(|t| t.is_plain_use_of(p) && !t.unevaluated)
+                    .count()
+                    > 1
+            })
+            .cloned()
     }
 }
