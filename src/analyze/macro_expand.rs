@@ -766,13 +766,16 @@ fn split_function_like_define(line: &str) -> Option<(String, Vec<String>, String
 
 /// The identifiers in a replacement list that are operands of `#` or `##`,
 /// and those that appear with neither next to them, skipping string and
-/// character literals.
+/// character literals. GNU's `, ## __VA_ARGS__` only drops the comma when
+/// the variable arguments are empty; they are still macro-expanded, so the
+/// identifier after a `, ##` counts as a plain use.
 fn operand_tokens(body: &str) -> (Vec<String>, Vec<String>) {
     #[derive(PartialEq)]
     enum Tok {
         Ident(String),
         Hash,
         HashHash,
+        Comma,
         Other,
     }
     let chars: Vec<char> = body.chars().collect();
@@ -808,7 +811,7 @@ fn operand_tokens(body: &str) -> (Vec<String>, Vec<String>) {
             tokens.push(Tok::Ident(chars[start..i].iter().collect()));
         } else {
             i += 1;
-            tokens.push(Tok::Other);
+            tokens.push(if c == ',' { Tok::Comma } else { Tok::Other });
         }
     }
     let mut operands = Vec::new();
@@ -817,7 +820,13 @@ fn operand_tokens(body: &str) -> (Vec<String>, Vec<String>) {
         let Tok::Ident(name) = tok else { continue };
         let before = k.checked_sub(1).map(|p| &tokens[p]);
         let after = tokens.get(k + 1);
-        if matches!(before, Some(Tok::Hash) | Some(Tok::HashHash)) || after == Some(&Tok::HashHash)
+        let comma_swallow = before == Some(&Tok::HashHash)
+            && k.checked_sub(2).map(|p| &tokens[p]) == Some(&Tok::Comma)
+            && after != Some(&Tok::HashHash);
+        if comma_swallow {
+            plain.push(name.clone());
+        } else if matches!(before, Some(Tok::Hash) | Some(Tok::HashHash))
+            || after == Some(&Tok::HashHash)
         {
             operands.push(name.clone());
         } else {
@@ -2669,6 +2678,8 @@ mod tests {
                    #define NAMED(v, s) case v: return #v; case s: return #s\n\
                    #define HALF(a, b) (a) + (b ## _n)\n\
                    #define VA(fmt, ...) f(#__VA_ARGS__, __VA_ARGS__)\n\
+                   #define GNU(fmt, ...) g(fmt, ##__VA_ARGS__)\n\
+                   #define GNU_NAMED(fmt, args...) g(#fmt, ## args)\n\
                    #ifdef B\n\
                    #define ARM(call) ((call) < 0)\n\
                    #else\n\
@@ -2690,6 +2701,9 @@ mod tests {
         assert_eq!(get("NAMED"), None);
         assert_eq!(get("HALF"), Some((vec![1], None)));
         assert_eq!(get("VA"), None);
+        // GNU's `, ##` before the variable arguments pastes nothing.
+        assert_eq!(get("GNU"), None);
+        assert_eq!(get("GNU_NAMED"), Some((vec![0], Some(1))));
         // Decided per definition: the pasting branch alone makes it one.
         assert_eq!(get("ARM"), Some((vec![0], None)));
         let args = out["ARGS"].clone();
