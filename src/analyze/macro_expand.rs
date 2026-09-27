@@ -146,17 +146,25 @@ impl MacroLookup for WithDefinition<'_> {
 /// definition is a configuration some build compiles, and a violation any
 /// configuration produces is reported (ADR-0010 D1), so the merge goes
 /// toward the finding.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Merge {
     /// Union, for a free: a build whose definition frees the argument uses
     /// freed memory if the caller touches it again. A definition the
     /// expander cannot read adds nothing.
     Union,
-    /// Intersection, for a fact that clears the state a finding rests on (a
-    /// null, a write, a clear): it holds only if every definition does it. A
-    /// definition the expander cannot read proves nothing, so the fact is
-    /// empty.
+    /// Intersection, for a clear: it holds only if every definition does
+    /// it, since a build whose definition leaves the argument alone leaves
+    /// it uncleared. A definition the expander cannot read proves nothing,
+    /// so the fact is empty.
     Intersect,
+    /// Intersection over the definitions that mention the parameter, for a
+    /// write or a null: a definition that drops the argument entirely
+    /// (hostap's `for_each_mld_link(partner, self)` is `if (false)` without
+    /// CONFIG_IEEE80211BE) neither reads nor frees it in that build, so it
+    /// is no build in which the argument is left unwritten and then read,
+    /// or freed and left dangling. An unreadable definition still empties
+    /// the fact.
+    IntersectWhereUsed,
 }
 
 /// `fact` of `name`, over every live definition `table` holds for it,
@@ -168,33 +176,51 @@ fn over_live_definitions(
     merge: Merge,
     fact: impl Fn(&dyn MacroLookup, &str) -> Vec<usize>,
 ) -> Vec<usize> {
+    use std::collections::BTreeSet;
     let Some(m) = table.get(name) else {
         return Vec::new();
     };
     if m.alternatives.is_empty() {
         return fact(table, name);
     }
-    let mut merged: Option<std::collections::BTreeSet<usize>> = None;
+    let arity = m.params.len();
+    // Per index: whether every definition that counts for it has the fact,
+    // and whether any definition counted at all.
+    let mut holds = vec![true; arity];
+    let mut voted = vec![false; arity];
+    let mut union: BTreeSet<usize> = BTreeSet::new();
     for alt in &m.alternatives {
-        let Some(definition) = alt else {
-            match merge {
+        let definition = match alt {
+            Some(d) if d.params.len() == arity => d,
+            _ => match merge {
                 Merge::Union => continue,
-                Merge::Intersect => return Vec::new(),
-            }
+                Merge::Intersect | Merge::IntersectWhereUsed => return Vec::new(),
+            },
         };
         let view = WithDefinition {
             table,
             name,
             definition,
         };
-        let found: std::collections::BTreeSet<usize> = fact(&view, name).into_iter().collect();
-        merged = Some(match (merged, merge) {
-            (None, _) => found,
-            (Some(acc), Merge::Union) => &acc | &found,
-            (Some(acc), Merge::Intersect) => &acc & &found,
-        });
+        let found: BTreeSet<usize> = fact(&view, name).into_iter().collect();
+        if merge == Merge::Union {
+            union.extend(found);
+            continue;
+        }
+        for i in 0..arity {
+            if merge == Merge::IntersectWhereUsed
+                && !contains_whole_ident(&definition.body, &definition.params[i])
+            {
+                continue;
+            }
+            voted[i] = true;
+            holds[i] &= found.contains(&i);
+        }
     }
-    merged.map(|s| s.into_iter().collect()).unwrap_or_default()
+    if merge == Merge::Union {
+        return union.into_iter().collect();
+    }
+    (0..arity).filter(|&i| voted[i] && holds[i]).collect()
 }
 
 /// Maximum recursive-rescan depth (defense against pathological input; real
@@ -1911,7 +1937,12 @@ pub fn macro_output_param_indices(
     table: &HashMap<String, FunctionMacro>,
     name: &str,
 ) -> Vec<usize> {
-    over_live_definitions(table, name, Merge::Intersect, output_param_indices_in)
+    over_live_definitions(
+        table,
+        name,
+        Merge::IntersectWhereUsed,
+        output_param_indices_in,
+    )
 }
 
 fn output_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
@@ -1978,7 +2009,12 @@ pub fn macro_expands_to_case_label(table: &HashMap<String, FunctionMacro>, name:
 /// (mosquitto `mosquitto_FREE`, `SAFE_FREE` share the idiom — engine, not
 /// allowlist.)
 pub fn macro_nulls_param_indices(table: &HashMap<String, FunctionMacro>, name: &str) -> Vec<usize> {
-    over_live_definitions(table, name, Merge::Intersect, nulls_param_indices_in)
+    over_live_definitions(
+        table,
+        name,
+        Merge::IntersectWhereUsed,
+        nulls_param_indices_in,
+    )
 }
 
 fn nulls_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
@@ -2026,7 +2062,12 @@ pub fn macro_writes_param_indices(
     table: &HashMap<String, FunctionMacro>,
     name: &str,
 ) -> Vec<usize> {
-    over_live_definitions(table, name, Merge::Intersect, writes_param_indices_in)
+    over_live_definitions(
+        table,
+        name,
+        Merge::IntersectWhereUsed,
+        writes_param_indices_in,
+    )
 }
 
 fn writes_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
@@ -3220,6 +3261,29 @@ mod tests {
             "#endif\n",
         ));
         assert_eq!(macro_nulls_param_indices(&both, "SAFE_FREE"), vec![0]);
+    }
+
+    #[test]
+    fn a_definition_that_drops_the_argument_does_not_undo_a_write() {
+        // hostap's for_each_mld_link: a list walk that assigns `partner`
+        // with CONFIG_IEEE80211BE, `if (false)` without it.
+        let t = table(concat!(
+            "#ifdef CONFIG_IEEE80211BE\n",
+            "#define for_each_link(partner, self) for ((partner) = (self)->first; (partner); (partner) = (partner)->next)\n",
+            "#else\n",
+            "#define for_each_link(partner, self) if (0)\n",
+            "#endif\n",
+        ));
+        assert_eq!(macro_output_param_indices(&t, "for_each_link"), vec![0]);
+        // A definition that reads the argument instead still undoes it.
+        let reads = table(concat!(
+            "#ifdef FAST\n",
+            "#define FETCH(out, v) ((out) = (v))\n",
+            "#else\n",
+            "#define FETCH(out, v) log_value((out), (v))\n",
+            "#endif\n",
+        ));
+        assert!(macro_output_param_indices(&reads, "FETCH").is_empty());
     }
 
     #[test]
