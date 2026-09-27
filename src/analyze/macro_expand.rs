@@ -698,11 +698,22 @@ pub fn collect_macro_operand_params(source: &str, out: &mut HashMap<String, Oper
                 .iter()
                 .position(|p| p.trim_end_matches("...").trim() == token)
         };
-        let (operands, plain) = operand_tokens(&strip_comments(&body));
-        let plain: HashSet<usize> = plain
+        let (mut operands, plain, comma_pasted) = operand_tokens(&strip_comments(&body));
+        let mut plain: HashSet<usize> = plain
             .iter()
             .filter_map(|token| param_index(token))
             .collect();
+        // `, ## __VA_ARGS__` (or `, ## args` for `args...`) is GNU's comma
+        // swallow, which still expands the arguments; any other `, ## x`
+        // pastes.
+        for token in comma_pasted {
+            match param_index(&token) {
+                Some(index) if Some(index) == variadic_at => {
+                    plain.insert(index);
+                }
+                _ => operands.push(token),
+            }
+        }
         let indices: Vec<usize> = operands
             .iter()
             .filter_map(|token| param_index(token))
@@ -765,11 +776,13 @@ fn split_function_like_define(line: &str) -> Option<(String, Vec<String>, String
 }
 
 /// The identifiers in a replacement list that are operands of `#` or `##`,
-/// and those that appear with neither next to them, skipping string and
-/// character literals. GNU's `, ## __VA_ARGS__` only drops the comma when
-/// the variable arguments are empty; they are still macro-expanded, so the
-/// identifier after a `, ##` counts as a plain use.
-fn operand_tokens(body: &str) -> (Vec<String>, Vec<String>) {
+/// those that appear with neither next to them, and those pasted onto a
+/// comma (`, ## x`), skipping string and character literals. The caller
+/// decides the last group: GNU's `, ## __VA_ARGS__` only drops the comma
+/// when the variable arguments are empty, and they are still
+/// macro-expanded, but a comma pasted to any other parameter is a real
+/// paste.
+fn operand_tokens(body: &str) -> (Vec<String>, Vec<String>, Vec<String>) {
     #[derive(PartialEq)]
     enum Tok {
         Ident(String),
@@ -816,6 +829,7 @@ fn operand_tokens(body: &str) -> (Vec<String>, Vec<String>) {
     }
     let mut operands = Vec::new();
     let mut plain = Vec::new();
+    let mut comma_pasted = Vec::new();
     for (k, tok) in tokens.iter().enumerate() {
         let Tok::Ident(name) = tok else { continue };
         let before = k.checked_sub(1).map(|p| &tokens[p]);
@@ -824,7 +838,7 @@ fn operand_tokens(body: &str) -> (Vec<String>, Vec<String>) {
             && k.checked_sub(2).map(|p| &tokens[p]) == Some(&Tok::Comma)
             && after != Some(&Tok::HashHash);
         if comma_swallow {
-            plain.push(name.clone());
+            comma_pasted.push(name.clone());
         } else if matches!(before, Some(Tok::Hash) | Some(Tok::HashHash))
             || after == Some(&Tok::HashHash)
         {
@@ -833,7 +847,7 @@ fn operand_tokens(body: &str) -> (Vec<String>, Vec<String>) {
             plain.push(name.clone());
         }
     }
-    (operands, plain)
+    (operands, plain, comma_pasted)
 }
 
 /// The function-like macro names in scope for one file: every scanned
@@ -2680,6 +2694,7 @@ mod tests {
                    #define VA(fmt, ...) f(#__VA_ARGS__, __VA_ARGS__)\n\
                    #define GNU(fmt, ...) g(fmt, ##__VA_ARGS__)\n\
                    #define GNU_NAMED(fmt, args...) g(#fmt, ## args)\n\
+                   #define COMMA_FIXED(a, b) f(a, ## b)\n\
                    #ifdef B\n\
                    #define ARM(call) ((call) < 0)\n\
                    #else\n\
@@ -2704,6 +2719,8 @@ mod tests {
         // GNU's `, ##` before the variable arguments pastes nothing.
         assert_eq!(get("GNU"), None);
         assert_eq!(get("GNU_NAMED"), Some((vec![0], Some(1))));
+        // ...but only before the variadic parameter.
+        assert_eq!(get("COMMA_FIXED"), Some((vec![1], None)));
         // Decided per definition: the pasting branch alone makes it one.
         assert_eq!(get("ARM"), Some((vec![0], None)));
         let args = out["ARGS"].clone();

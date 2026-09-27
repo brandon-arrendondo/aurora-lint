@@ -451,8 +451,9 @@ impl ProjectContext {
 }
 
 /// Version of the prescan cache's serialized layout. Bump it with any change
-/// to a serialized field of [`ProjectContext`] (or of a type it holds): the
-/// cache header carries it, so an old cache is refused instead of misread.
+/// to a serialized field of [`ProjectContext`] (or of a type it holds), or to
+/// what such a field means: the cache header carries it, so an old cache is
+/// refused instead of misread.
 const PRESCAN_CACHE_FORMAT: u32 = 7;
 
 /// The header a prescan cache file starts with: a magic, the layout version
