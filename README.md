@@ -276,11 +276,18 @@ aurora-lint /path/to/repo --diff
 ### Exclude files from a scan
 
 ```bash
-# Drop vendored code, test harnesses, or generated/amalgamated files
-aurora-lint /path/to/repo --exclude "tests/**" --exclude "vendor/**" --exclude "**/onelua.c"
+# Leave test harnesses and generated/amalgamated files out entirely
+aurora-lint /path/to/repo --exclude "tests/**" --exclude "**/onelua.c"
+
+# Report nothing in vendored code the product links, but keep reading it
+aurora-lint /path/to/repo --report-exclude "vendor/**"
 ```
 
-`--exclude` is the only flag that removes files from the scan — `-d` only adds
+`--exclude` leaves matching files out of everything: they are not scanned,
+nothing is reported in them, and their definitions do not feed the cross-file
+facts other files are checked against. `--report-exclude` (no findings, still
+read) and `--prescan-exclude` (reported, not read) are the rarer partial
+cases; a manifest's `[scope]` table takes the same three lists. `-d` only adds
 directories for cross-file context and never restricts what gets analyzed.
 
 ### Use a custom rules manifest

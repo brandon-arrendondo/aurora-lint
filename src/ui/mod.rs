@@ -2146,7 +2146,7 @@ impl TerminalUI {
 
         // Pre-scan directories for cross-file context
         let mut context = if !self.directories.is_empty() {
-            prescan::prescan_directories(&self.directories, None, true)?
+            prescan::prescan_directories(&self.directories, None, true, &|_, _| false)?
         } else {
             crate::analyze::context::ProjectContext::new()
         };

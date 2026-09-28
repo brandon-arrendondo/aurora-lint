@@ -25,6 +25,40 @@ pub struct RuleManifest {
     /// The `[environment]` table: overrides of the environment axis.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<EnvironmentConfig>,
+    /// The `[scope]` table: path globs left out of the analysis, added to
+    /// the command line's `--exclude`, `--report-exclude` and
+    /// `--prescan-exclude`.
+    #[serde(default, skip_serializing_if = "ScopeConfig::is_empty")]
+    pub scope: ScopeConfig,
+}
+
+/// Which files a scan leaves out, as path globs relative to the scanned
+/// root. `exclude` leaves a file out of everything; the other two are the
+/// rarer partial cases.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScopeConfig {
+    /// Not scanned, not reported, and not read by the cross-file prescan:
+    /// the file might as well not exist (test suites, example programs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+    /// No findings, but still read by the prescan, so its definitions keep
+    /// feeding cross-file facts: vendored code the product links and ships.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub report_exclude: Vec<String>,
+    /// Scanned and reported, but not read by the prescan, so its
+    /// definitions do not stand for the functions and macros other files
+    /// call: stubs, fuzz harnesses, alternate-platform files that do not
+    /// link into the product under analysis.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prescan_exclude: Vec<String>,
+}
+
+impl ScopeConfig {
+    /// No glob in any of the three lists.
+    pub fn is_empty(&self) -> bool {
+        self.exclude.is_empty() && self.report_exclude.is_empty() && self.prescan_exclude.is_empty()
+    }
 }
 
 /// Rule configs grouped by family.
@@ -333,6 +367,7 @@ impl Default for RuleManifest {
             profile: None,
             policy: None,
             environment: None,
+            scope: ScopeConfig::default(),
         }
     }
 }

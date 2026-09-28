@@ -95,9 +95,43 @@ pub struct AnalysisResults {
     pub macro_gaps: Option<macro_gaps::MacroGapReport>,
 }
 
+/// Which files a scan leaves out, as path globs relative to the scanned root
+/// (a `-d` directory outside it matches relative to itself). `toolchain.toml`'s
+/// `[ignore].paths` count as `exclude`.
+#[derive(Debug, Clone, Default)]
+pub struct ScanScope {
+    /// Left out of everything: not scanned, not reported, not read by the
+    /// prescan.
+    pub exclude: Vec<String>,
+    /// Not scanned or reported, but still read by the prescan.
+    pub report_exclude: Vec<String>,
+    /// Scanned and reported, but not read by the prescan.
+    pub prescan_exclude: Vec<String>,
+}
+
+impl ScanScope {
+    /// The globs whose files get no findings.
+    fn report_globs(&self) -> Vec<String> {
+        self.exclude
+            .iter()
+            .chain(&self.report_exclude)
+            .cloned()
+            .collect()
+    }
+
+    /// The globs whose files the prescan does not read.
+    pub fn prescan_globs(&self) -> Vec<String> {
+        self.exclude
+            .iter()
+            .chain(&self.prescan_exclude)
+            .cloned()
+            .collect()
+    }
+}
+
 /// Run every enabled rule over `project_source`, returning active and
-/// suppressed violations. `directories`/`include_paths`/`excludes` scope
-/// which files are analyzed; `diff_only` limits analysis to changed files;
+/// suppressed violations. `directories`/`include_paths`/`scope` decide
+/// which files are analyzed and which feed the cross-file context; `diff_only` limits analysis to changed files;
 /// `save_prescan`/`load_prescan` cache the cross-file pre-scan phase across
 /// runs; `jobs` bounds parallelism. `compile_db`, when supplied, contributes
 /// the build's `-D` macro state to the cross-file context (its include paths
@@ -110,7 +144,7 @@ pub fn analyze_project(
     progress: Option<&dyn ProgressReporter>,
     directories: &[String],
     include_paths: &[String],
-    excludes: &[String],
+    scope: &ScanScope,
     diff_only: bool,
     suppress_file: Option<&str>,
     save_prescan: Option<&str>,
@@ -149,6 +183,7 @@ pub fn analyze_project(
         compile_db,
         needs_vra,
         &header_lookup,
+        scope,
     )?;
     context.settings = std::sync::Arc::new(settings.clone());
 
@@ -164,7 +199,7 @@ pub fn analyze_project(
 
     warn_unimplemented_rules(manifest, &registry);
 
-    let c_files = collect_c_files(project_source, diff_only, excludes)?;
+    let c_files = collect_c_files(project_source, diff_only, &scope.report_globs())?;
     let total_files = c_files.len();
 
     // A declaration is per scan; a database is per translation unit. Sources
@@ -357,7 +392,16 @@ fn load_project_context(
     compile_db: Option<&compile_commands::CompileDb>,
     needs_vra: bool,
     header_lookup: &include_names::HeaderLookup,
+    scope: &ScanScope,
 ) -> Result<context::ProjectContext> {
+    // The files the prescan leaves out, and the same globs as a cache
+    // records them: a context built without them holds other definitions.
+    let prescan_ignore = build_path_ignore(project_source, &scope.prescan_globs())?;
+    let prescan_scope = prescan_scope_of(project_source, &scope.prescan_globs())?;
+    let root = project_source.get_root_path().to_string();
+    let scoped_out = |path: &std::path::Path, base: &str| {
+        prescan::is_scoped_out(&prescan_ignore, &root, base, path)
+    };
     // A declared build configuration decides which conditional definitions the
     // collectors below may keep, so it has to be in force BEFORE prescan runs
     // -- unlike the `-D` macro *values*, which are folded in at the end because
@@ -398,6 +442,16 @@ fn load_project_context(
                     declared
                 );
             }
+            if ctx.prescan_scope != prescan_scope {
+                anyhow::bail!(
+                    "prescan cache {} was built leaving out {:?}, but this scan leaves out {:?}; \
+                     re-create it with --save-prescan under the same --exclude and \
+                     --prescan-exclude",
+                    cache_path,
+                    ctx.prescan_scope,
+                    prescan_scope,
+                );
+            }
             if let Some(reporter) = progress {
                 reporter.report_prescan_complete(ctx.known_functions.len());
             }
@@ -423,10 +477,12 @@ fn load_project_context(
         if let Some(dir) = project_source.prescan_dir() {
             files.extend(prescan::sibling_headers(&dir));
         }
+        files.retain(|f| !scoped_out(f, &root));
         prescan::prescan_files(files, progress, needs_vra)?
     } else {
-        prescan::prescan_directories(directories, progress, needs_vra)?
+        prescan::prescan_directories(directories, progress, needs_vra, &scoped_out)?
     };
+    context.prescan_scope = prescan_scope;
 
     // Stamp only a context built here. A loaded one keeps the record it was
     // saved with (already checked above), so re-saving it never claims
@@ -537,8 +593,9 @@ fn warn_unimplemented_rules(manifest: &RuleManifest, registry: &RuleRegistry) {
 }
 
 /// Collect the C files to analyze: gather (all or modified), drop ignored
-/// matches (`toolchain.toml` `[ignore].paths` plus `--exclude`), then sort by
-/// size descending for LPT scheduling.
+/// matches (`toolchain.toml` `[ignore].paths` plus `excludes`, the globs
+/// whose files get no findings), then sort by size descending for LPT
+/// scheduling.
 fn collect_c_files(
     project_source: &ProjectSource,
     diff_only: bool,
@@ -550,11 +607,10 @@ fn collect_c_files(
         project_source.get_c_files()?
     };
 
-    // Drop files matching a project-wide `toolchain.toml` ignore or a
-    // --exclude path glob (e.g. checked-in amalgamations or test harnesses).
-    // Prescan/cross-file context is intentionally left intact so excluded
-    // files still contribute callee definitions; only their own findings are
-    // suppressed.
+    // Drop files matching a project-wide `toolchain.toml` ignore or an
+    // --exclude/--report-exclude path glob (e.g. checked-in amalgamations or
+    // test harnesses). Whether they still feed the cross-file prescan is the
+    // scope's other half (`ScanScope::prescan_globs`).
     let ignore = build_path_ignore(project_source, excludes)?;
     let root = project_source.get_root_path();
     let before = c_files.len();
@@ -603,6 +659,19 @@ fn build_path_ignore(
 
     lang_parsing_substrate::PathIgnore::new(&valid)
         .map_err(|e| anyhow::anyhow!("Invalid ignore glob pattern: {e}"))
+}
+
+/// The globs the prescan leaves out, as a cache records them: `globs` plus
+/// `toolchain.toml`'s `[ignore].paths`, sorted and deduplicated.
+fn prescan_scope_of(project_source: &ProjectSource, globs: &[String]) -> Result<Vec<String>> {
+    let mut scope: Vec<String> = globs.to_vec();
+    let root = std::path::Path::new(project_source.get_root_path());
+    if let Some(toolchain) = crate::toolchain::ToolchainConfig::discover(root)? {
+        scope.extend(toolchain.ignore.paths);
+    }
+    scope.sort();
+    scope.dedup();
+    Ok(scope)
 }
 
 /// Strips `root` (and a leading path separator) from `path`, and normalizes

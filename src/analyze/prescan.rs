@@ -429,6 +429,7 @@ pub fn prescan_directories(
     dirs: &[String],
     progress: Option<&dyn ProgressReporter>,
     needs_vra: bool,
+    scoped_out: &dyn Fn(&Path, &str) -> bool,
 ) -> Result<ProjectContext> {
     // Phase 1: collect all file paths (sequential — WalkDir is not parallel-safe).
     //
@@ -453,6 +454,11 @@ pub fn prescan_directories(
                     Some("c") | Some("h")
                 )
             })
+            // A file the scope leaves out of the prescan does not stand for
+            // the functions and macros other files see. A header of it that
+            // a scanned file includes is still read, by include resolution:
+            // it is part of that file's translation unit.
+            .filter(|e| !scoped_out(e.path(), dir))
         {
             let is_header = entry.path().extension().and_then(|ext| ext.to_str()) == Some("h");
             all_files.push((entry.path().to_path_buf(), is_header));
@@ -460,6 +466,29 @@ pub fn prescan_directories(
     }
 
     prescan_file_list(all_files, dirs.len(), progress, needs_vra)
+}
+
+/// Whether `ignore` leaves `path` out of the prescan. The globs are relative
+/// to the scanned `root`; a file outside it (from a `-d` directory elsewhere)
+/// is matched relative to `base`, the directory it was found under.
+pub fn is_scoped_out(
+    ignore: &lang_parsing_substrate::PathIgnore,
+    root: &str,
+    base: &str,
+    path: &Path,
+) -> bool {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let relative = |prefix: &str| {
+        let prefix = prefix.replace('\\', "/");
+        let prefix = prefix.trim_end_matches('/');
+        text.strip_prefix(prefix)
+            .filter(|rest| rest.starts_with('/'))
+            .map(|rest| rest.trim_start_matches('/').to_string())
+    };
+    let rel = relative(root)
+        .or_else(|| relative(base))
+        .unwrap_or_else(|| text.clone());
+    ignore.is_ignored(Path::new(&rel))
 }
 
 /// Build a [`ProjectContext`] for one file, exactly as a `-d` prescan of a
@@ -1317,6 +1346,8 @@ fn prescan_file_list(
     signal_handlers_registered_elsewhere.retain(|name| known_functions.contains(name));
 
     Ok(ProjectContext {
+        // Set by the caller, which knows the scope.
+        prescan_scope: Vec::new(),
         settings: Default::default(),
         built_under: Default::default(),
         memory_declarations: crate::settings::memory::declared().clone(),
@@ -7320,7 +7351,13 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.join("use.c"), "#include \"common.h\"\nu16 v;\n").unwrap();
-        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let ctx = prescan_directories(
+            &[dir.to_string_lossy().to_string()],
+            None,
+            false,
+            &|_, _| false,
+        )
+        .unwrap();
         assert_eq!(
             ctx.typedef_types.get("u16").map(String::as_str),
             Some("uint16_t")
@@ -7368,7 +7405,13 @@ mod tests {
              }\n",
         )
         .unwrap();
-        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let ctx = prescan_directories(
+            &[dir.to_string_lossy().to_string()],
+            None,
+            false,
+            &|_, _| false,
+        )
+        .unwrap();
         let summary = ctx
             .function_summaries
             .get("get_thing")
@@ -7413,7 +7456,13 @@ mod tests {
              }\n",
         )
         .unwrap();
-        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let ctx = prescan_directories(
+            &[dir.to_string_lossy().to_string()],
+            None,
+            false,
+            &|_, _| false,
+        )
+        .unwrap();
         let summary = ctx
             .function_summaries
             .get("fill")
@@ -8878,7 +8927,7 @@ void caller(char *other) {
         std::fs::write(dir.path().join("a.c"), "void func_a(void) { func_b(); }").unwrap();
         std::fs::write(dir.path().join("b.c"), "void func_b(void) {}").unwrap();
         let dirs = vec![dir.path().to_string_lossy().to_string()];
-        let ctx = prescan_directories(&dirs, None, false).unwrap();
+        let ctx = prescan_directories(&dirs, None, false, &|_, _| false).unwrap();
         assert!(ctx.known_functions.contains("func_a"));
         assert!(ctx.known_functions.contains("func_b"));
         assert!(ctx.call_graph.get("func_a").unwrap().contains("func_b"));
@@ -8901,7 +8950,7 @@ void caller(char *other) {
         )
         .unwrap();
         let dirs = vec![dir.path().to_string_lossy().to_string()];
-        let ctx = prescan_directories(&dirs, None, false).unwrap();
+        let ctx = prescan_directories(&dirs, None, false, &|_, _| false).unwrap();
         assert!(ctx.ambiguous_call_targets.contains("timer_cb"));
         // The edge recording that run_a calls (some) timer_cb is untouched --
         // consumers that must not chase it filter on ambiguous_call_targets.
@@ -8928,7 +8977,7 @@ void caller(char *other) {
         )
         .unwrap();
         let dirs = vec![dir.path().to_string_lossy().to_string()];
-        let ctx = prescan_directories(&dirs, None, false).unwrap();
+        let ctx = prescan_directories(&dirs, None, false, &|_, _| false).unwrap();
         assert!(ctx.known_functions.contains("public_api"));
         assert!(ctx.header_declared_functions.contains("public_api"));
     }
@@ -8942,7 +8991,7 @@ void caller(char *other) {
         )
         .unwrap();
         let dirs = vec![dir.path().to_string_lossy().to_string()];
-        let ctx = prescan_directories(&dirs, None, false).unwrap();
+        let ctx = prescan_directories(&dirs, None, false, &|_, _| false).unwrap();
         assert!(ctx
             .struct_field_types
             .get("Config")
@@ -8963,7 +9012,7 @@ void caller(char *other) {
         )
         .unwrap();
         let dirs = vec![dir.path().to_string_lossy().to_string()];
-        let ctx = prescan_directories(&dirs, None, false).unwrap();
+        let ctx = prescan_directories(&dirs, None, false, &|_, _| false).unwrap();
         assert!(
             ctx.global_writers.contains_key("g_clean"),
             "g_clean should be tracked as a file-scope global: {:?}",
@@ -9124,8 +9173,13 @@ void caller(char *other) {
 ",
             )
             .unwrap();
-            let ctx =
-                prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+            let ctx = prescan_directories(
+                &[dir.to_string_lossy().to_string()],
+                None,
+                false,
+                &|_, _| false,
+            )
+            .unwrap();
             let summary = ctx.function_summaries.get("save_file_text").unwrap();
             assert!(
                 !summary.has_internal_linkage,
@@ -9158,7 +9212,13 @@ void caller(char *other) {
             "int os_write(char *buf) { return put(buf); }\n",
         )
         .unwrap();
-        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let ctx = prescan_directories(
+            &[dir.to_string_lossy().to_string()],
+            None,
+            false,
+            &|_, _| false,
+        )
+        .unwrap();
         let summary = ctx.function_summaries.get("os_write").unwrap();
         assert!(summary.checks_null_params.contains(&0));
         let _ = std::fs::remove_dir_all(&dir);
@@ -9183,7 +9243,13 @@ void caller(char *other) {
             "static int aead_setup(char *buf) { return use(buf); }\n",
         )
         .unwrap();
-        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let ctx = prescan_directories(
+            &[dir.to_string_lossy().to_string()],
+            None,
+            false,
+            &|_, _| false,
+        )
+        .unwrap();
 
         assert!(
             !ctx.function_summaries.contains_key("aead_setup"),
@@ -9229,7 +9295,13 @@ void caller(char *other) {
             "static int helper(char *buf) { if (buf == NULL) return 0; return use(buf); }\n",
         )
         .unwrap();
-        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let ctx = prescan_directories(
+            &[dir.to_string_lossy().to_string()],
+            None,
+            false,
+            &|_, _| false,
+        )
+        .unwrap();
         assert!(ctx.function_summaries.contains_key("helper"));
         assert!(ctx.scoped_names_by_file.is_empty());
         assert!(ctx.as_seen_from(&dir.join("only.c")).is_none());
@@ -9261,7 +9333,13 @@ void caller(char *other) {
 ",
         )
         .unwrap();
-        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let ctx = prescan_directories(
+            &[dir.to_string_lossy().to_string()],
+            None,
+            false,
+            &|_, _| false,
+        )
+        .unwrap();
         let one = ctx.as_seen_from(&dir.join("a_one.c")).expect("a view");
         let two = ctx.as_seen_from(&dir.join("b_two.c")).expect("a view");
         let states = |c: &ProjectContext| {
@@ -9321,7 +9399,13 @@ void caller(char *other) {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("chain.c"), &src).unwrap();
-        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let ctx = prescan_directories(
+            &[dir.to_string_lossy().to_string()],
+            None,
+            false,
+            &|_, _| false,
+        )
+        .unwrap();
         assert_eq!(
             ctx.function_summaries
                 .get("sink")
@@ -9386,7 +9470,13 @@ void caller(char *other) {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("events.c"), &src).unwrap();
-        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let ctx = prescan_directories(
+            &[dir.to_string_lossy().to_string()],
+            None,
+            false,
+            &|_, _| false,
+        )
+        .unwrap();
         assert_eq!(
             ctx.function_summaries
                 .get("handler")
@@ -9439,7 +9529,13 @@ void caller(char *other) {
             )
             .unwrap();
         }
-        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let ctx = prescan_directories(
+            &[dir.to_string_lossy().to_string()],
+            None,
+            false,
+            &|_, _| false,
+        )
+        .unwrap();
         for file in ["a_mysql.c", "b_pgsql.c"] {
             let view = ctx.as_seen_from(&dir.join(file)).expect("a scoped view");
             let summary = view.function_summaries.get("subst").expect("its own subst");
@@ -9483,7 +9579,13 @@ void caller(char *other) {
             )
             .unwrap();
         }
-        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let ctx = prescan_directories(
+            &[dir.to_string_lossy().to_string()],
+            None,
+            false,
+            &|_, _| false,
+        )
+        .unwrap();
         let tainted = |file: &str| {
             let view = ctx.as_seen_from(&dir.join(file)).expect("a scoped view");
             let summary = view.function_summaries.get("sink").expect("its own sink");
@@ -9520,7 +9622,13 @@ void caller(char *other) {
             "static void sink(int n) { (void)n; }\nvoid b(void) { sink(2); }\n",
         )
         .unwrap();
-        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let ctx = prescan_directories(
+            &[dir.to_string_lossy().to_string()],
+            None,
+            false,
+            &|_, _| false,
+        )
+        .unwrap();
         let sink_of = |file: &str| {
             let view = ctx.as_seen_from(&dir.join(file)).expect("a scoped view");
             view.function_summaries
@@ -9553,7 +9661,13 @@ void caller(char *other) {
 ",
         )
         .unwrap();
-        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let ctx = prescan_directories(
+            &[dir.to_string_lossy().to_string()],
+            None,
+            false,
+            &|_, _| false,
+        )
+        .unwrap();
         let bad = ctx.function_summaries.get("bad_sink").unwrap();
         assert!(bad.callsite_param_taint_observed.contains(&0));
         assert!(bad.callsite_param_tainted.contains(&0));

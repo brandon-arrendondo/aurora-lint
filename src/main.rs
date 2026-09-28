@@ -40,6 +40,25 @@ fn load_manifest(manifest_path: Option<&String>) -> Result<RuleManifest> {
     }
 }
 
+/// Which files the scan leaves out: the command line's `--exclude`,
+/// `--report-exclude` and `--prescan-exclude`, plus the manifest's `[scope]`.
+fn scan_scope(matches: &clap::ArgMatches, manifest: &RuleManifest) -> analyze::ScanScope {
+    let globs = |id: &str, from_manifest: &[String]| -> Vec<String> {
+        matches
+            .get_many::<String>(id)
+            .into_iter()
+            .flatten()
+            .chain(from_manifest)
+            .cloned()
+            .collect()
+    };
+    analyze::ScanScope {
+        exclude: globs("exclude", &manifest.scope.exclude),
+        report_exclude: globs("report_exclude", &manifest.scope.report_exclude),
+        prescan_exclude: globs("prescan_exclude", &manifest.scope.prescan_exclude),
+    }
+}
+
 /// The settings the command line states, to layer over the manifest's.
 fn settings_from_cli(matches: &clap::ArgMatches) -> Result<SettingsConfig> {
     let parse = |id: &str| matches.get_one::<String>(id).map(String::as_str);
@@ -217,7 +236,21 @@ fn run() -> Result<i32> {
         .arg(
             Arg::new("exclude")
                 .long("exclude")
-                .help("Exclude files matching this path glob from analysis (repeatable, e.g. --exclude '**/onelua.c' --exclude 'testes/**')")
+                .help("Leave files matching this path glob out of everything: not scanned, not reported, and not read for cross-file facts (repeatable, e.g. --exclude '**/onelua.c' --exclude 'testes/**')")
+                .value_name("GLOB")
+                .action(clap::ArgAction::Append),
+        )
+        .arg(
+            Arg::new("report_exclude")
+                .long("report-exclude")
+                .help("Report nothing in files matching this path glob, but still read them for cross-file facts: vendored code the product links (repeatable)")
+                .value_name("GLOB")
+                .action(clap::ArgAction::Append),
+        )
+        .arg(
+            Arg::new("prescan_exclude")
+                .long("prescan-exclude")
+                .help("Scan and report files matching this path glob, but do not read them for cross-file facts: stubs and alternate-platform files that do not link into the product (repeatable)")
                 .value_name("GLOB")
                 .action(clap::ArgAction::Append),
         )
@@ -472,10 +505,6 @@ fn run() -> Result<i32> {
     // Some(path) when the flag was given; the path is empty for the bare
     // flag (summary only) and a file name when the user wants the JSON too.
     let report_macro_gaps: Option<String> = matches.get_one::<String>("report_macro_gaps").cloned();
-    let excludes: Vec<String> = matches
-        .get_many::<String>("exclude")
-        .map(|vals| vals.cloned().collect())
-        .unwrap_or_default();
     let fail_on_violation = matches.get_flag("fail_on_violation");
     let fail_on_severity: Option<Severity> = matches
         .get_one::<String>("fail_on_severity")
@@ -544,11 +573,13 @@ fn run() -> Result<i32> {
     if let Some(ref rules) = rule_filter {
         manifest.restrict_to(rules);
     }
-    let analysis_settings = resolve_settings(
+    let mut analysis_settings = resolve_settings(
         &manifest,
         &settings_cli,
         compile_db.as_ref().is_some_and(|db| db.msvc),
     )?;
+    let scope = scan_scope(&matches, &manifest);
+    analysis_settings.set_prescan_scope(scope.prescan_globs());
 
     // Handle suppression generation
     if let Some(gen_spec) = generate_suppression {
@@ -608,7 +639,7 @@ fn run() -> Result<i32> {
         Some(&progress_reporter),
         &directories,
         &include_paths,
-        &excludes,
+        &scope,
         diff_only,
         suppress_file.map(|s| s.as_str()),
         save_prescan.map(|s| s.as_str()),

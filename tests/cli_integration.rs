@@ -3368,3 +3368,125 @@ fn a_leak_through_a_two_arm_allocator_names_the_standard_allocator() {
         "{found:?}"
     );
 }
+
+// ---- Scope: --exclude, --report-exclude, --prescan-exclude ----------------
+
+/// A tree where `tests/stub.c` holds the only definition of `rel`, which
+/// frees its argument, and a use-after-free of its own; `src/a.c` uses a
+/// pointer after `rel(p)`. MEM30-C reports a.c only when the stub fed the
+/// prescan, and the stub only when it was scanned.
+fn write_scope_tree(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("tests")).unwrap();
+    std::fs::write(
+        dir.join("src/a.c"),
+        "#include <stdlib.h>\nvoid rel(void *p);\n\
+         void f(void) { char *p = malloc(4); if (!p) return; rel(p); p[0] = 1; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("tests/stub.c"),
+        "#include <stdlib.h>\nvoid rel(void *p) { free(p); }\n\
+         void g(void) { char *q = malloc(4); if (!q) return; free(q); q[0] = 1; }\n",
+    )
+    .unwrap();
+}
+
+/// Which of the two files MEM30-C reports in, scanning the tree with `args`.
+fn mem30_files_under(dir: &std::path::Path, args: &[&str]) -> (bool, bool) {
+    let root = dir.to_str().unwrap();
+    let mut all = vec![root, "-d", root, "--rules", "MEM30-C"];
+    all.extend_from_slice(args);
+    let (code, stdout, stderr) = run_aurora_lint(&all);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let reported = |file: &str| {
+        stdout
+            .lines()
+            .any(|l| l.contains(file) && l.contains("MEM30-C"))
+    };
+    (reported("a.c"), reported("stub.c"))
+}
+
+#[test]
+fn exclude_leaves_a_tree_out_of_findings_and_cross_file_facts() {
+    let dir = tempfile::tempdir().unwrap();
+    write_scope_tree(dir.path());
+    assert_eq!(mem30_files_under(dir.path(), &[]), (true, true));
+    assert_eq!(
+        mem30_files_under(dir.path(), &["--exclude", "tests/**"]),
+        (false, false)
+    );
+}
+
+#[test]
+fn report_exclude_keeps_a_tree_feeding_cross_file_facts() {
+    let dir = tempfile::tempdir().unwrap();
+    write_scope_tree(dir.path());
+    assert_eq!(
+        mem30_files_under(dir.path(), &["--report-exclude", "tests/**"]),
+        (true, false)
+    );
+}
+
+#[test]
+fn prescan_exclude_still_reports_a_tree_it_keeps_out_of_cross_file_facts() {
+    let dir = tempfile::tempdir().unwrap();
+    write_scope_tree(dir.path());
+    assert_eq!(
+        mem30_files_under(dir.path(), &["--prescan-exclude", "tests/**"]),
+        (false, true)
+    );
+}
+
+#[test]
+fn manifest_scope_table_adds_to_the_command_line() {
+    let dir = tempfile::tempdir().unwrap();
+    write_scope_tree(dir.path());
+    let manifest = dir.path().join("rules.toml");
+    std::fs::write(
+        &manifest,
+        "[metadata]\nname = \"scope\"\nversion = \"1\"\ncert_version = \"2016\"\n\n\
+         [scope]\nexclude = [\"tests/**\"]\n\n\
+         [rules.cert_c.MEM30-C]\nenabled = true\n",
+    )
+    .unwrap();
+    assert_eq!(
+        mem30_files_under(dir.path(), &["-m", manifest.to_str().unwrap()]),
+        (false, false)
+    );
+}
+
+/// A prescan cache records which files it was built without, and a scan
+/// that leaves out others refuses it rather than reading definitions the
+/// scan excludes.
+#[test]
+fn a_prescan_cache_is_refused_under_a_different_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    write_scope_tree(dir.path());
+    let root = dir.path().to_str().unwrap();
+    let cache = dir.path().join("prescan.bin");
+    let cache = cache.to_str().unwrap();
+    let (code, _, stderr) = run_aurora_lint(&[
+        root,
+        "-d",
+        root,
+        "--rules",
+        "MEM30-C",
+        "--save-prescan",
+        cache,
+    ]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let (code, _, stderr) = run_aurora_lint(&[
+        root,
+        "--rules",
+        "MEM30-C",
+        "--load-prescan",
+        cache,
+        "--exclude",
+        "tests/**",
+    ]);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("was built leaving out"), "stderr: {stderr}");
+    let (code, _, stderr) = run_aurora_lint(&[root, "--rules", "MEM30-C", "--load-prescan", cache]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+}

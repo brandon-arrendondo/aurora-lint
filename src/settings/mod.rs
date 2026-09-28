@@ -507,6 +507,11 @@ pub struct AnalysisSettings {
     pub include_names: IncludeNames,
     /// The project's declared allocators and deallocators.
     pub memory: MemoryDeclarations,
+    /// The path globs whose files the cross-file prescan does not read
+    /// (`--exclude` and `--prescan-exclude`, with their manifest keys),
+    /// sorted and deduplicated. What a summary, a macro's alternatives or a
+    /// noreturn set can hold depends on them.
+    pub prescan_scope: Vec<String>,
     values: BTreeMap<&'static str, bool>,
 }
 
@@ -609,8 +614,18 @@ impl AnalysisSettings {
             libc,
             include_names,
             memory,
+            prescan_scope: Vec::new(),
             values,
         })
+    }
+
+    /// Record the path globs the prescan leaves out, sorted and
+    /// deduplicated so the same scope always names the same settings.
+    pub fn set_prescan_scope(&mut self, globs: impl IntoIterator<Item = String>) {
+        let mut scope: Vec<String> = globs.into_iter().collect();
+        scope.sort();
+        scope.dedup();
+        self.prescan_scope = scope;
     }
 
     /// The value of the option `name`.
@@ -626,7 +641,8 @@ impl AnalysisSettings {
     }
 
     /// The preset these settings equal, if any. A preset says nothing about
-    /// how `#include` names match or which functions a project declares, so
+    /// how `#include` names match, which functions a project declares or
+    /// which files the prescan reads, so
     /// those fields are not compared.
     pub fn matching_preset(&self) -> Option<Preset> {
         [Preset::Default, Preset::Strict].into_iter().find(|p| {
@@ -634,6 +650,7 @@ impl AnalysisSettings {
                 == Self {
                     include_names: self.include_names,
                     memory: self.memory.clone(),
+                    prescan_scope: self.prescan_scope.clone(),
                     ..Self::preset(*p)
                 }
         })
@@ -690,6 +707,10 @@ impl AnalysisSettings {
         }
         if !self.memory.deallocators.is_empty() {
             identity["deallocators"] = serde_json::json!(self.memory.deallocators);
+        }
+        // Likewise present only when the prescan leaves files out.
+        if !self.prescan_scope.is_empty() {
+            identity["prescan_scope"] = serde_json::json!(self.prescan_scope);
         }
         identity
     }
@@ -1036,6 +1057,25 @@ mod tests {
         );
         assert_eq!(s.to_json()["include_names"], "case-insensitive");
         assert!(AnalysisSettings::preset(Preset::Default).to_json()["include_names"].is_null());
+    }
+
+    #[test]
+    fn a_prescan_scope_is_named_and_hashed_but_keeps_the_preset() {
+        let mut s = AnalysisSettings::preset(Preset::Default);
+        let before = s.settings_hash();
+        s.set_prescan_scope(Vec::new());
+        assert_eq!(s.settings_hash(), before);
+        assert!(s.to_json()["prescan_scope"].is_null());
+
+        s.set_prescan_scope([
+            "tests/**".to_string(),
+            "docs/**".to_string(),
+            "tests/**".to_string(),
+        ]);
+        assert_eq!(s.prescan_scope, ["docs/**", "tests/**"]);
+        assert_eq!(s.matching_preset(), Some(Preset::Default));
+        assert_ne!(s.settings_hash(), before);
+        assert_eq!(s.to_json()["prescan_scope"][1], "tests/**");
     }
 
     #[test]
