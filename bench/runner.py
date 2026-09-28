@@ -570,7 +570,7 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
 
     version = _get_sqc_version()
     sha = _get_git_sha()
-    settings = juliet_settings(profile)
+    settings = juliet_settings(profile, compile_db)
     run_id = juliet_run_id(version, sha, fast=fast, compile_commands=compile_commands,
                            cwes=cwe_ids, settings=settings)
     mode = "fast" if fast else "full"

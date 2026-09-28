@@ -162,30 +162,65 @@ JULIET_SETTING_OVERRIDES = ("closed_program=true",)
 # How a run_id names that declaration after its preset (ADR-0015 Decision 8).
 JULIET_RUN_LABEL_SUFFIX = "+closed"
 
+# aurora-lint options that change the resolved settings, each taking one
+# value. `resolve_settings` forwards these from a scan's extra arguments so
+# the settings it records are the ones the scan ran under.
+SETTINGS_FLAGS = ("--compile-commands", "--include-names", "--policy",
+                  "--environment", "--libc", "--set")
 
-def resolve_settings(profile: str, overrides: tuple[str, ...] = ()) -> dict:
+
+def settings_args(extra_args: list[str]) -> list[str]:
+    """The settings-changing options in `extra_args`, with their values, in
+    order (`--flag value` and `--flag=value` both)."""
+    out, i = [], 0
+    while i < len(extra_args):
+        arg = extra_args[i]
+        if arg in SETTINGS_FLAGS and i + 1 < len(extra_args):
+            out += [arg, extra_args[i + 1]]
+            i += 2
+            continue
+        if arg.startswith(tuple(f"{f}=" for f in SETTINGS_FLAGS)):
+            out.append(arg)
+        i += 1
+    return out
+
+
+def resolve_settings(profile: str, overrides: tuple[str, ...] = (), *,
+                     compile_db: str | None = None,
+                     extra_args: list[str] = ()) -> dict:
     """The settings `profile` (plus each `--set NAME=VALUE` in `overrides`)
     resolves to, exactly as the binary reports them (`aurora-lint
     --list-options json`): the resolved values, the preset they equal (None
     for neither) and their SHA-256 `hash`, which the binary computes over
-    their canonical JSON so SARIF and this harness never disagree about it."""
+    their canonical JSON so SARIF and this harness never disagree about it.
+
+    Pass the scan's `compile_db` and its `extra_args` when it has them: a
+    database can change the settings (one written for cl matches `#include`
+    names ignoring case), and so can a settings option among the extra
+    arguments, so without them the recorded settings could differ from the
+    scan's. The options go in the order the scan command gives them."""
     if profile not in PROFILES:
         raise ValueError(f"unknown profile '{profile}'; one of: {', '.join(PROFILES)}")
     cmd = [str(SQC_BIN), "--list-options", "json", "--profile", profile]
+    if compile_db:
+        cmd += ["--compile-commands", compile_db]
     for o in overrides:
         cmd.extend(["--set", o])
+    cmd += settings_args(list(extra_args))
     out = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return json.loads(out.stdout)["current"]
 
 
-def juliet_settings(profile: str = DEFAULT_PROFILE) -> dict:
+def juliet_settings(profile: str = DEFAULT_PROFILE,
+                    compile_db: str | None = None) -> dict:
     """The settings every Juliet scan under `profile` runs with: the preset
     plus JULIET_SETTING_OVERRIDES, as the binary resolves them, carrying the
     `run_label` its run_id is named by (`default+closed`, `strict+closed`).
     The one place that answers what a Juliet run's settings and name are:
     the runner and benchmarking_db's ingest probe both call it, so the two
     cannot build different run_ids for one run."""
-    settings = resolve_settings(profile, JULIET_SETTING_OVERRIDES)
+    settings = resolve_settings(profile, JULIET_SETTING_OVERRIDES,
+                                compile_db=compile_db)
     settings["run_label"] = f"{profile}{JULIET_RUN_LABEL_SUFFIX}"
     return settings
 

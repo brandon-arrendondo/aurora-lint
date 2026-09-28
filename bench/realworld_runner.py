@@ -1502,8 +1502,12 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
                 "-i 'localhost,' -c local --ask-become-pass")
         compile_db = str(found)
 
+    settings = None
     if tool == "sqc":
-        suffix = settings_run_suffix(resolve_settings(profile)).lstrip("-")
+        settings = resolve_settings(
+            profile, compile_db=compile_db,
+            extra_args=_expand(cfg["sqc"].get("extra_args", []), str(cfg["path"])))
+        suffix = settings_run_suffix(settings).lstrip("-")
         variant = f"{variant}-{suffix}" if variant else suffix
 
     version = _get_tool_version(tool)
@@ -1608,6 +1612,7 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
         "codebase_commit": codebase_sha, "duration_s": duration,
         "returncode": proc.returncode, "total": parsed.get("total", 0),
         "result_file": result_file, "ok": ok, "coverage": coverage,
+        "settings": settings,
     }
 
 
@@ -1651,63 +1656,99 @@ def run_and_ingest(tools: list[str], codebases: list[str],
 def _ingest(results: list[dict], summary: dict, profile: str = DEFAULT_PROFILE) -> None:
     """Write the completed scans into SQLite and score them. Split out of
     `run_and_ingest` so a failure here is reported as its own outcome rather
-    than as the failure of the whole run."""
+    than as the failure of the whole run.
+
+    The sqc scans of one invocation normally share one export directory and
+    so one run. A compile database can split them: one written for cl makes
+    aurora-lint match #include names ignoring case, which changes the
+    settings and so the directory (`run_one`). Each directory is ingested and
+    scored as its own run, with its own settings, and `summary["run_ids"]`
+    lists them all; `summary["run_id"]` and `summary["score"]` keep their
+    single-run meaning when there is one."""
     db = BenchDB()
     machine = {"hostname": os.uname().nodename}
 
     sqc_results = [r for r in results if r["tool"] == "sqc" and r.get("ok")]
-    if sqc_results:
-        sqc_dir = sqc_results[0]["version_dir"]  # shared across codebases for one invocation
-        durations = {r["codebase"]: r["duration_s"] for r in sqc_results}
-        metrics = {r["codebase"]: dict(zip(("c_files", "loc"), _count_c_source(CODEBASES[r["codebase"]])))
-                   for r in sqc_results}
-        # Ingest only what THIS invocation scanned. The export directory is
-        # keyed on (tool, version, sha) and so is shared by every codebase at
-        # one commit, while the pre-run cleanup in `run_one` unlinks only the
-        # current run_id's own files -- so any narrowed re-run at a commit that
-        # has been scanned before (`--codebase hostap` after a full sweep, or
-        # after an interrupted one) would otherwise sweep the other projects'
-        # older exports in through `ingest_realworld_run`'s `*.json` glob. They
-        # arrive with no duration and no metrics, and — because the scan-time
-        # sidecar is the only source of codebase_commit — a NULL commit, which
-        # silently drops those findings out of the ground_truth denominator
-        # rather than erroring.
-        #
-        # Deliberately NOT fixed by clearing the directory or by an mtime
-        # cutoff: both break re-ingest, which two things here rely on. The
-        # ingest-failure path below promises "the scans themselves completed
-        # and their JSON exports are intact", i.e. that a failed ingest can be
-        # repeated from disk; and `ingest_realworld_run`'s `run_id` +
-        # `only_projects` merge exists so a later sweep can fill in projects a
-        # partial earlier ingest missed, which reads older exports on purpose.
-        # Naming the projects is what this invocation actually knows.
-        run_id = db.ingest_realworld_run(sqc_dir.name, str(sqc_dir), machine=machine,
-                                         durations=durations, metrics=metrics,
-                                         only_projects={r["codebase"] for r in sqc_results},
-                                         settings=settings_column(resolve_settings(profile)))
-        summary["run_id"] = run_id
+    groups: dict[Path, list[dict]] = {}
+    for r in sqc_results:
+        groups.setdefault(r["version_dir"], []).append(r)
+    # Comparison-tool rows ride on the run that scanned the same codebase;
+    # a codebase sqc did not scan goes with the first run, as it always has.
+    group_of = {r["codebase"]: d for d, rs in groups.items() for r in rs}
+    first = next(iter(groups), None)
+    others: dict[Path, list[dict]] = {d: [] for d in groups}
+    for r in results:
+        if r["tool"] != "sqc" and r.get("ok") and first is not None:
+            others[group_of.get(r["codebase"], first)].append(r)
 
-        for r in results:
-            if r["tool"] == "sqc" or not r.get("ok"):
-                continue
-            cfg = CODEBASES[r["codebase"]]
-            c_files, loc = _count_c_source(cfg)
-            commit = r.get("codebase_commit")
-            db.insert_realworld_result(run_id, r["codebase"], r["tool"],
-                                       c_files, loc, r["total"], r["duration_s"], commit,
-                                       coverage=r.get("coverage"))
+    run_ids, scores = [], {}
+    for sqc_dir, group in groups.items():
+        if len(groups) > 1:
+            print(f"\nRun {sqc_dir.name}: " + ", ".join(r["codebase"] for r in group))
+        run_id, score = _ingest_group(db, machine, sqc_dir, group, others[sqc_dir])
+        run_ids.append(run_id)
+        scores[run_id] = score
+    summary["run_ids"] = run_ids
+    if len(run_ids) == 1:
+        summary["run_id"] = run_ids[0]
+        summary["score"] = scores[run_ids[0]]
+    elif run_ids:
+        summary["run_id"] = run_ids
+        summary["score"] = scores
 
-        score = db.score_realworld_run(run_id)
-        if not score.get("error"):
-            (sqc_dir / f"{sqc_dir.name}.score.json").write_text(
-                json.dumps(score, indent=2, default=str))
-            ov = score["overall"]
-            labeled = ov["labeled_total"]
-            if labeled:
-                rec = ov.get("recall_pct")
-                rec_s = f", recall {rec}% ({ov['tp_detected']}/{ov['tp_labels']})" if rec is not None else ""
-                print(f"\nMeasured precision {ov['precision_pct']}% "
-                      f"(TP {ov['labeled_tp']}/{labeled} labeled of {ov['run_findings']} findings){rec_s}")
-            else:
-                print("\nNo oracle labels cover this run's commit(s) yet -- nothing scored.")
-        summary["score"] = score
+
+def _ingest_group(db, machine: dict, sqc_dir: Path, sqc_results: list[dict],
+                  other_results: list[dict]) -> tuple:
+    """Ingest and score the sqc scans that share `sqc_dir` (and so one set of
+    settings) as one run, attaching `other_results` to it. Returns the run id
+    and its score."""
+    durations = {r["codebase"]: r["duration_s"] for r in sqc_results}
+    metrics = {r["codebase"]: dict(zip(("c_files", "loc"), _count_c_source(CODEBASES[r["codebase"]])))
+               for r in sqc_results}
+    # Ingest only what THIS invocation scanned. The export directory is
+    # keyed on (tool, version, sha) and so is shared by every codebase at
+    # one commit, while the pre-run cleanup in `run_one` unlinks only the
+    # current run_id's own files -- so any narrowed re-run at a commit that
+    # has been scanned before (`--codebase hostap` after a full sweep, or
+    # after an interrupted one) would otherwise sweep the other projects'
+    # older exports in through `ingest_realworld_run`'s `*.json` glob. They
+    # arrive with no duration and no metrics, and — because the scan-time
+    # sidecar is the only source of codebase_commit — a NULL commit, which
+    # silently drops those findings out of the ground_truth denominator
+    # rather than erroring.
+    #
+    # Deliberately NOT fixed by clearing the directory or by an mtime
+    # cutoff: both break re-ingest, which two things here rely on. The
+    # ingest-failure path below promises "the scans themselves completed
+    # and their JSON exports are intact", i.e. that a failed ingest can be
+    # repeated from disk; and `ingest_realworld_run`'s `run_id` +
+    # `only_projects` merge exists so a later sweep can fill in projects a
+    # partial earlier ingest missed, which reads older exports on purpose.
+    # Naming the projects is what this invocation actually knows.
+    run_id = db.ingest_realworld_run(sqc_dir.name, str(sqc_dir), machine=machine,
+                                     durations=durations, metrics=metrics,
+                                     only_projects={r["codebase"] for r in sqc_results},
+                                     settings=settings_column(sqc_results[0]["settings"]))
+
+    for r in other_results:
+        cfg = CODEBASES[r["codebase"]]
+        c_files, loc = _count_c_source(cfg)
+        commit = r.get("codebase_commit")
+        db.insert_realworld_result(run_id, r["codebase"], r["tool"],
+                                   c_files, loc, r["total"], r["duration_s"], commit,
+                                   coverage=r.get("coverage"))
+
+    score = db.score_realworld_run(run_id)
+    if not score.get("error"):
+        (sqc_dir / f"{sqc_dir.name}.score.json").write_text(
+            json.dumps(score, indent=2, default=str))
+        ov = score["overall"]
+        labeled = ov["labeled_total"]
+        if labeled:
+            rec = ov.get("recall_pct")
+            rec_s = f", recall {rec}% ({ov['tp_detected']}/{ov['tp_labels']})" if rec is not None else ""
+            print(f"\nMeasured precision {ov['precision_pct']}% "
+                  f"(TP {ov['labeled_tp']}/{labeled} labeled of {ov['run_findings']} findings){rec_s}")
+        else:
+            print("\nNo oracle labels cover this run's commit(s) yet -- nothing scored.")
+    return run_id, score
