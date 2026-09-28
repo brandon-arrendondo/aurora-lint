@@ -4,12 +4,8 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::{
-    find_containing_function, get_node_text, resolve_field_expression_type,
-    resolve_identifier_declarator,
-};
-use crate::utility::cert_c::float_typing::collect_variable_types;
-use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
+use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::expr_type::{self, CType, TypeEnv};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -37,10 +33,6 @@ pub struct Int02C {
     /// the translation unit being scanned has to resolve whether or not a
     /// prescan supplied one.
     visible_struct_fields: RefCell<HashMap<String, HashMap<String, String>>>,
-    /// Per-function `name -> type` maps, keyed by the function node's id.
-    /// `resolve_field_expression_type` needs one, and rebuilding it for every
-    /// field operand in a large function would be quadratic.
-    function_type_maps: RefCell<HashMap<usize, HashMap<String, String>>>,
 }
 
 /// Integer conversion rank, coarse enough for the only two questions this
@@ -112,7 +104,6 @@ impl CertRule for Int02C {
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.rebuild_visible_typedefs(node, source);
         self.rebuild_visible_struct_fields(node, source);
-        self.function_type_maps.borrow_mut().clear();
 
         for expr in query::find_descendants_of_kind(*node, "binary_expression") {
             let Some(op) = expr.child_by_field_name("operator") else {
@@ -283,53 +274,25 @@ impl Int02C {
         while node.kind() == "parenthesized_expression" {
             node = node.named_child(0)?;
         }
-        match node.kind() {
-            "identifier" => self.declared_int_type(&node, get_node_text(&node, source), source),
-            "field_expression" => self.field_int_type(&node, source),
-            "subscript_expression" => self.element_int_type(&node, source),
-            "call_expression" => self.call_result_int_type(&node, source),
+        let typedefs = self.visible_typedefs.borrow();
+        let fields = self.visible_struct_fields.borrow();
+        let env = TypeEnv::new(&typedefs, &fields);
+        let declared = match node.kind() {
+            // The type the name, the struct field, or the indexed array's
+            // element is declared with, at this occurrence.
+            "identifier" | "field_expression" | "subscript_expression" => {
+                expr_type::expr_type(&node, source, &env)
+            }
+            "call_expression" => return self.call_result_int_type(&node, source),
             // `sizeof x` is size_t by definition, whatever x is.
-            "sizeof_expression" => classify("size_t"),
+            "sizeof_expression" => expr_type::expr_type(&node, source, &env),
             // A cast states the conversion, which is what INT02-C asks for.
             // A literal, a compound expression or anything else is not a type
             // this rule can name, and guessing is what produced its previous
             // false-positive population.
             _ => None,
-        }
-    }
-
-    /// `hdr->length` — the type the struct field is declared with.
-    fn field_int_type(&self, node: &Node, source: &str) -> Option<IntType> {
-        let func = find_containing_function(node)?;
-        let key = func.id();
-        if !self.function_type_maps.borrow().contains_key(&key) {
-            let map = collect_variable_types(&func, source);
-            self.function_type_maps.borrow_mut().insert(key, map);
-        }
-        let maps = self.function_type_maps.borrow();
-        let type_map = maps.get(&key)?;
-        let text = resolve_field_expression_type(
-            node,
-            source,
-            type_map,
-            &self.visible_struct_fields.borrow(),
-        )?;
-        self.classify_spelling(&text)
-    }
-
-    /// `buf[i]` — the element type of the array or pointer being indexed,
-    /// which is the declaration's base type once the subscript is applied.
-    fn element_int_type(&self, node: &Node, source: &str) -> Option<IntType> {
-        let base = node.child_by_field_name("argument")?;
-        if base.kind() != "identifier" {
-            return None;
-        }
-        let name = get_node_text(&base, source);
-        let (decl, declarator) = resolve_identifier_declarator(&base, name, source)?;
-        if !matches!(declarator.kind(), "array_declarator" | "pointer_declarator") {
-            return None;
-        }
-        self.classify_spelling(&base_type_text(&decl, source)?)
+        };
+        int_type(declared?)
     }
 
     /// The return type of a standard library function whose result type is
@@ -343,93 +306,38 @@ impl Int02C {
         }
         match get_node_text(&function, source) {
             "strlen" | "strnlen" | "wcslen" | "strspn" | "strcspn" | "fread" | "fwrite" => {
-                classify("size_t")
+                Some(IntType {
+                    sign: Sign::Unsigned,
+                    rank: Rank::Long,
+                })
             }
             _ => None,
         }
     }
-
-    /// The integer type the name is DECLARED with at this occurrence. `None`
-    /// for a pointer, an array, a function, a struct, or a spelling that is
-    /// not an integer even after typedefs are followed.
-    fn declared_int_type(&self, ident: &Node, name: &str, source: &str) -> Option<IntType> {
-        let (decl, declarator) = resolve_identifier_declarator(ident, name, source)?;
-        if declarator.kind() != "identifier" {
-            return None;
-        }
-        self.classify_spelling(&base_type_text(&decl, source)?)
-    }
-
-    /// Classify a type spelling, following typedefs when the spelling is not
-    /// itself a standard one. The chain is walked to its terminal name and
-    /// that is classified, so `u32 -> unsigned int` and a two-hop
-    /// `paddr_t -> word_t -> unsigned long` both resolve.
-    fn classify_spelling(&self, base: &str) -> Option<IntType> {
-        if let Some(int_type) = classify(base) {
-            return Some(int_type);
-        }
-        let terminal = resolve_typedef_chain(base, &self.visible_typedefs.borrow());
-        if terminal == base {
-            return None;
-        }
-        classify(&terminal)
-    }
 }
 
-/// The type-specifier tokens of a `declaration`/`parameter_declaration` with
-/// qualifiers and storage class dropped (`static const unsigned int x` ->
-/// `"unsigned int"`). `None` for a struct/union/enum specifier, which is not
-/// an integer.
-fn base_type_text(decl: &Node, source: &str) -> Option<String> {
-    let mut parts: Vec<&str> = Vec::new();
-    for i in 0..decl.child_count() {
-        let Some(child) = decl.child(i) else {
-            continue;
-        };
-        match child.kind() {
-            "primitive_type" | "sized_type_specifier" | "type_identifier" => {
-                parts.extend(get_node_text(&child, source).split_whitespace());
-            }
-            "struct_specifier" | "union_specifier" | "enum_specifier" => return None,
-            _ => {}
-        }
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(" "))
-    }
-}
-
-/// Classify a bare type spelling. Exhaustive by design: an unrecognised
-/// spelling -- a typedef this rule cannot see through, `_Bool`, an enum --
-/// yields `None` and is never reported, because both shapes need to know the
-/// operand's rank and no text heuristic can supply it.
-///
-/// Plain `char` is deliberately absent. Its signedness is
-/// implementation-defined, so neither shape can say what conversion happens,
-/// and INT16-C leaves it out for the same reason.
-fn classify(base: &str) -> Option<IntType> {
-    use Rank::*;
-    use Sign::*;
-    let (sign, rank) = match base {
-        "signed char" | "int8_t" => (Signed, Byte),
-        "short" | "short int" | "signed short" | "signed short int" | "int16_t" => (Signed, Short),
-        "int" | "signed" | "signed int" | "int32_t" => (Signed, Int),
-        "long" | "long int" | "signed long" | "signed long int" => (Signed, Long),
-        "long long" | "long long int" | "signed long long" | "signed long long int" | "int64_t" => {
-            (Signed, LongLong)
-        }
-
-        "unsigned char" | "uint8_t" => (Unsigned, Byte),
-        "unsigned short" | "unsigned short int" | "uint16_t" => (Unsigned, Short),
-        "unsigned" | "unsigned int" | "uint32_t" => (Unsigned, Int),
-        "unsigned long" | "unsigned long int" | "size_t" => (Unsigned, Long),
-        "unsigned long long" | "unsigned long long int" | "uint64_t" | "uintmax_t" => {
-            (Unsigned, LongLong)
-        }
-
-        _ => return None,
+/// The rule's view of a declared type: an integer with a known sign. `None`
+/// for a pointer, an array, a function, a struct, a float, `_Bool`, and plain
+/// `char`, whose signedness is implementation-defined, so neither shape can
+/// say what conversion happens (INT16-C leaves it out for the same reason).
+/// An unknown type is never reported: both shapes need the operand's rank,
+/// and no text heuristic can supply it.
+fn int_type(t: CType) -> Option<IntType> {
+    let CType::Int { sign, rank } = t else {
+        return None;
+    };
+    let sign = match sign {
+        expr_type::Sign::Signed => Sign::Signed,
+        expr_type::Sign::Unsigned => Sign::Unsigned,
+        expr_type::Sign::PlainChar => return None,
+    };
+    let rank = match rank {
+        expr_type::Rank::Bool => return None,
+        expr_type::Rank::Char => Rank::Byte,
+        expr_type::Rank::Short => Rank::Short,
+        expr_type::Rank::Int => Rank::Int,
+        expr_type::Rank::Long => Rank::Long,
+        expr_type::Rank::LongLong => Rank::LongLong,
     };
     Some(IntType { sign, rank })
 }
