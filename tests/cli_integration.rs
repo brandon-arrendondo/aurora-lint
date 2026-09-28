@@ -2030,6 +2030,90 @@ fn signal_handler_macros_are_judged_by_where_they_are_defined() {
     }
 }
 
+fn sig30_calls(args: &[&str]) -> Vec<(u64, String)> {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let manifest = manifest_sig30();
+    let mut argv: Vec<&str> = args.to_vec();
+    argv.extend([
+        "-m",
+        manifest.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    let (code, _, _) = run_aurora_lint(&argv);
+    assert_eq!(code, 0);
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    violations
+        .iter()
+        .filter(|v| v["rule_id"] == "SIG30-C")
+        .map(|v| {
+            (
+                v["line"].as_u64().unwrap(),
+                v["message"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_loaded_prescan_keeps_system_macros_outside_the_project() {
+    // A context loaded from a cache carries the system header's definitions
+    // too; they must not start counting as the project's when -I resolves
+    // the same header again.
+    let fixture_dir = fixtures().join("sig30_macro_origin");
+    let project = fixture_dir.join("project");
+    let main_c = project.join("main.c");
+    let system = fixture_dir.join("system");
+    let cache_dir = tempfile::tempdir().unwrap();
+    let cache = cache_dir.path().join("prescan.bin");
+    let direct = sig30_calls(&[
+        main_c.to_str().unwrap(),
+        "-d",
+        project.to_str().unwrap(),
+        "-I",
+        system.to_str().unwrap(),
+        "--save-prescan",
+        cache.to_str().unwrap(),
+    ]);
+    let loaded = sig30_calls(&[
+        main_c.to_str().unwrap(),
+        "--load-prescan",
+        cache.to_str().unwrap(),
+        "-I",
+        system.to_str().unwrap(),
+    ]);
+    assert_eq!(loaded, direct);
+    assert!(
+        loaded
+            .iter()
+            .all(|(_, m)| !m.contains("__sysv_signal") && !m.contains("__longjmp_chk")),
+        "{loaded:?}"
+    );
+}
+
+#[test]
+fn a_single_file_targets_own_tree_is_the_project() {
+    // Outside any git repository, a lone file's project is its directory: a
+    // header under it, reached through -I, is the project's own remapping.
+    let src = fixtures().join("sig30_single_file_root");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("include")).unwrap();
+    for f in ["main.c", "include/remap.h"] {
+        std::fs::copy(src.join(f), dir.path().join(f)).unwrap();
+    }
+    let found = sig30_calls(&[
+        dir.path().join("main.c").to_str().unwrap(),
+        "-I",
+        dir.path().join("include").to_str().unwrap(),
+    ]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0]
+        .1
+        .contains("calls 'project_alarm()' (through macro 'alarm')"));
+}
+
 #[test]
 fn crossfile_sibling_header_suppresses_public_api_without_d_flag() {
     // aurora-lint auto-scans sibling .h files even without -d, so public API functions

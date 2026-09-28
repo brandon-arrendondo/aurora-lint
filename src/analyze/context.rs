@@ -150,7 +150,9 @@ pub struct ProjectContext {
     pub macro_definitions: Arc<HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>>>,
     /// Names `#define`d in a header resolved from outside every project root
     /// (a system header: glibc's `#define signal __sysv_signal`) and in no
-    /// scanned file or project header. Their `macro_definitions` are the
+    /// scanned file or project header. The project roots are the scanned
+    /// tree and every `-d` directory; a single-file target's root is the
+    /// directory holding it. Their `macro_definitions` are the
     /// implementation's, not the project's: a rule judging a call by what a
     /// macro expands to can still say so in the name the code wrote.
     #[serde(default)]

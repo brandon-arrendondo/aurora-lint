@@ -515,6 +515,21 @@ impl<'a, 's, 'p> Collector<'a, 's, 'p> {
                     );
                 }
             }
+            // A wrapper passing its own parameter on to another wrapper
+            // (`void install(void (*cb)(int)) { set(SIGINT, cb); }`): the
+            // registering call inside the inner wrapper installs whatever
+            // this one's callers pass. The inner one may be a `static` whose
+            // only caller is this wrapper, and so records no site of its own
+            // (see `callers_all_here`); unless every caller of this one is
+            // here too, the site is recorded for it.
+            HandlerRef::Parameter(_) if !forwarders_only && !self.callers_all_here(call) => {
+                self.caller_supplied.push(CallerSuppliedSite {
+                    kind: kind_of(fwd.api, fwd.siginfo),
+                    mask: fwd.mask.clone(),
+                    api_line: fwd.api_site.0,
+                    api_column: fwd.api_site.1,
+                });
+            }
             _ => {}
         }
     }
@@ -1522,6 +1537,28 @@ mod tests {
                    void set(int s, void (*h)(int)) { signal(s, h); }\n\
                    int main(void) { set(SIGPIPE, SIG_IGN); return 0; }\n";
         assert_eq!(collect(src).caller_supplied.len(), 1);
+    }
+
+    #[test]
+    fn a_static_wrapper_behind_a_public_forwarder_is_a_caller_supplied_site() {
+        let src = "#include <signal.h>\n\
+                   static void set(int s, void (*h)(int)) { signal(s, h); }\n\
+                   void install(void (*cb)(int)) { set(SIGINT, cb); }\n";
+        let r = collect(src);
+        assert!(r.registrations.is_empty());
+        assert_eq!(r.caller_supplied.len(), 1);
+        // The site is the registering call, inside `set`.
+        assert_eq!(r.caller_supplied[0].api_line, 2);
+    }
+
+    #[test]
+    fn a_static_forwarder_called_here_passes_on_only_what_its_callers_pass() {
+        let src = "#include <signal.h>\n\
+                   static void set(int s, void (*h)(int)) { signal(s, h); }\n\
+                   static void install(void (*cb)(int)) { set(SIGINT, cb); }\n\
+                   int main(void) { install(SIG_IGN); return 0; }\n";
+        let r = collect(src);
+        assert!(r.registrations.is_empty() && r.caller_supplied.is_empty());
     }
 
     #[test]

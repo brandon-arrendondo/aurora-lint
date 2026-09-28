@@ -474,9 +474,11 @@ impl<'p> Macros<'p> {
             let expansion = match def {
                 MacroDefinition::Function { params, body } if params.len() == args.len() => {
                     let opaque = placeholders(args.len());
+                    // One arm: the others are judged in their own turn.
                     let arm = FunctionMacro {
                         params: params.clone(),
                         body: body.clone(),
+                        alternatives: Vec::new(),
                     };
                     let table = HashMap::from([(name.to_string(), arm)]);
                     macro_expand::expand_invocation(&table, name, &opaque)

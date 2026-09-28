@@ -6586,6 +6586,165 @@ fn extract_field_id_from_declarator(node: &Node, source: &str) -> Option<String>
 // Include path resolution (-I flag)
 // ---------------------------------------------------------------------------
 
+/// One resolved header's macros, aliases, function summaries and macro
+/// definitions, merged into `context` (the macro half of `resolve_includes`'
+/// per-header harvest). `outside_project` says whether the header lies outside
+/// every project root, for `origins`.
+fn harvest_header_macros(
+    context: &mut super::context::ProjectContext,
+    root: &tree_sitter::Node,
+    hsource: &str,
+    header_path: &str,
+    needs_vra: bool,
+    origins: &mut MacroOrigins,
+    outside_project: bool,
+) {
+    // Collect macro constants and aliases from resolved headers
+    let header_macros = const_eval::collect_macro_constants(root, hsource);
+    Arc::make_mut(&mut context.macro_constants).extend(header_macros.clone());
+
+    let header_alias_alternatives = const_eval::collect_macro_alias_alternatives(root, hsource);
+    let header_aliases = const_eval::settled_aliases(&header_alias_alternatives);
+    let header_taint_aliases: Vec<String> = header_aliases
+        .iter()
+        .filter(|(_, target)| {
+            function_summary::ENV03_TAINT_SOURCE_FUNCTIONS.contains(&target.as_str())
+        })
+        .map(|(alias, _)| alias.clone())
+        .collect();
+
+    let header_string_macros = const_eval::collect_string_literal_macros(root, hsource);
+    let header_function_macros =
+        crate::analyze::macro_expand::collect_function_macros(root, hsource);
+    let file_summaries = function_summary::compute_summaries(
+        root,
+        hsource,
+        &header_macros,
+        needs_vra,
+        &header_taint_aliases,
+        &header_string_macros,
+        &header_function_macros,
+    );
+    for (name, summary) in file_summaries {
+        context.function_summaries.make_mut().insert(name, summary);
+    }
+    let names: Vec<String> = header_alias_alternatives.keys().cloned().collect();
+    const_eval::merge_macro_alias_alternatives(
+        Arc::make_mut(&mut context.macro_alias_alternatives),
+        header_alias_alternatives,
+    );
+    for name in names {
+        let targets = &context.macro_alias_alternatives[&name];
+        let aliases = Arc::make_mut(&mut context.macro_aliases);
+        if let [target] = targets.as_slice() {
+            aliases.insert(name, target.clone());
+        } else {
+            aliases.remove(&name);
+        }
+    }
+    let header_audit = crate::analyze::macro_gaps::audit_definitions(hsource, header_path);
+    for (name, indices) in ast_utils::restrict_parameter_indices(root, hsource) {
+        context.restrict_params.entry(name).or_insert(indices);
+    }
+    merge_documented_params(
+        &mut context.documented_nonnull_params,
+        ast_utils::documented_nonnull_parameters(root, hsource),
+    );
+    for (name, m) in header_function_macros {
+        match Arc::make_mut(&mut context.function_macros).entry(name) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(m);
+            }
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                if !e.get().same_expansion(&m) {
+                    let line = header_audit.kept_lines.get(e.key()).copied().unwrap_or(0);
+                    context
+                        .macro_gaps
+                        .push(crate::analyze::macro_gaps::conflicting_definition(
+                            e.key(),
+                            header_path,
+                            line,
+                            "a file scanned earlier",
+                        ));
+                }
+                e.get_mut().absorb(m);
+            }
+        }
+    }
+    context.macro_gaps.extend(header_audit.gaps);
+    let header_definitions = crate::analyze::check_macros::collect_macro_definitions(hsource);
+    origins.record(outside_project, header_definitions.keys());
+    crate::analyze::check_macros::merge_macro_definitions(
+        Arc::make_mut(&mut context.macro_definitions),
+        header_definitions,
+    );
+    Arc::make_mut(&mut context.conditional_macro_names)
+        .extend(crate::analyze::check_macros::collect_conditional_macro_names(hsource));
+    Arc::make_mut(&mut context.config_dependent_constants)
+        .extend(const_eval::config_dependent_constant_names(root, hsource));
+}
+
+/// Which `#define`d names come only from headers outside every project root
+/// (`ProjectContext::macros_defined_outside_project`), gathered while
+/// `resolve_includes` walks the headers.
+struct MacroOrigins {
+    /// The project roots, canonical. A root that is a file (a single-file
+    /// target) stands for the directory holding it. Empty: nothing can be
+    /// judged outside.
+    roots: Vec<PathBuf>,
+    outside: HashSet<String>,
+    /// Names the project defines: every name already known, except those an
+    /// earlier pass found only outside it -- a context loaded from a prescan
+    /// cache (--load-prescan) carries the system headers' definitions too.
+    project: HashSet<String>,
+}
+
+impl MacroOrigins {
+    fn new(project_roots: &[String], context: &super::context::ProjectContext) -> Self {
+        let roots = project_roots
+            .iter()
+            .map(|r| std::fs::canonicalize(r).unwrap_or_else(|_| PathBuf::from(r)))
+            .map(|r| match r.parent() {
+                Some(dir) if r.is_file() => dir.to_path_buf(),
+                _ => r,
+            })
+            .collect();
+        let project = context
+            .macro_definitions
+            .keys()
+            .filter(|name| !context.macros_defined_outside_project.contains(*name))
+            .cloned()
+            .collect();
+        Self {
+            roots,
+            outside: HashSet::new(),
+            project,
+        }
+    }
+
+    /// Whether a header at `canonical` is the implementation's.
+    fn is_outside(&self, canonical: &Path) -> bool {
+        !self.roots.is_empty() && !self.roots.iter().any(|r| canonical.starts_with(r))
+    }
+
+    fn record<'n>(&mut self, outside: bool, names: impl Iterator<Item = &'n String>) {
+        let set = if outside {
+            &mut self.outside
+        } else {
+            &mut self.project
+        };
+        set.extend(names.cloned());
+    }
+
+    /// Fold what was found into `context`: a name the project defines
+    /// anywhere is the project's.
+    fn finish(self, context: &mut super::context::ProjectContext) {
+        let outside = Arc::make_mut(&mut context.macros_defined_outside_project);
+        outside.extend(self.outside);
+        outside.retain(|name| !self.project.contains(name));
+    }
+}
+
 /// Resolve `#include` directives from source files against the given include
 /// search paths, parse found headers, and merge declarations into `context`.
 ///
@@ -6614,15 +6773,7 @@ pub fn resolve_includes(
     // *project* header. Computed once: the check is filesystem-
     // touching and the answer is the same for every include.
     let project_search_paths = project_local_search_paths(include_paths, project_roots);
-    // A header outside every project root is the implementation's (see
-    // `ProjectContext::macros_defined_outside_project`). With no root to sit
-    // under, nothing can be judged outside.
-    let canonical_roots: Vec<PathBuf> = project_roots
-        .iter()
-        .map(|r| std::fs::canonicalize(r).unwrap_or_else(|_| PathBuf::from(r)))
-        .collect();
-    let mut outside_project_macros: HashSet<String> = HashSet::new();
-    let mut project_macros: HashSet<String> = context.macro_definitions.keys().cloned().collect();
+    let mut origins = MacroOrigins::new(project_roots, context);
 
     let mut parser = CParser::new()?;
     let mut resolved_set: HashSet<PathBuf> = HashSet::new();
@@ -6686,8 +6837,7 @@ pub fn resolve_includes(
             if resolved_set.contains(&canonical) {
                 continue;
             }
-            let outside_project = !canonical_roots.is_empty()
-                && !canonical_roots.iter().any(|r| canonical.starts_with(r));
+            let outside_project = origins.is_outside(&canonical);
             resolved_set.insert(canonical);
 
             let header_path = resolved.to_string_lossy().to_string();
@@ -6703,99 +6853,15 @@ pub fn resolve_includes(
                     &hsource,
                     Arc::make_mut(&mut context.header_declared_functions),
                 );
-                // Collect macro constants and aliases from resolved headers
-                let header_macros = const_eval::collect_macro_constants(&root, &hsource);
-                Arc::make_mut(&mut context.macro_constants).extend(header_macros.clone());
-
-                let header_alias_alternatives =
-                    const_eval::collect_macro_alias_alternatives(&root, &hsource);
-                let header_aliases = const_eval::settled_aliases(&header_alias_alternatives);
-                let header_taint_aliases: Vec<String> = header_aliases
-                    .iter()
-                    .filter(|(_, target)| {
-                        function_summary::ENV03_TAINT_SOURCE_FUNCTIONS.contains(&target.as_str())
-                    })
-                    .map(|(alias, _)| alias.clone())
-                    .collect();
-
-                let header_string_macros =
-                    const_eval::collect_string_literal_macros(&root, &hsource);
-                let header_function_macros =
-                    crate::analyze::macro_expand::collect_function_macros(&root, &hsource);
-                let file_summaries = function_summary::compute_summaries(
+                harvest_header_macros(
+                    context,
                     &root,
                     &hsource,
-                    &header_macros,
+                    &header_path,
                     needs_vra,
-                    &header_taint_aliases,
-                    &header_string_macros,
-                    &header_function_macros,
+                    &mut origins,
+                    outside_project,
                 );
-                for (name, summary) in file_summaries {
-                    context.function_summaries.make_mut().insert(name, summary);
-                }
-                let names: Vec<String> = header_alias_alternatives.keys().cloned().collect();
-                const_eval::merge_macro_alias_alternatives(
-                    Arc::make_mut(&mut context.macro_alias_alternatives),
-                    header_alias_alternatives,
-                );
-                for name in names {
-                    let targets = &context.macro_alias_alternatives[&name];
-                    let aliases = Arc::make_mut(&mut context.macro_aliases);
-                    if let [target] = targets.as_slice() {
-                        aliases.insert(name, target.clone());
-                    } else {
-                        aliases.remove(&name);
-                    }
-                }
-                let header_audit =
-                    crate::analyze::macro_gaps::audit_definitions(&hsource, &header_path);
-                for (name, indices) in ast_utils::restrict_parameter_indices(&root, &hsource) {
-                    context.restrict_params.entry(name).or_insert(indices);
-                }
-                merge_documented_params(
-                    &mut context.documented_nonnull_params,
-                    ast_utils::documented_nonnull_parameters(&root, &hsource),
-                );
-                for (name, m) in header_function_macros {
-                    match Arc::make_mut(&mut context.function_macros).entry(name) {
-                        std::collections::hash_map::Entry::Vacant(e) => {
-                            e.insert(m);
-                        }
-                        std::collections::hash_map::Entry::Occupied(mut e) => {
-                            if !e.get().same_expansion(&m) {
-                                let line =
-                                    header_audit.kept_lines.get(e.key()).copied().unwrap_or(0);
-                                context.macro_gaps.push(
-                                    crate::analyze::macro_gaps::conflicting_definition(
-                                        e.key(),
-                                        &header_path,
-                                        line,
-                                        "a file scanned earlier",
-                                    ),
-                                );
-                            }
-                            e.get_mut().absorb(m);
-                        }
-                    }
-                }
-                context.macro_gaps.extend(header_audit.gaps);
-                let header_definitions =
-                    crate::analyze::check_macros::collect_macro_definitions(&hsource);
-                if outside_project {
-                    outside_project_macros.extend(header_definitions.keys().cloned());
-                } else {
-                    project_macros.extend(header_definitions.keys().cloned());
-                }
-                crate::analyze::check_macros::merge_macro_definitions(
-                    Arc::make_mut(&mut context.macro_definitions),
-                    header_definitions,
-                );
-                Arc::make_mut(&mut context.conditional_macro_names).extend(
-                    crate::analyze::check_macros::collect_conditional_macro_names(&hsource),
-                );
-                Arc::make_mut(&mut context.config_dependent_constants)
-                    .extend(const_eval::config_dependent_constant_names(&root, &hsource));
 
                 // Collect struct field types from resolved headers
                 collect_struct_definitions(
@@ -6862,9 +6928,7 @@ pub fn resolve_includes(
         }
     }
 
-    let outside = Arc::make_mut(&mut context.macros_defined_outside_project);
-    outside.extend(outside_project_macros);
-    outside.retain(|name| !project_macros.contains(name));
+    origins.finish(context);
 
     // Resolve trailing-macro packed-struct candidates against the
     // macro names seen across ALL resolved headers (the macro's #define and
