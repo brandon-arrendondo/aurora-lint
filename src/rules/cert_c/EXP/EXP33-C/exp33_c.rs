@@ -71,6 +71,46 @@ impl Exp33C {
         }
     }
 
+    /// The function-like macros a file's invocations expand: the project's,
+    /// with the file's own definitions winning over another file's of the
+    /// same name.
+    fn file_function_macros(
+        &self,
+        node: &Node,
+        source: &str,
+    ) -> HashMap<String, crate::analyze::macro_expand::FunctionMacro> {
+        let mut macros = HashMap::clone(&self.function_macros.borrow());
+        macros.extend(crate::analyze::macro_expand::collect_function_macros(
+            node, source,
+        ));
+        macros
+    }
+
+    /// Invoked macros' arguments no build reads at the invocation. A name
+    /// the project or the file defines conditionally keeps its reads.
+    fn untouched_macro_params(
+        &self,
+        node: &Node,
+        source: &str,
+        macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    ) -> HashMap<String, Vec<usize>> {
+        let mut conditional = HashSet::clone(&self.conditional_macro_names.borrow());
+        conditional.extend(crate::analyze::check_macros::collect_conditional_macro_names(source));
+        let mut invoked = HashSet::new();
+        collect_invoked_macro_names(node, source, macros, &mut invoked);
+        invoked
+            .into_iter()
+            .filter_map(|name| {
+                let untouched = crate::analyze::macro_expand::macro_untouched_param_indices(
+                    macros,
+                    &name,
+                    &conditional,
+                );
+                (!untouched.is_empty()).then_some((name, untouched))
+            })
+            .collect()
+    }
+
     /// Build the read-only dereference map from cross-file summaries.
     /// Returns functions that dereference a pointer param without modifying it.
     ///
@@ -99,31 +139,6 @@ impl Exp33C {
     /// be general points-to/alias analysis for function pointers, which the
     /// design doc explicitly declines (piece (c), same precedent as
     /// `docs/design/cfg-substrate-adoption-decision.md`).
-    /// Invoked macros' arguments no build reads at the invocation. The
-    /// file's own definitions win over another file's of the same name, and
-    /// a name either defines conditionally keeps its reads.
-    fn untouched_macro_params(&self, node: &Node, source: &str) -> HashMap<String, Vec<usize>> {
-        let mut macros = HashMap::clone(&self.function_macros.borrow());
-        macros.extend(crate::analyze::macro_expand::collect_function_macros(
-            node, source,
-        ));
-        let mut conditional = HashSet::clone(&self.conditional_macro_names.borrow());
-        conditional.extend(crate::analyze::check_macros::collect_conditional_macro_names(source));
-        let mut invoked = HashSet::new();
-        collect_invoked_macro_names(node, source, &macros, &mut invoked);
-        invoked
-            .into_iter()
-            .filter_map(|name| {
-                let untouched = crate::analyze::macro_expand::macro_untouched_param_indices(
-                    &macros,
-                    &name,
-                    &conditional,
-                );
-                (!untouched.is_empty()).then_some((name, untouched))
-            })
-            .collect()
-    }
-
     fn build_read_only_deref_fns(&self) -> HashMap<String, HashSet<usize>> {
         let summaries = self.cross_file_summaries.borrow();
         let mut result = HashMap::new();
@@ -315,7 +330,10 @@ impl CertRule for Exp33C {
                 // actually invoked in this file (cheap: only invoked names, once per
                 // file). Macros whose body assigns a parameter (e.g. CF_DATA_SAVE)
                 // write that argument — feeds the init-state transfer + read-checker.
-                let macros = self.function_macros.borrow();
+                let macros = self.file_function_macros(node, source);
+                // A file with no function-like macros must not keep the
+                // previous file's output arguments.
+                self.macro_output_params.borrow_mut().clear();
                 if !macros.is_empty() {
                     let mut invoked = HashSet::new();
                     collect_invoked_macro_names(node, source, &macros, &mut invoked);
@@ -359,10 +377,9 @@ impl CertRule for Exp33C {
                     drop(cross_file_summaries);
                     *self.macro_output_params.borrow_mut() = out_params;
                 }
-                drop(macros);
 
                 *self.macro_untouched_params.borrow_mut() =
-                    self.untouched_macro_params(node, source);
+                    self.untouched_macro_params(node, source, &macros);
             }
 
             if node.kind() == "function_definition" {
