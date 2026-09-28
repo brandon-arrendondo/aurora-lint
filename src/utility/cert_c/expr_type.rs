@@ -96,8 +96,9 @@ pub enum CType {
     Enum,
     /// `void`.
     Void,
-    /// A function, which an identifier naming one designates.
-    Function,
+    /// A function, which an identifier naming one designates; its return
+    /// type when it is known.
+    Function(Option<Box<CType>>),
 }
 
 impl CType {
@@ -431,7 +432,7 @@ fn apply_declarator(base: Option<CType>, declarator: &Node) -> Option<CType> {
     let applied = match declarator.kind() {
         "pointer_declarator" | "abstract_pointer_declarator" => Some(CType::Pointer(wrap(base))),
         "array_declarator" | "abstract_array_declarator" => Some(CType::Array(wrap(base))),
-        "function_declarator" | "abstract_function_declarator" => Some(CType::Function),
+        "function_declarator" | "abstract_function_declarator" => Some(CType::Function(wrap(base))),
         "parenthesized_declarator" | "abstract_parenthesized_declarator" => base,
         _ => return base,
     };
@@ -504,7 +505,7 @@ pub fn expr_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
                 "&" => Some(CType::Pointer(operand.map(Box::new))),
                 "*" => match operand? {
                     CType::Pointer(p) | CType::Array(p) => p.map(|b| *b),
-                    CType::Function => Some(CType::Function),
+                    f @ CType::Function(_) => Some(f),
                     _ => None,
                 },
                 _ => None,
@@ -532,6 +533,19 @@ pub fn expr_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
             }
         }
         "field_expression" => field_type(node, source, env),
+        // A call has its callee's declared return type, when the callee is
+        // declared where the call can see it; a library function whose header
+        // was not expanded is unknown.
+        "call_expression" => {
+            match expr_type(&node.child_by_field_name("function")?, source, env)? {
+                CType::Function(ret) => ret.map(|b| *b),
+                CType::Pointer(Some(p)) => match *p {
+                    CType::Function(ret) => ret.map(|b| *b),
+                    _ => None,
+                },
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -935,12 +949,18 @@ mod tests {
     #[test]
     fn unresolved_and_calls_are_unknown() {
         assert_eq!(returned("int f(void) { return g_unknown; }", &[]), None);
+        assert_eq!(returned("int f(double x) { return sqrt(x); }", &[]), None);
         assert_eq!(
             returned(
-                "double sqrt(double); int f(double x) { return sqrt(x); }",
+                "double half(double); int f(double x) { return half(x); }",
                 &[]
             ),
-            None
+            Some(CType::Float(FloatKind::Double))
+        );
+        assert!(
+            returned("char *name(int); int f(int x) { return name(x); }", &[])
+                .unwrap()
+                .is_pointer()
         );
     }
 }
