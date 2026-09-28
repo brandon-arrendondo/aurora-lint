@@ -586,8 +586,11 @@ impl Err33C {
             .cloned()
             .unwrap_or_else(|| match cert_error_return(function_name) {
                 Some(error) => ErrorInfo {
-                    description: format!("Returns {} on error", error),
-                    suggestion: format!("Compare the result with {} before relying on it", error),
+                    description: format!("error return (CERT ERR33-C table): {}", error),
+                    suggestion: format!(
+                        "Test the result for its error return ({}) before relying on it",
+                        error
+                    ),
                 },
                 None => ErrorInfo {
                     description: "Can return error indicator".to_string(),
@@ -1203,7 +1206,7 @@ const CERT_ERROR_RETURNS: &[(&str, &str)] = &[
     ("fclose", "EOF (negative)"),
     ("fflush", "EOF (negative)"),
     ("fgetc", "EOF"),
-    ("fgetpos", "Nonzero, errno >"),
+    ("fgetpos", "Nonzero, errno > 0"),
     ("fgets", "NULL"),
     ("fgetwc", "WEOF"),
     ("fopen", "NULL"),
@@ -1220,8 +1223,8 @@ const CERT_ERROR_RETURNS: &[(&str, &str)] = &[
     ("fscanf", "EOF (negative)"),
     ("fscanf_s", "EOF (negative)"),
     ("fseek", "Nonzero"),
-    ("fsetpos", "Nonzero, errno >"),
-    ("ftell", "-1L, errno >"),
+    ("fsetpos", "Nonzero, errno > 0"),
+    ("ftell", "-1L, errno > 0"),
     ("fwprintf", "Negative"),
     ("fwprintf_s", "Negative"),
     ("fwrite", "Elements written"),
@@ -1267,7 +1270,7 @@ const CERT_ERROR_RETURNS: &[(&str, &str)] = &[
     ("setvbuf", "Nonzero"),
     ("scanf", "EOF (negative)"),
     ("scanf_s", "EOF (negative)"),
-    ("signal", "SIG_ERR, errno >"),
+    ("signal", "SIG_ERR, errno > 0"),
     ("snprintf", "Negative"),
     ("snprintf_s", "Negative"),
     ("sprintf", "Negative"),
