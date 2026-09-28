@@ -297,6 +297,13 @@ impl Dcl31C {
                     return;
                 }
 
+                // A keyword is never a callee. A statement passed to a macro
+                // (sqlite's `TESTONLY( if( nPage>=0 ) nPage++; )`) parses as
+                // an argument list holding a call to `if`.
+                if ast_utils::is_c_keyword(func_name) {
+                    return;
+                }
+
                 // `defined` is a preprocessor operator, not a function.
                 // Tree-sitter parses `#if defined(X)` conditions and `defined`
                 // appears as a call_expression identifier.
