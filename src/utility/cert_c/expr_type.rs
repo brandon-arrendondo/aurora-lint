@@ -648,6 +648,43 @@ fn binary_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
     }
 }
 
+/// `<math.h>` functions whose result is a real floating type by the
+/// standard. Their header is not expanded when a file is parsed, so their
+/// declaration is usually not in reach and [`expr_type`] answers `None` for a
+/// call to one.
+const MATH_FUNCTIONS: &[&str] = &[
+    "sqrtf", "sqrt", "powf", "pow", "sinf", "sin", "cosf", "cos", "tanf", "tan", "logf", "log",
+    "expf", "exp", "fabsf", "fabs",
+];
+
+/// The standard's return type for a call to one of the `<math.h>` functions
+/// in [`MATH_FUNCTIONS`] (`float` for the `f`-suffixed ones), or `None`. For a
+/// caller to consult only when [`expr_type`] has no answer: a declaration in
+/// reach always wins over the name.
+pub fn math_call_type(node: &Node, source: &str) -> Option<CType> {
+    let mut n = *node;
+    while n.kind() == "parenthesized_expression" {
+        n = n.named_child(0)?;
+    }
+    if n.kind() != "call_expression" {
+        return None;
+    }
+    let callee = n.child_by_field_name("function")?;
+    if callee.kind() != "identifier" {
+        return None;
+    }
+    let name = get_node_text(&callee, source);
+    if !MATH_FUNCTIONS.contains(&name) {
+        return None;
+    }
+    let kind = if name.ends_with('f') {
+        FloatKind::Float
+    } else {
+        FloatKind::Double
+    };
+    Some(CType::Float(kind))
+}
+
 /// `s.f` / `p->f`: the field's recorded type in the struct the base names.
 fn field_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
     let field = get_node_text(&node.child_by_field_name("field")?, source);

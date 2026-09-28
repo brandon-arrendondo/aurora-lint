@@ -71,14 +71,6 @@ pub struct Flp02C {
     struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
 }
 
-/// `<math.h>` functions whose result is a floating type by the standard. Their
-/// header is not expanded when a file is parsed, so their declaration is not
-/// in reach; the standard fixes the return type instead.
-const MATH_FUNCTIONS: &[&str] = &[
-    "sqrtf", "sqrt", "powf", "pow", "sinf", "sin", "cosf", "cos", "tanf", "tan", "logf", "log",
-    "expf", "exp", "fabsf", "fabs",
-];
-
 impl Flp02C {
     pub fn new() -> Self {
         Self::default()
@@ -99,24 +91,13 @@ impl Flp02C {
     }
 
     /// Whether the operand's value is of a floating type: its type by
-    /// declaration (`expr_type`), or a `<math.h>` call. An operand whose type
-    /// is not in reach is not floating-point: this check accuses, so an unknown
-    /// type must not raise a finding.
+    /// declaration (`expr_type`), or a `<math.h>` call's standard type. An
+    /// operand whose type is not in reach is not floating-point: this check
+    /// accuses, so an unknown type must not raise a finding.
     fn is_float_operand(&self, node: &Node, source: &str, env: &TypeEnv) -> bool {
-        if expr_type::expr_type(node, source, env).is_some_and(|t| t.is_float()) {
-            return true;
-        }
-        let mut n = *node;
-        while n.kind() == "parenthesized_expression" {
-            match n.named_child(0) {
-                Some(inner) => n = inner,
-                None => return false,
-            }
-        }
-        n.kind() == "call_expression"
-            && n.child_by_field_name("function").is_some_and(|f| {
-                f.kind() == "identifier" && MATH_FUNCTIONS.contains(&get_node_text(&f, source))
-            })
+        expr_type::expr_type(node, source, env)
+            .or_else(|| expr_type::math_call_type(node, source))
+            .is_some_and(|t| t.is_float())
     }
 
     /// Check if a binary expression is a floating-point equality comparison
