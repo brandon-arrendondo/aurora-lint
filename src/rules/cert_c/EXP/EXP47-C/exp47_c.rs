@@ -75,143 +75,117 @@ impl Exp47C {
     }
 
     /// Extract the type argument from a va_arg call
-    fn extract_va_arg_type<'a>(&self, node: &'a Node, source: &'a str) -> Option<String> {
-        // va_arg is typically a macro call_expression
-        // Looking for: va_arg(ap, type)
+    fn extract_va_arg_type(&self, node: &Node, source: &str) -> Option<String> {
         if node.kind() != "call_expression" {
             return None;
         }
-
-        // Check if this is a va_arg call
-        if let Some(function) = node.child_by_field_name("function") {
-            let func_name = get_node_text(&function, source).trim().to_string();
-            if func_name != "va_arg" {
-                return None;
-            }
-        } else {
+        let function = node.child_by_field_name("function")?;
+        if get_node_text(&function, source).trim() != "va_arg" {
             return None;
         }
+        let arguments = node.child_by_field_name("arguments")?;
 
-        // Get the arguments
-        if let Some(arguments) = node.child_by_field_name("arguments") {
-            // arguments is an argument_list node
-            let mut cursor = arguments.walk();
-            let mut arg_count = 0;
+        // The type is everything between the first `,` and the closing `)`.
+        // A multi-word type such as `unsigned char` is not an expression, so it
+        // parses as an identifier followed by an ERROR node, not as one child.
+        let mut cursor = arguments.walk();
+        let children: Vec<Node> = arguments.children(&mut cursor).collect();
+        let comma = children.iter().position(|c| c.kind() == ",")?;
+        let type_nodes: Vec<&Node> = children[comma + 1..]
+            .iter()
+            .filter(|c| c.kind() != ")")
+            .collect();
+        let (first, last) = (type_nodes.first()?, type_nodes.last()?);
+        let type_text = source[first.start_byte()..last.end_byte()].trim();
+        (!type_text.is_empty()).then(|| type_text.to_string())
+    }
 
-            for child in arguments.children(&mut cursor) {
-                // Skip the parentheses and commas
-                if child.kind() == "(" || child.kind() == ")" || child.kind() == "," {
-                    continue;
-                }
-
-                arg_count += 1;
-
-                // The second argument is the type (might be a type_descriptor node)
-                if arg_count == 2 {
-                    let type_text = get_node_text(&child, source).trim().to_string();
-                    return Some(type_text);
-                }
-            }
-        }
-
-        // Also check for generic_expression or other macro expansion patterns
-        // va_arg may expand to different AST structures
-        let node_text = get_node_text(node, source);
-        if node_text.contains("va_arg") {
-            // Try to extract the type from the text directly
-            // Pattern: va_arg(something, type)
-            if let Some(start) = node_text.find(',') {
-                let after_comma = &node_text[start + 1..];
-                if let Some(end) = after_comma.rfind(')') {
-                    let type_text = after_comma[..end].trim().to_string();
-                    if !type_text.is_empty() {
-                        return Some(type_text);
-                    }
-                }
-            }
-        }
-
-        None
+    fn push_violation(
+        &self,
+        type_text: &str,
+        correct_type: &str,
+        row: usize,
+        column: usize,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        violations.push(RuleViolation {
+            rule_id: "EXP47-C".to_string(),
+            severity: Severity::Medium,
+            line: row + 1,
+            column: column + 1,
+            message: format!(
+                "va_arg called with type '{}' which undergoes default argument promotion; use '{}' instead",
+                type_text, correct_type
+            ),
+            file_path: String::new(),
+            suggestion: Some(format!(
+                "Change va_arg type to '{}' and cast the result if needed: ({})va_arg(ap, {})",
+                correct_type, type_text, correct_type
+            )),
+            requires_manual_review: Some(false),
+        });
     }
 
     /// Check a va_arg call for incorrect type usage
     fn check_va_arg_call(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         if let Some(type_text) = self.extract_va_arg_type(node, source) {
             if let Some(correct_type) = self.is_promoted_type(&type_text) {
-                violations.push(RuleViolation {
-                    rule_id: "EXP47-C".to_string(),
-                    severity: Severity::Medium,
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
-                    message: format!(
-                        "va_arg called with type '{}' which undergoes default argument promotion; use '{}' instead",
-                        type_text, correct_type
-                    ),
-                    file_path: String::new(),
-                    suggestion: Some(format!(
-                        "Change va_arg type to '{}' and cast the result if needed: ({})va_arg(ap, {})",
-                        correct_type, type_text, correct_type
-                    )),
-                    requires_manual_review: Some(false),
-                });
+                let start = node.start_position();
+                self.push_violation(
+                    &type_text,
+                    correct_type,
+                    start.row,
+                    start.column,
+                    violations,
+                );
             }
         }
     }
 
-    /// Recursively traverse AST
+    /// Visit every va_arg call once, plus each unparsed macro body.
     fn traverse(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        for n in query::find_descendants(*node, |_| true) {
-            // Check if this is a call expression (potential va_arg call)
+        for n in query::find_descendants(*node, |n| {
+            matches!(n.kind(), "call_expression" | "preproc_arg")
+        }) {
             if n.kind() == "call_expression" {
                 self.check_va_arg_call(&n, source, violations);
-            }
-
-            // Also check for va_arg pattern in text for any node type
-            // (va_arg may be expanded by macros or parsed differently)
-            let node_text = get_node_text(&n, source);
-            if node_text.contains("va_arg(") && n.kind() != "call_expression" {
-                // Try text-based detection as fallback
-                self.check_va_arg_text(&n, &node_text, violations);
+            } else {
+                self.check_macro_body(&n, source, violations);
             }
         }
     }
 
-    /// Check for va_arg with incorrect type using text-based analysis
-    fn check_va_arg_text(&self, node: &Node, text: &str, violations: &mut Vec<RuleViolation>) {
-        // Find all va_arg( patterns in the text
-        let mut start_pos = 0;
-        while let Some(pos) = text[start_pos..].find("va_arg(") {
-            let absolute_pos = start_pos + pos;
-            let after_va_arg = &text[absolute_pos + 7..]; // Skip "va_arg("
-
-            // Find the comma separating arguments
-            if let Some(comma_pos) = after_va_arg.find(',') {
-                let after_comma = &after_va_arg[comma_pos + 1..];
-                // Find the closing paren
-                if let Some(paren_pos) = after_comma.find(')') {
-                    let type_text = after_comma[..paren_pos].trim();
-
-                    if let Some(correct_type) = self.is_promoted_type(type_text) {
-                        violations.push(RuleViolation {
-                            rule_id: "EXP47-C".to_string(),
-                            severity: Severity::Medium,
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
-                            message: format!(
-                                "va_arg called with type '{}' which undergoes default argument promotion; use '{}' instead",
-                                type_text, correct_type
-                            ),
-                            file_path: String::new(),
-                            suggestion: Some(format!(
-                                "Change va_arg type to '{}' and cast the result if needed: ({})va_arg(ap, {})",
-                                correct_type, type_text, correct_type
-                            )),
-                            requires_manual_review: Some(false),
-                        });
-                    }
-                }
+    /// A macro's replacement list is a single unparsed `preproc_arg` leaf, so
+    /// a `va_arg` written there has no call_expression to visit. Read it from
+    /// the text, reporting each occurrence at its own position.
+    fn check_macro_body(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let text = get_node_text(node, source);
+        let mut search_from = 0;
+        while let Some(pos) = text[search_from..].find("va_arg(") {
+            let at = search_from + pos;
+            search_from = at + "va_arg(".len();
+            // A longer identifier ending in `va_arg` is a different name.
+            let preceded_by_ident = text[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_');
+            if preceded_by_ident {
+                continue;
             }
-            start_pos = absolute_pos + 7;
+            let args = &text[search_from..];
+            let Some(comma) = args.find(',') else {
+                continue;
+            };
+            let Some(close) = args[comma + 1..].find(')') else {
+                continue;
+            };
+            let type_text = args[comma + 1..comma + 1 + close].trim();
+            if let Some(correct_type) = self.is_promoted_type(type_text) {
+                let before = &source[..node.start_byte() + at];
+                let row = before.matches('\n').count();
+                let column = before.len() - before.rfind('\n').map_or(0, |i| i + 1);
+                self.push_violation(type_text, correct_type, row, column, violations);
+            }
         }
     }
 
