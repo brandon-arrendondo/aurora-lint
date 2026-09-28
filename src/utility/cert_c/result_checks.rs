@@ -109,6 +109,39 @@ pub fn error_signal_for(function_name: &str) -> Option<ErrorSignal> {
         "strtol" | "strtoul" | "strtoll" | "strtoull" | "strtoimax" | "strtoumax" | "strtof"
         | "strtod" | "strtold" => ErrorSignal::ErrnoOrEnd,
         "system" | "putenv" | "setenv" => ErrorSignal::Any,
+        // The rest of ERR33-C's table, by the error return CERT gives.
+        "bsearch" | "bsearch_s" | "gets_s" | "gmtime_s" | "localtime_s" | "memchr" | "strchr"
+        | "strpbrk" | "strrchr" | "strstr" | "strtok" | "strtok_s" | "wcschr" | "wcspbrk"
+        | "wcsrchr" | "wcsstr" | "wcstok" | "wcstok_s" | "wmemchr" => ErrorSignal::Null,
+        // Zero on failure, which the null test reads the same way.
+        "timespec_get" | "tss_get" | "wctrans" | "wctype" => ErrorSignal::Null,
+        // The table gives `getenv_s` NULL and `wctomb_s` -1, but both return
+        // an `errno_t` (C11 K.3.6.2.1, K.3.6.4.1): zero on success.
+        "asctime_s" | "at_quick_exit" | "ctime_s" | "fopen_s" | "freopen_s" | "getenv_s"
+        | "mbsrtowcs_s" | "mbstowcs_s" | "setvbuf" | "strerror_s" | "tmpfile_s" | "tmpnam_s"
+        | "wcsrtombs_s" | "wcstombs_s" | "wctomb_s" => ErrorSignal::NonZero,
+        "btowc" | "fgetwc" | "fputwc" | "fputws" | "getwc" | "getwchar" | "putwc" | "ungetwc"
+        | "wctob" => ErrorSignal::Eof,
+        "fscanf_s" | "fwscanf" | "fwscanf_s" | "scanf_s" | "sscanf_s" | "swscanf" | "swscanf_s"
+        | "vfscanf_s" | "vfwscanf" | "vfwscanf_s" | "vscanf_s" | "vsscanf_s" | "vswscanf"
+        | "vswscanf_s" | "vwscanf" | "vwscanf_s" | "wscanf" | "wscanf_s" => {
+            ErrorSignal::Conversions
+        }
+        "fprintf_s" | "fwprintf" | "fwprintf_s" | "printf_s" | "snprintf_s" | "sprintf_s"
+        | "swprintf" | "swprintf_s" | "thrd_sleep" | "vfprintf_s" | "vfwprintf" | "vfwprintf_s"
+        | "vprintf_s" | "vsnprintf_s" | "vsprintf_s" | "vswprintf" | "vswprintf_s"
+        | "vwprintf_s" | "wprintf_s" => ErrorSignal::Negative,
+        "c16rtomb" | "c32rtomb" | "mbrlen" | "mbrtoc16" | "mbrtoc32" | "mbrtowc" | "mbsrtowcs"
+        | "wcrtomb" | "wcsrtombs" => ErrorSignal::MinusOne,
+        "wcstod" | "wcstof" | "wcstoimax" | "wcstol" | "wcstold" | "wcstoll" | "wcstoumax"
+        | "wcstoul" | "wcstoull" => ErrorSignal::ErrnoOrEnd,
+        // A status other than `thrd_success` (one of several), or a length
+        // `>= n` for the transforms: any test of the result reads it.
+        "cnd_broadcast" | "cnd_init" | "cnd_signal" | "cnd_timedwait" | "cnd_wait" | "mtx_init"
+        | "mtx_lock" | "mtx_timedlock" | "mtx_trylock" | "mtx_unlock" | "strxfrm"
+        | "thrd_create" | "thrd_detach" | "thrd_join" | "tss_create" | "tss_set" | "wcsxfrm" => {
+            ErrorSignal::Any
+        }
         _ => return None,
     })
 }

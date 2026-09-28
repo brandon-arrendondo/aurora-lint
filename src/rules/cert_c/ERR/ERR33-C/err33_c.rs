@@ -555,50 +555,28 @@ impl Err33C {
             return false;
         }
 
-        matches!(
-            function_name,
-            // Memory management
-            "malloc" | "calloc" | "realloc" | "aligned_alloc" |
-
-            // File I/O
-            "fopen" | "freopen" | "fseek" | "ftell" | "fsetpos" | "fgetpos" |
-            "fread" | "fwrite" | "fflush" | "fclose" | "remove" | "rename" |
-            "tmpfile" | "tmpnam" | "fgets" | "fputs" | "fgetc" | "fputc" | "ungetc" |
-
-            // String/locale functions
-            "setlocale" | "strtol" | "strtoul" | "strtoll" | "strtoull" |
-            "strtof" | "strtod" | "strtold" | "strftime" | "mbstowcs" | "wcstombs" |
-            "gets" | // deprecated but still needs checking
-
-            // Formatted I/O
-            "printf" | "fprintf" | "sprintf" | "snprintf" | "scanf" | "fscanf" | "sscanf" |
-            "vprintf" | "vfprintf" | "vsprintf" | "vsnprintf" |
-
-            // Time functions
-            "time" | "mktime" | "clock" | "ctime" | "localtime" | "gmtime" | "asctime" |
-
-            // System functions
-            "system" | "atexit" | "signal" | "raise" |
-
-            // Character classification that can fail
-            "mblen" | "mbtowc" | "wctomb" |
-
-            // Math functions covered by FLP32-C — removed to avoid double-flagging.
-            // Recorded in this rule's TOML as `[references] related = [...,
-            // "FLP32-C"]` (cross-rule overlap policy:
-            // docs/design/cross-rule-overlap.md). This is a `related` tag,
-            // not a validated `defers_to` exception -- an earlier fix found zero
-            // ground-truth-labeled co-located data for this pair. If math
-            // functions are ever added back to this list, it is a
-            // detection-behavior change and needs delta-adjudication before
-            // any precision claim.
-
-            // Environment
-            "getenv" | "putenv" | "setenv" |
-
-            // String duplication (returns NULL on failure)
-            "strdup" | "strndup"
-        )
+        cert_error_return(function_name).is_some()
+            || matches!(
+                function_name,
+                // Outside CERT's table, but each signals failure through its
+                // result: the non-`_s` time conversions and `gets` return
+                // NULL, `system`/`putenv`/`setenv` a status, and the
+                // duplication functions NULL.
+                "asctime" | "ctime" | "gets" | "system" | "putenv" | "setenv" | "strdup"
+                    | "strndup"
+                    // In ERR33-C-EX1's table rather than the main one; a
+                    // discard is exempt (`ex1_permits_discard`), a stored
+                    // result is still held to its test.
+                    | "printf" | "vprintf"
+            )
+        // Math functions covered by FLP32-C are not listed, to avoid
+        // double-flagging. Recorded in this rule's TOML as `[references]
+        // related = [..., "FLP32-C"]` (cross-rule overlap policy:
+        // docs/design/cross-rule-overlap.md). This is a `related` tag, not a
+        // validated `defers_to` exception -- an earlier fix found zero
+        // ground-truth-labeled co-located data for this pair. If math
+        // functions are ever added, it is a detection-behavior change and
+        // needs delta-adjudication before any precision claim.
     }
 
     fn get_error_info(&self, function_name: &str) -> ErrorInfo {
@@ -606,9 +584,15 @@ impl Err33C {
         functions_info
             .get(function_name)
             .cloned()
-            .unwrap_or_else(|| ErrorInfo {
-                description: "Can return error indicator".to_string(),
-                suggestion: "Check return value for errors".to_string(),
+            .unwrap_or_else(|| match cert_error_return(function_name) {
+                Some(error) => ErrorInfo {
+                    description: format!("Returns {} on error", error),
+                    suggestion: format!("Compare the result with {} before relying on it", error),
+                },
+                None => ErrorInfo {
+                    description: "Can return error indicator".to_string(),
+                    suggestion: "Check return value for errors".to_string(),
+                },
             })
     }
 
@@ -1191,6 +1175,207 @@ struct ErrorInfo {
     suggestion: String,
 }
 
+/// ERR33-C's table of standard library functions and the value each returns
+/// on error, as CERT writes it (SEI CERT C Coding Standard, ERR33-C, "Table
+/// of Standard Library Functions", wiki.sei.cmu.edu, fetched 2026-09-28).
+/// Footnote markers are dropped. `puts`, `putchar`, `putwchar`, `putws`,
+/// `printf`, `vprintf`, `wprintf` and `vwprintf` are not here: CERT lists
+/// them in ERR33-C-EX1's table of functions whose results need not be
+/// checked.
+const CERT_ERROR_RETURNS: &[(&str, &str)] = &[
+    ("aligned_alloc", "NULL"),
+    ("asctime_s", "Nonzero"),
+    ("at_quick_exit", "Nonzero"),
+    ("atexit", "Nonzero"),
+    ("bsearch", "NULL"),
+    ("bsearch_s", "NULL"),
+    ("btowc", "WEOF"),
+    ("c16rtomb", "(size_t)(-1)"),
+    ("c32rtomb", "(size_t)(-1)"),
+    ("calloc", "NULL"),
+    ("clock", "(clock_t)(-1)"),
+    ("cnd_broadcast", "thrd_error"),
+    ("cnd_init", "thrd_nomem or thrd_error"),
+    ("cnd_signal", "thrd_error"),
+    ("cnd_timedwait", "thrd_timedout or thrd_error"),
+    ("cnd_wait", "thrd_error"),
+    ("ctime_s", "Nonzero"),
+    ("fclose", "EOF (negative)"),
+    ("fflush", "EOF (negative)"),
+    ("fgetc", "EOF"),
+    ("fgetpos", "Nonzero, errno >"),
+    ("fgets", "NULL"),
+    ("fgetwc", "WEOF"),
+    ("fopen", "NULL"),
+    ("fopen_s", "Nonzero"),
+    ("fprintf", "Negative"),
+    ("fprintf_s", "Negative"),
+    ("fputc", "EOF"),
+    ("fputs", "EOF (negative)"),
+    ("fputwc", "WEOF"),
+    ("fputws", "EOF (negative)"),
+    ("fread", "Elements read"),
+    ("freopen", "NULL"),
+    ("freopen_s", "Nonzero"),
+    ("fscanf", "EOF (negative)"),
+    ("fscanf_s", "EOF (negative)"),
+    ("fseek", "Nonzero"),
+    ("fsetpos", "Nonzero, errno >"),
+    ("ftell", "-1L, errno >"),
+    ("fwprintf", "Negative"),
+    ("fwprintf_s", "Negative"),
+    ("fwrite", "Elements written"),
+    ("fwscanf", "EOF (negative)"),
+    ("fwscanf_s", "EOF (negative)"),
+    ("getc", "EOF"),
+    ("getchar", "EOF"),
+    ("getenv", "NULL"),
+    ("getenv_s", "NULL"),
+    ("gets_s", "NULL"),
+    ("getwc", "WEOF"),
+    ("getwchar", "WEOF"),
+    ("gmtime", "NULL"),
+    ("gmtime_s", "NULL"),
+    ("localtime", "NULL"),
+    ("localtime_s", "NULL"),
+    ("malloc", "NULL"),
+    ("mblen", "-1"),
+    ("mbrlen", "(size_t)(-1)"),
+    ("mbrtoc16", "(size_t)(-1), errno == EILSEQ"),
+    ("mbrtoc32", "(size_t)(-1), errno == EILSEQ"),
+    ("mbrtowc", "(size_t)(-1), errno == EILSEQ"),
+    ("mbsrtowcs", "(size_t)(-1), errno == EILSEQ"),
+    ("mbsrtowcs_s", "Nonzero"),
+    ("mbstowcs", "(size_t)(-1)"),
+    ("mbstowcs_s", "Nonzero"),
+    ("mbtowc", "-1"),
+    ("memchr", "NULL"),
+    ("mktime", "(time_t)(-1)"),
+    ("mtx_init", "thrd_error"),
+    ("mtx_lock", "thrd_error"),
+    ("mtx_timedlock", "thrd_timedout or thrd_error"),
+    ("mtx_trylock", "thrd_busy or thrd_error"),
+    ("mtx_unlock", "thrd_error"),
+    ("printf_s", "Negative"),
+    ("putc", "EOF"),
+    ("putwc", "WEOF"),
+    ("raise", "Nonzero"),
+    ("realloc", "NULL"),
+    ("remove", "Nonzero"),
+    ("rename", "Nonzero"),
+    ("setlocale", "NULL"),
+    ("setvbuf", "Nonzero"),
+    ("scanf", "EOF (negative)"),
+    ("scanf_s", "EOF (negative)"),
+    ("signal", "SIG_ERR, errno >"),
+    ("snprintf", "Negative"),
+    ("snprintf_s", "Negative"),
+    ("sprintf", "Negative"),
+    ("sprintf_s", "Negative"),
+    ("sscanf", "EOF (negative)"),
+    ("sscanf_s", "EOF (negative)"),
+    ("strchr", "NULL"),
+    ("strerror_s", "Nonzero"),
+    ("strftime", "0"),
+    ("strpbrk", "NULL"),
+    ("strrchr", "NULL"),
+    ("strstr", "NULL"),
+    ("strtod", "0, errno == ERANGE"),
+    ("strtof", "0, errno == ERANGE"),
+    ("strtoimax", "INTMAX_MAX or INTMAX_MIN, errno == ERANGE"),
+    ("strtok", "NULL"),
+    ("strtok_s", "NULL"),
+    ("strtol", "LONG_MAX or LONG_MIN, errno == ERANGE"),
+    ("strtold", "0, errno == ERANGE"),
+    ("strtoll", "LLONG_MAX or LLONG_MIN, errno == ERANGE"),
+    ("strtoumax", "UINTMAX_MAX, errno == ERANGE"),
+    ("strtoul", "ULONG_MAX, errno == ERANGE"),
+    ("strtoull", "ULLONG_MAX, errno == ERANGE"),
+    ("strxfrm", ">= n"),
+    ("swprintf", "Negative"),
+    ("swprintf_s", "Negative"),
+    ("swscanf", "EOF (negative)"),
+    ("swscanf_s", "EOF (negative)"),
+    ("thrd_create", "thrd_nomem or thrd_error"),
+    ("thrd_detach", "thrd_error"),
+    ("thrd_join", "thrd_error"),
+    ("thrd_sleep", "Negative"),
+    ("time", "(time_t)(-1)"),
+    ("timespec_get", "0"),
+    ("tmpfile", "NULL"),
+    ("tmpfile_s", "Nonzero"),
+    ("tmpnam", "NULL"),
+    ("tmpnam_s", "Nonzero"),
+    ("tss_create", "thrd_error"),
+    ("tss_get", "0"),
+    ("tss_set", "thrd_error"),
+    ("ungetc", "EOF"),
+    ("ungetwc", "WEOF"),
+    ("vfprintf", "Negative"),
+    ("vfprintf_s", "Negative"),
+    ("vfscanf", "EOF (negative)"),
+    ("vfscanf_s", "EOF (negative)"),
+    ("vfwprintf", "Negative"),
+    ("vfwprintf_s", "Negative"),
+    ("vfwscanf", "EOF (negative)"),
+    ("vfwscanf_s", "EOF (negative)"),
+    ("vprintf_s", "Negative"),
+    ("vscanf", "EOF (negative)"),
+    ("vscanf_s", "EOF (negative)"),
+    ("vsnprintf", "Negative"),
+    ("vsnprintf_s", "Negative"),
+    ("vsprintf", "Negative"),
+    ("vsprintf_s", "Negative"),
+    ("vsscanf", "EOF (negative)"),
+    ("vsscanf_s", "EOF (negative)"),
+    ("vswprintf", "Negative"),
+    ("vswprintf_s", "Negative"),
+    ("vswscanf", "EOF (negative)"),
+    ("vswscanf_s", "EOF (negative)"),
+    ("vwprintf_s", "Negative"),
+    ("vwscanf", "EOF (negative)"),
+    ("vwscanf_s", "EOF (negative)"),
+    ("wcrtomb", "(size_t)(-1)"),
+    ("wcschr", "NULL"),
+    ("wcsftime", "0"),
+    ("wcspbrk", "NULL"),
+    ("wcsrchr", "NULL"),
+    ("wcsrtombs", "(size_t)(-1), errno == EILSEQ"),
+    ("wcsrtombs_s", "Nonzero"),
+    ("wcsstr", "NULL"),
+    ("wcstod", "0, errno == ERANGE"),
+    ("wcstof", "0, errno == ERANGE"),
+    ("wcstoimax", "INTMAX_MAX or INTMAX_MIN, errno == ERANGE"),
+    ("wcstok", "NULL"),
+    ("wcstok_s", "NULL"),
+    ("wcstol", "LONG_MAX or LONG_MIN, errno == ERANGE"),
+    ("wcstold", "0, errno == ERANGE"),
+    ("wcstoll", "LLONG_MAX or LLONG_MIN, errno == ERANGE"),
+    ("wcstombs", "(size_t)(-1)"),
+    ("wcstombs_s", "Nonzero"),
+    ("wcstoumax", "UINTMAX_MAX, errno == ERANGE"),
+    ("wcstoul", "ULONG_MAX, errno == ERANGE"),
+    ("wcstoull", "ULLONG_MAX, errno == ERANGE"),
+    ("wcsxfrm", ">= n"),
+    ("wctob", "EOF"),
+    ("wctomb", "-1"),
+    ("wctomb_s", "-1"),
+    ("wctrans", "0"),
+    ("wctype", "0"),
+    ("wmemchr", "NULL"),
+    ("wprintf_s", "Negative"),
+    ("wscanf", "EOF (negative)"),
+    ("wscanf_s", "EOF (negative)"),
+];
+
+/// The error return CERT's ERR33-C table gives for `function_name`.
+fn cert_error_return(function_name: &str) -> Option<&'static str> {
+    CERT_ERROR_RETURNS
+        .iter()
+        .find(|(name, _)| *name == function_name)
+        .map(|(_, error)| *error)
+}
+
 /// Whether ERR33-C-EX1 lets a call to `function_name` have its result
 /// discarded: always for the console functions in its table, and for the
 /// `fprintf` and file-output families only when the stream argument is
@@ -1199,9 +1384,9 @@ struct ErrorInfo {
 /// neither a local nor a parameter of that name (ADR-0006). A stream held in
 /// a variable is not followed: it may be a file, so the discard is reported.
 ///
-/// The wide forms and `puts`/`putchar`/`putws`/`putwchar` take effect only
-/// once `is_error_returning_function` lists them; until then this is never
-/// reached for them.
+/// `puts`, `putchar`, `putws`, `putwchar`, `wprintf` and `vwprintf` are not
+/// in CERT's main table, so `is_error_returning_function` never lists them
+/// and this is not reached for them; their arm states EX1 for completeness.
 fn ex1_permits_discard(
     function_name: &str,
     call_node: &Node,
