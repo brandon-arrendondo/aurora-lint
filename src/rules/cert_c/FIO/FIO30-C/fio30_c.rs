@@ -1293,6 +1293,15 @@ impl FormatStringAnalyzer {
                 }
                 true // Conservative: assume unknown function calls could be unsafe
             }
+            // Parentheses do not change the value: judge what they hold, not
+            // the `(` token, which would fall to "unknown node is unsafe".
+            "parenthesized_expression" => {
+                let mut cursor = node.walk();
+                let inner = node
+                    .named_children(&mut cursor)
+                    .find(|c| c.kind() != "comment");
+                inner.is_none_or(|inner| self.is_potentially_unsafe_format_string(&inner, source))
+            }
             "conditional_expression" => {
                 // The format is whichever result operand is selected, so judge
                 // only those two; the condition never reaches the format slot.

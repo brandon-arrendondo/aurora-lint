@@ -17,5 +17,6 @@
 int main(int argc, char *argv[]) {
     // VULNERABLE: user input selected as the format string
     printf(argc > 1 ? argv[1] : "no argument\n");
+    printf((argc > 2 ? "two\n" : argv[0]));
     return 0;
 }
