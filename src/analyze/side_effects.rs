@@ -1556,8 +1556,9 @@ impl Resolver<'_, '_> {
         use crate::utility::cert_c::library_effects::{standard_object_name, StandardName};
         match standard_object_name(name) {
             Some(StandardName::Constant) => {}
-            // Known only while the hosted library contract holds.
-            Some(StandardName::HostedStream) => self.own.lib_any = true,
+            // Known only while the hosted library contract holds; at a rule's
+            // own argument a stream is a name, not a call, and reads nothing.
+            Some(StandardName::HostedStream) => self.own.lib_any |= !self.lenient,
             None if crate::utility::cert_c::std_functions::is_iso_c_or_posix_function(name) => {
                 // A library function named without a call: a designator.
             }
