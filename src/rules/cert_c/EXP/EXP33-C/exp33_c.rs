@@ -60,6 +60,32 @@ pub struct Exp33C {
 }
 
 impl Exp33C {
+    /// Unless the scan is a declared closed program, drop from this file's
+    /// literal-returning functions every one with external linkage, which
+    /// another translation unit may interpose (ADR-0011). Read off the
+    /// file's own definitions as well as the prescan's list: the checked
+    /// file need not be in the prescan set (`-d` elsewhere, a foreign cache).
+    fn withhold_open_constant_functions(
+        &self,
+        root: &Node,
+        source: &str,
+        fn_constants: &mut HashMap<String, i64>,
+    ) {
+        if self.settings.borrow().flag("closed_program") {
+            return;
+        }
+        for f in query::find_descendants_of_kind(*root, "function_definition") {
+            let is_static = crate::utility::cert_c::ast_utils::declaration_has_storage_class(
+                &f, "static", source,
+            );
+            if let Some(name) = cfg_mod::get_function_name(&f, source).filter(|_| !is_static) {
+                fn_constants.remove(name);
+            }
+        }
+        let open = self.closure_dependent_constants.borrow();
+        fn_constants.retain(|name, _| !open.contains(name));
+    }
+
     pub fn new() -> Self {
         Self {
             function_cfgs: RefCell::new(HashMap::new()),
@@ -320,10 +346,7 @@ impl CertRule for Exp33C {
                 let file_constants = init_state::collect_file_scope_constants(node, source);
                 // Also collect zero-arg constant-return functions (e.g., staticReturnsTrue()).
                 let mut fn_constants = init_state::collect_constant_functions(node, source);
-                if !self.settings.borrow().flag("closed_program") {
-                    let open = self.closure_dependent_constants.borrow();
-                    fn_constants.retain(|name, _| !open.contains(name));
-                }
+                self.withhold_open_constant_functions(node, source, &mut fn_constants);
                 {
                     let mut constants = self.file_scope_constants.borrow_mut();
                     // File-scope constants and constant functions override prescan globals

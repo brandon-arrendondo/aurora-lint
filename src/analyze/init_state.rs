@@ -2573,11 +2573,18 @@ pub fn collect_file_scope_constants(root: &Node, source: &str) -> HashMap<String
     // name -> Some((value, needs the never-written check)), None = no one value
     let mut seen: HashMap<String, Option<(i64, bool)>> = HashMap::new();
     collect_constants_recursive(root, source, &mut seen);
+    let function_macros = const_eval::function_macro_names(source);
     seen.into_iter()
         .filter_map(|(name, entry)| {
             let (value, needs_check) = entry?;
-            (!needs_check || const_eval::file_static_never_written(root, source, &name))
-                .then_some((name, value))
+            (!needs_check
+                || const_eval::file_static_never_written_among(
+                    root,
+                    source,
+                    &name,
+                    &function_macros,
+                ))
+            .then_some((name, value))
         })
         .collect()
 }
@@ -2629,16 +2636,20 @@ fn collect_constants_recursive(
                 let text_of = |n: Node| n.utf8_text(source.as_bytes()).unwrap_or("");
                 let mut is_const = false;
                 let mut is_static = false;
+                let mut is_volatile = false;
                 for k in 0..child.child_count() {
                     if let Some(c) = child.child(k) {
                         match c.kind() {
                             "type_qualifier" if text_of(c) == "const" => is_const = true,
+                            "type_qualifier" if text_of(c) == "volatile" => is_volatile = true,
                             "storage_class_specifier" if text_of(c) == "static" => is_static = true,
                             _ => {}
                         }
                     }
                 }
-                if !is_const && !is_static {
+                // A volatile object may change by means the program cannot
+                // see (C11 6.7.3p7), so it is never a constant.
+                if (!is_const && !is_static) || is_volatile {
                     continue;
                 }
                 for j in 0..child.child_count() {

@@ -116,6 +116,10 @@ safety-critical user unprotected.
      (ADR-0001).
 8. **Every figure names its setting.** Published results report the default
    preset as the headline, with strict alongside. Juliet is run under both.
+   A run whose settings are a preset plus a declared environment fact is
+   named after both, as `-default+closed-{hash12}` and
+   `-strict+closed-{hash12}` for a scan declared a closed program, never a
+   bare `-preset-`, so the default and strict runs of one build stay distinct.
 
 ## Consequences
 

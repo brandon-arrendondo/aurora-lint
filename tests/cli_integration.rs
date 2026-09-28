@@ -714,6 +714,79 @@ fn exp33_global_defined_differently_per_configuration_does_not_prune() {
     );
 }
 
+/// The checked file's own non-static literal-returning function folds only
+/// in a closed program, whether or not the file is in the prescan set.
+#[test]
+fn exp33_checked_files_own_constant_function_folds_only_in_a_closed_program() {
+    assert_eq!(
+        exp33_findings_in_use_c("exp33_constant_function_in_checked_file", true),
+        0
+    );
+    assert_eq!(
+        exp33_findings_in_use_c("exp33_constant_function_in_checked_file", false),
+        1
+    );
+    // Against a prescan cache built from other files, which never saw this
+    // function: the storage class alone must decide.
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("foreign.prescan");
+    let out = dir.path().join("out.json");
+    let foreign = fixtures().join("exp33_global_never_written");
+    let use_c = fixtures().join("exp33_constant_function_in_checked_file/use.c");
+    let manifest = manifest_exp33();
+    let (code, _, _) = run_aurora_lint(&[
+        foreign.join("use.c").to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "-d",
+        foreign.to_str().unwrap(),
+        "--save-prescan",
+        cache.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    let (code, _, _) = run_aurora_lint(&[
+        use_c.to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "--load-prescan",
+        cache.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    assert_eq!(
+        violations
+            .iter()
+            .filter(|v| v["rule_id"] == "EXP33-C")
+            .count(),
+        1
+    );
+}
+
+/// A header's never-written static is each includer's own copy: an includer
+/// that writes it must not have its branch folded.
+#[test]
+fn exp33_header_static_written_by_an_includer_does_not_prune() {
+    assert_eq!(
+        exp33_findings_in_use_c("exp33_header_static_written_by_includer", false),
+        1
+    );
+}
+
+/// A volatile global is never a constant, closed program or not.
+#[test]
+fn exp33_volatile_global_does_not_prune() {
+    assert_eq!(exp33_findings_in_use_c("exp33_volatile_global", true), 1);
+}
+
+/// A pointer global initialized to 0 is not the integer constant 0.
+#[test]
+fn exp33_pointer_global_is_not_an_integer_constant() {
+    assert_eq!(exp33_findings_in_use_c("exp33_pointer_global", true), 1);
+}
+
 /// A never-written static in one file is not the same-named, written static
 /// in another (ADR-0006): it must not fold that file's branch.
 #[test]

@@ -19,7 +19,7 @@ from bench.analyzer import analyze_shard, merge_shards
 from bench.config import (
     DEFAULT_JOBS, DEFAULT_PROFILE, GENERATE_MAP_SCRIPT, JULIET_BASE,
     MANIFEST_JULIET_FULL, MANIFEST_CWE_DIR, RULE_CWE_MAP, SQC_BIN,
-    JULIET_COMPILE_DB, JULIET_SETTING_OVERRIDES, juliet_run_id, resolve_settings,
+    JULIET_COMPILE_DB, JULIET_SETTING_OVERRIDES, juliet_run_id, juliet_settings,
     settings_column,
 )
 from bench.db import BenchDB
@@ -570,7 +570,7 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
 
     version = _get_sqc_version()
     sha = _get_git_sha()
-    settings = resolve_settings(profile, JULIET_SETTING_OVERRIDES)
+    settings = juliet_settings(profile)
     run_id = juliet_run_id(version, sha, fast=fast, compile_commands=compile_commands,
                            cwes=cwe_ids, settings=settings)
     mode = "fast" if fast else "full"

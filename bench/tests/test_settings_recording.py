@@ -30,10 +30,39 @@ class TestSettingsRunId(unittest.TestCase):
                           cwes=("CWE-78",), settings=STRICT),
             "sqc-0.5.3-2db3d605-full-cdb-strict-6686349f9a10-cwe78")
 
+    def test_a_juliet_run_is_named_after_its_preset_and_the_closed_program(self):
+        # A Juliet scan declares the testcase set a closed program: a preset
+        # plus that fact is named after both, never a bare -preset-, so the
+        # default and strict runs of one build stay distinct (ADR-0015 D8).
+        default = {"preset": None, "run_label": "default+closed",
+                   "hash": "a90f2cb52174" + "3" * 52}
+        strict = {"preset": None, "run_label": "strict+closed",
+                  "hash": "5b1e0c7d9f22" + "4" * 52}
+        self.assertEqual(
+            juliet_run_id("0.5.3", "2db3d605", fast=True, compile_commands=False,
+                          settings=default),
+            "sqc-0.5.3-2db3d605-default+closed-a90f2cb52174")
+        self.assertEqual(
+            juliet_run_id("0.5.3", "2db3d605", fast=True, compile_commands=False,
+                          settings=strict),
+            "sqc-0.5.3-2db3d605-strict+closed-5b1e0c7d9f22")
+
     def test_default_and_strict_runs_of_one_build_do_not_collide(self):
         ids = {juliet_run_id("0.5.3", "2db3d605", fast=True, compile_commands=False,
                              settings=s) for s in (DEFAULT, STRICT, None)}
         self.assertEqual(len(ids), 3)
+
+
+class TestJulietSettings(unittest.TestCase):
+    def test_every_juliet_scan_declares_a_closed_program_and_is_labeled(self):
+        from unittest import mock
+        from bench import config
+        resolved = {"preset": None, "hash": "c" * 64}
+        with mock.patch.object(config, "resolve_settings", return_value=resolved) as r:
+            s = config.juliet_settings("strict")
+        r.assert_called_once_with("strict", ("closed_program=true",))
+        self.assertEqual(s["run_label"], "strict+closed")
+        self.assertEqual(settings_run_suffix(s), "-strict+closed-cccccccccccc")
 
 
 class TestResolvePrefersDefaultSettings(unittest.TestCase):

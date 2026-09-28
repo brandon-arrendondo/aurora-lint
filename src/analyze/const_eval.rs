@@ -828,8 +828,9 @@ fn collect_static_const_defs(root: &Node, source: &str, defs: &mut Vec<(String, 
             continue;
         }
         let decl_text = child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-        // Must contain "const" and an integer/bool type
-        if !decl_text.contains("const") {
+        // Must contain "const" and an integer/bool type; a volatile object
+        // may change unseen (C11 6.7.3p7) and is never a constant.
+        if !decl_text.contains("const") || contains_token(&decl_text, "volatile") {
             continue;
         }
         // Check for integer type keywords
@@ -884,8 +885,12 @@ fn collect_non_const_static_defs(root: &Node, source: &str, defs: &mut Vec<(Stri
             continue;
         }
         let decl_text = child.utf8_text(source.as_bytes()).unwrap_or("");
-        // Must have `static` but NOT `const` (const handled by collect_static_const_defs)
-        if !decl_text.contains("static") || decl_text.contains("const") {
+        // Must have `static` but NOT `const` (const handled by collect_static_const_defs),
+        // and not `volatile`, which may change unseen (C11 6.7.3p7).
+        if !decl_text.contains("static")
+            || decl_text.contains("const")
+            || contains_token(decl_text, "volatile")
+        {
             continue;
         }
         let has_int_type = decl_text.contains("int")
@@ -922,8 +927,9 @@ fn collect_non_const_static_defs(root: &Node, source: &str, defs: &mut Vec<(Stri
         }
     }
 
+    let function_macros = function_macro_names(source);
     for (name, value, _decl_end) in candidates {
-        if file_static_never_written(root, source, &name) {
+        if file_static_never_written_among(root, source, &name, &function_macros) {
             defs.push((name, value));
         }
     }
@@ -946,6 +952,26 @@ fn collect_non_const_static_defs(root: &Node, source: &str, defs: &mut Vec<(Stri
 /// file defines, counts as a write, and a block-scope `extern` declaration
 /// of the name is the file-scope object, not another one.
 pub fn file_static_never_written(root: &Node, source: &str, name: &str) -> bool {
+    file_static_never_written_among(root, source, name, &function_macro_names(source))
+}
+
+/// The names `source` defines as function-like macros, collected once so a
+/// per-identifier question does not rescan the file.
+pub fn function_macro_names(source: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    crate::analyze::macro_expand::collect_function_macro_names(source, &mut out);
+    out
+}
+
+/// [`file_static_never_written`] with the file's function-like macro names
+/// ([`function_macro_names`]) already collected, for a caller asking about
+/// several names.
+pub fn file_static_never_written_among(
+    root: &Node,
+    source: &str,
+    name: &str,
+    function_macros: &std::collections::HashSet<String>,
+) -> bool {
     use crate::utility::cert_c::ast_utils::{
         declaration_has_storage_class, resolve_identifier_binding, IdentifierBinding,
     };
@@ -955,8 +981,6 @@ pub fn file_static_never_written(root: &Node, source: &str, name: &str) -> bool 
     if name_in_a_define_body(source, name) {
         return false;
     }
-    let mut macro_callees: std::collections::HashMap<String, bool> =
-        std::collections::HashMap::new();
     let ids = lang_parsing_substrate::query::find_descendants_of_kind(*root, "identifier");
     for id in ids {
         if id.utf8_text(source.as_bytes()).unwrap_or("") != name {
@@ -972,7 +996,7 @@ pub fn file_static_never_written(root: &Node, source: &str, name: &str) -> bool 
             Some(IdentifierBinding::Parameter(_)) => continue,
             _ => {}
         }
-        if is_write_context(&id) || is_function_macro_argument(&id, source, &mut macro_callees) {
+        if is_write_context(&id) || is_function_macro_argument(&id, source, function_macros) {
             return false;
         }
     }
@@ -996,14 +1020,13 @@ pub fn file_scope_written_names(root: &Node, source: &str) -> std::collections::
         declaration_has_storage_class, resolve_identifier_binding, IdentifierBinding,
     };
     let mut out = define_body_identifiers(source);
-    let mut macro_callees: std::collections::HashMap<String, bool> =
-        std::collections::HashMap::new();
+    let function_macros = function_macro_names(source);
     for id in lang_parsing_substrate::query::find_descendants_of_kind(*root, "identifier") {
         let name = id.utf8_text(source.as_bytes()).unwrap_or("");
         if name.is_empty() || out.contains(name) {
             continue;
         }
-        if !is_write_context(&id) && !is_function_macro_argument(&id, source, &mut macro_callees) {
+        if !is_write_context(&id) && !is_function_macro_argument(&id, source, &function_macros) {
             continue;
         }
         match resolve_identifier_binding(&id, name, source) {
@@ -1149,7 +1172,7 @@ fn contains_token(text: &str, name: &str) -> bool {
 fn is_function_macro_argument(
     id: &Node,
     source: &str,
-    cache: &mut std::collections::HashMap<String, bool>,
+    function_macros: &std::collections::HashSet<String>,
 ) -> bool {
     let mut node = *id;
     while let Some(parent) = node.parent() {
@@ -1160,13 +1183,8 @@ fn is_function_macro_argument(
                 .and_then(|c| c.child_by_field_name("function"))
                 .filter(|f| f.kind() == "identifier")
                 .and_then(|f| f.utf8_text(source.as_bytes()).ok());
-            if let Some(callee) = callee {
-                let is_macro = *cache.entry(callee.to_string()).or_insert_with(|| {
-                    crate::analyze::check_macros::defines_function_macro(source, callee)
-                });
-                if is_macro {
-                    return true;
-                }
+            if callee.is_some_and(|c| function_macros.contains(c)) {
+                return true;
             }
         }
         if matches!(
@@ -3188,6 +3206,41 @@ fn parens_balanced(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn written_names(code: &str) -> std::collections::HashSet<String> {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+        file_scope_written_names(&tree.root_node(), code)
+    }
+
+    #[test]
+    fn written_names_holds_every_file_scope_write_and_no_local_one() {
+        let w = written_names(
+            "int a, b, c, d, e, f;\n\
+             void g(int f) { int e; a = 1; ++b; int *p = &c; e = 2; f = 3; }\n\
+             void h(void) { extern int d; d = 4; }\n",
+        );
+        for name in ["a", "b", "c", "d"] {
+            assert!(w.contains(name), "{name} is written at file scope");
+        }
+        // A local and a parameter of the same spelling are other objects.
+        assert!(!w.contains("e"));
+        assert!(!w.contains("f"));
+    }
+
+    #[test]
+    fn written_names_counts_macro_bodies_and_function_macro_arguments() {
+        let w = written_names(
+            "int a, b, c;\n\
+             #define BUMP() (a++)\n\
+             #define SET(v) ((v) = 1)\n\
+             void g(void) { SET(b); (void)c; }\n",
+        );
+        assert!(w.contains("a"), "named in a #define body");
+        assert!(w.contains("b"), "an argument of a function-like macro");
+        assert!(!w.contains("c"), "only read");
+    }
 
     fn never_written(code: &str, name: &str) -> bool {
         let mut parser = tree_sitter::Parser::new();

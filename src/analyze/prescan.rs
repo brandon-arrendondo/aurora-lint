@@ -94,6 +94,9 @@ struct FilePrescanResult {
     /// Every name this file may write as a file-scope object
     /// (`const_eval::file_scope_written_names`).
     file_scope_writes: HashSet<String>,
+    /// For a header, the names it declares `static` at file scope: each
+    /// includer compiles its own copy, which that includer may write.
+    header_statics: HashSet<String>,
     global_var_null_states: HashMap<String, NullState>,
     global_writers: HashMap<String, HashSet<String>>,
     callsite_args: HashMap<String, Vec<Vec<NullState>>>,
@@ -162,6 +165,7 @@ impl FilePrescanResult {
             global_constants: Vec::new(),
             closure_dependent_constants: HashSet::new(),
             file_scope_writes: HashSet::new(),
+            header_statics: HashSet::new(),
             global_var_null_states: HashMap::new(),
             global_writers: HashMap::new(),
             callsite_args: HashMap::new(),
@@ -218,10 +222,12 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         // A `.c` file's own statics are its alone: exported project-wide they
         // would fold a same-named, written static in another file (ADR-0006).
         // A header's statics are compiled into every includer, so they stay.
+        let file_statics = const_eval::file_scope_static_names(&root, &source);
         let own_statics = if is_header {
+            result.header_statics = file_statics;
             HashSet::new()
         } else {
-            const_eval::file_scope_static_names(&root, &source)
+            file_statics
         };
         result.macro_constants.extend(
             file_macros
@@ -580,6 +586,7 @@ fn prescan_file_list(
     let mut global_constants: HashMap<String, i64> = HashMap::new();
     let mut global_constant_conflicts: HashSet<String> = HashSet::new();
     let mut closure_dependent_constants: HashSet<String> = HashSet::new();
+    let mut header_statics: HashSet<String> = HashSet::new();
     let mut file_scope_writes: HashSet<String> = HashSet::new();
     let mut global_var_null_states: HashMap<String, NullState> = HashMap::new();
     let mut global_writers: HashMap<String, HashSet<String>> = HashMap::new();
@@ -890,6 +897,7 @@ fn prescan_file_list(
         }
         file_scope_writes.extend(r.file_scope_writes);
         closure_dependent_constants.extend(r.closure_dependent_constants);
+        header_statics.extend(r.header_statics);
         // One object per name: these are the non-static pointer globals, so
         // a name defined in several files is one variable, and its states
         // are joined as converging paths would be. Keeping the last file's
@@ -1237,6 +1245,10 @@ fn prescan_file_list(
     // A non-static global is a constant only if no scanned file writes it
     // (ADR-0011: proof in the scanned source) and every definition agrees
     // on its value.
+    // A header's static is compiled into each includer, which may write
+    // its copy: one written anywhere is no constant for any of them.
+    macro_constants
+        .retain(|name, _| !(header_statics.contains(name) && file_scope_writes.contains(name)));
     global_constants.retain(|name, _| {
         !global_constant_conflicts.contains(name) && !file_scope_writes.contains(name)
     });
@@ -5741,8 +5753,9 @@ fn collect_global_constants(
                         }
                         text
                     };
-                    // Skip static declarations (handled per-file in init_state)
-                    if type_text.contains("static") {
+                    // Skip static declarations (handled per-file in init_state),
+                    // and volatile ones, which may change unseen (C11 6.7.3p7).
+                    if type_text.contains("static") || type_text.contains("volatile") {
                         continue;
                     }
                     // Accept: const TYPE NAME = VALUE; or TYPE NAME = VALUE;
@@ -5750,6 +5763,15 @@ fn collect_global_constants(
                     for j in 0..child.child_count() {
                         if let Some(decl) = child.child(j) {
                             if decl.kind() == "init_declarator" {
+                                // Only a plain object: `int *p = 0;` is a
+                                // pointer and `int a[2] = {0}` an array, not
+                                // the integer constant 0.
+                                if decl
+                                    .child_by_field_name("declarator")
+                                    .is_some_and(|d| d.kind() != "identifier")
+                                {
+                                    continue;
+                                }
                                 let name = extract_declarator_name(&decl, source);
                                 if name.is_empty() {
                                     continue;
