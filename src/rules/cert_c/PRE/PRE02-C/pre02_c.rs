@@ -113,13 +113,30 @@ fn starts_operand(token: &PpToken) -> bool {
     }
 }
 
+/// Whether the list opens a bracket it never closes. Such a list cannot be
+/// one parenthesized expression, however its operators nest:
+/// `((u32) (BIT(6) | BIT(7))` leaves the expansion's text to close it.
+fn has_unclosed_bracket(tokens: &[PpToken]) -> bool {
+    let mut depth = 0usize;
+    for t in tokens {
+        if t.is("(") || t.is("[") || t.is("{") {
+            depth += 1;
+        } else if t.is(")") || t.is("]") || t.is("}") {
+            depth = depth.saturating_sub(1);
+        }
+    }
+    depth > 0
+}
+
 /// Whether the replacement list has an operator at its top level, outside
 /// every bracket: a binary operator (spaced or not) between two operands,
 /// or a leading `-`, `!` or `~`, which the text before the expansion can
 /// turn into a binary operator (`x END_OF_FILE` with `#define END_OF_FILE
 /// -1`). A list that is one call, subscript or member access (EX1, EX2),
-/// one parenthesized expression, a cast of one, or a `do { } while (0)` has
-/// none: all its operators sit inside brackets.
+/// one parenthesized expression, a cast of one, or a `do { } while (0)`
+/// has none: all its operators sit inside brackets. In a list with an
+/// unclosed bracket every binary operator counts, since no pair of
+/// brackets in it encloses the whole.
 fn has_top_level_operator(tokens: &[PpToken]) -> bool {
     if tokens
         .first()
@@ -127,8 +144,9 @@ fn has_top_level_operator(tokens: &[PpToken]) -> bool {
     {
         return true;
     }
+    let unclosed = has_unclosed_bracket(tokens);
     tokens.iter().enumerate().skip(1).any(|(k, t)| {
-        t.depth == 0
+        (unclosed || t.depth == 0)
             && t.kind == PpKind::Punctuator
             && BINARY_OPERATORS.iter().any(|op| t.is(op))
             && ends_operand(tokens, k - 1)

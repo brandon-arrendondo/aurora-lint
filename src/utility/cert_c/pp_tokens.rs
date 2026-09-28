@@ -729,6 +729,52 @@ fn mark_operands(tokens: &mut [PpToken], function_like: bool) {
     }
 }
 
+/// Whether token `k` of a replacement list is spelled into the expansion
+/// rather than read as a token of C: a `#` or `##` operand in this list, or
+/// a whole argument of an invocation inside it (`V(A5, 03)`) whose
+/// parameter the invoked macro stringizes or pastes, as
+/// `is_operand_argument(name, index)` says. mbedtls's AES tables write
+/// `V(C6, 08, 0D, 03)` inside a `#define`, and `V` pastes `0x##a##b##c##d`:
+/// none of those pp-numbers is ever an integer constant.
+pub fn is_spelled_operand(
+    tokens: &[PpToken],
+    k: usize,
+    is_operand_argument: impl Fn(&str, usize) -> bool,
+) -> bool {
+    let t = &tokens[k];
+    if t.stringized || t.pasted {
+        return true;
+    }
+    if t.depth == 0 {
+        return false;
+    }
+    let prev = k.checked_sub(1).map(|p| &tokens[p]);
+    let next = tokens.get(k + 1);
+    let whole_argument = prev.is_some_and(|p| p.is("(") || p.is(","))
+        && next.is_some_and(|n| n.is(",") || n.is(")"));
+    if !whole_argument {
+        return false;
+    }
+    let Some(open) = (0..k)
+        .rev()
+        .find(|&j| tokens[j].depth == t.depth - 1 && tokens[j].is("("))
+    else {
+        return false;
+    };
+    let Some(name) = open
+        .checked_sub(1)
+        .map(|j| &tokens[j])
+        .filter(|n| n.kind == PpKind::Identifier)
+    else {
+        return false;
+    };
+    let index = tokens[open + 1..k]
+        .iter()
+        .filter(|a| a.depth == t.depth && a.is(","))
+        .count();
+    is_operand_argument(&name.text, index)
+}
+
 /// The index of the bracket closing the one at `open`, if it is closed.
 pub fn matching_close(tokens: &[PpToken], open: usize) -> Option<usize> {
     let depth = tokens.get(open)?.depth;
@@ -958,6 +1004,18 @@ mod tests {
         let ranges = [2..5, 9..12];
         let hits: Vec<usize> = (0..14).filter(|&k| in_sorted_ranges(&ranges, k)).collect();
         assert_eq!(hits, [2, 3, 4, 9, 10, 11]);
+    }
+
+    #[test]
+    fn operands_spelled_through_an_invocation_are_found() {
+        let t = lex_replacement_list("V(C6, 08, 0D, 03), W(07) + 0x##10", false);
+        let pastes_every = |name: &str, _: usize| name == "V";
+        let spelled: Vec<&str> = (0..t.len())
+            .filter(|&k| t[k].kind == PpKind::Number)
+            .filter(|&k| is_spelled_operand(&t, k, pastes_every))
+            .map(|k| t[k].text.as_ref())
+            .collect();
+        assert_eq!(spelled, ["08", "0D", "03", "0x", "10"]);
     }
 
     #[test]

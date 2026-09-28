@@ -12,17 +12,30 @@
 // 3. Flag violations and suggest using uppercase 'L' or 'LL'
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::macro_expand::{operand_params_in_scope, OperandParams};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
-use crate::utility::cert_c::pp_tokens::{define_directives, in_sorted_ranges, LineIndex, PpKind};
+use crate::utility::cert_c::pp_tokens::{
+    define_directives, in_sorted_ranges, is_spelled_operand, LineIndex, PpKind,
+};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::{Node, Point};
 
-pub struct Dcl16C;
+pub struct Dcl16C {
+    /// Which parameters each function-like macro stringizes or pastes
+    /// (`ProjectContext::macro_operand_params`): a number passed to one
+    /// inside a replacement list is spelled, never an integer constant.
+    operand_params: RefCell<Arc<HashMap<String, OperandParams>>>,
+}
 
 impl Dcl16C {
-    #[allow(dead_code)]
     pub fn new() -> Self {
-        Dcl16C
+        Self {
+            operand_params: RefCell::default(),
+        }
     }
 
     /// Check a node and all its descendants for violations, skipping the
@@ -131,6 +144,10 @@ impl CertRule for Dcl16C {
         "DCL16-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.operand_params.borrow_mut() = context.macro_operand_params.clone();
+    }
+
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // A `#define`'s replacement list is one opaque token to tree-sitter,
         // so its literals come from the pp-token lexer.
@@ -141,9 +158,15 @@ impl CertRule for Dcl16C {
             return;
         }
         let lines = LineIndex::new(source);
+        let params = operand_params_in_scope(&self.operand_params.borrow(), source);
+        let is_operand_argument =
+            |name: &str, index: usize| params.get(name).is_some_and(|p| p.covers_argument(index));
         for (_, define) in &defines {
-            for token in define.tokens() {
-                if token.kind == PpKind::Number {
+            let tokens = define.tokens();
+            for (k, token) in tokens.iter().enumerate() {
+                if token.kind == PpKind::Number
+                    && !is_spelled_operand(&tokens, k, is_operand_argument)
+                {
                     let at = lines.point(define.body_start + token.start);
                     self.check_literal(&token.text, at, violations);
                 }

@@ -745,6 +745,21 @@ pub fn collect_macro_operand_params(source: &str, out: &mut HashMap<String, Oper
     }
 }
 
+/// The operand parameters a file sees: `project`'s (from
+/// `ProjectContext::macro_operand_params`) with the file's own merged in.
+pub fn operand_params_in_scope(
+    project: &HashMap<String, OperandParams>,
+    source: &str,
+) -> HashMap<String, OperandParams> {
+    let mut params = project.clone();
+    let mut local = HashMap::new();
+    collect_macro_operand_params(source, &mut local);
+    for (name, p) in local {
+        merge_operand_params(&mut params, name, p);
+    }
+    params
+}
+
 /// Merge one file's [`OperandParams`] for `name` into `out`: the union of
 /// operand positions, as [`collect_macro_operand_params`] does across
 /// branches within a file.

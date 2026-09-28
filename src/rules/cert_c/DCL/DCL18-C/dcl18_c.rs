@@ -2,13 +2,33 @@
 // Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::macro_expand::{operand_params_in_scope, OperandParams};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
-use crate::utility::cert_c::pp_tokens::{define_directives, in_sorted_ranges, LineIndex, PpKind};
+use crate::utility::cert_c::pp_tokens::{
+    define_directives, in_sorted_ranges, is_spelled_operand, LineIndex, PpKind,
+};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::{Node, Point};
 
-pub struct Dcl18C;
+pub struct Dcl18C {
+    /// Which parameters each function-like macro stringizes or pastes
+    /// (`ProjectContext::macro_operand_params`): a number passed to one
+    /// inside a replacement list is spelled, never an integer constant.
+    operand_params: RefCell<Arc<HashMap<String, OperandParams>>>,
+}
+
+impl Dcl18C {
+    pub fn new() -> Self {
+        Self {
+            operand_params: RefCell::default(),
+        }
+    }
+}
 
 impl CertRule for Dcl18C {
     fn rule_id(&self) -> &'static str {
@@ -25,6 +45,10 @@ impl CertRule for Dcl18C {
 
     fn cert_id(&self) -> &'static str {
         "DCL18-C"
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.operand_params.borrow_mut() = context.macro_operand_params.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -53,9 +77,15 @@ impl Dcl18C {
                 .filter_map(|n| self.check_literal(get_node_text(&n, source), n.start_position()))
                 .collect();
         let lines = (!defines.is_empty()).then(|| LineIndex::new(source));
+        let params = operand_params_in_scope(&self.operand_params.borrow(), source);
+        let is_operand_argument =
+            |name: &str, index: usize| params.get(name).is_some_and(|p| p.covers_argument(index));
         for (_, define) in &defines {
-            for token in define.tokens() {
-                if token.kind == PpKind::Number {
+            let tokens = define.tokens();
+            for (k, token) in tokens.iter().enumerate() {
+                if token.kind == PpKind::Number
+                    && !is_spelled_operand(&tokens, k, is_operand_argument)
+                {
                     let at = lines.as_ref().map_or_else(Default::default, |l| {
                         l.point(define.body_start + token.start)
                     });
