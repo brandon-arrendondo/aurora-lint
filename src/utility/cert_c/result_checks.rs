@@ -67,6 +67,12 @@ pub enum ErrorSignal {
     Count,
     /// `(T)-1`: `ftell`, `time`, `mktime`, `clock`, `mbstowcs`, ...
     MinusOne,
+    /// `(size_t)-1` on an encoding error, next to `(size_t)-2` for an
+    /// incomplete sequence (and `(size_t)-3` for `mbrtoc16`/`mbrtoc32`): the
+    /// restartable conversions. As [`Self::MinusOne`], and any ordering at
+    /// a negative constant, `n >= (size_t)-2`, which separates the failing
+    /// values from every count.
+    Restartable,
     /// `SIG_ERR`: `signal`.
     SigErr,
     /// The value itself does not signal failure: `errno`, or the end pointer
@@ -80,7 +86,10 @@ impl ErrorSignal {
     /// Whether the failing value cannot be used at all -- a null pointer, a
     /// negative length, `(T)-1` -- so a use before the test defeats it.
     fn is_unusable_on_failure(self) -> bool {
-        matches!(self, Self::Null | Self::Negative | Self::MinusOne)
+        matches!(
+            self,
+            Self::Null | Self::Negative | Self::MinusOne | Self::Restartable
+        )
     }
 }
 
@@ -114,7 +123,7 @@ pub fn error_signal_for(function_name: &str) -> Option<ErrorSignal> {
         | "strpbrk" | "strrchr" | "strstr" | "strtok" | "strtok_s" | "wcschr" | "wcspbrk"
         | "wcsrchr" | "wcsstr" | "wcstok" | "wcstok_s" | "wmemchr" => ErrorSignal::Null,
         // Zero on failure, which the null test reads the same way.
-        "timespec_get" | "tss_get" | "wctrans" | "wctype" => ErrorSignal::Null,
+        "tss_get" | "wctrans" | "wctype" => ErrorSignal::Null,
         // The table gives `getenv_s` NULL and `wctomb_s` -1, but both return
         // an `errno_t` (C11 K.3.6.2.1, K.3.6.4.1): zero on success.
         "asctime_s" | "at_quick_exit" | "ctime_s" | "fopen_s" | "freopen_s" | "getenv_s"
@@ -131,17 +140,18 @@ pub fn error_signal_for(function_name: &str) -> Option<ErrorSignal> {
         | "swprintf" | "swprintf_s" | "thrd_sleep" | "vfprintf_s" | "vfwprintf" | "vfwprintf_s"
         | "vprintf_s" | "vsnprintf_s" | "vsprintf_s" | "vswprintf" | "vswprintf_s"
         | "vwprintf_s" | "wprintf_s" => ErrorSignal::Negative,
-        "c16rtomb" | "c32rtomb" | "mbrlen" | "mbrtoc16" | "mbrtoc32" | "mbrtowc" | "mbsrtowcs"
-        | "wcrtomb" | "wcsrtombs" => ErrorSignal::MinusOne,
+        "c16rtomb" | "c32rtomb" | "mbsrtowcs" | "wcrtomb" | "wcsrtombs" => ErrorSignal::MinusOne,
+        "mbrlen" | "mbrtoc16" | "mbrtoc32" | "mbrtowc" => ErrorSignal::Restartable,
         "wcstod" | "wcstof" | "wcstoimax" | "wcstol" | "wcstold" | "wcstoll" | "wcstoumax"
         | "wcstoul" | "wcstoull" => ErrorSignal::ErrnoOrEnd,
-        // A status other than `thrd_success` (one of several), or a length
-        // `>= n` for the transforms: any test of the result reads it.
+        // A status other than `thrd_success` (one of several), a length
+        // `>= n` for the transforms, or 0 against the `base` success returns
+        // (`timespec_get`, canonically tested `!= TIME_UTC`): any test of
+        // the result reads it.
         "cnd_broadcast" | "cnd_init" | "cnd_signal" | "cnd_timedwait" | "cnd_wait" | "mtx_init"
         | "mtx_lock" | "mtx_timedlock" | "mtx_trylock" | "mtx_unlock" | "strxfrm"
-        | "thrd_create" | "thrd_detach" | "thrd_join" | "tss_create" | "tss_set" | "wcsxfrm" => {
-            ErrorSignal::Any
-        }
+        | "timespec_get" | "thrd_create" | "thrd_detach" | "thrd_join" | "tss_create"
+        | "tss_set" | "wcsxfrm" => ErrorSignal::Any,
         _ => return None,
     })
 }
@@ -936,6 +946,7 @@ fn comparison_counts(
         && matches!(
             signal,
             ErrorSignal::MinusOne
+                | ErrorSignal::Restartable
                 | ErrorSignal::Negative
                 | ErrorSignal::Eof
                 | ErrorSignal::Conversions
@@ -982,6 +993,11 @@ fn comparison_counts(
             }
         }
         ErrorSignal::MinusOne => is_negative_one(&o) || (!equality && (o == "0" || o == "-1")),
+        // Every failing value sits at the top of `size_t`, above every count:
+        // any ordering at a negative constant separates `-1` from them.
+        ErrorSignal::Restartable => {
+            is_negative_one(&o) || (!equality && (o == "0" || is_negative_constant(&o)))
+        }
         ErrorSignal::SigErr => equality && o == "SIG_ERR",
         ErrorSignal::ErrnoOrEnd => false,
         ErrorSignal::Any => true,
