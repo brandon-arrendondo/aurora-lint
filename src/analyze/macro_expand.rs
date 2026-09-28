@@ -1337,8 +1337,75 @@ fn conditional_regions(chars: &[char]) -> Vec<bool> {
         for flag in cond.iter_mut().take((end + 1).min(n)).skip(first) {
             *flag = true;
         }
+        // An `if`/`else` whose statement can leave the enclosing block
+        // (`if (lvl < min) break;` inside a `do { } while (0)`) makes
+        // everything after it in that block conditional too: serverLog's
+        // arguments are evaluated only when the level passes. A loop's
+        // own `break` or `continue` leaves only the loop.
+        if matches!(word.as_str(), "if" | "else") && contains_exit(&chars[first..=end.min(n - 1)]) {
+            let close = enclosing_block_end(chars, start);
+            for flag in cond.iter_mut().take((close + 1).min(n)).skip(end + 1) {
+                *flag = true;
+            }
+        }
     }
     cond
+}
+
+/// Whether `chars` holds a `break`, `continue`, `return` or `goto` as a
+/// whole word.
+fn contains_exit(chars: &[char]) -> bool {
+    let mut i = 0;
+    while i < chars.len() {
+        if !is_ident_start(chars[i]) || (i > 0 && is_ident_char(chars[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && is_ident_char(chars[i]) {
+            i += 1;
+        }
+        let word: String = chars[start..i].iter().collect();
+        if matches!(word.as_str(), "break" | "continue" | "return" | "goto") {
+            return true;
+        }
+    }
+    false
+}
+
+/// The index of the `}` closing the innermost `{` that encloses `at`, or
+/// the last index when no brace encloses it.
+fn enclosing_block_end(chars: &[char], at: usize) -> usize {
+    let mut depth = 0i32;
+    let mut open = None;
+    for k in (0..at).rev() {
+        match chars[k] {
+            '}' => depth += 1,
+            '{' if depth == 0 => {
+                open = Some(k);
+                break;
+            }
+            '{' => depth -= 1,
+            _ => {}
+        }
+    }
+    let Some(open) = open else {
+        return chars.len().saturating_sub(1);
+    };
+    let mut depth = 0i32;
+    for (k, &c) in chars.iter().enumerate().skip(open) {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return k;
+                }
+            }
+            _ => {}
+        }
+    }
+    chars.len().saturating_sub(1)
 }
 
 /// Every occurrence of a *free* identifier in `m`'s replacement list — one
@@ -4377,6 +4444,31 @@ mod macro_write_tests {
 
     fn arm(params: &[&str], body: &str) -> MacroArm {
         MacroArm::from(&m(params, body))
+    }
+
+    #[test]
+    fn an_early_exit_makes_the_rest_of_its_block_conditional() {
+        // valkey's serverLog: the arguments are evaluated only when the
+        // level passes.
+        let log = MacroArm {
+            params: vec!["level".to_string()],
+            variadic: Some((1, "__VA_ARGS__".to_string())),
+            body: "do { if (((level) & 0xff) < server.verbosity) break; \
+                   _serverLog(level, __VA_ARGS__); } while (0)"
+                .to_string(),
+        };
+        assert_eq!(argument_evaluation(&log, 1), ArgEvaluation::Unpredictable);
+        let ret = arm(&["x"], "{ if (!ready) return; use(x); }");
+        assert_eq!(argument_evaluation(&ret, 0), ArgEvaluation::Unpredictable);
+        // A loop's own break leaves only the loop.
+        let looped = arm(
+            &["x"],
+            "{ for (i = 0; i < n; i++) { if (a[i]) break; } use(x); }",
+        );
+        assert_eq!(argument_evaluation(&looped, 0), ArgEvaluation::Once);
+        // After the block the exit leaves, evaluation is unconditional again.
+        let after = arm(&["x"], "{ { if (a) break; } use(x); }");
+        assert_eq!(argument_evaluation(&after, 0), ArgEvaluation::Once);
     }
 
     #[test]
