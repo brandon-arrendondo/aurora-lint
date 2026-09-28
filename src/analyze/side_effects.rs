@@ -1308,6 +1308,7 @@ impl EffectTable {
             };
             let mut out = Vec::new();
             let mut resolver = Resolver {
+                lenient: false,
                 inputs,
                 index: &index,
                 base,
@@ -1466,13 +1467,14 @@ pub fn name_effects(
     let mut own = ClosedEffects::default();
     let mut out = Vec::new();
     let mut resolver = Resolver {
+        lenient: !unknown_is_opaque,
         inputs,
         index: &index,
         base,
         own: &mut own,
         out: &mut out,
     };
-    resolver.free_name_with(name, 0, unknown_is_opaque);
+    resolver.free_name(name, 0);
     own
 }
 
@@ -1492,6 +1494,9 @@ fn map_through(loc: &Loc, args: &[ArgRoot]) -> Option<Loc> {
 
 /// Resolves one function's callees for the closure.
 struct Resolver<'r, 'i> {
+    /// A name or macro nothing can read is judged as reading nothing, not as
+    /// unknown: set for a rule's own argument identifier, never for a body.
+    lenient: bool,
     inputs: &'r EffectInputs<'i>,
     index: &'r HashMap<&'r str, usize>,
     base: &'r dyn Fn(&str) -> Option<ClosedEffects>,
@@ -1500,17 +1505,18 @@ struct Resolver<'r, 'i> {
 }
 
 impl Resolver<'_, '_> {
+    /// Something could not be read: a name nothing declares, or a macro with
+    /// no body the table can reason about. Unknown for a body; nothing for a
+    /// rule's own argument identifier.
+    fn unreadable(&mut self) {
+        self.own.opaque |= !self.lenient;
+    }
+
     /// Judge a name a body reads without declaring it: a project-wide
     /// volatile object is a volatile read; an object-like macro is what its
     /// replacement lists read, write and call; any other name the scan or the
     /// standard headers declare reads nothing; anything else is unknown.
     fn free_name(&mut self, name: &str, depth: usize) {
-        self.free_name_with(name, depth, true);
-    }
-
-    /// [`Self::free_name`]; `unknown_is_opaque` false leaves a name nothing
-    /// knows as reading nothing instead of unknown.
-    fn free_name_with(&mut self, name: &str, depth: usize, unknown_is_opaque: bool) {
         let names = self.inputs.names;
         if names.volatile_globals.contains(name) {
             self.own.volatile_read = true;
@@ -1522,14 +1528,14 @@ impl Resolver<'_, '_> {
                 match def {
                     MacroDefinition::Object { body } => {
                         if depth > 4 {
-                            self.own.opaque = true;
+                            self.unreadable();
                             continue;
                         }
                         self.object_macro(body, depth);
                     }
                     // Named without a call: a function designator.
                     MacroDefinition::Function { .. } => {}
-                    MacroDefinition::Opaque => self.own.opaque = true,
+                    MacroDefinition::Opaque => self.unreadable(),
                 }
             }
             return;
@@ -1555,7 +1561,7 @@ impl Resolver<'_, '_> {
             None if crate::utility::cert_c::std_functions::is_iso_c_or_posix_function(name) => {
                 // A library function named without a call: a designator.
             }
-            None => self.own.opaque |= unknown_is_opaque,
+            None => self.unreadable(),
         }
     }
 
@@ -1633,7 +1639,7 @@ impl Resolver<'_, '_> {
         }
         if inputs.function_macro_names.contains(resolved) {
             if depth > 4 {
-                self.own.opaque = true;
+                self.unreadable();
                 return;
             }
             match inputs.function_macros.get(resolved) {
@@ -1658,7 +1664,7 @@ impl Resolver<'_, '_> {
                         }
                     }
                 }
-                None => self.own.opaque = true,
+                None => self.unreadable(),
             }
             // An `#if` arm that does not define the macro may leave the name
             // a real function: that body counts too.
