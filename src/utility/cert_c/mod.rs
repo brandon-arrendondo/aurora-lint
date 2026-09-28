@@ -14,6 +14,9 @@ pub mod clearing_extent;
 pub mod credential_sinks;
 /// Reusable functions for analyzing C declarators (arrays, pointers, function pointers).
 pub mod declarator_utils;
+/// The C type of an expression, read from the declarations it names and
+/// the typedef chain -- never from a name map or a substring of type text.
+pub mod expr_type;
 pub mod float_typing;
 /// Which functions a file-scope function-pointer variable is bound to
 /// across one translation unit -- initializer AND later assignment, every
