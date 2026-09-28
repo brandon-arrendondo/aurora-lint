@@ -42,7 +42,7 @@ pub struct HeaderMatch {
     pub ambiguous_with: Vec<PathBuf>,
 }
 
-/// Directory → (folded entry name → the entry names on disk, sorted).
+/// Folded entry name → the entry names on disk, sorted.
 type DirIndex = HashMap<String, Vec<String>>;
 
 /// The kind of entry a walk must end on.
@@ -83,7 +83,8 @@ fn same_file(a: &Path, b: &Path) -> bool {
 #[derive(Debug, Default)]
 pub struct HeaderLookup {
     mode: IncludeNames,
-    dirs: Mutex<HashMap<PathBuf, Arc<DirIndex>>>,
+    /// Directory → its index, or `None` when it cannot be listed.
+    dirs: Mutex<HashMap<PathBuf, Option<Arc<DirIndex>>>>,
 }
 
 impl HeaderLookup {
@@ -216,7 +217,12 @@ impl HeaderLookup {
         if *part == ".." {
             return self.descend(at.join(part), rest, want, case_differs);
         }
-        let index = self.index(&at);
+        // A directory that can be entered but not listed (a 0711 home, a
+        // sandbox) has no index to fold against: take the component as
+        // written, which is all the file system can confirm there.
+        let Some(index) = self.index(&at) else {
+            return self.descend(at.join(part), rest, want, case_differs);
+        };
         let names = index.get(&fold(part))?;
         let candidates = names
             .iter()
@@ -242,28 +248,29 @@ impl HeaderLookup {
         found
     }
 
-    /// The index of `dir`, read on first use.
-    fn index(&self, dir: &Path) -> Arc<DirIndex> {
+    /// The index of `dir`, read on first use; `None` when it cannot be
+    /// listed.
+    fn index(&self, dir: &Path) -> Option<Arc<DirIndex>> {
         if let Some(i) = self.lock().get(dir) {
-            return Arc::clone(i);
+            return i.clone();
         }
-        let mut index = DirIndex::new();
-        if let Ok(entries) = std::fs::read_dir(dir) {
+        let index = std::fs::read_dir(dir).ok().map(|entries| {
+            let mut index = DirIndex::new();
             for entry in entries.flatten() {
                 if let Ok(name) = entry.file_name().into_string() {
                     index.entry(fold(&name)).or_default().push(name);
                 }
             }
-        }
-        for names in index.values_mut() {
-            names.sort();
-        }
-        let index = Arc::new(index);
-        self.lock().insert(dir.to_path_buf(), Arc::clone(&index));
+            for names in index.values_mut() {
+                names.sort();
+            }
+            Arc::new(index)
+        });
+        self.lock().insert(dir.to_path_buf(), index.clone());
         index
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<PathBuf, Arc<DirIndex>>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<PathBuf, Option<Arc<DirIndex>>>> {
         // A panic elsewhere while the map was held leaves it consistent: every
         // write is one insert of a complete index.
         self.dirs.lock().unwrap_or_else(|e| e.into_inner())
@@ -532,6 +539,33 @@ mod tests {
         let hit = lookup.find_absolute(&written).unwrap();
         assert!(hit.path.is_file());
         assert!(hit.case_differs);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_that_cannot_be_listed_is_passed_through_as_written() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tree(&["locked/inc/A.h"]);
+        let locked = dir.path().join("locked");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o711)).unwrap();
+        // Root reads any directory, so there is nothing to test as root.
+        let listable = fs::read_dir(&locked).is_ok();
+        let lookup = HeaderLookup::new(IncludeNames::CaseInsensitive);
+        let search = locked.join("inc");
+        let hit = lookup.find_in(&search, "a.h");
+        let spelled = lookup.find_in(&locked.join("INC"), "a.h");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        if listable {
+            eprintln!("a_directory_that_cannot_be_listed...: skipped, running as root");
+            return;
+        }
+        let hit = hit.expect("found through the unlistable parent");
+        assert_eq!(hit.path, search.join("A.h"));
+        // Below it, case is still folded; at it, only the written spelling
+        // can be confirmed.
+        if !temp_fs_ignores_case() {
+            assert!(spelled.is_none());
+        }
     }
 
     #[test]
