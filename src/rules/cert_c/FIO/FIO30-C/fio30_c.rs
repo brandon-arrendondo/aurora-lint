@@ -1293,7 +1293,20 @@ impl FormatStringAnalyzer {
                 }
                 true // Conservative: assume unknown function calls could be unsafe
             }
-            "binary_expression" | "conditional_expression" | "cast_expression" => {
+            "conditional_expression" => {
+                // The format is whichever result operand is selected, so judge
+                // only those two; the condition never reaches the format slot.
+                // GNU `c ?: b` has no consequence and yields the condition itself.
+                let consequence = node
+                    .child_by_field_name("consequence")
+                    .or_else(|| node.child_by_field_name("condition"));
+                let alternative = node.child_by_field_name("alternative");
+                [consequence, alternative]
+                    .iter()
+                    .flatten()
+                    .any(|operand| self.is_potentially_unsafe_format_string(operand, source))
+            }
+            "binary_expression" | "cast_expression" => {
                 // These could involve string operations, need deeper inspection
                 // For now, check if any child is potentially unsafe
                 for i in 0..node.child_count() {
