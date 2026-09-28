@@ -53,24 +53,35 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/FLP02-C.+Avoid+using+floating-point+numbers+when+precise+computation+is+needed>
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::VisibleTypes;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
-use crate::utility::cert_c::float_typing;
+use crate::utility::cert_c::expr_type::{self, TypeEnv};
 use lang_parsing_substrate::query;
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::Node;
 
-#[derive(Debug)]
-pub struct Flp02C;
+#[derive(Debug, Default)]
+pub struct Flp02C {
+    /// The typedefs and struct fields this file sees, so an operand declared
+    /// `real` (a typedef of double) or `p->ratio` is typed by its declaration.
+    typedef_types: RefCell<Arc<HashMap<String, String>>>,
+    struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
+}
+
+/// `<math.h>` functions whose result is a floating type by the standard. Their
+/// header is not expanded when a file is parsed, so their declaration is not
+/// in reach; the standard fixes the return type instead.
+const MATH_FUNCTIONS: &[&str] = &[
+    "sqrtf", "sqrt", "powf", "pow", "sinf", "sin", "cosf", "cos", "tanf", "tan", "logf", "log",
+    "expf", "exp", "fabsf", "fabs",
+];
 
 impl Flp02C {
     pub fn new() -> Self {
-        Flp02C
-    }
-
-    /// Check if type is a floating-point type
-    fn is_float_type(&self, type_text: &str) -> bool {
-        float_typing::is_float_type(type_text)
+        Self::default()
     }
 
     /// Check if operator is equality or inequality
@@ -87,98 +98,25 @@ impl Flp02C {
         matches!(t, "0.0" | "0." | ".0" | "0")
     }
 
-    /// Get the type of an expression (simplified heuristic)
-    /// Checks if expression or any of its descendants contain floating-point characteristics
-    #[allow(dead_code)]
-    fn appears_to_be_float_expression(&self, node: &Node, source: &str) -> bool {
-        query::find_first_descendant(*node, |n| self.has_float_characteristics(&n, source))
-            .is_some()
-    }
-
-    /// Check if a node itself has floating-point characteristics
-    /// Only checks via AST node kinds to avoid false positives from text matching
-    fn has_float_characteristics(&self, node: &Node, source: &str) -> bool {
-        let kind = node.kind();
-
-        // Only check number_literal nodes for float literal patterns
-        if kind == "number_literal" {
-            let text = get_node_text(node, source);
-            // Decimal point (but not -> or ...)
-            if text.contains('.') && !text.contains("->") && !text.contains("...") {
-                return true;
-            }
-            // 'f'/'F' suffix on number literal
-            if text.ends_with('f') || text.ends_with('F') {
-                return true;
-            }
-            // Scientific notation on number literal
-            if text.contains('e') || text.contains('E') {
-                return true;
+    /// Whether the operand's value is of a floating type: its type by
+    /// declaration (`expr_type`), or a `<math.h>` call. An operand whose type
+    /// is not in reach is not floating-point: this check accuses, so an unknown
+    /// type must not raise a finding.
+    fn is_float_operand(&self, node: &Node, source: &str, env: &TypeEnv) -> bool {
+        if expr_type::expr_type(node, source, env).is_some_and(|t| t.is_float()) {
+            return true;
+        }
+        let mut n = *node;
+        while n.kind() == "parenthesized_expression" {
+            match n.named_child(0) {
+                Some(inner) => n = inner,
+                None => return false,
             }
         }
-
-        // Only check cast_expression nodes for float casts
-        if kind == "cast_expression" {
-            if let Some(type_node) = node.child_by_field_name("type") {
-                let type_text = get_node_text(&type_node, source);
-                if type_text.contains("float") || type_text.contains("double") {
-                    return true;
-                }
-            }
-        }
-
-        // Only check call_expression nodes for float function calls
-        if kind == "call_expression" {
-            if let Some(func_node) = node.child_by_field_name("function") {
-                if func_node.kind() == "identifier" {
-                    let func_name = get_node_text(&func_node, source);
-                    let float_funcs = [
-                        "sqrtf", "sqrt", "powf", "pow", "sinf", "sin", "cosf", "cos", "tanf",
-                        "tan", "logf", "log", "expf", "exp", "fabsf", "fabs",
-                    ];
-                    if float_funcs.contains(&func_name) {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        false
-    }
-
-    /// Collect float/double variable names from declarations
-    fn collect_float_variables(&self, node: &Node, source: &str, float_vars: &mut HashSet<String>) {
-        for n in query::find_descendants_of_kinds(*node, &["declaration", "parameter_declaration"])
-        {
-            let decl_text = get_node_text(&n, source);
-            if self.is_float_type(&decl_text) {
-                // Extract identifier names from this declaration
-                self.extract_identifiers(&n, source, float_vars);
-            }
-        }
-    }
-
-    /// Extract identifier names from a declaration node
-    fn extract_identifiers(&self, node: &Node, source: &str, identifiers: &mut HashSet<String>) {
-        for n in query::find_descendants_of_kind(*node, "identifier") {
-            identifiers.insert(get_node_text(&n, source).to_string());
-        }
-    }
-
-    /// Check if an expression involves a float variable
-    fn involves_float_variable(
-        &self,
-        node: &Node,
-        source: &str,
-        float_vars: &HashSet<String>,
-    ) -> bool {
-        query::find_first_descendant(*node, |n| {
-            if n.kind() == "identifier" && float_vars.contains(get_node_text(&n, source)) {
-                return true;
-            }
-            self.has_float_characteristics(&n, source)
-        })
-        .is_some()
+        n.kind() == "call_expression"
+            && n.child_by_field_name("function").is_some_and(|f| {
+                f.kind() == "identifier" && MATH_FUNCTIONS.contains(&get_node_text(&f, source))
+            })
     }
 
     /// Check if a binary expression is a floating-point equality comparison
@@ -186,7 +124,7 @@ impl Flp02C {
         &self,
         node: &Node,
         source: &str,
-        float_vars: &HashSet<String>,
+        env: &TypeEnv,
         violations: &mut Vec<RuleViolation>,
     ) {
         if node.kind() != "binary_expression" {
@@ -201,18 +139,12 @@ impl Flp02C {
                 return;
             }
 
-            // Check if either operand involves floating-point
-            let left_is_float = if let Some(left) = node.child_by_field_name("left") {
-                self.involves_float_variable(&left, source, float_vars)
-            } else {
-                false
-            };
-
-            let right_is_float = if let Some(right) = node.child_by_field_name("right") {
-                self.involves_float_variable(&right, source, float_vars)
-            } else {
-                false
-            };
+            let left_is_float = node
+                .child_by_field_name("left")
+                .is_some_and(|l| self.is_float_operand(&l, source, env));
+            let right_is_float = node
+                .child_by_field_name("right")
+                .is_some_and(|r| self.is_float_operand(&r, source, env));
 
             // Skip comparisons against exact zero (0.0, 0.0f, -0.0, etc.)
             // Zero is exactly representable in IEEE 754 — comparing to zero is
@@ -229,7 +161,7 @@ impl Flp02C {
                 return;
             }
 
-            // Only flag if BOTH operands involve floating-point
+            // Only flag if BOTH operands are floating-point
             // This avoids false positives when comparing float to integer literals
             if left_is_float && right_is_float {
                 violations.push(RuleViolation {
@@ -248,20 +180,6 @@ impl Flp02C {
                     requires_manual_review: Some(false),
                 });
             }
-        }
-    }
-
-    /// Recursively traverse AST
-    fn traverse(
-        &self,
-        node: &Node,
-        source: &str,
-        float_vars: &HashSet<String>,
-        violations: &mut Vec<RuleViolation>,
-    ) {
-        // Check for floating-point equality comparisons
-        for n in query::find_descendants_of_kind(*node, "binary_expression") {
-            self.check_float_equality(&n, source, float_vars, violations);
         }
     }
 }
@@ -283,14 +201,19 @@ impl CertRule for Flp02C {
         "FLP02-C"
     }
 
-    fn check(&self, root: &Node, source: &str) -> Vec<RuleViolation> {
-        // First pass: collect all float/double variable names
-        let mut float_vars = HashSet::new();
-        self.collect_float_variables(root, source, &mut float_vars);
+    fn set_visible_types(&self, types: &VisibleTypes) {
+        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
+        *self.struct_field_types.borrow_mut() = types.struct_field_types.clone();
+    }
 
-        // Second pass: check for floating-point equality comparisons
+    fn check(&self, root: &Node, source: &str) -> Vec<RuleViolation> {
+        let typedefs = self.typedef_types.borrow();
+        let fields = self.struct_field_types.borrow();
+        let env = TypeEnv::new(&typedefs, &fields);
         let mut violations = Vec::new();
-        self.traverse(root, source, &float_vars, &mut violations);
+        for n in query::find_descendants_of_kind(*root, "binary_expression") {
+            self.check_float_equality(&n, source, &env, &mut violations);
+        }
         violations
     }
 }
