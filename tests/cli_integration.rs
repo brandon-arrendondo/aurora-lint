@@ -806,6 +806,26 @@ fn exp33_header_static_written_by_an_includer_does_not_prune() {
     );
 }
 
+/// A tentative `int globalOn;` in one #if arm is 0 in that build, so the
+/// other arm's `= 1` is no constant for every configuration (ADR-0010).
+#[test]
+fn exp33_global_tentative_in_one_arm_does_not_fold() {
+    assert_eq!(
+        exp33_findings_in_use_c("exp33_global_tentative_in_one_arm", true),
+        1
+    );
+}
+
+/// An initializer the scan cannot evaluate in one #if arm leaves the global
+/// no one value, whatever another arm initializes it to.
+#[test]
+fn exp33_global_computed_in_one_arm_does_not_fold() {
+    assert_eq!(
+        exp33_findings_in_use_c("exp33_global_computed_in_one_arm", true),
+        1
+    );
+}
+
 /// A volatile global is never a constant, closed program or not.
 #[test]
 fn exp33_volatile_global_does_not_prune() {

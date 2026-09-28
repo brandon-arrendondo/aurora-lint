@@ -99,6 +99,10 @@ struct FilePrescanResult {
     /// Every name this file may write as a file-scope object
     /// (`const_eval::file_scope_written_names`).
     file_scope_writes: HashSet<String>,
+    /// Names with a definition here (in any #if arm) that offers no constant:
+    /// a computed initializer, a tentative `int g;`, or a function that does
+    /// more than return a literal. Such a name has no one value to fold.
+    constant_disqualified: HashSet<String>,
     /// For a header, the names it declares `static` at file scope: each
     /// includer compiles its own copy, which that includer may write.
     header_statics: HashSet<String>,
@@ -173,6 +177,7 @@ impl FilePrescanResult {
             global_constants: Vec::new(),
             closure_dependent_constants: HashSet::new(),
             file_scope_writes: HashSet::new(),
+            constant_disqualified: HashSet::new(),
             header_statics: HashSet::new(),
             global_var_null_states: HashMap::new(),
             global_writers: HashMap::new(),
@@ -352,11 +357,17 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
             &source,
             &mut result.global_constants,
             &mut result.closure_dependent_constants,
+            &mut result.constant_disqualified,
         );
         // Another translation unit may interpose a non-static function, so a
         // literal-returning one is a constant only in a closed program too.
         let mut returning: Vec<(String, i64)> = Vec::new();
-        collect_constant_return_functions(&root, &source, &mut returning);
+        collect_constant_return_functions(
+            &root,
+            &source,
+            &mut returning,
+            &mut result.constant_disqualified,
+        );
         result
             .closure_dependent_constants
             .extend(returning.iter().map(|(n, _)| n.clone()));
@@ -970,6 +981,7 @@ fn prescan_file_list(
             }
         }
         file_scope_writes.extend(r.file_scope_writes);
+        global_constant_conflicts.extend(r.constant_disqualified);
         closure_dependent_constants.extend(r.closure_dependent_constants);
         header_statics.extend(r.header_statics);
         // One object per name: these are the non-static pointer globals, so
@@ -5823,6 +5835,7 @@ fn collect_global_constants(
     source: &str,
     constants: &mut Vec<(String, i64)>,
     closure_dependent: &mut HashSet<String>,
+    disqualified: &mut HashSet<String>,
 ) {
     for i in 0..root.child_count() {
         if let Some(child) = root.child(i) {
@@ -5869,11 +5882,12 @@ fn collect_global_constants(
                                 if name.is_empty() {
                                     continue;
                                 }
-                                if let Some(value) = decl.child_by_field_name("value") {
-                                    let empty_macros: HashMap<String, i64> = HashMap::new();
-                                    if let Some(val) =
-                                        const_eval::try_evaluate_expr(&value, source, &empty_macros)
-                                    {
+                                let empty_macros: HashMap<String, i64> = HashMap::new();
+                                let val = decl.child_by_field_name("value").and_then(|value| {
+                                    const_eval::try_evaluate_expr(&value, source, &empty_macros)
+                                });
+                                match val {
+                                    Some(val) => {
                                         // A `const` object cannot be written by
                                         // any translation unit; a plain one can.
                                         if !type_text.contains("const") {
@@ -5881,6 +5895,18 @@ fn collect_global_constants(
                                         }
                                         constants.push((name, val));
                                     }
+                                    // A definition whose value is not a constant
+                                    // (in any arm) leaves the name no one value.
+                                    None => {
+                                        disqualified.insert(name);
+                                    }
+                                }
+                            } else if decl.kind() == "identifier" && !type_text.contains("extern") {
+                                // A tentative definition, `int g;`: in the
+                                // configuration that compiles it, g is not the
+                                // value another arm initializes it to.
+                                if let Ok(name) = decl.utf8_text(source.as_bytes()) {
+                                    disqualified.insert(name.to_string());
                                 }
                             }
                         }
@@ -5888,7 +5914,13 @@ fn collect_global_constants(
                 }
                 "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
                 | "preproc_elifdef" => {
-                    collect_global_constants(&child, source, constants, closure_dependent);
+                    collect_global_constants(
+                        &child,
+                        source,
+                        constants,
+                        closure_dependent,
+                        disqualified,
+                    );
                 }
                 _ => {}
             }
@@ -5903,16 +5935,30 @@ fn collect_constant_return_functions(
     root: &Node,
     source: &str,
     constants: &mut Vec<(String, i64)>,
+    disqualified: &mut HashSet<String>,
 ) {
     for i in 0..root.child_count() {
         if let Some(child) = root.child(i) {
             match child.kind() {
                 "function_definition" => {
+                    let before = constants.len();
                     collect_one_constant_function(&child, source, constants);
+                    // A non-static definition that computes its value (in any
+                    // #if arm) leaves the name no one constant, whatever
+                    // another arm's definition returns (ADR-0010).
+                    let is_static =
+                        crate::utility::cert_c::ast_utils::declaration_has_storage_class(
+                            &child, "static", source,
+                        );
+                    if constants.len() == before && !is_static {
+                        if let Some(name) = crate::analyze::cfg::get_function_name(&child, source) {
+                            disqualified.insert(name.to_string());
+                        }
+                    }
                 }
                 "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
                 | "preproc_elifdef" => {
-                    collect_constant_return_functions(&child, source, constants);
+                    collect_constant_return_functions(&child, source, constants, disqualified);
                 }
                 _ => {}
             }

@@ -2702,24 +2702,42 @@ fn collect_constants_recursive(
 /// Collect zero-argument functions with a single `return LITERAL;` body.
 /// These are constant-valued functions that can be used in dead-branch elimination
 /// (e.g., `staticReturnsTrue()`, `globalReturnsFalse()`).
+///
+/// Every preprocessor arm is read (`#elifdef` included), and a folding fact
+/// suppresses, so it must hold in every configuration (ADR-0010): a name
+/// folds only if every definition of it returns the same literal. A
+/// definition in one arm that computes its value, or does anything else,
+/// leaves the name out, whatever another arm returns.
 pub fn collect_constant_functions(root: &Node, source: &str) -> HashMap<String, i64> {
-    let mut result = HashMap::new();
-    collect_constant_functions_in(root, source, &mut result);
-    result
+    // name -> Some(value) while every definition so far agrees; None once not.
+    let mut seen: HashMap<String, Option<i64>> = HashMap::new();
+    collect_constant_functions_in(root, source, &mut seen);
+    seen.into_iter()
+        .filter_map(|(name, value)| Some((name, value?)))
+        .collect()
 }
 
-fn collect_constant_functions_in(node: &Node, source: &str, result: &mut HashMap<String, i64>) {
+fn collect_constant_functions_in(
+    node: &Node,
+    source: &str,
+    seen: &mut HashMap<String, Option<i64>>,
+) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             match child.kind() {
                 "function_definition" => {
-                    if let Some((name, val)) = extract_constant_function(&child, source) {
-                        result.insert(name, val);
+                    let Some(name) = crate::analyze::cfg::get_function_name(&child, source) else {
+                        continue;
+                    };
+                    let value = extract_constant_function(&child, source).map(|(_, v)| v);
+                    let entry = seen.entry(name.to_string()).or_insert(value);
+                    if *entry != value {
+                        *entry = None;
                     }
                 }
                 "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
-                | "preproc_ifndef" => {
-                    collect_constant_functions_in(&child, source, result);
+                | "preproc_elifdef" => {
+                    collect_constant_functions_in(&child, source, seen);
                 }
                 _ => {}
             }
