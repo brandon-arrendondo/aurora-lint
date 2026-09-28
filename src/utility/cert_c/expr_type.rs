@@ -447,6 +447,23 @@ fn apply_declarator(base: Option<CType>, declarator: &Node) -> Option<CType> {
     }
 }
 
+/// The type `declarator` gives the object it declares in `decl` (a
+/// `declaration`, `parameter_declaration` or `field_declaration`), an
+/// `init_declarator` unwrapped to its declarator.
+pub fn declarator_type(
+    decl: &Node,
+    declarator: &Node,
+    source: &str,
+    env: &TypeEnv,
+) -> Option<CType> {
+    let declarator = if declarator.kind() == "init_declarator" {
+        declarator.child_by_field_name("declarator")?
+    } else {
+        *declarator
+    };
+    apply_declarator(classify_specifiers(decl, source, env), &declarator)
+}
+
 /// The declared type of the object the identifier occurrence `ident` names.
 /// `None` when the occurrence does not resolve to a declaration in this file.
 pub fn declared_type(ident: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
