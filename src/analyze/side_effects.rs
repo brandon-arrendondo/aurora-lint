@@ -224,8 +224,9 @@ fn file_scope_declarators<'t>(root: &Node<'t>, source: &str) -> Vec<(String, Nod
     out
 }
 
-/// The file-scope objects `root` declares, and those among them declared
-/// `volatile`, `#if` blocks included. Functions are not objects.
+/// The file-scope objects and enumeration constants `root` declares, and the
+/// objects among them declared `volatile`, `#if` blocks included. Functions
+/// are not objects.
 pub fn file_scope_objects(
     root: &Node,
     source: &str,
@@ -246,6 +247,13 @@ pub fn file_scope_objects(
             volatile.insert(name.clone());
         }
         objects.insert(name);
+    }
+    // Enumeration constants are declared names too, whatever block their
+    // `enum` is in, and whether or not a value is written.
+    for e in lang_parsing_substrate::query::find_descendants_of_kind(*root, "enumerator") {
+        if let Some(n) = e.child_by_field_name("name") {
+            objects.insert(get_node_text(&n, source).to_string());
+        }
     }
     (objects, volatile)
 }
@@ -343,6 +351,65 @@ fn typedef_declarations(func: &Node, source: &str) -> HashMap<String, Option<(St
     out
 }
 
+/// C11 6.4.1 keywords, plus the GNU spellings of a few, which tree-sitter
+/// can read as identifiers inside a macro argument it cannot parse.
+const C_KEYWORDS: &[&str] = &[
+    "auto",
+    "break",
+    "case",
+    "char",
+    "const",
+    "continue",
+    "default",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "extern",
+    "float",
+    "for",
+    "goto",
+    "if",
+    "inline",
+    "int",
+    "long",
+    "register",
+    "restrict",
+    "return",
+    "short",
+    "signed",
+    "sizeof",
+    "static",
+    "struct",
+    "switch",
+    "typedef",
+    "union",
+    "unsigned",
+    "void",
+    "volatile",
+    "while",
+    "_Alignas",
+    "_Alignof",
+    "_Atomic",
+    "_Bool",
+    "_Complex",
+    "_Generic",
+    "_Imaginary",
+    "_Noreturn",
+    "_Static_assert",
+    "_Thread_local",
+    "__inline",
+    "__inline__",
+    "__restrict",
+    "__volatile__",
+    "__const",
+    "__signed__",
+    "__typeof__",
+    "typeof",
+    "__attribute__",
+    "__extension__",
+];
+
 /// Where a name occurrence is bound.
 enum Bound<'t> {
     Local(Node<'t>),
@@ -375,6 +442,25 @@ impl<'t> Collector<'_, 't> {
                 // A function tree-sitter nested inside this one is a parse
                 // artifact with its own summary.
                 "function_definition" => continue,
+                // A directive's names are read by the preprocessor, not the
+                // program: skip an `#if`'s condition and an `#ifdef`'s name,
+                // keep the arms, and skip `#define`s written in a body.
+                "preproc_if" | "preproc_elif" | "preproc_ifdef" | "preproc_elifdef" => {
+                    let skip = node
+                        .child_by_field_name("condition")
+                        .or_else(|| node.child_by_field_name("name"))
+                        .map(|n| n.id());
+                    let mut cursor = node.walk();
+                    let children: Vec<Node> = node
+                        .named_children(&mut cursor)
+                        .filter(|c| Some(c.id()) != skip)
+                        .collect();
+                    stack.extend(children.into_iter().rev());
+                    continue;
+                }
+                "preproc_def" | "preproc_function_def" | "preproc_call" | "preproc_defined" => {
+                    continue
+                }
                 // Operands C11 leaves unevaluated (a VLA `sizeof` aside).
                 "sizeof_expression" | "alignof_expression" | "string_literal" | "char_literal" => {
                     continue
@@ -702,6 +788,11 @@ impl<'t> Collector<'_, 't> {
     /// something unknown. A callee is judged as a call, not here.
     fn is_free(&self, ident: &Node<'t>) -> bool {
         let name = get_node_text(ident, self.source);
+        // A keyword read as an identifier is a misparse around a macro
+        // argument (`list_first(&l, struct node, link)`), not a name.
+        if C_KEYWORDS.contains(&name) {
+            return false;
+        }
         let is_callee = ident.parent().is_some_and(|p| {
             p.kind() == "call_expression"
                 && p.child_by_field_name("function")
@@ -1362,10 +1453,14 @@ pub fn typedef_read(ident: &Node, source: &str) -> Option<String> {
 /// What reading `name` -- one no declaration in scope binds -- can change,
 /// judged as a body's free name is ([`DirectEffects::free_names`]), with
 /// callees an object-like macro calls looked up in `base`.
+/// `unknown_is_opaque` false judges a name nothing knows as reading nothing:
+/// a rule looking at an identifier it has in hand, rather than at a body
+/// that might hide a call behind it.
 pub fn name_effects(
     name: &str,
     inputs: &EffectInputs,
     base: &dyn Fn(&str) -> Option<ClosedEffects>,
+    unknown_is_opaque: bool,
 ) -> ClosedEffects {
     let index = HashMap::new();
     let mut own = ClosedEffects::default();
@@ -1377,7 +1472,7 @@ pub fn name_effects(
         own: &mut own,
         out: &mut out,
     };
-    resolver.free_name(name, 0);
+    resolver.free_name_with(name, 0, unknown_is_opaque);
     own
 }
 
@@ -1410,6 +1505,12 @@ impl Resolver<'_, '_> {
     /// replacement lists read, write and call; any other name the scan or the
     /// standard headers declare reads nothing; anything else is unknown.
     fn free_name(&mut self, name: &str, depth: usize) {
+        self.free_name_with(name, depth, true);
+    }
+
+    /// [`Self::free_name`]; `unknown_is_opaque` false leaves a name nothing
+    /// knows as reading nothing instead of unknown.
+    fn free_name_with(&mut self, name: &str, depth: usize, unknown_is_opaque: bool) {
         let names = self.inputs.names;
         if names.volatile_globals.contains(name) {
             self.own.volatile_read = true;
@@ -1454,7 +1555,7 @@ impl Resolver<'_, '_> {
             None if crate::utility::cert_c::std_functions::is_iso_c_or_posix_function(name) => {
                 // A library function named without a call: a designator.
             }
-            None => self.own.opaque = true,
+            None => self.own.opaque |= unknown_is_opaque,
         }
     }
 

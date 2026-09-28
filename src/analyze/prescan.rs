@@ -130,6 +130,8 @@ struct FilePrescanResult {
     /// declarator, anywhere in the project -- disqualifies the name from
     /// `value_only_global_candidates` project-wide.
     pointer_named_globals: HashSet<String>,
+    /// File-scope objects and enumeration constants (`#if` arms included).
+    file_scope_names: HashSet<String>,
     /// File-scope objects declared `volatile` (`#if` arms included).
     volatile_globals: HashSet<String>,
     /// Typedef names defined with `volatile`.
@@ -197,6 +199,7 @@ impl FilePrescanResult {
             source_path: None,
             value_only_global_candidates: HashSet::new(),
             pointer_named_globals: HashSet::new(),
+            file_scope_names: HashSet::new(),
             volatile_globals: HashSet::new(),
             volatile_typedefs: HashSet::new(),
         }
@@ -393,8 +396,10 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
             &mut result.value_only_global_candidates,
             &mut result.pointer_named_globals,
         );
-        result.volatile_globals =
-            crate::analyze::side_effects::file_scope_objects(&root, &source).1;
+        let (file_scope_names, file_volatile) =
+            crate::analyze::side_effects::file_scope_objects(&root, &source);
+        result.file_scope_names = file_scope_names;
+        result.volatile_globals = file_volatile;
         result.volatile_typedefs = crate::analyze::side_effects::volatile_typedefs(&root, &source);
 
         if !is_header {
@@ -690,6 +695,7 @@ fn prescan_file_list(
     let mut file_functions: HashMap<PathBuf, Vec<String>> = HashMap::new();
     let mut value_only_global_candidates: HashSet<String> = HashSet::new();
     let mut pointer_named_globals: HashSet<String> = HashSet::new();
+    let mut file_scope_names: HashSet<String> = HashSet::new();
     let mut volatile_globals: HashSet<String> = HashSet::new();
     let mut volatile_typedefs: HashSet<String> = HashSet::new();
 
@@ -1090,6 +1096,7 @@ fn prescan_file_list(
 
         value_only_global_candidates.extend(r.value_only_global_candidates);
         pointer_named_globals.extend(r.pointer_named_globals);
+        file_scope_names.extend(r.file_scope_names);
         volatile_globals.extend(r.volatile_globals);
         volatile_typedefs.extend(r.volatile_typedefs);
     }
@@ -1390,12 +1397,7 @@ fn prescan_file_list(
         built_under: Default::default(),
         memory_declarations: crate::settings::memory::declared().clone(),
         side_effects: Default::default(),
-        global_object_names: Arc::new(
-            value_only_global_candidates
-                .union(&pointer_named_globals)
-                .cloned()
-                .collect(),
-        ),
+        global_object_names: Arc::new(file_scope_names),
         volatile_globals: Arc::new(volatile_globals),
         volatile_typedefs: Arc::new(volatile_typedefs),
         known_functions: Arc::new(known_functions),

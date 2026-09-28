@@ -394,7 +394,8 @@ impl<'a> Ctx<'a> {
 
     /// A name nothing in this file declares in scope (a header's `extern
     /// volatile` object, an object-like macro such as `NOW` expanding to a
-    /// call), judged against the project as a callee's free names are.
+    /// call), judged against the project as a callee's free names are, except
+    /// that a name nothing knows is not unknown here.
     fn free_name_effect(&self, ident: &Node<'a>) -> Effect {
         let Some(view) = self.effects else {
             return Effect::None;
@@ -403,8 +404,11 @@ impl<'a> Ctx<'a> {
         if ast_utils::resolve_identifier_binding(ident, name, self.source).is_some() {
             return Effect::None;
         }
+        // An identifier in the argument is not a call: only what the project
+        // shows it to be (a volatile object, a macro that calls or writes)
+        // counts, and a name nothing knows reads nothing here.
         match view
-            .name_effects(name)
+            .name_effects(name, false)
             .proof(self.settings.flag("stdlib_call_effects"))
         {
             Proof::Pure => Effect::None,

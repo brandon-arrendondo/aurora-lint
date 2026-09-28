@@ -503,9 +503,10 @@ pub struct ProjectContext {
     /// that looks it up need not spell a path the same way.
     #[serde(default)]
     pub scoped_names_by_file: Arc<HashMap<String, Arc<HashSet<String>>>>,
-    /// Every file-scope object name declared in a scanned file or resolved
-    /// header, `extern` declarations and `#if` arms included: a name a body
-    /// reads without binding it is one of these, or a macro, or unknown.
+    /// Every file-scope object and enumeration-constant name declared in a
+    /// scanned file or resolved header, `extern` declarations and `#if` arms
+    /// included: a name a body reads without binding it is one of these, or a
+    /// macro, or unknown.
     #[serde(default)]
     pub global_object_names: Arc<HashSet<String>>,
     /// The file-scope objects some scanned file or header declares
@@ -953,11 +954,19 @@ impl EffectView {
     }
 
     /// What reading `name`, which no declaration in scope binds, can change
-    /// ([`crate::analyze::side_effects::name_effects`]).
-    pub fn name_effects(&self, name: &str) -> crate::analyze::side_effects::ClosedEffects {
-        crate::analyze::side_effects::name_effects(name, &self.inputs(), &|callee| {
-            self.get(callee).cloned()
-        })
+    /// ([`crate::analyze::side_effects::name_effects`]). `unknown_is_opaque`
+    /// false leaves a name nothing knows as reading nothing.
+    pub fn name_effects(
+        &self,
+        name: &str,
+        unknown_is_opaque: bool,
+    ) -> crate::analyze::side_effects::ClosedEffects {
+        crate::analyze::side_effects::name_effects(
+            name,
+            &self.inputs(),
+            &|callee| self.get(callee).cloned(),
+            unknown_is_opaque,
+        )
     }
 
     fn inputs(&self) -> crate::analyze::side_effects::EffectInputs<'_> {

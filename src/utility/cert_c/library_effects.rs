@@ -343,6 +343,20 @@ const STANDARD_OBJECT_NAMES: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "C11 7.8.1 <inttypes.h> format specifier macros (string literals)",
+        &[
+            "PRId8", "PRId16", "PRId32", "PRId64", "PRIdMAX", "PRIdPTR", "PRIi8", "PRIi16",
+            "PRIi32", "PRIi64", "PRIiMAX", "PRIiPTR", "PRIo8", "PRIo16", "PRIo32", "PRIo64",
+            "PRIoMAX", "PRIoPTR", "PRIu8", "PRIu16", "PRIu32", "PRIu64", "PRIuMAX", "PRIuPTR",
+            "PRIx8", "PRIx16", "PRIx32", "PRIx64", "PRIxMAX", "PRIxPTR", "PRIX8", "PRIX16",
+            "PRIX32", "PRIX64", "PRIXMAX", "PRIXPTR", "SCNd8", "SCNd16", "SCNd32", "SCNd64",
+            "SCNdMAX", "SCNdPTR", "SCNi8", "SCNi16", "SCNi32", "SCNi64", "SCNiMAX", "SCNiPTR",
+            "SCNo8", "SCNo16", "SCNo32", "SCNo64", "SCNoMAX", "SCNoPTR", "SCNu8", "SCNu16",
+            "SCNu32", "SCNu64", "SCNuMAX", "SCNuPTR", "SCNx8", "SCNx16", "SCNx32", "SCNx64",
+            "SCNxMAX", "SCNxPTR",
+        ],
+    ),
+    (
         "C11 7.21.1 <stdio.h> macros (the streams are listed separately, hosted only)",
         &[
             "EOF",
