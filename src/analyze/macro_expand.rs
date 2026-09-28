@@ -1056,17 +1056,41 @@ fn nest(outer: ArgEvaluation, inner: ArgEvaluation) -> ArgEvaluation {
 /// it writes (`=`, a compound assignment, `++`/`--`) and which names it calls
 /// (`name(`, not a parameter and not an unevaluated operator). Lets a rule
 /// judge a macro invoked inside another macro's argument, where the body is
-/// the only definition there is.
+/// the only definition there is. [`macro_body_calls`] also reports the calls
+/// this leaves out.
 pub fn macro_body_effects(arm: &MacroArm) -> (bool, Vec<String>) {
+    let calls = macro_body_calls(arm);
+    (calls.writes, calls.callees)
+}
+
+/// What a macro body writes and calls, every kind of call included.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MacroBodyCalls {
+    /// The body writes (`=`, a compound assignment, `++`/`--`).
+    pub writes: bool,
+    /// Names called directly (`name(`).
+    pub callees: Vec<String>,
+    /// Positions of parameters the body calls (`fn(x)` in
+    /// `#define APPLY(fn, x) fn(x)`): the callee is whatever the invocation
+    /// passes there.
+    pub param_calls: Vec<usize>,
+    /// A call through something no name designates: a member
+    /// (`o->vt->run(o)`, `ops.f(x)`) or a parenthesized pointer
+    /// (`(*fp)(x)`, `(o->fn)(x)`).
+    pub indirect: bool,
+}
+
+/// [`macro_body_effects`], with the calls through parameters, members and
+/// pointers reported instead of dropped.
+pub fn macro_body_calls(arm: &MacroArm) -> MacroBodyCalls {
     let chars: Vec<char> = arm.body.chars().collect();
     let tokens = tokenize_body(&chars);
-    let mut writes = false;
-    let mut callees = Vec::new();
+    let mut out = MacroBodyCalls::default();
     for (j, t) in tokens.iter().enumerate() {
         let next = tokens.get(j + 1).map(|t| t.text.as_str());
         let after_member = j > 0 && matches!(tokens[j - 1].text.as_str(), "." | "->");
         match t.text.as_str() {
-            "++" | "--" => writes = true,
+            "++" | "--" => out.writes = true,
             "=" => {
                 // `==`, `<=`, `>=`, `!=` tokenize as two single characters;
                 // `<<=`/`>>=` (a write) as three.
@@ -1085,7 +1109,20 @@ pub fn macro_body_effects(arm: &MacroArm) -> (bool, Vec<String>) {
                 // an initializer, not a write.
                 let initializer = declares_before(&tokens, j);
                 if !comparison && !equality_next && !initializer {
-                    writes = true;
+                    out.writes = true;
+                }
+            }
+            ")" if next == Some("(") => {
+                // `(*fp)(x)`, `(o->fn)(x)`: a call through what the
+                // parentheses hold. A cast (`(T *)(x)`) holds a type instead.
+                let Some(open) = matching_open(&tokens, j) else {
+                    continue;
+                };
+                let inner = &tokens[open + 1..j];
+                let through_pointer = inner.first().is_some_and(|t| t.text == "*")
+                    || inner.iter().any(|t| matches!(t.text.as_str(), "->" | "."));
+                if through_pointer {
+                    out.indirect = true;
                 }
             }
             w if next == Some("(")
@@ -1100,17 +1137,50 @@ pub fn macro_body_effects(arm: &MacroArm) -> (bool, Vec<String>) {
                         | "_Generic"
                         | "__extension__"
                         | "__attribute__"
-                )
-                && !arm.params.iter().any(|p| p == w)
-                // `ops.strlen(x)` / `p->strlen(x)` calls through a member.
-                && !after_member =>
+                ) =>
             {
-                callees.push(w.to_string());
+                if after_member {
+                    // `ops.strlen(x)` / `p->run(x)` calls through a member.
+                    out.indirect = true;
+                } else if let Some(k) = arm.params.iter().position(|p| p == w) {
+                    out.param_calls.push(k);
+                } else {
+                    out.callees.push(w.to_string());
+                }
             }
             _ => {}
         }
     }
-    (writes, callees)
+    out
+}
+
+/// The identifiers in a replacement list, in order, string and character
+/// literals dropped.
+pub fn body_identifiers(body: &str) -> Vec<String> {
+    let chars: Vec<char> = body.chars().collect();
+    tokenize_body(&chars)
+        .into_iter()
+        .filter(|t| t.text.chars().next().is_some_and(is_ident_start))
+        .map(|t| t.text)
+        .collect()
+}
+
+/// The `(` a `)` at `close` closes, in the same token list.
+fn matching_open(tokens: &[BodyToken], close: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    for k in (0..=close).rev() {
+        match tokens[k].text.as_str() {
+            ")" => depth += 1,
+            "(" => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(k);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Whether the tokens before the `=` at `eq` are a declarator preceded by a

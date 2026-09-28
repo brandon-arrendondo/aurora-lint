@@ -130,6 +130,8 @@ struct FilePrescanResult {
     /// declarator, anywhere in the project -- disqualifies the name from
     /// `value_only_global_candidates` project-wide.
     pointer_named_globals: HashSet<String>,
+    /// File-scope objects declared `volatile` (`#if` arms included).
+    volatile_globals: HashSet<String>,
 }
 
 impl FilePrescanResult {
@@ -193,6 +195,7 @@ impl FilePrescanResult {
             source_path: None,
             value_only_global_candidates: HashSet::new(),
             pointer_named_globals: HashSet::new(),
+            volatile_globals: HashSet::new(),
         }
     }
 }
@@ -387,6 +390,8 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
             &mut result.value_only_global_candidates,
             &mut result.pointer_named_globals,
         );
+        result.volatile_globals =
+            crate::analyze::side_effects::file_scope_objects(&root, &source).1;
 
         if !is_header {
             collect_global_var_null_states(&root, &source, &mut result.global_var_null_states);
@@ -681,6 +686,7 @@ fn prescan_file_list(
     let mut file_functions: HashMap<PathBuf, Vec<String>> = HashMap::new();
     let mut value_only_global_candidates: HashSet<String> = HashSet::new();
     let mut pointer_named_globals: HashSet<String> = HashSet::new();
+    let mut volatile_globals: HashSet<String> = HashSet::new();
 
     for r in file_results {
         known_functions.extend(r.known_functions);
@@ -1079,6 +1085,7 @@ fn prescan_file_list(
 
         value_only_global_candidates.extend(r.value_only_global_candidates);
         pointer_named_globals.extend(r.pointer_named_globals);
+        volatile_globals.extend(r.volatile_globals);
     }
 
     // A `static` function has internal linkage: it cannot be called from a
@@ -1377,6 +1384,13 @@ fn prescan_file_list(
         built_under: Default::default(),
         memory_declarations: crate::settings::memory::declared().clone(),
         side_effects: Default::default(),
+        global_object_names: Arc::new(
+            value_only_global_candidates
+                .union(&pointer_named_globals)
+                .cloned()
+                .collect(),
+        ),
+        volatile_globals: Arc::new(volatile_globals),
         known_functions: Arc::new(known_functions),
         header_declared_functions: Arc::new(header_declared_functions),
         function_summaries: function_summaries.into(),
@@ -1662,11 +1676,19 @@ fn scope_summary_callees(
         .into_iter()
         .map(|(c, i)| (scoped_callee(scoped, file, c), i))
         .collect();
-    for call in summary.effects.calls.iter_mut() {
-        if let Some(callee) = call.callee.as_mut() {
-            key(callee);
-        }
-    }
+    summary.effects.calls = std::mem::take(&mut summary.effects.calls)
+        .into_iter()
+        .map(|mut call| {
+            for name in call
+                .callee
+                .iter_mut()
+                .chain(call.arg_functions.iter_mut().flatten())
+            {
+                key(name);
+            }
+            call
+        })
+        .collect();
 }
 
 fn merge_documented_params(
@@ -6838,9 +6860,7 @@ fn harvest_header_macros(
         &header_string_macros,
         &header_function_macros,
     );
-    for (name, summary) in file_summaries {
-        context.function_summaries.make_mut().insert(name, summary);
-    }
+    fold_header_summaries(context, file_summaries, root, hsource);
     let names: Vec<String> = header_alias_alternatives.keys().cloned().collect();
     const_eval::merge_macro_alias_alternatives(
         Arc::make_mut(&mut context.macro_alias_alternatives),
@@ -6956,6 +6976,28 @@ impl MacroOrigins {
         outside.extend(self.outside);
         outside.retain(|name| !self.project.contains(name));
     }
+}
+
+/// Fold a resolved header's summaries and file-scope objects into `context`.
+/// A summary replaces an earlier one of the same name, as it always has, but
+/// its side effects are the union of both: what calling the name can change
+/// is the union over every definition, a header's included.
+fn fold_header_summaries(
+    context: &mut super::context::ProjectContext,
+    file_summaries: HashMap<String, FunctionSummary>,
+    root: &Node,
+    source: &str,
+) {
+    let summaries = context.function_summaries.make_mut();
+    for (name, mut summary) in file_summaries {
+        if let Some(previous) = summaries.get_mut(&name) {
+            summary.effects.merge(std::mem::take(&mut previous.effects));
+        }
+        summaries.insert(name, summary);
+    }
+    let (objects, volatile) = crate::analyze::side_effects::file_scope_objects(root, source);
+    Arc::make_mut(&mut context.global_object_names).extend(objects);
+    Arc::make_mut(&mut context.volatile_globals).extend(volatile);
 }
 
 /// Resolve `#include` directives from source files against the given include

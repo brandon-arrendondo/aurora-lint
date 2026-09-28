@@ -56,7 +56,9 @@ pub enum ArgRoot {
 }
 
 /// One call in a body.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct CallSite {
     /// The callee as spelled, or `None` for a call through a pointer or a
     /// member (nothing names the body).
@@ -64,6 +66,12 @@ pub struct CallSite {
     /// One root per argument, in order. Empty for a callee reached through a
     /// macro body, whose arguments are not separated.
     pub args: Vec<ArgRoot>,
+    /// Per argument, the function a bare identifier argument names (one not
+    /// declared as an object), so a header macro calling its parameter
+    /// (`#define APPLY(fn, x) fn(x)`) resolves to it. Empty when no argument
+    /// is one.
+    #[serde(default)]
+    pub arg_functions: Vec<Option<String>>,
 }
 
 /// One step of a member-access chain, from its root identifier outwards.
@@ -104,9 +112,14 @@ pub struct DirectEffects {
     pub member_chains: BTreeSet<MemberChain>,
     /// Every call, macro bodies this file defines already expanded into the
     /// callees they name.
-    pub calls: Vec<CallSite>,
+    pub calls: BTreeSet<CallSite>,
     /// Inline assembly: anything may change.
     pub opaque: bool,
+    /// Names the body reads that nothing in its file declares in scope: a
+    /// header's global, an object-like macro, a constant, or something no
+    /// scanned file declares. Judged against the project in the closure.
+    #[serde(default)]
+    pub free_names: BTreeSet<String>,
 }
 
 impl DirectEffects {
@@ -117,12 +130,9 @@ impl DirectEffects {
         self.writes.extend(other.writes);
         self.volatile_read |= other.volatile_read;
         self.member_chains.extend(other.member_chains);
-        for call in other.calls {
-            if !self.calls.contains(&call) {
-                self.calls.push(call);
-            }
-        }
+        self.calls.extend(other.calls);
         self.opaque |= other.opaque;
+        self.free_names.extend(other.free_names);
     }
 }
 
@@ -146,26 +156,8 @@ impl<'t> FileScope<'t> {
     /// Index `root`, a translation unit.
     pub fn of(root: &Node<'t>, source: &str) -> Self {
         let mut globals = HashMap::new();
-        let mut cursor = root.walk();
-        for decl in root.children(&mut cursor) {
-            if decl.kind() != "declaration" {
-                continue;
-            }
-            let mut inner = decl.walk();
-            for child in decl.children(&mut inner) {
-                let declarator = match child.kind() {
-                    "init_declarator" => child.child_by_field_name("declarator").unwrap_or(child),
-                    "identifier"
-                    | "pointer_declarator"
-                    | "array_declarator"
-                    | "function_declarator" => child,
-                    _ => continue,
-                };
-                let name = ast_utils::get_identifier_from_declarator(&declarator, source);
-                if !name.is_empty() {
-                    globals.entry(name).or_insert(decl);
-                }
-            }
+        for (name, decl) in file_scope_declarators(root, source) {
+            globals.entry(name).or_insert(decl);
         }
         let volatile_names = source.contains("volatile").then(|| {
             lang_parsing_substrate::query::find_descendants(*root, |n| {
@@ -173,13 +165,7 @@ impl<'t> FileScope<'t> {
             })
             .into_iter()
             .filter(|d| get_node_text(d, source).contains("volatile"))
-            .flat_map(|d| {
-                let mut cursor = d.walk();
-                d.children(&mut cursor)
-                    .map(|c| ast_utils::get_identifier_from_declarator(&c, source))
-                    .filter(|n| !n.is_empty())
-                    .collect::<Vec<_>>()
-            })
+            .flat_map(|d| declared_in(&d, source))
             .collect()
         });
         FileScope {
@@ -187,6 +173,74 @@ impl<'t> FileScope<'t> {
             volatile_names,
         }
     }
+}
+
+/// Every `(name, declaration)` at file scope, in source order: the
+/// translation unit's own declarations and those inside its top-level
+/// `#if`/`#ifdef` blocks (a `static volatile int flag;` under `#ifdef` is as
+/// file-scope as any), never a function body's.
+fn file_scope_declarators<'t>(root: &Node<'t>, source: &str) -> Vec<(String, Node<'t>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![*root];
+    while let Some(scope) = stack.pop() {
+        let mut cursor = scope.walk();
+        let children: Vec<Node<'t>> = scope.children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            match child.kind() {
+                "declaration" => {
+                    let mut inner = child.walk();
+                    for part in child.children(&mut inner) {
+                        let declarator = match part.kind() {
+                            "init_declarator" => {
+                                part.child_by_field_name("declarator").unwrap_or(part)
+                            }
+                            "identifier"
+                            | "pointer_declarator"
+                            | "array_declarator"
+                            | "function_declarator" => part,
+                            _ => continue,
+                        };
+                        let name = ast_utils::get_identifier_from_declarator(&declarator, source);
+                        if !name.is_empty() {
+                            out.push((name, child));
+                        }
+                    }
+                }
+                k if k.starts_with("preproc_") => stack.push(child),
+                _ => {}
+            }
+        }
+    }
+    // The stack visits a block after the declarations around it; source
+    // order decides which declaration of a name answers.
+    out.sort_by_key(|(_, d)| d.start_byte());
+    out
+}
+
+/// The file-scope objects `root` declares, and those among them declared
+/// `volatile`, `#if` blocks included. Functions are not objects.
+pub fn file_scope_objects(
+    root: &Node,
+    source: &str,
+) -> (
+    std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
+) {
+    let mut objects = std::collections::HashSet::new();
+    let mut volatile = std::collections::HashSet::new();
+    for (name, decl) in file_scope_declarators(root, source) {
+        let Some(declarator) = ast_utils::declaration_declarator_for(&decl, &name, source) else {
+            continue;
+        };
+        if declares_function(&declarator) {
+            continue;
+        }
+        if ast_utils::declaration_has_qualifier(&decl, "volatile", source) {
+            volatile.insert(name.clone());
+        }
+        objects.insert(name);
+    }
+    (objects, volatile)
 }
 
 /// Collect `func`'s [`DirectEffects`]. `arms` is every function-like macro
@@ -203,6 +257,7 @@ pub fn collect_direct_effects(
         source,
         func: *func,
         params: crate::analyze::function_summary::collect_param_names(func, source),
+        declared: declared_names(func, source),
         arms,
         scope,
         out: DirectEffects::default(),
@@ -211,6 +266,31 @@ pub fn collect_direct_effects(
         collector.walk(&body);
     }
     collector.out
+}
+
+/// Every name `func` declares: its parameters and every declarator in its
+/// body, whatever block it is in.
+fn declared_names(func: &Node, source: &str) -> std::collections::HashSet<String> {
+    lang_parsing_substrate::query::find_descendants(*func, |n| {
+        matches!(n.kind(), "declaration" | "parameter_declaration")
+    })
+    .into_iter()
+    .flat_map(|d| declared_in(&d, source))
+    .collect()
+}
+
+/// The names a `declaration` or `parameter_declaration` introduces, an
+/// initialized declarator (`int total = 0`) included.
+fn declared_in(decl: &Node, source: &str) -> Vec<String> {
+    let mut cursor = decl.walk();
+    decl.children(&mut cursor)
+        .map(|c| match c.kind() {
+            "init_declarator" => c.child_by_field_name("declarator").unwrap_or(c),
+            _ => c,
+        })
+        .map(|c| ast_utils::get_identifier_from_declarator(&c, source))
+        .filter(|n| !n.is_empty())
+        .collect()
 }
 
 /// Where a name occurrence is bound.
@@ -224,6 +304,9 @@ struct Collector<'s, 't> {
     source: &'s str,
     func: Node<'t>,
     params: Vec<String>,
+    /// Every name the function declares: its parameters and every
+    /// declarator in its body.
+    declared: std::collections::HashSet<String>,
     arms: &'s HashMap<String, Vec<MacroArm>>,
     scope: &'s FileScope<'t>,
     out: DirectEffects,
@@ -261,8 +344,14 @@ impl<'t> Collector<'_, 't> {
                         }
                     }
                 }
-                "identifier" if self.reads_volatile(&node) => {
-                    self.out.volatile_read = true;
+                "identifier" => {
+                    if self.reads_volatile(&node) {
+                        self.out.volatile_read = true;
+                    } else if self.is_free(&node) {
+                        self.out
+                            .free_names
+                            .insert(get_node_text(&node, self.source).to_string());
+                    }
                 }
                 // `&p->f` takes the address; nothing is read.
                 "field_expression" if dereferences_applied(&node, self.source) >= 0 => {
@@ -270,7 +359,25 @@ impl<'t> Collector<'_, 't> {
                         self.out.member_chains.insert(chain);
                     }
                 }
-                "call_expression" => self.call(&node),
+                "call_expression" => {
+                    self.call(&node);
+                    // `offsetof(type, member)` and `va_arg(ap, type)` name a
+                    // type and a member; neither is read.
+                    let callee = node
+                        .child_by_field_name("function")
+                        .map(|f| get_node_text(&f, self.source));
+                    match callee {
+                        Some("offsetof" | "__builtin_offsetof") => continue,
+                        Some("va_arg" | "__builtin_va_arg") => {
+                            let first = node
+                                .child_by_field_name("arguments")
+                                .and_then(|a| a.named_child(0));
+                            stack.extend(first);
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
                 _ => {}
             }
             let mut cursor = node.walk();
@@ -287,40 +394,58 @@ impl<'t> Collector<'_, 't> {
             }
             _ => None,
         };
-        if let Some(name) = &callee {
-            if let Some(arms) = self.arms.get(name).filter(|a| !a.is_empty()) {
-                for arm in arms {
-                    let (writes, callees) = macro_expand::macro_body_effects(arm);
-                    if writes {
-                        self.out.writes.insert(Loc::Unknown);
-                    }
-                    for c in callees {
-                        self.push_call(CallSite {
-                            callee: Some(c),
-                            args: Vec::new(),
-                        });
-                    }
-                }
-                return;
-            }
-        }
-        let args = node
+        let (args, arg_functions): (Vec<ArgRoot>, Vec<Option<String>>) = node
             .child_by_field_name("arguments")
             .map(|a| {
                 let mut cursor = a.walk();
                 a.named_children(&mut cursor)
                     .filter(|c| c.kind() != "comment")
                     .map(|c| self.arg_root(&c))
-                    .collect()
+                    .unzip()
             })
             .unwrap_or_default();
-        self.push_call(CallSite { callee, args });
-    }
-
-    fn push_call(&mut self, call: CallSite) {
-        if !self.out.calls.contains(&call) {
-            self.out.calls.push(call);
+        if let Some(name) = &callee {
+            if let Some(arms) = self.arms.get(name).filter(|a| !a.is_empty()) {
+                for arm in arms {
+                    let body = macro_expand::macro_body_calls(arm);
+                    if body.writes {
+                        self.out.writes.insert(Loc::Unknown);
+                    }
+                    let reached = body
+                        .callees
+                        .into_iter()
+                        .map(Some)
+                        // A call through a parameter calls what is passed
+                        // there; an argument that names no function, or a
+                        // call through a member or a pointer, names no body.
+                        .chain(
+                            body.param_calls
+                                .iter()
+                                .map(|&k| arg_functions.get(k).cloned().flatten()),
+                        )
+                        .chain(body.indirect.then_some(None));
+                    for callee in reached {
+                        self.out.calls.insert(CallSite {
+                            callee,
+                            args: Vec::new(),
+                            arg_functions: Vec::new(),
+                        });
+                    }
+                }
+                // The call itself stays too: an `#if` arm that does not
+                // define the macro may leave the name a real function.
+            }
         }
+        let arg_functions = if arg_functions.iter().any(Option::is_some) {
+            arg_functions
+        } else {
+            Vec::new()
+        };
+        self.out.calls.insert(CallSite {
+            callee,
+            args,
+            arg_functions,
+        });
     }
 
     /// Where an assignment to `lvalue` lands; `None` for the function's own
@@ -386,9 +511,19 @@ impl<'t> Collector<'_, 't> {
                     None
                 }
             }
+            // A local declared under a preprocessor arm the use is not in
+            // binds it in that configuration only; in the others the same
+            // spelling names the object outside (`int g; ... #ifdef LOCAL
+            // int g; #endif g = 1;`), so the write counts.
+            Some(IdentifierBinding::Local(decl)) if in_other_arm(&decl, ident) => {
+                Some(Loc::Global(name.to_string()))
+            }
             Some(IdentifierBinding::Local(decl)) => {
                 if ast_utils::declaration_has_storage_class(&decl, "static", self.source) {
                     Some(Loc::Static(name.to_string()))
+                } else if ast_utils::declaration_has_storage_class(&decl, "extern", self.source) {
+                    // `extern int hits;` in a block names the file-scope object.
+                    Some(Loc::Global(name.to_string()))
                 } else if element && !is_automatic_local_array(&decl, ident, self.source) {
                     Some(Loc::Unknown)
                 } else {
@@ -484,6 +619,19 @@ impl<'t> Collector<'_, 't> {
         Some((decl, declarator))
     }
 
+    /// Whether an identifier read names something neither the function nor
+    /// its file declares: a header's object, a macro, a constant, or
+    /// something unknown. A callee is judged as a call, not here.
+    fn is_free(&self, ident: &Node<'t>) -> bool {
+        let name = get_node_text(ident, self.source);
+        let is_callee = ident.parent().is_some_and(|p| {
+            p.kind() == "call_expression"
+                && p.child_by_field_name("function")
+                    .is_some_and(|f| f.id() == ident.id())
+        });
+        !is_callee && !self.declared.contains(name) && !self.scope.globals.contains_key(name)
+    }
+
     /// [`is_volatile_read`], answered only for names some declaration in
     /// the file qualifies `volatile`.
     fn reads_volatile(&self, ident: &Node<'t>) -> bool {
@@ -506,24 +654,34 @@ impl<'t> Collector<'_, 't> {
         })
     }
 
-    fn arg_root(&self, arg: &Node<'t>) -> ArgRoot {
+    /// What an argument designates, and the function it names when it is a
+    /// bare identifier not declared as an object.
+    fn arg_root(&self, arg: &Node<'t>) -> (ArgRoot, Option<String>) {
         let arg = crate::analyze::init_state::strip_arg_casts(arg);
         match arg.kind() {
             "identifier" => {
                 let name = get_node_text(&arg, self.source);
                 match self.binding(&arg) {
-                    Some(IdentifierBinding::Parameter(_)) => self
-                        .params
-                        .iter()
-                        .position(|p| p == name)
-                        .map_or(ArgRoot::Other, ArgRoot::Param),
+                    Some(IdentifierBinding::Parameter(_)) => (
+                        self.params
+                            .iter()
+                            .position(|p| p == name)
+                            .map_or(ArgRoot::Other, ArgRoot::Param),
+                        None,
+                    ),
                     // A local array decays to its own storage's address.
                     Some(IdentifierBinding::Local(decl))
                         if is_automatic_local_array(&decl, &arg, self.source) =>
                     {
-                        ArgRoot::AddrOfLocal
+                        (ArgRoot::AddrOfLocal, None)
                     }
-                    _ => ArgRoot::Other,
+                    Some(IdentifierBinding::Local(decl) | IdentifierBinding::Global(decl))
+                        if ast_utils::declaration_declarator_for(&decl, name, self.source)
+                            .is_some_and(|d| !declares_function(&d)) =>
+                    {
+                        (ArgRoot::Other, None)
+                    }
+                    _ => (ArgRoot::Other, Some(name.to_string())),
                 }
             }
             "pointer_expression"
@@ -532,19 +690,50 @@ impl<'t> Collector<'_, 't> {
                     .is_some_and(|op| get_node_text(&op, self.source) == "&") =>
             {
                 let Some(operand) = arg.child_by_field_name("argument") else {
-                    return ArgRoot::Other;
+                    return (ArgRoot::Other, None);
                 };
-                match self.write_location(&operand) {
+                let root = match self.write_location(&operand) {
                     None => ArgRoot::AddrOfLocal,
                     Some(Loc::Global(g) | Loc::Static(g)) => ArgRoot::AddrOfGlobal(g),
                     // `&p[i]`, `&p->f`: inside what parameter `j` points to.
                     Some(Loc::ParamPointee(j)) => ArgRoot::Param(j),
                     Some(Loc::Unknown) => ArgRoot::Other,
-                }
+                };
+                (root, None)
             }
-            _ => ArgRoot::Other,
+            _ => (ArgRoot::Other, None),
         }
     }
+}
+
+/// Whether `decl` sits in a preprocessor arm that does not also hold `usage`:
+/// under an `#if` whose block `usage` is outside, or in the `#else`/`#elif`
+/// alternative of one whose other branch holds `usage` (or the reverse).
+fn in_other_arm(decl: &Node, usage: &Node) -> bool {
+    let within = |outer: &Node, inner: &Node| {
+        outer.start_byte() <= inner.start_byte() && inner.end_byte() <= outer.end_byte()
+    };
+    let mut node = decl.parent();
+    while let Some(ancestor) = node {
+        if ancestor.kind() == "function_definition" {
+            return false;
+        }
+        if matches!(
+            ancestor.kind(),
+            "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef"
+        ) {
+            if !within(&ancestor, usage) {
+                return true;
+            }
+            if let Some(alternative) = ancestor.child_by_field_name("alternative") {
+                if within(&alternative, usage) != within(&alternative, decl) {
+                    return true;
+                }
+            }
+        }
+        node = ancestor.parent();
+    }
+    false
 }
 
 /// Whether a declarator declares a function (`f(void)`, `*f(void)`) rather
@@ -567,12 +756,30 @@ fn declares_function(declarator: &Node) -> bool {
     }
 }
 
-/// Whether `decl` (a block-scope declaration binding `ident`) declares a
-/// non-static array: storage the function owns.
+/// Whether `decl` (a block-scope declaration binding `ident`) declares an
+/// array with automatic storage (neither `static` nor `extern`): storage the
+/// function owns.
 fn is_automatic_local_array(decl: &Node, ident: &Node, source: &str) -> bool {
     !ast_utils::declaration_has_storage_class(decl, "static", source)
+        && !ast_utils::declaration_has_storage_class(decl, "extern", source)
         && ast_utils::declaration_declarator_for(decl, get_node_text(ident, source), source)
             .is_some_and(|d| d.kind() == "array_declarator")
+}
+
+/// Whether a callee identifier is declared as an object -- a parameter, a
+/// local or a file-scope function pointer -- so the call goes through a
+/// pointer and the spelling names no function (ADR-0006: a parameter called
+/// `next` is not another file's function `next`).
+pub fn designates_object(ident: &Node, source: &str) -> bool {
+    let name = get_node_text(ident, source);
+    match ast_utils::resolve_identifier_binding(ident, name, source) {
+        Some(IdentifierBinding::Parameter(_)) => true,
+        Some(IdentifierBinding::Local(decl) | IdentifierBinding::Global(decl)) => {
+            ast_utils::declaration_declarator_for(&decl, name, source)
+                .is_some_and(|d| !declares_function(&d))
+        }
+        None => false,
+    }
 }
 
 /// Whether an identifier occurrence reads a volatile object, resolved to its
@@ -811,6 +1018,14 @@ impl ClosedEffects {
         }
     }
 
+    /// Everything either may change: the worse of two definitions.
+    pub fn union(&self, other: &ClosedEffects) -> ClosedEffects {
+        let mut out = self.clone();
+        out.absorb_flags(other);
+        out.writes.extend(other.writes.iter().cloned());
+        out
+    }
+
     fn absorb_flags(&mut self, other: &ClosedEffects) {
         self.writes_any |= other.writes_any;
         self.volatile_read |= other.volatile_read;
@@ -821,8 +1036,35 @@ impl ClosedEffects {
     }
 }
 
+/// What the project knows about names a body reads without declaring them.
+#[derive(Debug, Clone, Default)]
+pub struct ProjectNames {
+    /// Every `#define`, every arm (object-like bodies are expanded).
+    pub macro_definitions:
+        std::sync::Arc<HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>>>,
+    /// File-scope objects some file or header declares `volatile`.
+    pub volatile_globals: std::sync::Arc<std::collections::HashSet<String>>,
+    /// Every file-scope object name declared anywhere in the scan.
+    pub global_objects: std::sync::Arc<std::collections::HashSet<String>>,
+    /// Every function name defined or declared in the scan.
+    pub functions: std::sync::Arc<std::collections::HashSet<String>>,
+    /// Numeric macro and enumeration constants.
+    pub constants: std::sync::Arc<HashMap<String, i64>>,
+    /// Every macro name defined anywhere in the scan.
+    pub macros: std::sync::Arc<std::collections::HashSet<String>>,
+    /// Typedef names (a macro argument may name a type).
+    pub typedefs: std::sync::Arc<HashMap<String, String>>,
+    /// Every struct or union member name (a macro argument may name one).
+    pub members: std::sync::Arc<std::collections::HashSet<String>>,
+    /// Whether these tables describe a prescan. Without one, a name nothing
+    /// here knows is not evidence of anything, so it is not judged unknown.
+    pub complete: bool,
+}
+
 /// The project tables the closure resolves callees and member types against.
 pub struct EffectInputs<'a> {
+    /// Names read without a declaration in scope.
+    pub names: &'a ProjectNames,
     /// One definition per function-like macro name, project-wide.
     pub function_macros: &'a HashMap<String, macro_expand::FunctionMacro>,
     /// Every function-like macro name: what makes a call a macro invocation.
@@ -893,20 +1135,21 @@ impl EffectTable {
                 ..Default::default()
             };
             let mut out = Vec::new();
+            let mut resolver = Resolver {
+                inputs,
+                index: &index,
+                base,
+                own: &mut own,
+                out: &mut out,
+            };
             for call in &direct.calls {
                 match &call.callee {
-                    Some(name) => {
-                        let mut resolver = Resolver {
-                            inputs,
-                            index: &index,
-                            base,
-                            own: &mut own,
-                            out: &mut out,
-                        };
-                        resolver.classify(name, &call.args, 0)
-                    }
-                    None => own.opaque = true,
+                    Some(name) => resolver.classify(name, &call.args, &call.arg_functions, 0),
+                    None => resolver.own.opaque = true,
                 }
+            }
+            for name in &direct.free_names {
+                resolver.free_name(name, 0);
             }
             local.push(own);
             edges.push(out);
@@ -928,10 +1171,12 @@ impl EffectTable {
                     }
                 }
             }
-            // Mapped writes: to a fixpoint within the group.
+            // Mapped writes: to a fixpoint within the group. Each pass only
+            // adds, and every location is a parameter pointee, a name some
+            // body spells or `Unknown`, so the sets are bounded and this ends.
             let mut writes: HashMap<usize, BTreeSet<Loc>> =
                 scc.iter().map(|&m| (m, local[m].writes.clone())).collect();
-            for _pass in 0..64 {
+            loop {
                 let mut changed = false;
                 for &m in &scc {
                     let mut add = BTreeSet::new();
@@ -975,6 +1220,28 @@ impl EffectTable {
     }
 }
 
+/// What reading `name` -- one no declaration in scope binds -- can change,
+/// judged as a body's free name is ([`DirectEffects::free_names`]), with
+/// callees an object-like macro calls looked up in `base`.
+pub fn name_effects(
+    name: &str,
+    inputs: &EffectInputs,
+    base: &dyn Fn(&str) -> Option<ClosedEffects>,
+) -> ClosedEffects {
+    let index = HashMap::new();
+    let mut own = ClosedEffects::default();
+    let mut out = Vec::new();
+    let mut resolver = Resolver {
+        inputs,
+        index: &index,
+        base,
+        own: &mut own,
+        out: &mut out,
+    };
+    resolver.free_name(name, 0);
+    own
+}
+
 /// A callee's written location as its caller sees it; `None` when the
 /// caller handed the callee its own automatic storage.
 fn map_through(loc: &Loc, args: &[ArgRoot]) -> Option<Loc> {
@@ -999,10 +1266,114 @@ struct Resolver<'r, 'i> {
 }
 
 impl Resolver<'_, '_> {
+    /// Judge a name a body reads without declaring it: a project-wide
+    /// volatile object is a volatile read; an object-like macro is what its
+    /// replacement lists read, write and call; any other name the scan or the
+    /// standard headers declare reads nothing; anything else is unknown.
+    fn free_name(&mut self, name: &str, depth: usize) {
+        let names = self.inputs.names;
+        if names.volatile_globals.contains(name) {
+            self.own.volatile_read = true;
+            return;
+        }
+        if let Some(defs) = names.macro_definitions.get(name) {
+            use crate::analyze::check_macros::MacroDefinition;
+            for def in defs {
+                match def {
+                    MacroDefinition::Object { body } => {
+                        if depth > 4 {
+                            self.own.opaque = true;
+                            continue;
+                        }
+                        self.object_macro(body, depth);
+                    }
+                    // Named without a call: a function designator.
+                    MacroDefinition::Function { .. } => {}
+                    MacroDefinition::Opaque => self.own.opaque = true,
+                }
+            }
+            return;
+        }
+        // A struct member or tag name is read where a macro argument names
+        // one (`container_of(p, struct node, link)`); it is declared.
+        let declared = names.global_objects.contains(name)
+            || names.functions.contains(name)
+            || names.constants.contains_key(name)
+            || names.macros.contains(name)
+            || names.typedefs.contains_key(name)
+            || self.inputs.function_macro_names.contains(name)
+            || self.inputs.struct_field_types.contains_key(name)
+            || names.members.contains(name);
+        if declared || !names.complete {
+            return;
+        }
+        use crate::utility::cert_c::library_effects::{standard_object_name, StandardName};
+        match standard_object_name(name) {
+            Some(StandardName::Constant) => {}
+            // Known only while the hosted library contract holds.
+            Some(StandardName::HostedStream) => self.own.lib_any = true,
+            None if crate::utility::cert_c::std_functions::is_iso_c_or_posix_function(name) => {
+                // A library function named without a call: a designator.
+            }
+            None => self.own.opaque = true,
+        }
+    }
+
+    /// What an object-like macro's replacement list reads, writes and calls:
+    /// `(*(volatile unsigned *)0x40000000u)` reads a volatile object,
+    /// `get_tick()` calls, a nested macro recurses.
+    fn object_macro(&mut self, body: &str, depth: usize) {
+        let arm = MacroArm {
+            params: Vec::new(),
+            variadic: None,
+            body: body.to_string(),
+        };
+        let calls = macro_expand::macro_body_calls(&arm);
+        if calls.writes {
+            self.own.writes.insert(Loc::Unknown);
+            self.own.writes_any = true;
+        }
+        if calls.indirect {
+            self.own.opaque = true;
+        }
+        for c in &calls.callees {
+            self.classify(c, &[], &[], depth + 1);
+        }
+        let names = self.inputs.names;
+        for ident in macro_expand::body_identifiers(body) {
+            if ident == "volatile" {
+                self.own.volatile_read = true;
+            } else if calls.callees.contains(&ident) {
+                // Judged as a call above.
+            } else if names.volatile_globals.contains(&ident)
+                || names.macro_definitions.contains_key(&ident)
+            {
+                self.free_name(&ident, depth + 1);
+            }
+        }
+    }
+
+    /// Take a callee's closed effects from the base table as they are.
+    fn absorb(&mut self, closed: &ClosedEffects, args: &[ArgRoot]) {
+        self.own.absorb_flags(closed);
+        self.own.writes.extend(
+            closed
+                .writes
+                .iter()
+                .filter_map(|loc| map_through(loc, args)),
+        );
+    }
+
     /// Resolve one callee name: a macro's body, a function being closed (an
     /// edge), a function the base table holds, a library function (by its
     /// contract, judged at query time), else something nothing summarizes.
-    fn classify(&mut self, name: &str, args: &[ArgRoot], depth: usize) {
+    fn classify(
+        &mut self,
+        name: &str,
+        args: &[ArgRoot],
+        arg_functions: &[Option<String>],
+        depth: usize,
+    ) {
         // A file-qualified key names a scanned static directly.
         if name.contains('\0') {
             match self.index.get(name) {
@@ -1025,17 +1396,36 @@ impl Resolver<'_, '_> {
                 self.own.opaque = true;
                 return;
             }
-            let Some(def) = inputs.function_macros.get(resolved) else {
-                self.own.opaque = true;
-                return;
-            };
-            let (writes, callees) = macro_expand::macro_body_effects(&MacroArm::from(def));
-            if writes {
-                self.own.writes.insert(Loc::Unknown);
-                self.own.writes_any = true;
+            match inputs.function_macros.get(resolved) {
+                Some(def) => {
+                    let body = macro_expand::macro_body_calls(&MacroArm::from(def));
+                    if body.writes {
+                        self.own.writes.insert(Loc::Unknown);
+                        self.own.writes_any = true;
+                    }
+                    if body.indirect {
+                        self.own.opaque = true;
+                    }
+                    for c in body.callees {
+                        self.classify(&c, &[], &[], depth + 1);
+                    }
+                    // A call through a parameter calls what the invocation
+                    // passed there, when that names a function.
+                    for k in body.param_calls {
+                        match arg_functions.get(k).cloned().flatten() {
+                            Some(f) => self.classify(&f, &[], &[], depth + 1),
+                            None => self.own.opaque = true,
+                        }
+                    }
+                }
+                None => self.own.opaque = true,
             }
-            for c in callees {
-                self.classify(&c, &[], depth + 1);
+            // An `#if` arm that does not define the macro may leave the name
+            // a real function: that body counts too.
+            if let Some(&i) = self.index.get(resolved) {
+                self.out.push((i, args.to_vec()));
+            } else if let Some(closed) = (self.base)(resolved) {
+                self.absorb(&closed, args);
             }
             return;
         }
@@ -1044,13 +1434,7 @@ impl Resolver<'_, '_> {
             return;
         }
         if let Some(closed) = (self.base)(resolved) {
-            self.own.absorb_flags(&closed);
-            self.own.writes.extend(
-                closed
-                    .writes
-                    .iter()
-                    .filter_map(|loc| map_through(loc, args)),
-            );
+            self.absorb(&closed, args);
             return;
         }
         use crate::utility::cert_c::library_effects::{library_call_effect, LibraryEffect};
@@ -1226,6 +1610,28 @@ mod tests {
     }
 
     #[test]
+    fn a_local_in_another_preprocessor_arm_does_not_hide_the_global() {
+        let code = "int g;\n\
+            void f(void) {\n\
+            #ifdef LOCAL\n\
+                int g;\n\
+            #endif\n\
+                g = 1;\n\
+            }\n\
+            void h(void) {\n\
+            #ifdef LOCAL\n\
+                int g;\n\
+                g = 1;\n\
+            #endif\n\
+            }\n";
+        assert_eq!(
+            direct(code, "f").writes,
+            [Loc::Global("g".into())].into_iter().collect()
+        );
+        assert!(direct(code, "h").writes.is_empty());
+    }
+
+    #[test]
     fn automatic_storage_is_not_a_write() {
         let code = "struct pt { int x; };\n\
             int f(int n) { int a[3]; struct pt v; a[0] = n; v.x = n; n++; return a[0] + v.x; }\n";
@@ -1238,9 +1644,10 @@ mod tests {
             void f(int *p, int n) { int x; int buf[2]; int *lp = p; h(p, &x, buf, &g, lp, n + 1, &p[1]); }\n";
         let e = direct(code, "f");
         assert_eq!(e.calls.len(), 1);
-        assert_eq!(e.calls[0].callee.as_deref(), Some("h"));
+        let call = e.calls.iter().next().unwrap();
+        assert_eq!(call.callee.as_deref(), Some("h"));
         assert_eq!(
-            e.calls[0].args,
+            call.args,
             vec![
                 ArgRoot::Param(0),
                 ArgRoot::AddrOfLocal,
@@ -1262,7 +1669,9 @@ mod tests {
             .calls
             .iter()
             .any(|c| c.callee.as_deref() == Some("log_it")));
-        assert!(!e.calls.iter().any(|c| c.callee.as_deref() == Some("LOG")));
+        // The call itself is kept: an arm without the macro may leave the name a
+        // function.
+        assert!(e.calls.iter().any(|c| c.callee.as_deref() == Some("LOG")));
         // A macro body's write is not located.
         assert!(e.writes.contains(&Loc::Unknown));
     }
@@ -1278,7 +1687,10 @@ mod tests {
         assert!(direct(code, "f").calls.iter().all(|c| c.callee.is_none()));
         // A parameter named like a scanned function is still a pointer.
         assert!(direct(code, "h").calls.iter().all(|c| c.callee.is_none()));
-        assert_eq!(direct(code, "k").calls[0].callee.as_deref(), Some("cmp"));
+        assert!(direct(code, "k")
+            .calls
+            .iter()
+            .any(|c| c.callee.as_deref() == Some("cmp")));
         // However the parser reads it, inline assembly is proven nothing.
         let ctx = scanned(&[("asm.c", code)], "asm");
         assert_eq!(ctx.effects().get("g").unwrap().proof(true), Proof::Unproven);
@@ -1376,9 +1788,10 @@ mod tests {
             .map(|i| {
                 let mut d = DirectEffects::default();
                 if i > 0 {
-                    d.calls.push(CallSite {
+                    d.calls.insert(CallSite {
                         callee: Some(format!("f{}", i - 1)),
                         args: Vec::new(),
+                        arg_functions: Vec::new(),
                     });
                 }
                 (format!("f{i}"), d)
@@ -1390,6 +1803,7 @@ mod tests {
         let table = EffectTable::build(
             facts.iter().map(|(k, v)| (k.clone(), v)),
             &EffectInputs {
+                names: &ProjectNames::default(),
                 function_macros: &HashMap::new(),
                 function_macro_names: &names,
                 macro_aliases: &empty,
@@ -1436,6 +1850,48 @@ mod tests {
         // Strict: the unproven one too; the proven-pure one never.
         assert_eq!(pre31(&ctx, "use.c", use_c, "strict"), 2);
     }
+    #[test]
+    fn a_header_volatile_global_is_a_volatile_read_in_other_files() {
+        let header = "extern volatile int g_ready;\n";
+        let lib = "#include \"api.h\"\nint ready(void) { return g_ready; }\n";
+        let use_c = "#define TWICE(x) ((x) + (x))\n\
+            int a(void) { return TWICE(ready()); }\n\
+            int b(void) { return TWICE(g_ready); }\n";
+        let ctx = scanned(
+            &[("api.h", header), ("lib.c", lib), ("use.c", use_c)],
+            "volatile-header",
+        );
+        assert_eq!(
+            ctx.effects().get("ready").unwrap().proof(true),
+            Proof::Impure
+        );
+        assert_eq!(pre31(&ctx, "use.c", use_c, "default"), 2);
+    }
+
+    #[test]
+    fn a_macro_in_one_arm_does_not_hide_the_function_in_the_other() {
+        let code = "int g;\n\
+            #ifdef FAST_LOG\n\
+            #define log_it(x) ((void)(x))\n\
+            #else\n\
+            void log_it(int x) { g = x; }\n\
+            #endif\n\
+            int f(int v) { log_it(v); return v; }\n";
+        let ctx = scanned(&[("log.c", code)], "one-arm-macro");
+        assert_eq!(ctx.effects().get("f").unwrap().proof(true), Proof::Impure);
+    }
+
+    #[test]
+    fn an_unknown_name_is_unproven_and_a_standard_one_is_not() {
+        let code = "#include <stdio.h>\n\
+            int known(void) { return EOF + (NULL == 0); }\n\
+            int unknown(void) { return MYSTERY_VALUE; }\n";
+        let ctx = scanned(&[("n.c", code)], "unknown-name");
+        let effects = ctx.effects();
+        assert_eq!(effects.get("known").unwrap().proof(true), Proof::Pure);
+        assert_eq!(effects.get("unknown").unwrap().proof(true), Proof::Unproven);
+    }
+
     #[test]
     fn pre31_judges_the_files_own_functions_when_the_prescan_skipped_them() {
         // The prescan read only a header directory, as a `-d include` run does.

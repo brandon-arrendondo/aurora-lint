@@ -7,8 +7,8 @@ use crate::analyze::context::{EffectView, IncludeClosure, ProjectContext, Visibl
 use crate::analyze::function_summary::extract_function_name;
 use crate::analyze::macro_expand::{self, ArgEvaluation, FunctionMacro, MacroArm, ProjectMacroArm};
 use crate::analyze::side_effects::{
-    collect_direct_effects, dereferences_applied, is_volatile_read, EffectInputs, EffectTable,
-    FileScope, Proof, PURE_BUILTINS,
+    collect_direct_effects, dereferences_applied, designates_object, is_volatile_read,
+    EffectInputs, EffectTable, FileScope, Proof, PURE_BUILTINS,
 };
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
@@ -136,19 +136,18 @@ impl CertRule for Pre31C {
         let arms = macro_expand::collect_function_macro_arms(source);
         let aliases = merged_macro_aliases(&self.macro_aliases.borrow(), node, source);
         let types = self.types.borrow();
-        // The file's own functions the scan's table does not hold -- all of
-        // them with no prescan context, or when the prescan read only the
-        // include directories -- closed here, their calls into the rest of
-        // the scan answered by the table.
+        // The file's own functions, closed here with their calls into the
+        // rest of the scan answered by the table. When the prescan read this
+        // file, the table's entry already covers these bodies. When it did
+        // not (a `-d` naming only the include directories, or no prescan at
+        // all), a same-named function elsewhere is a different definition, so
+        // the worse of the two answers.
         let effects = self.effects.borrow().clone();
         let file_scope = FileScope::of(node, source);
         let mut direct: HashMap<String, crate::analyze::side_effects::DirectEffects> =
             HashMap::new();
         for f in query::find_descendants_of_kind(*node, "function_definition") {
             if let Some(name) = extract_function_name(&f, source) {
-                if effects.as_ref().is_some_and(|v| v.get(&name).is_some()) {
-                    continue;
-                }
                 direct
                     .entry(name)
                     .or_default()
@@ -157,12 +156,17 @@ impl CertRule for Pre31C {
         }
         let include_edges = self.include_edges.borrow();
         let file_path = self.file_path.borrow();
+        let names_known = effects
+            .as_ref()
+            .map(|v| v.names.clone())
+            .unwrap_or_default();
         let local_table = (!direct.is_empty()).then(|| {
             let mut names: HashSet<String> = HashSet::clone(&project_names);
             names.extend(function_macros.keys().cloned());
             EffectTable::build_over(
                 direct.iter().map(|(k, v)| (k.clone(), v)),
                 &EffectInputs {
+                    names: &names_known,
                     function_macros: &function_macros,
                     function_macro_names: &names,
                     macro_aliases: &aliases,
@@ -258,7 +262,7 @@ struct Ctx<'a> {
     outside: &'a HashSet<String>,
     /// The scan's side-effect table, as this file resolves names.
     effects: Option<&'a EffectView>,
-    /// This file's functions the scan's table does not hold.
+    /// This file's own functions, closed over the scan's table.
     local_table: Option<&'a EffectTable>,
     types: &'a VisibleTypes,
     settings: &'a AnalysisSettings,
@@ -343,7 +347,7 @@ impl<'a> Ctx<'a> {
                 if is_volatile_read(node, self.source) {
                     Effect::Definite
                 } else {
-                    Effect::None
+                    self.free_name_effect(node)
                 }
             }
             "field_expression" if self.is_volatile_member(node) => Effect::Definite,
@@ -357,21 +361,46 @@ impl<'a> Ctx<'a> {
                     .unwrap_or(Effect::None)
             }
             "call_expression" => {
+                let arguments = node.child_by_field_name("arguments");
                 let callee = match node.child_by_field_name("function") {
+                    // A parameter, local or function pointer named like a
+                    // function is still a call through a pointer (ADR-0006).
+                    Some(f) if f.kind() == "identifier" && designates_object(&f, self.source) => {
+                        Effect::Unknown
+                    }
                     Some(f) if f.kind() == "identifier" => {
-                        self.callee_effect(get_node_text(&f, self.source), 0)
+                        self.call_effect(get_node_text(&f, self.source), arguments.as_ref(), 0)
                     }
                     // Through a pointer or a member: nothing names the body,
                     // and the callee expression may itself have effects.
                     Some(f) => self.expression_effect(&f).max(Effect::Unknown),
                     None => Effect::Unknown,
                 };
-                let args = node
-                    .child_by_field_name("arguments")
-                    .map_or(Effect::None, |a| self.children_effect(&a));
+                let args = arguments.map_or(Effect::None, |a| self.children_effect(&a));
                 callee.max(args)
             }
             _ => self.children_effect(node),
+        }
+    }
+
+    /// A name nothing in this file declares in scope (a header's `extern
+    /// volatile` object, an object-like macro such as `NOW` expanding to a
+    /// call), judged against the project as a callee's free names are.
+    fn free_name_effect(&self, ident: &Node<'a>) -> Effect {
+        let Some(view) = self.effects else {
+            return Effect::None;
+        };
+        let name = get_node_text(ident, self.source);
+        if ast_utils::resolve_identifier_binding(ident, name, self.source).is_some() {
+            return Effect::None;
+        }
+        match view
+            .name_effects(name)
+            .proof(self.settings.flag("stdlib_call_effects"))
+        {
+            Proof::Pure => Effect::None,
+            Proof::Unproven => Effect::Unknown,
+            Proof::Impure => Effect::Definite,
         }
     }
 
@@ -446,6 +475,13 @@ impl<'a> Ctx<'a> {
 
     /// The side effect of calling `name` (as spelled at the call site).
     fn callee_effect(&self, name: &str, depth: usize) -> Effect {
+        self.call_effect(name, None, depth)
+    }
+
+    /// [`Self::callee_effect`] for a call whose argument list is at hand, so
+    /// a macro calling one of its parameters resolves to the function passed
+    /// there.
+    fn call_effect(&self, name: &str, arguments: Option<&Node<'a>>, depth: usize) -> Effect {
         if depth > 4 {
             return Effect::Unknown;
         }
@@ -458,22 +494,18 @@ impl<'a> Ctx<'a> {
             return Effect::None;
         }
         if self.names.contains(name) {
-            return self.macro_effect(name, depth);
-        }
-        let stdlib_contract = self.settings.flag("stdlib_call_effects");
-        let closed = self
-            .local_table
-            .and_then(|t| t.get(name))
-            .or_else(|| self.effects.and_then(|v| v.get(name)));
-        if let Some(closed) = closed {
-            // The conservative reading: a callee writing through a pointer it
-            // was handed counts, whatever the caller handed it.
-            return match closed.proof(stdlib_contract) {
-                Proof::Pure => Effect::None,
-                Proof::Unproven => Effect::Unknown,
-                Proof::Impure => Effect::Definite,
+            // An `#if` arm that does not define the macro may leave the name
+            // a real function: the worse of the two.
+            let as_macro = self.macro_effect(name, arguments, depth);
+            return match self.function_effect(name) {
+                Some(f) => as_macro.max(f),
+                None => as_macro,
             };
         }
+        if let Some(effect) = self.function_effect(name) {
+            return effect;
+        }
+        let stdlib_contract = self.settings.flag("stdlib_call_effects");
         if stdlib_contract {
             match library_call_effect(name) {
                 Some(LibraryEffect::Pure) => return Effect::None,
@@ -487,22 +519,68 @@ impl<'a> Ctx<'a> {
         Effect::Unknown
     }
 
+    /// What calling a scanned function can change, when the scan defines it.
+    fn function_effect(&self, name: &str) -> Option<Effect> {
+        let stdlib_contract = self.settings.flag("stdlib_call_effects");
+        let local = self.local_table.and_then(|t| t.get(name));
+        let project = self.effects.and_then(|v| v.get(name));
+        let closed = match (local, project) {
+            (Some(l), Some(p)) => Some(l.union(p)),
+            (l, p) => l.or(p).cloned(),
+        };
+        // The conservative reading: a callee writing through a pointer it
+        // was handed counts, whatever the caller handed it.
+        closed.map(|closed| match closed.proof(stdlib_contract) {
+            Proof::Pure => Effect::None,
+            Proof::Unproven => Effect::Unknown,
+            Proof::Impure => Effect::Definite,
+        })
+    }
+
     /// A function-like macro invoked inside the argument: its body is its
-    /// only definition, so judge what the body writes and calls.
-    fn macro_effect(&self, name: &str, depth: usize) -> Effect {
+    /// only definition, so judge what the body writes and calls. A call
+    /// through one of its parameters calls what `arguments` passes there; a
+    /// call through a member or a pointer names no body.
+    fn macro_effect(&self, name: &str, arguments: Option<&Node<'a>>, depth: usize) -> Effect {
         let defs = self.definitions(name);
         if defs.is_empty() {
             return Effect::Unknown;
         }
+        let passed: Vec<Node<'a>> = arguments
+            .map(|a| {
+                let mut cursor = a.walk();
+                a.named_children(&mut cursor)
+                    .filter(|c| c.kind() != "comment")
+                    .collect()
+            })
+            .unwrap_or_default();
         defs.iter()
             .map(|arm| {
-                let (writes, callees) = macro_expand::macro_body_effects(arm);
-                if writes {
+                let body = macro_expand::macro_body_calls(arm);
+                if body.writes {
                     return Effect::Definite;
                 }
-                callees
+                let direct = body
+                    .callees
                     .iter()
-                    .map(|c| self.callee_effect(c, depth + 1))
+                    .map(|c| self.callee_effect(c, depth + 1));
+                let through_params = body.param_calls.iter().map(|&k| {
+                    let arg = passed
+                        .get(k)
+                        .map(crate::analyze::init_state::strip_arg_casts);
+                    match arg {
+                        Some(a)
+                            if a.kind() == "identifier" && !designates_object(&a, self.source) =>
+                        {
+                            self.callee_effect(get_node_text(&a, self.source), depth + 1)
+                        }
+                        _ => Effect::Unknown,
+                    }
+                });
+                let indirect = body.indirect.then_some(Effect::Unknown);
+                direct
+                    .chain(through_params)
+                    .chain(indirect)
                     .max()
                     .unwrap_or(Effect::None)
             })

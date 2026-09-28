@@ -503,39 +503,66 @@ pub struct ProjectContext {
     /// that looks it up need not spell a path the same way.
     #[serde(default)]
     pub scoped_names_by_file: Arc<HashMap<String, Arc<HashSet<String>>>>,
+    /// Every file-scope object name declared in a scanned file or resolved
+    /// header, `extern` declarations and `#if` arms included: a name a body
+    /// reads without binding it is one of these, or a macro, or unknown.
+    #[serde(default)]
+    pub global_object_names: Arc<HashSet<String>>,
+    /// The file-scope objects some scanned file or header declares
+    /// `volatile` (`extern volatile int g_ready;`), so a body in another
+    /// file reading one reads a volatile object.
+    #[serde(default)]
+    pub volatile_globals: Arc<HashSet<String>>,
     /// Every function's side effects closed over the call graph, built on
     /// first use from the tables above and shared by every clone. Never
     /// serialized: it is derived, and rebuilding it costs less than storing
     /// it. Anything that changes `function_summaries` after it may have
     /// been built must call [`Self::invalidate_side_effects`].
     #[serde(skip)]
-    pub(crate) side_effects:
-        Arc<std::sync::OnceLock<Arc<crate::analyze::side_effects::EffectTable>>>,
+    pub(crate) side_effects: Arc<std::sync::OnceLock<SideEffectCell>>,
 }
 
 impl ProjectContext {
     /// What calling each scanned function can change, as this context's
     /// file sees the names ([`crate::analyze::side_effects`]).
     pub fn effects(&self) -> EffectView {
-        let table = self.side_effects.get_or_init(|| {
-            let inputs = crate::analyze::side_effects::EffectInputs {
-                function_macros: &self.function_macros,
-                function_macro_names: &self.function_macro_names,
-                macro_aliases: &self.macro_aliases,
-                struct_field_types: &self.struct_field_types,
-                typedef_types: &self.typedef_types,
-            };
-            Arc::new(crate::analyze::side_effects::EffectTable::build(
+        let view = |table, members| EffectView {
+            table,
+            summaries: self.function_summaries.clone(),
+            names: crate::analyze::side_effects::ProjectNames {
+                macro_definitions: Arc::clone(&self.macro_definitions),
+                volatile_globals: Arc::clone(&self.volatile_globals),
+                global_objects: Arc::clone(&self.global_object_names),
+                functions: Arc::clone(&self.known_functions),
+                constants: Arc::clone(&self.macro_constants),
+                macros: Arc::clone(&self.defined_macro_names),
+                typedefs: Arc::clone(&self.typedef_types),
+                members,
+                complete: true,
+            },
+            function_macros: Arc::clone(&self.function_macros),
+            function_macro_names: Arc::clone(&self.function_macro_names),
+            macro_aliases: Arc::clone(&self.macro_aliases),
+            struct_field_types: Arc::clone(&self.struct_field_types),
+            typedef_types: Arc::clone(&self.typedef_types),
+        };
+        let (table, members) = self.side_effects.get_or_init(|| {
+            let members: Arc<HashSet<String>> = Arc::new(
+                self.struct_field_types
+                    .values()
+                    .flat_map(|fields| fields.keys().cloned())
+                    .collect(),
+            );
+            let unbuilt = view(Arc::default(), Arc::clone(&members));
+            let table = crate::analyze::side_effects::EffectTable::build(
                 self.function_summaries
                     .raw_entries()
                     .map(|(k, s)| (k, &s.effects)),
-                &inputs,
-            ))
+                &unbuilt.inputs(),
+            );
+            (Arc::new(table), members)
         });
-        EffectView {
-            table: Arc::clone(table),
-            summaries: self.function_summaries.clone(),
-        }
+        view(Arc::clone(table), Arc::clone(members))
     }
 
     /// Drop a side-effect table built before `function_summaries` changed.
@@ -891,19 +918,52 @@ impl<V> ScopedTable<V> {
     }
 }
 
+/// The closed side-effect table and the member names it was built with.
+pub(crate) type SideEffectCell = (
+    Arc<crate::analyze::side_effects::EffectTable>,
+    Arc<HashSet<String>>,
+);
+
 /// The side-effect table as one file reads it: a callee name resolves to the
 /// definition that file's summary lookup would (its own `static`, else the
-/// shared one).
+/// shared one). It carries the project tables the table was built from, so a
+/// name read outside any call can be judged the same way.
 #[derive(Debug, Clone, Default)]
 pub struct EffectView {
     table: Arc<crate::analyze::side_effects::EffectTable>,
     summaries: ScopedTable<FunctionSummary>,
+    /// What the project knows about undeclared names.
+    pub names: crate::analyze::side_effects::ProjectNames,
+    function_macros: Arc<HashMap<String, FunctionMacro>>,
+    function_macro_names: Arc<HashSet<String>>,
+    macro_aliases: Arc<HashMap<String, String>>,
+    struct_field_types: Arc<HashMap<String, HashMap<String, String>>>,
+    typedef_types: Arc<HashMap<String, String>>,
 }
 
 impl EffectView {
     /// What calling `name` can change, when a scanned file defines it.
     pub fn get(&self, name: &str) -> Option<&crate::analyze::side_effects::ClosedEffects> {
         self.table.get(&self.summaries.resolve_key(name)?)
+    }
+
+    /// What reading `name`, which no declaration in scope binds, can change
+    /// ([`crate::analyze::side_effects::name_effects`]).
+    pub fn name_effects(&self, name: &str) -> crate::analyze::side_effects::ClosedEffects {
+        crate::analyze::side_effects::name_effects(name, &self.inputs(), &|callee| {
+            self.get(callee).cloned()
+        })
+    }
+
+    fn inputs(&self) -> crate::analyze::side_effects::EffectInputs<'_> {
+        crate::analyze::side_effects::EffectInputs {
+            names: &self.names,
+            function_macros: &self.function_macros,
+            function_macro_names: &self.function_macro_names,
+            macro_aliases: &self.macro_aliases,
+            struct_field_types: &self.struct_field_types,
+            typedef_types: &self.typedef_types,
+        }
     }
 }
 
