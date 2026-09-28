@@ -7,6 +7,7 @@
 use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
 use crate::analyze::init_state;
 use crate::analyze::null_state::NullState;
+use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::guard_dominance;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use tree_sitter::Node;
@@ -1664,6 +1665,9 @@ fn is_allocator_name(name: &str) -> bool {
         || name.contains("calloc")
         || name.contains("realloc")
         || name.contains("aligned_alloc")
+        || crate::settings::memory::declared()
+            .allocators
+            .contains_key(name)
 }
 
 fn body_returned_callees(body: &Node, source: &str, text_end: usize) -> Option<HashSet<String>> {
@@ -3002,7 +3006,10 @@ fn forwarded_argument_names(body: &Node, source: &str) -> HashSet<String> {
             .unwrap_or("");
         // The same exclusion `forwarded_write_obligation` makes: these two are
         // the free path's business, not an output-parameter write.
-        if callee.is_empty() || callee == "free" || callee == "realloc" {
+        if callee.is_empty()
+            || call_roles::is_deallocator(callee)
+            || call_roles::is_realloc_like(callee)
+        {
             continue;
         }
         let Some(arguments) = call.child_by_field_name("arguments") else {
@@ -3047,7 +3054,10 @@ fn forwarded_write_obligation(expr: &Node, source: &str, param: &str) -> Option<
         let callee = func_node.utf8_text(source.as_bytes()).unwrap_or("");
         // Same exclusion `collect_param_passthroughs` makes: these two are
         // the free path's business, not an output-parameter write.
-        if callee.is_empty() || callee == "free" || callee == "realloc" {
+        if callee.is_empty()
+            || call_roles::is_deallocator(callee)
+            || call_roles::is_realloc_like(callee)
+        {
             continue;
         }
         let Some(arguments) = call.child_by_field_name("arguments") else {
@@ -4839,11 +4849,17 @@ fn credit_frees_params(
             summary.sole_param_escapes_unnamed_call |= escapes;
         }
 
-        if func_name == "free" {
-            let [arg] = real.as_slice() else {
-                continue;
+        if let Some(k) = call_roles::frees_argument(func_name) {
+            // `free` takes exactly one argument, as C requires; a declared
+            // deallocator frees the argument its declaration names.
+            let arg = match real.as_slice() {
+                [arg] if func_name == "free" => Some(*arg),
+                _ if func_name == "free" => None,
+                _ => real.get(k).copied(),
             };
-            credit_frees_one_arg(&call, *arg, body, source, params, summary);
+            if let Some(arg) = arg {
+                credit_frees_one_arg(&call, arg, body, source, params, summary);
+            }
             continue;
         }
 
@@ -4997,7 +5013,7 @@ fn resolve_name_shaped_frees(
                 let callee = edge_target(macro_aliases, &callee_name, |n| {
                     corroborated.contains_key(n)
                 });
-                let backed = (callee == "free" && arg_pos == 0)
+                let backed = call_roles::frees_argument(callee) == Some(arg_pos)
                     || corroborated
                         .get(callee)
                         .is_some_and(|f| f.contains(&arg_pos));
@@ -5638,6 +5654,12 @@ fn collect_frees_param_fields(
             }
             continue;
         }
+        if let Some(k) = call_roles::frees_argument(func_name) {
+            if let Some(arg) = args.get(k) {
+                credit_field(summary, arg);
+            }
+            continue;
+        }
 
         let null_idxs = macro_nulls_param_indices(function_macros, func_name, Live::All);
         if !null_idxs.is_empty() {
@@ -6049,7 +6071,11 @@ fn edge_target<'a>(
 ) -> &'a str {
     use crate::analyze::const_eval::resolve_macro_alias;
     let resolved = resolve_macro_alias(macro_aliases, callee_name);
-    if resolved != callee_name && resolved != "free" && !known(resolved) && known(callee_name) {
+    if resolved != callee_name
+        && !call_roles::is_deallocator(resolved)
+        && !known(resolved)
+        && known(callee_name)
+    {
         callee_name
     } else {
         resolved
@@ -6095,16 +6121,17 @@ pub fn propagate_transitive_frees(
                     let callee = edge_target(macro_aliases, callee_name, |n| {
                         frees_snapshot.contains_key(n)
                     });
-                    let (callee_frees, callee_guessed) = if callee == "free" && *callee_idx == 0 {
-                        (true, false)
-                    } else {
-                        match frees_snapshot.get(callee) {
-                            Some((frees, guessed)) => {
-                                (frees.contains(callee_idx), guessed.contains(callee_idx))
+                    let (callee_frees, callee_guessed) =
+                        if call_roles::frees_argument(callee) == Some(*callee_idx) {
+                            (true, false)
+                        } else {
+                            match frees_snapshot.get(callee) {
+                                Some((frees, guessed)) => {
+                                    (frees.contains(callee_idx), guessed.contains(callee_idx))
+                                }
+                                None => (false, false),
                             }
-                            None => (false, false),
-                        }
-                    };
+                        };
                     if !callee_frees {
                         continue;
                     }
@@ -6153,7 +6180,7 @@ pub fn propagate_transitive_frees(
                     let callee = edge_target(macro_aliases, callee_name, |n| {
                         unconditional_snapshot.contains_key(n)
                     });
-                    let callee_frees = (callee == "free" && *callee_idx == 0)
+                    let callee_frees = call_roles::frees_argument(callee) == Some(*callee_idx)
                         || unconditional_snapshot
                             .get(callee)
                             .is_some_and(|f| f.contains(callee_idx));

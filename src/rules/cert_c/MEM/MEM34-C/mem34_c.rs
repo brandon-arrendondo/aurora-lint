@@ -190,9 +190,9 @@ impl MemorySourceAnalyzer {
             if let Some(function) = call_node.child_by_field_name("function") {
                 let func_name = ast_utils::get_node_text_owned(&function, source);
 
-                if func_name == "free" {
+                if call_roles::is_deallocator(&func_name) {
                     self.check_free_argument(&call_node, source, violations);
-                } else if func_name == "realloc" {
+                } else if call_roles::is_realloc_like(&func_name) {
                     self.check_realloc_argument(&call_node, source, violations);
                 }
             }
@@ -205,36 +205,32 @@ impl MemorySourceAnalyzer {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if let Some(arguments) = call_node.child_by_field_name("arguments") {
-            for i in 0..arguments.child_count() {
-                if let Some(arg) = arguments.child(i) {
-                    if arg.kind() == "identifier" {
-                        let var_name = ast_utils::get_node_text_owned(&arg, source);
+        if let Some(arg) = call_roles::freed_argument(call_node, source) {
+            if arg.kind() == "identifier" {
+                let var_name = ast_utils::get_node_text_owned(&arg, source);
 
-                        // Check if this variable holds non-dynamic memory
-                        if let Some(mem_source) = self.non_dynamic_memory.get(&var_name) {
-                            let (line, column, source_type) = match mem_source {
-                                MemorySource::StringLiteral(l, c) => (l, c, "string literal"),
-                                MemorySource::StackArray(l, c) => (l, c, "stack-allocated array"),
-                            };
+                // Check if this variable holds non-dynamic memory
+                if let Some(mem_source) = self.non_dynamic_memory.get(&var_name) {
+                    let (line, column, source_type) = match mem_source {
+                        MemorySource::StringLiteral(l, c) => (l, c, "string literal"),
+                        MemorySource::StackArray(l, c) => (l, c, "stack-allocated array"),
+                    };
 
-                            violations.push(RuleViolation {
-                                rule_id: "MEM34-C".to_string(),
-                                severity: Severity::High,
-                                message: format!(
-                                    "Attempting to free() memory from {} '{}' which was not dynamically allocated",
-                                    source_type, var_name
-                                ),
-                                file_path: String::new(),
-                                line: *line,
-                                column: *column,
-                                suggestion: Some(
-                                    "Only call free() on memory allocated with malloc/calloc/realloc".to_string()
-                                ),
-                                requires_manual_review: None,
-                            });
-                        }
-                    }
+                    violations.push(RuleViolation {
+                        rule_id: "MEM34-C".to_string(),
+                        severity: Severity::High,
+                        message: format!(
+                            "Attempting to free() memory from {} '{}' which was not dynamically allocated",
+                            source_type, var_name
+                        ),
+                        file_path: String::new(),
+                        line: *line,
+                        column: *column,
+                        suggestion: Some(
+                            "Only call free() on memory allocated with malloc/calloc/realloc".to_string()
+                        ),
+                        requires_manual_review: None,
+                    });
                 }
             }
         }

@@ -4,6 +4,20 @@ version = "1.0.0"
 description = "Project rules manifest for mbedtls (TLS/crypto library, library/ scope), onboarded as the suite's first dedicated crypto-library oracle -- mbedtls_platform_zeroize is a purpose-fit sensitive-data-clearing idiom the suite never had for MEM03-C. Pinned to v3.6.7 (068ff080). aurora-lint --detect-relevance reports threading=true, windows=true (real MBEDTLS_THREADING_PTHREAD and _WIN32-conditional code in threading.c, net_sockets.c, entropy_poll.c, timing.c -- not false positives), so no CON*/WIN* auto-gating applies and this is the full base manifest (rules_templates/rules-all.toml) with only the suite-wide dead-config disables. Per-finding false positives among ENABLED rules are not suppressed here; they go to the ground_truth oracle so precision is measured, not hidden. See data/precision_audit/mbedtls/README.md."
 cert_version = "2016"
 
+# mbedtls lets a build supply its own allocator pair. Under
+# MBEDTLS_PLATFORM_MEMORY, include/mbedtls/platform.h defines mbedtls_calloc
+# and mbedtls_free as MBEDTLS_PLATFORM_CALLOC_MACRO and
+# MBEDTLS_PLATFORM_FREE_MACRO, which include/mbedtls/mbedtls_config.h
+# documents as the "allocator macro" and "free macro" (defaults calloc and
+# free; requirements as for MBEDTLS_PLATFORM_STD_CALLOC/_FREE). The build
+# supplies their definitions, so the scan never sees them: they are declared
+# here as the calloc and free that documentation says they are.
+[environment.allocators]
+MBEDTLS_PLATFORM_CALLOC_MACRO = "calloc"
+
+[environment.deallocators]
+MBEDTLS_PLATFORM_FREE_MACRO = 1
+
 [rules.cert_c.API00-C]
 enabled = true
 

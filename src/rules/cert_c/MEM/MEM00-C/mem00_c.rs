@@ -33,6 +33,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::function_summary::extract_function_name;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -128,37 +129,28 @@ impl Mem00C {
         violations: &mut Vec<RuleViolation>,
     ) {
         for node in query::find_descendants_of_kind(*node, "call_expression") {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-                if func_name == "free" {
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        // Check if argument is a parameter
-                        for i in 0..args.child_count() {
-                            if let Some(arg) = args.child(i) {
-                                let arg_text = get_node_text(&arg, source).trim().to_string();
-                                if params.contains(&arg_text) {
-                                    violations.push(RuleViolation {
-                                        rule_id: self.rule_id().to_string(),
-                                        message: format!(
-                                            "Freeing parameter '{}'. Memory should be freed at \
-                                             the same abstraction level where it was allocated.",
-                                            arg_text
-                                        ),
-                                        severity: self.severity(),
-                                        line: node.start_position().row + 1,
-                                        column: node.start_position().column + 1,
-                                        file_path: String::new(),
-                                        suggestion: Some(
-                                            "Return error code and let caller handle deallocation"
-                                                .to_string(),
-                                        ),
-                                        requires_manual_review: None,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
+            // `free`'s argument, or the one a declared deallocator frees.
+            let Some(arg) = call_roles::freed_argument(&node, source) else {
+                continue;
+            };
+            let arg_text = get_node_text(&arg, source).trim().to_string();
+            if params.contains(&arg_text) {
+                violations.push(RuleViolation {
+                    rule_id: self.rule_id().to_string(),
+                    message: format!(
+                        "Freeing parameter '{}'. Memory should be freed at \
+                         the same abstraction level where it was allocated.",
+                        arg_text
+                    ),
+                    severity: self.severity(),
+                    line: node.start_position().row + 1,
+                    column: node.start_position().column + 1,
+                    file_path: String::new(),
+                    suggestion: Some(
+                        "Return error code and let caller handle deallocation".to_string(),
+                    ),
+                    requires_manual_review: None,
+                });
             }
         }
     }

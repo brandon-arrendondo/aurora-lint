@@ -1309,6 +1309,7 @@ fn prescan_file_list(
     Ok(ProjectContext {
         settings: Default::default(),
         built_under: Default::default(),
+        memory_declarations: crate::settings::memory::declared().clone(),
         known_functions: Arc::new(known_functions),
         header_declared_functions: Arc::new(header_declared_functions),
         function_summaries: function_summaries.into(),

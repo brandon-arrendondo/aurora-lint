@@ -71,6 +71,30 @@ fn settings_from_cli(matches: &clap::ArgMatches) -> Result<SettingsConfig> {
     for assignment in matches.get_many::<String>("set").into_iter().flatten() {
         config.set(assignment).context("--set")?;
     }
+    for value in matches
+        .get_many::<String>("allocator")
+        .into_iter()
+        .flatten()
+    {
+        let (name, contract) = settings::memory::parse_allocator_flag(value)?;
+        config
+            .environment
+            .get_or_insert_with(Default::default)
+            .allocators
+            .insert(name, contract);
+    }
+    for value in matches
+        .get_many::<String>("deallocator")
+        .into_iter()
+        .flatten()
+    {
+        let (name, arg) = settings::memory::parse_deallocator_flag(value)?;
+        config
+            .environment
+            .get_or_insert_with(Default::default)
+            .deallocators
+            .insert(name, arg);
+    }
     Ok(config)
 }
 
@@ -295,6 +319,20 @@ fn run() -> Result<i32> {
                 .help("How #include names match files: exact, or case-insensitive as cl does on Windows. Default: case-insensitive with an MSVC --compile-commands database, exact otherwise; never taken from the scanning host")
                 .value_name("MODE")
                 .value_parser(["exact", "case-insensitive"]),
+        )
+        .arg(
+            Arg::new("allocator")
+                .long("allocator")
+                .help("Declare a function the scan cannot see into as an allocator following the named standard allocator's contract (malloc, calloc, realloc, aligned_alloc, strdup, strndup; default malloc). Repeatable; same as [environment.allocators] in the manifest")
+                .value_name("NAME[=CONTRACT]")
+                .action(clap::ArgAction::Append),
+        )
+        .arg(
+            Arg::new("deallocator")
+                .long("deallocator")
+                .help("Declare a function the scan cannot see into as freeing its ARG-th argument (default 1). Repeatable; same as [environment.deallocators] in the manifest")
+                .value_name("NAME[=ARG]")
+                .action(clap::ArgAction::Append),
         )
         .arg(
             Arg::new("set")

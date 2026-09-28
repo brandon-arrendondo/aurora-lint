@@ -99,11 +99,77 @@ pub fn is_string_duplicator(name: &str) -> bool {
     STRING_DUP_FUNCS.contains(&name)
 }
 
-/// Any heap-allocating call: [`is_heap_allocator`] or [`is_string_duplicator`].
-/// This is the broader set most allocation-lifetime-tracking rules
+/// Any heap-allocating call: [`is_heap_allocator`], [`is_string_duplicator`],
+/// or an allocator the project declares (`[environment.allocators]`). This is
+/// the broader set most allocation-lifetime-tracking rules
 /// (leak/free/thread-lifetime checks) actually want.
 pub fn is_allocator_call(name: &str) -> bool {
-    is_heap_allocator(name) || is_string_duplicator(name)
+    is_heap_allocator(name)
+        || is_string_duplicator(name)
+        || crate::settings::memory::declared()
+            .allocators
+            .contains_key(name)
+}
+
+/// The standard allocator contract a call to `name` follows: a standard
+/// allocator's own, or the one a project declaration names. A consumer
+/// that reads size arguments or treats `realloc`'s release of its first
+/// argument asks this rather than comparing spellings, so a declared
+/// `calloc`-like hook is read as `calloc` is.
+pub fn allocator_contract(name: &str) -> Option<crate::settings::AllocatorContract> {
+    crate::settings::AllocatorContract::of_standard(name).or_else(|| {
+        crate::settings::memory::declared()
+            .allocators
+            .get(name)
+            .copied()
+    })
+}
+
+/// Whether a call to `name` follows `realloc`'s contract: it releases the
+/// block its first argument points at and returns a fresh one.
+pub fn is_realloc_like(name: &str) -> bool {
+    allocator_contract(name) == Some(crate::settings::AllocatorContract::Realloc)
+}
+
+/// The argument (0-based) a call to `name` frees, by proof rather than by
+/// spelling: `free`'s only argument, or the argument a project-declared
+/// deallocator names (`[environment.deallocators]`). `realloc`'s release of
+/// its first argument is [`is_realloc_like`]'s, since the call also
+/// allocates. A wrapper whose body frees is `FunctionSummary`'s to prove.
+pub fn frees_argument(name: &str) -> Option<usize> {
+    if name == "free" {
+        return Some(0);
+    }
+    crate::settings::memory::declared()
+        .deallocators
+        .get(name)
+        .map(|arg| arg - 1)
+}
+
+/// Whether `name` is `free` or a declared deallocator, whatever argument it
+/// frees.
+pub fn is_deallocator(name: &str) -> bool {
+    frees_argument(name).is_some()
+}
+
+/// The argument node a call frees by [`frees_argument`]: `free(p)`'s `p`, or
+/// the argument a declared deallocator names. `None` for any other callee,
+/// or a call with too few arguments. Punctuation and comments are not
+/// arguments.
+pub fn freed_argument<'t>(
+    call: &tree_sitter::Node<'t>,
+    source: &str,
+) -> Option<tree_sitter::Node<'t>> {
+    let callee = call
+        .child_by_field_name("function")?
+        .utf8_text(source.as_bytes())
+        .ok()?;
+    let k = frees_argument(callee)?;
+    let arguments = call.child_by_field_name("arguments")?;
+    (0..arguments.child_count())
+        .filter_map(|i| arguments.child(i))
+        .filter(|a| !matches!(a.kind(), "(" | ")" | "," | "comment"))
+        .nth(k)
 }
 
 /// A call that overwrites the buffer its first argument points at -- one of

@@ -3098,3 +3098,195 @@ fn pre31_header_macro_arms_survive_prescan_cache() {
     assert_eq!(saved.len(), 1, "{:?}", saved);
     assert_eq!(loaded, saved);
 }
+
+/// Scan one `declared_memory/` fixture under `manifest` with `args` appended;
+/// return each finding as `(rule, line, message)`.
+fn declared_memory_findings(
+    file: &str,
+    manifest: &str,
+    args: &[&str],
+) -> Vec<(String, u64, String)> {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let path = fixtures().join("declared_memory").join(file);
+    let manifest = fixtures().join(manifest);
+    let mut all = vec![
+        path.to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ];
+    all.extend(args);
+    let (code, _, stderr) = run_aurora_lint(&all);
+    assert!(code == 0 || code == 1, "stderr: {stderr}");
+    let findings: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    findings
+        .iter()
+        .map(|f| {
+            (
+                f["rule_id"].as_str().unwrap().to_string(),
+                f["line"].as_u64().unwrap(),
+                f["message"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+fn has(findings: &[(String, u64, String)], rule: &str, line: u64, text: &str) -> bool {
+    findings
+        .iter()
+        .any(|(r, l, m)| r == rule && *l == line && m.contains(text))
+}
+
+#[test]
+fn an_undeclared_hook_is_not_a_free_and_a_declared_one_is() {
+    let bare = declared_memory_findings("hook_releases.c", "manifest_mem30_mem31.toml", &[]);
+    assert!(
+        bare.iter()
+            .any(|(r, _, m)| r == "MEM31-C" && m.contains("not freed")),
+        "an undeclared hook proves nothing, so the block leaks: {bare:?}"
+    );
+    let declared =
+        declared_memory_findings("hook_releases.c", "manifest_declared_memory.toml", &[]);
+    assert!(declared.is_empty(), "{declared:?}");
+    // The command line says the same as the manifest.
+    let cli = declared_memory_findings(
+        "hook_releases.c",
+        "manifest_mem30_mem31.toml",
+        &["--deallocator", "platform_give_back"],
+    );
+    assert!(cli.is_empty(), "{cli:?}");
+}
+
+#[test]
+fn a_declared_deallocator_accuses_as_well_as_excuses() {
+    let bare = declared_memory_findings("hook_double_free.c", "manifest_mem30_mem31.toml", &[]);
+    assert!(
+        !bare.iter().any(|(_, _, m)| m.contains("ouble")),
+        "an undeclared hook is no free to double: {bare:?}"
+    );
+    let declared =
+        declared_memory_findings("hook_double_free.c", "manifest_declared_memory.toml", &[]);
+    assert!(has(&declared, "MEM31-C", 7, "Double free"), "{declared:?}");
+    assert!(has(&declared, "MEM30-C", 7, "Double-free"), "{declared:?}");
+}
+
+#[test]
+fn a_wrapper_around_a_declared_hook_frees_by_its_summary() {
+    let declared = declared_memory_findings(
+        "wrapper_use_after_free.c",
+        "manifest_declared_memory.toml",
+        &[],
+    );
+    assert!(
+        has(&declared, "MEM30-C", 11, "Use-after-free"),
+        "{declared:?}"
+    );
+    let bare =
+        declared_memory_findings("wrapper_use_after_free.c", "manifest_mem30_mem31.toml", &[]);
+    assert!(!has(&bare, "MEM30-C", 11, "Use-after-free"), "{bare:?}");
+}
+
+#[test]
+fn a_declared_deallocator_frees_only_the_argument_it_names() {
+    let declared = declared_memory_findings(
+        "pool_put_second_argument.c",
+        "manifest_declared_memory.toml",
+        &[],
+    );
+    assert!(has(&declared, "MEM31-C", 11, "'p'"), "{declared:?}");
+    assert!(
+        !declared.iter().any(|(_, _, m)| m.contains("'pool'")),
+        "the pool is not freed: {declared:?}"
+    );
+    assert!(
+        !declared.iter().any(|(_, _, m)| m.contains("not freed")),
+        "{declared:?}"
+    );
+}
+
+#[test]
+fn declared_allocators_allocate_and_a_realloc_like_one_releases_its_old_block() {
+    let declared =
+        declared_memory_findings("pool_allocators.c", "manifest_declared_memory.toml", &[]);
+    assert!(
+        has(&declared, "MEM31-C", 7, "'pool_take'"),
+        "a declared allocator's block must be freed: {declared:?}"
+    );
+    assert!(
+        has(&declared, "MEM30-C", 17, "Use-after-free"),
+        "pool_grow follows realloc, which releases the old block: {declared:?}"
+    );
+    let bare = declared_memory_findings("pool_allocators.c", "manifest_mem30_mem31.toml", &[]);
+    assert!(!has(&bare, "MEM31-C", 7, "'pool_take'"), "{bare:?}");
+    assert!(!has(&bare, "MEM30-C", 17, "Use-after-free"), "{bare:?}");
+}
+
+#[test]
+fn declarations_are_recorded_in_the_settings_and_their_hash() {
+    let bare = sarif_settings(&manifest_msc04(), &[]);
+    let declared = sarif_settings(
+        &manifest_msc04(),
+        &[
+            "--deallocator",
+            "pool_put=2",
+            "--allocator",
+            "pool_grow=realloc",
+        ],
+    );
+    assert!(bare["deallocators"].is_null());
+    assert_eq!(declared["deallocators"]["pool_put"], 2);
+    assert_eq!(declared["allocators"]["pool_grow"], "realloc");
+    assert_eq!(declared["preset"], "default");
+    assert_ne!(declared["hash"], bare["hash"]);
+}
+
+#[test]
+fn an_invalid_declaration_is_refused() {
+    let path = fixtures().join("declared_memory/hook_releases.c");
+    let manifest = fixtures().join("manifest_mem30_mem31.toml");
+    for args in [
+        ["--deallocator", "free=2"],
+        ["--deallocator", "pool_put=0"],
+        ["--allocator", "pool_take=new"],
+    ] {
+        let mut all = vec![path.to_str().unwrap(), "-m", manifest.to_str().unwrap()];
+        all.extend(args);
+        let (code, _, stderr) = run_aurora_lint(&all);
+        assert_eq!(code, 2, "{args:?} should be refused; stderr: {stderr}");
+    }
+}
+
+#[test]
+fn a_prescan_cache_built_under_other_declarations_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("prescan.bin");
+    let path = fixtures().join("declared_memory/hook_releases.c");
+    let manifest = fixtures().join("manifest_mem30_mem31.toml");
+    let (code, _, stderr) = run_aurora_lint(&[
+        path.to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "--save-prescan",
+        cache.to_str().unwrap(),
+    ]);
+    assert!(code == 0 || code == 1, "stderr: {stderr}");
+    let load = |extra: &[&str]| {
+        let mut all = vec![
+            path.to_str().unwrap(),
+            "-m",
+            manifest.to_str().unwrap(),
+            "--load-prescan",
+            cache.to_str().unwrap(),
+        ];
+        all.extend(extra);
+        run_aurora_lint(&all)
+    };
+    let (code, _, stderr) = load(&[]);
+    assert!(code == 0 || code == 1, "same declarations load: {stderr}");
+    let (code, _, stderr) = load(&["--deallocator", "platform_give_back"]);
+    assert_eq!(code, 2, "stderr: {stderr}");
+    assert!(stderr.contains("declarations"), "{stderr}");
+}

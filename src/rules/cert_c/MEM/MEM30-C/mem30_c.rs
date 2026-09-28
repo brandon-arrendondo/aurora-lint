@@ -664,7 +664,7 @@ impl GlobalTracker {
         for realloc_call in query::find_descendants_of_kind(body, "call_expression") {
             let is_realloc = realloc_call
                 .child_by_field_name("function")
-                .is_some_and(|f| get_node_text(&f, source) == "realloc");
+                .is_some_and(|f| call_roles::is_realloc_like(get_node_text(&f, source)));
             if !is_realloc {
                 continue;
             }
@@ -703,11 +703,8 @@ impl GlobalTracker {
                 .into_iter()
                 .filter(|c| c.start_byte() > realloc_call.start_byte())
                 .any(|c| {
-                    c.child_by_field_name("function")
-                        .is_some_and(|f| get_node_text(&f, source) == "free")
-                        && c.child_by_field_name("arguments")
-                            .and_then(|a| a.named_child(0))
-                            .is_some_and(|arg| self.extract_base_variable(&arg, source) == ptr_var)
+                    call_roles::freed_argument(&c, source)
+                        .is_some_and(|arg| self.extract_base_variable(&arg, source) == ptr_var)
                 });
             if freed_after {
                 self.realloc_zero_patterns.push((
@@ -928,21 +925,20 @@ impl GlobalTracker {
         };
         let called_func = get_node_text(&func, source);
 
-        // Check for free() calls
-        if called_func == "free" {
+        // Check for free() calls, and a declared deallocator's own argument
+        if let Some(position) = call_roles::frees_argument(called_func) {
             if let Some(args) = node.child_by_field_name("arguments") {
-                for i in 0..args.child_count() {
-                    if let Some(arg) = args.child(i) {
-                        if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
-                            let var_name = self.extract_base_variable(&arg, source);
-                            if self.global_vars.contains(&var_name) {
-                                freed_globals.insert(var_name.clone());
-                            }
-                            if params.contains(&var_name) {
-                                freed_params.insert(var_name);
-                            }
-                            break;
-                        }
+                let freed = (0..args.child_count())
+                    .filter_map(|i| args.child(i))
+                    .filter(|a| a.kind() != "(" && a.kind() != ")" && a.kind() != ",")
+                    .nth(position);
+                if let Some(arg) = freed {
+                    let var_name = self.extract_base_variable(&arg, source);
+                    if self.global_vars.contains(&var_name) {
+                        freed_globals.insert(var_name.clone());
+                    }
+                    if params.contains(&var_name) {
+                        freed_params.insert(var_name);
                     }
                 }
             }
@@ -1251,7 +1247,8 @@ impl GlobalTracker {
                 if let Some(call) = parent.parent() {
                     if call.kind() == "call_expression" {
                         if let Some(func) = call.child_by_field_name("function") {
-                            if func.kind() == "identifier" && get_node_text(&func, source) == "free"
+                            if func.kind() == "identifier"
+                                && call_roles::is_deallocator(get_node_text(&func, source))
                             {
                                 return true;
                             }
@@ -3551,11 +3548,15 @@ impl MemoryAnalyzer {
                 "free" => {
                     return self.process_free_call(node, source, None, violations);
                 }
+                declared if call_roles::frees_argument(declared).is_some() => {
+                    let k = call_roles::frees_argument(declared);
+                    return self.process_free_call_at(node, source, k, None, violations);
+                }
                 "malloc" | "calloc" => {
                     // Allocation will be tracked via assignment
                     return HashSet::new();
                 }
-                "realloc" => {
+                realloc if call_roles::is_realloc_like(realloc) => {
                     // For realloc, the original pointer may become invalid
                     // Track the old pointer as invalidated in case it's used
                     self.track_realloc_old_pointer(node, source);
@@ -3790,6 +3791,20 @@ impl MemoryAnalyzer {
         guessed_by: Option<&str>,
         violations: &mut Vec<RuleViolation>,
     ) -> HashSet<usize> {
+        self.process_free_call_at(node, source, None, guessed_by, violations)
+    }
+
+    /// [`Self::process_free_call`] with the freed argument's position known:
+    /// a declared deallocator names it (`settings::memory`). `None` keeps the
+    /// shape rule below.
+    fn process_free_call_at(
+        &mut self,
+        node: &Node,
+        source: &str,
+        position: Option<usize>,
+        guessed_by: Option<&str>,
+        violations: &mut Vec<RuleViolation>,
+    ) -> HashSet<usize> {
         let Some(arguments) = node.child_by_field_name("arguments") else {
             return HashSet::new();
         };
@@ -3811,7 +3826,11 @@ impl MemoryAnalyzer {
         // handle/type operand is a live object that must NOT be marked freed. Treating
         // every argument as freed was the dominant MEM30-C false-positive source on
         // real-world C (the live db handle was flagged as use-after-free / double-free).
-        let Some(arg) = arg_nodes.last().copied() else {
+        let chosen = match position {
+            Some(k) => arg_nodes.get(k),
+            None => arg_nodes.last(),
+        };
+        let Some(arg) = chosen.copied() else {
             return HashSet::new();
         };
         if !self.arg_can_be_freed(arg, source) {
@@ -4716,7 +4735,8 @@ impl MemoryAnalyzer {
                 if let Some(func) = value.child_by_field_name("function") {
                     let func_name = get_node_text(&func, source);
                     let upper_func_name = func_name.to_uppercase();
-                    if func_name == "realloc" || upper_func_name.contains("REALLOC") {
+                    if call_roles::is_realloc_like(func_name) || upper_func_name.contains("REALLOC")
+                    {
                         // Track that left_var is the result of realloc
                         self.realloc_updated.insert(left_var.clone());
                         // Also track what pointer was passed to realloc (it's now invalidated)
@@ -4739,7 +4759,9 @@ impl MemoryAnalyzer {
                         if let Some(func) = inner_value.child_by_field_name("function") {
                             let func_name = get_node_text(&func, source);
                             let upper_func_name = func_name.to_uppercase();
-                            if func_name == "realloc" || upper_func_name.contains("REALLOC") {
+                            if call_roles::is_realloc_like(func_name)
+                                || upper_func_name.contains("REALLOC")
+                            {
                                 self.realloc_updated.insert(left_var.clone());
                                 let old_ptrs = self.track_realloc_old_pointer(&inner_value, source);
                                 if !old_ptrs.is_empty() {
@@ -5056,12 +5078,9 @@ impl MemoryAnalyzer {
         let frees_var = query::find_descendants_of_kind(body, "call_expression")
             .iter()
             .any(|c| {
-                c.child_by_field_name("function")
-                    .is_some_and(|f| get_node_text(&f, source) == "free")
-                    && c.child_by_field_name("arguments")
-                        .and_then(|a| a.named_child(0))
-                        .and_then(|arg| lvalue_of(&arg, source))
-                        .is_some_and(|lv| lv.root_var() == var)
+                call_roles::freed_argument(c, source)
+                    .and_then(|arg| lvalue_of(&arg, source))
+                    .is_some_and(|lv| lv.root_var() == var)
             });
         if frees_var {
             violations.push(RuleViolation {
@@ -5098,8 +5117,8 @@ impl MemoryAnalyzer {
                             let func_name = get_node_text(&func, source);
                             let upper_func_name = func_name.to_uppercase();
                             // Skip for free, realloc, and custom variants
-                            if func_name == "free"
-                                || func_name == "realloc"
+                            if call_roles::is_deallocator(func_name)
+                                || call_roles::is_realloc_like(func_name)
                                 || upper_func_name.contains("FREE")
                                 || upper_func_name.contains("REALLOC")
                             {

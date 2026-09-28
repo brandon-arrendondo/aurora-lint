@@ -2926,6 +2926,20 @@ pub fn macro_param_indices_released_by(
     releases: impl Fn(&str) -> bool,
     live: Live,
 ) -> Vec<usize> {
+    macro_param_indices_released_at(table, name, |callee| releases(callee).then_some(None), live)
+}
+
+/// [`macro_param_indices_released_by`] for a predicate that knows which
+/// argument a callee releases: `Some(None)` for every argument (as `free`'s
+/// one argument, or a name the caller cannot place), `Some(Some(k))` for
+/// argument `k` only (a declared deallocator, `settings::memory`), `None` for
+/// a callee that releases nothing.
+pub fn macro_param_indices_released_at(
+    table: &HashMap<String, FunctionMacro>,
+    name: &str,
+    releases: impl Fn(&str) -> Option<Option<usize>>,
+    live: Live,
+) -> Vec<usize> {
     let merge = match live {
         Live::Any => Merge::Union,
         Live::All => Merge::Intersect,
@@ -2939,7 +2953,7 @@ pub fn macro_param_indices_released_by(
 fn released_param_indices(
     table: &dyn MacroLookup,
     name: &str,
-    releases: &impl Fn(&str) -> bool,
+    releases: &impl Fn(&str) -> Option<Option<usize>>,
     active: &mut HashSet<String>,
     depth: usize,
 ) -> Vec<usize> {
@@ -2978,9 +2992,11 @@ fn released_param_indices(
     active.insert(name.to_string());
     let mut out = Vec::new();
     for (callee, args) in calls_in(&body) {
-        if releases(&callee) {
-            for arg in &args {
-                out.extend(sentinel_indices_in(arg));
+        if let Some(position) = releases(&callee) {
+            for (k, arg) in args.iter().enumerate() {
+                if position.is_none_or(|p| p == k) {
+                    out.extend(sentinel_indices_in(arg));
+                }
             }
         } else if table.lookup(&callee).is_some() {
             for j in released_param_indices(table, &callee, releases, active, depth + 1) {

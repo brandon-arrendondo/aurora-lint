@@ -133,6 +133,10 @@ pub fn analyze_project(
     // passes through is read once whichever pass asks.
     let header_lookup = include_names::HeaderLookup::new(settings.include_names);
 
+    // Declared allocators and deallocators reach the function summaries
+    // prescan builds, so they are installed first.
+    crate::settings::memory::declare(settings.memory.clone())?;
+
     // Load or compute cross-file context (prescan, includes, optional cache save)
     let mut context = load_project_context(
         project_source,
@@ -384,6 +388,16 @@ fn load_project_context(
             }
             let ctx = context::ProjectContext::load_from_file(path)?;
             ctx.check_built_under(&built_under, path)?;
+            let declared = crate::settings::memory::declared();
+            if ctx.memory_declarations != *declared {
+                anyhow::bail!(
+                    "prescan cache {} was built under allocator/deallocator declarations \
+                     {:?}, and this run declares {:?}; re-create it with --save-prescan",
+                    cache_path,
+                    ctx.memory_declarations,
+                    declared
+                );
+            }
             if let Some(reporter) = progress {
                 reporter.report_prescan_complete(ctx.known_functions.len());
             }

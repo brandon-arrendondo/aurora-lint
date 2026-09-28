@@ -343,22 +343,8 @@ impl Mem03C {
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
                 if child.kind() == "call_expression" {
-                    if let Some(func) = child.child_by_field_name("function") {
-                        let func_name = get_node_text(&func, source);
-                        if func_name == "free" {
-                            if let Some(args) = child.child_by_field_name("arguments") {
-                                for j in 0..args.child_count() {
-                                    if let Some(arg) = args.child(j) {
-                                        if arg.kind() != "("
-                                            && arg.kind() != ")"
-                                            && arg.kind() != ","
-                                        {
-                                            return Some(get_node_text(&arg, source).to_string());
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    if let Some(arg) = call_roles::freed_argument(&child, source) {
+                        return Some(get_node_text(&arg, source).to_string());
                     }
                 }
             }
@@ -375,7 +361,7 @@ impl Mem03C {
         let call = query::find_first_descendant(*node, |n| {
             n.kind() == "call_expression"
                 && n.child_by_field_name("function")
-                    .map(|func| get_node_text(&func, source) == "realloc")
+                    .map(|func| call_roles::is_realloc_like(get_node_text(&func, source)))
                     .unwrap_or(false)
         })?;
 

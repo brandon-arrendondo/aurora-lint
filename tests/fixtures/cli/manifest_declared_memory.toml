@@ -1,0 +1,19 @@
+[metadata]
+name = "CLI Integration Test - declared allocators and deallocators"
+version = "1.0.0"
+description = "MEM30-C and MEM31-C with a project's declared memory functions"
+cert_version = "2016"
+
+[environment.allocators]
+pool_take = "malloc"
+pool_grow = "realloc"
+
+[environment.deallocators]
+platform_give_back = 1
+pool_put = 2
+
+[rules.cert_c.MEM30-C]
+enabled = true
+
+[rules.cert_c.MEM31-C]
+enabled = true

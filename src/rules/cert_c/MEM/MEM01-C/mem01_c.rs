@@ -18,6 +18,7 @@ use crate::analyze::dataflow::find_node_at_range;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -205,29 +206,17 @@ impl Mem01C {
     fn collect_free_calls(&self, node: &Node, source: &str) -> Vec<(String, usize, usize, usize)> {
         let mut results = Vec::new();
         for node in query::find_descendants_of_kind(*node, "call_expression") {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source);
-                if func_name == "free" {
-                    if let Some(ptr_name) = self.extract_free_arg(&node, source) {
-                        let pos = node.start_position();
-                        results.push((ptr_name, node.start_byte(), pos.row + 1, pos.column + 1));
-                    }
-                }
+            if let Some(ptr_name) = self.extract_free_arg(&node, source) {
+                let pos = node.start_position();
+                results.push((ptr_name, node.start_byte(), pos.row + 1, pos.column + 1));
             }
         }
         results
     }
 
     fn extract_free_arg(&self, call_node: &Node, source: &str) -> Option<String> {
-        let args = call_node.child_by_field_name("arguments")?;
-        for i in 0..args.child_count() {
-            if let Some(arg) = args.child(i) {
-                if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
-                    return Some(get_node_text(&arg, source).to_string());
-                }
-            }
-        }
-        None
+        call_roles::freed_argument(call_node, source)
+            .map(|arg| get_node_text(&arg, source).to_string())
     }
 
     /// BFS forward through the CFG from the free() call site.
@@ -448,6 +437,10 @@ fn classify_expr_for_ptr(
                             return PtrAction::FreedAgain;
                         }
                     }
+                } else if call_roles::freed_argument(expr, source).is_some_and(|arg| {
+                    arg.kind() == "identifier" && get_node_text(&arg, source) == ptr_name
+                }) {
+                    return PtrAction::FreedAgain;
                 }
             }
             // `&ptr_name` passed to a call is the output-param idiom (e.g.

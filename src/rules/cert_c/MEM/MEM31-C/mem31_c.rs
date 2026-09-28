@@ -841,12 +841,16 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         if self.function_macros.is_empty() {
             return Vec::new();
         }
-        macro_expand::macro_param_indices_released_by(
+        macro_expand::macro_param_indices_released_at(
             self.function_macros,
             func_name,
             |callee| {
                 let resolved = const_eval::resolve_macro_alias(self.macro_aliases, callee);
-                resolved == "free" || self.is_named_deallocator(resolved, site)
+                // A declaration names its argument; `free` has only one.
+                match call_roles::frees_argument(resolved) {
+                    Some(k) => Some(Some(k)),
+                    None => self.is_named_deallocator(resolved, site).then_some(None),
+                }
             },
             macro_expand::Live::All,
         )
@@ -1053,6 +1057,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             let site = site_of(&n, source);
             let summary = self.summary_at(&callee, site);
             let by_name = callee == "free" || self.is_named_deallocator(&callee, site);
+            let declared = call_roles::frees_argument(&callee);
             let by_macro = self.macro_freed_param_indices(&callee, site);
             Self::call_args(n).enumerate().any(|(idx, arg)| {
                 let arg = peel_casts_and_parens(arg);
@@ -1060,7 +1065,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     && arg.child_by_field_name("argument").is_some_and(|b| {
                         ast_utils::get_node_text(&peel_casts_and_parens(b), source) == base_text
                     })
-                    && (by_name
+                    && (declared.map_or(by_name, |k| k == idx)
                         || by_macro.contains(&idx)
                         || summary
                             .as_ref()
@@ -1109,28 +1114,21 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 (pos.row + 1, pos.column + 1),
             ))
         } else {
-            // Looking for free(array[i]) pattern
-            let call = query::find_first_descendant(*node, |n| {
+            // Looking for free(array[i]) pattern: the freed argument (a
+            // declared deallocator's own, or any of free's) is a subscript.
+            // The position of that argument, if the call is such a free.
+            let freed_subscript = |n: Node<'_>| -> Option<usize> {
                 if n.kind() != "call_expression" {
-                    return false;
+                    return None;
                 }
-                let Some(function) = n.child_by_field_name("function") else {
-                    return false;
-                };
-                if self.callee_name(&function, source) != "free" {
-                    return false;
-                }
-                let Some(arguments) = n.child_by_field_name("arguments") else {
-                    return false;
-                };
-                (0..arguments.child_count())
-                    .filter_map(|i| arguments.child(i))
-                    .any(|arg| arg.kind() == "subscript_expression")
-            })?;
-            let arguments = call.child_by_field_name("arguments")?;
-            let arg = (0..arguments.child_count())
-                .filter_map(|i| arguments.child(i))
-                .find(|arg| arg.kind() == "subscript_expression")?;
+                let callee = self.callee_name(&n.child_by_field_name("function")?, source);
+                let k = call_roles::frees_argument(&callee)?;
+                Self::call_args(n).enumerate().position(|(i, arg)| {
+                    (callee == "free" || i == k) && arg.kind() == "subscript_expression"
+                })
+            };
+            let call = query::find_first_descendant(*node, |n| freed_subscript(n).is_some())?;
+            let arg = Self::call_args(call).nth(freed_subscript(call)?)?;
             let base = arg.child_by_field_name("argument")?;
             let pos = call.start_position();
             Some((
@@ -1649,7 +1647,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // left every `goto` into those labels reading as a leak
                 // . `named_deallocator_releases_arg` below then
                 // asks the same summary WHICH argument.
-                if func_name == "free"
+                let declared = call_roles::frees_argument(&func_name);
+                if declared.is_some()
                     || self.is_named_deallocator(&func_name, site)
                     || self.summary_frees_some_param(&func_name, site)
                 {
@@ -1669,7 +1668,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                                 // crypto_ec_key *) pkey`.
                                 let arg = peel_casts_and_parens(arg);
                                 let through_address_of = arg.kind() == "pointer_expression";
-                                if func_name != "free"
+                                if declared
+                                    .is_some_and(|k| func_name != "free" && k != this_param_idx)
+                                {
+                                    continue;
+                                }
+                                if declared.is_none()
                                     && !self.named_deallocator_releases_arg(
                                         &func_name,
                                         this_param_idx,
@@ -2788,7 +2792,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     let alloc_type = self.get_allocation_type(&value, source);
 
                     // Special handling for realloc: track relationship for later
-                    if alloc_type == "realloc" {
+                    if call_roles::is_realloc_like(&alloc_type) {
                         self.handle_realloc_in_decl(&var_name, &value, source);
                     }
 
@@ -3386,19 +3390,27 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         // keep their own handlers even where a project redefines them as
         // macros (valkey's `#define free(ptr) je_free(ptr)`).
         if !matches!(func_name.as_str(), "free" | "realloc")
+            && call_roles::frees_argument(&func_name).is_none()
+            && !call_roles::is_realloc_like(&func_name)
             && self.process_freeing_macro(node, source, &func_name)
         {
             return;
         }
 
         // Check for custom deallocation functions: destroy_*, free_*, delete_*, cleanup_*, release_*
-        if self.is_named_deallocator(&func_name, site_of(node, source)) {
+        if call_roles::frees_argument(&func_name).is_none()
+            && self.is_named_deallocator(&func_name, site_of(node, source))
+        {
             self.process_custom_deallocator(node, source, &func_name);
         }
 
         if func_name == "free" {
-            self.process_free_call(node, source);
-        } else if func_name == "realloc" {
+            self.process_free_call(node, source, None);
+        } else if let Some(k) = call_roles::frees_argument(&func_name) {
+            // A declared deallocator frees the argument its declaration
+            // names, as `free` frees its one: proof, not a name guess.
+            self.process_free_call(node, source, Some(k));
+        } else if call_roles::is_realloc_like(&func_name) {
             let spelled = node
                 .child_by_field_name("function")
                 .map(|f| ast_utils::get_node_text(&f, source))
@@ -3527,7 +3539,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             .filter(|call| {
                 call.child_by_field_name("function")
                     .map(|f| self.callee_name(&f, source))
-                    .is_none_or(|name| name != "realloc")
+                    .is_none_or(|name| !call_roles::is_realloc_like(&name))
             })
             .collect();
         for call in calls {
@@ -3866,14 +3878,13 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
     /// Handle a `free()` call: record double-frees and mark the argument plus any
     /// aliases (same allocation site) as freed.
-    fn process_free_call(&mut self, node: &Node, source: &str) {
-        let Some(arguments) = node.child_by_field_name("arguments") else {
-            return;
-        };
-        for i in 0..arguments.child_count() {
-            let Some(arg) = arguments.child(i) else {
+    /// `only` is the one argument a declared deallocator frees; `None` for
+    /// `free`, whose every argument is read.
+    fn process_free_call(&mut self, node: &Node, source: &str, only: Option<usize>) {
+        for (k, arg) in Self::call_args(*node).enumerate() {
+            if only.is_some_and(|o| o != k) {
                 continue;
-            };
+            }
             // Handle identifiers, field expressions, and subscript expressions
             let var_name = match arg.kind() {
                 "identifier" | "field_expression" | "subscript_expression" => {

@@ -124,3 +124,26 @@ Toolchain
    - Part of the settings hash only when ``case-insensitive``
    - Basis: Windows looks file names up case-insensitively unless a directory
      is marked case-sensitive (Microsoft Learn, "Case sensitivity").
+
+Declared memory functions
+-------------------------
+
+``allocators`` and ``deallocators``
+   A function the scan has no body for (a platform hook supplied at build time,
+   or a library outside the scanned tree) cannot be proven to allocate or to
+   free. A project declares what such a function does: a deallocator frees the argument its position names (counting from
+   1), and an allocator returns fresh memory under the contract of the standard
+   allocator it names (``malloc``, ``calloc``, ``realloc``, ``aligned_alloc``,
+   ``strdup`` or ``strndup``). A ``realloc``-like allocator also releases the
+   block its first argument points at. Every rule that asks whether a call
+   frees or allocates reads the declarations, whichever way they cut: a free
+   through a declared hook excuses a leak and makes a second free a double
+   free. A function whose body the scan reads needs no declaration, and a C
+   library function cannot be declared, since its contract is the library's.
+
+   - Set with ``[environment.allocators]`` ``NAME = "CONTRACT"`` and
+     ``[environment.deallocators]`` ``NAME = ARG``, or ``--allocator
+     NAME[=CONTRACT]`` (default ``malloc``) and ``--deallocator NAME[=ARG]``
+     (default 1)
+   - Part of the settings hash only when something is declared
+   - Basis: the project's own statement of its environment (ADR-0001, ADR-0015)

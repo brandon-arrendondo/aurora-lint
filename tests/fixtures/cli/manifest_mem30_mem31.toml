@@ -1,0 +1,11 @@
+[metadata]
+name = "CLI Integration Test - MEM30-C and MEM31-C"
+version = "1.0.0"
+description = "MEM30-C and MEM31-C with nothing declared"
+cert_version = "2016"
+
+[rules.cert_c.MEM30-C]
+enabled = true
+
+[rules.cert_c.MEM31-C]
+enabled = true

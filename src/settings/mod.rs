@@ -14,7 +14,10 @@
 //! row here (with its basis) and reading it through
 //! [`AnalysisSettings::flag`]; nothing else needs wiring.
 
+pub mod memory;
+
 use anyhow::{bail, Result};
+pub use memory::{AllocatorContract, MemoryDeclarations};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -376,6 +379,14 @@ pub struct EnvironmentConfig {
     /// makes it case-insensitive and anything else exact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_names: Option<IncludeNames>,
+    /// Declared allocators: `name = "malloc"` (or another standard
+    /// allocator whose contract the function follows). See [`memory`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub allocators: BTreeMap<String, AllocatorContract>,
+    /// Declared deallocators: `name = ARG`, the 1-based position of the
+    /// argument it frees. See [`memory`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub deallocators: BTreeMap<String, usize>,
     /// Per-contract overrides.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub overrides: BTreeMap<String, bool>,
@@ -416,6 +427,10 @@ impl SettingsConfig {
             if e.include_names.is_some() {
                 mine.include_names = e.include_names;
             }
+            mine.allocators
+                .extend(e.allocators.iter().map(|(k, v)| (k.clone(), *v)));
+            mine.deallocators
+                .extend(e.deallocators.iter().map(|(k, v)| (k.clone(), *v)));
             mine.overrides
                 .extend(e.overrides.iter().map(|(k, v)| (k.clone(), *v)));
         }
@@ -468,6 +483,8 @@ pub struct AnalysisSettings {
     pub libc: Option<Libc>,
     /// How `#include` names match files.
     pub include_names: IncludeNames,
+    /// The project's declared allocators and deallocators.
+    pub memory: MemoryDeclarations,
     values: BTreeMap<&'static str, bool>,
 }
 
@@ -498,6 +515,7 @@ impl AnalysisSettings {
         };
         let mut libc = None;
         let mut include_names = IncludeNames::default();
+        let mut memory = MemoryDeclarations::default();
         if let Some(p) = &config.policy {
             policy = p.level.unwrap_or(policy);
         }
@@ -505,6 +523,11 @@ impl AnalysisSettings {
             environment = e.kind.unwrap_or(environment);
             libc = e.libc;
             include_names = e.include_names.unwrap_or_default();
+            memory = MemoryDeclarations {
+                allocators: e.allocators.clone(),
+                deallocators: e.deallocators.clone(),
+            };
+            memory.validate()?;
         }
         // A hosted implementation provides the standard library, so its
         // contracts hold unless a model says otherwise; a freestanding one
@@ -563,6 +586,7 @@ impl AnalysisSettings {
             environment,
             libc,
             include_names,
+            memory,
             values,
         })
     }
@@ -580,12 +604,14 @@ impl AnalysisSettings {
     }
 
     /// The preset these settings equal, if any. A preset says nothing about
-    /// how `#include` names match, so that field is not compared.
+    /// how `#include` names match or which functions a project declares, so
+    /// those fields are not compared.
     pub fn matching_preset(&self) -> Option<Preset> {
         [Preset::Default, Preset::Strict].into_iter().find(|p| {
             *self
                 == Self {
                     include_names: self.include_names,
+                    memory: self.memory.clone(),
                     ..Self::preset(*p)
                 }
         })
@@ -635,6 +661,13 @@ impl AnalysisSettings {
         // every run scanned under before the field existed keep their hash.
         if self.include_names != IncludeNames::Exact {
             identity["include_names"] = serde_json::json!(self.include_names);
+        }
+        // Likewise present only when something is declared.
+        if !self.memory.allocators.is_empty() {
+            identity["allocators"] = serde_json::json!(self.memory.allocators);
+        }
+        if !self.memory.deallocators.is_empty() {
+            identity["deallocators"] = serde_json::json!(self.memory.deallocators);
         }
         identity
     }
@@ -722,6 +755,17 @@ pub fn render_text(current: &AnalysisSettings) -> String {
             .map_or_else(|| "none".to_string(), |l| l.to_string()),
         current.include_names,
     );
+    for (name, contract) in &current.memory.allocators {
+        out.push_str(&format!("Declared allocator: {name} (as {contract})\n"));
+    }
+    for (name, arg) in &current.memory.deallocators {
+        out.push_str(&format!(
+            "Declared deallocator: {name} (frees argument {arg})\n"
+        ));
+    }
+    if !current.memory.is_empty() {
+        out.push('\n');
+    }
     out.push_str(&format!(
         "{:<24} {:<12} {:<14} {:>7} {:>7} {:>7}\n",
         "OPTION", "AXIS", "SCOPE", "default", "strict", "current"
@@ -821,6 +865,28 @@ pub fn render_rst() -> String {
          - Basis: Windows looks file names up case-insensitively unless a directory\n     \
          is marked case-sensitive (Microsoft Learn, \"Case sensitivity\").\n",
     );
+    out.push_str(
+        "\nDeclared memory functions\n\
+         -------------------------\n\n\
+         ``allocators`` and ``deallocators``\n   \
+         A function the scan has no body for (a platform hook supplied at build time,\n   \
+         or a library outside the scanned tree) cannot be proven to allocate or to\n   \
+         free. A project declares what such a function does: a deallocator frees the argument its position names (counting from\n   \
+         1), and an allocator returns fresh memory under the contract of the standard\n   \
+         allocator it names (``malloc``, ``calloc``, ``realloc``, ``aligned_alloc``,\n   \
+         ``strdup`` or ``strndup``). A ``realloc``-like allocator also releases the\n   \
+         block its first argument points at. Every rule that asks whether a call\n   \
+         frees or allocates reads the declarations, whichever way they cut: a free\n   \
+         through a declared hook excuses a leak and makes a second free a double\n   \
+         free. A function whose body the scan reads needs no declaration, and a C\n   \
+         library function cannot be declared, since its contract is the library's.\n\n   \
+         - Set with ``[environment.allocators]`` ``NAME = \"CONTRACT\"`` and\n     \
+         ``[environment.deallocators]`` ``NAME = ARG``, or ``--allocator\n     \
+         NAME[=CONTRACT]`` (default ``malloc``) and ``--deallocator NAME[=ARG]``\n     \
+         (default 1)\n   \
+         - Part of the settings hash only when something is declared\n   \
+         - Basis: the project's own statement of its environment (ADR-0001, ADR-0015)\n",
+    );
     out
 }
 
@@ -838,6 +904,60 @@ mod tests {
             ..Default::default()
         })
         .unwrap()
+    }
+
+    fn with_memory(toml_env: &str) -> Result<AnalysisSettings> {
+        let config: SettingsConfig = toml::from_str(toml_env).unwrap();
+        AnalysisSettings::resolve(&config)
+    }
+
+    #[test]
+    fn no_declarations_leave_the_preset_hash_and_one_moves_it() {
+        let none = with_memory("[environment]\n").unwrap();
+        assert_eq!(
+            none.settings_hash(),
+            AnalysisSettings::preset(Preset::Default).settings_hash()
+        );
+        assert!(none.to_json()["deallocators"].is_null());
+        let hook = with_memory(
+            "[environment.deallocators]\nMBEDTLS_PLATFORM_FREE_MACRO = 1\n\
+             [environment.allocators]\nMBEDTLS_PLATFORM_CALLOC_MACRO = \"calloc\"\n",
+        )
+        .unwrap();
+        assert_ne!(hook.settings_hash(), none.settings_hash());
+        assert_eq!(
+            hook.to_json()["deallocators"]["MBEDTLS_PLATFORM_FREE_MACRO"],
+            1
+        );
+        assert_eq!(
+            hook.to_json()["allocators"]["MBEDTLS_PLATFORM_CALLOC_MACRO"],
+            "calloc"
+        );
+        // A declaration is a project fact, not a departure from the preset.
+        assert_eq!(hook.matching_preset(), Some(Preset::Default));
+        let other =
+            with_memory("[environment.deallocators]\nMBEDTLS_PLATFORM_FREE_MACRO = 2\n").unwrap();
+        assert_ne!(other.settings_hash(), hook.settings_hash());
+    }
+
+    #[test]
+    fn an_invalid_declaration_is_refused_by_resolve() {
+        assert!(with_memory("[environment.deallocators]\nfree = 1\n").is_err());
+        assert!(
+            toml::from_str::<SettingsConfig>("[environment.allocators]\nhook = \"new\"\n").is_err()
+        );
+    }
+
+    #[test]
+    fn declarations_overlay_by_name() {
+        let mut base: SettingsConfig =
+            toml::from_str("[environment.deallocators]\na_put = 1\nb_put = 1\n").unwrap();
+        let cli: SettingsConfig =
+            toml::from_str("[environment.deallocators]\nb_put = 2\n").unwrap();
+        base.overlay(&cli);
+        let s = AnalysisSettings::resolve(&base).unwrap();
+        assert_eq!(s.memory.deallocators["a_put"], 1);
+        assert_eq!(s.memory.deallocators["b_put"], 2);
     }
 
     #[test]

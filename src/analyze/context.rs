@@ -42,6 +42,14 @@ pub struct ProjectContext {
     /// a cache from before this field existed.
     #[serde(default)]
     pub built_under: BTreeMap<String, String>,
+    /// The allocator and deallocator declarations the function summaries
+    /// were built under (`settings::memory`). Unlike the settings above this
+    /// IS baked into the tables -- a wrapper around a declared hook frees by
+    /// its summary -- so the cache records it and a run under different
+    /// declarations refuses the cache. It is its own field, compared whole,
+    /// rather than a `built_under` key, where a key absent from either side
+    /// would read as not compared.
+    pub memory_declarations: crate::settings::MemoryDeclarations,
     /// Every function name found in the pre-scanned `.c`/`.h` files.
     pub known_functions: Arc<HashSet<String>>,
     /// Functions declared (prototyped) in `.h` header files.
