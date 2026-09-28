@@ -474,6 +474,41 @@ pub fn declared_type(ident: &Node, source: &str, env: &TypeEnv) -> Option<CType>
     apply_declarator(classify_specifiers(&decl, source, env), &declarator)
 }
 
+/// The type of the function this file DEFINES under the callee's name, for a
+/// call whose callee resolves to no declaration: a `static` helper defined
+/// above its caller with no prototype. Only the translation unit's own
+/// file-scope definitions are searched (through preprocessor arms, never into
+/// a function body), so a name this file neither declares nor defines stays
+/// unknown.
+fn file_function_type(callee: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
+    let name = get_node_text(callee, source);
+    let mut root = *callee;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    let mut pending = vec![root];
+    while let Some(scope) = pending.pop() {
+        for i in 0..scope.named_child_count() {
+            let Some(child) = scope.named_child(i) else {
+                continue;
+            };
+            match child.kind() {
+                "function_definition" => {
+                    let Some(declarator) = child.child_by_field_name("declarator") else {
+                        continue;
+                    };
+                    if ast_utils::get_identifier_from_declarator(&declarator, source) == name {
+                        return declarator_type(&child, &declarator, source, env);
+                    }
+                }
+                k if k.starts_with("preproc_") => pending.push(child),
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 /// The type of a cast's `type_descriptor`.
 fn type_descriptor_type(descriptor: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
     let base = classify_specifiers(descriptor, source, env);
@@ -554,7 +589,13 @@ pub fn expr_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
         // declared where the call can see it; a library function whose header
         // was not expanded is unknown.
         "call_expression" => {
-            match expr_type(&node.child_by_field_name("function")?, source, env)? {
+            let callee = node.child_by_field_name("function")?;
+            let callee_type = expr_type(&callee, source, env).or_else(|| {
+                (callee.kind() == "identifier")
+                    .then(|| file_function_type(&callee, source, env))
+                    .flatten()
+            });
+            match callee_type? {
                 CType::Function(ret) => ret.map(|b| *b),
                 CType::Pointer(Some(p)) => match *p {
                     CType::Function(ret) => ret.map(|b| *b),
@@ -1007,6 +1048,13 @@ mod tests {
         assert_eq!(
             returned(
                 "double half(double); int f(double x) { return half(x); }",
+                &[]
+            ),
+            Some(CType::Float(FloatKind::Double))
+        );
+        assert_eq!(
+            returned(
+                "static double ceil2(double v) { return v; }\nint f(double x) { return ceil2(x); }",
                 &[]
             ),
             Some(CType::Float(FloatKind::Double))
