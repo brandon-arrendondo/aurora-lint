@@ -18,6 +18,32 @@ use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
+/// `va_arg`, or the builtin `<stdarg.h>` defines it as.
+fn is_va_arg_name(name: &str) -> bool {
+    matches!(name, "va_arg" | "__builtin_va_arg")
+}
+
+/// A type argument as one line of words: comments removed and whitespace,
+/// newlines included, collapsed to single spaces.
+fn normalize_type_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("/*") {
+            rest = after.find("*/").map_or("", |end| &after[end + 2..]);
+            out.push(' ');
+        } else if let Some(after) = rest.strip_prefix("//") {
+            rest = after.find('\n').map_or("", |end| &after[end..]);
+            out.push(' ');
+        } else {
+            let c = rest.chars().next().unwrap_or_default();
+            out.push(c);
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[derive(Debug)]
 pub struct Exp47C;
 
@@ -41,36 +67,41 @@ impl Exp47C {
     /// - char, signed char, unsigned char -> int
     /// - short, unsigned short -> int (or unsigned int if larger)
     /// - float -> double
+    ///
+    /// `type_text` is normalized (`normalize_type_text`). The type is read by
+    /// its set of specifiers, not its spelling: `short signed` is `short`,
+    /// qualifiers are ignored, and a pointer, array or function type, or any
+    /// other word (a typedef name, `long`), is not one of these.
     fn is_promoted_type(&self, type_text: &str) -> Option<&'static str> {
-        let trimmed = type_text.trim();
-
-        // Check for char types (promote to int)
-        if trimmed == "char"
-            || trimmed == "signed char"
-            || trimmed == "unsigned char"
-            || trimmed.ends_with(" char")
-        {
+        if type_text.contains(['*', '(', '[']) {
+            return None;
+        }
+        let words: Vec<&str> = type_text
+            .split_whitespace()
+            .filter(|w| !matches!(*w, "const" | "volatile" | "restrict" | "_Atomic"))
+            .collect();
+        if words.iter().any(|w| {
+            !matches!(
+                *w,
+                "signed" | "unsigned" | "char" | "short" | "int" | "float"
+            )
+        }) {
+            return None;
+        }
+        let has = |w: &str| words.contains(&w);
+        if has("char") && !has("short") && !has("int") && !has("float") {
             return Some("int");
         }
-
-        // Check for short types (promote to int or unsigned int)
-        if trimmed == "short"
-            || trimmed == "short int"
-            || trimmed == "signed short"
-            || trimmed == "signed short int"
-        {
-            return Some("int");
+        if has("short") && !has("char") && !has("float") {
+            return Some(if has("unsigned") {
+                "int or unsigned int"
+            } else {
+                "int"
+            });
         }
-
-        if trimmed == "unsigned short" || trimmed == "unsigned short int" {
-            return Some("int or unsigned int");
-        }
-
-        // Check for float (promotes to double)
-        if trimmed == "float" {
+        if words == ["float"] {
             return Some("double");
         }
-
         None
     }
 
@@ -80,7 +111,7 @@ impl Exp47C {
             return None;
         }
         let function = node.child_by_field_name("function")?;
-        if get_node_text(&function, source).trim() != "va_arg" {
+        if !is_va_arg_name(get_node_text(&function, source).trim()) {
             return None;
         }
         let arguments = node.child_by_field_name("arguments")?;
@@ -96,8 +127,8 @@ impl Exp47C {
             .filter(|c| c.kind() != ")")
             .collect();
         let (first, last) = (type_nodes.first()?, type_nodes.last()?);
-        let type_text = source[first.start_byte()..last.end_byte()].trim();
-        (!type_text.is_empty()).then(|| type_text.to_string())
+        let type_text = normalize_type_text(&source[first.start_byte()..last.end_byte()]);
+        (!type_text.is_empty()).then_some(type_text)
     }
 
     fn push_violation(
@@ -142,10 +173,13 @@ impl Exp47C {
         }
     }
 
-    /// Visit every va_arg call once, plus each unparsed macro body.
+    /// Visit every va_arg call once, plus each macro's replacement list.
     fn traverse(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         for n in query::find_descendants(*node, |n| {
-            matches!(n.kind(), "call_expression" | "preproc_arg")
+            matches!(
+                n.kind(),
+                "call_expression" | "preproc_def" | "preproc_function_def"
+            )
         }) {
             if n.kind() == "call_expression" {
                 self.check_va_arg_call(&n, source, violations);
@@ -155,21 +189,30 @@ impl Exp47C {
         }
     }
 
-    /// A macro's replacement list is a single unparsed `preproc_arg` leaf, so
-    /// a `va_arg` written there has no call_expression to visit. Read it from
-    /// the text, reporting each occurrence at its own position.
+    /// A macro's replacement list is unparsed `preproc_arg` text, so a
+    /// `va_arg` written there has no call_expression to visit. Read it from
+    /// the text, reporting each occurrence at its own position. A comment in
+    /// the list splits it into several nodes, so the list is read as the span
+    /// from its first `preproc_arg` to the end of the directive.
     fn check_macro_body(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        let text = get_node_text(node, source);
+        let Some(first) = query::find_descendants_of_kind(*node, "preproc_arg")
+            .into_iter()
+            .min_by_key(|n| n.start_byte())
+        else {
+            return;
+        };
+        let offset = first.start_byte();
+        let text = &source[offset..node.end_byte()];
         let mut search_from = 0;
         while let Some(pos) = text[search_from..].find("va_arg(") {
             let at = search_from + pos;
             search_from = at + "va_arg(".len();
-            // A longer identifier ending in `va_arg` is a different name.
-            let preceded_by_ident = text[..at]
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_alphanumeric() || c == '_');
-            if preceded_by_ident {
+            // The whole identifier ending here must be a va_arg spelling: a
+            // longer name such as `my_va_arg` is a different function.
+            let start = text[..at]
+                .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .map_or(0, |i| i + 1);
+            if !is_va_arg_name(&text[start..at + "va_arg".len()]) {
                 continue;
             }
             let args = &text[search_from..];
@@ -179,12 +222,12 @@ impl Exp47C {
             let Some(close) = args[comma + 1..].find(')') else {
                 continue;
             };
-            let type_text = args[comma + 1..comma + 1 + close].trim();
-            if let Some(correct_type) = self.is_promoted_type(type_text) {
-                let before = &source[..node.start_byte() + at];
+            let type_text = normalize_type_text(&args[comma + 1..comma + 1 + close]);
+            if let Some(correct_type) = self.is_promoted_type(&type_text) {
+                let before = &source[..offset + start];
                 let row = before.matches('\n').count();
                 let column = before.len() - before.rfind('\n').map_or(0, |i| i + 1);
-                self.push_violation(type_text, correct_type, row, column, violations);
+                self.push_violation(&type_text, correct_type, row, column, violations);
             }
         }
     }
