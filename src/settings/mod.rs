@@ -842,15 +842,16 @@ mod tests {
 
     #[test]
     fn exact_include_names_leave_every_preset_hash_as_it_was() {
-        // The hashes the presets had before `include_names` existed. Benchmark
-        // run ids carry them, so exact matching must not move them.
+        // The presets' hashes with the current option table (`closed_program`
+        // added a declared option, which moved both). Benchmark run ids carry
+        // them, so exact include-name matching must not move them.
         assert_eq!(
             AnalysisSettings::preset(Preset::Default).settings_hash(),
-            "146f25fdde211a31e40cb3d049b8d8c173b4025ae10aba035c0b478baadb05f0"
+            "6a42bd4cf1e02bd610c081ad24a69ebfc4a214e67a7f338449fd9651ddf24c8f"
         );
         assert_eq!(
             AnalysisSettings::preset(Preset::Strict).settings_hash(),
-            "1df095acbd20780b729da10b67af7fa2a32180a844f7c69a35cc1c4b91141694"
+            "b15a42e2ed2094bb968fc6ff764429d5f3e598d0103e91ab3ff660286dc648f9"
         );
         assert_eq!(
             with_names(Preset::Default, Some(IncludeNames::Exact)).settings_hash(),
