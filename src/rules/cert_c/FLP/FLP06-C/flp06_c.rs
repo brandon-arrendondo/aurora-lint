@@ -2,12 +2,22 @@
 // Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::VisibleTypes;
 use crate::manifest::Severity;
-use crate::utility::cert_c::float_typing;
+use crate::utility::cert_c::expr_type::{self, TypeEnv};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::Node;
 
-pub struct Flp06C;
+#[derive(Default)]
+pub struct Flp06C {
+    /// The typedefs and struct fields this file sees, so a target declared
+    /// `real` (a typedef of double) and an operand declared `u32` are typed by
+    /// their declarations.
+    typedef_types: RefCell<Arc<HashMap<String, String>>>,
+    struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
+}
 
 impl CertRule for Flp06C {
     fn rule_id(&self) -> &'static str {
@@ -23,99 +33,80 @@ impl CertRule for Flp06C {
         "FLP06-C"
     }
 
+    fn set_visible_types(&self, types: &VisibleTypes) {
+        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
+        *self.struct_field_types.borrow_mut() = types.struct_field_types.clone();
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
+        let typedefs = self.typedef_types.borrow();
+        let fields = self.struct_field_types.borrow();
+        let env = TypeEnv::new(&typedefs, &fields);
         let mut violations = Vec::new();
-        let type_map = HashMap::new();
-        self.check_node(node, source, &type_map, &mut violations);
+        for decl in lang_parsing_substrate::query::find_descendants_of_kind(*node, "declaration") {
+            self.check_declaration(&decl, source, &env, &mut violations);
+        }
         violations
     }
 }
 
 impl Flp06C {
-    fn check_node(
+    /// `double d = a * b;` with integer `a` and `b`: the arithmetic happens in
+    /// an integer type and only the result is converted.
+    ///
+    /// The target is the declaration's first `init_declarator`, typed by its
+    /// own declarator: a floating object, not a pointer to one, and not an int
+    /// whose name happens to contain `float`. The initializer must be a
+    /// top-level `+ - * /` whose type is an integer type: both operands typed
+    /// integer by their declarations (expr_type), so a float-returning call,
+    /// a float operand, `->` in an argument, index arithmetic inside a
+    /// subscript read, a unary minus on a literal and a brace initializer are
+    /// not integer arithmetic implicitly converted to float.
+    ///
+    /// On unknown (None), for the target or either operand, no finding: this
+    /// check accuses, and an unknown type must not raise one.
+    fn check_declaration(
         &self,
-        node: &Node,
+        decl: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        env: &TypeEnv,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Build a fresh param/local type map at each function boundary so
-        // operand types can be resolved (see the float-operand suppression
-        // below). Outside any function the map is empty.
-        if node.kind() == "function_definition" {
-            let fn_type_map = float_typing::collect_variable_types(node, source);
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                self.check_node(&child, source, &fn_type_map, violations);
-            }
+        let Some(init) = first_init_declarator(decl) else {
+            return;
+        };
+        let target_is_float =
+            expr_type::declarator_type(decl, &init, source, env).is_some_and(|t| t.is_float());
+        if !target_is_float {
             return;
         }
-
-        // Look for declarations: float/double var = expression;
-        if node.kind() == "declaration" {
-            let decl_text = node.utf8_text(source.as_bytes()).unwrap_or("");
-
-            // Must be a float or double declaration with an initializer.
-            if (decl_text.contains("float") || decl_text.contains("double"))
-                && decl_text.contains(" = ")
-            {
-                // Fire only when the initializer's value is genuine integer
-                // arithmetic: a top-level `+ - * /` binary expression whose
-                // operands are all provably integer. Driving off the AST
-                // (rather than the old text `contains('+-*/')`) excludes the
-                // residual FP sub-classes that scan picked up — the `->` arrow
-                // in call arguments, integer index arithmetic inside a subscript
-                // *read*, unary minus on a literal, and brace initializers — and
-                // float-returning calls or float operands, none
-                // of which are integer arithmetic implicitly converted to float.
-                let is_integer_arith = initializer_value_node(node)
-                    .map(|v| is_integer_arithmetic(&v, source, type_map))
-                    .unwrap_or(false);
-
-                if is_integer_arith {
-                    violations.push(RuleViolation {
-                        rule_id: self.rule_id().to_string(),
-                        severity: self.severity(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
-                        file_path: String::new(),
-                        message: "Floating point variable initialized with integer arithmetic; use floating-point literals or explicit conversion".to_string(),
-                        suggestion: Some("Use floating-point literals (e.g., 7.0) or explicit casts (e.g., (double)x)".to_string()),
-                        requires_manual_review: None,
-                    });
-                }
-            }
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, type_map, violations);
+        let is_integer_arith = init
+            .child_by_field_name("value")
+            .is_some_and(|v| is_integer_arithmetic(&v, source, env));
+        if is_integer_arith {
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                severity: self.severity(),
+                line: decl.start_position().row + 1,
+                column: decl.start_position().column + 1,
+                file_path: String::new(),
+                message: "Floating point variable initialized with integer arithmetic; use floating-point literals or explicit conversion".to_string(),
+                suggestion: Some("Use floating-point literals (e.g., 7.0) or explicit casts (e.g., (double)x)".to_string()),
+                requires_manual_review: None,
+            });
         }
     }
 }
 
-/// Return the initializer expression (`value`) of the first `init_declarator`
-/// in a `declaration` node, if present.
-fn initializer_value_node<'a>(decl: &Node<'a>) -> Option<Node<'a>> {
+fn first_init_declarator<'a>(decl: &Node<'a>) -> Option<Node<'a>> {
     let mut cursor = decl.walk();
-    for child in decl.children(&mut cursor) {
-        if child.kind() == "init_declarator" {
-            return child.child_by_field_name("value");
-        }
-    }
-    None
+    let found = decl
+        .children(&mut cursor)
+        .find(|c| c.kind() == "init_declarator");
+    found
 }
 
-/// True if `node` (after unwrapping parentheses) is *integer* arithmetic: a
-/// `+ - * /` binary expression all of whose operands are provably integer.
-///
-/// Requiring provably-integer operands (rather than merely "no float operand")
-/// keeps the rule conservative: a float-typed operand, a float-returning call
-/// (`sinf`/`cosf`), an unresolved identifier, or a struct-field access all make
-/// the expression not-provably-integer, so it is not reported. This is the
-/// integer-then-implicitly-converted-to-float pattern FLP06-C targets.
-fn is_integer_arithmetic(node: &Node, source: &str, type_map: &HashMap<String, String>) -> bool {
+fn is_integer_arithmetic(node: &Node, source: &str, env: &TypeEnv) -> bool {
     let inner = unwrap_parens(node);
     if inner.kind() != "binary_expression" {
         return false;
@@ -132,10 +123,9 @@ fn is_integer_arithmetic(node: &Node, source: &str, type_map: &HashMap<String, S
     if !is_arith_op {
         return false;
     }
-    float_typing::expr_is_definitely_integer(&inner, source, type_map)
+    expr_type::expr_type(&inner, source, env).is_some_and(|t| t.is_integer())
 }
 
-/// Peel away `( … )` wrappers to reach the underlying expression.
 fn unwrap_parens<'a>(node: &Node<'a>) -> Node<'a> {
     let mut n = *node;
     while n.kind() == "parenthesized_expression" {

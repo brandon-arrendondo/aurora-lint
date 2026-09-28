@@ -1079,7 +1079,7 @@ impl RuleRegistry {
         registry.register(Box::new(flp03_c::Flp03C::default()));
         registry.register(Box::new(flp04_c::Flp04C::new()));
         registry.register(Box::new(flp05_c::Flp05C));
-        registry.register(Box::new(flp06_c::Flp06C));
+        registry.register(Box::new(flp06_c::Flp06C::default()));
         registry.register(Box::new(flp30_c::Flp30C));
         registry.register(Box::new(flp32_c::Flp32C));
         registry.register(Box::new(flp34_c::Flp34C));
