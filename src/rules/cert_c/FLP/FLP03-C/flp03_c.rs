@@ -50,11 +50,11 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval::{self, MacroConstantMap};
-use crate::analyze::context::ProjectContext;
+use crate::analyze::context::{ProjectContext, VisibleTypes};
 use crate::manifest::Severity;
 use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::get_node_text;
-use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
+use crate::utility::cert_c::expr_type::{self, TypeEnv};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -68,93 +68,20 @@ pub struct Flp03C {
     /// the divisor-provably-{non}zero checks so a guard defined outside the
     /// file under scan is still resolved.
     project_macros: RefCell<Arc<MacroConstantMap>>,
+    /// The typedefs and struct fields this file sees, so an operand declared
+    /// `real` (a typedef of double) or `p->ratio` is typed by its declaration.
+    typedef_types: RefCell<Arc<HashMap<String, String>>>,
+    struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
 }
 
-/// Analyzer that tracks floating-point variables.
-///
-/// `type_map` holds `name -> "float"` for every identifier this file's
-/// declarations establish as float/double-typed (see [`Self::collect_float_vars`]);
-/// no project context is available here, so [`StructFieldTypes`] is always
-/// empty and `float_typing::expr_is_float` cannot resolve struct-field types.
-struct FpAnalyzer {
-    type_map: HashMap<String, String>,
-    struct_field_types: StructFieldTypes,
-}
-
-impl FpAnalyzer {
-    fn new() -> Self {
-        Self {
-            type_map: HashMap::new(),
-            struct_field_types: StructFieldTypes::new(),
-        }
-    }
-
-    /// Collect all floating-point variable declarations from the AST
-    fn collect_float_vars(&mut self, node: &Node, source: &str) {
-        for decl in query::find_descendants_of_kind(*node, "declaration") {
-            if Self::declaration_is_float_typed(&decl, source) {
-                self.extract_identifiers_from_declaration(&decl, source);
-            }
-        }
-    }
-
-    /// True if `decl`'s type specifier child is a float/double token (whole-token
-    /// match via [`float_typing::is_float_type`], not a substring scan of the
-    /// full declaration text — avoids misclassifying e.g. a `double_buffered_count`
-    /// declarator as float).
-    fn declaration_is_float_typed(decl: &Node, source: &str) -> bool {
-        for i in 0..decl.child_count() {
-            if let Some(child) = decl.child(i) {
-                if matches!(
-                    child.kind(),
-                    "primitive_type" | "sized_type_specifier" | "type_identifier"
-                ) && float_typing::is_float_type(get_node_text(&child, source))
-                {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    fn extract_identifiers_from_declaration(&mut self, node: &Node, source: &str) {
-        // Look for init_declarator or declarator nodes containing identifiers
-        for id_node in query::find_descendants_of_kind(*node, "identifier") {
-            // Verify parent is a declarator-type node (not type specifier)
-            if let Some(parent) = id_node.parent() {
-                let parent_kind = parent.kind();
-                if parent_kind == "init_declarator"
-                    || parent_kind == "declarator"
-                    || parent_kind == "pointer_declarator"
-                    || parent_kind == "array_declarator"
-                {
-                    let var_name = get_node_text(&id_node, source).to_string();
-                    self.type_map.insert(var_name, "float".to_string());
-                }
-            }
-        }
-    }
-
-    /// Check if an expression involves floating-point values or variables.
-    ///
-    /// Delegates the structural cases (literals, casts, unary/binary/paren
-    /// forms) to [`float_typing::expr_is_float`]. That function doesn't model
-    /// every node kind (call/conditional/subscript expressions fall through
-    /// to its `false` default), so [`Self::contains_float_identifier`] is
-    /// still consulted unconditionally as a whole-subtree fallback — this
-    /// preserves the original "any known-float identifier anywhere inside"
-    /// recall for expressions like `x / sqrt(y)` where `y` is a float local.
-    fn is_fp_expression(&self, node: &Node, source: &str) -> bool {
-        float_typing::expr_is_float(node, source, &self.type_map, &self.struct_field_types)
-            || self.contains_float_identifier(node, source)
-    }
-
-    fn contains_float_identifier(&self, node: &Node, source: &str) -> bool {
-        query::find_first_descendant(*node, |n| {
-            n.kind() == "identifier" && self.type_map.contains_key(get_node_text(&n, source))
-        })
-        .is_some()
-    }
+/// Whether the operand's value is of a floating type: its type by
+/// declaration (`expr_type`), or a `<math.h>` call's standard type. An operand
+/// whose type is not in reach is not floating-point: this check accuses, so an
+/// unknown type must not raise a finding.
+fn is_fp_expression(node: &Node, source: &str, env: &TypeEnv) -> bool {
+    expr_type::expr_type(node, source, env)
+        .or_else(|| expr_type::math_call_type(node, source))
+        .is_some_and(|t| t.is_float())
 }
 
 impl Flp03C {
@@ -334,7 +261,7 @@ impl Flp03C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        analyzer: &FpAnalyzer,
+        env: &TypeEnv,
     ) {
         if node.kind() == "binary_expression" {
             // Check if this is a division operation
@@ -351,10 +278,10 @@ impl Flp03C {
             // Check each operand individually — at least one must be float
             let left_fp = node
                 .child_by_field_name("left")
-                .is_some_and(|l| analyzer.is_fp_expression(&l, source));
+                .is_some_and(|l| is_fp_expression(&l, source, env));
             let right_fp = node
                 .child_by_field_name("right")
-                .is_some_and(|r| analyzer.is_fp_expression(&r, source));
+                .is_some_and(|r| is_fp_expression(&r, source, env));
             if is_division && (left_fp || right_fp) {
                 // Check if the division is inside a divide-by-zero guard
                 if self.is_inside_division_guard(node, source) {
@@ -1114,15 +1041,17 @@ impl CertRule for Flp03C {
         *self.project_macros.borrow_mut() = context.macro_constants.clone();
     }
 
+    fn set_visible_types(&self, types: &VisibleTypes) {
+        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
+        *self.struct_field_types.borrow_mut() = types.struct_field_types.clone();
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-
-        // First pass: collect all floating-point variable declarations
-        let mut analyzer = FpAnalyzer::new();
-        analyzer.collect_float_vars(node, source);
-
-        // Second pass: check for violations
-        self.check_node(node, source, &mut violations, &analyzer);
+        let typedefs = self.typedef_types.borrow();
+        let fields = self.struct_field_types.borrow();
+        let env = TypeEnv::new(&typedefs, &fields);
+        self.check_node(node, source, &mut violations, &env);
         violations
     }
 }
@@ -1133,11 +1062,11 @@ impl Flp03C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        analyzer: &FpAnalyzer,
+        env: &TypeEnv,
     ) {
         // Check for floating-point division without error checking
         for binary_expr in query::find_descendants_of_kind(*node, "binary_expression") {
-            self.check_fp_division(&binary_expr, source, violations, analyzer);
+            self.check_fp_division(&binary_expr, source, violations, env);
         }
     }
 }
