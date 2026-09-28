@@ -120,6 +120,12 @@ pub struct DirectEffects {
     /// scanned file declares. Judged against the project in the closure.
     #[serde(default)]
     pub free_names: BTreeSet<String>,
+    /// Typedef names of the objects the body reads at the level the typedef
+    /// qualifies (`reg_t *R; ... *R` reads a `reg_t`): volatile when the
+    /// typedef is (`typedef volatile uint32_t reg_t;`), which the closure
+    /// knows project-wide and a body usually does not.
+    #[serde(default)]
+    pub typedef_reads: BTreeSet<String>,
 }
 
 impl DirectEffects {
@@ -133,6 +139,7 @@ impl DirectEffects {
         self.calls.extend(other.calls);
         self.opaque |= other.opaque;
         self.free_names.extend(other.free_names);
+        self.typedef_reads.extend(other.typedef_reads);
     }
 }
 
@@ -258,6 +265,7 @@ pub fn collect_direct_effects(
         func: *func,
         params: crate::analyze::function_summary::collect_param_names(func, source),
         declared: declared_names(func, source),
+        typed: typedef_declarations(func, source),
         arms,
         scope,
         out: DirectEffects::default(),
@@ -293,6 +301,48 @@ fn declared_in(decl: &Node, source: &str) -> Vec<String> {
         .collect()
 }
 
+/// The typedef name a declaration's type is, and the pointer/array levels of
+/// its declarator for `name`: `reg_t *R` gives `("reg_t", 1)`.
+fn typedef_declaration(decl: &Node, name: &str, source: &str) -> Option<(String, isize)> {
+    let ty = decl.child_by_field_name("type")?;
+    if ty.kind() != "type_identifier" {
+        return None;
+    }
+    let mut d = ast_utils::declaration_declarator_for(decl, name, source)?;
+    let mut levels = 0;
+    while matches!(d.kind(), "pointer_declarator" | "array_declarator") {
+        levels += 1;
+        match d.child_by_field_name("declarator") {
+            Some(inner) => d = inner,
+            None => break,
+        }
+    }
+    Some((get_node_text(&ty, source).to_string(), levels))
+}
+
+/// [`Collector::typed`]: the function's typedef-typed declarations by name.
+fn typedef_declarations(func: &Node, source: &str) -> HashMap<String, Option<(String, isize)>> {
+    let mut out: HashMap<String, Option<(String, isize)>> = HashMap::new();
+    for decl in lang_parsing_substrate::query::find_descendants(*func, |n| {
+        matches!(n.kind(), "declaration" | "parameter_declaration")
+    }) {
+        for name in declared_in(&decl, source) {
+            let entry = typedef_declaration(&decl, &name, source);
+            match out.get(&name) {
+                Some(_) => {
+                    out.insert(name, None);
+                }
+                None => {
+                    if let Some(e) = entry {
+                        out.insert(name, Some(e));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Where a name occurrence is bound.
 enum Bound<'t> {
     Local(Node<'t>),
@@ -307,6 +357,10 @@ struct Collector<'s, 't> {
     /// Every name the function declares: its parameters and every
     /// declarator in its body.
     declared: std::collections::HashSet<String>,
+    /// The function's objects declared with a typedef name, by name: the
+    /// typedef and the declarator's pointer/array levels. `None` for a name
+    /// declared more than once in the function, which is resolved exactly.
+    typed: HashMap<String, Option<(String, isize)>>,
     arms: &'s HashMap<String, Vec<MacroArm>>,
     scope: &'s FileScope<'t>,
     out: DirectEffects,
@@ -345,6 +399,9 @@ impl<'t> Collector<'_, 't> {
                     }
                 }
                 "identifier" => {
+                    if let Some(t) = self.typedef_read(&node) {
+                        self.out.typedef_reads.insert(t);
+                    }
                     if self.reads_volatile(&node) {
                         self.out.volatile_read = true;
                     } else if self.is_free(&node) {
@@ -617,6 +674,27 @@ impl<'t> Collector<'_, 't> {
         };
         let declarator = ast_utils::declaration_declarator_for(&decl, name, self.source)?;
         Some((decl, declarator))
+    }
+
+    /// The typedef an identifier read reads an object of, when the read
+    /// reaches the level the typedef names (`*R` for `reg_t *R`, `v` for
+    /// `reg_t v`).
+    fn typedef_read(&self, ident: &Node<'t>) -> Option<String> {
+        let name = get_node_text(ident, self.source);
+        let (ty, levels) = match self.typed.get(name) {
+            Some(Some(entry)) => entry.clone(),
+            // Declared twice in the function: resolve this occurrence.
+            Some(None) => {
+                let (decl, _) = self.declarator(ident)?;
+                typedef_declaration(&decl, name, self.source)?
+            }
+            None if self.declared.contains(name) => return None,
+            None => {
+                let decl = self.scope.globals.get(name)?;
+                typedef_declaration(decl, name, self.source)?
+            }
+        };
+        (dereferences_applied(ident, self.source) >= levels).then_some(ty)
     }
 
     /// Whether an identifier read names something neither the function nor
@@ -1056,6 +1134,9 @@ pub struct ProjectNames {
     pub typedefs: std::sync::Arc<HashMap<String, String>>,
     /// Every struct or union member name (a macro argument may name one).
     pub members: std::sync::Arc<std::collections::HashSet<String>>,
+    /// Typedef names whose definition carries `volatile`
+    /// (`typedef volatile uint32_t reg_t;`).
+    pub volatile_typedefs: std::sync::Arc<std::collections::HashSet<String>>,
     /// Whether these tables describe a prescan. Without one, a name nothing
     /// here knows is not evidence of anything, so it is not judged unknown.
     pub complete: bool,
@@ -1151,6 +1232,13 @@ impl EffectTable {
             for name in &direct.free_names {
                 resolver.free_name(name, 0);
             }
+            if direct
+                .typedef_reads
+                .iter()
+                .any(|t| typedef_is_volatile(t, inputs.names))
+            {
+                resolver.own.volatile_read = true;
+            }
             local.push(own);
             edges.push(out);
         }
@@ -1218,6 +1306,57 @@ impl EffectTable {
                 .collect(),
         }
     }
+}
+
+/// Whether a typedef name denotes a volatile-qualified type: its own
+/// definition says `volatile`, or it aliases, through `typedefs`, one that
+/// does.
+pub fn typedef_is_volatile(name: &str, names: &ProjectNames) -> bool {
+    let mut current = name;
+    for _ in 0..8 {
+        if names.volatile_typedefs.contains(current) {
+            return true;
+        }
+        match names.typedefs.get(current) {
+            Some(next) => current = next.as_str(),
+            None => return false,
+        }
+    }
+    false
+}
+
+/// The typedef names `root` defines with `volatile` in their type
+/// (`typedef volatile uint32_t reg_t;`), `#if` blocks included. A pointer
+/// typedef (`typedef volatile int *vptr;`) is not one: the typedef names the
+/// pointer, not the volatile object.
+pub fn volatile_typedefs(root: &Node, source: &str) -> std::collections::HashSet<String> {
+    lang_parsing_substrate::query::find_descendants(*root, |n| n.kind() == "type_definition")
+        .into_iter()
+        .filter(|def| {
+            let mut cursor = def.walk();
+            let qualified = def
+                .children(&mut cursor)
+                .any(|c| c.kind() == "type_qualifier" && get_node_text(&c, source) == "volatile");
+            qualified
+        })
+        .flat_map(|def| {
+            let mut cursor = def.walk();
+            def.children_by_field_name("declarator", &mut cursor)
+                .filter(|d| d.kind() == "type_identifier")
+                .map(|d| get_node_text(&d, source).to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The typedef an identifier read reads an object of at the level the
+/// typedef names, resolved to its declaration (ADR-0006): for a rule judging
+/// an expression it has in hand.
+pub fn typedef_read(ident: &Node, source: &str) -> Option<String> {
+    let name = get_node_text(ident, source);
+    let (decl, _) = ast_utils::resolve_identifier_declarator(ident, name, source)?;
+    let (ty, levels) = typedef_declaration(&decl, name, source)?;
+    (dereferences_applied(ident, source) >= levels).then_some(ty)
 }
 
 /// What reading `name` -- one no declaration in scope binds -- can change,
@@ -1890,6 +2029,19 @@ mod tests {
         let effects = ctx.effects();
         assert_eq!(effects.get("known").unwrap().proof(true), Proof::Pure);
         assert_eq!(effects.get("unknown").unwrap().proof(true), Proof::Unproven);
+    }
+
+    #[test]
+    fn a_header_volatile_typedef_makes_a_read_through_it_volatile() {
+        let header = "typedef volatile unsigned reg_t;\ntypedef reg_t reg2_t;\n";
+        let lib = "#include \"regs.h\"\n\
+            static reg2_t *R;\n\
+            unsigned rd(void) { return *R; }\n\
+            int mapped(void) { return R != 0; }\n";
+        let ctx = scanned(&[("regs.h", header), ("lib.c", lib)], "volatile-typedef");
+        let effects = ctx.effects();
+        assert_eq!(effects.get("rd").unwrap().proof(true), Proof::Impure);
+        assert_eq!(effects.get("mapped").unwrap().proof(true), Proof::Pure);
     }
 
     #[test]

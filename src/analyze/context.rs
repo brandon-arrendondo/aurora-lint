@@ -513,6 +513,10 @@ pub struct ProjectContext {
     /// file reading one reads a volatile object.
     #[serde(default)]
     pub volatile_globals: Arc<HashSet<String>>,
+    /// Typedef names some scanned file or header defines with `volatile`
+    /// (`typedef volatile uint32_t reg_t;`).
+    #[serde(default)]
+    pub volatile_typedefs: Arc<HashSet<String>>,
     /// Every function's side effects closed over the call graph, built on
     /// first use from the tables above and shared by every clone. Never
     /// serialized: it is derived, and rebuilding it costs less than storing
@@ -538,6 +542,7 @@ impl ProjectContext {
                 macros: Arc::clone(&self.defined_macro_names),
                 typedefs: Arc::clone(&self.typedef_types),
                 members,
+                volatile_typedefs: Arc::clone(&self.volatile_typedefs),
                 complete: true,
             },
             function_macros: Arc::clone(&self.function_macros),

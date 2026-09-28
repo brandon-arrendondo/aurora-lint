@@ -132,6 +132,8 @@ struct FilePrescanResult {
     pointer_named_globals: HashSet<String>,
     /// File-scope objects declared `volatile` (`#if` arms included).
     volatile_globals: HashSet<String>,
+    /// Typedef names defined with `volatile`.
+    volatile_typedefs: HashSet<String>,
 }
 
 impl FilePrescanResult {
@@ -196,6 +198,7 @@ impl FilePrescanResult {
             value_only_global_candidates: HashSet::new(),
             pointer_named_globals: HashSet::new(),
             volatile_globals: HashSet::new(),
+            volatile_typedefs: HashSet::new(),
         }
     }
 }
@@ -392,6 +395,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         );
         result.volatile_globals =
             crate::analyze::side_effects::file_scope_objects(&root, &source).1;
+        result.volatile_typedefs = crate::analyze::side_effects::volatile_typedefs(&root, &source);
 
         if !is_header {
             collect_global_var_null_states(&root, &source, &mut result.global_var_null_states);
@@ -687,6 +691,7 @@ fn prescan_file_list(
     let mut value_only_global_candidates: HashSet<String> = HashSet::new();
     let mut pointer_named_globals: HashSet<String> = HashSet::new();
     let mut volatile_globals: HashSet<String> = HashSet::new();
+    let mut volatile_typedefs: HashSet<String> = HashSet::new();
 
     for r in file_results {
         known_functions.extend(r.known_functions);
@@ -1086,6 +1091,7 @@ fn prescan_file_list(
         value_only_global_candidates.extend(r.value_only_global_candidates);
         pointer_named_globals.extend(r.pointer_named_globals);
         volatile_globals.extend(r.volatile_globals);
+        volatile_typedefs.extend(r.volatile_typedefs);
     }
 
     // A `static` function has internal linkage: it cannot be called from a
@@ -1391,6 +1397,7 @@ fn prescan_file_list(
                 .collect(),
         ),
         volatile_globals: Arc::new(volatile_globals),
+        volatile_typedefs: Arc::new(volatile_typedefs),
         known_functions: Arc::new(known_functions),
         header_declared_functions: Arc::new(header_declared_functions),
         function_summaries: function_summaries.into(),
@@ -6998,6 +7005,9 @@ fn fold_header_summaries(
     let (objects, volatile) = crate::analyze::side_effects::file_scope_objects(root, source);
     Arc::make_mut(&mut context.global_object_names).extend(objects);
     Arc::make_mut(&mut context.volatile_globals).extend(volatile);
+    Arc::make_mut(&mut context.volatile_typedefs).extend(
+        crate::analyze::side_effects::volatile_typedefs(root, source),
+    );
 }
 
 /// Resolve `#include` directives from source files against the given include

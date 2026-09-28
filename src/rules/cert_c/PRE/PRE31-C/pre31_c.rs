@@ -8,7 +8,7 @@ use crate::analyze::function_summary::extract_function_name;
 use crate::analyze::macro_expand::{self, ArgEvaluation, FunctionMacro, MacroArm, ProjectMacroArm};
 use crate::analyze::side_effects::{
     collect_direct_effects, dereferences_applied, designates_object, is_volatile_read,
-    EffectInputs, EffectTable, FileScope, Proof, PURE_BUILTINS,
+    typedef_is_volatile, typedef_read, EffectInputs, EffectTable, FileScope, Proof, PURE_BUILTINS,
 };
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
@@ -344,7 +344,7 @@ impl<'a> Ctx<'a> {
                 Effect::None
             }
             "identifier" => {
-                if is_volatile_read(node, self.source) {
+                if is_volatile_read(node, self.source) || self.reads_volatile_typedef(node) {
                     Effect::Definite
                 } else {
                     self.free_name_effect(node)
@@ -381,6 +381,15 @@ impl<'a> Ctx<'a> {
             }
             _ => self.children_effect(node),
         }
+    }
+
+    /// Whether an identifier reads an object whose typedef is volatile
+    /// (`typedef volatile uint32_t reg_t;`, usually in a header).
+    fn reads_volatile_typedef(&self, ident: &Node<'a>) -> bool {
+        let Some(view) = self.effects else {
+            return false;
+        };
+        typedef_read(ident, self.source).is_some_and(|t| typedef_is_volatile(&t, &view.names))
     }
 
     /// A name nothing in this file declares in scope (a header's `extern
