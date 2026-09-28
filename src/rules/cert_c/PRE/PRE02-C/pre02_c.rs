@@ -40,7 +40,9 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
-use crate::utility::cert_c::pp_tokens::{define_at, lex_replacement_list, PpKind, PpToken};
+use crate::utility::cert_c::pp_tokens::{
+    define_at, lex_replacement_list, PpKind, PpToken, KEYWORDS,
+};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -51,7 +53,7 @@ pub struct Pre02C;
 fn as_written(body: &str, function_like: bool) -> &str {
     let tokens = lex_replacement_list(body, function_like);
     match (tokens.first(), tokens.last()) {
-        (Some(first), Some(last)) => &body[first.start..last.start + last.text.len()],
+        (Some(first), Some(last)) => &body[first.start..last.end],
         _ => "",
     }
 }
@@ -63,24 +65,61 @@ const BINARY_OPERATORS: &[&str] = &[
     "!=",
 ];
 
-/// Whether the token before an operator ends an operand, making the
-/// operator binary: `a - b`, `f(x) * 2`, `(int)-1`. After nothing, another
-/// operator or an opening bracket it is unary (`-1`, `a * -b`).
-fn ends_operand(token: &PpToken) -> bool {
+/// Keywords that begin an operand (an expression), as opposed to a type,
+/// a statement or a declaration.
+const OPERAND_KEYWORDS: &[&str] = &[
+    "sizeof",
+    "_Alignof",
+    "alignof",
+    "__alignof__",
+    "__alignof",
+    "_Generic",
+    "__extension__",
+];
+
+/// Whether the token at `k` ends an operand, making an operator after it
+/// binary: `a - b`, `f(x) * 2`, `(int)-1`. A keyword does not (`return -1`,
+/// `case -1:`, `char *`), nor does the tag after `struct`, `union` or `enum`
+/// (`struct node *`); after those, or nothing, another operator or an
+/// opening bracket, the operator is unary.
+fn ends_operand(tokens: &[PpToken], k: usize) -> bool {
+    let token = &tokens[k];
     match token.kind {
-        PpKind::Identifier | PpKind::Number | PpKind::StringLiteral | PpKind::CharLiteral => true,
+        PpKind::Identifier => {
+            !KEYWORDS.contains(&token.text.as_ref())
+                && !k
+                    .checked_sub(1)
+                    .is_some_and(|p| matches!(tokens[p].text.as_ref(), "struct" | "union" | "enum"))
+        }
+        PpKind::Number | PpKind::StringLiteral | PpKind::CharLiteral => true,
         PpKind::Punctuator => token.is(")") || token.is("]") || token.is("++") || token.is("--"),
         PpKind::Other => false,
     }
 }
 
+/// Whether `token` can begin an operand: a binary operator has one on each
+/// side, so `STR_T char *` ends in a declarator's `*`, not a multiplication.
+fn starts_operand(token: &PpToken) -> bool {
+    match token.kind {
+        PpKind::Identifier => {
+            !KEYWORDS.contains(&token.text.as_ref())
+                || OPERAND_KEYWORDS.contains(&token.text.as_ref())
+        }
+        PpKind::Number | PpKind::StringLiteral | PpKind::CharLiteral => true,
+        PpKind::Punctuator => ["(", "-", "+", "!", "~", "*", "&", "++", "--"]
+            .iter()
+            .any(|p| token.is(p)),
+        PpKind::Other => false,
+    }
+}
+
 /// Whether the replacement list has an operator at its top level, outside
-/// every bracket: a binary operator (spaced or not), or a leading `-`, `!`
-/// or `~`, which the text before the expansion can turn into a binary
-/// operator (`x END_OF_FILE` with `#define END_OF_FILE -1`). A list that
-/// is one call, subscript or member access (EX1, EX2), one parenthesized
-/// expression, a cast of one, or a `do { } while (0)` has none: all its
-/// operators sit inside brackets.
+/// every bracket: a binary operator (spaced or not) between two operands,
+/// or a leading `-`, `!` or `~`, which the text before the expansion can
+/// turn into a binary operator (`x END_OF_FILE` with `#define END_OF_FILE
+/// -1`). A list that is one call, subscript or member access (EX1, EX2),
+/// one parenthesized expression, a cast of one, or a `do { } while (0)` has
+/// none: all its operators sit inside brackets.
 fn has_top_level_operator(tokens: &[PpToken]) -> bool {
     if tokens
         .first()
@@ -92,7 +131,8 @@ fn has_top_level_operator(tokens: &[PpToken]) -> bool {
         t.depth == 0
             && t.kind == PpKind::Punctuator
             && BINARY_OPERATORS.iter().any(|op| t.is(op))
-            && ends_operand(&tokens[k - 1])
+            && ends_operand(tokens, k - 1)
+            && tokens.get(k + 1).is_some_and(starts_operand)
     })
 }
 

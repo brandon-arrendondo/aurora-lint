@@ -14,7 +14,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
-use crate::utility::cert_c::pp_tokens::{define_directives, point_at, PpKind};
+use crate::utility::cert_c::pp_tokens::{define_directives, in_sorted_ranges, LineIndex, PpKind};
 use tree_sitter::{Node, Point};
 
 pub struct Dcl16C;
@@ -36,7 +36,7 @@ impl Dcl16C {
         violations: &mut Vec<RuleViolation>,
     ) {
         if node.kind() == "number_literal" {
-            if !defines.iter().any(|d| d.contains(&node.start_byte())) {
+            if !in_sorted_ranges(defines, node.start_byte()) {
                 self.check_literal(
                     get_node_text(node, source),
                     node.start_position(),
@@ -137,11 +137,15 @@ impl CertRule for Dcl16C {
         let defines = define_directives(node, source);
         let ranges: Vec<_> = defines.iter().map(|(range, _)| range.clone()).collect();
         self.check_node(node, source, &ranges, violations);
+        if defines.is_empty() {
+            return;
+        }
+        let lines = LineIndex::new(source);
         for (_, define) in &defines {
             for token in define.tokens() {
                 if token.kind == PpKind::Number {
-                    let at = point_at(source, define.body_start + token.start);
-                    self.check_literal(token.text, at, violations);
+                    let at = lines.point(define.body_start + token.start);
+                    self.check_literal(&token.text, at, violations);
                 }
             }
         }

@@ -4,7 +4,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
-use crate::utility::cert_c::pp_tokens::{define_directives, point_at, PpKind};
+use crate::utility::cert_c::pp_tokens::{define_directives, in_sorted_ranges, LineIndex, PpKind};
 use lang_parsing_substrate::query;
 use tree_sitter::{Node, Point};
 
@@ -45,21 +45,21 @@ impl Dcl18C {
     /// skipped.
     fn check_node(&self, node: Node, source: &str) -> Vec<RuleViolation> {
         let defines = define_directives(&node, source);
+        let ranges: Vec<_> = defines.iter().map(|(range, _)| range.clone()).collect();
         let mut violations: Vec<RuleViolation> =
             query::find_descendants_of_kind(node, "number_literal")
                 .into_iter()
-                .filter(|n| {
-                    !defines
-                        .iter()
-                        .any(|(range, _)| range.contains(&n.start_byte()))
-                })
+                .filter(|n| !in_sorted_ranges(&ranges, n.start_byte()))
                 .filter_map(|n| self.check_literal(get_node_text(&n, source), n.start_position()))
                 .collect();
+        let lines = (!defines.is_empty()).then(|| LineIndex::new(source));
         for (_, define) in &defines {
             for token in define.tokens() {
                 if token.kind == PpKind::Number {
-                    let at = point_at(source, define.body_start + token.start);
-                    violations.extend(self.check_literal(token.text, at));
+                    let at = lines.as_ref().map_or_else(Default::default, |l| {
+                        l.point(define.body_start + token.start)
+                    });
+                    violations.extend(self.check_literal(&token.text, at));
                 }
             }
         }

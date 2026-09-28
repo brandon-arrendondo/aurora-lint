@@ -709,7 +709,7 @@ pub fn collect_macro_operand_params(source: &str, out: &mut HashMap<String, Oper
             if token.kind != PpKind::Identifier {
                 continue;
             }
-            let Some(index) = param_index(token.text) else {
+            let Some(index) = param_index(&token.text) else {
                 continue;
             };
             // `, ## __VA_ARGS__` (or `, ## args` for `args...`) is GNU's

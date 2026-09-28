@@ -18,6 +18,8 @@
 //! the lexer finds that end itself (the first newline neither escaped nor
 //! inside a block comment).
 
+use std::borrow::Cow;
+
 /// What kind of preprocessing token (C11 6.4p1) a [`PpToken`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpKind {
@@ -40,10 +42,15 @@ pub enum PpKind {
 pub struct PpToken<'a> {
     /// What kind of token it is.
     pub kind: PpKind,
-    /// The token's spelling, exactly as written.
-    pub text: &'a str,
+    /// The token's spelling, with any line continuation inside it spliced
+    /// out (C11 5.1.1.2 phase 2): `PA\` then `RAM` on the next line is
+    /// `PARAM`.
+    pub text: Cow<'a, str>,
     /// Byte offset of the token in the text given to the lexer.
     pub start: usize,
+    /// Byte offset one past the token's end in that text, continuations
+    /// included (so not always `start + text.len()`).
+    pub end: usize,
     /// How many `(`, `[` and `{` enclose the token. An opening bracket
     /// carries the depth outside it, as does its matching close.
     pub depth: usize,
@@ -61,7 +68,7 @@ impl PpToken<'_> {
     /// Whether this is the punctuator spelled `p` (digraphs normalized:
     /// `%:` is `#`, `<:` is `[`, and so on).
     pub fn is(&self, p: &str) -> bool {
-        self.kind == PpKind::Punctuator && normalize_digraph(self.text) == p
+        self.kind == PpKind::Punctuator && normalize_digraph(&self.text) == p
     }
 
     /// Whether this is a string or character literal.
@@ -91,6 +98,88 @@ pub const UNEVALUATED_OPERATORS: &[&str] = &[
     "__typeof",
     "typeof_unqual",
     "__typeof_unqual__",
+];
+
+/// Keywords of C11, C23 and the common GNU spellings: none is an operand, so
+/// none ends one. (C23's `true`, `false` and `nullptr` are constants, and are
+/// not listed.)
+pub const KEYWORDS: &[&str] = &[
+    "auto",
+    "break",
+    "case",
+    "char",
+    "const",
+    "continue",
+    "default",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "extern",
+    "float",
+    "for",
+    "goto",
+    "if",
+    "inline",
+    "int",
+    "long",
+    "register",
+    "restrict",
+    "return",
+    "short",
+    "signed",
+    "sizeof",
+    "static",
+    "struct",
+    "switch",
+    "typedef",
+    "union",
+    "unsigned",
+    "void",
+    "volatile",
+    "while",
+    "_Alignas",
+    "_Alignof",
+    "_Atomic",
+    "_Bool",
+    "_Complex",
+    "_Generic",
+    "_Imaginary",
+    "_Noreturn",
+    "_Static_assert",
+    "_Thread_local",
+    "alignas",
+    "alignof",
+    "bool",
+    "constexpr",
+    "static_assert",
+    "thread_local",
+    "typeof",
+    "typeof_unqual",
+    "__typeof_unqual__",
+    "__typeof__",
+    "__typeof",
+    "__alignof__",
+    "__alignof",
+    "__attribute__",
+    "__attribute",
+    "__asm__",
+    "__asm",
+    "asm",
+    "__inline",
+    "__inline__",
+    "__restrict",
+    "__restrict__",
+    "__volatile__",
+    "__volatile",
+    "__const",
+    "__const__",
+    "__signed__",
+    "__signed",
+    "__extension__",
+    "__thread",
+    "__int128",
+    "__label__",
 ];
 
 /// C punctuators (6.4.6), longest first so the first match is the longest.
@@ -174,14 +263,36 @@ pub fn directive_starts(source: &str) -> Vec<usize> {
             t.is("#")
                 && match k.checked_sub(1) {
                     None => true,
-                    Some(p) => {
-                        let prev_end = tokens[p].start + tokens[p].text.len();
-                        bytes[prev_end..t.start].contains(&b'\n')
-                    }
+                    Some(p) => has_line_break(&bytes[tokens[p].end..t.start]),
                 }
         })
         .map(|(_, t)| t.start)
         .collect()
+}
+
+/// Whether the white space and comments between two tokens hold a line
+/// break: a newline that is neither escaped (a line continuation) nor
+/// inside a block comment, which is one space however many lines it spans.
+fn has_line_break(gap: &[u8]) -> bool {
+    let mut k = 0;
+    while k < gap.len() {
+        if gap[k..].starts_with(b"/*") {
+            k = gap[k + 2..]
+                .windows(2)
+                .position(|w| w == b"*/")
+                .map_or(gap.len(), |p| k + 2 + p + 2);
+            continue;
+        }
+        if gap[k] == b'\\' && continuation_len(gap, k) > 0 {
+            k += continuation_len(gap, k);
+            continue;
+        }
+        if gap[k] == b'\n' {
+            return true;
+        }
+        k += 1;
+    }
+    false
 }
 
 fn mask(text: &str, tokens: &[PpToken]) -> String {
@@ -190,8 +301,8 @@ fn mask(text: &str, tokens: &[PpToken]) -> String {
         .map(|b| if b == b'\n' { b'\n' } else { b' ' })
         .collect();
     for t in tokens {
-        let bytes = t.text.as_bytes();
-        let range = t.start..t.start + bytes.len();
+        let bytes = &text.as_bytes()[t.start..t.end];
+        let range = t.start..t.end;
         if t.is_literal() {
             let open = bytes
                 .iter()
@@ -247,10 +358,19 @@ pub fn parse_define_directive(text: &str) -> Option<DefineDirective<'_>> {
     if !hash.is("#") || keyword.text != "define" || name.kind != PpKind::Identifier {
         return None;
     }
-    let name_end = name.start + name.text.len();
     let mut next = 3;
+    // Only line continuations may separate the name from a function-like
+    // macro's `(`: they are gone before the directive is read.
+    let adjacent = |open: &PpToken| {
+        let gap = &text.as_bytes()[name.end..open.start];
+        let mut k = 0;
+        while k < gap.len() && gap[k] == b'\\' && continuation_len(gap, k) > 0 {
+            k += continuation_len(gap, k);
+        }
+        k == gap.len()
+    };
     let params = match tokens.get(3) {
-        Some(open) if open.is("(") && open.start == name_end => {
+        Some(open) if open.is("(") && adjacent(open) => {
             let mut params: Vec<String> = Vec::new();
             let mut k = 4;
             loop {
@@ -279,7 +399,7 @@ pub fn parse_define_directive(text: &str) -> Option<DefineDirective<'_>> {
     };
     let body_start = tokens.get(next).map_or(end, |t| t.start);
     Some(DefineDirective {
-        name: name.text,
+        name: &text[name.start..name.end],
         params,
         body_start,
         body: &text[body_start..end],
@@ -315,29 +435,53 @@ pub fn define_directives<'s>(
         &["preproc_def", "preproc_function_def"],
     ) {
         let start = node.start_byte();
-        if out.iter().any(|(range, _)| range.contains(&start)) {
+        // Nodes come in source order, so a node inside an earlier directive
+        // (tree-sitter's misparse of it) can only be inside the last one.
+        if out.last().is_some_and(|(range, _)| range.contains(&start)) {
             continue;
         }
         if let Some(define) = define_at(&node, source) {
             out.push((start..define.body_start + define.body.len(), define));
         }
     }
-    out.sort_by_key(|(range, _)| range.start);
     out
 }
 
-/// The row and column (both 0-based, the column in bytes, as tree-sitter
-/// counts them) of byte `offset` in `source`.
-pub fn point_at(source: &str, offset: usize) -> tree_sitter::Point {
-    let before = &source.as_bytes()[..offset.min(source.len())];
-    let row = before.iter().filter(|&&b| b == b'\n').count();
-    let line_start = before
-        .iter()
-        .rposition(|&b| b == b'\n')
-        .map_or(0, |k| k + 1);
-    tree_sitter::Point {
-        row,
-        column: offset - line_start,
+/// Whether `offset` falls in one of `ranges`, which are sorted and do not
+/// overlap (as [`define_directives`] returns them).
+pub fn in_sorted_ranges(ranges: &[std::ops::Range<usize>], offset: usize) -> bool {
+    let k = ranges.partition_point(|r| r.end <= offset);
+    ranges.get(k).is_some_and(|r| r.contains(&offset))
+}
+
+/// Where each line of a text starts, for turning byte offsets into
+/// positions without rescanning the text each time.
+pub struct LineIndex {
+    starts: Vec<usize>,
+}
+
+impl LineIndex {
+    /// Index the lines of `source`.
+    pub fn new(source: &str) -> Self {
+        let mut starts = vec![0];
+        starts.extend(
+            source
+                .bytes()
+                .enumerate()
+                .filter(|&(_, b)| b == b'\n')
+                .map(|(k, _)| k + 1),
+        );
+        Self { starts }
+    }
+
+    /// The row and column (both 0-based, the column in bytes, as
+    /// tree-sitter counts them) of byte `offset`.
+    pub fn point(&self, offset: usize) -> tree_sitter::Point {
+        let row = self.starts.partition_point(|&s| s <= offset) - 1;
+        tree_sitter::Point {
+            row,
+            column: offset - self.starts[row],
+        }
     }
 }
 
@@ -358,8 +502,9 @@ fn lex_with(text: &str, multi_line: bool) -> Vec<PpToken<'_>> {
         &mut |kind, range: std::ops::Range<usize>| {
             tokens.push(PpToken {
                 kind,
-                text: &text[range.clone()],
+                text: splice_continuations(&text[range.clone()]),
                 start: range.start,
+                end: range.end,
                 depth: 0,
                 stringized: false,
                 pasted: false,
@@ -368,6 +513,41 @@ fn lex_with(text: &str, multi_line: bool) -> Vec<PpToken<'_>> {
         },
     );
     tokens
+}
+
+/// `s` with its line continuations removed, borrowed when it has none.
+fn splice_continuations(s: &str) -> Cow<'_, str> {
+    let b = s.as_bytes();
+    if !b.contains(&b'\\') {
+        return Cow::Borrowed(s);
+    }
+    let mut out = Vec::with_capacity(b.len());
+    let mut k = 0;
+    let mut spliced = false;
+    while k < b.len() {
+        if b[k] == b'\\' && continuation_len(b, k) > 0 {
+            k += continuation_len(b, k);
+            spliced = true;
+        } else {
+            out.push(b[k]);
+            k += 1;
+        }
+    }
+    if spliced {
+        // Only ASCII runs were removed, so the rest is still UTF-8.
+        Cow::Owned(String::from_utf8(out).expect("splicing keeps UTF-8"))
+    } else {
+        Cow::Borrowed(s)
+    }
+}
+
+/// The index after the continuations (if any) at `i`: where a token that
+/// has reached `i` goes on reading.
+fn skip_continuations(b: &[u8], mut i: usize) -> usize {
+    while i < b.len() && b[i] == b'\\' && continuation_len(b, i) > 0 {
+        i += continuation_len(b, i);
+    }
+    i
 }
 
 /// The lexer proper: report each token's kind and byte range, and return
@@ -423,6 +603,11 @@ fn scan(
         {
             i += 1;
             while i < n {
+                let at = skip_continuations(b, i);
+                if at >= n || (at != i && !(is_ident_continue(b[at]) || b[at] == b'.')) {
+                    break;
+                }
+                i = at;
                 let d = b[i];
                 if matches!(d, b'e' | b'E' | b'p' | b'P')
                     && matches!(b.get(i + 1), Some(b'+' | b'-'))
@@ -431,7 +616,9 @@ fn scan(
                 } else if is_ident_continue(d) || d == b'.' {
                     i += 1;
                 } else if d == b'\'' && b.get(i + 1).is_some_and(|&x| is_ident_continue(x)) {
-                    // C23 digit separator.
+                    // C23 digit separator. In C11 `1'000` is a pp-number
+                    // then a character literal, but no valid C11 program
+                    // spells that, so reading it the C23 way costs nothing.
                     i += 1;
                 } else {
                     break;
@@ -439,8 +626,16 @@ fn scan(
             }
             emit(PpKind::Number, start..i);
         } else if is_ident_start(c) {
-            while i < n && is_ident_continue(b[i]) {
-                i += 1;
+            loop {
+                while i < n && is_ident_continue(b[i]) {
+                    i += 1;
+                }
+                let at = skip_continuations(b, i);
+                if at < n && at != i && is_ident_continue(b[at]) {
+                    i = at;
+                } else {
+                    break;
+                }
             }
             let prefix = &text[start..i];
             if matches!(prefix, "L" | "u" | "U" | "u8") && matches!(b.get(i), Some(b'"' | b'\'')) {
@@ -501,7 +696,7 @@ fn mark_depth(tokens: &mut [PpToken]) {
     let mut depth = 0usize;
     for t in tokens.iter_mut() {
         let p = if t.kind == PpKind::Punctuator {
-            normalize_digraph(t.text)
+            normalize_digraph(&t.text)
         } else {
             ""
         };
@@ -544,7 +739,7 @@ pub fn matching_close(tokens: &[PpToken], open: usize) -> Option<usize> {
         .find(|(_, t)| {
             t.depth == depth
                 && t.kind == PpKind::Punctuator
-                && matches!(normalize_digraph(t.text), ")" | "]" | "}")
+                && matches!(normalize_digraph(&t.text), ")" | "]" | "}")
         })
         .map(|(k, _)| k)
 }
@@ -553,7 +748,7 @@ fn mark_unevaluated(tokens: &mut [PpToken]) {
     let mut k = 0;
     while k < tokens.len() {
         let t = &tokens[k];
-        if t.kind == PpKind::Identifier && UNEVALUATED_OPERATORS.contains(&t.text) {
+        if t.kind == PpKind::Identifier && UNEVALUATED_OPERATORS.contains(&t.text.as_ref()) {
             if tokens.get(k + 1).is_some_and(|n| n.is("(")) {
                 if let Some(close) = matching_close(tokens, k + 1) {
                     tokens[k + 2..close]
@@ -613,8 +808,8 @@ fn mark_unevaluated(tokens: &mut [PpToken]) {
 mod tests {
     use super::*;
 
-    fn texts<'a>(tokens: &[PpToken<'a>]) -> Vec<&'a str> {
-        tokens.iter().map(|t| t.text).collect()
+    fn texts<'t>(tokens: &'t [PpToken]) -> Vec<&'t str> {
+        tokens.iter().map(|t| t.text.as_ref()).collect()
     }
 
     #[test]
@@ -701,7 +896,8 @@ mod tests {
         assert_eq!(d.name, "SUM");
         assert_eq!(d.params, Some(vec!["a".to_string(), "b".to_string()]));
         assert_eq!(d.body, "a /* first */ + b // x");
-        let texts: Vec<&str> = d.tokens().iter().map(|t| t.text).collect();
+        let tokens = d.tokens();
+        let texts = texts(&tokens);
         assert_eq!(texts, ["a", "+", "b"]);
         // A space before the `(` makes it object-like.
         let d = parse_define_directive("# define PAREN (x)").unwrap();
@@ -735,6 +931,36 @@ mod tests {
     }
 
     #[test]
+    fn continuations_are_spliced_before_tokens_are_read() {
+        let t = lex_replacement_list("PA\\\nRAM + 12\\\n34", false);
+        assert_eq!(texts(&t), ["PARAM", "+", "1234"]);
+        assert_eq!((t[0].start, t[0].end), (0, 7));
+        // `F\` then `(x)`: the name and its `(` are adjacent once spliced.
+        let d = parse_define_directive("#define F\\\n(x) (x)").unwrap();
+        assert_eq!(d.params, Some(vec!["x".to_string()]));
+        // Masking keeps the continuation's bytes in place.
+        assert_eq!(mask_literals_and_comments("PA\\\nRAM"), "PA\\\nRAM");
+    }
+
+    #[test]
+    fn a_hash_after_a_continuation_or_comment_is_not_a_directive() {
+        let src = "x = a \\\n # b;\ny = 1; /* two\nlines */ # c\n#d\n";
+        let starts: Vec<usize> = directive_starts(src);
+        assert_eq!(starts, [src.rfind("#d").unwrap()]);
+    }
+
+    #[test]
+    fn positions_and_ranges_come_from_sorted_tables() {
+        let lines = LineIndex::new("ab\ncd\n\nef");
+        assert_eq!(lines.point(0), tree_sitter::Point { row: 0, column: 0 });
+        assert_eq!(lines.point(4), tree_sitter::Point { row: 1, column: 1 });
+        assert_eq!(lines.point(7), tree_sitter::Point { row: 3, column: 0 });
+        let ranges = [2..5, 9..12];
+        let hits: Vec<usize> = (0..14).filter(|&k| in_sorted_ranges(&ranges, k)).collect();
+        assert_eq!(hits, [2, 3, 4, 9, 10, 11]);
+    }
+
+    #[test]
     fn depth_counts_enclosing_brackets() {
         let t = lex_replacement_list("f(a[i], {b})", false);
         let depth: Vec<usize> = t.iter().map(|t| t.depth).collect();
@@ -759,14 +985,19 @@ mod tests {
     #[test]
     fn unevaluated_operands_are_marked() {
         let t = lex_replacement_list("sizeof(x++) + sizeof p->n[i++] + y", false);
-        let unevaluated: Vec<&str> = t.iter().filter(|t| t.unevaluated).map(|t| t.text).collect();
+        let unevaluated: Vec<&str> = t
+            .iter()
+            .filter(|t| t.unevaluated)
+            .map(|t| t.text.as_ref())
+            .collect();
         assert_eq!(
             unevaluated,
             ["x", "++", "p", "->", "n", "[", "i", "++", "]"]
         );
         assert!(!t.last().unwrap().unevaluated);
         let t = lex_replacement_list("_Generic((x), int: f(x), default: g)(x)", true);
-        let marked: Vec<(&str, bool)> = t.iter().map(|t| (t.text, t.unevaluated)).collect();
+        let marked: Vec<(&str, bool)> =
+            t.iter().map(|t| (t.text.as_ref(), t.unevaluated)).collect();
         assert_eq!(&marked[2..5], [("(", true), ("x", true), (")", true)]);
         assert!(marked[9..].iter().all(|(_, u)| !u));
     }

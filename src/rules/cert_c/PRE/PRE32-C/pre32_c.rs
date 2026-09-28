@@ -86,7 +86,9 @@ struct FileText {
 impl FileText {
     /// Whether a preprocessing directive begins inside `range`.
     fn has_directive(&self, range: std::ops::Range<usize>) -> bool {
-        self.directives.iter().any(|at| range.contains(at))
+        // `directives` is in source order.
+        let k = self.directives.partition_point(|&at| at < range.start);
+        self.directives.get(k).is_some_and(|&at| at < range.end)
     }
 }
 
