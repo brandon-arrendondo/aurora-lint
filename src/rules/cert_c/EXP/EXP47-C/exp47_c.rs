@@ -23,6 +23,47 @@ fn is_va_arg_name(name: &str) -> bool {
     matches!(name, "va_arg" | "__builtin_va_arg")
 }
 
+/// `text` with each comment's bytes replaced by spaces (newlines kept), so
+/// the result has the same length and offsets. A comment marker inside a
+/// string or character literal is not a comment.
+fn blank_comments(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = bytes.to_vec();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            quote @ (b'"' | b'\'') => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                let end = text[i + 2..]
+                    .find("*/")
+                    .map_or(bytes.len(), |e| i + 2 + e + 2);
+                blank(&mut out[i..end]);
+                i = end;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                let end = text[i..].find('\n').map_or(bytes.len(), |e| i + e);
+                blank(&mut out[i..end]);
+                i = end;
+            }
+            _ => i += 1,
+        }
+    }
+    // Only whole comments were replaced, each by ASCII, so this stays UTF-8.
+    String::from_utf8(out).unwrap_or_else(|_| text.to_string())
+}
+
+fn blank(span: &mut [u8]) {
+    for b in span.iter_mut().filter(|b| **b != b'\n') {
+        *b = b' ';
+    }
+}
+
 /// A type argument as one line of words: comments removed and whitespace,
 /// newlines included, collapsed to single spaces.
 fn normalize_type_text(text: &str) -> String {
@@ -202,7 +243,9 @@ impl Exp47C {
             return;
         };
         let offset = first.start_byte();
-        let text = &source[offset..node.end_byte()];
+        // Comments call nothing: blank them so a `va_arg(` written in one is
+        // not read, keeping every byte offset (and so every column) in place.
+        let text = &blank_comments(&source[offset..node.end_byte()]);
         let mut search_from = 0;
         while let Some(pos) = text[search_from..].find("va_arg(") {
             let at = search_from + pos;
