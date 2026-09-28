@@ -1293,28 +1293,8 @@ impl FormatStringAnalyzer {
                 }
                 true // Conservative: assume unknown function calls could be unsafe
             }
-            // Parentheses do not change the value: judge what they hold, not
-            // the `(` token, which would fall to "unknown node is unsafe".
-            "parenthesized_expression" => {
-                let mut cursor = node.walk();
-                let inner = node
-                    .named_children(&mut cursor)
-                    .find(|c| c.kind() != "comment");
-                inner.is_none_or(|inner| self.is_potentially_unsafe_format_string(&inner, source))
-            }
-            "conditional_expression" => {
-                // The format is whichever result operand is selected, so judge
-                // only those two; the condition never reaches the format slot.
-                // GNU `c ?: b` has no consequence and yields the condition itself.
-                let consequence = node
-                    .child_by_field_name("consequence")
-                    .or_else(|| node.child_by_field_name("condition"));
-                let alternative = node.child_by_field_name("alternative");
-                [consequence, alternative]
-                    .iter()
-                    .flatten()
-                    .any(|operand| self.is_potentially_unsafe_format_string(operand, source))
-            }
+            "parenthesized_expression" => self.parenthesized_format_is_unsafe(node, source),
+            "conditional_expression" => self.conditional_format_is_unsafe(node, source),
             "binary_expression" | "cast_expression" => {
                 // These could involve string operations, need deeper inspection
                 // For now, check if any child is potentially unsafe
@@ -1351,6 +1331,30 @@ impl FormatStringAnalyzer {
                 true
             }
         }
+    }
+
+    /// Parentheses do not change the value: judge what they hold, not the `(`
+    /// token, which would fall to "unknown node is unsafe".
+    fn parenthesized_format_is_unsafe(&self, node: &Node, source: &str) -> bool {
+        let mut cursor = node.walk();
+        let inner = node
+            .named_children(&mut cursor)
+            .find(|c| c.kind() != "comment");
+        inner.is_none_or(|inner| self.is_potentially_unsafe_format_string(&inner, source))
+    }
+
+    /// The format is whichever result operand is selected, so judge only
+    /// those two; the condition never reaches the format slot. GNU `c ?: b`
+    /// has no consequence and yields the condition itself.
+    fn conditional_format_is_unsafe(&self, node: &Node, source: &str) -> bool {
+        let consequence = node
+            .child_by_field_name("consequence")
+            .or_else(|| node.child_by_field_name("condition"));
+        let alternative = node.child_by_field_name("alternative");
+        [consequence, alternative]
+            .iter()
+            .flatten()
+            .any(|operand| self.is_potentially_unsafe_format_string(operand, source))
     }
 
     fn could_be_user_input(&self, var_name: &str) -> bool {
