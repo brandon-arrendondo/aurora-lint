@@ -570,6 +570,9 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
 
     version = _get_sqc_version()
     sha = _get_git_sha()
+    # No manifest: none of Juliet's declares allocators or deallocators. One
+    # that did would need passing here, or its run would hash apart from
+    # what the scan used (config.resolve_settings).
     settings = juliet_settings(profile, compile_db)
     run_id = juliet_run_id(version, sha, fast=fast, compile_commands=compile_commands,
                            cwes=cwe_ids, settings=settings)

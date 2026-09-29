@@ -104,6 +104,9 @@ class TestManifestDeclarations(unittest.TestCase):
         self.addCleanup(d.cleanup)
         return d.name
 
+    # Needs a release binary, so it always skips in CI's bench job (which
+    # builds none) and fails against a stale local build. The CI guard is the
+    # Rust test a_profile_keeps_the_manifests_declared_memory_functions.
     @unittest.skipUnless(
         __import__("bench.config", fromlist=["SQC_BIN"]).SQC_BIN.is_file(),
         "no release binary to resolve settings with")

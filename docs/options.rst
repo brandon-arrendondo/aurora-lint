@@ -131,8 +131,9 @@ Declared memory functions
 ``allocators`` and ``deallocators``
    A function the scan has no body for (a platform hook supplied at build time,
    or a library outside the scanned tree) cannot be proven to allocate or to
-   free. A project declares what such a function does: a deallocator frees the argument its position names (counting from
-   1), and an allocator returns fresh memory under the contract of the standard
+   free. A project declares what such a function does: a deallocator frees
+   the argument its position names (counting from 1), and an allocator
+   returns fresh memory under the contract of the standard
    allocator it names (``malloc``, ``calloc``, ``realloc``, ``aligned_alloc``,
    ``strdup`` or ``strndup``). A ``realloc``-like allocator also releases the
    block its first argument points at. The memory-lifetime rules (MEM00-C,

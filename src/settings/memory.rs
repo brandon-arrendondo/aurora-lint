@@ -9,9 +9,11 @@
 //! declaration is the project's own statement of what such a function does
 //! (ADR-0001, ADR-0015's environment axis): a declared deallocator frees the
 //! argument it names, and a declared allocator returns fresh memory under the
-//! contract of the standard allocator it names. Every consumer that asks
-//! whether a call frees or allocates reads the same declarations, through
-//! [`crate::utility::cert_c::call_roles`].
+//! contract of the standard allocator it names. Consumers read the
+//! declarations through [`crate::utility::cert_c::call_roles`]: the
+//! memory-lifetime rules, the function summaries, and every rule that asks
+//! whether a call allocates at all. Null-state, unchecked-result and
+//! allocation-size checks still compare standard names (`docs/options.rst`).
 //!
 //! One process scans under one set of declarations. [`declare`] installs it
 //! before prescan, because function summaries built there already record what

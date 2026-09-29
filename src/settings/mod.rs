@@ -893,8 +893,9 @@ pub fn render_rst() -> String {
          ``allocators`` and ``deallocators``\n   \
          A function the scan has no body for (a platform hook supplied at build time,\n   \
          or a library outside the scanned tree) cannot be proven to allocate or to\n   \
-         free. A project declares what such a function does: a deallocator frees the argument its position names (counting from\n   \
-         1), and an allocator returns fresh memory under the contract of the standard\n   \
+         free. A project declares what such a function does: a deallocator frees\n   \
+         the argument its position names (counting from 1), and an allocator\n   \
+         returns fresh memory under the contract of the standard\n   \
          allocator it names (``malloc``, ``calloc``, ``realloc``, ``aligned_alloc``,\n   \
          ``strdup`` or ``strndup``). A ``realloc``-like allocator also releases the\n   \
          block its first argument points at. The memory-lifetime rules (MEM00-C,\n   \
