@@ -6,8 +6,6 @@ use crate::analyze::context::VisibleTypes;
 use crate::manifest::Severity;
 use crate::utility::cert_c::expr_type::{self, TypeEnv};
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::sync::Arc;
 use tree_sitter::Node;
 
 #[derive(Default)]
@@ -15,8 +13,7 @@ pub struct Flp06C {
     /// The typedefs and struct fields this file sees, so a target declared
     /// `real` (a typedef of double) and an operand declared `u32` are typed by
     /// their declarations.
-    typedef_types: RefCell<Arc<HashMap<String, String>>>,
-    struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
+    visible: RefCell<VisibleTypes>,
 }
 
 impl CertRule for Flp06C {
@@ -34,14 +31,12 @@ impl CertRule for Flp06C {
     }
 
     fn set_visible_types(&self, types: &VisibleTypes) {
-        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
-        *self.struct_field_types.borrow_mut() = types.struct_field_types.clone();
+        *self.visible.borrow_mut() = types.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let typedefs = self.typedef_types.borrow();
-        let fields = self.struct_field_types.borrow();
-        let env = TypeEnv::new(&typedefs, &fields);
+        let visible = self.visible.borrow();
+        let env = TypeEnv::visible(&visible);
         let mut violations = Vec::new();
         for decl in lang_parsing_substrate::query::find_descendants_of_kind(*node, "declaration") {
             self.check_declaration(&decl, source, &env, &mut violations);

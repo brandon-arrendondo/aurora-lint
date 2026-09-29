@@ -11,6 +11,7 @@ use crate::settings::IncludeNames;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::declarator_utils;
+use crate::utility::cert_c::expr_type;
 use crate::utility::cert_c::guard_dominance;
 
 use anyhow::Result;
@@ -61,6 +62,7 @@ struct FilePrescanResult {
     /// `.c`-only by design), for naming the origin of a macro definition.
     display_path: String,
     struct_field_types: HashMap<String, HashMap<String, String>>,
+    struct_field_shapes: HashMap<String, HashMap<String, String>>,
     struct_typedef_aliases: HashMap<String, String>,
     typedef_types: HashMap<String, String>,
     function_pointer_typedef_names: HashSet<String>,
@@ -147,6 +149,7 @@ impl FilePrescanResult {
             documented_nonnull_params: HashMap::new(),
             display_path: String::new(),
             struct_field_types: HashMap::new(),
+            struct_field_shapes: HashMap::new(),
             struct_typedef_aliases: HashMap::new(),
             typedef_types: HashMap::new(),
             function_pointer_typedef_names: HashSet::new(),
@@ -282,7 +285,12 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
 
         result.macro_aliases.extend(file_aliases);
 
-        collect_struct_definitions(&root, &source, &mut result.struct_field_types);
+        collect_struct_tables(
+            &root,
+            &source,
+            &mut result.struct_field_types,
+            &mut result.struct_field_shapes,
+        );
         collect_struct_typedef_aliases(&root, &source, &mut result.struct_typedef_aliases);
         collect_typedef_aliases(&root, &source, &mut result.typedef_types);
         collect_function_pointer_typedef_names(
@@ -574,6 +582,7 @@ fn prescan_file_list(
     let mut restrict_params: HashMap<String, Vec<usize>> = HashMap::new();
     let mut documented_nonnull_params: HashMap<String, Vec<usize>> = HashMap::new();
     let mut struct_field_types: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut struct_field_shapes: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut struct_typedef_aliases: HashMap<String, String> = HashMap::new();
     let mut typedef_types: HashMap<String, String> = HashMap::new();
     let mut function_pointer_typedef_names: HashSet<String> = HashSet::new();
@@ -842,6 +851,7 @@ fn prescan_file_list(
         }
         merge_documented_params(&mut documented_nonnull_params, r.documented_nonnull_params);
         struct_field_types.extend(r.struct_field_types);
+        struct_field_shapes.extend(r.struct_field_shapes);
         struct_typedef_aliases.extend(r.struct_typedef_aliases);
         typedef_types.extend(r.typedef_types);
         function_pointer_typedef_names.extend(r.function_pointer_typedef_names);
@@ -1328,6 +1338,7 @@ fn prescan_file_list(
         config_dependent_constants: Arc::new(config_dependent_constants),
         abort_check_macros,
         struct_field_types: Arc::new(struct_field_types),
+        struct_field_shapes: Arc::new(struct_field_shapes),
         struct_typedef_aliases: Arc::new(struct_typedef_aliases),
         typedef_types: Arc::new(typedef_types),
         function_pointer_typedef_names: Arc::new(function_pointer_typedef_names),
@@ -6020,6 +6031,10 @@ fn extract_declarator_name(decl: &Node, source: &str) -> String {
     String::new()
 }
 
+/// `struct tag or typedef name -> field -> text`: a field's type spelling in
+/// `struct_field_types`, its declarator shape in `struct_field_shapes`.
+type FieldTable = HashMap<String, HashMap<String, String>>;
+
 /// Collect struct field types from struct definitions and typedefs.
 ///
 /// Handles three patterns:
@@ -6032,18 +6047,32 @@ fn extract_declarator_name(decl: &Node, source: &str) -> String {
 pub(crate) fn collect_struct_definitions(
     node: &Node,
     source: &str,
-    struct_field_types: &mut HashMap<String, HashMap<String, String>>,
+    struct_field_types: &mut FieldTable,
+) {
+    collect_struct_tables(node, source, struct_field_types, &mut HashMap::new());
+}
+
+/// [`collect_struct_definitions`], also filing each field's declarator shape
+/// ([`expr_type::declarator_shape`]) under the same name in `shapes`. The two
+/// tables are filled by one traversal, so a name redefined later in the file
+/// replaces its entry in both, and every field in one has an entry in the
+/// other.
+pub(crate) fn collect_struct_tables(
+    node: &Node,
+    source: &str,
+    struct_field_types: &mut FieldTable,
+    shapes: &mut FieldTable,
 ) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             match child.kind() {
                 "struct_specifier" => {
                     // Pattern 1: `struct Name { ... };` (top-level or inside declaration)
-                    collect_from_struct_specifier(&child, source, struct_field_types);
+                    collect_from_struct_specifier(&child, source, struct_field_types, shapes);
                 }
                 "type_definition" => {
                     // Pattern 2/3: `typedef struct { ... } Name;`
-                    collect_from_typedef(&child, source, struct_field_types);
+                    collect_from_typedef(&child, source, struct_field_types, shapes);
                 }
                 "declaration" => {
                     // Struct definitions can appear inside declarations:
@@ -6051,7 +6080,12 @@ pub(crate) fn collect_struct_definitions(
                     for j in 0..child.child_count() {
                         if let Some(gc) = child.child(j) {
                             if gc.kind() == "struct_specifier" {
-                                collect_from_struct_specifier(&gc, source, struct_field_types);
+                                collect_from_struct_specifier(
+                                    &gc,
+                                    source,
+                                    struct_field_types,
+                                    shapes,
+                                );
                             }
                         }
                     }
@@ -6060,7 +6094,7 @@ pub(crate) fn collect_struct_definitions(
                     || kind == "linkage_specification"
                     || kind == "declaration_list" =>
                 {
-                    collect_struct_definitions(&child, source, struct_field_types);
+                    collect_struct_tables(&child, source, struct_field_types, shapes);
                 }
                 _ => {}
             }
@@ -6072,7 +6106,8 @@ pub(crate) fn collect_struct_definitions(
 fn collect_from_struct_specifier(
     node: &Node,
     source: &str,
-    struct_field_types: &mut HashMap<String, HashMap<String, String>>,
+    struct_field_types: &mut FieldTable,
+    shapes: &mut FieldTable,
 ) {
     let name = match node.child_by_field_name("name") {
         Some(n) => n.utf8_text(source.as_bytes()).unwrap_or("").to_string(),
@@ -6082,9 +6117,10 @@ fn collect_from_struct_specifier(
         return;
     }
     if let Some(body) = node.child_by_field_name("body") {
-        let fields = extract_struct_fields(&body, source);
+        let (fields, field_shapes) = extract_struct_fields(&body, source);
         if !fields.is_empty() {
-            struct_field_types.insert(name, fields);
+            struct_field_types.insert(name.clone(), fields);
+            shapes.insert(name, field_shapes);
         }
     }
 }
@@ -6094,7 +6130,8 @@ fn collect_from_struct_specifier(
 fn collect_from_typedef(
     node: &Node,
     source: &str,
-    struct_field_types: &mut HashMap<String, HashMap<String, String>>,
+    struct_field_types: &mut FieldTable,
+    shapes: &mut FieldTable,
 ) {
     let mut struct_spec = None;
     let mut typedef_name = None;
@@ -6121,15 +6158,16 @@ fn collect_from_typedef(
 
     if let Some(spec) = struct_spec {
         // First, collect under the struct's own name (if it has one)
-        collect_from_struct_specifier(&spec, source, struct_field_types);
+        collect_from_struct_specifier(&spec, source, struct_field_types, shapes);
 
         // Then, also register under the typedef alias
         if let Some(alias) = typedef_name {
             if !alias.is_empty() {
                 if let Some(body) = spec.child_by_field_name("body") {
-                    let fields = extract_struct_fields(&body, source);
+                    let (fields, field_shapes) = extract_struct_fields(&body, source);
                     if !fields.is_empty() {
-                        struct_field_types.insert(alias, fields);
+                        struct_field_types.insert(alias.clone(), fields);
+                        shapes.insert(alias, field_shapes);
                     }
                 }
             }
@@ -6508,22 +6546,27 @@ fn record_packed_signal(
 ///
 /// Anonymous `struct`/`union` members inside the body have their inner fields
 /// flattened into the parent, matching C's transparent-access semantics.
-fn extract_struct_fields(body: &Node, source: &str) -> HashMap<String, String> {
+fn extract_struct_fields(
+    body: &Node,
+    source: &str,
+) -> (HashMap<String, String>, HashMap<String, String>) {
     let mut fields = HashMap::new();
+    let mut shapes = HashMap::new();
     for i in 0..body.child_count() {
         if let Some(child) = body.child(i) {
             if child.kind() == "field_declaration" {
-                if let Some((field_name, type_text)) = extract_field_decl(&child, source) {
-                    fields.insert(field_name, type_text);
+                if let Some((field_name, type_text, shape)) = extract_field_decl(&child, source) {
+                    fields.insert(field_name.clone(), type_text);
+                    shapes.insert(field_name, shape);
                 } else if let Some(inner) = find_anonymous_inner_body(&child) {
-                    for (k, v) in extract_struct_fields(&inner, source) {
-                        fields.insert(k, v);
-                    }
+                    let (inner_fields, inner_shapes) = extract_struct_fields(&inner, source);
+                    fields.extend(inner_fields);
+                    shapes.extend(inner_shapes);
                 }
             }
         }
     }
-    fields
+    (fields, shapes)
 }
 
 /// For an anonymous `union`/`struct` inside a `field_declaration`, return the
@@ -6543,15 +6586,24 @@ fn find_anonymous_inner_body<'a>(field_decl: &Node<'a>) -> Option<Node<'a>> {
     None
 }
 
-/// Extract (field_name, type_text) from a single `field_declaration` node.
+/// Extract (field_name, type_text, shape) from a single `field_declaration`
+/// node.
 ///
 /// A field_declaration looks like: `type_specifiers declarator ;`
 /// e.g., `unsigned int flags;` or `char *name;` or `struct Inner *inner;`
-fn extract_field_decl(node: &Node, source: &str) -> Option<(String, String)> {
+///
+/// `type_text` is the specifiers, with ` *` appended when any declarator in
+/// the declaration is a pointer, and is what other rules read, so it keeps
+/// that spelling. It is lossy: `double v[4]` is `"double"` and `double **p` is
+/// `"double *"`. `shape` is the exact [`expr_type::declarator_shape`] of the
+/// declarator the field is named by, so the specifiers and the shape together
+/// give the field's type.
+fn extract_field_decl(node: &Node, source: &str) -> Option<(String, String, String)> {
     // Collect type specifier text (everything before the declarator)
     let mut type_parts = Vec::new();
     let mut field_name = None;
     let mut has_pointer = false;
+    let mut shape = String::new();
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
@@ -6567,15 +6619,18 @@ fn extract_field_decl(node: &Node, source: &str) -> Option<(String, String)> {
                 }
                 "field_identifier" => {
                     field_name = Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    shape.clear();
                 }
                 "pointer_declarator" => {
                     has_pointer = true;
                     // Extract field_identifier from inside pointer_declarator
                     field_name = extract_field_id_from_declarator(&child, source);
+                    shape = expr_type::declarator_shape(&child);
                 }
                 "array_declarator" => {
                     // e.g., `char name[64];` — extract field_identifier
                     field_name = extract_field_id_from_declarator(&child, source);
+                    shape = expr_type::declarator_shape(&child);
                 }
                 "function_declarator" => {
                     // Function pointer fields — skip for type resolution purposes
@@ -6596,7 +6651,7 @@ fn extract_field_decl(node: &Node, source: &str) -> Option<(String, String)> {
         type_text.push_str(" *");
     }
 
-    Some((name, type_text))
+    Some((name, type_text, shape))
 }
 
 /// Extract field_identifier from a declarator chain (pointer_declarator, array_declarator).
@@ -6899,10 +6954,11 @@ pub fn resolve_includes(
                 );
 
                 // Collect struct field types from resolved headers
-                collect_struct_definitions(
+                collect_struct_tables(
                     &root,
                     &hsource,
                     Arc::make_mut(&mut context.struct_field_types),
+                    Arc::make_mut(&mut context.struct_field_shapes),
                 );
                 collect_packed_structs(
                     &root,

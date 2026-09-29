@@ -338,6 +338,17 @@ pub struct ProjectContext {
     /// instead.
     #[serde(default)]
     pub value_only_globals: Arc<HashSet<String>>,
+    /// `struct tag or typedef name -> field -> declarator shape`
+    /// ([`crate::utility::cert_c::expr_type::declarator_shape`]), for every
+    /// field `struct_field_types` records, filed by the same traversal so the
+    /// two tables always describe the same definition of a name.
+    ///
+    /// `struct_field_types` spells a field by its specifiers plus at most one
+    /// ` *`, so an array field reads as its element type and `double **p` as
+    /// `double *`. Other rules read that spelling as it is, so it keeps it;
+    /// this is what a consumer needs to type the field exactly.
+    #[serde(default)]
+    pub struct_field_shapes: Arc<HashMap<String, HashMap<String, String>>>,
     /// Struct/union typedef aliases: `alias name -> the tag name its fields
     /// are filed under in `struct_field_types``, for every
     /// `typedef struct Tag Alias;` across the scanned files.
@@ -828,18 +839,37 @@ pub struct VisibleTypes {
     pub struct_field_types: Arc<HashMap<String, HashMap<String, String>>>,
     /// `typedef name -> aliased type text`, this file's definitions winning.
     pub typedef_types: Arc<HashMap<String, String>>,
+    /// `struct tag or typedef name -> field -> declarator shape`, filed with
+    /// `struct_field_types` and overlaid the same way, so the two agree on
+    /// which definition of a name is visible.
+    pub struct_field_shapes: Arc<HashMap<String, HashMap<String, String>>>,
+    /// `typedef name -> struct/union tag` for `typedef struct Tag Alias;`,
+    /// this file's winning. Kept apart from `struct_field_types` for the
+    /// reason [`ProjectContext::struct_typedef_aliases`] gives; a consumer
+    /// opts in by resolving through it.
+    pub struct_typedef_aliases: Arc<HashMap<String, String>>,
 }
 
 impl VisibleTypes {
     /// `context`'s tables overlaid with the definitions in `root`.
     pub fn for_file(context: &ProjectContext, root: &tree_sitter::Node, source: &str) -> Self {
         let mut own_fields = HashMap::new();
-        crate::analyze::prescan::collect_struct_definitions(root, source, &mut own_fields);
+        let mut own_shapes = HashMap::new();
+        crate::analyze::prescan::collect_struct_tables(
+            root,
+            source,
+            &mut own_fields,
+            &mut own_shapes,
+        );
         let mut own_typedefs = HashMap::new();
         crate::analyze::prescan::collect_typedef_aliases(root, source, &mut own_typedefs);
+        let mut own_aliases = HashMap::new();
+        crate::analyze::prescan::collect_struct_typedef_aliases(root, source, &mut own_aliases);
         Self {
             struct_field_types: overlay(&context.struct_field_types, own_fields),
             typedef_types: overlay(&context.typedef_types, own_typedefs),
+            struct_field_shapes: overlay(&context.struct_field_shapes, own_shapes),
+            struct_typedef_aliases: overlay(&context.struct_typedef_aliases, own_aliases),
         }
     }
 }

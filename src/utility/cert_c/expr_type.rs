@@ -19,11 +19,11 @@
 //! model of the target is a parameter rather than a constant. Only LP64 is
 //! implemented; an LLP64 target (a Windows build) is typed as LP64 for now.
 //!
-//! Known losses, inherited from the prescan's `struct_field_types`: a field is
-//! spelled with at most one ` *` whatever its pointer depth, and an array
-//! field is spelled as its element type, so a field is typed no more precisely
-//! than that spelling says.
+//! A struct field is typed from its specifiers (`struct_field_types`) with its
+//! declarator shape applied (`struct_field_shapes`): the spelling alone drops
+//! array-ness and pointer depth, so a field with no recorded shape is unknown.
 
+use crate::analyze::context::VisibleTypes;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::float_typing::EXTENDED_FLOAT_TYPES;
 use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
@@ -198,28 +198,46 @@ impl DataModel {
 }
 
 /// What an expression is typed against: the typedefs and struct fields this
-/// file sees ([`crate::analyze::context::VisibleTypes`]) and the data model.
+/// file sees ([`VisibleTypes`]) and the data model.
 pub struct TypeEnv<'a> {
     /// `typedef name -> aliased type text`.
     pub typedefs: &'a HashMap<String, String>,
     /// `struct tag or typedef name -> field -> type text`.
     pub fields: &'a HashMap<String, HashMap<String, String>>,
+    /// `struct tag or typedef name -> field -> declarator shape`, for the
+    /// same fields.
+    pub shapes: &'a HashMap<String, HashMap<String, String>>,
+    /// `typedef name -> struct/union tag`, for `typedef struct Tag Alias;`.
+    pub struct_aliases: &'a HashMap<String, String>,
     /// The target's integer data model.
     pub model: DataModel,
 }
 
 impl<'a> TypeEnv<'a> {
-    /// An environment over `typedefs` and `fields` with the default data
-    /// model.
+    /// An environment over these tables with the default data model.
     pub fn new(
         typedefs: &'a HashMap<String, String>,
         fields: &'a HashMap<String, HashMap<String, String>>,
+        shapes: &'a HashMap<String, HashMap<String, String>>,
+        struct_aliases: &'a HashMap<String, String>,
     ) -> Self {
         Self {
             typedefs,
             fields,
+            shapes,
+            struct_aliases,
             model: DataModel::default(),
         }
+    }
+
+    /// An environment over what one file sees.
+    pub fn visible(types: &'a VisibleTypes) -> Self {
+        Self::new(
+            &types.typedef_types,
+            &types.struct_field_types,
+            &types.struct_field_shapes,
+            &types.struct_typedef_aliases,
+        )
     }
 }
 
@@ -291,7 +309,7 @@ fn is_keyword(token: &str) -> bool {
 
 /// A typedef name: the file's or the project's typedef chain first (a project
 /// may define its own `u32`), then the standard aliases, then a typedef'd
-/// struct the field map knows.
+/// struct the field map knows, by its own name or as an alias of a tag.
 fn classify_name(name: &str, env: &TypeEnv, depth: u32) -> Option<CType> {
     if depth < 16 {
         if let Some(rhs) = env.typedefs.get(name) {
@@ -311,6 +329,12 @@ fn classify_name(name: &str, env: &TypeEnv, depth: u32) -> Option<CType> {
     }
     if env.fields.contains_key(name) {
         return Some(CType::Record(Some(name.to_string())));
+    }
+    // `typedef struct gauge gauge_t;` files the fields under the tag only.
+    if let Some(tag) = env.struct_aliases.get(name) {
+        if env.fields.contains_key(tag) {
+            return Some(CType::Record(Some(tag.clone())));
+        }
     }
     None
 }
@@ -423,28 +447,53 @@ pub fn classify_specifiers(decl: &Node, source: &str, env: &TypeEnv) -> Option<C
     classify_spelling(&specifier_spelling(decl, source)?, env)
 }
 
-/// Apply `declarator` to `base`: `*d` makes a pointer to base, `d[N]` an array
-/// of base, `d(...)` a function, parentheses pass through; the innermost name
-/// ends the walk. Abstract declarators (in a cast's type) are applied the same
-/// way.
-fn apply_declarator(base: Option<CType>, declarator: &Node) -> Option<CType> {
-    let wrap = |t: Option<CType>| t.map(Box::new);
-    let applied = match declarator.kind() {
-        "pointer_declarator" | "abstract_pointer_declarator" => Some(CType::Pointer(wrap(base))),
-        "array_declarator" | "abstract_array_declarator" => Some(CType::Array(wrap(base))),
-        "function_declarator" | "abstract_function_declarator" => Some(CType::Function(wrap(base))),
-        "parenthesized_declarator" | "abstract_parenthesized_declarator" => base,
-        _ => return base,
-    };
-    let inner = declarator.child_by_field_name("declarator").or_else(|| {
-        declarator
-            .named_child(0)
-            .filter(|c| c.kind() != "type_qualifier")
-    });
-    match inner {
-        Some(inner) if inner.id() != declarator.id() => apply_declarator(applied, &inner),
-        _ => applied,
+/// The derivations `declarator` applies to its specifier type, outermost
+/// first: `*` a pointer, `[` an array, `(` a function; parentheses add none.
+/// The innermost name ends the walk. Abstract declarators (in a cast's type)
+/// are read the same way. `double *v[4]` is `"*["`, which [`apply_shape`]
+/// makes an array of pointers to `double`: the order the declarator nests in,
+/// not the order its tokens are written in.
+pub fn declarator_shape(declarator: &Node) -> String {
+    let mut shape = String::new();
+    let mut current = *declarator;
+    loop {
+        match current.kind() {
+            "pointer_declarator" | "abstract_pointer_declarator" => shape.push('*'),
+            "array_declarator" | "abstract_array_declarator" => shape.push('['),
+            "function_declarator" | "abstract_function_declarator" => shape.push('('),
+            "parenthesized_declarator" | "abstract_parenthesized_declarator" => {}
+            _ => return shape,
+        }
+        let inner = current.child_by_field_name("declarator").or_else(|| {
+            current
+                .named_child(0)
+                .filter(|c| c.kind() != "type_qualifier")
+        });
+        match inner {
+            Some(inner) if inner.id() != current.id() => current = inner,
+            _ => return shape,
+        }
     }
+}
+
+/// `base` with the derivations of a [`declarator_shape`] applied. An unknown
+/// base stays unknown inside them: a pointer to something, not nothing.
+pub fn apply_shape(base: Option<CType>, shape: &str) -> Option<CType> {
+    shape.chars().fold(base, |t, c| {
+        let inner = t.map(Box::new);
+        match c {
+            '*' => Some(CType::Pointer(inner)),
+            '[' => Some(CType::Array(inner)),
+            '(' => Some(CType::Function(inner)),
+            _ => inner.map(|b| *b),
+        }
+    })
+}
+
+/// Apply `declarator` to `base`: `*d` makes a pointer to base, `d[N]` an array
+/// of base, `d(...)` a function, parentheses pass through.
+fn apply_declarator(base: Option<CType>, declarator: &Node) -> Option<CType> {
+    apply_shape(base, &declarator_shape(declarator))
 }
 
 /// The type `declarator` gives the object it declares in `decl` (a
@@ -743,7 +792,10 @@ pub fn math_call_type(node: &Node, source: &str) -> Option<CType> {
     Some(CType::Float(kind))
 }
 
-/// `s.f` / `p->f`: the field's recorded type in the struct the base names.
+/// `s.f` / `p->f`: the field's type in the struct the base names -- its
+/// recorded specifiers with its declarator shape applied. The specifier
+/// spelling alone is not the type (`double v[4]` and `double **p` are filed
+/// as `double` and `double *`), so a field with no recorded shape is unknown.
 fn field_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
     let field = get_node_text(&node.child_by_field_name("field")?, source);
     let base = expr_type(&node.child_by_field_name("argument")?, source, env)?;
@@ -756,7 +808,9 @@ fn field_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
         _ => return None,
     }?;
     let spelling = env.fields.get(&record)?.get(field)?;
-    classify_spelling(spelling, env)
+    let shape = env.shapes.get(&record)?.get(field)?;
+    // The spelling's ` *` stands for the pointer levels the shape states.
+    apply_shape(classify_spelling(&spelling.replace('*', " "), env), shape)
 }
 
 /// An integer or floating constant's type (C11 6.4.4.1, 6.4.4.2).
@@ -858,9 +912,12 @@ mod tests {
             .iter()
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect();
-        let mut fields = HashMap::new();
-        crate::analyze::prescan::collect_struct_definitions(&tree.root_node(), code, &mut fields);
-        let env = TypeEnv::new(&typedefs, &fields);
+        let (mut fields, mut shapes, mut aliases) =
+            (HashMap::new(), HashMap::new(), HashMap::new());
+        let root = tree.root_node();
+        crate::analyze::prescan::collect_struct_tables(&root, code, &mut fields, &mut shapes);
+        crate::analyze::prescan::collect_struct_typedef_aliases(&root, code, &mut aliases);
+        let env = TypeEnv::new(&typedefs, &fields, &shapes, &aliases);
         let ret = lang_parsing_substrate::query::find_descendants_of_kind(
             tree.root_node(),
             "return_statement",
@@ -1033,6 +1090,53 @@ mod tests {
         let code = "typedef struct { float v; } pt_t;\n\
                     int f(pt_t p) { return p.v; }";
         assert_eq!(returned(code, &[]), Some(CType::Float(FloatKind::Float)));
+    }
+
+    #[test]
+    fn a_field_has_its_declarator_shape() {
+        let double = || Some(Box::new(CType::Float(FloatKind::Double)));
+        let code = "struct buf { double v[4]; };\n\
+                    int f(struct buf *a) { return a->v; }";
+        assert_eq!(returned(code, &[]), Some(CType::Array(double())));
+        let code = "struct mat { double **rows; };\n\
+                    int f(struct mat *a) { return *a->rows; }";
+        assert_eq!(returned(code, &[]), Some(CType::Pointer(double())));
+        // Array of pointers, not pointer to array.
+        let code = "struct t { double *p[4]; };\n\
+                    int f(struct t *a) { return a->p[0]; }";
+        assert_eq!(returned(code, &[]), Some(CType::Pointer(double())));
+        // The ` *` a sibling declarator put in the spelling is not this one's.
+        let code = "struct u { double *a, b; };\n\
+                    int f(struct u *s) { return s->b; }";
+        assert_eq!(returned(code, &[]), Some(CType::Float(FloatKind::Double)));
+    }
+
+    #[test]
+    fn a_field_with_no_recorded_shape_is_unknown() {
+        let tree = parse("int f(struct s *p) { return p->d; }");
+        let code = "int f(struct s *p) { return p->d; }";
+        let fields: HashMap<String, HashMap<String, String>> = [(
+            "s".to_string(),
+            [("d".to_string(), "double".to_string())].into(),
+        )]
+        .into();
+        let (typedefs, shapes, aliases) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let env = TypeEnv::new(&typedefs, &fields, &shapes, &aliases);
+        let ret = lang_parsing_substrate::query::find_descendants_of_kind(
+            tree.root_node(),
+            "return_statement",
+        )
+        .pop()
+        .unwrap();
+        assert_eq!(expr_type(&ret.named_child(0).unwrap(), code, &env), None);
+    }
+
+    #[test]
+    fn a_bodyless_struct_typedef_names_the_tags_fields() {
+        let code = "struct gauge { double ratio; };\n\
+                    typedef struct gauge gauge_t;\n\
+                    int f(const gauge_t *p) { return p->ratio; }";
+        assert_eq!(returned(code, &[]), Some(CType::Float(FloatKind::Double)));
     }
 
     #[test]

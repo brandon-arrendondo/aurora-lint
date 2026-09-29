@@ -70,8 +70,7 @@ pub struct Flp03C {
     project_macros: RefCell<Arc<MacroConstantMap>>,
     /// The typedefs and struct fields this file sees, so an operand declared
     /// `real` (a typedef of double) or `p->ratio` is typed by its declaration.
-    typedef_types: RefCell<Arc<HashMap<String, String>>>,
-    struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
+    visible: RefCell<VisibleTypes>,
 }
 
 /// Whether the operand's value is of a floating type: its type by
@@ -1042,15 +1041,13 @@ impl CertRule for Flp03C {
     }
 
     fn set_visible_types(&self, types: &VisibleTypes) {
-        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
-        *self.struct_field_types.borrow_mut() = types.struct_field_types.clone();
+        *self.visible.borrow_mut() = types.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        let typedefs = self.typedef_types.borrow();
-        let fields = self.struct_field_types.borrow();
-        let env = TypeEnv::new(&typedefs, &fields);
+        let visible = self.visible.borrow();
+        let env = TypeEnv::visible(&visible);
         self.check_node(node, source, &mut violations, &env);
         violations
     }

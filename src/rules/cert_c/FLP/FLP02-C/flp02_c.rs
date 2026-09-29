@@ -59,16 +59,13 @@ use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::expr_type::{self, TypeEnv};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::sync::Arc;
 use tree_sitter::Node;
 
 #[derive(Debug, Default)]
 pub struct Flp02C {
     /// The typedefs and struct fields this file sees, so an operand declared
     /// `real` (a typedef of double) or `p->ratio` is typed by its declaration.
-    typedef_types: RefCell<Arc<HashMap<String, String>>>,
-    struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
+    visible: RefCell<VisibleTypes>,
 }
 
 impl Flp02C {
@@ -183,14 +180,12 @@ impl CertRule for Flp02C {
     }
 
     fn set_visible_types(&self, types: &VisibleTypes) {
-        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
-        *self.struct_field_types.borrow_mut() = types.struct_field_types.clone();
+        *self.visible.borrow_mut() = types.clone();
     }
 
     fn check(&self, root: &Node, source: &str) -> Vec<RuleViolation> {
-        let typedefs = self.typedef_types.borrow();
-        let fields = self.struct_field_types.borrow();
-        let env = TypeEnv::new(&typedefs, &fields);
+        let visible = self.visible.borrow();
+        let env = TypeEnv::visible(&visible);
         let mut violations = Vec::new();
         for n in query::find_descendants_of_kind(*root, "binary_expression") {
             self.check_float_equality(&n, source, &env, &mut violations);

@@ -2,37 +2,24 @@
 // Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 use super::super::{CertRule, RuleViolation};
-use crate::analyze::context::ProjectContext;
+use crate::analyze::context::VisibleTypes;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::expr_type::{self, CType, TypeEnv};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::sync::Arc;
 use tree_sitter::Node;
 
 #[derive(Default)]
 pub struct Int02C {
-    /// One-level typedef alias map from the prescan. Without it an operand
-    /// spelled `u32`, `uint32`, `WORD` or any vendor integer alias classifies
-    /// as unknown and is skipped -- which is most of the integer arithmetic in
-    /// the embedded and CI-targeted code this rule is meant to run on.
-    typedef_types: RefCell<Arc<HashMap<String, String>>>,
-    /// The project map merged with the current file's own aliases, rebuilt per
-    /// file. The injected map only arrives when a prescan ran (`-d`, or a
-    /// header sweep); a typedef declared in the translation unit being scanned
-    /// has to resolve either way.
-    visible_typedefs: RefCell<HashMap<String, String>>,
-    /// `struct tag -> {field -> type text}` from the prescan, so a field
-    /// operand (`hdr->length`) can be resolved to the type it is declared
-    /// with rather than skipped.
-    struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
-    /// The project's struct fields merged with this file's own, rebuilt per
-    /// file for the same reason as `visible_typedefs`: a struct declared in
-    /// the translation unit being scanned has to resolve whether or not a
-    /// prescan supplied one.
-    visible_struct_fields: RefCell<HashMap<String, HashMap<String, String>>>,
+    /// The typedefs and struct fields this file sees (the project's, this
+    /// file's own definitions winning), so an operand spelled `u32`, `WORD`
+    /// or any vendor integer alias, or a field operand (`hdr->length`), is
+    /// typed by its declaration rather than skipped. A name is not a type:
+    /// curl defines two different `struct h3_stream_ctx`, one per QUIC
+    /// backend, whose `id` is `uint64_t` in one and `int64_t` in the other,
+    /// and the one in scope is the file's own.
+    visible: RefCell<VisibleTypes>,
 }
 
 /// Integer conversion rank, coarse enough for the only two questions this
@@ -76,14 +63,8 @@ impl CertRule for Int02C {
         "INT02-C"
     }
 
-    fn set_project_context(&self, context: &ProjectContext) {
-        *self.typedef_types.borrow_mut() = context.typedef_types.clone();
-        *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
-    }
-
-    fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
-        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
-        *self.struct_field_types.borrow_mut() = types.struct_field_types.clone();
+    fn set_visible_types(&self, types: &VisibleTypes) {
+        *self.visible.borrow_mut() = types.clone();
     }
 
     // Every question here is answered from the type the operand's own
@@ -102,9 +83,6 @@ impl CertRule for Int02C {
     // rule's own fixture made the identical defect invisible. All 431
     // real-world findings ever adjudicated against that version were false.
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        self.rebuild_visible_typedefs(node, source);
-        self.rebuild_visible_struct_fields(node, source);
-
         for expr in query::find_descendants_of_kind(*node, "binary_expression") {
             let Some(op) = expr.child_by_field_name("operator") else {
                 continue;
@@ -235,48 +213,13 @@ impl Int02C {
 /// the operand's type is not in reach here, and guessing is what produced
 /// this rule's previous false-positive population.
 impl Int02C {
-    /// Project aliases plus this file's own, so a typedef is resolvable
-    /// whether or not a prescan supplied one.
-    ///
-    /// THIS FILE'S OWN DEFINITION WINS. The project map is keyed by NAME
-    /// across the whole tree, and a name is not a type: two translation units
-    /// may spell the same alias differently, and the one in scope here is the
-    /// one this file declares. The project map is the fallback, for a name
-    /// this file only receives through a header — headers are not expanded
-    /// when a file is parsed, so the collector cannot see those.
-    fn rebuild_visible_typedefs(&self, node: &Node, source: &str) {
-        let mut merged: HashMap<String, String> = (**self.typedef_types.borrow()).clone();
-        let mut file_local = HashMap::new();
-        crate::analyze::prescan::collect_typedef_aliases(node, source, &mut file_local);
-        merged.extend(file_local);
-        *self.visible_typedefs.borrow_mut() = merged;
-    }
-
-    /// Project struct fields plus this file's own, this file's winning for the
-    /// same reason as its typedefs — and here the reason is demonstrable. The
-    /// prescan map is keyed by struct TAG across the whole tree, and a tag is
-    /// not a type: curl defines two different `struct h3_stream_ctx`, one per
-    /// QUIC backend, whose `id` field is `uint64_t` in one and `int64_t` in
-    /// the other. With the project map winning, the ngtcp2 definition answered
-    /// for the quiche file and produced a signed/unsigned comparison that is
-    /// not in the code.
-    fn rebuild_visible_struct_fields(&self, node: &Node, source: &str) {
-        let mut merged: HashMap<String, HashMap<String, String>> =
-            (**self.struct_field_types.borrow()).clone();
-        let mut file_local = HashMap::new();
-        crate::analyze::prescan::collect_struct_definitions(node, source, &mut file_local);
-        merged.extend(file_local);
-        *self.visible_struct_fields.borrow_mut() = merged;
-    }
-
     fn operand_int_type(&self, node: &Option<Node>, source: &str) -> Option<IntType> {
         let mut node = (*node)?;
         while node.kind() == "parenthesized_expression" {
             node = node.named_child(0)?;
         }
-        let typedefs = self.visible_typedefs.borrow();
-        let fields = self.visible_struct_fields.borrow();
-        let env = TypeEnv::new(&typedefs, &fields);
+        let visible = self.visible.borrow();
+        let env = TypeEnv::visible(&visible);
         let declared = match node.kind() {
             // The type the name, the struct field, or the indexed array's
             // element is declared with, at this occurrence.
