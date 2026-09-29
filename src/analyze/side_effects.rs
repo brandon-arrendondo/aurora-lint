@@ -729,8 +729,15 @@ impl<'t> Collector<'_, 't> {
             // ... #ifdef LOCAL int g; #endif g = 1;`), so the write is that
             // object's. With nothing past the arm, a configuration without
             // it would not compile: the arm is active and its local is the
-            // object (`#ifdef _WIN32 long n; #else int n; #endif n = 0;`).
+            // object (`#ifdef _WIN32 long n; #else int n; #endif n = 0;`),
+            // and so it is when every alternative of the group declares it,
+            // whatever lies past.
             Some(IdentifierBinding::Local(decl)) if in_other_arm(&decl, ident) => {
+                if let Some(decls) = declarations_in_every_arm(&decl, name, self.source) {
+                    return decls
+                        .iter()
+                        .find_map(|d| self.local_location(d, ident, name, element));
+                }
                 match self.binding_past_other_arms(ident) {
                     Some(IdentifierBinding::Local(outer)) => {
                         self.local_location(&outer, ident, name, element)
@@ -1017,6 +1024,41 @@ fn global_location(decl: &Node, name: &str, source: &str) -> Loc {
     } else {
         Loc::Global(name.to_string())
     }
+}
+
+/// The declarations of `name` in every alternative of the `#if` group
+/// holding `decl`, when each declares it directly and the group ends in an
+/// `#else`: then one of them binds the name in every configuration. `None`
+/// when some configuration may leave it undeclared.
+fn declarations_in_every_arm<'t>(
+    decl: &Node<'t>,
+    name: &str,
+    source: &str,
+) -> Option<Vec<Node<'t>>> {
+    let mut head = decl.parent()?;
+    while matches!(
+        head.kind(),
+        "preproc_else" | "preproc_elif" | "preproc_elifdef"
+    ) {
+        head = head.parent()?;
+    }
+    if !matches!(head.kind(), "preproc_if" | "preproc_ifdef") {
+        return None;
+    }
+    let mut found = Vec::new();
+    let mut arm = Some(head);
+    while let Some(current) = arm {
+        let mut cursor = current.walk();
+        let declared = current.named_children(&mut cursor).find(|d| {
+            d.kind() == "declaration" && declared_in(d, source).iter().any(|n| n == name)
+        })?;
+        found.push(declared);
+        if current.kind() == "preproc_else" {
+            return Some(found);
+        }
+        arm = current.child_by_field_name("alternative");
+    }
+    None
 }
 
 /// Whether `decl` sits in a preprocessor arm that does not also hold `usage`:
