@@ -13,6 +13,7 @@ use crate::manifest::Severity;
 use crate::rules::cert_c::int_provenance;
 use crate::settings::DataModel;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
+use crate::utility::cert_c::data_model::Rank;
 use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
@@ -23,11 +24,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
-
-/// Width every integer operation is performed in at minimum: C's usual
-/// arithmetic conversions promote anything narrower than `int` before the
-/// operation runs.
-const PROMOTED_ARITH_BITS: u32 = 32;
 
 /// Depth cap for walking into an operand looking for its type.
 const OPERAND_TYPE_MAX_DEPTH: u32 = 8;
@@ -1412,11 +1408,13 @@ impl Int30C {
 
             let macros = self.current_macros.borrow();
             let vra_ranges = self.vra_var_ranges_at(check_node, source);
-            let fits_64 = const_eval::expression_fits_in_signed_vra(
+            // The width size_t is guaranteed: 64 on a declared LP64 or LLP64
+            // target, only 16 under ISO C's (C11 7.20.3, SIZE_MAX).
+            let fits_size_t = const_eval::expression_fits_in_signed_vra(
                 check_node,
                 source,
                 &macros,
-                64,
+                self.size_t_bits(),
                 vra_ranges.as_ref(),
             );
             // A product that fits in 64 bits can still *definitely* wrap a
@@ -1432,7 +1430,7 @@ impl Int30C {
                 vra_ranges.as_ref(),
             );
             drop(macros);
-            if fits_64 && !wraps_32_size_t {
+            if fits_size_t && !wraps_32_size_t {
                 continue;
             }
             if self.has_allocation_size_guard(node, check_node, source) {
@@ -1677,11 +1675,12 @@ impl Int30C {
             return Some(true);
         }
         let product = count?.mul(&elem?)?;
-        // Mirrors `check_allocation_size_wrap`: fits 64 bits, and does not
-        // *definitely* exceed a 32-bit `size_t`. A product that merely
-        // straddles the 32-bit bound is a possible wrap, not a proven one,
-        // and is left to the range being narrowed, not reported here.
-        Some(product.fits_in_unsigned(64) && product.min <= i64::from(u32::MAX))
+        // Mirrors `check_allocation_size_wrap`: fits the width `size_t` is
+        // guaranteed, and does not *definitely* exceed a 32-bit `size_t`. A
+        // product that merely straddles the 32-bit bound is a possible wrap,
+        // not a proven one, and is left to the range being narrowed, not
+        // reported here.
+        Some(product.fits_in_unsigned(self.size_t_bits()) && product.min <= i64::from(u32::MAX))
     }
 
     /// The value range of one `calloc` operand: the VRA ranges replayed at
@@ -2281,6 +2280,11 @@ impl Int30C {
         source: &str,
         type_map: &HashMap<String, String>,
     ) -> bool {
+        // The bound is a 32-bit int's; a model that does not fix int's width
+        // proves nothing here.
+        if self.data_model.get().exact_width(Rank::Int).is_none() {
+            return false;
+        }
         let macros = self.current_macros.borrow();
         const MAX_FACTOR: i64 = (u32::MAX as i64) / 65535; // ≈ 65538
         let check = |narrow: &Node, small: &Node| -> bool {
@@ -2304,14 +2308,18 @@ impl Int30C {
     /// multiplies in 32 bits and wraps before the store widens anything. The
     /// operands' common type is what bounds it.
     ///
-    /// Everything narrower than `int` promotes, so [`PROMOTED_ARITH_BITS`] is
-    /// the floor and the only lift is to 64. Asking the fits-check at a flat 32
-    /// was the whole of this rule's word-width blindness: `count *
+    /// Everything narrower than `int` promotes, so `int`'s guaranteed width
+    /// ([`Self::promoted_bits`]) is the floor, and a wider operand lifts it
+    /// to the width its type is guaranteed. Asking the fits-check at a flat
+    /// 32 was the whole of this rule's word-width blindness: `count *
     /// sizeof(struct s)` is computed in `size_t`, cannot wrap on a 64-bit
     /// build, and was reported anyway because it does not fit in 32 bits.
+    /// The widths are the data model's: under ISO C's a `size_t` is only
+    /// guaranteed 16 bits, so without a declared model that product is not
+    /// proven to fit.
     ///
-    /// This is the floor a fits-check may use: a value that fits 32 bits
-    /// fits any width promotion can produce. Whether the width is actually
+    /// This is the floor a fits-check may use: a value that fits it fits
+    /// any width the operation can have on a target the model allows. Whether the width is actually
     /// KNOWN is `arith_width_known`'s question, and the one the
     /// definite-wrap channel has to ask.
     fn arith_width_bits(
@@ -2321,7 +2329,7 @@ impl Int30C {
         type_map: &HashMap<String, String>,
     ) -> u32 {
         self.arith_width_known(node, source, type_map)
-            .unwrap_or(PROMOTED_ARITH_BITS)
+            .unwrap_or_else(|| self.promoted_bits())
     }
 
     /// `arith_width_bits`, or `None` when an operand's declared type resolves
@@ -2354,7 +2362,7 @@ impl Int30C {
             {
                 width(node.child_by_field_name("left"))
             }
-            "binary_expression" => Self::common_width(
+            "binary_expression" => self.common_width(
                 width(node.child_by_field_name("left")),
                 width(node.child_by_field_name("right")),
             ),
@@ -2366,23 +2374,40 @@ impl Int30C {
         }
     }
 
-    /// The width two operands' usual arithmetic conversions land on: 64 if
-    /// either is, else unknown if either is, else the promoted floor.
-    fn common_width(left: Option<u32>, right: Option<u32>) -> Option<u32> {
+    /// The width two operands' usual arithmetic conversions land on: the
+    /// wider of the two, unknown if either is (unless the other is already
+    /// 64 bits, which nothing the model allows widens), and never below the
+    /// promoted floor.
+    fn common_width(&self, left: Option<u32>, right: Option<u32>) -> Option<u32> {
         match (left, right) {
             (Some(64), _) | (_, Some(64)) => Some(64),
-            (None, _) | (_, None) => None,
-            _ => Some(PROMOTED_ARITH_BITS),
+            (Some(l), Some(r)) => Some(l.max(r).max(self.promoted_bits())),
+            _ => None,
         }
     }
 
-    /// The width this operand's type gives an operation: `Some(64)` for a
-    /// type that is 64-bit unsigned on every data model the pinned corpora
-    /// build for, `Some(PROMOTED_ARITH_BITS)` for any other type the rule
-    /// can place (promotion makes everything narrower than `int` 32-bit
-    /// arithmetic, and a shape with no declared type at all -- a literal, a
-    /// call -- keeps the floor it always had), `None` for a declared type
-    /// that resolves to a spelling the rule does not recognize.
+    /// The width `int` is guaranteed under the data model: every operation
+    /// is performed in at least this, since C's usual arithmetic conversions
+    /// promote anything narrower before it runs. 32 on a declared model, 16
+    /// under ISO C's widths.
+    fn promoted_bits(&self) -> u32 {
+        self.data_model.get().min_width(Rank::Int)
+    }
+
+    /// The width `size_t` is guaranteed under the data model.
+    fn size_t_bits(&self) -> u32 {
+        self.data_model
+            .get()
+            .spelled_width("size_t")
+            .map_or(16, |(_, width)| width.min)
+    }
+
+    /// The width this operand's type gives an operation: the width the data
+    /// model guarantees its type, no less than the promoted floor for any
+    /// type the rule can place (promotion makes everything narrower than
+    /// `int` `int` arithmetic, and a shape with no declared type at all -- a
+    /// literal, a call -- keeps the floor it always had), `None` for a
+    /// declared type that resolves to a spelling the rule does not recognize.
     ///
     /// Recurses through the shapes that carry a type without changing it
     /// (parentheses, a nested arithmetic subexpression), depth-capped because
@@ -2395,7 +2420,7 @@ impl Int30C {
         depth: u32,
     ) -> Option<u32> {
         if depth > OPERAND_TYPE_MAX_DEPTH {
-            return Some(PROMOTED_ARITH_BITS);
+            return Some(self.promoted_bits());
         }
         let recurse = |n: Option<Node>| -> Option<u32> {
             self.operand_width(&n?, source, type_map, depth + 1)
@@ -2403,20 +2428,21 @@ impl Int30C {
         match node.kind() {
             "parenthesized_expression" => recurse(node.named_child(0)),
             // `sizeof` yields `size_t` by definition -- the operand that makes
-            // an allocation size computation 64-bit in the first place.
-            "sizeof_expression" => Some(64),
+            // an allocation size computation 64-bit in the first place, on a
+            // declared 64-bit model.
+            "sizeof_expression" => Some(self.size_t_bits().max(self.promoted_bits())),
             "cast_expression" => match node.child_by_field_name("type") {
                 Some(t) => self.type_width_bits(get_node_text(&t, source)),
-                None => Some(PROMOTED_ARITH_BITS),
+                None => Some(self.promoted_bits()),
             },
             // A subexpression is at least as wide as its own widest operand.
-            "binary_expression" => Self::common_width(
+            "binary_expression" => self.common_width(
                 recurse(node.child_by_field_name("left")),
                 recurse(node.child_by_field_name("right")),
             ),
             "identifier" => match ast_utils::identifier_type(node, source, type_map) {
                 Some(t) => self.type_width_bits(&t),
-                None => Some(PROMOTED_ARITH_BITS),
+                None => Some(self.promoted_bits()),
             },
             "field_expression" => {
                 let sft = self.struct_field_types.borrow();
@@ -2424,10 +2450,10 @@ impl Int30C {
                     node, source, type_map, &sft,
                 ) {
                     Some(t) => self.type_width_bits(&t),
-                    None => Some(PROMOTED_ARITH_BITS),
+                    None => Some(self.promoted_bits()),
                 }
             }
-            _ => Some(PROMOTED_ARITH_BITS),
+            _ => Some(self.promoted_bits()),
         }
     }
 
@@ -2435,35 +2461,37 @@ impl Int30C {
     /// through the project's typedef chain first (ADR-0006):
     /// hostap's `u64` is `uint64_t` and was judged 32-bit by name.
     ///
-    /// `Some(64)` for the unsigned types that are 64-bit under *both* LP64
-    /// and LLP64. `unsigned long` is deliberately absent: 64-bit on LP64,
-    /// 32-bit on LLP64, and curl builds for both. Widening on it would
-    /// suppress a wrap that is real on Windows, which is not a trade this
-    /// rule gets to make silently -- so it and every other spelling the
-    /// rule recognizes is `Some(PROMOTED_ARITH_BITS)`. `None` is a chain
-    /// that bottoms out in a name nothing the scan read defines.
+    /// The width the data model guarantees the type: `unsigned long` is 64
+    /// bits on a declared LP64 target, 32 on LLP64, and only 32 under ISO C's
+    /// widths; `uint64_t` and the `least`/`fast`/`max` 64-bit types are 64
+    /// everywhere; `size_t` is a pointer's width on a declared model. No
+    /// less than the promoted floor for any spelling the rule recognizes.
+    /// `None` is a chain that bottoms out in a name nothing the scan read
+    /// defines.
     fn type_width_bits(&self, type_str: &str) -> Option<u32> {
         let base = Self::strip_type_qualifiers(type_str);
         let resolved = overflow_helpers::resolve_typedef_chain(&base, &self.typedef_types.borrow());
         let base = Self::strip_type_qualifiers(&resolved);
         let base = base.trim();
+        let floor = self.promoted_bits();
         if base.contains('*') {
-            return Some(PROMOTED_ARITH_BITS);
+            return Some(floor);
         }
         if matches!(
             base,
-            "size_t"
-                | "uint64_t"
-                | "uint_least64_t"
+            "uint_least64_t"
                 | "uint_fast64_t"
                 | "uintmax_t"
-                | "uintptr_t"
-                | "unsigned long long"
-                | "unsigned long long int"
+                | "int_least64_t"
+                | "int_fast64_t"
+                | "intmax_t"
         ) {
             return Some(64);
         }
-        Self::is_recognized_integer_spelling(base).then_some(PROMOTED_ARITH_BITS)
+        if let Some((_, width)) = self.data_model.get().spelled_width(base) {
+            return Some(width.min.max(floor));
+        }
+        Self::is_recognized_integer_spelling(base).then_some(floor)
     }
 
     /// A type spelling this rule can place at some width: the C integer

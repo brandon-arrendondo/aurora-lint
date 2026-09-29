@@ -2,6 +2,9 @@
  * Rule: INT32-C
  * Source: testcases
  * Status: PASS - No violation expected
+ * Settings: data_model=lp64
+ *
+ * 1000000 << 10 fits a 32-bit int, which a declared model fixes.
  */
 
 /*
