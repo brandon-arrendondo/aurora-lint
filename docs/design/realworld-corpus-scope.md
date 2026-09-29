@@ -301,6 +301,15 @@ intra-file and stays in the denominator. It is also not a platform
 axis but a compile-time limit — a third kind of build knob the field does not
 model.
 
+### Declared memory functions
+
+`conf/realworld/sqlite-rules.toml` declares `sqlite3_free = 1`. Its body frees
+through `sqlite3GlobalConfig.m.xFree`, a function pointer the scan cannot
+follow, and the documented API says it releases memory from `sqlite3_malloc`.
+Only the root is declared; sqlite's own wrappers free by their bodies. A free
+counts only where the scan can show it (a body, a macro, or a declaration), so
+without this every `sqlite3_free(p)` would be an escape rather than a free.
+
 ## curl
 
 ### Scope + file reduction (sqlite lesson)
