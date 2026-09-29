@@ -94,7 +94,7 @@ Environment contracts
    - Basis: C11 7.24 and 7.4: memcmp, strcmp, strncmp, memchr, strchr, strcspn, strpbrk, strrchr, strspn, strstr, strlen and the character classification and case mapping functions modify no object; 7.22.1.4p8 and 7.12.1 (strtol and math functions report errors through errno); CERT PRE31-C-EX1: "even changing errno is a side effect".
 
 ``library_macros_evaluate_once``
-   A C library function the implementation's headers define as a macro (glibc's tolower) evaluates each argument exactly once, whatever its replacement list looks like. Withdrawn, such a macro is judged by its definition like any other.
+   A C library function the implementation's headers define as a macro (glibc's tolower) evaluates each argument exactly once, whatever its replacement list looks like, including when a project macro hands it an argument. "The implementation's headers" are any defining the name outside the scanned project, so a third-party library on the search path that redefines a standard name is trusted too (a redefinition C11 7.1.3 already makes undefined). Withdrawn, such a macro is judged by its definition like any other.
 
    - Default preset: ``true``; strict preset: ``false``
    - Scope: contract

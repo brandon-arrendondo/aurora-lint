@@ -161,6 +161,31 @@ const CONFORMING_LIBCS: &[Libc] = &[
     Libc::Picolibc,
 ];
 
+/// Options that enter the settings hash only when overridden away from the
+/// value their source derives. Each was added after runs had already been
+/// recorded, so settings that merely take the implied value keep the hash
+/// those runs carry.
+const HASHED_ONLY_WHEN_OVERRIDDEN: &[&str] = &["library_macros_evaluate_once"];
+
+/// The value `o` takes from its source before any override.
+fn derived_value(
+    o: &OptionSpec,
+    policy: Policy,
+    environment: EnvironmentKind,
+    libc: Option<Libc>,
+) -> bool {
+    match o.source {
+        Source::Policy { default, strict } => match policy {
+            Policy::Default => default,
+            Policy::Strict => strict,
+        },
+        Source::Hosted => environment == EnvironmentKind::Hosted,
+        Source::Library(libcs) => libc.is_some_and(|l| libcs.contains(&l)),
+        Source::Language => true,
+        Source::Declared => false,
+    }
+}
+
 /// Every option the tool supports. The listing and the generated
 /// documentation are rendered from this table.
 pub static OPTIONS: &[OptionSpec] = &[
@@ -306,8 +331,12 @@ pub static OPTIONS: &[OptionSpec] = &[
         oracle_tag: "contract:library_macros_evaluate_once",
         summary: "A C library function the implementation's headers define as a macro \
                   (glibc's tolower) evaluates each argument exactly once, whatever its \
-                  replacement list looks like. Withdrawn, such a macro is judged by its \
-                  definition like any other.",
+                  replacement list looks like, including when a project macro hands it \
+                  an argument. \"The implementation's headers\" are any defining the \
+                  name outside the scanned project, so a third-party library on the \
+                  search path that redefines a standard name is trusted too (a \
+                  redefinition C11 7.1.3 already makes undefined). Withdrawn, such a \
+                  macro is judged by its definition like any other.",
         basis: "C11 7.1.4p1: \"Any invocation of a library function that is implemented \
                 as a macro shall expand to code that evaluates each of its arguments \
                 exactly once\". The standard's own exceptions (the stream argument of \
@@ -580,17 +609,7 @@ impl AnalysisSettings {
 
         let mut values = BTreeMap::new();
         for o in OPTIONS {
-            let v = match o.source {
-                Source::Policy { default, strict } => match policy {
-                    Policy::Default => default,
-                    Policy::Strict => strict,
-                },
-                Source::Hosted => environment == EnvironmentKind::Hosted,
-                Source::Library(libcs) => libc.is_some_and(|l| libcs.contains(&l)),
-                Source::Language => true,
-                Source::Declared => false,
-            };
-            values.insert(o.name, v);
+            values.insert(o.name, derived_value(o, policy, environment, libc));
         }
 
         let overrides = [
@@ -694,15 +713,28 @@ impl AnalysisSettings {
     /// SHA-256 (hex) of [`canonical_json`](Self::canonical_json). Names the
     /// settings a run scanned under: benchmark run ids carry its first 12
     /// characters, and a report carries all of it. Every option the table
-    /// knows is part of it, so adding an option changes every hash.
+    /// knows is part of it, so adding an option changes every hash, except
+    /// one in [`HASHED_ONLY_WHEN_OVERRIDDEN`], which counts only when an
+    /// override departs from what the preset, policy, environment and libc
+    /// imply.
     pub fn settings_hash(&self) -> String {
         crate::utility::hash::sha256_hex(self.canonical_json().as_bytes())
     }
 
     fn identity_json(&self) -> serde_json::Value {
-        let options: serde_json::Map<String, serde_json::Value> = self
-            .values()
-            .map(|(k, v)| (k.to_string(), serde_json::Value::Bool(v)))
+        let options: serde_json::Map<String, serde_json::Value> = OPTIONS
+            .iter()
+            .filter(|o| {
+                !HASHED_ONLY_WHEN_OVERRIDDEN.contains(&o.name)
+                    || self.values[o.name]
+                        != derived_value(o, self.policy, self.environment, self.libc)
+            })
+            .map(|o| {
+                (
+                    o.name.to_string(),
+                    serde_json::Value::Bool(self.values[o.name]),
+                )
+            })
             .collect();
         let mut identity = serde_json::json!({
             "preset": self.matching_preset(),
@@ -1044,22 +1076,46 @@ mod tests {
 
     #[test]
     fn exact_include_names_leave_every_preset_hash_as_it_was() {
-        // The presets' hashes with the current option table
-        // (`library_macros_evaluate_once` added a contract, which moved both).
-        // Benchmark run ids carry
+        // The presets' hashes with the current option table (`closed_program`
+        // added a declared option, which moved both). Benchmark run ids carry
         // them, so exact include-name matching must not move them.
         assert_eq!(
             AnalysisSettings::preset(Preset::Default).settings_hash(),
-            "6a001173c239eb726f3ca4e2e73487042aa972f8ae7c3561b2d512a8905d473f"
+            "6a42bd4cf1e02bd610c081ad24a69ebfc4a214e67a7f338449fd9651ddf24c8f"
         );
         assert_eq!(
             AnalysisSettings::preset(Preset::Strict).settings_hash(),
-            "5fa23c0fef79bc1d0337f4df67a0df0ee2e5a502841075133eefb24e8e307eab"
+            "b15a42e2ed2094bb968fc6ff764429d5f3e598d0103e91ab3ff660286dc648f9"
         );
         assert_eq!(
             with_names(Preset::Default, Some(IncludeNames::Exact)).settings_hash(),
             AnalysisSettings::preset(Preset::Default).settings_hash()
         );
+    }
+
+    #[test]
+    fn a_late_option_moves_the_hash_only_when_overridden() {
+        let with = |preset: Preset, value: bool| {
+            let mut config = SettingsConfig {
+                profile: Some(preset),
+                ..Default::default()
+            };
+            config
+                .set(&format!("library_macros_evaluate_once={value}"))
+                .unwrap();
+            AnalysisSettings::resolve(&config).unwrap()
+        };
+        for preset in [Preset::Default, Preset::Strict] {
+            let base = AnalysisSettings::preset(preset);
+            let implied = base.flag("library_macros_evaluate_once");
+            assert_eq!(with(preset, implied).settings_hash(), base.settings_hash());
+            let overridden = with(preset, !implied);
+            assert_ne!(overridden.settings_hash(), base.settings_hash());
+            assert_eq!(
+                overridden.to_json()["options"]["library_macros_evaluate_once"],
+                !implied
+            );
+        }
     }
 
     #[test]
