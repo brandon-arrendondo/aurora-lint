@@ -32,10 +32,13 @@ pub struct ProjectContext {
     pub settings: Arc<crate::settings::AnalysisSettings>,
     /// The settings the collected facts themselves depend on, by name and
     /// value, such as `include_names`: which headers were found at all
-    /// depends on it. Recorded when the context is built; a cache loaded
-    /// under a different value for any of them is refused
-    /// ([`check_built_under`](Self::check_built_under)) rather than silently
-    /// mixing two scans.
+    /// depends on it. `prescan_scope` names the path globs whose files the
+    /// prescan did not read (`--exclude-all`, `--prescan-exclude` and their
+    /// manifest keys), as a sorted JSON list, or "" for none: a context built
+    /// without some files holds other definitions. Recorded when the context
+    /// is built; a cache loaded under a different value for any of them is
+    /// refused ([`check_built_under`](Self::check_built_under)) rather than
+    /// silently mixing two scans.
     ///
     /// `#[serde(default)]` does not make an older cache readable: bincode
     /// reads fields by position, so the cache format header is what refuses
@@ -50,11 +53,6 @@ pub struct ProjectContext {
     /// rather than a `built_under` key, where a key absent from either side
     /// would read as not compared.
     pub memory_declarations: crate::settings::MemoryDeclarations,
-    /// The path globs whose files this context was built without
-    /// (`--exclude-all`, `--prescan-exclude` and their manifest keys), sorted. A cache built leaving out other files holds other definitions,
-    /// so `--load-prescan` refuses it under a different scope.
-    #[serde(default)]
-    pub prescan_scope: Vec<String>,
     /// Every function name found in the pre-scanned `.c`/`.h` files.
     pub known_functions: Arc<HashSet<String>>,
     /// Functions declared (prototyped) in `.h` header files.
@@ -515,6 +513,14 @@ impl ProjectContext {
         current: &BTreeMap<String, String>,
         path: &Path,
     ) -> anyhow::Result<()> {
+        // An empty value (no prescan scope) reads as "(none)".
+        let shown = |value: &str| {
+            if value.is_empty() {
+                "(none)".to_string()
+            } else {
+                value.to_string()
+            }
+        };
         for (name, now) in current {
             let then = self.built_under.get(name).map(String::as_str).or_else(|| {
                 BUILT_UNDER_IMPLICIT
@@ -525,14 +531,17 @@ impl ProjectContext {
             match then {
                 Some(then) if then == now => {}
                 Some(then) => anyhow::bail!(
-                    "prescan cache {} was built with {name} = {then}, but this run uses \
-                     {name} = {now}; re-create it with --save-prescan under the same settings",
-                    path.display()
+                    "prescan cache {} was built with {name} = {}, but this run uses \
+                     {name} = {}; re-create it with --save-prescan under the same settings",
+                    path.display(),
+                    shown(then),
+                    shown(now)
                 ),
                 None => anyhow::bail!(
                     "prescan cache {} does not record the {name} it was built under, and this \
-                     run uses {name} = {now}; re-create it with --save-prescan",
-                    path.display()
+                     run uses {name} = {}; re-create it with --save-prescan",
+                    path.display(),
+                    shown(now)
                 ),
             }
         }
@@ -572,7 +581,11 @@ impl ProjectContext {
 /// collection did before the setting existed. A new key registers its entry
 /// here, so an older cache that lacks the key is still judged correctly
 /// without a format bump (adding a key does not change the layout).
-pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[("include_names", "exact")];
+///
+/// Before `prescan_scope` was recorded the prescan read every file it walked,
+/// so an older cache was built leaving nothing out.
+pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] =
+    &[("include_names", "exact"), ("prescan_scope", "")];
 
 /// Version of the prescan cache's serialized layout. Bump it with any change
 /// to a serialized field of [`ProjectContext`] (or of a type it holds), or to
@@ -963,5 +976,35 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("does not record the declarations"), "{err}");
+    }
+
+    #[test]
+    fn a_cache_without_a_prescan_scope_was_built_leaving_nothing_out() {
+        let ctx = ProjectContext::default();
+        let path = Path::new("cache.bin");
+        assert!(ctx
+            .check_built_under(&map(&[("prescan_scope", "")]), path)
+            .is_ok());
+        let err = ctx
+            .check_built_under(&map(&[("prescan_scope", r#"["tests/**"]"#)]), path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("prescan_scope = (none)"), "{err}");
+        assert!(err.contains(r#"prescan_scope = ["tests/**"]"#), "{err}");
+    }
+
+    #[test]
+    fn a_scoped_cache_is_refused_by_an_unscoped_run() {
+        let ctx = ProjectContext {
+            built_under: map(&[("prescan_scope", r#"["tests/**"]"#)]),
+            ..Default::default()
+        };
+        let path = Path::new("cache.bin");
+        assert!(ctx
+            .check_built_under(&map(&[("prescan_scope", r#"["tests/**"]"#)]), path)
+            .is_ok());
+        assert!(ctx
+            .check_built_under(&map(&[("prescan_scope", "")]), path)
+            .is_err());
     }
 }

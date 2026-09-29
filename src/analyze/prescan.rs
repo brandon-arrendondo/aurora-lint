@@ -1347,7 +1347,6 @@ fn prescan_file_list(
 
     Ok(ProjectContext {
         // Set by the caller, which knows the scope.
-        prescan_scope: Vec::new(),
         settings: Default::default(),
         built_under: Default::default(),
         memory_declarations: crate::settings::memory::declared().clone(),

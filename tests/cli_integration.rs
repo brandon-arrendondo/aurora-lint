@@ -3576,6 +3576,9 @@ fn deprecated_exclude_means_report_exclude_and_says_so() {
     assert_eq!(findings(&dep_out), (true, false), "{dep_out}");
     assert_eq!(findings(&dep_out), findings(&rep_out));
     assert_eq!(deprecated["hash"], report["hash"]);
+    // ...which is the hash of a scan that leaves nothing out.
+    let (plain, _, _) = scope_tree_run(false, &[]);
+    assert_eq!(report["hash"], plain["hash"]);
     assert!(
         dep_err.contains("--exclude is deprecated") && dep_err.contains("--exclude-all"),
         "stderr: {dep_err}"
@@ -3639,7 +3642,44 @@ fn a_prescan_cache_is_refused_under_a_different_scope() {
         "tests/**",
     ]);
     assert_ne!(code, 0);
-    assert!(stderr.contains("was built leaving out"), "stderr: {stderr}");
+    assert!(
+        stderr
+            .contains(r#"prescan_scope = (none), but this run uses prescan_scope = ["tests/**"]"#),
+        "stderr: {stderr}"
+    );
     let (code, _, stderr) = run_aurora_lint(&[root, "--rules", "MEM30-C", "--load-prescan", cache]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    // The reverse: a cache built leaving tests/ out is refused by a run that
+    // leaves nothing out, and loads under the same prescan scope however it is
+    // spelled.
+    let (code, _, stderr) = run_aurora_lint(&[
+        root,
+        "-d",
+        root,
+        "--rules",
+        "MEM30-C",
+        "--exclude-all",
+        "tests/**",
+        "--save-prescan",
+        cache,
+    ]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let (code, _, stderr) = run_aurora_lint(&[root, "--rules", "MEM30-C", "--load-prescan", cache]);
+    assert_ne!(code, 0);
+    assert!(
+        stderr
+            .contains(r#"prescan_scope = ["tests/**"], but this run uses prescan_scope = (none)"#),
+        "stderr: {stderr}"
+    );
+    let (code, _, stderr) = run_aurora_lint(&[
+        root,
+        "--rules",
+        "MEM30-C",
+        "--load-prescan",
+        cache,
+        "--prescan-exclude",
+        "tests/**",
+    ]);
     assert_eq!(code, 0, "stderr: {stderr}");
 }

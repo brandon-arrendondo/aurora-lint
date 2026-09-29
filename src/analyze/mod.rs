@@ -408,7 +408,12 @@ fn load_project_context(
     // ignore built from exactly those: a context built without them holds
     // other definitions. toolchain.toml's ignores are report-only.
     let prescan_scope = scope.prescan_scope();
-    let prescan_ignore = path_ignore(prescan_scope.clone())?;
+    let prescan_scope_key = if prescan_scope.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(&prescan_scope)?
+    };
+    let prescan_ignore = path_ignore(prescan_scope)?;
     let root = project_source.get_root_path().to_string();
     let scoped_out = |path: &std::path::Path, base: &str| {
         prescan::is_scoped_out(&prescan_ignore, &root, base, path)
@@ -429,11 +434,18 @@ fn load_project_context(
     }
 
     // The settings the facts collected below depend on: a cache records them
-    // and is refused under different ones.
-    let built_under = std::collections::BTreeMap::from([(
-        "include_names".to_string(),
-        header_lookup.mode().to_string(),
-    )]);
+    // and is refused under different ones. `prescan_scope` is always supplied,
+    // "" when the prescan leaves nothing out, since only the keys given here
+    // are compared: a cache built leaving files out must be refused by a run
+    // that leaves nothing out, and the reverse. A glob may hold a comma, so
+    // the list is encoded as JSON.
+    let built_under = std::collections::BTreeMap::from([
+        (
+            "include_names".to_string(),
+            header_lookup.mode().to_string(),
+        ),
+        ("prescan_scope".to_string(), prescan_scope_key),
+    ]);
 
     let mut context = if let Some(cache_path) = load_prescan {
         let path = std::path::Path::new(cache_path);
@@ -451,16 +463,6 @@ fn load_project_context(
                     cache_path,
                     ctx.memory_declarations,
                     declared
-                );
-            }
-            if ctx.prescan_scope != prescan_scope {
-                anyhow::bail!(
-                    "prescan cache {} was built leaving out {:?}, but this scan leaves out {:?}; \
-                     re-create it with --save-prescan under the same --exclude-all and \
-                     --prescan-exclude",
-                    cache_path,
-                    ctx.prescan_scope,
-                    prescan_scope,
                 );
             }
             if let Some(reporter) = progress {
@@ -493,7 +495,6 @@ fn load_project_context(
     } else {
         prescan::prescan_directories(directories, progress, needs_vra, &scoped_out)?
     };
-    context.prescan_scope = prescan_scope;
 
     // Stamp only a context built here. A loaded one keeps the record it was
     // saved with (already checked above), so re-saving it never claims
