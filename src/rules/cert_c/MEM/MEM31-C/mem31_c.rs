@@ -675,14 +675,13 @@ impl PreprocArmState {
     /// `record_goto_entry_state` folds one more goto: intersection for what
     /// every jump agrees is freed, union for what some jump freed.
     fn absorb(&mut self, other: Self) {
+        self.branch.unaccusable_frees = merge_unaccusable(&[
+            (&self.branch.freed_memory, &self.branch.unaccusable_frees),
+            (&other.branch.freed_memory, &other.branch.unaccusable_frees),
+        ]);
         for (var, pos) in other.branch.freed_memory {
             self.branch.freed_memory.entry(var).or_insert(pos);
         }
-        // A mark that cannot accuse in the arm that made it cannot accuse
-        // below the `#endif` either.
-        self.branch
-            .unaccusable_frees
-            .extend(other.branch.unaccusable_frees);
         for (var, pos) in other.branch.maybe_freed {
             self.branch.maybe_freed.entry(var).or_insert(pos);
         }
@@ -713,6 +712,28 @@ impl PreprocArmState {
                 .extend(names);
         }
     }
+}
+
+/// One path into a join: its `freed_memory` and its `unaccusable_frees`.
+type JoiningPath<'a> = (&'a HashMap<String, (usize, usize)>, &'a HashSet<String>);
+
+/// The `unaccusable_frees` of paths that join, given each path's
+/// `freed_memory` beside it. A name stays unaccusable only where every path
+/// that released it did so in a way that cannot accuse: in
+/// `if (c) free(p); else maybe_release(p, k); free(p);` the first arm's
+/// release is certain, and the free() below is a double free on its path.
+/// A path that did not release the name at all has no say.
+fn merge_unaccusable(paths: &[JoiningPath]) -> HashSet<String> {
+    paths
+        .iter()
+        .flat_map(|(_, unaccusable)| unaccusable.iter())
+        .filter(|name| {
+            paths.iter().all(|(freed, unaccusable)| {
+                !freed.contains_key(*name) || unaccusable.contains(*name)
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 /// The arms of the conditional chain headed by `head`, in source order:
@@ -2703,12 +2724,16 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         base.state.restore(self);
         self.allocated_memory = base.allocated.clone();
         self.escaped_memory = base.escaped.clone();
+        self.unaccusable_frees = merge_unaccusable(
+            &live
+                .iter()
+                .map(|l| (&l.state.freed_memory, &l.state.unaccusable_frees))
+                .collect::<Vec<_>>(),
+        );
         for other in &live[1..] {
             for (k, v) in &other.state.freed_memory {
                 self.freed_memory.entry(k.clone()).or_insert(*v);
             }
-            self.unaccusable_frees
-                .extend(other.state.unaccusable_frees.iter().cloned());
             for (k, v) in &other.state.maybe_freed {
                 self.maybe_freed.entry(k.clone()).or_insert(*v);
             }
@@ -2845,11 +2870,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 merged.entry(k).or_insert(v);
             }
             analyzer.freed_memory = merged;
-            analyzer.unaccusable_frees = true_state
-                .unaccusable_frees
-                .union(&else_state.unaccusable_frees)
-                .cloned()
-                .collect();
+            analyzer.unaccusable_frees = merge_unaccusable(&[
+                (&true_state.freed_memory, &true_state.unaccusable_frees),
+                (&else_state.freed_memory, &else_state.unaccusable_frees),
+            ]);
             let mut maybe = true_state.maybe_freed.clone();
             for (k, v) in else_state.maybe_freed.clone() {
                 maybe.entry(k).or_insert(v);
