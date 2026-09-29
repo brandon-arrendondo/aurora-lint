@@ -7,8 +7,9 @@ cert_version = "2016"
 # zmalloc.h renames zfree/zrealloc to valkey_free/valkey_realloc. zfree's body
 # moves the pointer back over its size prefix before freeing it, so no summary
 # shows the argument itself released, and the jemalloc arms live under the
-# excluded deps/. Declared as what zmalloc.h documents them to be: free and
-# realloc for blocks from zmalloc.
+# excluded deps/. Declared as the free and realloc of blocks from zmalloc,
+# which is what their bodies do once the prefix is accounted for; zmalloc.h
+# itself only renames them.
 [environment.allocators]
 valkey_realloc = "realloc"
 

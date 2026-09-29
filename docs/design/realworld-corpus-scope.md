@@ -833,7 +833,8 @@ there are no platform-alternative sources in `src/*.c` scope.
 `zrealloc` to. `zfree` moves the pointer back over its size prefix before
 freeing it, so no summary shows its argument released, and the jemalloc arms
 are under the excluded `deps/`. They are declared as the free and realloc
-`zmalloc.h` documents them to be.
+of blocks from `zmalloc`, which is what their bodies do once the prefix is
+accounted for; `zmalloc.h` itself only renames them.
 
 ## libcrc
 
