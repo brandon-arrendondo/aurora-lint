@@ -568,7 +568,7 @@ impl Walk<'_> {
 /// false: `p`, `p != NULL` and `NULL != p` prove `p` when true; `!p`,
 /// `p == NULL` when false. A conjunction proves each conjunct's true facts;
 /// a disjunction proves each disjunct's false facts.
-fn null_test_facts(cond: &Node, source: &str) -> (Vec<String>, Vec<String>) {
+pub(crate) fn null_test_facts(cond: &Node, source: &str) -> (Vec<String>, Vec<String>) {
     let cond = strip_parens_and_casts(*cond);
     match cond.kind() {
         "identifier" => (vec![ast_utils::get_node_text_owned(&cond, source)], vec![]),

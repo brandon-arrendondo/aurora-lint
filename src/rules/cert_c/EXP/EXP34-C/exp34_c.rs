@@ -323,6 +323,7 @@ impl CertRule for Exp34C {
                         &global_states,
                         func_name.as_deref(),
                         null_state::NullPolicy::from_settings(&settings),
+                        &all_macros,
                         &mut violations,
                         &mut reported_vars,
                     );
@@ -1640,6 +1641,7 @@ fn check_dereferences_before_null_tests(
     global_states: &StateMap,
     func_name: Option<&str>,
     policy: null_state::NullPolicy,
+    macros: &HashMap<String, FunctionMacro>,
     violations: &mut Vec<RuleViolation>,
     reported_vars: &mut ReportedSites<'_>,
 ) {
@@ -1647,6 +1649,9 @@ fn check_dereferences_before_null_tests(
         let Some(site) = first_dereference_before(&var, &test, source) else {
             continue;
         };
+        if asserted_by_the_same_macro(&var, &site, source, macros) {
+            continue;
+        }
         if reported_vars.contains(&var, &site) {
             continue;
         }
@@ -1827,6 +1832,12 @@ fn first_dereference_before<'t>(var: &str, test: &Node<'t>, source: &str) -> Opt
                     }
                 }
             }
+            // A test in an `#else`/`#elif` arm is preceded by nothing in
+            // the arms before it: no build runs both.
+            "preproc_if" | "preproc_ifdef" | "preproc_elif"
+                if parent
+                    .child_by_field_name("alternative")
+                    .is_some_and(|alt| alt.id() == current.id()) => {}
             "compound_statement" | "preproc_if" | "preproc_ifdef" | "preproc_else"
             | "preproc_elif" => {
                 let mut cursor = parent.walk();
@@ -1861,6 +1872,81 @@ fn first_dereference_before<'t>(var: &str, test: &Node<'t>, source: &str) -> Opt
     }
     let first = candidates.into_iter().min_by_key(|n| n.start_byte())?;
     (!written_between(&current, var, first.end_byte(), test.start_byte(), source)).then_some(first)
+}
+
+/// Whether `site` sits in an argument of a function-like macro `M` whose
+/// invocation an earlier statement of the same block, `M(var)` (or any
+/// argument proving `var` non-null when true), precedes with no write to
+/// `var` between: `DEBUGASSERT(data); DEBUGASSERT(data->conn);`.
+///
+/// Whether `M` evaluates its argument at all is the build's choice (curl's
+/// `DEBUGASSERT` is `assert` in a debug build and empty otherwise), so the
+/// dereference exists only in a build whose `M` also evaluated, and
+/// asserted, the earlier test. Asserting one argument is taken to guard
+/// the next only for the same macro, whose builds are the same ones.
+fn asserted_by_the_same_macro(
+    var: &str,
+    site: &Node,
+    source: &str,
+    macros: &HashMap<String, FunctionMacro>,
+) -> bool {
+    let mut current = *site;
+    let (name, stmt) = loop {
+        let Some(parent) = current.parent() else {
+            return false;
+        };
+        if parent.kind() == "argument_list" {
+            let call = parent.parent().filter(|c| c.kind() == "call_expression");
+            let name = call
+                .and_then(|c| c.child_by_field_name("function"))
+                .filter(|f| f.kind() == "identifier")
+                .map(|f| ast_utils::get_node_text(&f, source));
+            let stmt = call
+                .and_then(|c| c.parent())
+                .filter(|s| s.kind() == "expression_statement");
+            if let (Some(name), Some(stmt)) = (name, stmt) {
+                if macros.contains_key(name) {
+                    break (name, stmt);
+                }
+            }
+        }
+        if matches!(
+            parent.kind(),
+            "expression_statement" | "function_definition"
+        ) {
+            return false;
+        }
+        current = parent;
+    };
+    let Some(block) = stmt.parent() else {
+        return false;
+    };
+    let mut cursor = block.walk();
+    let earlier: Vec<Node> = block
+        .named_children(&mut cursor)
+        .take_while(|s| s.id() != stmt.id())
+        .collect();
+    earlier.iter().rev().any(|prev| {
+        let asserts = prev.kind() == "expression_statement"
+            && prev
+                .named_child(0)
+                .filter(|c| c.kind() == "call_expression")
+                .is_some_and(|call| {
+                    let same = call
+                        .child_by_field_name("function")
+                        .is_some_and(|f| ast_utils::get_node_text(&f, source) == name);
+                    let arg = call
+                        .child_by_field_name("arguments")
+                        .and_then(|a| a.named_child(0));
+                    same && arg.is_some_and(|a| {
+                        crate::analyze::out_param_nonnull::null_test_facts(&a, source)
+                            .0
+                            .iter()
+                            .any(|n| n == var)
+                    })
+                });
+        asserts && !written_between(&block, var, prev.end_byte(), site.start_byte(), source)
+    })
 }
 
 /// The dereferences of `var` in `node` that are EXP34-C sites: `var->f`,
