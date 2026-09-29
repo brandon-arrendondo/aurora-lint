@@ -35,7 +35,8 @@ pub type ArmSets = Vec<Vec<(String, bool)>>;
 pub struct DefinitionFacts {
     /// The definition's `#if` arm assumptions; empty when no arm constrains it.
     pub arms: Vec<(String, bool)>,
-    /// This definition's share of [`FunctionSummary::frees_params`].
+    /// This definition's share of [`FunctionSummary::frees_params`], as its
+    /// own body establishes it.
     pub frees: HashSet<usize>,
     /// ... of [`FunctionSummary::unconditional_frees_params`].
     pub unconditional_frees: HashSet<usize>,
@@ -53,14 +54,24 @@ pub struct DefinitionFacts {
     pub nulls: HashSet<usize>,
     /// ... of [`FunctionSummary::returned_value_escapes`].
     pub escapes: bool,
-    /// The definition's own parameter forwards, by which a later pass
-    /// credits a callee's fact ([`settle_definition_facts`]).
+    /// The definition's own parameter forwards, by which
+    /// [`settle_definition_facts`] credits a callee's fact.
     pub passthroughs: HashMap<usize, Vec<(String, usize)>>,
-    /// The parameters this definition hands to a name-shaped deallocator
-    /// with no body to read (`BN_clear_free(n)`), and whether that call is
-    /// unconditional: its share of what `resolve_name_shaped_frees` settles
-    /// for the name, from `frees_params_by_name`.
-    pub name_shaped_frees: HashMap<usize, bool>,
+    /// ... of those, the forwards every path makes (for the MUST-free fact).
+    pub unconditional_passthroughs: HashMap<usize, Vec<(String, usize)>>,
+    /// The parameters this definition releases in every build: freed, a
+    /// pointee freed, stored or closed by its own body, or forwarded to a
+    /// callee EVERY one of whose definitions releases it, to any depth.
+    /// Settled by [`settle_definition_facts`].
+    ///
+    /// One predicate, not one per kind: a definition that stores a
+    /// parameter and one that frees it both release it, and asking each kind
+    /// of every definition separately would say neither build does.
+    pub settled_releases: HashSet<usize>,
+    /// ... the parameters it frees on every path in every build.
+    pub settled_unconditional_frees: HashSet<usize>,
+    /// ... the parameters it clears in every build.
+    pub settled_clears: HashSet<usize>,
 }
 
 impl DefinitionFacts {
@@ -78,17 +89,18 @@ impl DefinitionFacts {
             nulls: summary.nulls_params.clone(),
             escapes: summary.returned_value_escapes,
             passthroughs: summary.param_passthroughs.clone(),
-            name_shaped_frees: summary
-                .frees_params_by_name
-                .iter()
-                .map(|(idx, calls)| {
-                    (
-                        *idx,
-                        calls.iter().any(|(_, _, unconditional)| *unconditional),
-                    )
-                })
-                .collect(),
+            unconditional_passthroughs: summary.unconditional_param_passthroughs.clone(),
+            ..Self::default()
         }
+    }
+
+    /// Every callee name this definition forwards to, for re-keying.
+    pub fn forward_callees_mut(&mut self) -> impl Iterator<Item = &mut String> {
+        self.passthroughs
+            .values_mut()
+            .chain(self.unconditional_passthroughs.values_mut())
+            .flatten()
+            .map(|(callee, _)| callee)
     }
 }
 
@@ -192,9 +204,11 @@ pub struct FunctionSummary {
     #[serde(default)]
     pub return_edge_arms: Vec<Vec<(String, bool)>>,
     /// Each definition's own facts, in the order the definitions were
-    /// folded, kept only while a name has more than one definition
-    /// ([`settle_definition_facts`] drops a lone one: the summary-level
-    /// sets already are that definition's). Read through
+    /// folded, and what it establishes in every build once
+    /// [`settle_definition_facts`] has run. Kept for a name with one
+    /// definition too: the union is that definition's own facts plus what
+    /// it MAY be credited through its callees, and a caller asking what it
+    /// does in every build needs the narrower answer. Read through
     /// [`Self::at_all`].
     #[serde(default)]
     pub definitions: Vec<DefinitionFacts>,
@@ -3852,9 +3866,8 @@ impl FunctionSummary {
 impl FunctionSummary {
     /// The summary as a call on 1-based `line` of `source` sees it when a
     /// fact must hold in EVERY build: [`Self::at`], with each suppressive
-    /// fact -- a free, a pointee or field free, a store, a clear, a close, a
-    /// nulling, an escaping result -- kept only if every definition that can
-    /// compile together with that line holds it.
+    /// fact kept only if every definition that can compile together with
+    /// that line holds it.
     ///
     /// For a consumer that stops reporting because of the fact (a leak is
     /// not reported because the callee frees): the tool cannot tell which
@@ -3862,16 +3875,23 @@ impl FunctionSummary {
     /// leaks (ADR-0010, per consumer). A consumer that ACCUSES through a
     /// fact reads [`Self::at`], where one definition that frees is enough.
     ///
-    /// A fact no definition holds itself was added by a pass that does not
-    /// say which definition it belongs to (name folding); it applies
-    /// everywhere, as a fact with no arm entry does. Borrowed when nothing
-    /// is dropped, which is every name with one definition.
+    /// A release -- a free, a pointee free, a store, a close -- is asked as
+    /// one predicate ([`DefinitionFacts::settled_releases`]), to any depth
+    /// of forwarding: when every definition releases a parameter, each kind
+    /// some definition uses stays, and when one does not, every kind goes.
+    /// The MUST-free and clear facts are asked the same way on their own.
+    /// A free whose only evidence is a callee's name
+    /// ([`Self::frees_params_guessed`]) says nothing about which definition
+    /// made it, and applies everywhere. So does every fact of a summary no
+    /// definition was read for.
+    ///
+    /// The nulling, field-free and escaping-result facts are each
+    /// definition's own, not credited through forwards, and are asked only
+    /// of a name with several definitions: for one definition the union
+    /// already is its answer.
     pub fn at_all(&self, source: &str, line: usize) -> std::borrow::Cow<'_, FunctionSummary> {
         use std::borrow::Cow;
         let seen = self.at(source, line);
-        if self.definitions.len() < 2 {
-            return seen;
-        }
         let live: Vec<&DefinitionFacts> = self
             .definitions
             .iter()
@@ -3883,25 +3903,49 @@ impl FunctionSummary {
         if live.is_empty() {
             return seen;
         }
-        let dropped = |set: &HashSet<usize>, of: fn(&DefinitionFacts) -> &HashSet<usize>| {
-            set.iter()
-                .copied()
-                .filter(|idx| {
-                    self.definitions.iter().any(|d| of(d).contains(idx))
-                        && !live.iter().all(|d| of(d).contains(idx))
-                })
-                .collect::<HashSet<usize>>()
+        let guessed = &self.frees_params_guessed;
+        let in_every = |idx: &usize, of: fn(&DefinitionFacts) -> &HashSet<usize>| {
+            live.iter().all(|d| of(d).contains(idx))
         };
-        let frees = dropped(&seen.frees_params, |d| &d.frees);
-        let unconditional = dropped(&seen.unconditional_frees_params, |d| &d.unconditional_frees);
-        let pointees = dropped(&seen.frees_param_pointees, |d| &d.pointee_frees);
-        let stores = dropped(&seen.stores_params, |d| &d.stores);
-        let clears = dropped(&seen.clears_params, |d| &d.clears);
-        let closes = dropped(&seen.closes_params, |d| &d.closes);
-        let nulls = dropped(&seen.nulls_params, |d| &d.nulls);
+        let released: HashSet<usize> = seen
+            .frees_params
+            .iter()
+            .chain(&seen.frees_param_pointees)
+            .chain(&seen.stores_params)
+            .chain(&seen.closes_params)
+            .copied()
+            .filter(|idx| !guessed.contains(idx) && !in_every(idx, |d| &d.settled_releases))
+            .collect();
+        let unconditional: HashSet<usize> = seen
+            .unconditional_frees_params
+            .iter()
+            .copied()
+            .filter(|idx| {
+                !guessed.contains(idx) && !in_every(idx, |d| &d.settled_unconditional_frees)
+            })
+            .collect();
+        let clears: HashSet<usize> = seen
+            .clears_params
+            .iter()
+            .copied()
+            .filter(|idx| !in_every(idx, |d| &d.settled_clears))
+            .collect();
+        let several = self.definitions.len() >= 2;
+        // A fact no definition holds itself was added by a pass that does not
+        // say whose it is; it applies everywhere.
+        let nulls: HashSet<usize> = seen
+            .nulls_params
+            .iter()
+            .copied()
+            .filter(|idx| {
+                several
+                    && self.definitions.iter().any(|d| d.nulls.contains(idx))
+                    && !in_every(idx, |d| &d.nulls)
+            })
+            .collect();
         // A field free holds for the fields every live definition frees.
         let mut fields: HashMap<usize, Option<HashSet<String>>> = HashMap::new();
-        for (idx, names) in &seen.frees_param_fields {
+        for (idx, names) in seen.frees_param_fields.iter().filter(|_| several) {
             if !self
                 .definitions
                 .iter()
@@ -3924,15 +3968,13 @@ impl FunctionSummary {
                 }
             }
         }
-        let escape = seen.returned_value_escapes
+        let escape = several
+            && seen.returned_value_escapes
             && self.definitions.iter().any(|d| d.escapes)
             && !live.iter().all(|d| d.escapes);
-        if frees.is_empty()
+        if released.is_empty()
             && unconditional.is_empty()
-            && pointees.is_empty()
-            && stores.is_empty()
             && clears.is_empty()
-            && closes.is_empty()
             && nulls.is_empty()
             && fields.is_empty()
             && !escape
@@ -3940,14 +3982,14 @@ impl FunctionSummary {
             return seen;
         }
         let mut all = seen.into_owned();
-        all.frees_params.retain(|i| !frees.contains(i));
-        all.frees_params_guessed.retain(|i| !frees.contains(i));
+        all.frees_params.retain(|i| !released.contains(i));
+        all.frees_params_guessed.retain(|i| !released.contains(i));
         all.unconditional_frees_params
-            .retain(|i| !frees.contains(i) && !unconditional.contains(i));
-        all.frees_param_pointees.retain(|i| !pointees.contains(i));
-        all.stores_params.retain(|i| !stores.contains(i));
+            .retain(|i| !released.contains(i) && !unconditional.contains(i));
+        all.frees_param_pointees.retain(|i| !released.contains(i));
+        all.stores_params.retain(|i| !released.contains(i));
+        all.closes_params.retain(|i| !released.contains(i));
         all.clears_params.retain(|i| !clears.contains(i));
-        all.closes_params.retain(|i| !closes.contains(i));
         all.nulls_params.retain(|i| !nulls.contains(i));
         for (idx, common) in fields {
             match common {
@@ -5017,10 +5059,22 @@ fn credit_frees_one_arg(
         summary.frees_param_pointees.insert(idx);
         return;
     }
+    credit_param_free(call, body, source, params, idx, summary);
+}
+
+/// Record that `call` frees parameter `idx`, and on every path when nothing
+/// but a null guard stands before it. The guard that matters is on the
+/// parameter: a local set from it, or the parameter moved by a constant, is
+/// null exactly when it is (or points just past null, which no path frees).
+fn credit_param_free(
+    call: &Node,
+    body: &Node,
+    source: &str,
+    params: &[String],
+    idx: usize,
+    summary: &mut FunctionSummary,
+) {
     summary.frees_params.insert(idx);
-    // The guard that matters is on the parameter: a local set from it is
-    // null exactly when it is (or points just past null, which no path
-    // frees).
     if is_unconditionally_reached_modulo_null_guard(call, body, source, &params[idx]) {
         summary.unconditional_frees_params.insert(idx);
     }
@@ -5111,8 +5165,23 @@ fn param_behind_local(
     if set.start_byte() >= use_site.start_byte() {
         return None;
     }
+    param_at_offset(value, body, source, params, allow_offset)
+}
 
-    // `p`, or `p + k` / `p - k` with `k` an integer literal.
+/// The parameter `value` is -- `p`, or with `allow_offset` `p + k` / `p - k`
+/// with `k` an integer literal, casts and parentheses aside -- when that
+/// parameter still holds what the caller passed: it is not written anywhere
+/// in `body` and its address is not taken.
+fn param_at_offset(
+    value: &Node,
+    body: &Node,
+    source: &str,
+    params: &[String],
+    allow_offset: bool,
+) -> Option<usize> {
+    use crate::utility::cert_c::ast_utils;
+    use lang_parsing_substrate::query;
+    let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
     let value = init_state::strip_arg_casts(value);
     let base = match value.kind() {
         "identifier" => value,
@@ -5282,33 +5351,29 @@ fn credit_frees_params(
             // summary claim the function frees parameters it merely reads --
             // curl's `Curl_cwriter_free(data, writer)` then reports every
             // caller's `data` as freed.
-            // A local that only holds a parameter names it as well
-            // (`EVP_CIPHER_CTX *c = ctx; ... EVP_CIPHER_CTX_free(c)`).
-            let names_param = |arg: Node| -> Option<usize> {
-                let (t, false) = strip_free_argument(arg)? else {
-                    return None;
-                };
-                let n = t.utf8_text(source.as_bytes()).unwrap_or("");
-                params
-                    .iter()
-                    .position(|p| !p.is_empty() && p == n)
-                    .or_else(|| param_behind_local(&call, t, body, source, params, true))
-            };
-            let mut resolving = real.iter().filter(|&&arg| names_param(arg).is_some());
+            let mut resolving = real.iter().filter(|&&arg| {
+                strip_free_argument(arg)
+                    .map(|(t, _)| t.utf8_text(source.as_bytes()).unwrap_or(""))
+                    .is_some_and(|n| params.iter().any(|p| !p.is_empty() && p == n))
+            });
             let (Some(&arg), None) = (resolving.next(), resolving.next()) else {
                 continue;
             };
             // Recorded as a guess against the callee's name, not credited:
             // `resolve_name_shaped_frees` folds it in once it can tell
             // whether anything backs it.
-            let Some(idx) = names_param(arg) else {
+            let Some((target, false)) = strip_free_argument(arg) else {
+                continue;
+            };
+            let arg_name = target.utf8_text(source.as_bytes()).unwrap_or("");
+            let Some(idx) = params.iter().position(|p| !p.is_empty() && p == arg_name) else {
                 continue;
             };
             let Some(arg_pos) = real.iter().position(|a| a.id() == arg.id()) else {
                 continue;
             };
             let unconditional =
-                is_unconditionally_reached_modulo_null_guard(&call, body, source, &params[idx]);
+                is_unconditionally_reached_modulo_null_guard(&call, body, source, arg_name);
             summary.frees_params_by_name.entry(idx).or_default().push((
                 func_name.to_string(),
                 arg_pos,
@@ -6927,108 +6992,145 @@ pub fn propagate_transitive_clears(
     }
 }
 
-/// Give each definition of a multiply-defined name the facts the transitive
-/// passes credited through ITS forwards, and drop the definition list of a
-/// name with only one definition. Run after every other propagation.
+/// Settle what each definition establishes in EVERY build
+/// ([`DefinitionFacts::settled_releases`] and its siblings), to a fixpoint.
+/// Run after every other propagation.
 ///
 /// `propagate_transitive_frees` and its siblings credit the summary-level
-/// union: a wrapper whose `#ifdef A` body forwards `p` to a freeing callee
-/// and whose `#else` body does not, frees `p` for the union. For
-/// [`FunctionSummary::at_all`] only the first definition does, so each
-/// definition is credited from its own `passthroughs` against the settled
-/// callee summaries -- and only with what the union already holds, so the
-/// all-definitions view never claims more than the any-definition one.
+/// union: a wrapper that forwards `p` to a callee frees `p` if SOME
+/// definition of the callee does. Here a definition is credited only
+/// through a callee every one of whose definitions holds the fact, so
+/// `wrap(p) { release(p); }` over an `#ifdef`-split `release` that frees in
+/// one arm does not release `p` in every build, however many levels of
+/// wrapping sit above it. A free whose only evidence is a callee's name
+/// counts for every definition of the name that holds it, as
+/// [`FunctionSummary::at_all`] reads it. Only a fact the union already
+/// holds is credited, so the all-definitions view never claims more than
+/// the any-definition one.
 ///
-/// A name with one definition needs no list: the union is that definition,
-/// and `at_all` reads it as `at`. Dropping it keeps the saved context the
-/// size it was for every such name.
+/// Recomputed from each definition's own facts on every call, so running it
+/// again after [`crate::analyze::prescan::resolve_includes`] adds
+/// definitions gives the answer a single run would have. At most 10 passes,
+/// like its siblings: a deeper chain is left uncredited, which errs toward
+/// a finding.
 pub fn settle_definition_facts(
     summaries: &mut HashMap<String, FunctionSummary>,
     macro_aliases: &HashMap<String, String>,
 ) {
-    let mut credits: Vec<(String, usize, DefinitionFacts)> = Vec::new();
-    for (name, summary) in summaries.iter() {
-        if summary.definitions.len() < 2 {
-            continue;
-        }
-        for (i, def) in summary.definitions.iter().enumerate() {
-            let mut got = DefinitionFacts::default();
-            // A name-shaped guess this definition made is its own free once
-            // the name's resolution kept it (the union cap below).
-            for (idx, unconditional) in &def.name_shaped_frees {
-                got.frees.insert(*idx);
-                if *unconditional {
-                    got.unconditional_frees.insert(*idx);
-                }
-            }
-            for (idx, callees) in &def.passthroughs {
-                for (callee_name, callee_idx) in callees {
-                    let callee = edge_target(macro_aliases, callee_name, |n| {
-                        summaries.contains_key(n)
-                            || call_roles::is_deallocator(n)
-                            || call_roles::is_memory_clearing_call(n)
-                    });
-                    let theirs = summaries.get(callee);
-                    let has = |of: fn(&FunctionSummary) -> &HashSet<usize>| {
-                        theirs.is_some_and(|s| of(s).contains(callee_idx))
-                    };
-                    if call_roles::frees_argument(callee) == Some(*callee_idx)
-                        || has(|s| &s.frees_params)
-                    {
-                        got.frees.insert(*idx);
-                    }
-                    if call_roles::frees_argument(callee) == Some(*callee_idx)
-                        || has(|s| &s.unconditional_frees_params)
-                    {
-                        got.unconditional_frees.insert(*idx);
-                    }
-                    if has(|s| &s.frees_param_pointees) {
-                        got.pointee_frees.insert(*idx);
-                    }
-                    if has(|s| &s.stores_params) {
-                        got.stores.insert(*idx);
-                    }
-                    if (*callee_idx == 0 && call_roles::is_memory_clearing_call(callee))
-                        || has(|s| &s.clears_params)
-                    {
-                        got.clears.insert(*idx);
-                    }
-                    if has(|s| &s.closes_params) {
-                        got.closes.insert(*idx);
-                    }
-                }
-            }
-            credits.push((name.clone(), i, got));
-        }
-    }
-    for (name, i, got) in credits {
-        let Some(summary) = summaries.get_mut(&name) else {
-            continue;
-        };
-        let union = |set: &HashSet<usize>, add: HashSet<usize>| {
-            add.into_iter()
-                .filter(|idx| set.contains(idx))
-                .collect::<Vec<_>>()
-        };
-        let frees = union(&summary.frees_params, got.frees);
-        let unconditional = union(&summary.unconditional_frees_params, got.unconditional_frees);
-        let pointees = union(&summary.frees_param_pointees, got.pointee_frees);
-        let stores = union(&summary.stores_params, got.stores);
-        let clears = union(&summary.clears_params, got.clears);
-        let closes = union(&summary.closes_params, got.closes);
-        let def = &mut summary.definitions[i];
-        def.frees.extend(frees);
-        def.unconditional_frees.extend(unconditional);
-        def.pointee_frees.extend(pointees);
-        def.stores.extend(stores);
-        def.clears.extend(clears);
-        def.closes.extend(closes);
-    }
     for summary in summaries.values_mut() {
-        if summary.definitions.len() < 2 {
-            summary.definitions = Vec::new();
+        for def in &mut summary.definitions {
+            def.settled_releases = def
+                .frees
+                .iter()
+                .chain(&def.pointee_frees)
+                .chain(&def.stores)
+                .chain(&def.closes)
+                .copied()
+                .collect();
+            def.settled_unconditional_frees = def.unconditional_frees.clone();
+            def.settled_clears = def.clears.clone();
         }
     }
+    // What every definition of a name holds: a summary no definition was
+    // read for holds its union.
+    let every = |s: &FunctionSummary,
+                 union: HashSet<usize>,
+                 of: fn(&DefinitionFacts) -> &HashSet<usize>,
+                 guessed: bool| {
+        if s.definitions.is_empty() {
+            return union;
+        }
+        union
+            .into_iter()
+            .filter(|idx| {
+                (guessed && s.frees_params_guessed.contains(idx))
+                    || s.definitions.iter().all(|d| of(d).contains(idx))
+            })
+            .collect::<HashSet<usize>>()
+    };
+    for _pass in 0..10 {
+        let snapshot: HashMap<String, [HashSet<usize>; 3]> = summaries
+            .iter()
+            .map(|(n, s)| {
+                (
+                    n.clone(),
+                    [
+                        every(s, released_params(s), |d| &d.settled_releases, true),
+                        every(
+                            s,
+                            s.unconditional_frees_params.clone(),
+                            |d| &d.settled_unconditional_frees,
+                            true,
+                        ),
+                        every(s, s.clears_params.clone(), |d| &d.settled_clears, false),
+                    ],
+                )
+            })
+            .collect();
+        let target = |name: &'_ str| -> String {
+            edge_target(macro_aliases, name, |n| {
+                snapshot.contains_key(n)
+                    || call_roles::is_deallocator(n)
+                    || call_roles::is_memory_clearing_call(n)
+            })
+            .to_string()
+        };
+        let mut changed = false;
+        for summary in summaries.values_mut() {
+            let released = released_params(summary);
+            let unconditional = summary.unconditional_frees_params.clone();
+            let clears = summary.clears_params.clone();
+            for def in &mut summary.definitions {
+                for (idx, callees) in &def.passthroughs {
+                    for (callee_name, callee_idx) in callees {
+                        let callee = target(callee_name);
+                        let theirs = snapshot.get(&callee);
+                        if released.contains(idx)
+                            && (call_roles::frees_argument(&callee) == Some(*callee_idx)
+                                || theirs.is_some_and(|t| t[0].contains(callee_idx)))
+                        {
+                            changed |= def.settled_releases.insert(*idx);
+                        }
+                        if clears.contains(idx)
+                            && ((*callee_idx == 0 && call_roles::is_memory_clearing_call(&callee))
+                                || theirs.is_some_and(|t| t[2].contains(callee_idx)))
+                        {
+                            changed |= def.settled_clears.insert(*idx);
+                        }
+                    }
+                }
+                for (idx, callees) in &def.unconditional_passthroughs {
+                    for (callee_name, callee_idx) in callees {
+                        let callee = target(callee_name);
+                        if unconditional.contains(idx)
+                            && (call_roles::frees_argument(&callee) == Some(*callee_idx)
+                                || snapshot
+                                    .get(&callee)
+                                    .is_some_and(|t| t[1].contains(callee_idx)))
+                        {
+                            changed |= def.settled_unconditional_frees.insert(*idx);
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// The parameters `summary` releases in some build: freed, a pointee freed,
+/// stored or closed.
+fn released_params(summary: &FunctionSummary) -> HashSet<usize> {
+    summary
+        .frees_params
+        .iter()
+        .chain(&summary.frees_param_pointees)
+        .chain(&summary.stores_params)
+        .chain(&summary.closes_params)
+        .copied()
+        .collect()
 }
 
 /// Propagate the MEM06-C facts across functions, to a fixpoint.
@@ -7944,8 +8046,6 @@ mod tests {
         assert!(!summaries.get("fill").unwrap().returns_allocation);
     }
 
-    /// hostap's traced os_malloc: the block comes back offset past a
-    /// bookkeeping header. Still the block.
     /// A free that reaches one definition through a wrapper is that
     /// definition's alone: the all-definitions view drops it for a call
     /// both definitions can link with, and keeps it where only the
@@ -7975,37 +8075,79 @@ void other(void) { }
         assert!(!drop.at_all(code, 8).frees_params.contains(&0));
         // Line 10 (`other`) compiles only without POOLED.
         assert!(drop.at_all(code, 10).frees_params.contains(&0));
-        // One definition: nothing kept, and nothing dropped.
+        // One definition that frees: nothing dropped.
         let rel = summaries.get("rel").unwrap();
-        assert!(rel.definitions.is_empty());
+        assert_eq!(rel.definitions.len(), 1);
         assert!(rel.at_all(code, 8).frees_params.contains(&0));
     }
 
-    /// A definition whose free is a name-shaped guess (a library
-    /// deallocator with no body, as hostap's OpenSSL `crypto_bignum_deinit`
-    /// calls `BN_clear_free`) frees as much as one calling `free` itself.
+    /// A wrapper with one definition releases in every build only what its
+    /// callee releases in every build: over an `#ifdef`-split `release` that
+    /// frees in one arm, `wrap` frees for the union and not for `at_all`, at
+    /// any depth of wrapping.
     #[test]
-    fn test_at_all_credits_a_definitions_name_shaped_free() {
+    fn test_at_all_follows_a_wrapper_of_a_split_release() {
         let code = r#"
-#ifdef USE_OPENSSL
-void bignum_deinit(void *n) { BN_clear_free(n); }
+#ifdef POOLED
+void release(void *p) { (void)p; }
 #else
-void bignum_deinit(void *n) { free(n); }
+void release(void *p) { free(p); }
 #endif
+void wrap(void *p) { release(p); }
+void outer(void *p) { wrap(p); }
+void rel(void *p) { free(p); }
+void wrap_rel(void *p) { rel(p); }
 void caller(void) { }
 "#;
         let mut summaries = parse_and_summarize(code);
         propagate_transitive_frees(&mut summaries, &HashMap::new());
         settle_definition_facts(&mut summaries, &HashMap::new());
-        let deinit = summaries.get("bignum_deinit").unwrap();
-        assert_eq!(deinit.definitions.len(), 2);
-        assert!(deinit.at_all(code, 7).frees_params.contains(&0));
+        for name in ["wrap", "outer"] {
+            let s = summaries.get(name).unwrap();
+            assert!(s.at(code, 11).frees_params.contains(&0), "{name}");
+            assert!(!s.at_all(code, 11).frees_params.contains(&0), "{name}");
+            assert!(
+                !s.at_all(code, 11).unconditional_frees_params.contains(&0),
+                "{name}"
+            );
+        }
+        let s = summaries.get("wrap_rel").unwrap();
+        assert!(s.at_all(code, 11).frees_params.contains(&0));
+        assert!(s.at_all(code, 11).unconditional_frees_params.contains(&0));
     }
 
-    /// A fact no definition holds itself (credited by name folding, which
-    /// does not say whose it is) applies everywhere.
+    /// A definition that stores its parameter and one that frees it both
+    /// release it: neither build leaks, so the all-definitions view keeps
+    /// both facts rather than dropping each for the definition that used the
+    /// other.
     #[test]
-    fn test_at_all_keeps_a_fact_no_definition_owns() {
+    fn test_at_all_a_store_and_a_free_both_release() {
+        let code = r#"
+static void *g_pending;
+#ifdef DEFERRED
+void hand_off(void *p) { g_pending = p; }
+#else
+void hand_off(void *p) { free(p); }
+#endif
+void wrap(void *p) { hand_off(p); }
+void caller(void) { }
+"#;
+        let mut summaries = parse_and_summarize(code);
+        propagate_transitive_frees(&mut summaries, &HashMap::new());
+        propagate_transitive_stores(&mut summaries, &HashMap::new());
+        settle_definition_facts(&mut summaries, &HashMap::new());
+        for name in ["hand_off", "wrap"] {
+            let all = summaries.get(name).unwrap().at_all(code, 9);
+            assert!(all.frees_params.contains(&0), "{name}");
+            assert!(all.stores_params.contains(&0), "{name}");
+        }
+    }
+
+    /// A free whose only evidence is a callee's name does not say which
+    /// definition made it, and applies everywhere; any other free no
+    /// definition holds is dropped.
+    #[test]
+    fn test_at_all_keeps_a_guessed_free() {
         let code = r#"
 #ifdef A
 void drop(void *p) { (void)p; }
@@ -8017,23 +8159,38 @@ void drop(void *p) { (void)p; }
         settle_definition_facts(&mut summaries, &HashMap::new());
         let drop = summaries.get_mut("drop").unwrap();
         drop.frees_params.insert(0);
+        assert!(!drop.at_all(code, 1).frees_params.contains(&0));
+        drop.frees_params_guessed.insert(0);
         assert!(drop.at_all(code, 1).frees_params.contains(&0));
     }
 
-    /// A copy of the parameter handed to a library deallocator with no body
-    /// is guessed to free it, as the parameter itself would be.
+    /// Settling again -- as the prescan does after resolving includes --
+    /// gives what settling once did.
     #[test]
-    fn test_name_shaped_free_through_a_copy_of_the_parameter() {
+    fn test_settle_definition_facts_is_idempotent() {
         let code = r#"
-        void aes_encrypt_deinit(void *ctx) {
-            EVP_CIPHER_CTX *c = ctx;
-            finish(c);
-            EVP_CIPHER_CTX_free(c);
+#ifdef POOLED
+void release(void *p) { (void)p; }
+#else
+void release(void *p) { free(p); }
+#endif
+void wrap(void *p) { release(p); }
+void rel(void *p) { free(p); }
+void wrap_rel(void *p) { rel(p); }
+"#;
+        let mut summaries = parse_and_summarize(code);
+        propagate_transitive_frees(&mut summaries, &HashMap::new());
+        settle_definition_facts(&mut summaries, &HashMap::new());
+        let once: HashMap<String, Vec<DefinitionFacts>> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.definitions.clone()))
+            .collect();
+        settle_definition_facts(&mut summaries, &HashMap::new());
+        for (n, s) in &summaries {
+            assert_eq!(&s.definitions, once.get(n).unwrap(), "{n}");
         }
-        "#;
-        let summaries = parse_and_summarize(code);
-        let s = summaries.get("aes_encrypt_deinit").unwrap();
-        assert!(s.frees_params_by_name.contains_key(&0));
+        assert!(once["wrap_rel"][0].settled_releases.contains(&0));
+        assert!(!once["wrap"][0].settled_releases.contains(&0));
     }
 
     /// A copy of the parameter forwarded to a callee is a forward of the

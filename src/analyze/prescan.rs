@@ -1635,8 +1635,8 @@ fn scoped_callee(scoped: &HashSet<String>, file: Option<&str>, callee: String) -
 
 /// Key the callees a summary names the way the fold keys their definitions,
 /// so the phase 4 passes that follow a summary's own edges to another
-/// summary -- the passthrough chains, the returned-callee and name-shaped
-/// free resolutions -- reach this file's scoped static rather than a bare
+/// summary -- the passthrough chains, each definition's own forwards, the
+/// returned-callee and name-shaped free resolutions -- reach this file's scoped static rather than a bare
 /// entry the fold never made. Without it, a static wrapper forwarding to a
 /// static sink that another file also defines (Juliet's `badSink` ->
 /// `badVaSink`, in every file of a CWE directory) has an edge to nothing,
@@ -1663,6 +1663,11 @@ fn scope_summary_callees(
     }
     for guesses in summary.frees_params_by_name.values_mut() {
         for (callee, _, _) in guesses.iter_mut() {
+            key(callee);
+        }
+    }
+    for def in summary.definitions.iter_mut() {
+        for callee in def.forward_callees_mut() {
             key(callee);
         }
     }
