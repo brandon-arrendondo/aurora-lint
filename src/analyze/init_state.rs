@@ -2565,15 +2565,22 @@ fn collect_file_scope_statics_recursive(node: &Node, source: &str, state: &mut I
 ///
 /// Every preprocessor arm is read (`#elifdef` included) except one the file
 /// proves dead, and a name whose definitions disagree across arms, or one of
-/// which is not a compile-time value or is a tentative `static int g;`, is
-/// left out: it has no single value in every configuration (ADR-0010 D4).
+/// which is not a compile-time value, is left out: it has no single value in
+/// every configuration (ADR-0010 D4). A tentative `static int g;` with no
+/// initialized definition compiled beside it counts as 0.
 ///
 /// Keyed by name, so a use must first be checked to bind to the file-scope
 /// object rather than a local of the same name: [`constants_visible_at`].
 pub fn collect_file_scope_constants(root: &Node, source: &str) -> HashMap<String, i64> {
     // name -> Some((value, needs the never-written check)), None = no one value
-    let mut seen: HashMap<String, Option<(i64, bool)>> = HashMap::new();
-    collect_constants_recursive(root, source, &file_proven_dead_lines(source), &mut seen);
+    let mut seen: ConstantSeen = HashMap::new();
+    collect_constants_recursive(
+        root,
+        source,
+        &file_proven_dead_lines(source),
+        &HashSet::new(),
+        &mut seen,
+    );
     let function_macros = const_eval::function_macro_names(source);
     seen.into_iter()
         .filter_map(|(name, entry)| {
@@ -2641,12 +2648,150 @@ pub(crate) fn starts_in_dead_lines(node: &Node, dead: &[(usize, usize)]) -> bool
     dead.iter().any(|&(s, e)| line >= s && line <= e)
 }
 
+type ConstantSeen = HashMap<String, Option<(i64, bool)>>;
+
+/// The storage and qualifiers that decide whether a file-scope declaration
+/// can hold a constant.
+struct DeclQualifiers {
+    is_const: bool,
+    is_static: bool,
+    is_extern: bool,
+    is_volatile: bool,
+}
+
+fn decl_qualifiers(decl: &Node, source: &str) -> DeclQualifiers {
+    let text_of = |n: Node| n.utf8_text(source.as_bytes()).unwrap_or("");
+    let mut q = DeclQualifiers {
+        is_const: false,
+        is_static: false,
+        is_extern: false,
+        is_volatile: false,
+    };
+    for k in 0..decl.child_count() {
+        if let Some(c) = decl.child(k) {
+            match c.kind() {
+                "type_qualifier" if text_of(c) == "const" => q.is_const = true,
+                "type_qualifier" if text_of(c) == "volatile" => q.is_volatile = true,
+                "storage_class_specifier" if text_of(c) == "static" => q.is_static = true,
+                "storage_class_specifier" if text_of(c) == "extern" => q.is_extern = true,
+                _ => {}
+            }
+        }
+    }
+    q
+}
+
+/// Names given an initialized definition directly in this arm (not in an arm
+/// nested inside it): every configuration that compiles this arm compiles
+/// that initializer.
+fn initialized_names_in_arm(node: &Node, source: &str, dead: &[(usize, usize)]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else {
+            continue;
+        };
+        if child.kind() != "declaration" || starts_in_dead_lines(&child, dead) {
+            continue;
+        }
+        for j in 0..child.child_count() {
+            if let Some(decl) = child.child(j).filter(|d| d.kind() == "init_declarator") {
+                let name = get_declarator_name(&decl, source);
+                if !name.is_empty() {
+                    names.insert(name);
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Record one definition's value for `name`: definitions that disagree, or
+/// one that is not a compile-time value, leave the name with no one value.
+fn merge_constant(seen: &mut ConstantSeen, name: String, entry: Option<(i64, bool)>) {
+    match seen.get(&name) {
+        None => {
+            seen.insert(name, entry);
+        }
+        Some(Some((old, old_check))) => {
+            let merged = match entry {
+                Some((v, check)) if v == *old => Some((v, check || *old_check)),
+                _ => None,
+            };
+            seen.insert(name, merged);
+        }
+        Some(None) => {}
+    }
+}
+
+/// The value a declaration's declarators give their names, in the
+/// configurations that compile it. `initialized` names an initializer
+/// compiled alongside it (this arm or an enclosing one).
+fn declaration_constants(
+    decl_node: &Node,
+    source: &str,
+    initialized: &HashSet<String>,
+) -> Vec<(String, Option<(i64, bool)>)> {
+    let q = decl_qualifiers(decl_node, source);
+    // A volatile object may change by means the program cannot
+    // see (C11 6.7.3p7), so it is never a constant.
+    if (!q.is_const && !q.is_static) || q.is_volatile {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for j in 0..decl_node.child_count() {
+        let Some(decl) = decl_node.child(j) else {
+            continue;
+        };
+        if decl.kind() == "identifier" && !q.is_extern {
+            let Ok(name) = decl.utf8_text(source.as_bytes()) else {
+                continue;
+            };
+            if initialized.contains(name) {
+                // `static int flag; ... static int flag = 5;`: the
+                // initializer is the value, in either order.
+                continue;
+            }
+            // A tentative definition with no initialized one beside it is
+            // initialized to 0 (C11 6.9.2p2). That holds within this
+            // translation unit only, so only for a `static`; a non-static
+            // name may be defined in another file.
+            let entry = q.is_static.then_some((0, !q.is_const));
+            out.push((name.to_string(), entry));
+            continue;
+        }
+        if decl.kind() != "init_declarator" {
+            continue;
+        }
+        // `static const char *p` is a mutable pointer; an array
+        // is not one value either.
+        if decl
+            .child_by_field_name("declarator")
+            .is_none_or(|d| d.kind() != "identifier")
+        {
+            continue;
+        }
+        let name = get_declarator_name(&decl, source);
+        if name.is_empty() {
+            continue;
+        }
+        let empty_macros: HashMap<String, i64> = HashMap::new();
+        let value = decl
+            .child_by_field_name("value")
+            .and_then(|v| const_eval::try_evaluate_expr(&v, source, &empty_macros));
+        out.push((name, value.map(|v| (v, !q.is_const))));
+    }
+    out
+}
+
 fn collect_constants_recursive(
     node: &Node,
     source: &str,
     dead: &[(usize, usize)],
-    seen: &mut HashMap<String, Option<(i64, bool)>>,
+    enclosing_initialized: &HashSet<String>,
+    seen: &mut ConstantSeen,
 ) {
+    let mut initialized = initialized_names_in_arm(node, source, dead);
+    initialized.extend(enclosing_initialized.iter().cloned());
     for i in 0..node.child_count() {
         let Some(child) = node.child(i) else {
             continue;
@@ -2654,80 +2799,13 @@ fn collect_constants_recursive(
         match child.kind() {
             "declaration" if starts_in_dead_lines(&child, dead) => {}
             "declaration" => {
-                let text_of = |n: Node| n.utf8_text(source.as_bytes()).unwrap_or("");
-                let mut is_const = false;
-                let mut is_static = false;
-                let mut is_extern = false;
-                let mut is_volatile = false;
-                for k in 0..child.child_count() {
-                    if let Some(c) = child.child(k) {
-                        match c.kind() {
-                            "type_qualifier" if text_of(c) == "const" => is_const = true,
-                            "type_qualifier" if text_of(c) == "volatile" => is_volatile = true,
-                            "storage_class_specifier" if text_of(c) == "static" => is_static = true,
-                            "storage_class_specifier" if text_of(c) == "extern" => is_extern = true,
-                            _ => {}
-                        }
-                    }
-                }
-                // A volatile object may change by means the program cannot
-                // see (C11 6.7.3p7), so it is never a constant.
-                if (!is_const && !is_static) || is_volatile {
-                    continue;
-                }
-                for j in 0..child.child_count() {
-                    let Some(decl) = child.child(j) else {
-                        continue;
-                    };
-                    if decl.kind() == "identifier" && !is_extern {
-                        // A tentative definition, `static int flag;`: in the
-                        // configuration that compiles it, flag is 0, not the
-                        // value another arm initializes it to. This also
-                        // withholds the rare tentative-then-initialized pair
-                        // in one configuration, which only loses pruning.
-                        if let Ok(name) = decl.utf8_text(source.as_bytes()) {
-                            seen.insert(name.to_string(), None);
-                        }
-                        continue;
-                    }
-                    if decl.kind() != "init_declarator" {
-                        continue;
-                    }
-                    // `static const char *p` is a mutable pointer; an array
-                    // is not one value either.
-                    if decl
-                        .child_by_field_name("declarator")
-                        .is_none_or(|d| d.kind() != "identifier")
-                    {
-                        continue;
-                    }
-                    let name = get_declarator_name(&decl, source);
-                    if name.is_empty() {
-                        continue;
-                    }
-                    let empty_macros: HashMap<String, i64> = HashMap::new();
-                    let value = decl
-                        .child_by_field_name("value")
-                        .and_then(|v| const_eval::try_evaluate_expr(&v, source, &empty_macros));
-                    let entry = value.map(|v| (v, !is_const));
-                    match seen.get(&name) {
-                        None => {
-                            seen.insert(name, entry);
-                        }
-                        Some(Some((old, old_check))) => {
-                            let merged = match entry {
-                                Some((v, check)) if v == *old => Some((v, check || *old_check)),
-                                _ => None,
-                            };
-                            seen.insert(name, merged);
-                        }
-                        Some(None) => {}
-                    }
+                for (name, entry) in declaration_constants(&child, source, &initialized) {
+                    merge_constant(seen, name, entry);
                 }
             }
             "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
             | "preproc_elifdef" => {
-                collect_constants_recursive(&child, source, dead, seen);
+                collect_constants_recursive(&child, source, dead, &initialized, seen);
             }
             _ => {}
         }
