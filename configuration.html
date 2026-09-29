@@ -224,6 +224,9 @@ scan leaves out. It adds to the command line’s <code class="docutils literal n
 <p><code class="docutils literal notranslate"><span class="pre">exclude_all</span></code> and <code class="docutils literal notranslate"><span class="pre">prescan_exclude</span></code> change what the cross-file facts can hold,
 so they enter the settings hash (only when non-empty) and a SARIF export’s
 recorded settings.</p>
+<p>Excluding code, disabling a rule and suppressing findings are the project’s
+own declarations; <a class="reference internal" href="suppression.html#project-controls"><span class="std std-ref">Scoping and suppressing findings: the four project controls</span></a> sets the four controls side by side
+and says when each one fits.</p>
 </section>
 <section id="supported-cert-c-rules">
 <h2>Supported CERT C Rules<a class="headerlink" href="#supported-cert-c-rules" title="Link to this heading"></a></h2>
@@ -312,7 +315,7 @@ default (the remaining 4 are tracked but not implemented — see
 in <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/</span></code>.</p>
 </section>
 <section id="strict-vs-relaxed-onboarding">
-<h2>Strict vs. Relaxed Onboarding<a class="headerlink" href="#strict-vs-relaxed-onboarding" title="Link to this heading"></a></h2>
+<span id="relaxed-onboarding"></span><h2>Strict vs. Relaxed Onboarding<a class="headerlink" href="#strict-vs-relaxed-onboarding" title="Link to this heading"></a></h2>
 <p>Dropping aurora-lint into CI/CD against an existing codebase for the first
 time can surface a large number of findings before you have had a chance to
 triage any of them — real-world precision varies a lot by codebase (see

@@ -138,6 +138,10 @@ scan leaves out. It adds to the command line's ``--exclude-all``,
 so they enter the settings hash (only when non-empty) and a SARIF export's
 recorded settings.
 
+Excluding code, disabling a rule and suppressing findings are the project's
+own declarations; :ref:`project-controls` sets the four controls side by side
+and says when each one fits.
+
 Supported CERT C Rules
 ----------------------
 
@@ -169,6 +173,8 @@ Category    Count   Rules
 
 For the full list, see ``rules_templates/rules-all.toml`` or the rule source files
 in ``src/rules/cert_c/``.
+
+.. _relaxed-onboarding:
 
 Strict vs. Relaxed Onboarding
 -----------------------------

@@ -47,6 +47,7 @@
 <li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Suppression System</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#design-intent-surface-don-t-silence">Design intent: surface, don’t silence</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#scoping-and-suppressing-findings-the-four-project-controls">Scoping and suppressing findings: the four project controls</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#inline-comment-suppression">Inline Comment Suppression</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#pre-rename-spellings-still-accepted">Pre-rename spellings (still accepted)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#external-suppression-file">External Suppression File</a></li>
@@ -98,9 +99,10 @@
              
   <section id="suppression-system">
 <h1>Suppression System<a class="headerlink" href="#suppression-system" title="Link to this heading"></a></h1>
-<p>aurora-lint supports suppressing false positives via inline source comments or an external
-TOML file. Each suppression includes a SHA-256 hash of the violation line, ensuring
-suppressions break automatically when the underlying code changes.</p>
+<p>aurora-lint suppresses findings through inline source comments or an external
+TOML file. A per-line suppression carries a hash of the violation line, so it
+stops working when that line changes. A per-file or per-directory suppression
+matches by path and rule instead.</p>
 <section id="design-intent-surface-don-t-silence">
 <h2>Design intent: surface, don’t silence<a class="headerlink" href="#design-intent-surface-don-t-silence" title="Link to this heading"></a></h2>
 <p>aurora-lint’s job is to correctly surface every violation of a rule as the rule is written
@@ -116,6 +118,74 @@ entry or a manifest change, with a justification – not softening the rule so i
 stops finding things. A rule that under-reports to avoid noise is failing at its
 one job; a rule that over-reports on a project that doesn’t want it is a
 configuration problem, and configuration problems have a config-file answer.</p>
+</section>
+<section id="scoping-and-suppressing-findings-the-four-project-controls">
+<span id="project-controls"></span><h2>Scoping and suppressing findings: the four project controls<a class="headerlink" href="#scoping-and-suppressing-findings-the-four-project-controls" title="Link to this heading"></a></h2>
+<p>A project team decides what aurora-lint reports with four controls, from the
+coarsest to the finest. aurora-lint never infers scope and never silences a
+finding by itself. Every exclusion and every suppression is the project’s own
+declaration, written on its command line, in its manifest or suppression file,
+or in its source. Each one should say why: a comment beside an excluded glob
+or an <code class="docutils literal notranslate"><span class="pre">enabled</span> <span class="pre">=</span> <span class="pre">false</span></code> line, and the <code class="docutils literal notranslate"><span class="pre">justification</span></code> a suppression
+carries.</p>
+<ol class="arabic">
+<li><p><strong>Exclude code from the scan.</strong> Use this for code that is not the product:
+test harnesses, generated files, demo programs and build tooling.
+<code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code> (or <code class="docutils literal notranslate"><span class="pre">exclude_all</span></code> in a manifest’s <code class="docutils literal notranslate"><span class="pre">[scope]</span></code> table)
+leaves such files out of everything, including the cross-file facts other
+files are checked against. Vendored code the product links is different:
+its definitions are the ones the product’s calls reach. Use
+<code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> for it, which reports nothing there but still reads it.
+<a class="reference internal" href="cli-usage.html"><span class="doc">Advanced CLI Usage</span></a> covers these and <code class="docutils literal notranslate"><span class="pre">--prescan-exclude</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">.</span> <span class="o">--</span><span class="n">exclude</span><span class="o">-</span><span class="nb">all</span> <span class="s1">&#39;tests/**&#39;</span> <span class="o">--</span><span class="n">report</span><span class="o">-</span><span class="n">exclude</span> <span class="s1">&#39;vendor/**&#39;</span>
+</pre></div>
+</div>
+</li>
+<li><p><strong>Disable a rule for the whole codebase.</strong> Use this for a rule that cannot
+apply to the project, such as a Windows-only rule on a POSIX-only project,
+or one the team defers on purpose while it builds triage capacity. Set
+<code class="docutils literal notranslate"><span class="pre">enabled</span> <span class="pre">=</span> <span class="pre">false</span></code> on the rule in the project’s manifest, with the reason
+in a comment. <a class="reference internal" href="configuration.html#relaxed-onboarding"><span class="std std-ref">Strict vs. Relaxed Onboarding</span></a> explains when this is the right
+control and when it is not:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">[</span><span class="n">rules</span><span class="o">.</span><span class="n">cert_c</span><span class="o">.</span><span class="n">WIN30</span><span class="o">-</span><span class="n">C</span><span class="p">]</span>
+<span class="n">enabled</span> <span class="o">=</span> <span class="n">false</span>  <span class="c1"># POSIX-only project: no Windows API calls</span>
+</pre></div>
+</div>
+</li>
+<li><p><strong>Suppress per file or directory.</strong> Use this when the files are scanned and
+their other findings matter, but one rule or rule family is known not to
+apply there. Add a <a class="reference internal" href="#wildcard-suppression">wildcard suppression</a>: a suppression-file entry
+with no <code class="docutils literal notranslate"><span class="pre">hash</span></code>, matched by <code class="docutils literal notranslate"><span class="pre">file_glob</span></code> together with <code class="docutils literal notranslate"><span class="pre">rule</span></code>,
+<code class="docutils literal notranslate"><span class="pre">rule_glob</span></code> or <code class="docutils literal notranslate"><span class="pre">function_prefix</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">[[</span><span class="n">suppress</span><span class="p">]]</span>
+<span class="n">name</span> <span class="o">=</span> <span class="s2">&quot;tests-mem&quot;</span>
+<span class="n">tool</span> <span class="o">=</span> <span class="s2">&quot;aurora-lint&quot;</span>
+<span class="n">file_glob</span> <span class="o">=</span> <span class="s2">&quot;tests/**&quot;</span>
+<span class="n">rule_glob</span> <span class="o">=</span> <span class="s2">&quot;MEM*&quot;</span>
+<span class="n">justification</span> <span class="o">=</span> <span class="s2">&quot;Test fixtures leak on purpose; the process exits&quot;</span>
+</pre></div>
+</div>
+</li>
+<li><p><strong>Suppress per line.</strong> Use this for one finding the team has reviewed and
+accepted. Add an <a class="reference internal" href="#inline-comment-suppression">inline comment suppression</a> above the line, or a
+hash-matched entry in the <a class="reference internal" href="#external-suppression-file">external suppression file</a> when the source is
+read-only. Either one carries a hash of the line, so the suppression lapses
+when the line changes and the finding comes back for review:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">//</span> <span class="n">AURORA</span><span class="o">-</span><span class="n">SUPPRESS</span><span class="p">:</span> <span class="n">ARR30</span><span class="o">-</span><span class="n">C</span> <span class="n">HASH</span><span class="p">:</span><span class="n">a1b2c3d4e5f67890</span> <span class="n">JUSTIFICATION</span><span class="p">:</span> <span class="s2">&quot;Bounds validated by caller&quot;</span>
+</pre></div>
+</div>
+</li>
+</ol>
+<p>Excluding a file removes it before the scan. A suppressed finding is still
+found: the summary line counts it, and a SARIF export keeps it with a
+<code class="docutils literal notranslate"><span class="pre">suppressions</span></code> entry holding its justification.</p>
+<p>aurora-lint marks one kind of finding suppressed without a declaration: a
+finding inside a preprocessor branch that is never compiled as C. That covers
+<code class="docutils literal notranslate"><span class="pre">#if</span> <span class="pre">0</span></code>, a <code class="docutils literal notranslate"><span class="pre">__cplusplus</span></code>-only block, and a guard the file itself proves
+false. No build compiles that code. The finding’s justification says so, and
+it is counted and exported like any other suppressed finding. A branch that
+only some builds compile is not suppressed: every <code class="docutils literal notranslate"><span class="pre">#ifdef</span></code> arm is analysed
+(see <code class="docutils literal notranslate"><span class="pre">docs/adr/0010</span></code>).</p>
 </section>
 <section id="inline-comment-suppression">
 <h2>Inline Comment Suppression<a class="headerlink" href="#inline-comment-suppression" title="Link to this heading"></a></h2>
@@ -172,66 +242,101 @@ portion of the line – so renaming a comment in place does not invalidate it.
 <p>For read-only codebases, place a <code class="docutils literal notranslate"><span class="pre">suppress.toml</span></code> in the project root – the
 shared, all-tools file – or specify one with <code class="docutils literal notranslate"><span class="pre">--suppress-file</span></code>. Failing that,
 <code class="docutils literal notranslate"><span class="pre">.aurora-lint-suppress.toml</span></code> and the pre-rename <code class="docutils literal notranslate"><span class="pre">.sqc-suppress.toml</span></code> are
-auto-detected too, in that order:</p>
-<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="c1"># .aurora-lint-suppress.toml</span>
+auto-detected too, in that order.</p>
+<p>Every entry is a <code class="docutils literal notranslate"><span class="pre">[[suppress]]</span></code> table. <code class="docutils literal notranslate"><span class="pre">name</span></code> labels the entry and
+<code class="docutils literal notranslate"><span class="pre">tool</span></code> says which tool it applies to: <code class="docutils literal notranslate"><span class="pre">&quot;aurora-lint&quot;</span></code>, or <code class="docutils literal notranslate"><span class="pre">&quot;*&quot;</span></code> for every
+tool that reads the file. aurora-lint ignores entries for other tools. An entry
+with a <code class="docutils literal notranslate"><span class="pre">hash</span></code> suppresses one line; <a class="reference internal" href="#wildcard-suppression">wildcard suppression</a> covers an entry
+without one.</p>
+<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="c1"># suppress.toml</span>
 
-<span class="k">[[suppression]]</span>
+<span class="k">[[suppress]]</span>
+<span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;ringbuffer-int30&quot;</span>
+<span class="n">tool</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;aurora-lint&quot;</span>
 <span class="n">file</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;ringbuffer.c&quot;</span>
 <span class="n">rule</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;INT30-C&quot;</span>
 <span class="n">hash</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;a1f5861150a1e5b8&quot;</span>
 <span class="n">justification</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Overflow checked by caller&quot;</span>
 
-<span class="k">[[suppression]]</span>
+<span class="k">[[suppress]]</span>
+<span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;utility-exp34&quot;</span>
+<span class="n">tool</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;aurora-lint&quot;</span>
 <span class="n">file</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;src/utility.c&quot;</span>
 <span class="n">rule</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;EXP34-C&quot;</span>
 <span class="n">hash</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;b2c3d4e5f6a78901&quot;</span>
 <span class="n">justification</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Pointer validated at function entry&quot;</span>
 </pre></div>
 </div>
-<p>The <code class="docutils literal notranslate"><span class="pre">file</span></code> field matches by suffix – <code class="docutils literal notranslate"><span class="pre">ringbuffer.c</span></code> matches any path ending
-in <code class="docutils literal notranslate"><span class="pre">ringbuffer.c</span></code>.</p>
+<p>A hash-matched entry needs <code class="docutils literal notranslate"><span class="pre">file</span></code>, <code class="docutils literal notranslate"><span class="pre">rule</span></code> and <code class="docutils literal notranslate"><span class="pre">hash</span></code>;
+<code class="docutils literal notranslate"><span class="pre">--generate-suppression</span></code> prints one ready to paste. The <code class="docutils literal notranslate"><span class="pre">file</span></code> field
+matches by path suffix: <code class="docutils literal notranslate"><span class="pre">ringbuffer.c</span></code> matches any path ending in
+<code class="docutils literal notranslate"><span class="pre">/ringbuffer.c</span></code>.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>aurora-lint reads only <code class="docutils literal notranslate"><span class="pre">[[suppress]]</span></code> tables. A table under any other
+name, such as <code class="docutils literal notranslate"><span class="pre">[[suppression]]</span></code> or <code class="docutils literal notranslate"><span class="pre">[[wildcard]]</span></code>, is not read and
+suppresses nothing. When a file loads, aurora-lint prints how many entries
+it read (<code class="docutils literal notranslate"><span class="pre">Loaded</span> <span class="pre">N</span> <span class="pre">suppressions</span> <span class="pre">from</span> <span class="pre">FILE</span></code>) on standard error; check that
+count after editing the file.</p>
+</div>
 </section>
 <section id="wildcard-suppression">
 <h2>Wildcard Suppression<a class="headerlink" href="#wildcard-suppression" title="Link to this heading"></a></h2>
-<p>For suppressing entire categories of violations without per-line hashes, use
-<code class="docutils literal notranslate"><span class="pre">[[wildcard]]</span></code> entries. All specified fields are ANDed — a violation must match
-every field present. At least one matching field must be set.</p>
-<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="c1"># Suppress a rule for all files under a directory</span>
-<span class="k">[[wildcard]]</span>
+<p>To suppress findings by path and rule without per-line hashes, leave out
+<code class="docutils literal notranslate"><span class="pre">hash</span></code>. The fields present are ANDed, so a violation must match every one
+of them, and at least one of <code class="docutils literal notranslate"><span class="pre">file_glob</span></code> (or <code class="docutils literal notranslate"><span class="pre">file</span></code>), <code class="docutils literal notranslate"><span class="pre">rule</span></code>,
+<code class="docutils literal notranslate"><span class="pre">rule_glob</span></code> and <code class="docutils literal notranslate"><span class="pre">function_prefix</span></code> must be set.</p>
+<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="c1"># Suppress one rule for every file under a directory</span>
+<span class="k">[[suppress]]</span>
+<span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;vendor-dcl31&quot;</span>
+<span class="n">tool</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;aurora-lint&quot;</span>
 <span class="n">file_glob</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;src/vendor/**&quot;</span>
 <span class="n">rule</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;DCL31-C&quot;</span>
 <span class="n">justification</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Vendor code, not our responsibility&quot;</span>
 
-<span class="c1"># Suppress all DCL rules for vendor code</span>
-<span class="k">[[wildcard]]</span>
+<span class="c1"># Suppress a rule family for the same directory</span>
+<span class="k">[[suppress]]</span>
+<span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;vendor-dcl&quot;</span>
+<span class="n">tool</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;aurora-lint&quot;</span>
 <span class="n">file_glob</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;src/vendor/**&quot;</span>
 <span class="n">rule_glob</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;DCL*&quot;</span>
 <span class="n">justification</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;All DCL rules suppressed for vendor code&quot;</span>
 
-<span class="c1"># Suppress by function name prefix in violation messages</span>
-<span class="k">[[wildcard]]</span>
+<span class="c1"># Suppress by a function name prefix in violation messages</span>
+<span class="k">[[suppress]]</span>
+<span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;wolfssl-dcl31&quot;</span>
+<span class="n">tool</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;aurora-lint&quot;</span>
 <span class="n">rule</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;DCL31-C&quot;</span>
 <span class="n">function_prefix</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;wolfSSL_&quot;</span>
 <span class="n">justification</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;wolfSSL library functions declared in external headers&quot;</span>
 
-<span class="c1"># Combine multiple conditions (all must match)</span>
-<span class="k">[[wildcard]]</span>
+<span class="c1"># Combine conditions (all must match)</span>
+<span class="k">[[suppress]]</span>
+<span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;tests-mem&quot;</span>
+<span class="n">tool</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;aurora-lint&quot;</span>
 <span class="n">file_glob</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;tests/**&quot;</span>
 <span class="n">rule_glob</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;MEM*&quot;</span>
 <span class="n">justification</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Memory rules relaxed in test code&quot;</span>
 </pre></div>
 </div>
+<p>Vendored code the product links can also be left out of the report entirely
+with <code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> (see <a class="reference internal" href="#project-controls"><span class="std std-ref">Scoping and suppressing findings: the four project controls</span></a>). A wildcard entry is
+for code whose other findings you still want.</p>
 <p><strong>Fields:</strong></p>
 <ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">name</span></code> — A label for the entry, unique within the file (required).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">tool</span></code> — <code class="docutils literal notranslate"><span class="pre">&quot;aurora-lint&quot;</span></code>, or <code class="docutils literal notranslate"><span class="pre">&quot;*&quot;</span></code> for every tool (required).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">file_glob</span></code> — Glob pattern for file paths. Supports <code class="docutils literal notranslate"><span class="pre">*</span></code> (any characters
 except <code class="docutils literal notranslate"><span class="pre">/</span></code>), <code class="docutils literal notranslate"><span class="pre">**</span></code> (any characters including <code class="docutils literal notranslate"><span class="pre">/</span></code>), and <code class="docutils literal notranslate"><span class="pre">?</span></code> (single
-character). Matched as a suffix against the full file path.</p></li>
+character). Matched as a suffix against the full file path. Without
+<code class="docutils literal notranslate"><span class="pre">file_glob</span></code>, a <code class="docutils literal notranslate"><span class="pre">file</span></code> value is used as the pattern.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">rule</span></code> — Exact rule ID match (e.g., <code class="docutils literal notranslate"><span class="pre">&quot;DCL31-C&quot;</span></code>).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">rule_glob</span></code> — Glob pattern for rule IDs (e.g., <code class="docutils literal notranslate"><span class="pre">&quot;DCL*&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;INT3?-C&quot;</span></code>).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">function_prefix</span></code> — Prefix to match in violation messages. Matches at word
 boundaries, so <code class="docutils literal notranslate"><span class="pre">&quot;wolfSSL_&quot;</span></code> matches <code class="docutils literal notranslate"><span class="pre">'wolfSSL_Init'</span></code> but not
 <code class="docutils literal notranslate"><span class="pre">'myWolfSSL_Init'</span></code>.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">justification</span></code> — Explanation for the suppression (required).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">justification</span></code> — Why the findings are suppressed. A SARIF export records
+it with each suppressed finding.</p></li>
 </ul>
 <p>Wildcard suppressions are checked after inline comment and hash-matched
 suppressions. Hash-matched suppressions always take priority.</p>

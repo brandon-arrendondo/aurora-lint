@@ -1,9 +1,10 @@
 Suppression System
 ==================
 
-aurora-lint supports suppressing false positives via inline source comments or an external
-TOML file. Each suppression includes a SHA-256 hash of the violation line, ensuring
-suppressions break automatically when the underlying code changes.
+aurora-lint suppresses findings through inline source comments or an external
+TOML file. A per-line suppression carries a hash of the violation line, so it
+stops working when that line changes. A per-file or per-directory suppression
+matches by path and rule instead.
 
 Design intent: surface, don't silence
 --------------------------------------
@@ -22,6 +23,73 @@ entry or a manifest change, with a justification -- not softening the rule so it
 stops finding things. A rule that under-reports to avoid noise is failing at its
 one job; a rule that over-reports on a project that doesn't want it is a
 configuration problem, and configuration problems have a config-file answer.
+
+.. _project-controls:
+
+Scoping and suppressing findings: the four project controls
+-----------------------------------------------------------
+
+A project team decides what aurora-lint reports with four controls, from the
+coarsest to the finest. aurora-lint never infers scope and never silences a
+finding by itself. Every exclusion and every suppression is the project's own
+declaration, written on its command line, in its manifest or suppression file,
+or in its source. Each one should say why: a comment beside an excluded glob
+or an ``enabled = false`` line, and the ``justification`` a suppression
+carries.
+
+1. **Exclude code from the scan.** Use this for code that is not the product:
+   test harnesses, generated files, demo programs and build tooling.
+   ``--exclude-all`` (or ``exclude_all`` in a manifest's ``[scope]`` table)
+   leaves such files out of everything, including the cross-file facts other
+   files are checked against. Vendored code the product links is different:
+   its definitions are the ones the product's calls reach. Use
+   ``--report-exclude`` for it, which reports nothing there but still reads it.
+   :doc:`cli-usage` covers these and ``--prescan-exclude``::
+
+       aurora-lint . --exclude-all 'tests/**' --report-exclude 'vendor/**'
+
+2. **Disable a rule for the whole codebase.** Use this for a rule that cannot
+   apply to the project, such as a Windows-only rule on a POSIX-only project,
+   or one the team defers on purpose while it builds triage capacity. Set
+   ``enabled = false`` on the rule in the project's manifest, with the reason
+   in a comment. :ref:`relaxed-onboarding` explains when this is the right
+   control and when it is not::
+
+       [rules.cert_c.WIN30-C]
+       enabled = false  # POSIX-only project: no Windows API calls
+
+3. **Suppress per file or directory.** Use this when the files are scanned and
+   their other findings matter, but one rule or rule family is known not to
+   apply there. Add a `wildcard suppression`_: a suppression-file entry
+   with no ``hash``, matched by ``file_glob`` together with ``rule``,
+   ``rule_glob`` or ``function_prefix``::
+
+       [[suppress]]
+       name = "tests-mem"
+       tool = "aurora-lint"
+       file_glob = "tests/**"
+       rule_glob = "MEM*"
+       justification = "Test fixtures leak on purpose; the process exits"
+
+4. **Suppress per line.** Use this for one finding the team has reviewed and
+   accepted. Add an `inline comment suppression`_ above the line, or a
+   hash-matched entry in the `external suppression file`_ when the source is
+   read-only. Either one carries a hash of the line, so the suppression lapses
+   when the line changes and the finding comes back for review::
+
+       // AURORA-SUPPRESS: ARR30-C HASH:a1b2c3d4e5f67890 JUSTIFICATION: "Bounds validated by caller"
+
+Excluding a file removes it before the scan. A suppressed finding is still
+found: the summary line counts it, and a SARIF export keeps it with a
+``suppressions`` entry holding its justification.
+
+aurora-lint marks one kind of finding suppressed without a declaration: a
+finding inside a preprocessor branch that is never compiled as C. That covers
+``#if 0``, a ``__cplusplus``-only block, and a guard the file itself proves
+false. No build compiles that code. The finding's justification says so, and
+it is counted and exported like any other suppressed finding. A branch that
+only some builds compile is not suppressed: every ``#ifdef`` arm is analysed
+(see ``docs/adr/0010``).
 
 Inline Comment Suppression
 --------------------------
@@ -74,71 +142,108 @@ External Suppression File
 For read-only codebases, place a ``suppress.toml`` in the project root -- the
 shared, all-tools file -- or specify one with ``--suppress-file``. Failing that,
 ``.aurora-lint-suppress.toml`` and the pre-rename ``.sqc-suppress.toml`` are
-auto-detected too, in that order:
+auto-detected too, in that order.
+
+Every entry is a ``[[suppress]]`` table. ``name`` labels the entry and
+``tool`` says which tool it applies to: ``"aurora-lint"``, or ``"*"`` for every
+tool that reads the file. aurora-lint ignores entries for other tools. An entry
+with a ``hash`` suppresses one line; `wildcard suppression`_ covers an entry
+without one.
 
 .. code-block:: toml
 
-    # .aurora-lint-suppress.toml
+    # suppress.toml
 
-    [[suppression]]
+    [[suppress]]
+    name = "ringbuffer-int30"
+    tool = "aurora-lint"
     file = "ringbuffer.c"
     rule = "INT30-C"
     hash = "a1f5861150a1e5b8"
     justification = "Overflow checked by caller"
 
-    [[suppression]]
+    [[suppress]]
+    name = "utility-exp34"
+    tool = "aurora-lint"
     file = "src/utility.c"
     rule = "EXP34-C"
     hash = "b2c3d4e5f6a78901"
     justification = "Pointer validated at function entry"
 
-The ``file`` field matches by suffix -- ``ringbuffer.c`` matches any path ending
-in ``ringbuffer.c``.
+A hash-matched entry needs ``file``, ``rule`` and ``hash``;
+``--generate-suppression`` prints one ready to paste. The ``file`` field
+matches by path suffix: ``ringbuffer.c`` matches any path ending in
+``/ringbuffer.c``.
+
+.. warning::
+
+    aurora-lint reads only ``[[suppress]]`` tables. A table under any other
+    name, such as ``[[suppression]]`` or ``[[wildcard]]``, is not read and
+    suppresses nothing. When a file loads, aurora-lint prints how many entries
+    it read (``Loaded N suppressions from FILE``) on standard error; check that
+    count after editing the file.
 
 Wildcard Suppression
 --------------------
 
-For suppressing entire categories of violations without per-line hashes, use
-``[[wildcard]]`` entries. All specified fields are ANDed — a violation must match
-every field present. At least one matching field must be set.
+To suppress findings by path and rule without per-line hashes, leave out
+``hash``. The fields present are ANDed, so a violation must match every one
+of them, and at least one of ``file_glob`` (or ``file``), ``rule``,
+``rule_glob`` and ``function_prefix`` must be set.
 
 .. code-block:: toml
 
-    # Suppress a rule for all files under a directory
-    [[wildcard]]
+    # Suppress one rule for every file under a directory
+    [[suppress]]
+    name = "vendor-dcl31"
+    tool = "aurora-lint"
     file_glob = "src/vendor/**"
     rule = "DCL31-C"
     justification = "Vendor code, not our responsibility"
 
-    # Suppress all DCL rules for vendor code
-    [[wildcard]]
+    # Suppress a rule family for the same directory
+    [[suppress]]
+    name = "vendor-dcl"
+    tool = "aurora-lint"
     file_glob = "src/vendor/**"
     rule_glob = "DCL*"
     justification = "All DCL rules suppressed for vendor code"
 
-    # Suppress by function name prefix in violation messages
-    [[wildcard]]
+    # Suppress by a function name prefix in violation messages
+    [[suppress]]
+    name = "wolfssl-dcl31"
+    tool = "aurora-lint"
     rule = "DCL31-C"
     function_prefix = "wolfSSL_"
     justification = "wolfSSL library functions declared in external headers"
 
-    # Combine multiple conditions (all must match)
-    [[wildcard]]
+    # Combine conditions (all must match)
+    [[suppress]]
+    name = "tests-mem"
+    tool = "aurora-lint"
     file_glob = "tests/**"
     rule_glob = "MEM*"
     justification = "Memory rules relaxed in test code"
 
+Vendored code the product links can also be left out of the report entirely
+with ``--report-exclude`` (see :ref:`project-controls`). A wildcard entry is
+for code whose other findings you still want.
+
 **Fields:**
 
+- ``name`` — A label for the entry, unique within the file (required).
+- ``tool`` — ``"aurora-lint"``, or ``"*"`` for every tool (required).
 - ``file_glob`` — Glob pattern for file paths. Supports ``*`` (any characters
   except ``/``), ``**`` (any characters including ``/``), and ``?`` (single
-  character). Matched as a suffix against the full file path.
+  character). Matched as a suffix against the full file path. Without
+  ``file_glob``, a ``file`` value is used as the pattern.
 - ``rule`` — Exact rule ID match (e.g., ``"DCL31-C"``).
 - ``rule_glob`` — Glob pattern for rule IDs (e.g., ``"DCL*"``, ``"INT3?-C"``).
 - ``function_prefix`` — Prefix to match in violation messages. Matches at word
   boundaries, so ``"wolfSSL_"`` matches ``'wolfSSL_Init'`` but not
   ``'myWolfSSL_Init'``.
-- ``justification`` — Explanation for the suppression (required).
+- ``justification`` — Why the findings are suppressed. A SARIF export records
+  it with each suppressed finding.
 
 Wildcard suppressions are checked after inline comment and hash-matched
 suppressions. Hash-matched suppressions always take priority.
