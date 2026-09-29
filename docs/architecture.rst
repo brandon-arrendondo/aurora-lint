@@ -215,6 +215,14 @@ No ownership model              Same-function ownership transfer (allocate + cus
                                 dominant remaining MEM31-C real-world FP source
 ==============================  ====================================================
 
+**Known departures from the labeling ADRs.** Where detection still
+contradicts ADR-0005 (misfires), ADR-0006 (resolve identifiers, not
+spelling), ADR-0010 (every compilable configuration counts) or ADR-0011
+(what counts as proof), the place is listed in
+``docs/design/adr-conformance.md``: the code, the shortcut, and whether a
+fix adds or removes findings. A published per-rule figure for a rule with
+an open row there carries that caveat.
+
 Architectural Ceiling
 ---------------------
 
