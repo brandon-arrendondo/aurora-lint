@@ -7162,7 +7162,11 @@ mod tests {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
-        let macros = const_eval::collect_macro_constants(&tree.root_node(), code);
+        let macros = const_eval::collect_macro_constants(
+            &tree.root_node(),
+            code,
+            crate::settings::DataModel::Lp64,
+        );
         compute_summaries(
             &tree.root_node(),
             code,

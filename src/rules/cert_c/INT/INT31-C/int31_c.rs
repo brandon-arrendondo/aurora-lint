@@ -773,8 +773,12 @@ impl CertRule for Int31C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
         // Merge project-level macros with this file's own (file wins).
-        *self.current_macros.borrow_mut() =
-            const_eval::merged_macro_constants(&self.project_macros.borrow(), node, source);
+        *self.current_macros.borrow_mut() = const_eval::merged_macro_constants(
+            &self.project_macros.borrow(),
+            node,
+            source,
+            self.data_model.get(),
+        );
         // Risky-var memo is keyed on tree-sitter node ids, unique only within
         // one parse tree — reset per file.
         self.risky_vars_cache.borrow_mut().clear();

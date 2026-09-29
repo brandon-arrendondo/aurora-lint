@@ -51,8 +51,9 @@ use crate::analyze::macro_expand::{collect_function_macros, FunctionMacro};
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
+use crate::settings::DataModel;
 use lang_parsing_substrate::query;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
@@ -144,6 +145,9 @@ pub struct Arr30C {
     /// `buffer_in_scope_at` can size a re-resolved declaration identically
     /// without every caller threading the table through. Cleared per file.
     cached_file_constants: RefCell<HashMap<String, i64>>,
+    /// The integer data model the settings credit: which limit macros and
+    /// `sizeof` values are constants.
+    data_model: Cell<DataModel>,
 }
 
 /// Represents an index value that can be constant or variable
@@ -222,6 +226,10 @@ const BOUND_NAME_SUBSTRINGS: &[&str] = &["size", "length", "count"];
 const BOUND_NAME_SUBSTRINGS_WITH_LEN: &[&str] = &["size", "length", "count", "len"];
 
 impl CertRule for Arr30C {
+    fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
+        self.data_model.set(settings.data_model);
+    }
+
     fn rule_id(&self) -> &'static str {
         "ARR30-C"
     }
@@ -374,6 +382,7 @@ impl Arr30C {
             null_sentinel_macros: RefCell::new(HashSet::new()),
             cached_typedefs: RefCell::new(HashMap::new()),
             cached_file_constants: RefCell::new(HashMap::new()),
+            data_model: Cell::new(DataModel::default()),
         }
     }
 
@@ -385,7 +394,12 @@ impl Arr30C {
     /// merges in cross-file constants from the prescan (`set_project_context`)
     /// for names not defined in this file. Per-file definitions win.
     fn collect_constants(&self, root: &Node, source: &str) -> HashMap<String, i64> {
-        const_eval::merged_macro_constants(&self.macro_constants.borrow(), root, source)
+        const_eval::merged_macro_constants(
+            &self.macro_constants.borrow(),
+            root,
+            source,
+            self.data_model.get(),
+        )
     }
 
     /// Get VRA-derived variable ranges at a specific expression node.

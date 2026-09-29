@@ -2,6 +2,10 @@
  * Rule: INT08-C
  * Source: custom
  * Status: PASS - should NOT trigger INT08-C violation
+ * Settings: data_model=lp64
+ *
+ * The branch is proven dead from SHRT_MAX's value, which a declared model
+ * fixes; the Juliet builds this shape comes from are LP64.
  * Description: Juliet's CWE-190 good sink. `data` is CHAR_MAX, the branch
  * asks for `data < CHAR_MAX`, so the store inside it never executes and the
  * 128 it would compute is not a value the program ever holds. The range
