@@ -2630,9 +2630,6 @@ fn is_unconditionally_reached_modulo_null_guard(
     source: &str,
     guarded: &str,
 ) -> bool {
-    if returns_before(node, body, source, guarded, false) {
-        return false;
-    }
     let mut current = *node;
     loop {
         let Some(parent) = current.parent() else {
@@ -5342,7 +5339,13 @@ fn credit_param_free(
     summary: &mut FunctionSummary,
 ) {
     summary.frees_params.insert(idx);
-    if is_unconditionally_reached_modulo_null_guard(call, body, source, &params[idx]) {
+    // `returns_before` here and not inside the shared walk: the walk also
+    // decides which output parameters are always written, a question that
+    // credits the write by default (EXP33-C), and an early exit before a
+    // release is what makes the release conditional.
+    if is_unconditionally_reached_modulo_null_guard(call, body, source, &params[idx])
+        && !returns_before(call, body, source, &params[idx], false)
+    {
         summary.unconditional_frees_params.insert(idx);
     }
 }
