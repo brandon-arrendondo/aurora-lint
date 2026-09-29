@@ -125,7 +125,15 @@ a defect that occurs at some conforming width (``unsigned char * unsigned
 char`` overflowing a 16-bit ``int``) is reported. Declaring ``ilp32``, ``lp64``
 or ``llp64`` gives every width its value on that target. It enters the
 settings hash only when declared. ``--set data_model=MODEL`` is the same as
-``--data-model MODEL``.
+``--data-model MODEL``, and a ``--profile`` keeps a manifest's ``data_model``.
+
+A known limitation of ``iso``: a limit macro is not a number there, so a proof
+that goes through its value is lost even when it holds on every
+implementation. ``x = INT_MAX; x + 1`` overflows everywhere, and a branch
+guarded by ``d < SHRT_MAX`` after ``d = SHRT_MAX`` never runs, but with
+``INT_MAX`` and ``SHRT_MAX`` unknown neither is proven: an undeclared project
+loses such an overflow finding and can be reported inside such a dead branch.
+Declaring the data model avoids both.
 
 ``allocators`` and ``deallocators`` declare functions the scan has no body
 for, such as a platform hook the build supplies: a deallocator frees the
