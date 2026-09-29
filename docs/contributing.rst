@@ -108,6 +108,25 @@ pre-commit or CI. Reading ``.rst`` needs docutils' ``rst2html`` on
 Without it the task skips ``.rst`` files and says so. Rule changes belong in
 ``style_package``, not in a local override here.
 
+Publishing a Release's Documentation
+------------------------------------
+
+Pushing a ``v*`` tag runs ``.github/workflows/release.yml``, whose ``docs``
+job publishes that commit's rendered documentation under ``/<tag>/`` on the
+GitHub Pages site. The directory is never replaced: a later deploy of the
+same tag is refused, and every deploy from main copies each release
+directory forward unchanged. After tagging a release:
+
+1. Confirm ``https://brandon-arrendondo.github.io/aurora-lint/<tag>/index.html``
+   is live and listed on ``versions.html``. The tag's docs job waits in the
+   same queue as main's, and a newer push to main can cancel it while it
+   waits. If it did, re-run that job from the tag's release run. Main's docs
+   job also warns about any release whose directory is missing.
+2. Never re-run a docs job from a run made before per-tag publishing
+   existed, and never push to the ``gh-pages`` branch by hand. Either one
+   publishes a site without the release directories. If that happens,
+   restore them from an earlier ``gh-pages`` commit.
+
 Development Node Setup
 ----------------------
 

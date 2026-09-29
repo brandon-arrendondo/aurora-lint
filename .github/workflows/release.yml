@@ -436,3 +436,40 @@ jobs:
             artifacts/aurora-lint-deb/*.deb
             artifacts/aurora-lint-rpm/*.rpm
             artifacts/aurora-lint-appimage/*.AppImage
+
+  # ── Docs for this release, at /<tag>/ on GitHub Pages ───────────────
+  # Papers cite a release's rendered docs, so each tag's build is published
+  # under its own directory and never replaced: scripts/assemble_pages_site.py
+  # refuses a tag already published, and ci.yml's main deploy copies every
+  # release directory forward. It runs after the release job, so a tag whose
+  # release failed publishes no docs. It shares the `gh-pages` concurrency
+  # group with ci.yml's docs job.
+  docs:
+    name: Docs for this release (GitHub Pages)
+    runs-on: ubuntu-24.04
+    needs: release
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Sphinx and theme
+        run: pip install sphinx sphinx-rtd-theme
+
+      - name: Build HTML docs
+        run: sphinx-build -b html -d docs/_build/doctrees docs docs/_build/html
+
+      - name: Fetch the published site
+        run: scripts/fetch_published_pages.sh _site_published
+
+      - name: Assemble the site (this release under /${{ github.ref_name }}/)
+        run: |
+          python3 scripts/assemble_pages_site.py tag "${GITHUB_REF_NAME}" \
+            docs/_build/html _site_published _site
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: _site

@@ -144,6 +144,20 @@ jobs:
           name: lcov
           path: lcov.info
 
+  # The site root is main's build; each release's docs live under /<tag>/,
+  # published by release.yml and never replaced. The deploy replaces the whole
+  # gh-pages branch, so scripts/assemble_pages_site.py copies the published
+  # release directories into the new site first. The `gh-pages` concurrency
+  # group, shared with release.yml's docs job, keeps two deploys from reading
+  # and writing the branch at once.
+  # Each deploy replaces the whole gh-pages branch, so this job and
+  # release.yml's docs job rebuild the complete site: main's build at the
+  # root plus every published /<tag>/ directory, copied forward (see
+  # scripts/assemble_pages_site.py). Two things can still delete release
+  # directories, and no code here can stop them: re-running this job from a
+  # run older than this scheme (it runs that commit's workflow, which
+  # publishes main's build alone), and pushing to gh-pages by hand. Don't
+  # do either; restore a lost directory from an earlier gh-pages commit.
   docs:
     name: Docs (GitHub Pages)
     runs-on: ubuntu-24.04
@@ -151,6 +165,9 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
       contents: write
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
 
@@ -158,10 +175,27 @@ jobs:
         run: pip install sphinx sphinx-rtd-theme
 
       - name: Build HTML docs
-        run: sphinx-build -b html docs docs/_build/html
+        run: sphinx-build -b html -d docs/_build/doctrees docs docs/_build/html
+
+      - name: Fetch the published site
+        run: scripts/fetch_published_pages.sh _site_published
+
+      # A tag's docs job can be cancelled silently by a newer deploy in the
+      # gh-pages group. Warn about any release since this scheme shipped
+      # (its tree has the assembler) whose /<tag>/ is not published.
+      - name: Warn about releases whose docs are not published
+        run: |
+          git fetch --quiet --tags origin
+          tags=$(for t in $(git tag --list 'v*'); do
+            if git cat-file -e "$t:scripts/assemble_pages_site.py" 2>/dev/null; then echo "$t"; fi
+          done)
+          python3 scripts/assemble_pages_site.py missing _site_published $tags
+
+      - name: Assemble the site (main at the root, releases kept)
+        run: python3 scripts/assemble_pages_site.py main docs/_build/html _site_published _site
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: docs/_build/html
+          publish_dir: _site

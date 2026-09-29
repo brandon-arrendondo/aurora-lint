@@ -12,6 +12,14 @@ inter-procedural reasoning.
 This guide covers advanced usage, CI/CD integration, the interactive console UI,
 testing methodology, project internals, and contributing.
 
+These pages describe the main branch and change with it. Each release's
+documentation stays published under its tag, as it read when the release was
+made, and the `documentation versions
+<https://brandon-arrendondo.github.io/aurora-lint/versions.html>`_ page lists
+them. To cite a page, cite the release's copy, whose text and numbers never
+change: ``https://brandon-arrendondo.github.io/aurora-lint/<tag>/<page>.html``,
+for example ``.../aurora-lint/v0.6.0/configuration.html``.
+
 .. toctree::
    :maxdepth: 3
    :caption: Contents
