@@ -25,6 +25,7 @@
 //! module's version directly instead of maintaining a parallel, buggier one.
 
 use crate::utility::cert_c::ast_utils::{get_node_text, is_unsigned_type};
+use crate::utility::cert_c::data_model::DataModel;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -494,21 +495,25 @@ pub fn resolve_typedef_chain(type_name: &str, typedef_types: &HashMap<String, St
 }
 
 /// Whether `type_name` -- a declared type spelling, possibly a typedef alias
-/// -- names a SIGNED integer type that is 64-bit under every data model the
-/// pinned corpora build for, resolving the alias chain first so a project's
-/// own name for it counts (sqlite's `i64` -> `sqlite3_int64` ->
-/// `sqlite_int64` -> `long long int`, valkey's `mstime_t`).
+/// -- names a SIGNED integer type at least 64 bits wide under `model`,
+/// resolving the alias chain first so a project's own name for it counts
+/// (sqlite's `i64` -> `sqlite3_int64` -> `sqlite_int64` -> `long long int`,
+/// valkey's `mstime_t`).
 ///
-/// The signed counterpart of INT30-C's `is_portable_64bit_unsigned`, and it
-/// makes the same exclusion for the same reason: plain `long` is absent,
-/// because it is 64-bit on LP64 and 32-bit on LLP64 and curl builds for
-/// both. Treating it as wide would silently suppress an overflow that is
-/// real on Windows -- hostap's `os_time_t` (`typedef long os_time_t`) stays
-/// 32-bit-modelled here on purpose.
+/// `long long`, `int64_t` and the `least`/`fast`/`max` 64-bit types are, on
+/// every implementation (C11 5.2.4.2.1, 7.20.1). Plain `long`, `ptrdiff_t`
+/// and `intptr_t` are only on a model that says so: `long` is 64 bits on
+/// LP64 and 32 on LLP64, and ISO C guarantees `ptrdiff_t` and `intptr_t`
+/// only 16 -- treating them as wide would suppress an overflow that is real
+/// on another target (hostap's `os_time_t`, `typedef long os_time_t`).
 ///
 /// A pointer spelling is never an arithmetic width: `char *` carries the
 /// word size but pointer arithmetic is not this question.
-pub fn is_portable_64bit_signed(type_name: &str, typedef_types: &HashMap<String, String>) -> bool {
+pub fn is_64bit_signed(
+    type_name: &str,
+    typedef_types: &HashMap<String, String>,
+    model: DataModel,
+) -> bool {
     let resolved = resolve_typedef_chain(type_name, typedef_types);
     let base = resolved
         .replace("volatile ", "")
@@ -518,19 +523,12 @@ pub fn is_portable_64bit_signed(type_name: &str, typedef_types: &HashMap<String,
     if base.contains('*') {
         return false;
     }
-    matches!(
-        base,
-        "int64_t"
-            | "int_least64_t"
-            | "int_fast64_t"
-            | "intmax_t"
-            | "intptr_t"
-            | "ptrdiff_t"
-            | "long long"
-            | "long long int"
-            | "signed long long"
-            | "signed long long int"
-    )
+    if matches!(base, "int_least64_t" | "int_fast64_t" | "intmax_t") {
+        return true;
+    }
+    model
+        .spelled_width(base)
+        .is_some_and(|(unsigned, width)| !unsigned && width.min >= 64)
 }
 
 /// Recursively resolve a (possibly multi-level) typedef chain -- e.g.
