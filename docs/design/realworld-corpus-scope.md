@@ -4,24 +4,44 @@
 changes by a deliberate re-scoping task; this doc is the rationale those
 decisions were made with. The machine-readable form is `scope_include` /
 `scope_exclude` in `data/benchmark_repos.json`; the scan-side form is the
-`--report-exclude` globs and `scan_path` in `bench/realworld_runner.py`. When
+`--exclude-all` / `--report-exclude` globs and `scan_path` in
+`bench/realworld_runner.py`. When
 the three disagree, this doc is the one that says *why* — fix the other two to
 match it, or revise it here first.
 
-The runner's globs are `--report-exclude` (what aurora-lint's `--exclude`
-meant when these scopes were set, and what the deprecated flag still means):
-nothing is reported in those trees, but they are still read for cross-file
-facts. Moving a tree to `--exclude-all`, which takes it out of the cross-file
-facts too, changes findings in the files that remain, so it is a deliberate
-re-scoping of that project, recorded in its section here with its own A/B.
-The per-project sections below say `--exclude` where they record an audit as
-it was run.
+The runner's globs come in two kinds; see
+[Scan exclusion](#scan-exclusion-what-the-prescan-reads). The per-project
+sections below say `--exclude` where they record an audit as it was run.
 
 Scope says which *files* an oracle measures; `primary_build_config` in the
 same JSON says which *build* of them, and every project section below ends
 with a `Primary build configuration` subsection giving its rationale. See
 [Primary build configuration](#primary-build-configuration-adr-0010)
 for what that field does and does not claim.
+
+## Scan exclusion: what the prescan reads
+
+The runner drops each out-of-scope tree from the scan with one of two flags,
+and which one decides what the files that remain are analysed against:
+
+- **`--exclude-all`** for test, demo and tooling trees that link into nothing
+  in scope. Nothing is reported in them, and the cross-file prescan does not
+  read them. A test that passes NULL, or a stub that always succeeds, would
+  otherwise feed the function summaries and call-site facts the product's own
+  code is judged by, and stand in for the definitions the product actually
+  links.
+- **`--report-exclude`** for code the product compiles in: vendored
+  libraries and shared helpers. Nothing is reported in them, but the prescan
+  still reads them, because their definitions ARE the ones the product's
+  calls reach. Made dark, calls into them lose their declarations and misfire,
+  and wrappers they define vanish, which blinds the checks that follow them.
+
+The evidence for each choice is the project's own build files at the pinned
+commit: which targets compile which trees. Each project section below has a
+*Scan exclusion* subsection naming them. This is a declaration made for the
+benchmark, the way any project team declares its own scope; aurora-lint never
+infers it. It does not change the oracle scope (`scope_include` /
+`scope_exclude`): every tree involved was already unreported.
 
 ## Why this doc exists
 
@@ -217,6 +237,26 @@ headers rather than extending the globs:
 So the exclusion list is enumerated, not pattern-derived. A future sweep should
 re-read headers rather than trust either the filename or `TESTSRC`.
 
+### Scan exclusion
+
+Per the rule in [Scan exclusion](#scan-exclusion-what-the-prescan-reads), every tree the runner drops is test, tooling or binding material,
+so all of them are `--exclude-all`: `autosetup/` (vendored Jim Tcl, run only by
+`configure`), `tool/` (build tools: `main.mk` builds `lemon` from
+`tool/lemon.c` as a host program), `test/` and `src/test*.c` (the Tcl test
+glue: `main.mk`'s `TESTSRC` list, linked only into `testfixture`), and
+`ext/jni/`, `ext/wasm/` (language bindings with their own builds). The
+library's objects are `main.mk`'s `LIBOBJS0` list (or the amalgamation), which
+names none of them.
+
+The case that motivated it: `src/test_wsd.c` holds the only body of
+`sqlite3_wsd_find`, which `sqlite3GlobalConfig` calls behind the
+`SQLITE_OMIT_WSD` arm. Read by the prescan, that test body decided what every
+engine call through the macro was proven to do.
+
+The test-only files *inside* `src/` and `ext/` that the oracle excludes by
+exact path (see above) are not in the runner's globs, so they are still
+scanned and read; only `src/test*.c` is.
+
 ### Primary build configuration
 
 `linux-x86_64` — default autoconf build, `SQLITE_OS_UNIX`, compile-time limits
@@ -342,6 +382,21 @@ re-verification pass per the mosquitto model — re-challenges claimed TPs/FNs
 and samples FP buckets, because the adversarial agent consistently surfaces
 over-credited TPs, missed FPs, and overlooked FNs.
 
+### Scan exclusion
+
+Per the rule in [Scan exclusion](#scan-exclusion-what-the-prescan-reads): `tests/`, `docs/` (including the `docs/examples/*.c` programs),
+`scripts/`, `CMake/` and `projects/` are `--exclude-all`. `CMakeLists.txt`
+builds libcurl from `lib/` and the tool from `src/`; `tests/` and
+`docs/examples` are separate optional subdirectories (their own
+`add_subdirectory`, each building test servers, libtests or example programs
+that link libcurl, never the reverse). `projects/` is a different kind: beside
+the Windows IDE project files it holds the OS/400 and VMS port glue
+(`projects/OS400/os400sys.c`, `ccsidcurl.c`, `projects/vms/*.c`), which only
+those platforms' builds compile. The primary build configuration (Linux,
+below) links none of it, and its wrappers would otherwise stand in for the
+library's own functions. `include/` stays `--report-exclude`: the public API
+headers `lib/` and `src/` compile against.
+
 ### Primary build configuration
 
 `linux-x86_64` — Linux/OpenSSL build. **This corpus is the worked example the
@@ -396,6 +451,20 @@ the benchmark's own invocation (manifest `conf/realworld/hostap-rules.toml`,
 Whole-repo run: 38,659 violations (23 suppressed). Filtered to in-scope
 (`src/`, `wpa_supplicant/`, `hostapd/`): **36,072 findings across 636 files**,
 174 distinct rules firing.
+
+### Scan exclusion
+
+Per the rule in [Scan exclusion](#scan-exclusion-what-the-prescan-reads): `tests/` (hwsim test scripts, unit-test programs such as
+`tests/test-*.c`, and the fuzzing harnesses), `wlantest/`, `eap_example/`,
+`hs20/` (the `hs20/client` program), `radius_example/` and `wpaspy/` are
+`--exclude-all`. Each has its own `Makefile` building a separate program (or a
+Python extension) that pulls in `src/` objects; `wpa_supplicant/Makefile` and
+`hostapd/Makefile` list no object from any of them. The fuzzing harnesses'
+stub definitions (`tests/fuzzing/*`) are what made this matter: a stub that
+always returns a static object stood in for the daemon's own function.
+
+`src/ap/hs20.c` and `wpa_supplicant/hs20_supplicant.c` are the daemons' own
+Hotspot 2.0 code and are in scope; only the top-level `hs20/` tree is not.
 
 ### Primary build configuration
 
@@ -485,6 +554,23 @@ Binary: built from source at Cargo.toml v0.4.30 into an isolated target dir
 (`/tmp/sqc-mosquitto-audit`) so as not to disturb `target/release/sqc`, which
 another concurrent session used for the sqlite FP-reduction benchmark gate
 .
+
+### Scan exclusion
+
+Per the rule in [Scan exclusion](#scan-exclusion-what-the-prescan-reads): `test/`, `client/`, `apps/` and `plugins/` are `--exclude-all`.
+The top-level `CMakeLists.txt` adds each as its own subdirectory, building the
+test suite, the `mosquitto_pub`/`mosquitto_sub` clients, the auxiliary apps and
+the example plugins, and none of them is linked into the library or the
+broker.
+
+`deps/`, `common/` and `libcommon/` stay `--report-exclude`, because the
+product compiles them in: `picohttpparser.c` from `deps/` is a source of both
+targets (`lib/CMakeLists.txt`, `src/CMakeLists.txt`, and the matching
+Makefiles), `uthash.h`/`utlist.h` are included by broker sources,
+`common/json_help.c` is a broker source, and `libmosquitto_common` from
+`libcommon/` is linked by both the library and the broker. Their definitions
+are the ones the product's calls reach: dark, the allocation wrappers in
+`libcommon/` vanish and the leak checks go blind.
 
 ### Primary build configuration
 
@@ -632,6 +718,14 @@ category 1. Same disposition as libcrc's WIN* block.
 follow-up (match identifiers, not comment text). Had the detector been right,
 `--write-manifest` would have produced this exact disable set itself.
 
+### Scan exclusion
+
+Per the rule in [Scan exclusion](#scan-exclusion-what-the-prescan-reads): `src/modules/hello*.c` (example modules, built by
+`src/modules/Makefile` into their own `.so`s) and `src/unit/` (the C++ unit
+tests, built only by the `all-with-unit-tests` target into a separate test
+binary) are `--exclude-all`. The prescan reads only `-d src`, so nothing
+outside `src/` was ever read.
+
 ### Primary build configuration
 
 `linux-x86_64` — default Linux server build. Nothing is out of configuration;
@@ -723,6 +817,22 @@ full for FNs.
   errors, `luaM_*` raise-on-OOM, macro-heavy headers, internal cross-TU API,
   portability-not-structural C99.
 - An adversarial re-verification pass (FN-refute, TP-refute, FP-hunt).
+
+### Scan exclusion
+
+Per the rule in [Scan exclusion](#scan-exclusion-what-the-prescan-reads): `ltests.c`, `ltests.h` and `testes/` are `--exclude-all`.
+`ltests.o` is in the makefile's `CORE_O`, but its whole body is under
+`#if defined(LUA_DEBUG)` (`ltests.c`, line 41), which only the test mode turns
+on (`TESTS= -DLUA_USER_H='"ltests.h"'`, commented out in the makefile). The
+default build compiles it to nothing. Its definitions, a debugging allocator
+among them, exist only in the test build.
+
+`onelua.c` stays `--report-exclude`. It is not test material: it
+`#include`s every other source to build the product itself as one unit, so
+its definitions are the product's own, seen a second time. It is kept out of
+the report because its findings would duplicate the sources'. Taking it out
+of the cross-file facts as well would be a claim that the one-unit build is
+not a build of the product, and nothing supports that.
 
 ### Primary build configuration
 
@@ -849,6 +959,13 @@ each reading the full source files (not just the flagged line) before
 judging. Results merged into one adjudication CSV and imported via `bench
 realworld-import-labels`.
 
+### Scan exclusion
+
+Per the rule in [Scan exclusion](#scan-exclusion-what-the-prescan-reads): `gui/` is `--exclude-all`. It is the optional GTK admin GUI, a
+separate program, and holds no C source at this pin (`Makefile.am` and
+`build.sh` only). The prescan reads only `-d src -d puredb`, so the move is a
+declaration with no effect on findings.
+
 ### Primary build configuration
 
 `linux-x86_64` — default `configure` build.
@@ -902,6 +1019,21 @@ is a no-op under the stricter reading and load-bearing under fnmatch.
 
 Sweeping either in would multiply the coverage denominator by ~16 against a
 labeled corpus that never touched them.
+
+### Scan exclusion
+
+Per the rule in [Scan exclusion](#scan-exclusion-what-the-prescan-reads): `examples/`, `projects/` and `tools/` are `--exclude-all`. raylib is
+the one corpus whose scan path (`src/`) is narrower than its prescan: the
+runner adds `-d {path}` for the whole checkout, so without a declaration
+the prescan read these demo programs. `examples/` (every file has its own
+`main()`) is built only under `BUILD_EXAMPLES` as its own
+`add_subdirectory`; `projects/` holds IDE and template starter projects; and
+`tools/` holds two standalone programs (`rexm`, `rlparser`). None is linked
+into the library (`add_subdirectory(src raylib)`).
+
+`src/external/` stays `--report-exclude`: the library compiles it in, through
+`src/rglfw.c`'s `#include` of the GLFW sources and the single-header libraries
+implemented inside raylib's own translation units.
 
 ### Primary build configuration
 
@@ -966,6 +1098,14 @@ build-system code, none of it relevant to a CERT-C scan of the installer.
 second, smaller genuine Win32 C tool in the same repo, deferred as a
 separate low-priority follow-up: low marginal value next to Ventoy2Disk's
 surface.
+
+### Scan exclusion
+
+Per the rule in [Scan exclusion](#scan-exclusion-what-the-prescan-reads), nothing here moves. The three vendored libraries are `ClCompile`
+items of `Ventoy2Disk.vcxproj`, so they are part of the installer and stay
+`--report-exclude`. Dark, calls into them would lose their declarations and
+misfire. The prescan reads only `-d Ventoy2Disk/Ventoy2Disk`, so the rest of
+the checkout (GRUB2, LinuxGUI, and the other programs) was never read.
 
 ### Primary build configuration
 

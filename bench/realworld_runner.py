@@ -105,17 +105,21 @@ CODEBASES = {
             # the precision oracle (docs/design/realworld-corpus-scope.md, sqlite section).
             # `-d` doesn't restrict the scan (it only adds cross-file pre-scan
             # context; the primary scan root is still the whole repo when
-            # scan_path is None), so out-of-scope trees are dropped via
-            # --report-exclude instead: autosetup/ (vendored Jim Tcl), tool/ (lemon
-            # parser-gen, build tools), test/ + src/test*.c (Tcl test glue),
-            # and ext/jni + ext/wasm (language bindings, not the engine).
+            # scan_path is None), so out-of-scope trees are dropped with
+            # --exclude-all, out of the report AND the cross-file prescan:
+            # autosetup/ (vendored Jim Tcl, build-time only), tool/ (lemon
+            # parser-gen, build tools), test/ + src/test*.c (Tcl test glue) and
+            # ext/jni + ext/wasm (language bindings). None links into the
+            # library, and a test body must not stand in for the engine's own
+            # (src/test_wsd.c is the only body of sqlite3_wsd_find). Rationale
+            # and link evidence: docs/design/realworld-corpus-scope.md.
             "extra_args": [
-                "--report-exclude", "autosetup/**",
-                "--report-exclude", "tool/**",
-                "--report-exclude", "test/**",
-                "--report-exclude", "src/test*.c",
-                "--report-exclude", "ext/jni/**",
-                "--report-exclude", "ext/wasm/**",
+                "--exclude-all", "autosetup/**",
+                "--exclude-all", "tool/**",
+                "--exclude-all", "test/**",
+                "--exclude-all", "src/test*.c",
+                "--exclude-all", "ext/jni/**",
+                "--exclude-all", "ext/wasm/**",
             ],
         },
         "cppcheck": {
@@ -142,16 +146,19 @@ CODEBASES = {
             # (docs/design/realworld-corpus-scope.md, mosquitto section). `-d` doesn't restrict
             # the scan (it only adds cross-file pre-scan context; the primary
             # scan root is still the whole repo when scan_path is None), so
-            # out-of-scope trees are dropped via --report-exclude instead: deps/
-            # (vendored picohttpparser), test/, client/, apps/, plugins/
-            # (example plugins), common/ and libcommon/ (shared helpers, pulled
-            # in only as cross-file context).
+            # out-of-scope trees are dropped from the report. test/, client/,
+            # apps/ and plugins/ (example plugins) link into neither target, so
+            # they are --exclude-all: out of the cross-file prescan too. deps/
+            # (vendored picohttpparser), common/ and libcommon/ ARE compiled
+            # into the library and the broker, so they stay --report-exclude:
+            # still read, since their definitions are the ones the product's
+            # calls reach. Link evidence: docs/design/realworld-corpus-scope.md.
             "extra_args": [
                 "--report-exclude", "deps/**",
-                "--report-exclude", "test/**",
-                "--report-exclude", "client/**",
-                "--report-exclude", "apps/**",
-                "--report-exclude", "plugins/**",
+                "--exclude-all", "test/**",
+                "--exclude-all", "client/**",
+                "--exclude-all", "apps/**",
+                "--exclude-all", "plugins/**",
                 "--report-exclude", "common/**",
                 "--report-exclude", "libcommon/**",
             ],
@@ -191,25 +198,25 @@ CODEBASES = {
             # denominator.
             # `-d` doesn't restrict the scan (it only adds cross-file pre-scan
             # context; the primary scan root is still the whole repo when
-            # scan_path is None), so out-of-scope trees are dropped via
-            # --report-exclude instead: tests/, docs/ (incl. docs/examples/*.c
-            # snippets), scripts/, CMake/, projects/, include/ (vendored/build
-            # tooling + public API headers). Excluding include/ from the
-            # target list doesn't lose type/macro resolution for lib/+src/ --
-            # the `-d {path}` full-repo prescan walk (added automatically
-            # whenever extra_args has no explicit `-d`) already indexes
-            # include/'s macros/enums/types independently of --report-exclude, which
-            # only filters which files get reported, not which get parsed.
+            # scan_path is None), so out-of-scope trees are dropped from the
+            # report. tests/, docs/ (incl. docs/examples/*.c snippets),
+            # scripts/, CMake/ and projects/ link into neither libcurl nor the
+            # tool, so they are --exclude-all: out of the cross-file prescan
+            # too. include/ (the public API headers lib/ and src/ compile
+            # against) stays --report-exclude: the `-d {path}` full-repo prescan
+            # walk (added automatically whenever extra_args has no explicit
+            # `-d`) still indexes its macros/enums/types. Link evidence:
+            # docs/design/realworld-corpus-scope.md.
             # Does NOT exclude the WIN_MAC files (14 files under lib/vtls,
             # lib/curlx) — those stay in the scan since the oracle treats them
             # as a distinct build-config boundary, excluded only from
             # *scoring*, not from the scan itself.
             "extra_args": [
-                "--report-exclude", "tests/**",
-                "--report-exclude", "docs/**",
-                "--report-exclude", "scripts/**",
-                "--report-exclude", "CMake/**",
-                "--report-exclude", "projects/**",
+                "--exclude-all", "tests/**",
+                "--exclude-all", "docs/**",
+                "--exclude-all", "scripts/**",
+                "--exclude-all", "CMake/**",
+                "--exclude-all", "projects/**",
                 "--report-exclude", "include/**",
             ],
         },
@@ -245,17 +252,19 @@ CODEBASES = {
             # wpa_supplicant/ + hostapd/. `-d` doesn't restrict the scan (it
             # only adds cross-file pre-scan context; the primary scan root is
             # still the whole repo when scan_path is None), so out-of-scope
-            # trees are dropped via --report-exclude instead: tests/, wlantest/
-            # (separate test/monitoring tool), eap_example/, hs20/,
-            # radius_example/, wpaspy/ — none of these ship as part of either
-            # daemon.
+            # trees are dropped with --exclude-all, out of the report AND the
+            # cross-file prescan: tests/, wlantest/ (separate test/monitoring
+            # tool), eap_example/, hs20/, radius_example/, wpaspy/ — none of
+            # these ship as part of either daemon, so their stubs and call sites
+            # must not stand in for the daemons' own. Link evidence:
+            # docs/design/realworld-corpus-scope.md.
             "extra_args": [
-                "--report-exclude", "tests/**",
-                "--report-exclude", "wlantest/**",
-                "--report-exclude", "eap_example/**",
-                "--report-exclude", "hs20/**",
-                "--report-exclude", "radius_example/**",
-                "--report-exclude", "wpaspy/**",
+                "--exclude-all", "tests/**",
+                "--exclude-all", "wlantest/**",
+                "--exclude-all", "eap_example/**",
+                "--exclude-all", "hs20/**",
+                "--exclude-all", "radius_example/**",
+                "--exclude-all", "wpaspy/**",
             ],
         },
         "cppcheck": {
@@ -283,17 +292,20 @@ CODEBASES = {
             "scan_path": None,
             "manifest": "conf/realworld/lua-rules.toml",
             "includes": ["-I", "{path}"],
-            # Exclude the checked-in amalgamation (onelua.c #includes every
-            # other .c), the internal test/debug harness (ltests.c/.h) and the
-            # C test fixtures under testes/. Scope = shipping library + the
-            # lua.c interpreter main. sqc parses raw (no preprocessor) so
-            # onelua.c wouldn't double-count, but excluding keeps the scanned
-            # fileset identical to the competitor tools below.
+            # Scope = shipping library + the lua.c interpreter main. The
+            # internal test/debug harness (ltests.c/.h) and the C test fixtures
+            # under testes/ link into neither, so they are --exclude-all: out
+            # of the report and the cross-file prescan. The checked-in
+            # amalgamation (onelua.c #includes every other .c) is the product
+            # itself built as one unit, not test material, so it stays
+            # --report-exclude: unreported (its findings duplicate the
+            # sources'), still read. Keeping it out of the report also keeps
+            # the scanned fileset identical to the competitor tools below.
             "extra_args": [
                 "--report-exclude", "**/onelua.c",
-                "--report-exclude", "**/ltests.c",
-                "--report-exclude", "**/ltests.h",
-                "--report-exclude", "testes/**",
+                "--exclude-all", "**/ltests.c",
+                "--exclude-all", "**/ltests.h",
+                "--exclude-all", "testes/**",
             ],
         },
         "cppcheck": {
@@ -317,8 +329,11 @@ CODEBASES = {
             # Scope to raylib's OWN library code: src/ (the 7 module .c TUs +
             # platform backends + headers), excluding src/external/** which is
             # bundled third-party (glad, glfw, dr_*, cgltf, miniaudio, stb-like
-            # single-headers). examples/, projects/ and tools/ are demo programs,
-            # not the library, and fall outside scan_path. raylib is the suite's
+            # single-headers), which the library compiles in and so stays
+            # --report-exclude (still read). examples/, projects/ and tools/ are
+            # demo programs, not the library: outside scan_path, but the
+            # automatic `-d {path}` full-repo prescan would read them, so they
+            # are --exclude-all. raylib is the suite's
             # structural-C99 oracle (compound literals + designated initializers),
             # the idioms Lua/the other oracles lack.
             "scan_path": "{path}/src",
@@ -326,6 +341,9 @@ CODEBASES = {
             "includes": ["-I", "{path}/src"],
             "extra_args": [
                 "--report-exclude", "**/external/**",
+                "--exclude-all", "examples/**",
+                "--exclude-all", "projects/**",
+                "--exclude-all", "tools/**",
             ],
         },
         "cppcheck": {
@@ -361,14 +379,15 @@ CODEBASES = {
             # implements sqlite3_exec) or any other current oracle (none
             # touch SQL at all). Scope = whole project (src/ + puredb/);
             # gui/ is the separate, optional GTK admin GUI, not the ftpd
-            # itself.
+            # itself, so it is --exclude-all (the prescan reads only the two
+            # -d trees anyway).
             "scan_path": None,
             "manifest": "conf/realworld/pureftpd-rules.toml",
             "includes": [],
             "extra_args": [
                 "-d", "{path}/src",
                 "-d", "{path}/puredb",
-                "--report-exclude", "gui/**",
+                "--exclude-all", "gui/**",
             ],
         },
         "cppcheck": {
@@ -472,7 +491,9 @@ CODEBASES = {
             # on -I so the types resolve. version.h, commands.def and
             # fmtargs.h are TRACKED at this pin (not build-generated), so the
             # bare clone scans without a build and corpus-check has nothing
-            # to flag. --report-exclude globs resolve relative to the scan root.
+            # to flag. Globs resolve relative to the scan root. modules/hello*.c
+            # (example modules) and unit/ link into nothing the server ships,
+            # so they are --exclude-all.
             "scan_path": "{path}/src",
             "manifest": "conf/realworld/valkey-rules.toml",
             "includes": [
@@ -486,8 +507,8 @@ CODEBASES = {
             ],
             "extra_args": [
                 "-d", "{path}/src",
-                "--report-exclude", "modules/hello*.c",
-                "--report-exclude", "unit/**",
+                "--exclude-all", "modules/hello*.c",
+                "--exclude-all", "unit/**",
             ],
         },
         # Same scope as sqc above, for a fair cross-tool comparison.
@@ -902,10 +923,10 @@ def _sqc_exclude_patterns(cfg: dict) -> list["re.Pattern"]:
     and the deprecated --exclude, which means --report-exclude.
     --prescan-exclude files are still scanned, so they are not here.
 
-    The corpora pass --report-exclude: what the old --exclude always meant,
-    so their scope and every past run stay as they were. Taking a tree out
-    of the cross-file facts as well is a per-corpus decision, recorded in
-    docs/design/realworld-corpus-scope.md with its own A/B."""
+    A corpus passes --exclude-all for test, demo and tooling trees that link
+    into nothing in scope, and --report-exclude for vendored or shared code
+    the product compiles in. Each choice, with its link evidence, is recorded
+    in docs/design/realworld-corpus-scope.md."""
     return _sqc_flag_patterns(cfg, ("--exclude-all", "--report-exclude", "--exclude"))
 
 
