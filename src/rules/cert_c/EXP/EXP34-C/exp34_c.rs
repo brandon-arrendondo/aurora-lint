@@ -841,6 +841,11 @@ fn check_function_arguments_cfg(
             {
                 continue;
             }
+            if idx >= *fixed && is_null_pointer_constant(arg, source) {
+                let spec = reading.spec(idx - fixed).unwrap_or("%s");
+                violations.push(null_constant_to_conversion(arg, func_name, spec));
+                continue;
+            }
         }
         if arg.kind() == "identifier" {
             let var_name = ast_utils::get_node_text_owned(arg, source);
@@ -931,6 +936,54 @@ fn check_macro_dereferenced_arguments(
     }
 }
 
+/// True when `arg` is a null pointer constant spelled as one: the standard
+/// `NULL` macro (C11 7.19p3), or `0` cast to a pointer type. A bare `0` is
+/// left out, since in a vararg slot it is an `int` as often as a pointer.
+fn is_null_pointer_constant(arg: &Node, source: &str) -> bool {
+    let mut node = *arg;
+    while node.kind() == "parenthesized_expression" {
+        match node.named_child(0) {
+            Some(inner) => node = inner,
+            None => return false,
+        }
+    }
+    match node.kind() {
+        "null" => true,
+        "identifier" => ast_utils::get_node_text(&node, source) == "NULL",
+        "cast_expression" => {
+            let to_pointer = node
+                .child_by_field_name("type")
+                .is_some_and(|t| ast_utils::get_node_text(&t, source).contains('*'));
+            to_pointer
+                && node
+                    .child_by_field_name("value")
+                    .is_some_and(|v| is_null_value(ast_utils::get_node_text(&v, source)))
+        }
+        _ => false,
+    }
+}
+
+/// A null pointer constant handed to a conversion that dereferences it.
+fn null_constant_to_conversion(arg: &Node, callee: &str, spec: &str) -> RuleViolation {
+    let start_point = arg.start_position();
+    RuleViolation {
+        rule_id: "EXP34-C".to_string(),
+        severity: Severity::High,
+        message: format!(
+            "Passing a null pointer to '{}', whose '{}' conversion dereferences it",
+            callee, spec
+        ),
+        file_path: String::new(),
+        line: start_point.row + 1,
+        column: start_point.column + 1,
+        suggestion: Some(format!(
+            "Pass a valid string to '{}' instead of a null pointer",
+            callee
+        )),
+        ..Default::default()
+    }
+}
+
 /// Reads a format string as one family's conversions.
 type FormatReader = fn(&str) -> format_slots::Reading;
 
@@ -1011,6 +1064,17 @@ fn check_callsite_null_args(
         // report, not this call site's.
         if param_idx < variadic_from {
             continue;
+        }
+
+        if let Some(fmt) = &format {
+            let slot = param_idx - variadic_from;
+            if is_null_pointer_constant(arg, source) {
+                if format_slots::slot_dereferences_either_direction(fmt, slot) {
+                    let spec = format_slots::slot_spec(fmt, slot).unwrap_or_else(|| "%s".into());
+                    violations.push(null_constant_to_conversion(arg, callee_name, &spec));
+                }
+                continue;
+            }
         }
 
         if arg.kind() != "identifier" {
