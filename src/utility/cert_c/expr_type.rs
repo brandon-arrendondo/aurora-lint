@@ -24,9 +24,11 @@
 //! array-ness and pointer depth, so a field with no recorded shape is unknown.
 
 use crate::analyze::context::VisibleTypes;
+use crate::analyze::dead_regions::DeadRegions;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::float_typing::EXTENDED_FLOAT_TYPES;
 use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -199,6 +201,9 @@ impl DataModel {
 
 /// What an expression is typed against: the typedefs and struct fields this
 /// file sees ([`VisibleTypes`]) and the data model.
+///
+/// Built once per file: it memoizes the file's own function definitions on
+/// first use.
 pub struct TypeEnv<'a> {
     /// `typedef name -> aliased type text`.
     pub typedefs: &'a HashMap<String, String>,
@@ -211,6 +216,9 @@ pub struct TypeEnv<'a> {
     pub struct_aliases: &'a HashMap<String, String>,
     /// The target's integer data model.
     pub model: DataModel,
+    /// `name -> return type` for the functions this file defines; see
+    /// [`file_function_type`].
+    file_functions: OnceCell<HashMap<String, Option<CType>>>,
 }
 
 impl<'a> TypeEnv<'a> {
@@ -227,6 +235,7 @@ impl<'a> TypeEnv<'a> {
             shapes,
             struct_aliases,
             model: DataModel::default(),
+            file_functions: OnceCell::new(),
         }
     }
 
@@ -528,13 +537,28 @@ pub fn declared_type(ident: &Node, source: &str, env: &TypeEnv) -> Option<CType>
 /// above its caller with no prototype. Only the translation unit's own
 /// file-scope definitions are searched (through preprocessor arms, never into
 /// a function body), so a name this file neither declares nor defines stays
-/// unknown.
+/// unknown. A definition in a platform-dead arm ([`DeadRegions`]) does not
+/// count; when the live definitions of a name disagree (`double scale(...)`
+/// under one `#if` arm, `int scale(...)` under the other), which one is
+/// compiled is not known here, so the answer is unknown.
 fn file_function_type(callee: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
     let name = get_node_text(callee, source);
-    let mut root = *callee;
+    env.file_functions
+        .get_or_init(|| file_function_types(callee, source, env))
+        .get(name)
+        .cloned()
+        .flatten()
+}
+
+/// Every function the file containing `node` defines, by name: its type when
+/// its live definitions agree, `None` when they do not.
+fn file_function_types(node: &Node, source: &str, env: &TypeEnv) -> HashMap<String, Option<CType>> {
+    let mut root = *node;
     while let Some(parent) = root.parent() {
         root = parent;
     }
+    let dead = DeadRegions::of(source);
+    let mut types: HashMap<String, Option<CType>> = HashMap::new();
     let mut pending = vec![root];
     while let Some(scope) = pending.pop() {
         for i in 0..scope.named_child_count() {
@@ -542,20 +566,27 @@ fn file_function_type(callee: &Node, source: &str, env: &TypeEnv) -> Option<CTyp
                 continue;
             };
             match child.kind() {
-                "function_definition" => {
+                "function_definition" if !dead.contains_node(&child) => {
                     let Some(declarator) = child.child_by_field_name("declarator") else {
                         continue;
                     };
-                    if ast_utils::get_identifier_from_declarator(&declarator, source) == name {
-                        return declarator_type(&child, &declarator, source, env);
-                    }
+                    let name = ast_utils::get_identifier_from_declarator(&declarator, source);
+                    let t = declarator_type(&child, &declarator, source, env);
+                    types
+                        .entry(name)
+                        .and_modify(|seen| {
+                            if *seen != t {
+                                *seen = None;
+                            }
+                        })
+                        .or_insert(t);
                 }
                 k if k.starts_with("preproc_") => pending.push(child),
                 _ => {}
             }
         }
     }
-    None
+    types
 }
 
 /// The type of a cast's `type_descriptor`.
@@ -636,7 +667,8 @@ pub fn expr_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
         "field_expression" => field_type(node, source, env),
         // A call has its callee's declared return type, when the callee is
         // declared where the call can see it; a library function whose header
-        // was not expanded is unknown.
+        // was not expanded is unknown, apart from the `<math.h>` functions,
+        // whose type the standard fixes.
         "call_expression" => {
             let callee = node.child_by_field_name("function")?;
             let callee_type = expr_type(&callee, source, env).or_else(|| {
@@ -644,7 +676,10 @@ pub fn expr_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
                     .then(|| file_function_type(&callee, source, env))
                     .flatten()
             });
-            match callee_type? {
+            let Some(callee_type) = callee_type else {
+                return math_call_type(node, source);
+            };
+            match callee_type {
                 CType::Function(ret) => ret.map(|b| *b),
                 CType::Pointer(Some(p)) => match *p {
                     CType::Function(ret) => ret.map(|b| *b),
@@ -757,18 +792,18 @@ fn binary_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
 
 /// `<math.h>` functions whose result is a real floating type by the
 /// standard. Their header is not expanded when a file is parsed, so their
-/// declaration is usually not in reach and [`expr_type`] answers `None` for a
-/// call to one.
+/// declaration is usually not in reach; [`expr_type`] types a call to one by
+/// this table when nothing the file declares or defines types the callee.
 const MATH_FUNCTIONS: &[&str] = &[
     "sqrtf", "sqrt", "powf", "pow", "sinf", "sin", "cosf", "cos", "tanf", "tan", "logf", "log",
     "expf", "exp", "fabsf", "fabs",
 ];
 
 /// The standard's return type for a call to one of the `<math.h>` functions
-/// in [`MATH_FUNCTIONS`] (`float` for the `f`-suffixed ones), or `None`. For a
-/// caller to consult only when [`expr_type`] has no answer: a declaration in
-/// reach always wins over the name.
-pub fn math_call_type(node: &Node, source: &str) -> Option<CType> {
+/// in [`MATH_FUNCTIONS`] (`float` for the `f`-suffixed ones), or `None`. The
+/// names are reserved to the library (C11 7.1.3), so the name answers only
+/// when no declaration in reach does: [`expr_type`] consults it last.
+fn math_call_type(node: &Node, source: &str) -> Option<CType> {
     let mut n = *node;
     while n.kind() == "parenthesized_expression" {
         n = n.named_child(0)?;
@@ -1148,7 +1183,25 @@ mod tests {
     #[test]
     fn unresolved_and_calls_are_unknown() {
         assert_eq!(returned("int f(void) { return g_unknown; }", &[]), None);
-        assert_eq!(returned("int f(double x) { return sqrt(x); }", &[]), None);
+        // A `<math.h>` function the file does not declare has the standard's
+        // type, inside an operand as well as at its top.
+        assert_eq!(
+            returned("int f(double x) { return sqrt(x); }", &[]),
+            Some(CType::Float(FloatKind::Double))
+        );
+        assert_eq!(
+            returned("int f(float x) { return sqrtf(x) * 2; }", &[]),
+            Some(CType::Float(FloatKind::Float))
+        );
+        // A declaration in reach wins over the name.
+        assert_eq!(
+            returned("int sqrt(int); int f(int x) { return sqrt(x); }", &[]),
+            Some(CType::Int {
+                sign: Sign::Signed,
+                rank: Rank::Int
+            })
+        );
+        assert_eq!(returned("int f(double x) { return frob(x); }", &[]), None);
         assert_eq!(
             returned(
                 "double half(double); int f(double x) { return half(x); }",
@@ -1168,5 +1221,30 @@ mod tests {
                 .unwrap()
                 .is_pointer()
         );
+    }
+
+    #[test]
+    fn definitions_that_disagree_across_arms_are_unknown() {
+        let code = "#ifdef USE_FLOAT\n\
+                    static double scale(double v) { return v * 2.0; }\n\
+                    #else\n\
+                    static int scale(int v) { return v * 2; }\n\
+                    #endif\n\
+                    int same(int a) { return scale(a); }";
+        assert_eq!(returned(code, &[]), None);
+        let code = "#ifdef USE_FLOAT\n\
+                    static double scale(double v) { return v * 2.0; }\n\
+                    #else\n\
+                    static double scale(double v) { return v + v; }\n\
+                    #endif\n\
+                    int same(double a) { return scale(a); }";
+        assert_eq!(returned(code, &[]), Some(CType::Float(FloatKind::Double)));
+        // A definition in a dead arm is not compiled, so it does not count.
+        let code = "#if 0\n\
+                    static int scale(int v) { return v * 2; }\n\
+                    #endif\n\
+                    static double scale(double v) { return v * 2.0; }\n\
+                    int same(double a) { return scale(a); }";
+        assert_eq!(returned(code, &[]), Some(CType::Float(FloatKind::Double)));
     }
 }

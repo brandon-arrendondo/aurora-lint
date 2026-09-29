@@ -87,14 +87,12 @@ impl Flp02C {
         matches!(t, "0.0" | "0." | ".0" | "0")
     }
 
-    /// Whether the operand's value is of a floating type: its type by
-    /// declaration (`expr_type`), or a `<math.h>` call's standard type. An
-    /// operand whose type is not in reach is not floating-point: this check
-    /// accuses, so an unknown type must not raise a finding.
+    /// Whether the operand's value is of a floating type, by declaration
+    /// (`expr_type`, which also knows the `<math.h>` functions' standard
+    /// types). An operand whose type is not in reach is not floating-point:
+    /// this check accuses, so an unknown type must not raise a finding.
     fn is_float_operand(&self, node: &Node, source: &str, env: &TypeEnv) -> bool {
-        expr_type::expr_type(node, source, env)
-            .or_else(|| expr_type::math_call_type(node, source))
-            .is_some_and(|t| t.is_float())
+        expr_type::expr_type(node, source, env).is_some_and(|t| t.is_float())
     }
 
     /// Check if a binary expression is a floating-point equality comparison
