@@ -271,14 +271,22 @@ without one.</p>
 <code class="docutils literal notranslate"><span class="pre">--generate-suppression</span></code> prints one ready to paste. The <code class="docutils literal notranslate"><span class="pre">file</span></code> field
 matches by path suffix: <code class="docutils literal notranslate"><span class="pre">ringbuffer.c</span></code> matches any path ending in
 <code class="docutils literal notranslate"><span class="pre">/ringbuffer.c</span></code>.</p>
-<div class="admonition warning">
-<p class="admonition-title">Warning</p>
-<p>aurora-lint reads only <code class="docutils literal notranslate"><span class="pre">[[suppress]]</span></code> tables. A table under any other
-name, such as <code class="docutils literal notranslate"><span class="pre">[[suppression]]</span></code> or <code class="docutils literal notranslate"><span class="pre">[[wildcard]]</span></code>, is not read and
-suppresses nothing. When a file loads, aurora-lint prints how many entries
-it read (<code class="docutils literal notranslate"><span class="pre">Loaded</span> <span class="pre">N</span> <span class="pre">suppressions</span> <span class="pre">from</span> <span class="pre">FILE</span></code>) on standard error; check that
-count after editing the file.</p>
-</div>
+<p>aurora-lint reads only <code class="docutils literal notranslate"><span class="pre">[[suppress]]</span></code> tables. An invalid suppression file
+stops the run with exit status 2, so a file is never read in part. A file is
+invalid when it holds:</p>
+<ul class="simple">
+<li><p>a table under any other name, such as <code class="docutils literal notranslate"><span class="pre">[[suppression]]</span></code> or <code class="docutils literal notranslate"><span class="pre">[[wildcard]]</span></code>;</p></li>
+<li><p>an entry with no <code class="docutils literal notranslate"><span class="pre">name</span></code>;</p></li>
+<li><p>an entry with a key it does not take, such as <code class="docutils literal notranslate"><span class="pre">reason</span></code> in place of
+<code class="docutils literal notranslate"><span class="pre">justification</span></code>;</p></li>
+<li><p>a <code class="docutils literal notranslate"><span class="pre">hash</span></code> entry without <code class="docutils literal notranslate"><span class="pre">file</span></code> and <code class="docutils literal notranslate"><span class="pre">rule</span></code>;</p></li>
+<li><p>an entry with no <code class="docutils literal notranslate"><span class="pre">hash</span></code> and nothing to match on, which would suppress
+every finding.</p></li>
+</ul>
+<p>The error names the file and every problem in it at once, with the allowed
+keys. Entries are checked only when their <code class="docutils literal notranslate"><span class="pre">tool</span></code> is <code class="docutils literal notranslate"><span class="pre">&quot;aurora-lint&quot;</span></code> or
+<code class="docutils literal notranslate"><span class="pre">&quot;*&quot;</span></code>, since another tool’s entries in the shared file may carry keys only
+that tool reads. A file that is not valid TOML stops the run the same way.</p>
 </section>
 <section id="wildcard-suppression">
 <h2>Wildcard Suppression<a class="headerlink" href="#wildcard-suppression" title="Link to this heading"></a></h2>
