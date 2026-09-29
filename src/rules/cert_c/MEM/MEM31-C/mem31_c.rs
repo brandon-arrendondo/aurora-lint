@@ -876,12 +876,16 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     }
 
     /// `func_name`'s summary as the call at `site` sees it: facts from a
-    /// definition in an `#if` arm that call cannot compile with are gone
-    /// (`FunctionSummary::at`).
+    /// definition in an `#if` arm that call cannot compile with are gone,
+    /// and a release -- a free, a store, a close, an escaping result -- holds
+    /// only when every definition the call can link with has it
+    /// (`FunctionSummary::at_all`). Every such fact stops this rule reporting
+    /// a leak, and a build whose definition does not release still leaks
+    /// (ADR-0010, per consumer).
     fn summary_at(&self, func_name: &str, site: Site) -> Option<Cow<'a, FunctionSummary>> {
         self.function_summaries
             .get(func_name)
-            .map(|summary| summary.at(site.0, site.1))
+            .map(|summary| summary.at_all(site.0, site.1))
     }
 
     fn analyze_function(

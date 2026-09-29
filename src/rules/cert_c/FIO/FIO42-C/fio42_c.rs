@@ -202,6 +202,9 @@ impl FileResourceTracker {
             let Some(summary) = summaries.get(&callee_name) else {
                 continue;
             };
+            // A close credited here stops a leak report, so every definition
+            // this call can link with must close.
+            let summary = summary.at_all(source, call.start_position().row + 1);
             if summary.closes_params.is_empty() {
                 continue;
             }

@@ -96,10 +96,16 @@ impl Mem03C {
     /// body clears the parameter (`clears_params`) -- the fact that makes
     /// mbedtls's `mbedtls_platform_zeroize` a clearer without anyone naming
     /// it.
+    ///
+    /// The summary is read as the call at `line` of `source` sees it with
+    /// every definition it can link with clearing (`FunctionSummary::at_all`):
+    /// a clear forgives a finding, so it must hold in every build.
     fn cleared_arg_indices(
         &self,
         spelled_name: &str,
         aliases: &HashMap<String, String>,
+        source: &str,
+        line: usize,
     ) -> Vec<usize> {
         let name = const_eval::resolve_macro_alias(aliases, spelled_name);
         if call_roles::is_memory_clearing_call(name) {
@@ -118,7 +124,12 @@ impl Mem03C {
             .borrow()
             .get(name)
             .map(|s| {
-                let mut v: Vec<usize> = s.clears_params.iter().copied().collect();
+                let mut v: Vec<usize> = s
+                    .at_all(source, line)
+                    .clears_params
+                    .iter()
+                    .copied()
+                    .collect();
                 v.sort_unstable();
                 v
             })
@@ -134,7 +145,12 @@ impl Mem03C {
         aliases: &HashMap<String, String>,
     ) -> Option<Vec<String>> {
         let func = call.child_by_field_name("function")?;
-        let indices = self.cleared_arg_indices(get_node_text(&func, source), aliases);
+        let indices = self.cleared_arg_indices(
+            get_node_text(&func, source),
+            aliases,
+            source,
+            call.start_position().row + 1,
+        );
         if indices.is_empty() {
             return None;
         }

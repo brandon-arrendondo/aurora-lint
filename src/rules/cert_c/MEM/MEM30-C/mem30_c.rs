@@ -4515,6 +4515,10 @@ impl MemoryAnalyzer {
         } else if let Some(indices) = self.macro_clear_params.get(spelled_name) {
             indices.clone()
         } else if let Some(summary) = self.function_summaries.get(function_name) {
+            // Forgetting a freed path is a suppression, so the clear must
+            // hold in every definition this call can link with, as the
+            // macro half above asks of every arm.
+            let summary = summary.at_all(source, call.start_position().row + 1);
             let mut indices: Vec<usize> = summary.clears_params.iter().copied().collect();
             indices.sort_unstable();
             indices
