@@ -9,6 +9,7 @@ Commands:
   runs                                     List all runs
   realworld [RUN] [--compare BASE]         Real-world FP dashboard
   realworld-run [--tool T,T] [--codebase C,C] [--compile-commands] [--profile P]
+                [--dirs-out PATH]
                                             Run sqc/cppcheck/clang-tidy/infer/
                                             frama-c against real codebases
                                             (local, sequential), ingest + score
@@ -39,6 +40,7 @@ Commands:
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from bench.config import DEFAULT_JOBS, DEFAULT_PROFILE, PROFILES
 from bench.db import BenchDB
@@ -71,10 +73,17 @@ def cmd_realworld_run(args):
             print(f"Unknown codebase '{cb}'. Must be one of: {', '.join(sorted(CODEBASES))}")
             return
 
+    # Checked before the scans, not found out after them: a listing that
+    # cannot be written would otherwise stop the run between its scans and
+    # its ingest.
+    if args.dirs_out is not None and not args.dirs_out.parent.is_dir():
+        print(f"--dirs-out: {args.dirs_out.parent} is not a directory")
+        raise SystemExit(2)
+
     print(f"Running {'+'.join(tools)} against {len(codebases)} codebase(s): "
           f"{', '.join(codebases)}\n")
     summary = run_and_ingest(tools, codebases, compile_commands=args.compile_commands,
-                             profile=args.profile)
+                             profile=args.profile, dirs_out=args.dirs_out)
     # The scans can all succeed and the ingest still fail; exit nonzero so a
     # `tee`d or scripted run does not read as clean.
     if summary.get("ingest_error"):
@@ -1200,6 +1209,10 @@ def main():
     p_rw_run.add_argument("--profile", choices=PROFILES, default=DEFAULT_PROFILE,
                           help="sqc only: aurora-lint policy/environment preset to scan "
                                "under, recorded in the run's settings (default: default)")
+    p_rw_run.add_argument("--dirs-out", type=Path, default=None, metavar="PATH",
+                          help="Write a JSON list of the export directories the sqc "
+                               "scans produced (one per set of settings: name, path, "
+                               "settings and hash, codebases) to PATH before ingesting")
     p_rw_run.set_defaults(func=cmd_realworld_run)
 
     # competitor-export

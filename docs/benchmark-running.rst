@@ -198,7 +198,7 @@ own terminal, against their own SQLite DB. See ``bench/realworld_runner.py``.
 
 .. code-block:: bash
 
-    python -m bench realworld-run [--tool sqc,cppcheck,clang-tidy] [--codebase C,C] [--compile-commands] [--profile P]
+    python -m bench realworld-run [--tool sqc,cppcheck,clang-tidy] [--codebase C,C] [--compile-commands] [--profile P] [--dirs-out PATH]
     python -m bench realworld [RUN] [--compare BASE]   # FP dashboard
     python -m bench realworld-runs                     # list runs
     python -m bench realworld-score [RUN]               # measured precision/recall
@@ -343,6 +343,16 @@ nonzero, and the run is simply absent (or partial) in ``bench realworld`` and
 ``bench realworld-score`` until the ingest is repeated. Two runs can still be
 compared straight from their JSON exports, finding for finding, without the
 database.
+
+One invocation can write more than one export directory: a codebase's compile
+database or a settings option in its ``extra_args`` can change the settings it
+is scanned under, and each set of settings is its own directory and its own
+run. ``--dirs-out PATH`` writes a JSON list of the directories the aurora-lint
+scans produced -- each with its name (which is also its ``run_id``), path,
+settings and settings hash, and the codebases scanned into it -- before the
+ingest starts, so a caller that ingests the exports somewhere else reads the
+names instead of predicting them. Write it outside ``results/realworld/``: an
+export directory's ``*.json`` files are read as scan results.
 
 Typical real-world workflow:
 

@@ -9,6 +9,8 @@ refused after the sweep (or, before that, recorded under one codebase's
 settings).
 """
 
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -76,6 +78,51 @@ class TestIngestPerSettingsGroup(unittest.TestCase):
         # A comparison tool's row rides on the run that scanned its codebase.
         self.assertEqual(db.attached, [("sqc-v-sha-cdb-default-bbbb", "ventoy", "cppcheck")])
         self.assertEqual(len(summary["run_ids"]), 2)
+
+
+class TestDirsOut(unittest.TestCase):
+    """`--dirs-out` names each export directory an invocation produced, so a
+    caller that ingests elsewhere need not predict the names."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "dirs.json"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_each_settings_group_is_listed_with_its_settings_and_codebases(self):
+        realworld_runner.write_dirs_out([
+            _sqc("curl", "sqc-v-sha-default-aaaa", "aaaa"),
+            _sqc("ventoy", "sqc-v-sha-default-bbbb", "bbbb"),
+            _sqc("lua", "sqc-v-sha-default-aaaa", "aaaa"),
+            {"tool": "sqc", "codebase": "hostap", "ok": False, "error": "x"},
+            {"tool": "cppcheck", "codebase": "curl", "ok": True, "total": 1,
+             "duration_s": 1},
+        ], self.path)
+        listing = json.loads(self.path.read_text())
+        self.assertEqual([d["version_dir"] for d in listing],
+                         ["sqc-v-sha-default-aaaa", "sqc-v-sha-default-bbbb"])
+        first, second = listing
+        self.assertEqual(first["run_id"], "sqc-v-sha-default-aaaa")
+        self.assertEqual(first["path"], "/nonexistent/sqc-v-sha-default-aaaa")
+        self.assertEqual(first["codebases"], ["curl", "lua"])
+        self.assertEqual(first["settings_hash"], "aaaa")
+        self.assertEqual(second["codebases"], ["ventoy"])
+        self.assertEqual(second["settings"], {"preset": "default", "hash": "bbbb"})
+
+    def test_the_listing_survives_a_failed_ingest(self):
+        scans = [_sqc("ventoy", "sqc-v-sha-default-bbbb", "bbbb")]
+        with mock.patch.object(realworld_runner, "run_one", side_effect=scans), \
+                mock.patch.object(realworld_runner, "_ingest",
+                                  side_effect=RuntimeError("db locked")), \
+                mock.patch("traceback.print_exc"), \
+                mock.patch("builtins.print"):
+            summary = realworld_runner.run_and_ingest(["sqc"], ["ventoy"],
+                                                      dirs_out=self.path)
+        self.assertEqual(summary["ingest_error"], "db locked")
+        listing = json.loads(self.path.read_text())
+        self.assertEqual([d["codebases"] for d in listing], [["ventoy"]])
 
 
 class TestSettingsResolution(unittest.TestCase):

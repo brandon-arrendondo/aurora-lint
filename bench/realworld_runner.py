@@ -1620,10 +1620,14 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
 
 def run_and_ingest(tools: list[str], codebases: list[str],
                    compile_commands: bool = False,
-                   profile: str = DEFAULT_PROFILE) -> dict:
+                   profile: str = DEFAULT_PROFILE,
+                   dirs_out: Path | None = None) -> dict:
     """Run every tool x codebase combo sequentially, then ingest sqc results
     (+ attach cppcheck/clang-tidy comparison rows) into SQLite and score
-    against the ground-truth oracle. Returns a summary dict."""
+    against the ground-truth oracle. Returns a summary dict.
+
+    With `dirs_out`, the export directories the sqc scans produced are
+    listed there (`write_dirs_out`) before the ingest starts."""
     results: list[dict] = []
     for tool in tools:
         for codebase in codebases:
@@ -1636,6 +1640,8 @@ def run_and_ingest(tools: list[str], codebases: list[str],
 
     summary = {"results": results, "run_id": None, "score": None,
                "ingest_error": None}
+    if dirs_out is not None:
+        write_dirs_out(results, dirs_out)
     try:
         _ingest(results, summary, profile)
     except Exception as e:
@@ -1653,6 +1659,38 @@ def run_and_ingest(tools: list[str], codebases: list[str],
     return summary
 
 
+def _settings_groups(results: list[dict]) -> dict[Path, list[dict]]:
+    """The successful sqc scans in `results`, grouped by the export directory
+    they wrote to, in scan order. One directory is one set of settings and so
+    one run (see `_ingest`)."""
+    groups: dict[Path, list[dict]] = {}
+    for r in results:
+        if r["tool"] == "sqc" and r.get("ok"):
+            groups.setdefault(r["version_dir"], []).append(r)
+    return groups
+
+
+def write_dirs_out(results: list[dict], path: Path) -> None:
+    """List at `path`, as JSON, each export directory this invocation's sqc
+    scans produced: its name (`version_dir`, which is also the run's
+    `run_id`), its `path`, the `settings` its scans ran under with their
+    `settings_hash`, and the `codebases` scanned into it. `run_id` here is
+    the run's text identifier (the `realworld_runs.run_id` column), not the
+    integer row id `run_and_ingest`'s summary carries under the same key.
+
+    A caller that ingests the exports elsewhere reads this rather than
+    predicting the directory name, which it cannot do from the profile alone:
+    a codebase's compile database or settings options can put its scans in a
+    directory of their own. Written before the ingest, so it survives an
+    ingest that fails."""
+    listing = [{"version_dir": d.name, "run_id": d.name, "path": str(d),
+                "settings_hash": group[0]["settings"]["hash"],
+                "settings": group[0]["settings"],
+                "codebases": [r["codebase"] for r in group]}
+               for d, group in _settings_groups(results).items()]
+    Path(path).write_text(json.dumps(listing, indent=2, sort_keys=True) + "\n")
+
+
 def _ingest(results: list[dict], summary: dict, profile: str = DEFAULT_PROFILE) -> None:
     """Write the completed scans into SQLite and score them. Split out of
     `run_and_ingest` so a failure here is reported as its own outcome rather
@@ -1668,10 +1706,7 @@ def _ingest(results: list[dict], summary: dict, profile: str = DEFAULT_PROFILE) 
     db = BenchDB()
     machine = {"hostname": os.uname().nodename}
 
-    sqc_results = [r for r in results if r["tool"] == "sqc" and r.get("ok")]
-    groups: dict[Path, list[dict]] = {}
-    for r in sqc_results:
-        groups.setdefault(r["version_dir"], []).append(r)
+    groups = _settings_groups(results)
     # Comparison-tool rows ride on the run that scanned the same codebase;
     # a codebase sqc did not scan goes with the first run, as it always has.
     group_of = {r["codebase"]: d for d, rs in groups.items() for r in rs}
