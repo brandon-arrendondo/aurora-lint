@@ -279,6 +279,9 @@ MULTI = [
     (26, "sensitive second pair", {"release-note"},
      pairs(("Clean note.", "fixed"), ("Fixed at conf.c:921 (real bug).", "fixed")),
      "aurora_lint", "done", T % 7),
+    (27, "CRLF body: a blank line still ends the bullet", {"release-note"},
+     "release-note: CRLF note,\r\n  wrapped.\r\n\r\nUnrelated paragraph.\r\ncategory: fixed\r\n",
+     "aurora_lint", "done", T % 8),
 ]
 
 
@@ -343,6 +346,13 @@ class TestMultiplePairs(unittest.TestCase):
         self.assertEqual(len(warnings), 1, warnings)
         self.assertIn("deny pattern", warnings[0])
 
+    def test_crlf_blank_line_ends_the_bullet(self):
+        # Regression: the blank-line cut matched only "\n\n", so a CRLF body's
+        # "\r\n\r\n" did not end the bullet and the next paragraph was pulled in.
+        sections, warnings = self.sections(27)
+        self.assertEqual(sections, {"Fixed": ["CRLF note, wrapped."]})
+        self.assertEqual(warnings, [])
+
     def test_warnings_name_the_task_id_never_the_title(self):
         for task_id in self.tasks:
             for w in self.sections(task_id)[1]:
@@ -350,7 +360,7 @@ class TestMultiplePairs(unittest.TestCase):
 
 
 class TestSplice(unittest.TestCase):
-    NEW_BLOCK =["## [Unreleased]", "", "### Fixed", "", "- fresh bullet", ""]
+    NEW_BLOCK = ["## [Unreleased]", "", "### Fixed", "", "- fresh bullet", ""]
 
     def test_curated_sections_survive_byte_for_byte(self):
         out = gen.splice_unreleased(CURATED, self.NEW_BLOCK, RELEASES[:1])

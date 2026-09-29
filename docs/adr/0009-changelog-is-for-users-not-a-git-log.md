@@ -71,9 +71,10 @@ may *say*.
 
 - The generator is an aid, not the author. `scripts/generate_changelog.py`
   publishes only tasks tagged `release-note`, using the task's
-  `release-note:` lines (one bullet per note; a task may carry several). It must be extended so each note carries one of the
-  three categories and is emitted under that heading; a note with no
-  category is a defect in the note, not something to default into "Added".
+  `release-note:` lines (one bullet per note; a task may carry several).
+  It must be extended so each note carries one of the four categories and
+  is emitted under that heading; a note with no category is a defect in
+  the note, not something to default into "Added".
 - A done task that shipped something a user should hear about gets the tag
   and a written note in the same change. A task that did not ship user-visible
   behavior gets neither, and its absence from the changelog is correct.

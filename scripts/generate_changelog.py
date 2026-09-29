@@ -278,7 +278,7 @@ def extract_release_note(details, category_match, lo=0):
     if not starts:
         return None
     text = before[starts[-1].end():]
-    blank = re.search(r"\n[ \t]*\n", text)
+    blank = re.search(r"\r?\n[ \t\r]*\n", text)
     if blank:
         text = text[:blank.start()]
     return text
