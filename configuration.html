@@ -50,6 +50,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#manifest-file">Manifest File</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#custom-manifest-format">Custom Manifest Format</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#policy-and-environment-settings">Policy and Environment Settings</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#scope">Scope</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#supported-cert-c-rules">Supported CERT C Rules</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#strict-vs-relaxed-onboarding">Strict vs. Relaxed Onboarding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#tracked-but-not-implemented">Tracked but not implemented</a></li>
@@ -209,6 +210,21 @@ argument its position names, and an allocator follows the contract of the
 standard allocator it names. <a class="reference internal" href="options.html"><span class="doc">Policy and Environment Options</span></a> has the details. They enter the
 settings hash only when something is declared.</p>
 </section>
+<section id="scope">
+<h2>Scope<a class="headerlink" href="#scope" title="Link to this heading"></a></h2>
+<p>A <code class="docutils literal notranslate"><span class="pre">[scope]</span></code> table lists path globs, relative to the scanned root, that the
+scan leaves out. It adds to the command line’s <code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code>,
+<code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> and <code class="docutils literal notranslate"><span class="pre">--prescan-exclude</span></code> (see <a class="reference internal" href="cli-usage.html"><span class="doc">Advanced CLI Usage</span></a>):</p>
+<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="k">[scope]</span>
+<span class="n">exclude_all</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;tests/**&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;docs/examples/**&quot;</span><span class="p">]</span><span class="w">  </span><span class="c1"># out of everything</span>
+<span class="n">report_exclude</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;vendor/**&quot;</span><span class="p">]</span><span class="w">                  </span><span class="c1"># no findings, still read</span>
+<span class="n">prescan_exclude</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;port/win32/**&quot;</span><span class="p">]</span><span class="w">             </span><span class="c1"># reported, not read</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">exclude_all</span></code> and <code class="docutils literal notranslate"><span class="pre">prescan_exclude</span></code> change what the cross-file facts can hold,
+so they enter the settings hash (only when non-empty) and a SARIF export’s
+recorded settings.</p>
+</section>
 <section id="supported-cert-c-rules">
 <h2>Supported CERT C Rules<a class="headerlink" href="#supported-cert-c-rules" title="Link to this heading"></a></h2>
 <p>311 rules are tracked across 17 categories; 307 are implemented and enabled by
@@ -305,9 +321,11 @@ things help without writing a manifest at all:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">--min-severity</span></code>/<code class="docutils literal notranslate"><span class="pre">--fail-on-severity</span></code> (see <a class="reference external" href="../README.md#getting-started">Getting Started</a> in the top-level README) filter what is
 printed and what fails a build, independent of the manifest.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--exclude</span></code> drops vendored code, generated files, and test harnesses
-from the scan entirely — usually the single biggest volume reduction on a
-first run.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code> drops generated files and test harnesses from the scan
+entirely — usually the single biggest volume reduction on a first run. For
+vendored code the product links, <code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> silences its findings
+while its definitions keep informing the checks on your own code (see
+<a class="reference internal" href="cli-usage.html"><span class="doc">Advanced CLI Usage</span></a>).</p></li>
 </ul>
 <p>For a coarser starting point than either of those, build your own
 <strong>relaxed</strong> manifest the same way this project’s own real-world benchmark

@@ -120,6 +120,24 @@ argument its position names, and an allocator follows the contract of the
 standard allocator it names. :doc:`options` has the details. They enter the
 settings hash only when something is declared.
 
+Scope
+-----
+
+A ``[scope]`` table lists path globs, relative to the scanned root, that the
+scan leaves out. It adds to the command line's ``--exclude-all``,
+``--report-exclude`` and ``--prescan-exclude`` (see :doc:`cli-usage`):
+
+.. code-block:: toml
+
+    [scope]
+    exclude_all = ["tests/**", "docs/examples/**"]  # out of everything
+    report_exclude = ["vendor/**"]                  # no findings, still read
+    prescan_exclude = ["port/win32/**"]             # reported, not read
+
+``exclude_all`` and ``prescan_exclude`` change what the cross-file facts can hold,
+so they enter the settings hash (only when non-empty) and a SARIF export's
+recorded settings.
+
 Supported CERT C Rules
 ----------------------
 
@@ -164,9 +182,11 @@ things help without writing a manifest at all:
 - ``--min-severity``/``--fail-on-severity`` (see `Getting Started
   <../README.md#getting-started>`_ in the top-level README) filter what is
   printed and what fails a build, independent of the manifest.
-- ``--exclude`` drops vendored code, generated files, and test harnesses
-  from the scan entirely — usually the single biggest volume reduction on a
-  first run.
+- ``--exclude-all`` drops generated files and test harnesses from the scan
+  entirely — usually the single biggest volume reduction on a first run. For
+  vendored code the product links, ``--report-exclude`` silences its findings
+  while its definitions keep informing the checks on your own code (see
+  :doc:`cli-usage`).
 
 For a coarser starting point than either of those, build your own
 **relaxed** manifest the same way this project's own real-world benchmark

@@ -256,11 +256,16 @@ Per-Codebase Scan Scope
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 Each codebase's ``CODEBASES[<name>]["sqc"]["extra_args"]`` entry in
-``bench/realworld_runner.py`` also carries ``--exclude`` globs that
+``bench/realworld_runner.py`` also carries ``--report-exclude`` globs that
 scope the scan to the *shipped product*, not the whole checked-out repo —
 test harnesses, build tooling, vendored/bundled code, and companion tools
 (fuzzers, example plugins, separate CLI utilities) are excluded so they don't
 inflate the violation count or dilute the precision/recall denominator.
+``--report-exclude`` is what these globs always meant: nothing is reported in
+those trees, but they are still read for cross-file facts. Taking a tree out
+of the cross-file facts as well (``--exclude-all``) changes findings in the
+files that remain, so it is a per-codebase decision recorded in
+``docs/design/realworld-corpus-scope.md`` and made with its own A/B run.
 These globs are derived from each codebase's ground-truth oracle scope,
 documented per project in ``docs/design/realworld-corpus-scope.md`` — exactly
 which directories were ruled in/out during that codebase's adjudication
@@ -276,13 +281,13 @@ only what your own adjudication pass produces.)
     restrict the scan — it only adds cross-file pre-scan context (see
     :doc:`cli-usage`). A codebase's primary scan root is the whole repo
     whenever ``scan_path`` is ``None``, regardless of any ``-d`` entries in
-    ``extra_args``. To actually narrow scope, use ``--exclude`` globs (or set
+    ``extra_args``. To actually narrow scope, use ``--report-exclude`` globs (or set
     ``scan_path`` to a single subdirectory, as ``raylib`` does for
     ``{path}/src``).
 
 When adding a new real-world codebase or revisiting an existing one's
 ground-truth audit, check whether its scope notes call for new
-``--exclude`` entries here — a mismatch between the oracle's labeled scope
+``--report-exclude`` entries here — a mismatch between the oracle's labeled scope
 and the live scan's actual scope means dashboard numbers include findings
 that were never meant to be measured (or, more subtly, that the ground-truth
 denominator no longer matches what's being scanned).
@@ -291,7 +296,7 @@ denominator no longer matches what's being scanned).
 
     **That mismatch is not hypothetical, and it is measured.** Scope is
     declared in *three* places per codebase and nothing keeps them in sync:
-    the ``--exclude`` globs here (what aurora-lint reads), ``scope_include`` /
+    the ``--report-exclude`` globs here (what aurora-lint reports), ``scope_include`` /
     ``scope_exclude`` in ``data/benchmark_repos.json`` (what the oracle may
     adjudicate), and the codebase's *Scope* section in
     ``docs/design/realworld-corpus-scope.md`` (the rationale the other
@@ -322,7 +327,7 @@ denominator no longer matches what's being scanned).
 
     ``benchmark_repos.json``'s globs are **path-aware**: ``*`` stops at
     ``/`` and ``**`` crosses it, so ``src/**`` and ``src/*.c`` are different
-    things. The ``--exclude`` globs here are aurora-lint's own and follow aurora-lint's
+    things. The ``--report-exclude`` globs here are aurora-lint's own and follow aurora-lint's
     rules; do not assume the two spellings are interchangeable when copying
     a pattern between the files.
 

@@ -379,11 +379,16 @@ large codebases grow their labels incrementally.</p>
 <section id="per-codebase-scan-scope">
 <h3>Per-Codebase Scan Scope<a class="headerlink" href="#per-codebase-scan-scope" title="Link to this heading"></a></h3>
 <p>Each codebase’s <code class="docutils literal notranslate"><span class="pre">CODEBASES[&lt;name&gt;][&quot;sqc&quot;][&quot;extra_args&quot;]</span></code> entry in
-<code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code> also carries <code class="docutils literal notranslate"><span class="pre">--exclude</span></code> globs that
+<code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code> also carries <code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> globs that
 scope the scan to the <em>shipped product</em>, not the whole checked-out repo —
 test harnesses, build tooling, vendored/bundled code, and companion tools
 (fuzzers, example plugins, separate CLI utilities) are excluded so they don’t
 inflate the violation count or dilute the precision/recall denominator.
+<code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> is what these globs always meant: nothing is reported in
+those trees, but they are still read for cross-file facts. Taking a tree out
+of the cross-file facts as well (<code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code>) changes findings in the
+files that remain, so it is a per-codebase decision recorded in
+<code class="docutils literal notranslate"><span class="pre">docs/design/realworld-corpus-scope.md</span></code> and made with its own A/B run.
 These globs are derived from each codebase’s ground-truth oracle scope,
 documented per project in <code class="docutils literal notranslate"><span class="pre">docs/design/realworld-corpus-scope.md</span></code> — exactly
 which directories were ruled in/out during that codebase’s adjudication
@@ -398,13 +403,13 @@ only what your own adjudication pass produces.)</p>
 restrict the scan — it only adds cross-file pre-scan context (see
 <a class="reference internal" href="cli-usage.html"><span class="doc">Advanced CLI Usage</span></a>). A codebase’s primary scan root is the whole repo
 whenever <code class="docutils literal notranslate"><span class="pre">scan_path</span></code> is <code class="docutils literal notranslate"><span class="pre">None</span></code>, regardless of any <code class="docutils literal notranslate"><span class="pre">-d</span></code> entries in
-<code class="docutils literal notranslate"><span class="pre">extra_args</span></code>. To actually narrow scope, use <code class="docutils literal notranslate"><span class="pre">--exclude</span></code> globs (or set
+<code class="docutils literal notranslate"><span class="pre">extra_args</span></code>. To actually narrow scope, use <code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> globs (or set
 <code class="docutils literal notranslate"><span class="pre">scan_path</span></code> to a single subdirectory, as <code class="docutils literal notranslate"><span class="pre">raylib</span></code> does for
 <code class="docutils literal notranslate"><span class="pre">{path}/src</span></code>).</p>
 </div>
 <p>When adding a new real-world codebase or revisiting an existing one’s
 ground-truth audit, check whether its scope notes call for new
-<code class="docutils literal notranslate"><span class="pre">--exclude</span></code> entries here — a mismatch between the oracle’s labeled scope
+<code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> entries here — a mismatch between the oracle’s labeled scope
 and the live scan’s actual scope means dashboard numbers include findings
 that were never meant to be measured (or, more subtly, that the ground-truth
 denominator no longer matches what’s being scanned).</p>
@@ -412,7 +417,7 @@ denominator no longer matches what’s being scanned).</p>
 <p class="admonition-title">Warning</p>
 <p><strong>That mismatch is not hypothetical, and it is measured.</strong> Scope is
 declared in <em>three</em> places per codebase and nothing keeps them in sync:
-the <code class="docutils literal notranslate"><span class="pre">--exclude</span></code> globs here (what aurora-lint reads), <code class="docutils literal notranslate"><span class="pre">scope_include</span></code> /
+the <code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> globs here (what aurora-lint reports), <code class="docutils literal notranslate"><span class="pre">scope_include</span></code> /
 <code class="docutils literal notranslate"><span class="pre">scope_exclude</span></code> in <code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code> (what the oracle may
 adjudicate), and the codebase’s <em>Scope</em> section in
 <code class="docutils literal notranslate"><span class="pre">docs/design/realworld-corpus-scope.md</span></code> (the rationale the other
@@ -440,7 +445,7 @@ per-codebase reasoning and the audit results live in that repo’s
 <p class="admonition-title">Note</p>
 <p><code class="docutils literal notranslate"><span class="pre">benchmark_repos.json</span></code>’s globs are <strong>path-aware</strong>: <code class="docutils literal notranslate"><span class="pre">*</span></code> stops at
 <code class="docutils literal notranslate"><span class="pre">/</span></code> and <code class="docutils literal notranslate"><span class="pre">**</span></code> crosses it, so <code class="docutils literal notranslate"><span class="pre">src/**</span></code> and <code class="docutils literal notranslate"><span class="pre">src/*.c</span></code> are different
-things. The <code class="docutils literal notranslate"><span class="pre">--exclude</span></code> globs here are aurora-lint’s own and follow aurora-lint’s
+things. The <code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> globs here are aurora-lint’s own and follow aurora-lint’s
 rules; do not assume the two spellings are interchangeable when copying
 a pattern between the files.</p>
 </div>

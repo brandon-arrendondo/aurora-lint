@@ -128,9 +128,15 @@ Options:
       --min-severity &lt;LEVEL&gt;       Only report violations at or above this severity
                                    [Low, Medium, High, Critical]
       --rules &lt;RULE1,RULE2,...&gt;    Only report violations from these rules (comma-separated)
-      --exclude &lt;GLOB&gt;             Exclude files matching this path glob from analysis
-                                   (repeatable, e.g. --exclude &#39;**/onelua.c&#39;
-                                   --exclude &#39;testes/**&#39;)
+      --exclude-all &lt;GLOB&gt;         Leave files matching this path glob out of
+                                   everything: not scanned, not reported, and not
+                                   read for cross-file facts (repeatable, e.g.
+                                   --exclude-all &#39;**/onelua.c&#39; --exclude-all &#39;testes/**&#39;)
+      --exclude &lt;GLOB&gt;             Deprecated: same as --report-exclude
+      --report-exclude &lt;GLOB&gt;      Report nothing in matching files, but still read
+                                   them for cross-file facts (repeatable)
+      --prescan-exclude &lt;GLOB&gt;     Scan and report matching files, but do not read
+                                   them for cross-file facts (repeatable)
       --diff                       Only analyze modified/new C files (requires git repo)
       --suppress-file &lt;FILE&gt;       Path to suppress.toml file
                                    (auto-detected in project root if not specified;
@@ -443,38 +449,70 @@ each one is a name whose meaning depends on scan order.</p>
 </section>
 <section id="file-exclusion">
 <h2>File Exclusion<a class="headerlink" href="#file-exclusion" title="Link to this heading"></a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">--exclude</span></code> drops files matching a path glob from the scan (and from the
-precision/recall denominator), for checked-in amalgamations, vendored code,
-test harnesses, or build tooling that isn’t part of the shipped product.
+<p><code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code> leaves files matching a path glob out of everything: they
+are not scanned, nothing is reported in them, and the cross-file pre-scan does
+not read them, so their definitions (function summaries, macro and alias
+definitions, never-returning functions) do not stand for the ones the rest of
+the code calls. Use it for test harnesses, example programs, checked-in
+amalgamations and build tooling that aren’t part of the shipped product.
 Repeatable; each occurrence adds one more glob:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Drop a single generated/amalgamated file</span>
-<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">--</span><span class="n">exclude</span> <span class="s1">&#39;**/onelua.c&#39;</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">--</span><span class="n">exclude</span><span class="o">-</span><span class="nb">all</span> <span class="s1">&#39;**/onelua.c&#39;</span>
 
 <span class="c1"># Drop a whole subtree</span>
-<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">--</span><span class="n">exclude</span> <span class="s1">&#39;tests/**&#39;</span> <span class="o">--</span><span class="n">exclude</span> <span class="s1">&#39;vendor/**&#39;</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">--</span><span class="n">exclude</span><span class="o">-</span><span class="nb">all</span> <span class="s1">&#39;tests/**&#39;</span> <span class="o">--</span><span class="n">exclude</span><span class="o">-</span><span class="nb">all</span> <span class="s1">&#39;examples/**&#39;</span>
 
 <span class="c1"># Combine multiple globs to scope down to just the shipped product</span>
 <span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> \
-    <span class="o">--</span><span class="n">exclude</span> <span class="s1">&#39;tests/**&#39;</span> <span class="o">--</span><span class="n">exclude</span> <span class="s1">&#39;docs/**&#39;</span> <span class="o">--</span><span class="n">exclude</span> <span class="s1">&#39;scripts/**&#39;</span>
+    <span class="o">--</span><span class="n">exclude</span><span class="o">-</span><span class="nb">all</span> <span class="s1">&#39;tests/**&#39;</span> <span class="o">--</span><span class="n">exclude</span><span class="o">-</span><span class="nb">all</span> <span class="s1">&#39;docs/**&#39;</span> <span class="o">--</span><span class="n">exclude</span><span class="o">-</span><span class="nb">all</span> <span class="s1">&#39;scripts/**&#39;</span>
 </pre></div>
 </div>
 <p>Globs are matched against each file’s path relative to the scan root (same
 semantics as a project’s own <code class="docutils literal notranslate"><span class="pre">toolchain.toml</span></code> <code class="docutils literal notranslate"><span class="pre">[ignore].paths</span></code>, which are
-merged in automatically if present — <code class="docutils literal notranslate"><span class="pre">--exclude</span></code> only needs to name
-patterns that aren’t already covered there). A pattern like <code class="docutils literal notranslate"><span class="pre">tests/**</span></code>
+merged in automatically if present, as <code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> globs: nothing is
+reported in them, but they are still read for cross-file facts, as they always
+were). A pattern like <code class="docutils literal notranslate"><span class="pre">tests/**</span></code>
 matches anywhere a <code class="docutils literal notranslate"><span class="pre">tests</span></code> directory sits at that depth; use a leading
 <code class="docutils literal notranslate"><span class="pre">**/</span></code> (e.g. <code class="docutils literal notranslate"><span class="pre">**/ltests.c</span></code>) to match a filename regardless of its
 directory.</p>
+<p>Two options leave a file out of only one half:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> reports nothing in matching files but still reads them
+for cross-file facts. Use it for vendored code the product links and ships:
+its definitions are the ones your calls reach, but its findings are not
+yours to fix.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--prescan-exclude</span></code> scans and reports matching files but does not read
+them for cross-file facts. Use it for stubs, fuzz harnesses and
+alternate-platform files that do not link into the product under analysis,
+whose definitions would otherwise count as another build of the functions
+the product calls.</p></li>
+</ul>
+<p>A header in an excluded tree that a scanned file <code class="docutils literal notranslate"><span class="pre">#include</span></code>s is still read
+through <code class="docutils literal notranslate"><span class="pre">-I</span></code> include resolution: it is part of that file’s translation unit.
+A manifest’s <code class="docutils literal notranslate"><span class="pre">[scope]</span></code> table takes the same three lists
+(<code class="docutils literal notranslate"><span class="pre">exclude_all</span></code>, <code class="docutils literal notranslate"><span class="pre">report_exclude</span></code>, <code class="docutils literal notranslate"><span class="pre">prescan_exclude</span></code>) and adds to the
+command line’s. A prescan cache (<code class="docutils literal notranslate"><span class="pre">--save-prescan</span></code>) records which files it
+was built without, and <code class="docutils literal notranslate"><span class="pre">--load-prescan</span></code> refuses it under a different
+<code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code> or <code class="docutils literal notranslate"><span class="pre">--prescan-exclude</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--exclude</span></code> is deprecated. It keeps the meaning it has always had, which is
+<code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code>’s: nothing is reported in matching files, but they are
+still read for cross-file facts. So an existing command line gives the same
+findings as before; it also prints a one-line warning. Replace it with
+<code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> to keep that behaviour, or with <code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code> to
+leave the files out of the cross-file facts too.</p>
 <div class="admonition important">
 <p class="admonition-title">Important</p>
-<p><code class="docutils literal notranslate"><span class="pre">--exclude</span></code> is the only flag that removes files from the scan.
+<p><code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code> and <code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> (and the deprecated
+<code class="docutils literal notranslate"><span class="pre">--exclude</span></code>) are the only flags that remove files from the scan; a
+manifest’s <code class="docutils literal notranslate"><span class="pre">[scope]</span></code> table and <code class="docutils literal notranslate"><span class="pre">toolchain.toml</span></code>’s <code class="docutils literal notranslate"><span class="pre">[ignore].paths</span></code>
+do the same from a file.
 <code class="docutils literal notranslate"><span class="pre">-d</span></code>/<code class="docutils literal notranslate"><span class="pre">--directories</span></code> does the opposite: it <em>adds</em> directories to
 pre-scan for cross-file context (function summaries, macro aliases, …)
 and has no effect on which files are actually analyzed and reported on.
 Passing <code class="docutils literal notranslate"><span class="pre">-d</span> <span class="pre">some/dir</span></code> does <strong>not</strong> restrict analysis to <code class="docutils literal notranslate"><span class="pre">some/dir</span></code> —
 if you want a scan restricted to a subset of a larger tree, either point
 the <code class="docutils literal notranslate"><span class="pre">PATH</span></code> argument at that subdirectory or exclude everything else
-with <code class="docutils literal notranslate"><span class="pre">--exclude</span></code>.</p>
+with <code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code>.</p>
 </div>
 </section>
 <section id="export-formats">
