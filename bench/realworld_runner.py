@@ -897,22 +897,24 @@ def _sqc_flag_patterns(cfg: dict, flags: tuple[str, ...]) -> list["re.Pattern"]:
 
 
 def _sqc_exclude_patterns(cfg: dict) -> list["re.Pattern"]:
-    """The globs whose files sqc scans and reports nothing in: --exclude
-    (out of everything) and --report-exclude (still read for cross-file
-    facts). --prescan-exclude files are still scanned, so they are not here.
+    """The globs whose files sqc scans and reports nothing in: --exclude-all
+    (out of everything), --report-exclude (still read for cross-file facts)
+    and the deprecated --exclude, which means --report-exclude.
+    --prescan-exclude files are still scanned, so they are not here.
 
     The corpora pass --report-exclude: what the old --exclude always meant,
     so their scope and every past run stay as they were. Taking a tree out
     of the cross-file facts as well is a per-corpus decision, recorded in
     docs/design/realworld-corpus-scope.md with its own A/B."""
-    return _sqc_flag_patterns(cfg, ("--exclude", "--report-exclude"))
+    return _sqc_flag_patterns(cfg, ("--exclude-all", "--report-exclude", "--exclude"))
 
 
 def _sqc_untouched_patterns(cfg: dict) -> list["re.Pattern"]:
     """The globs whose files sqc neither scans nor reads for cross-file
-    facts: --exclude only. A file under --report-exclude still feeds the
-    prescan, and one under --prescan-exclude is still scanned."""
-    return _sqc_flag_patterns(cfg, ("--exclude",))
+    facts: --exclude-all only. A file under --report-exclude (or the
+    deprecated --exclude, which means it) still feeds the prescan, and one
+    under --prescan-exclude is still scanned."""
+    return _sqc_flag_patterns(cfg, ("--exclude-all",))
 
 
 def _count_c_source(cfg: dict) -> tuple[int, int]:

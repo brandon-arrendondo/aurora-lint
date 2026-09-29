@@ -50,9 +50,8 @@ pub struct ProjectContext {
     /// rather than a `built_under` key, where a key absent from either side
     /// would read as not compared.
     pub memory_declarations: crate::settings::MemoryDeclarations,
-    /// The path globs whose files this context was built without (`--exclude`,
-    /// `--prescan-exclude`, their manifest keys and `toolchain.toml`'s ignores),
-    /// sorted. A cache built leaving out other files holds other definitions,
+    /// The path globs whose files this context was built without
+    /// (`--exclude-all`, `--prescan-exclude` and their manifest keys), sorted. A cache built leaving out other files holds other definitions,
     /// so `--load-prescan` refuses it under a different scope.
     #[serde(default)]
     pub prescan_scope: Vec<String>,

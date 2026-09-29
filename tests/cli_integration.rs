@@ -3408,12 +3408,12 @@ fn mem30_files_under(dir: &std::path::Path, args: &[&str]) -> (bool, bool) {
 }
 
 #[test]
-fn exclude_leaves_a_tree_out_of_findings_and_cross_file_facts() {
+fn exclude_all_leaves_a_tree_out_of_findings_and_cross_file_facts() {
     let dir = tempfile::tempdir().unwrap();
     write_scope_tree(dir.path());
     assert_eq!(mem30_files_under(dir.path(), &[]), (true, true));
     assert_eq!(
-        mem30_files_under(dir.path(), &["--exclude", "tests/**"]),
+        mem30_files_under(dir.path(), &["--exclude-all", "tests/**"]),
         (false, false)
     );
 }
@@ -3491,7 +3491,7 @@ fn an_excluded_file_is_no_includer_for_include_resolution() {
     write_include_scope_tree(dir.path(), false);
     for with_d in [true, false] {
         assert!(mem30_in_use_c_with_include_path(dir.path(), with_d, &[]));
-        for flag in ["--exclude", "--prescan-exclude"] {
+        for flag in ["--exclude-all", "--prescan-exclude"] {
             assert!(
                 !mem30_in_use_c_with_include_path(dir.path(), with_d, &[flag, "tests/**"]),
                 "{flag} (with -d: {with_d}) let the excluded t.c's header in"
@@ -3508,36 +3508,87 @@ fn a_header_an_in_scope_file_includes_is_read_though_its_tree_is_excluded() {
         assert!(mem30_in_use_c_with_include_path(
             dir.path(),
             with_d,
-            &["--exclude", "tests/**"]
+            &["--exclude-all", "tests/**"]
         ));
     }
 }
 
+/// Scan the scope tree with `args` (and a `toolchain.toml` ignoring
+/// `tests/**` when `toolchain`), exporting SARIF: the run's recorded
+/// settings, stdout and stderr.
+fn scope_tree_run(toolchain: bool, args: &[&str]) -> (serde_json::Value, String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    write_scope_tree(dir.path());
+    if toolchain {
+        std::fs::write(
+            dir.path().join("toolchain.toml"),
+            "[ignore]\npaths = [\"tests/**\"]\n",
+        )
+        .unwrap();
+    }
+    let out = dir.path().join("out.sarif");
+    let root = dir.path().to_str().unwrap();
+    let mut all = vec![
+        root,
+        "-d",
+        root,
+        "--rules",
+        "MEM30-C",
+        "-e",
+        out.to_str().unwrap(),
+    ];
+    all.extend_from_slice(args);
+    let (code, stdout, stderr) = run_aurora_lint(&all);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let sarif: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    (
+        sarif["runs"][0]["properties"]["aurora-lint/settings"].clone(),
+        stdout,
+        stderr,
+    )
+}
+
+fn reports(stdout: &str, file: &str) -> bool {
+    stdout
+        .lines()
+        .any(|l| l.contains(file) && l.contains("MEM30-C"))
+}
+
 #[test]
-fn a_toolchain_ignore_that_narrows_the_prescan_moves_the_settings_hash() {
-    let settings = |toolchain: bool| {
-        let dir = tempfile::tempdir().unwrap();
-        write_scope_tree(dir.path());
-        if toolchain {
-            std::fs::write(
-                dir.path().join("toolchain.toml"),
-                "[ignore]\npaths = [\"tests/**\"]\n",
-            )
-            .unwrap();
-        }
-        let out = dir.path().join("out.sarif");
-        let root = dir.path().to_str().unwrap();
-        let (code, _, stderr) =
-            run_aurora_lint(&[root, "--rules", "MEM30-C", "-e", out.to_str().unwrap()]);
-        assert_eq!(code, 0, "stderr: {stderr}");
-        let sarif: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
-        sarif["runs"][0]["properties"]["aurora-lint/settings"].clone()
-    };
-    let plain = settings(false);
-    let ignored = settings(true);
-    assert_eq!(ignored["prescan_scope"], serde_json::json!(["tests/**"]));
-    assert_ne!(ignored["hash"], plain["hash"]);
+fn a_toolchain_ignore_keeps_its_report_only_meaning_and_the_hash() {
+    // toolchain.toml's ignores always meant "no findings here"; they still
+    // feed cross-file facts, so neither the findings elsewhere nor the
+    // settings identity change.
+    let (plain, _, _) = scope_tree_run(false, &[]);
+    let (ignored, stdout, _) = scope_tree_run(true, &[]);
+    assert!(reports(&stdout, "a.c"), "{stdout}");
+    assert!(!reports(&stdout, "stub.c"), "{stdout}");
+    assert_eq!(ignored["prescan_scope"], serde_json::Value::Null);
+    assert_eq!(ignored["hash"], plain["hash"]);
+}
+
+#[test]
+fn deprecated_exclude_means_report_exclude_and_says_so() {
+    let (deprecated, dep_out, dep_err) = scope_tree_run(false, &["--exclude", "tests/**"]);
+    let (report, rep_out, rep_err) = scope_tree_run(false, &["--report-exclude", "tests/**"]);
+    let findings = |out: &str| (reports(out, "a.c"), reports(out, "stub.c"));
+    assert_eq!(findings(&dep_out), (true, false), "{dep_out}");
+    assert_eq!(findings(&dep_out), findings(&rep_out));
+    assert_eq!(deprecated["hash"], report["hash"]);
+    assert!(
+        dep_err.contains("--exclude is deprecated") && dep_err.contains("--exclude-all"),
+        "stderr: {dep_err}"
+    );
+    assert!(!rep_err.contains("deprecated"), "stderr: {rep_err}");
+}
+
+#[test]
+fn exclude_all_moves_the_settings_hash() {
+    let (plain, _, _) = scope_tree_run(false, &[]);
+    let (all, _, _) = scope_tree_run(false, &["--exclude-all", "tests/**"]);
+    assert_eq!(all["prescan_scope"], serde_json::json!(["tests/**"]));
+    assert_ne!(all["hash"], plain["hash"]);
 }
 
 #[test]
@@ -3548,7 +3599,7 @@ fn manifest_scope_table_adds_to_the_command_line() {
     std::fs::write(
         &manifest,
         "[metadata]\nname = \"scope\"\nversion = \"1\"\ncert_version = \"2016\"\n\n\
-         [scope]\nexclude = [\"tests/**\"]\n\n\
+         [scope]\nexclude_all = [\"tests/**\"]\n\n\
          [rules.cert_c.MEM30-C]\nenabled = true\n",
     )
     .unwrap();
@@ -3584,7 +3635,7 @@ fn a_prescan_cache_is_refused_under_a_different_scope() {
         "MEM30-C",
         "--load-prescan",
         cache,
-        "--exclude",
+        "--exclude-all",
         "tests/**",
     ]);
     assert_ne!(code, 0);

@@ -26,22 +26,22 @@ pub struct RuleManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<EnvironmentConfig>,
     /// The `[scope]` table: path globs left out of the analysis, added to
-    /// the command line's `--exclude`, `--report-exclude` and
+    /// the command line's `--exclude-all`, `--report-exclude` and
     /// `--prescan-exclude`.
     #[serde(default, skip_serializing_if = "ScopeConfig::is_empty")]
     pub scope: ScopeConfig,
 }
 
 /// Which files a scan leaves out, as path globs relative to the scanned
-/// root. `exclude` leaves a file out of everything; the other two are the
-/// rarer partial cases.
+/// root. `exclude_all` leaves a file out of everything; the other two are
+/// the partial cases.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScopeConfig {
     /// Not scanned, not reported, and not read by the cross-file prescan:
     /// the file might as well not exist (test suites, example programs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub exclude: Vec<String>,
+    pub exclude_all: Vec<String>,
     /// No findings, but still read by the prescan, so its definitions keep
     /// feeding cross-file facts: vendored code the product links and ships.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -57,7 +57,9 @@ pub struct ScopeConfig {
 impl ScopeConfig {
     /// No glob in any of the three lists.
     pub fn is_empty(&self) -> bool {
-        self.exclude.is_empty() && self.report_exclude.is_empty() && self.prescan_exclude.is_empty()
+        self.exclude_all.is_empty()
+            && self.report_exclude.is_empty()
+            && self.prescan_exclude.is_empty()
     }
 }
 

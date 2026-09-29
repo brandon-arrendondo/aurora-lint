@@ -28,10 +28,11 @@ Full Command Reference
           --min-severity <LEVEL>       Only report violations at or above this severity
                                        [Low, Medium, High, Critical]
           --rules <RULE1,RULE2,...>    Only report violations from these rules (comma-separated)
-          --exclude <GLOB>             Leave files matching this path glob out of
+          --exclude-all <GLOB>         Leave files matching this path glob out of
                                        everything: not scanned, not reported, and not
                                        read for cross-file facts (repeatable, e.g.
-                                       --exclude '**/onelua.c' --exclude 'testes/**')
+                                       --exclude-all '**/onelua.c' --exclude-all 'testes/**')
+          --exclude <GLOB>             Deprecated: same as --report-exclude
           --report-exclude <GLOB>      Report nothing in matching files, but still read
                                        them for cross-file facts (repeatable)
           --prescan-exclude <GLOB>     Scan and report matching files, but do not read
@@ -354,9 +355,9 @@ each one is a name whose meaning depends on scan order.
 File Exclusion
 --------------
 
-``--exclude`` leaves files matching a path glob out of everything: they are
-not scanned, nothing is reported in them, and the cross-file pre-scan does not
-read them, so their definitions (function summaries, macro and alias
+``--exclude-all`` leaves files matching a path glob out of everything: they
+are not scanned, nothing is reported in them, and the cross-file pre-scan does
+not read them, so their definitions (function summaries, macro and alias
 definitions, never-returning functions) do not stand for the ones the rest of
 the code calls. Use it for test harnesses, example programs, checked-in
 amalgamations and build tooling that aren't part of the shipped product.
@@ -365,24 +366,25 @@ Repeatable; each occurrence adds one more glob:
 ::
 
     # Drop a single generated/amalgamated file
-    aurora-lint /path/to/project --exclude '**/onelua.c'
+    aurora-lint /path/to/project --exclude-all '**/onelua.c'
 
     # Drop a whole subtree
-    aurora-lint /path/to/project --exclude 'tests/**' --exclude 'vendor/**'
+    aurora-lint /path/to/project --exclude-all 'tests/**' --exclude-all 'examples/**'
 
     # Combine multiple globs to scope down to just the shipped product
     aurora-lint /path/to/repo \
-        --exclude 'tests/**' --exclude 'docs/**' --exclude 'scripts/**'
+        --exclude-all 'tests/**' --exclude-all 'docs/**' --exclude-all 'scripts/**'
 
 Globs are matched against each file's path relative to the scan root (same
 semantics as a project's own ``toolchain.toml`` ``[ignore].paths``, which are
-merged in automatically if present — ``--exclude`` only needs to name
-patterns that aren't already covered there). A pattern like ``tests/**``
+merged in automatically if present, as ``--report-exclude`` globs: nothing is
+reported in them, but they are still read for cross-file facts, as they always
+were). A pattern like ``tests/**``
 matches anywhere a ``tests`` directory sits at that depth; use a leading
 ``**/`` (e.g. ``**/ltests.c``) to match a filename regardless of its
 directory.
 
-Two rarer options leave a file out of only one half:
+Two options leave a file out of only one half:
 
 - ``--report-exclude`` reports nothing in matching files but still reads them
   for cross-file facts. Use it for vendored code the product links and ships:
@@ -397,22 +399,29 @@ Two rarer options leave a file out of only one half:
 A header in an excluded tree that a scanned file ``#include``\ s is still read
 through ``-I`` include resolution: it is part of that file's translation unit.
 A manifest's ``[scope]`` table takes the same three lists
-(``exclude``, ``report_exclude``, ``prescan_exclude``) and adds to the command
-line's. A prescan cache (``--save-prescan``) records which files it was built
-without, and ``--load-prescan`` refuses it under a different ``--exclude`` or
-``--prescan-exclude``.
+(``exclude_all``, ``report_exclude``, ``prescan_exclude``) and adds to the
+command line's. A prescan cache (``--save-prescan``) records which files it
+was built without, and ``--load-prescan`` refuses it under a different
+``--exclude-all`` or ``--prescan-exclude``.
+
+``--exclude`` is deprecated. It keeps the meaning it has always had, which is
+``--report-exclude``'s: nothing is reported in matching files, but they are
+still read for cross-file facts. So an existing command line gives the same
+findings as before; it also prints a one-line warning. Replace it with
+``--report-exclude`` to keep that behaviour, or with ``--exclude-all`` to
+leave the files out of the cross-file facts too.
 
 .. important::
 
-    ``--exclude`` and ``--report-exclude`` are the only flags that remove
-    files from the scan.
+    ``--exclude-all`` and ``--report-exclude`` (and the deprecated
+    ``--exclude``) are the only flags that remove files from the scan.
     ``-d``/``--directories`` does the opposite: it *adds* directories to
     pre-scan for cross-file context (function summaries, macro aliases, ...)
     and has no effect on which files are actually analyzed and reported on.
     Passing ``-d some/dir`` does **not** restrict analysis to ``some/dir`` —
     if you want a scan restricted to a subset of a larger tree, either point
     the ``PATH`` argument at that subdirectory or exclude everything else
-    with ``--exclude``.
+    with ``--exclude-all``.
 
 
 Export Formats

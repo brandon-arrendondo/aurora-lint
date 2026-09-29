@@ -277,17 +277,18 @@ aurora-lint /path/to/repo --diff
 
 ```bash
 # Leave test harnesses and generated/amalgamated files out entirely
-aurora-lint /path/to/repo --exclude "tests/**" --exclude "**/onelua.c"
+aurora-lint /path/to/repo --exclude-all "tests/**" --exclude-all "**/onelua.c"
 
 # Report nothing in vendored code the product links, but keep reading it
 aurora-lint /path/to/repo --report-exclude "vendor/**"
 ```
 
-`--exclude` leaves matching files out of everything: they are not scanned,
-nothing is reported in them, and their definitions do not feed the cross-file
-facts other files are checked against. `--report-exclude` (no findings, still
-read) and `--prescan-exclude` (reported, not read) are the rarer partial
-cases; a manifest's `[scope]` table takes the same three lists. `-d` only adds
+`--exclude-all` leaves matching files out of everything: they are not
+scanned, nothing is reported in them, and their definitions do not feed the
+cross-file facts other files are checked against. `--report-exclude` (no
+findings, still read) and `--prescan-exclude` (reported, not read) are the
+partial cases; a manifest's `[scope]` table takes the same three lists. The
+older `--exclude` is deprecated and means `--report-exclude`, as it always did. `-d` only adds
 directories for cross-file context and never restricts what gets analyzed.
 
 ### Use a custom rules manifest
@@ -298,7 +299,7 @@ aurora-lint /path/to/project --manifest my-rules.toml
 
 The default manifest (`rules_templates/rules-all.toml`) enables 307 of the 311 tracked rules; the other 4 are tracked but not yet implemented (2 parked on incomplete upstream CERT content) — see [Configuration](docs/configuration.rst). See the [Developer Guide](docs/index.rst) for the manifest format.
 
-First run against an existing codebase surfacing more findings than your team can triage at once? `--min-severity`/`--fail-on-severity` and `--exclude` are the fastest levers; [Configuration's "Strict vs. Relaxed Onboarding"](docs/configuration.rst) has the full discipline for building your own scoped-down manifest, and why this project doesn't ship a one-size-fits-all "relaxed" one.
+First run against an existing codebase surfacing more findings than your team can triage at once? `--min-severity`/`--fail-on-severity` and `--exclude-all` are the fastest levers; [Configuration's "Strict vs. Relaxed Onboarding"](docs/configuration.rst) has the full discipline for building your own scoped-down manifest, and why this project doesn't ship a one-size-fits-all "relaxed" one.
 
 ### Default or strict reading
 

@@ -101,11 +101,11 @@ class TestInScope(unittest.TestCase):
 
 class TestScanExcludes(unittest.TestCase):
     """An untracked/gitignored .c/.h that the real scan already
-    drops via --exclude is not contamination, so check_repo() must bucket it
+    drops via --exclude-all is not contamination, so check_repo() must bucket it
     separately rather than flagging it the same as a file that will actually
     be scanned. This is a different mechanism from in_scope() above --
     scope_include/scope_exclude filter findings after the scan; this filters
-    the fileset the scan itself walks, using the same --exclude globs
+    the fileset the scan itself walks, using the same --exclude-all globs
     bench/realworld_runner.py passes to sqc (`_sqc_exclude_patterns`, kept in
     lockstep with the Rust suppression::glob_to_regex the scanner actually
     runs), not corpus.py's own `_match`/`_translate`."""
@@ -117,7 +117,7 @@ class TestScanExcludes(unittest.TestCase):
     def test_excluded_file_is_recognized(self):
         with mock.patch("bench.realworld_runner.CODEBASES",
                         {"hostap": {"sqc": {"extra_args":
-                            ["--exclude", "tests/**"]}}}):
+                            ["--exclude-all", "tests/**"]}}}):
             patterns = corpus._scan_excludes("hostap")
             self.assertTrue(corpus._excluded(
                 "tests/fuzzing/ocsp-signedness/poc.c", patterns))
@@ -132,12 +132,15 @@ class TestScanExcludes(unittest.TestCase):
             self.assertFalse(corpus._excluded("anything.c", patterns))
 
     def test_report_exclude_is_not_harmless(self):
-        # A --report-exclude tree is still read by the prescan, so a stray
-        # generated file there feeds cross-file facts: contamination.
+        # A --report-exclude tree (and the deprecated --exclude, which means
+        # it) is still read by the prescan, so a stray generated file there
+        # feeds cross-file facts: contamination.
         with mock.patch("bench.realworld_runner.CODEBASES",
                         {"curl": {"sqc": {"extra_args":
                             ["--report-exclude", "include/**",
-                             "--exclude", "tests/**"]}}}):
+                             "--exclude", "docs/**",
+                             "--exclude-all", "tests/**"]}}}):
             patterns = corpus._scan_excludes("curl")
             self.assertFalse(corpus._excluded("include/curl/gen.c", patterns))
+            self.assertFalse(corpus._excluded("docs/examples/gen.c", patterns))
             self.assertTrue(corpus._excluded("tests/unit/gen.c", patterns))

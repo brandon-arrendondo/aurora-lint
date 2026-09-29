@@ -4,9 +4,18 @@
 changes by a deliberate re-scoping task; this doc is the rationale those
 decisions were made with. The machine-readable form is `scope_include` /
 `scope_exclude` in `data/benchmark_repos.json`; the scan-side form is the
-`--exclude` globs and `scan_path` in `bench/realworld_runner.py`. When the
-three disagree, this doc is the one that says *why* — fix the other two to
+`--report-exclude` globs and `scan_path` in `bench/realworld_runner.py`. When
+the three disagree, this doc is the one that says *why* — fix the other two to
 match it, or revise it here first.
+
+The runner's globs are `--report-exclude` (what aurora-lint's `--exclude`
+meant when these scopes were set, and what the deprecated flag still means):
+nothing is reported in those trees, but they are still read for cross-file
+facts. Moving a tree to `--exclude-all`, which takes it out of the cross-file
+facts too, changes findings in the files that remain, so it is a deliberate
+re-scoping of that project, recorded in its section here with its own A/B.
+The per-project sections below say `--exclude` where they record an audit as
+it was run.
 
 Scope says which *files* an oracle measures; `primary_build_config` in the
 same JSON says which *build* of them, and every project section below ends
@@ -269,7 +278,7 @@ revisit bringing `include/` into scope — consistent with mosquitto's
 precedent — since it would no longer be dominated by known junk.
 
 The realworld-benchmark sqc scan config mirrors this exclusion
-(`--exclude include/**`), matching the already-scoped cppcheck/clang-tidy
+(`--report-exclude include/**`), matching the already-scoped cppcheck/clang-tidy
 `source_dirs` for curl.
 
 Applying the **sqlite scope lesson** (measure precision on what you ship *and
@@ -936,7 +945,7 @@ C-style `lpVtbl->Method(...)` vtable idiom. The machine-readable mirror in
 Under path-aware globbing `*` stops at `/`, so the include alone already
 yields the 22 files; the exclude states the intent (the same reason raylib
 keeps its `src/external/*` exclude) and names the three vendored
-subdirectories the runner drops with `--exclude`:
+subdirectories the runner drops with `--report-exclude`:
 
 | Directory                 | What it is                              | Licence       | `.c`/`.h` |
 |---------------------------|-----------------------------------------|---------------|----------:|

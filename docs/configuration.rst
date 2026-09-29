@@ -124,17 +124,17 @@ Scope
 -----
 
 A ``[scope]`` table lists path globs, relative to the scanned root, that the
-scan leaves out. It adds to the command line's ``--exclude``,
+scan leaves out. It adds to the command line's ``--exclude-all``,
 ``--report-exclude`` and ``--prescan-exclude`` (see :doc:`cli-usage`):
 
 .. code-block:: toml
 
     [scope]
-    exclude = ["tests/**", "docs/examples/**"]  # out of everything
-    report_exclude = ["vendor/**"]              # no findings, still read
-    prescan_exclude = ["port/win32/**"]         # reported, not read
+    exclude_all = ["tests/**", "docs/examples/**"]  # out of everything
+    report_exclude = ["vendor/**"]                  # no findings, still read
+    prescan_exclude = ["port/win32/**"]             # reported, not read
 
-``exclude`` and ``prescan_exclude`` change what the cross-file facts can hold,
+``exclude_all`` and ``prescan_exclude`` change what the cross-file facts can hold,
 so they enter the settings hash (only when non-empty) and a SARIF export's
 recorded settings.
 
@@ -182,7 +182,7 @@ things help without writing a manifest at all:
 - ``--min-severity``/``--fail-on-severity`` (see `Getting Started
   <../README.md#getting-started>`_ in the top-level README) filter what is
   printed and what fails a build, independent of the manifest.
-- ``--exclude`` drops generated files and test harnesses from the scan
+- ``--exclude-all`` drops generated files and test harnesses from the scan
   entirely — usually the single biggest volume reduction on a first run. For
   vendored code the product links, ``--report-exclude`` silences its findings
   while its definitions keep informing the checks on your own code (see

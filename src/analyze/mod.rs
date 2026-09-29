@@ -97,12 +97,12 @@ pub struct AnalysisResults {
 
 /// Which files a scan leaves out, as path globs relative to the scanned root
 /// (a `-d` directory outside it matches relative to itself). `toolchain.toml`'s
-/// `[ignore].paths` count as `exclude`.
+/// `[ignore].paths` count as `report_exclude`, the meaning they always had.
 #[derive(Debug, Clone, Default)]
 pub struct ScanScope {
     /// Left out of everything: not scanned, not reported, not read by the
     /// prescan.
-    pub exclude: Vec<String>,
+    pub exclude_all: Vec<String>,
     /// Not scanned or reported, but still read by the prescan.
     pub report_exclude: Vec<String>,
     /// Scanned and reported, but not read by the prescan.
@@ -112,7 +112,7 @@ pub struct ScanScope {
 impl ScanScope {
     /// The globs whose files get no findings.
     fn report_globs(&self) -> Vec<String> {
-        self.exclude
+        self.exclude_all
             .iter()
             .chain(&self.report_exclude)
             .cloned()
@@ -120,8 +120,8 @@ impl ScanScope {
     }
 
     /// The globs whose files the prescan does not read.
-    pub fn prescan_globs(&self) -> Vec<String> {
-        self.exclude
+    fn prescan_globs(&self) -> Vec<String> {
+        self.exclude_all
             .iter()
             .chain(&self.prescan_exclude)
             .cloned()
@@ -129,18 +129,13 @@ impl ScanScope {
     }
 
     /// The prescan's scope as both the settings identity and a prescan cache
-    /// record it: [`Self::prescan_globs`] plus `toolchain.toml`'s
-    /// `[ignore].paths`, sorted and deduplicated. One function for both, so a
-    /// toolchain ignore that narrows the prescan also moves the hash.
-    pub fn prescan_scope(&self, project_source: &ProjectSource) -> Result<Vec<String>> {
+    /// record it: [`Self::prescan_globs`], sorted and deduplicated. One
+    /// function for both, so whatever narrows the prescan also moves the hash.
+    pub fn prescan_scope(&self) -> Vec<String> {
         let mut scope = self.prescan_globs();
-        let root = std::path::Path::new(project_source.get_root_path());
-        if let Some(toolchain) = crate::toolchain::ToolchainConfig::discover(root)? {
-            scope.extend(toolchain.ignore.paths);
-        }
         scope.sort();
         scope.dedup();
-        Ok(scope)
+        scope
     }
 }
 
@@ -409,10 +404,11 @@ fn load_project_context(
     header_lookup: &include_names::HeaderLookup,
     scope: &ScanScope,
 ) -> Result<context::ProjectContext> {
-    // The files the prescan leaves out, and the same globs as a cache
-    // records them: a context built without them holds other definitions.
-    let prescan_ignore = build_path_ignore(project_source, &scope.prescan_globs())?;
-    let prescan_scope = scope.prescan_scope(project_source)?;
+    // The globs the prescan leaves out, as a cache records them, and the
+    // ignore built from exactly those: a context built without them holds
+    // other definitions. toolchain.toml's ignores are report-only.
+    let prescan_scope = scope.prescan_scope();
+    let prescan_ignore = path_ignore(prescan_scope.clone())?;
     let root = project_source.get_root_path().to_string();
     let scoped_out = |path: &std::path::Path, base: &str| {
         prescan::is_scoped_out(&prescan_ignore, &root, base, path)
@@ -460,7 +456,7 @@ fn load_project_context(
             if ctx.prescan_scope != prescan_scope {
                 anyhow::bail!(
                     "prescan cache {} was built leaving out {:?}, but this scan leaves out {:?}; \
-                     re-create it with --save-prescan under the same --exclude and \
+                     re-create it with --save-prescan under the same --exclude-all and \
                      --prescan-exclude",
                     cache_path,
                     ctx.prescan_scope,
@@ -651,8 +647,8 @@ fn collect_c_files(
 
 /// Builds the combined ignore matcher from `toolchain.toml`'s shared
 /// `[ignore].paths` (discovered by walking up from the project root) and the
-/// CLI's `--exclude` globs, so a project's file/directory ignores can be
-/// expressed once instead of only via `--exclude` on every invocation.
+/// CLI's report-excluding globs, so a project's file/directory ignores can be
+/// expressed once instead of only via the command line on every invocation.
 fn build_path_ignore(
     project_source: &ProjectSource,
     excludes: &[String],
@@ -663,9 +659,14 @@ fn build_path_ignore(
         patterns.extend(toolchain.ignore.paths);
     }
     patterns.extend(excludes.iter().cloned());
+    path_ignore(patterns)
+}
 
-    // Validate patterns individually so one bad `--exclude` glob doesn't
-    // discard every other ignore pattern (toolchain.toml's included).
+/// The ignore matcher for `patterns`, skipping (with a warning) any that is
+/// not a valid glob.
+fn path_ignore(patterns: Vec<String>) -> Result<lang_parsing_substrate::PathIgnore> {
+    // Validate patterns individually so one bad glob doesn't discard every
+    // other ignore pattern (toolchain.toml's included).
     let valid: Vec<String> = patterns
         .into_iter()
         .filter(|p| {

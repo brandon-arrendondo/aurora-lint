@@ -38,14 +38,15 @@ Independently of status, three contamination flags are reported:
               gitignored sqlite3.c amalgamation, which would silently add
               ~250k lines to every sqlite scan.
 
-Both untracked and gitignored counts are run through the SAME --exclude globs
-`bench/realworld_runner.py`'s CODEBASES[...]["sqc"]["extra_args"] passes to the
-real scan: a stray .c/.h sitting under an already-excluded tree
-(hostap's tests/fuzzing/, curl's tests/, ...) never reaches the scanner, so it
-is split into its own harmless bucket instead of being counted as
-contamination it cannot actually cause. Only --exclude counts: a tree under
---report-exclude gets no findings but is still read for cross-file facts, so a
-generated file there contaminates the scan as surely as one in plain view.
+Both untracked and gitignored counts are run through the SAME --exclude-all
+globs `bench/realworld_runner.py`'s CODEBASES[...]["sqc"]["extra_args"] passes
+to the real scan: a stray .c/.h sitting under a tree the scan leaves out of
+everything never reaches the scanner or its cross-file facts, so it is split
+into its own harmless bucket instead of being counted as contamination it
+cannot actually cause. Only --exclude-all counts: a tree
+under --report-exclude (or the deprecated --exclude, which means it) gets no
+findings but is still read for cross-file facts, so a generated file there
+contaminates the scan as surely as one in plain view.
 This is a different mechanism from
 in_scope()/scope_include above -- that filters *findings* after the fact;
 this filters the *fileset the scan itself walks*, which is what "will this
@@ -174,8 +175,9 @@ def _match(relpath: str, pat: str) -> bool:
 
 
 def _scan_excludes(project):
-    """This project's compiled sqc --exclude patterns (not --report-exclude,
-    whose files the prescan still reads) from bench/realworld_runner.py's
+    """This project's compiled sqc --exclude-all patterns (not
+    --report-exclude or the deprecated --exclude, whose files the prescan
+    still reads) from bench/realworld_runner.py's
     CODEBASES registry, or [] if the project isn't registered there
     (data/benchmark_repos.json and CODEBASES are expected to agree on names,
     but don't assume it)."""
@@ -326,10 +328,10 @@ def report(bench_root=None, as_json=False):
             notes.append(f"{r['untracked_ignored']} untracked (not scanned)")
         if r["untracked_scanned_but_excluded"]:
             notes.append(f"{r['untracked_scanned_but_excluded']} untracked "
-                         "under a scan --exclude (harmless)")
+                         "under a scan --exclude-all (harmless)")
         if r["gitignored_scanned_but_excluded"]:
             notes.append(f"{r['gitignored_scanned_but_excluded']} gitignored "
-                         "under a scan --exclude (harmless)")
+                         "under a scan --exclude-all (harmless)")
         print(f"{r['name']:<11} {r['status']:<11} "
               f"{(r['head'] or '-')[:12]:<13} {r['expected'][:12]:<13} "
               f"{'; '.join(notes)}")

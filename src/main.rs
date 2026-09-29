@@ -40,22 +40,38 @@ fn load_manifest(manifest_path: Option<&String>) -> Result<RuleManifest> {
     }
 }
 
-/// Which files the scan leaves out: the command line's `--exclude`,
+/// Which files the scan leaves out: the command line's `--exclude-all`,
 /// `--report-exclude` and `--prescan-exclude`, plus the manifest's `[scope]`.
+/// The deprecated `--exclude` keeps the meaning it always had, which is
+/// `--report-exclude`'s, so no existing command line changes its findings.
 fn scan_scope(matches: &clap::ArgMatches, manifest: &RuleManifest) -> analyze::ScanScope {
-    let globs = |id: &str, from_manifest: &[String]| -> Vec<String> {
+    let cli = |id: &str| -> Vec<String> {
         matches
             .get_many::<String>(id)
             .into_iter()
             .flatten()
-            .chain(from_manifest)
             .cloned()
             .collect()
     };
+    let deprecated = cli("exclude");
+    if !deprecated.is_empty() {
+        eprintln!(
+            "Warning: --exclude is deprecated; it means --report-exclude (no findings, still \
+             read for cross-file facts). Use --report-exclude, or --exclude-all to leave files \
+             out of everything."
+        );
+    }
+    let with = |mut globs: Vec<String>, from_manifest: &[String]| {
+        globs.extend(from_manifest.iter().cloned());
+        globs
+    };
     analyze::ScanScope {
-        exclude: globs("exclude", &manifest.scope.exclude),
-        report_exclude: globs("report_exclude", &manifest.scope.report_exclude),
-        prescan_exclude: globs("prescan_exclude", &manifest.scope.prescan_exclude),
+        exclude_all: with(cli("exclude_all"), &manifest.scope.exclude_all),
+        report_exclude: with(
+            [deprecated, cli("report_exclude")].concat(),
+            &manifest.scope.report_exclude,
+        ),
+        prescan_exclude: with(cli("prescan_exclude"), &manifest.scope.prescan_exclude),
     }
 }
 
@@ -234,9 +250,16 @@ fn run() -> Result<i32> {
                 .require_equals(true),
         )
         .arg(
+            Arg::new("exclude_all")
+                .long("exclude-all")
+                .help("Leave files matching this path glob out of everything: not scanned, not reported, and not read for cross-file facts (repeatable, e.g. --exclude-all '**/onelua.c' --exclude-all 'testes/**')")
+                .value_name("GLOB")
+                .action(clap::ArgAction::Append),
+        )
+        .arg(
             Arg::new("exclude")
                 .long("exclude")
-                .help("Leave files matching this path glob out of everything: not scanned, not reported, and not read for cross-file facts (repeatable, e.g. --exclude '**/onelua.c' --exclude 'testes/**')")
+                .help("Deprecated: same as --report-exclude. Use --report-exclude, or --exclude-all to leave files out of everything (repeatable)")
                 .value_name("GLOB")
                 .action(clap::ArgAction::Append),
         )
@@ -579,7 +602,7 @@ fn run() -> Result<i32> {
         compile_db.as_ref().is_some_and(|db| db.msvc),
     )?;
     let scope = scan_scope(&matches, &manifest);
-    analysis_settings.set_prescan_scope(scope.prescan_scope(&project_source)?);
+    analysis_settings.set_prescan_scope(scope.prescan_scope());
 
     // Handle suppression generation
     if let Some(gen_spec) = generate_suppression {

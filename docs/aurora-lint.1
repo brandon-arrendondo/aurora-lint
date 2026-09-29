@@ -317,7 +317,7 @@ Exclude vendored code and test harnesses from a scan:
 .PP
 .RS
 .nf
-aurora-lint . --exclude "tests/**" --exclude "vendor/**" --exclude "**/onelua.c"
+aurora-lint . --exclude-all "tests/**" --report-exclude "vendor/**" --exclude-all "**/onelua.c"
 .fi
 .RE
 .PP
