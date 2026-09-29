@@ -875,11 +875,15 @@ pub fn render_rst() -> String {
          1), and an allocator returns fresh memory under the contract of the standard\n   \
          allocator it names (``malloc``, ``calloc``, ``realloc``, ``aligned_alloc``,\n   \
          ``strdup`` or ``strndup``). A ``realloc``-like allocator also releases the\n   \
-         block its first argument points at. Every rule that asks whether a call\n   \
-         frees or allocates reads the declarations, whichever way they cut: a free\n   \
-         through a declared hook excuses a leak and makes a second free a double\n   \
-         free. A function whose body the scan reads needs no declaration, and a C\n   \
-         library function cannot be declared, since its contract is the library's.\n\n   \
+         block its first argument points at. The memory-lifetime rules (MEM00-C,\n   \
+         MEM01-C, MEM03-C, MEM30-C, MEM31-C, MEM34-C) and the function summaries\n   \
+         that credit a wrapper with what it frees read the declarations, whichever\n   \
+         way they cut: a free through a declared hook excuses a leak and makes a\n   \
+         second free a double free. A rule that only asks whether a call allocates\n   \
+         at all counts a declared allocator too. Null-state, unchecked-result and\n   \
+         allocation-size checks still recognize the standard names only. A function\n   \
+         whose body the scan reads needs no declaration, and a C library function\n   \
+         cannot be declared, since its contract is the library's.\n\n   \
          - Set with ``[environment.allocators]`` ``NAME = \"CONTRACT\"`` and\n     \
          ``[environment.deallocators]`` ``NAME = ARG``, or ``--allocator\n     \
          NAME[=CONTRACT]`` (default ``malloc``) and ``--deallocator NAME[=ARG]``\n     \

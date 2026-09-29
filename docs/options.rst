@@ -135,11 +135,15 @@ Declared memory functions
    1), and an allocator returns fresh memory under the contract of the standard
    allocator it names (``malloc``, ``calloc``, ``realloc``, ``aligned_alloc``,
    ``strdup`` or ``strndup``). A ``realloc``-like allocator also releases the
-   block its first argument points at. Every rule that asks whether a call
-   frees or allocates reads the declarations, whichever way they cut: a free
-   through a declared hook excuses a leak and makes a second free a double
-   free. A function whose body the scan reads needs no declaration, and a C
-   library function cannot be declared, since its contract is the library's.
+   block its first argument points at. The memory-lifetime rules (MEM00-C,
+   MEM01-C, MEM03-C, MEM30-C, MEM31-C, MEM34-C) and the function summaries
+   that credit a wrapper with what it frees read the declarations, whichever
+   way they cut: a free through a declared hook excuses a leak and makes a
+   second free a double free. A rule that only asks whether a call allocates
+   at all counts a declared allocator too. Null-state, unchecked-result and
+   allocation-size checks still recognize the standard names only. A function
+   whose body the scan reads needs no declaration, and a C library function
+   cannot be declared, since its contract is the library's.
 
    - Set with ``[environment.allocators]`` ``NAME = "CONTRACT"`` and
      ``[environment.deallocators]`` ``NAME = ARG``, or ``--allocator

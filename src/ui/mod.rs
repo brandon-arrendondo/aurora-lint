@@ -2140,6 +2140,10 @@ impl TerminalUI {
         self.clean_files.clear();
         self.combined_violations.clear();
 
+        // Declared allocators and deallocators reach the function summaries
+        // prescan builds, so they are installed first, as a CLI scan does.
+        crate::settings::memory::declare(self.settings.memory.clone())?;
+
         // Pre-scan directories for cross-file context
         let mut context = if !self.directories.is_empty() {
             prescan::prescan_directories(&self.directories, None, true)?
