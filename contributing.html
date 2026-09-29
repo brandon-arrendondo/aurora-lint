@@ -63,6 +63,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#adding-a-new-cert-c-rule">Adding a New CERT C Rule</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#build-requirements">Build Requirements</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#invoke-tasks">Invoke Tasks</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#publishing-a-release-s-documentation">Publishing a Release’s Documentation</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#development-node-setup">Development Node Setup</a></li>
 </ul>
 </li>
@@ -192,6 +193,25 @@ pre-commit or CI. Reading <code class="docutils literal notranslate"><span class
 <code class="docutils literal notranslate"><span class="pre">PATH</span></code>; the development venv below has it (Sphinx depends on docutils).
 Without it the task skips <code class="docutils literal notranslate"><span class="pre">.rst</span></code> files and says so. Rule changes belong in
 <code class="docutils literal notranslate"><span class="pre">style_package</span></code>, not in a local override here.</p>
+</section>
+<section id="publishing-a-release-s-documentation">
+<h2>Publishing a Release’s Documentation<a class="headerlink" href="#publishing-a-release-s-documentation" title="Link to this heading"></a></h2>
+<p>Pushing a <code class="docutils literal notranslate"><span class="pre">v*</span></code> tag runs <code class="docutils literal notranslate"><span class="pre">.github/workflows/release.yml</span></code>, whose <code class="docutils literal notranslate"><span class="pre">docs</span></code>
+job publishes that commit’s rendered documentation under <code class="docutils literal notranslate"><span class="pre">/&lt;tag&gt;/</span></code> on the
+GitHub Pages site. The directory is never replaced: a later deploy of the
+same tag is refused, and every deploy from main copies each release
+directory forward unchanged. After tagging a release:</p>
+<ol class="arabic simple">
+<li><p>Confirm <code class="docutils literal notranslate"><span class="pre">https://brandon-arrendondo.github.io/aurora-lint/&lt;tag&gt;/index.html</span></code>
+is live and listed on <code class="docutils literal notranslate"><span class="pre">versions.html</span></code>. The tag’s docs job waits in the
+same queue as main’s, and a newer push to main can cancel it while it
+waits. If it did, re-run that job from the tag’s release run. Main’s docs
+job also warns about any release whose directory is missing.</p></li>
+<li><p>Never re-run a docs job from a run made before per-tag publishing
+existed, and never push to the <code class="docutils literal notranslate"><span class="pre">gh-pages</span></code> branch by hand. Either one
+publishes a site without the release directories. If that happens,
+restore them from an earlier <code class="docutils literal notranslate"><span class="pre">gh-pages</span></code> commit.</p></li>
+</ol>
 </section>
 <section id="development-node-setup">
 <h2>Development Node Setup<a class="headerlink" href="#development-node-setup" title="Link to this heading"></a></h2>

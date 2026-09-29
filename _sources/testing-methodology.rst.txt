@@ -723,7 +723,7 @@ the rest of the suite is substantial (measured 2026-09-02, run #226):
    * -
      - Rules
    * - Implemented
-     - **|rules_total|** (|rules_enabled| enabled by default)
+     - |rules_total| (|rules_enabled| enabled by default)
    * - Have true-positive evidence somewhere
      - **186** — 127 from Juliet, 144 from real-world TP/FN labels
    * - **No true-positive evidence anywhere**
