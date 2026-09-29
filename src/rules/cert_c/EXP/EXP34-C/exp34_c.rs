@@ -729,6 +729,36 @@ fn check_call_expression_cfg(
 
     let func_name = ast_utils::get_node_text_owned(&function, source);
 
+    // A function-like macro that writes through a parameter dereferences the
+    // pointer argument handed to it, right here: the macro has no body of
+    // its own to report the dereference in. A function-like macro replaces a
+    // call of the same name, so the macro table decides. Only the arguments
+    // spelled as a plain pointer: `M(&v)` stores into `v` instead.
+    if function.kind() == "identifier" && macros.contains_key(&func_name) {
+        let through = macro_expand::macro_writes_through_param_indices(
+            macros,
+            &func_name,
+            macro_expand::Live::Any,
+        );
+        if !through.is_empty() {
+            if let Some(args) = node.child_by_field_name("arguments") {
+                check_macro_dereferenced_arguments(
+                    &func_name,
+                    node,
+                    &args,
+                    &through,
+                    source,
+                    analysis,
+                    cfg,
+                    body,
+                    summaries,
+                    violations,
+                    reported_vars,
+                );
+            }
+        }
+    }
+
     // Check deref-function arguments: a curated set of libc functions that
     // unconditionally dereference their pointer argument, with no
     // project-analyzable body to relocate a report into (an earlier fix's ruling
@@ -838,6 +868,66 @@ fn check_function_arguments_cfg(
                 });
             }
         }
+    }
+}
+
+/// The pointer arguments of a macro invocation that the macro writes through
+/// (`through`, per [`macro_expand::macro_writes_through_param_indices`]):
+/// each is dereferenced at the invocation line.
+///
+/// The state is read at the invocation, not at the argument: the dataflow
+/// applies a statement whole, and the macro's own output-parameter credit
+/// would otherwise already have marked the argument non-null.
+#[allow(clippy::too_many_arguments)]
+fn check_macro_dereferenced_arguments(
+    macro_name: &str,
+    invocation: &Node,
+    args: &Node,
+    through: &[usize],
+    source: &str,
+    analysis: &NullAnalysisResult,
+    cfg: &FunctionCfg,
+    body: &Node,
+    summaries: &(impl SummaryLookup + ?Sized),
+    violations: &mut Vec<RuleViolation>,
+    reported_vars: &mut ReportedSites<'_>,
+) {
+    let mut cursor = args.walk();
+    let arg_nodes: Vec<Node> = args.named_children(&mut cursor).collect();
+    for &idx in through {
+        let Some(arg) = arg_nodes.get(idx) else {
+            continue;
+        };
+        if arg.kind() != "identifier" {
+            continue;
+        }
+        let var_name = ast_utils::get_node_text_owned(arg, source);
+        if reported_vars.contains(&var_name, arg)
+            || is_provably_not_a_pointer(arg, &var_name, source)
+            || !is_unsafe_at(
+                &var_name, invocation, source, analysis, cfg, body, summaries,
+            )
+        {
+            continue;
+        }
+        reported_vars.insert(&var_name, arg);
+        let start_point = arg.start_position();
+        violations.push(RuleViolation {
+            rule_id: "EXP34-C".to_string(),
+            severity: Severity::High,
+            message: format!(
+                "Macro '{}' writes through potentially null pointer '{}'",
+                macro_name, var_name
+            ),
+            file_path: String::new(),
+            line: start_point.row + 1,
+            column: start_point.column + 1,
+            suggestion: Some(format!(
+                "Check if '{}' is not NULL before passing it to '{}'",
+                var_name, macro_name
+            )),
+            ..Default::default()
+        });
     }
 }
 

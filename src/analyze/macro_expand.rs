@@ -2849,11 +2849,12 @@ fn nulls_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
 /// — `param->field = …`, `param[i] = …`, `*param = …`. The latter forms are
 /// deliberately *excluded* from `macro_output_param_indices` because they
 /// presuppose `param` already holds a valid address (relevant to EXP33-C's
-/// uninitialized-*scalar* question), but they are exactly what EXP34-C
-/// (null-pointer) and ARR00-C (array-bounds) care about: successfully writing
-/// through `param` proves it was non-null / in-bounds, the same idiom
-/// `function_summary.rs::modifies_params` tracks for real (non-macro)
-/// functions via `line_has_arrow_or_subscript_write`.
+/// uninitialized-*scalar* question). With an `&v` argument they are stores
+/// into `v`, the same idiom `function_summary.rs::modifies_params` tracks
+/// for real (non-macro) functions via `line_has_arrow_or_subscript_write`.
+/// With a plain pointer argument they are dereferences of it, which prove
+/// nothing about whether it is null: see
+/// [`macro_writes_through_param_indices`].
 ///
 /// Example: sqlite's `fts3GetVarint32(p, piVal)` expands with a deref write
 /// `*piVal = *(u8*)(p)`, so index 1 (`piVal`) is reported.
@@ -2894,6 +2895,45 @@ fn writes_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
         }
     }
     out
+}
+
+/// Parameter indices that a function-like macro writes THROUGH, as a
+/// pointer: `param->field = …`, `param[i] = …`, `*param = …` -- the subset of
+/// [`macro_writes_param_indices`] that is not a write of the argument
+/// itself.
+///
+/// For an argument spelled as a plain pointer (`INIT_V(p)` over
+/// `(q)->x = 0`), each of these is a dereference of that pointer at the
+/// invocation, which no callee body will ever report, because the macro has
+/// none. Writing through a pointer does not prove it non-null; it is the
+/// site to check (EXP34-C). An `&v` argument makes the same write a store
+/// into `v`, which is what the output-parameter credit reads.
+pub fn macro_writes_through_param_indices(
+    table: &HashMap<String, FunctionMacro>,
+    name: &str,
+    live: Live,
+) -> Vec<usize> {
+    let merge = match live {
+        Live::Any => Merge::Union,
+        Live::All => Merge::IntersectExceptDeadHeader,
+    };
+    over_live_definitions(table, name, merge, |table, name| {
+        let Some(m) = table.lookup(name) else {
+            return Vec::new();
+        };
+        let sentinels: Vec<String> = (0..m.params.len())
+            .map(|i| format!("__SQC_MWT_{i}__"))
+            .collect();
+        let Some(expanded) = expand_in(table, name, &sentinels) else {
+            return Vec::new();
+        };
+        sentinels
+            .iter()
+            .enumerate()
+            .filter(|(_, sent)| writes_through_pointer(&expanded, sent))
+            .map(|(i, _)| i)
+            .collect()
+    })
 }
 
 /// True if `ident` is written through a pointer/array access in `text`:
