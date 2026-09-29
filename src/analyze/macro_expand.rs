@@ -1112,17 +1112,41 @@ pub fn macro_body_calls(arm: &MacroArm) -> MacroBodyCalls {
                     out.writes = true;
                 }
             }
+            // `handlers[i](0)`: in an expression, `](` can only be a call
+            // through an array element.
+            "]" if next == Some("(") => out.indirect = true,
             ")" if next == Some("(") => {
                 // `(*fp)(x)`, `(o->fn)(x)`: a call through what the
                 // parentheses hold. A cast (`(T *)(x)`) holds a type instead.
                 let Some(open) = matching_open(&tokens, j) else {
                     continue;
                 };
+                // `f(a)(b)`: the parentheses are a call's arguments, not the
+                // callee's.
+                let call_arguments = open.checked_sub(1).is_some_and(|p| {
+                    let before = tokens[p].text.as_str();
+                    matches!(before, ")" | "]")
+                        || (is_ident_start(before.chars().next().unwrap_or(' '))
+                            && !matches!(before, "return" | "case" | "sizeof" | "else" | "do"))
+                });
                 let inner = &tokens[open + 1..j];
                 let through_pointer = inner.first().is_some_and(|t| t.text == "*")
                     || inner.iter().any(|t| matches!(t.text.as_str(), "->" | "."));
                 if through_pointer {
                     out.indirect = true;
+                } else if let [only] = inner {
+                    // `(fn)(x)` calls the one name the parentheses hold, a
+                    // parameter's argument or a function; `(T)(x)` is a cast,
+                    // which the consumer tells apart by knowing `T` a type.
+                    let w = only.text.as_str();
+                    if call_arguments || !is_ident_start(w.chars().next().unwrap_or(' ')) {
+                        continue;
+                    }
+                    if let Some(k) = arm.params.iter().position(|p| p == w) {
+                        out.param_calls.push(k);
+                    } else {
+                        out.callees.push(w.to_string());
+                    }
                 }
             }
             w if next == Some("(")
@@ -1139,8 +1163,13 @@ pub fn macro_body_calls(arm: &MacroArm) -> MacroBodyCalls {
                         | "__attribute__"
                 ) =>
             {
+                let pasted = j > 0 && tokens[j - 1].text == "##";
                 if after_member {
                     // `ops.strlen(x)` / `p->run(x)` calls through a member.
+                    out.indirect = true;
+                } else if pasted {
+                    // `do_##n(0)`: the callee is the pasted token, which no
+                    // spelling in the body names.
                     out.indirect = true;
                 } else if let Some(k) = arm.params.iter().position(|p| p == w) {
                     out.param_calls.push(k);
@@ -4863,5 +4892,26 @@ mod macro_write_tests {
     fn member_call_in_body_is_not_a_named_callee() {
         let a = arm(&["x"], "(ops.strlen(x) + p->len(x) + strlen(x))");
         assert_eq!(macro_body_effects(&a).1, vec!["strlen".to_string()]);
+    }
+
+    #[test]
+    fn body_call_shapes() {
+        let calls = |params: &[&str], body: &str| macro_body_calls(&arm(params, body));
+        // A pasted callee is named by no token: opaque, not the parameter's
+        // argument and not the suffix's spelling.
+        let c = calls(&["n"], "do_##n(0) + n##_init(0)");
+        assert!(c.indirect && c.param_calls.is_empty() && c.callees.is_empty());
+        // A call through an array element.
+        assert!(calls(&["i"], "handlers[i](0)").indirect);
+        // A parenthesized parameter or name is the callee, or a cast the
+        // consumer recognises by its type.
+        let c = calls(&["fn", "x"], "(fn)(x) + (run)(x)");
+        assert_eq!(c.param_calls, vec![0]);
+        assert_eq!(c.callees, vec!["run".to_string()]);
+        assert!(!c.indirect);
+        // `f(a)(b)`: `(a)` is f's argument list, not a callee.
+        let c = calls(&["a"], "f(a)(1)");
+        assert_eq!(c.callees, vec!["f".to_string()]);
+        assert!(c.param_calls.is_empty());
     }
 }

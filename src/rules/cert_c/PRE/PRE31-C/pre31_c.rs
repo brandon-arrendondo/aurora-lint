@@ -8,7 +8,8 @@ use crate::analyze::function_summary::extract_function_name;
 use crate::analyze::macro_expand::{self, ArgEvaluation, FunctionMacro, MacroArm, ProjectMacroArm};
 use crate::analyze::side_effects::{
     collect_direct_effects, dereferences_applied, designates_object, is_volatile_read,
-    typedef_is_volatile, typedef_read, EffectInputs, EffectTable, FileScope, Proof, PURE_BUILTINS,
+    names_a_type, typedef_is_volatile, typedef_read, EffectInputs, EffectTable, FileScope, Proof,
+    PURE_BUILTINS,
 };
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
@@ -517,6 +518,12 @@ impl<'a> Ctx<'a> {
         }
         if let Some(effect) = self.function_effect(name) {
             return effect;
+        }
+        // A type "called" in a macro body is a cast (`(T)(x)`).
+        let no_typedefs = HashMap::new();
+        let typedefs = self.effects.map_or(&no_typedefs, |v| &*v.names.typedefs);
+        if names_a_type(name, typedefs) {
+            return Effect::None;
         }
         let stdlib_contract = self.settings.flag("stdlib_call_effects");
         if stdlib_contract {

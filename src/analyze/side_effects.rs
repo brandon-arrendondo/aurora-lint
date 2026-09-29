@@ -1192,6 +1192,29 @@ pub const PURE_BUILTINS: &[&str] = &[
 
 /// Callees that change nothing the program goes on with: an assertion
 /// evaluates its condition (judged where it is written) or aborts.
+/// Whether `name` names a type rather than a function: a C type keyword, a
+/// typedef the scan knows, or an ISO C/POSIX `_t` name (POSIX reserves the
+/// suffix for types). A "call" of one in a macro body is a cast
+/// (`#define CAST(T, x) (T)(x)`), which evaluates nothing.
+pub fn names_a_type(name: &str, typedefs: &HashMap<String, String>) -> bool {
+    matches!(
+        name,
+        "char"
+            | "short"
+            | "int"
+            | "long"
+            | "float"
+            | "double"
+            | "void"
+            | "signed"
+            | "unsigned"
+            | "_Bool"
+            | "_Complex"
+            | "bool"
+    ) || typedefs.contains_key(name)
+        || name.ends_with("_t")
+}
+
 fn is_effect_free_builtin(name: &str) -> bool {
     matches!(name, "assert" | "static_assert" | "_Static_assert") || PURE_BUILTINS.contains(&name)
 }
@@ -1764,6 +1787,9 @@ impl Resolver<'_, '_> {
         }
         if let Some(closed) = (self.base)(resolved) {
             self.absorb(&closed, args);
+            return;
+        }
+        if names_a_type(resolved, &inputs.names.typedefs) {
             return;
         }
         use crate::utility::cert_c::library_effects::{library_call_effect, LibraryEffect};
