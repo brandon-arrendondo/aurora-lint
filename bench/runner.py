@@ -163,8 +163,18 @@ def _prescan_args(cwe_dir_str: str, compile_db: str | None) -> list[str]:
     return args
 
 
+def _settings_args(profile: str) -> list[str]:
+    """The flags that put a Juliet scan under `profile` plus
+    JULIET_SETTING_OVERRIDES."""
+    args = ["--profile", profile]
+    for o in JULIET_SETTING_OVERRIDES:
+        args.extend(["--set", o])
+    return args
+
+
 def _warm_prescan(cwe_dir_name: str, cwe_dir_str: str, manifest: str,
-                  cache_path: str, compile_db: str | None = None) -> dict:
+                  cache_path: str, compile_db: str | None = None,
+                  profile: str = DEFAULT_PROFILE) -> dict:
     """Build a sharded CWE's cross-file context once and save it for its
     shards to load (`--save-prescan`).
 
@@ -172,7 +182,9 @@ def _warm_prescan(cwe_dir_name: str, cwe_dir_str: str, manifest: str,
     process does nothing but the prescan and the save. The manifest is the
     shards' own: whether any enabled rule needs VRA changes what the prescan
     computes, so a cache built under a different manifest would not be the
-    context a shard's live prescan builds.
+    context a shard's live prescan builds. The settings are the shards' own
+    too: the data model decides the limit macros and sizes the prescan
+    evaluates, and a shard refuses a cache built under another one.
     """
     start_time = time.monotonic()
     empty_dir = tempfile.mkdtemp(prefix=f"{cwe_dir_name}_warm_")
@@ -181,6 +193,7 @@ def _warm_prescan(cwe_dir_name: str, cwe_dir_str: str, manifest: str,
         cmd = [
             str(SQC_BIN), empty_dir,
             "-m", manifest,
+            *_settings_args(profile),
             *_prescan_args(cwe_dir_str, compile_db),
             "--save-prescan", cache_path,
             # A throwaway report: the warm pass exists for its prescan
@@ -239,15 +252,13 @@ def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
 
     start_time = time.monotonic()
     try:
-        # The settings are applied per scan and never baked into a prescan,
-        # so a shard loading its CWE's warm cache needs only the flag.
+        # A shard loading its CWE's warm cache scans under the settings the
+        # cache was built with (see _warm_prescan).
         cmd = [
             str(SQC_BIN), str(shard_dir),
             "-m", manifest,
-            "--profile", profile,
+            *_settings_args(profile),
         ]
-        for o in JULIET_SETTING_OVERRIDES:
-            cmd.extend(["--set", o])
         if prescan_cache:
             cmd.extend(["--load-prescan", prescan_cache])
         else:
@@ -459,7 +470,7 @@ def _run_submissions(db: BenchDB, run_id: str, scan_map: dict, work_items: list[
         for cwe_dir_name, cwe_dir, manifest in warm_items:
             future = executor.submit(
                 _warm_prescan, cwe_dir_name, str(cwe_dir), manifest,
-                prescan_caches[cwe_dir_name], compile_db,
+                prescan_caches[cwe_dir_name], compile_db, profile,
             )
             futures[future] = ("warm", cwe_dir_name)
         for sub in submissions:
