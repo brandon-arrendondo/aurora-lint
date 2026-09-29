@@ -2,9 +2,10 @@
  * Rule: INT02-C
  * Source: regression
  * Status: PASS - Should NOT trigger INT02-C violation
+ * Settings: data_model=lp64
  *
- * Both operands are narrower than int, so both promote to int and the
- * comparison is signed-vs-signed. No conversion defect.
+ * On the declared LP64 target both operands are narrower than int, so both
+ * promote to int and the comparison is signed-vs-signed. No conversion defect.
  */
 
 void compare(unsigned short small_limit, short small_counter) {

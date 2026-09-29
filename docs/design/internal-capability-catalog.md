@@ -387,6 +387,19 @@ builds the report rows for a header found only by ignoring case.
 > build a `ParentMap` once per file and use its O(1)-per-step ancestor walk.
 > A bounded walk (a fixed few levels) is fine.
 
+### `src/utility/cert_c/data_model.rs`
+
+The integer widths a scan credits (`[environment] data_model`, ADR-0011). **Use it for every width, limit or `sizeof` of an integer type; never write a width down.** Under `DataModel::Iso`, the default, only ISO C's guarantees are known; `Ilp32`, `Lp64` and `Llp64` are declared targets.
+
+| Function | Signature | Description |
+|---|---|---|
+| `min_width` / `guaranteed_range` | `(self, rank) -> u32` / `(self, signed, rank) -> (i128, i128)` | What every implementation gives a type at least (C11 5.2.4.2.1: `int` 16 bits, `long` 32, signed minimum `-(2^(N-1) - 1)`), or the exact value on a declared model. What a proof that a value **fits** may use. |
+| `exact_width` / `range` | `(self, rank) -> Option<u32>` / `(self, signed, rank) -> Option<(i128, i128)>` | The exact width or range, `None` under `iso` (except `_Bool`). A caller must treat `None` as unknown in both directions: an upper bound needs it. |
+| `limit_macro` | `(self, name: &str) -> Option<i64>` | `INT_MAX`, `LONG_MAX`, `CHAR_BIT` and kin on a declared model; the exact-width `INT32_MAX` family on every model. `CHAR_MIN`/`CHAR_MAX` never: plain `char`'s sign is not part of a data model. |
+| `sizeof_bytes` / `pointer_width` | `(self, rank) -> Option<u32>` / `(self) -> Option<u32>` | `sizeof` an integer (the `char` types are 1 everywhere), and the width of a pointer, `size_t` or `ptrdiff_t`, when the model fixes them. |
+
+`Rank` (the conversion ranks, `Bool` lowest) lives here too; `expr_type` re-exports both.
+
 ### `src/utility/cert_c/expr_type.rs`
 
 The C type of an expression, read from the declarations it names. **Reach for this first** when a rule asks what type an operand is (floating? integer? signed? its rank? a pointer?). Everything below answers from declarations, never from a `{name -> type}` map or a substring of type text.
@@ -398,9 +411,10 @@ The C type of an expression, read from the declarations it names. **Reach for th
 | `declarator_type` | `(decl: &Node, declarator: &Node, source: &str, env: &TypeEnv) -> Option<CType>` | The same for a declaration already in hand (the object `double *p = ...` declares), with `init_declarator` unwrapped. |
 | `classify_specifiers` / `classify_spelling` | `(decl, source, env)` / `(spelling: &str, env)` | A type specifier read as a set of tokens, in any order (`long unsigned int`), with qualifiers and storage class dropped. A `type_identifier` follows the typedef chain in `env`, then the data model's standard aliases, then the struct-field map for a typedef'd struct. `ssize_t` is signed; `pointer`, `ushort` and `uint` are names until a typedef says otherwise. |
 | `declarator_shape` / `apply_shape` | `(declarator: &Node) -> String` / `(base: Option<CType>, shape: &str) -> Option<CType>` | A declarator's derivations as a string, outermost first (`*` pointer, `[` array, `(` function), and that string applied to a base type. `double *v[4]` is `"*["`, an array of pointers. The prescan files each struct field's shape in `struct_field_shapes`, so a field's type survives a header the file only receives through the project table. |
-| `number_literal_type` | `(text: &str, model: DataModel) -> Option<CType>` | C11 6.4.4.1/6.4.4.2: an unsuffixed decimal constant is int, then long, then long long; a hexadecimal or octal one may also be unsigned. |
+| `number_literal_type` | `(text: &str, model: DataModel) -> Option<CType>` | C11 6.4.4.1/6.4.4.2: an unsuffixed decimal constant is int, then long, then long long; a hexadecimal or octal one may also be unsigned. Where `model` leaves a width open, a constant inside the guaranteed range has that type everywhere and one outside it is unknown (`40000` is int or long under `iso`). |
+| `standard_alias` | `(model: DataModel, name: &str) -> Option<CType>` | The type a standard alias (`size_t`, `int32_t`, `wchar_t`, ...) names on `model`: a concrete rank on a declared model (LLP64's `size_t` is `unsigned long long`), and under `iso` an `IntOfWidth` of its exact or minimum width, since `uint32_t` may be `unsigned int` or `unsigned long`. `wchar_t` is unknown under `iso`: even its sign is not fixed. |
 
-`CType` is `Int { sign, rank }` / `Float(kind)` / `Pointer` / `Array` / `Record` / `Enum` / `Void` / `Function(return)`. Plain `char` has `Sign::PlainChar` and is claimed neither signed nor unsigned. `TypeEnv::visible(&visible)` takes a rule's `VisibleTypes`; build it once per file, since it memoizes the file's own function definitions. Widths and aliases come from `DataModel`; only LP64 exists, and an LLP64 target (a Windows build) is typed as LP64 for now. Consumers so far: INT02-C, FLP02-C, FLP03-C, FLP06-C.
+`CType` is `Int { sign, rank }` / `IntOfWidth { sign, min_bits, max_bits }` (an integer whose rank the model does not fix, including a bit-field that may or may not be as wide as `int`) / `Float(kind)` / `Pointer` / `Array` / `Record` / `Enum` / `Void` / `Function(return)`. Plain `char` has `Sign::PlainChar` and is claimed neither signed nor unsigned. `TypeEnv::visible(&visible, model)` takes a rule's `VisibleTypes` and the settings' `data_model`; build it once per file, since it memoizes the file's own function definitions. Widths come from `data_model::DataModel`: under the default `iso`, a promotion or usual arithmetic conversion whose result depends on a width ISO C leaves open is unknown (an `unsigned short` promotes to `unsigned int` where `short` and `int` are both 16 bits). Consumers so far: INT02-C, FLP02-C, FLP03-C, FLP06-C.
 
 ### `src/utility/cert_c/declarator_utils.rs`
 **Problem solved:** reusable checks for whether a declarator subtree
