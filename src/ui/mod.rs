@@ -2212,6 +2212,7 @@ impl TerminalUI {
                 // ranges when an enabled rule asks for them, and the struct and
                 // typedef tables this file sees.
                 let analysis = crate::analyze::build_file_analysis(
+                    std::path::Path::new(file_path),
                     &tree.root_node(),
                     &source,
                     &context,

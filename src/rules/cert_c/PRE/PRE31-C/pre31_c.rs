@@ -3,7 +3,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval::{merged_macro_aliases, resolve_macro_alias};
-use crate::analyze::context::{ProjectContext, ScopedTable, VisibleTypes};
+use crate::analyze::context::{IncludeClosure, ProjectContext, ScopedTable, VisibleTypes};
 use crate::analyze::function_summary::{extract_function_name, FunctionSummary};
 use crate::analyze::macro_expand::{self, ArgEvaluation, FunctionMacro, MacroArm, ProjectMacroArm};
 use crate::manifest::Severity;
@@ -12,8 +12,9 @@ use crate::utility::cert_c::ast_utils::{self, get_node_text, IdentifierBinding};
 use crate::utility::cert_c::library_effects::{library_call_effect, LibraryEffect};
 use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tree_sitter::Node;
 
@@ -29,9 +30,11 @@ pub struct Pre31C {
     /// alternatives, which `function_macros` reduces to one, each with the
     /// files that make it.
     function_macro_arms: RefCell<Arc<HashMap<String, Vec<ProjectMacroArm>>>>,
-    /// The files this file's translation unit includes
-    /// (`ProjectContext::include_closure`), when its includes were resolved.
-    include_closure: RefCell<Option<Arc<HashSet<String>>>>,
+    /// The resolved include graph (`ProjectContext::include_edges`), for the
+    /// closure of the file being checked.
+    include_edges: RefCell<Arc<HashMap<String, Vec<String>>>>,
+    /// The file being checked.
+    file_path: RefCell<Option<PathBuf>>,
     /// Every function-like macro name across the scanned files
     /// (`ProjectContext::function_macro_names`): what makes a call a macro
     /// invocation at all, whatever its spelling.
@@ -57,7 +60,8 @@ impl Pre31C {
         Self {
             function_macros: RefCell::new(Arc::new(HashMap::new())),
             function_macro_arms: RefCell::new(Arc::new(HashMap::new())),
-            include_closure: RefCell::new(None),
+            include_edges: RefCell::new(Arc::new(HashMap::new())),
+            file_path: RefCell::new(None),
             function_macro_names: RefCell::new(Arc::new(HashSet::new())),
             macro_aliases: RefCell::new(Arc::new(HashMap::new())),
             outside_macros: RefCell::new(Arc::new(HashSet::new())),
@@ -94,7 +98,7 @@ impl CertRule for Pre31C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_macros.borrow_mut() = context.function_macros.clone();
         *self.function_macro_arms.borrow_mut() = context.function_macro_arms.clone();
-        *self.include_closure.borrow_mut() = context.include_closure.clone();
+        *self.include_edges.borrow_mut() = context.include_edges.clone();
         *self.function_macro_names.borrow_mut() = context.function_macro_names.clone();
         *self.macro_aliases.borrow_mut() = context.macro_aliases.clone();
         *self.outside_macros.borrow_mut() = context.macros_defined_outside_project.clone();
@@ -103,6 +107,10 @@ impl CertRule for Pre31C {
 
     fn set_visible_types(&self, types: &VisibleTypes) {
         *self.types.borrow_mut() = types.clone();
+    }
+
+    fn set_file_path(&self, path: &Path) {
+        *self.file_path.borrow_mut() = Some(path.to_path_buf());
     }
 
     fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
@@ -128,14 +136,17 @@ impl CertRule for Pre31C {
         let settings = Arc::clone(&self.settings.borrow());
         let summaries = self.function_summaries.borrow();
         let types = self.types.borrow();
-        let include_closure = self.include_closure.borrow().clone();
+        let include_edges = self.include_edges.borrow();
+        let file_path = self.file_path.borrow();
         let ctx = Ctx {
             source,
             names: &macro_names,
             first: &function_macros,
             arms: &macro_expand::collect_function_macro_arms(source),
             project_arms: &self.function_macro_arms.borrow(),
-            include_closure: include_closure.as_deref(),
+            include_edges: &include_edges,
+            file_path: file_path.as_deref(),
+            include_closure: OnceCell::new(),
             aliases: &merged_macro_aliases(&self.macro_aliases.borrow(), node, source),
             outside: &self.outside_macros.borrow(),
             local_functions: &local_functions,
@@ -208,8 +219,13 @@ struct Ctx<'a> {
     arms: &'a HashMap<String, Vec<MacroArm>>,
     /// Every scanned header's definitions, the same way, with their files.
     project_arms: &'a HashMap<String, Vec<ProjectMacroArm>>,
-    /// `Pre31C::include_closure`.
-    include_closure: Option<&'a HashSet<String>>,
+    /// `Pre31C::include_edges`.
+    include_edges: &'a HashMap<String, Vec<String>>,
+    /// `Pre31C::file_path`.
+    file_path: Option<&'a Path>,
+    /// This file's include closure, walked the first time a name has more
+    /// than one project definition to choose between.
+    include_closure: OnceCell<Option<IncludeClosure>>,
     aliases: &'a HashMap<String, String>,
     /// `Pre31C::outside_macros`.
     outside: &'a HashSet<String>,
@@ -244,7 +260,21 @@ impl<'a> Ctx<'a> {
         if let Some(arms) = self.arms.get(name).filter(|arms| !arms.is_empty()) {
             return arms.clone();
         }
-        let arms = macro_expand::reachable_arms(self.project_arms, name, self.include_closure);
+        let closure = if self
+            .project_arms
+            .get(name)
+            .is_some_and(|arms| arms.len() > 1)
+        {
+            self.include_closure
+                .get_or_init(|| {
+                    self.file_path
+                        .and_then(|path| IncludeClosure::of(self.include_edges, path))
+                })
+                .as_ref()
+        } else {
+            None
+        };
+        let arms = macro_expand::reachable_arms(self.project_arms, name, closure);
         if !arms.is_empty() {
             return arms;
         }
@@ -253,6 +283,19 @@ impl<'a> Ctx<'a> {
             .map(MacroArm::from)
             .into_iter()
             .collect()
+    }
+
+    /// Whether `name` is the C library's own macro for a library function
+    /// (only a header outside the project defines it) while
+    /// `library_macros_evaluate_once` holds: C11 7.1.4 then has it evaluate
+    /// each argument exactly once, like the function, whatever its body
+    /// reads. The standard's own exceptions (`library_unsafe_argument`: getc's
+    /// stream, putc's) are not bound by it.
+    fn bound_by_library_contract(&self, name: &str) -> bool {
+        self.outside.contains(name)
+            && std_functions::is_iso_c_function(name)
+            && library_unsafe_argument(name).is_none()
+            && self.settings.flag("library_macros_evaluate_once")
     }
 
     /// The name a call's callee spelling denotes: a function-like macro's own
@@ -709,7 +752,7 @@ impl Pre31C {
         // evaluated as that macro evaluates it.
         let forward = |name: &str| {
             let name = ctx.resolve(name);
-            if ctx.names.contains(name) {
+            if ctx.names.contains(name) && !ctx.bound_by_library_contract(name) {
                 ctx.definitions(name)
             } else {
                 Vec::new()
@@ -723,10 +766,7 @@ impl Pre31C {
             Box::new(move |i| arms.iter().any(|a| !evaluates_once(a, i)))
         } else if let Some(k) = library_unsafe_argument(macro_name) {
             Box::new(move |i| i == k)
-        } else if ctx.outside.contains(macro_name)
-            && std_functions::is_iso_c_function(macro_name)
-            && ctx.settings.flag("library_macros_evaluate_once")
-        {
+        } else if ctx.bound_by_library_contract(macro_name) {
             // The implementation's macro for a library function: whatever
             // its body looks like, C11 7.1.4 has it evaluate each argument
             // once (glibc's tolower reads `c` twice through __tobody).

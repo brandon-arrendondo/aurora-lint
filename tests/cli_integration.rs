@@ -3704,11 +3704,20 @@ fn a_prescan_cache_is_refused_under_a_different_scope() {
     assert_eq!(code, 0, "stderr: {stderr}");
 }
 
+/// PRE31-C's findings in `fixture/project/file`, with the project
+/// prescanned and `fixture/system` on the search path.
 fn pre31_findings(fixture: &str, file: &str, extra: &[&str]) -> Vec<(u64, String)> {
+    let system = fixtures().join(fixture).join("system");
+    let mut args = vec!["-I", system.to_str().unwrap()];
+    args.extend(extra);
+    pre31_findings_searching(fixture, file, &args)
+}
+
+/// [`pre31_findings`] with only the search paths `extra` gives.
+fn pre31_findings_searching(fixture: &str, file: &str, extra: &[&str]) -> Vec<(u64, String)> {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
-    let fixture_dir = fixtures().join(fixture);
-    let project = fixture_dir.join("project");
+    let project = fixtures().join(fixture).join("project");
     let mut argv: Vec<String> = vec![
         project.join(file).to_string_lossy().into_owned(),
         "-m".into(),
@@ -3718,8 +3727,6 @@ fn pre31_findings(fixture: &str, file: &str, extra: &[&str]) -> Vec<(u64, String
             .into_owned(),
         "-d".into(),
         project.to_string_lossy().into_owned(),
-        "-I".into(),
-        fixture_dir.join("system").to_string_lossy().into_owned(),
         "-e".into(),
         out.to_string_lossy().into_owned(),
     ];
@@ -3764,6 +3771,33 @@ fn a_library_macro_is_judged_by_its_body_once_the_contract_is_withdrawn() {
 }
 
 #[test]
+fn the_strict_profile_withdraws_the_library_macro_contract() {
+    // Strict is freestanding: no C library is provided, so none is trusted.
+    let found = pre31_findings("pre31_library_macro", "main.c", &["--profile", "strict"]);
+    assert_eq!(pre31_lines(&found), vec![6, 11], "{found:?}");
+}
+
+#[test]
+fn a_project_macro_forwarding_to_a_library_macro_inherits_its_contract() {
+    // LOWER hands c to the library's tolower, which evaluates it once; READ
+    // hands f to getc, whose stream is the standard's exception.
+    let found = pre31_findings("pre31_library_macro", "forward.c", &[]);
+    assert_eq!(pre31_lines(&found), vec![10], "{found:?}");
+    let withdrawn = pre31_findings(
+        "pre31_library_macro",
+        "forward.c",
+        &["--set", "library_macros_evaluate_once=false"],
+    );
+    assert_eq!(pre31_lines(&withdrawn), vec![5, 10], "{withdrawn:?}");
+}
+
+#[test]
+fn a_project_defined_library_name_is_judged_by_its_body() {
+    let found = pre31_findings("pre31_own_library_name", "own.c", &[]);
+    assert_eq!(pre31_lines(&found), vec![9], "{found:?}");
+}
+
+#[test]
 fn a_project_macro_is_judged_by_the_header_its_file_includes() {
     // math_util.h and shapes.h define SQ two ways. stats.c includes the
     // first, which evaluates its argument twice; geometry.c reaches only the
@@ -3776,4 +3810,57 @@ fn a_project_macro_is_judged_by_the_header_its_file_includes() {
     );
     let geometry = pre31_findings("pre31_include_closure", "geometry.c", &[]);
     assert!(geometry.is_empty(), "{geometry:?}");
+}
+
+fn pre31_lines(found: &[(u64, String)]) -> Vec<u64> {
+    found.iter().map(|(l, _)| *l).collect()
+}
+
+#[test]
+fn with_no_search_path_every_definition_of_a_project_macro_counts() {
+    // No -I, so no include graph: which header geometry.c compiles with is
+    // unknown, and math_util.h's definition may be it.
+    let found = pre31_findings_searching("pre31_include_closure", "geometry.c", &[]);
+    assert_eq!(pre31_lines(&found), vec![5], "{found:?}");
+}
+
+#[test]
+fn a_forced_include_is_in_every_files_closure() {
+    // cl's /FI puts math_util.h ahead of geometry.c's first line, so its
+    // definition of SQ is one the file may compile with.
+    let dir = tempfile::tempdir().unwrap();
+    let project = fixtures().join("pre31_include_closure").join("project");
+    let db = dir.path().join("compile_commands.json");
+    let entry = serde_json::json!([{
+        "directory": project.to_str().unwrap(),
+        "file": project.join("geometry.c").to_str().unwrap(),
+        "command": format!(
+            r"C:\VS\bin\Hostx64\x86\cl.exe /nologo /I{} /FImath_util.h -c geometry.c",
+            project.to_str().unwrap()
+        ),
+    }]);
+    std::fs::write(&db, entry.to_string()).unwrap();
+    let found = pre31_findings_searching(
+        "pre31_include_closure",
+        "geometry.c",
+        &["--compile-commands", db.to_str().unwrap()],
+    );
+    assert_eq!(pre31_lines(&found), vec![5], "{found:?}");
+}
+
+#[test]
+fn an_include_that_did_not_resolve_keeps_the_definitions_it_may_name() {
+    // main.c includes defs.h, whose definition of SQ evaluates its argument
+    // twice, and shapes.h, whose definition evaluates it once. With only
+    // system/ searched, defs.h does not resolve, but the prescan read it, so
+    // its definition still counts; once inc/ is searched it resolves.
+    let fixture = "pre31_partial_include";
+    let project = fixtures().join(fixture).join("project");
+    let inc = project.join("inc");
+    for extra in [vec![], vec!["-I", inc.to_str().unwrap()]] {
+        let found = pre31_findings(fixture, "main.c", &extra);
+        assert_eq!(pre31_lines(&found), vec![6], "{extra:?}: {found:?}");
+    }
+    let unsearched = pre31_findings_searching(fixture, "main.c", &[]);
+    assert_eq!(pre31_lines(&unsearched), vec![6], "{unsearched:?}");
 }

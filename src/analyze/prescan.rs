@@ -1409,7 +1409,6 @@ fn prescan_file_list(
         macro_operand_params: Arc::new(macro_operand_params),
         function_macro_arms: Arc::new(function_macro_arms),
         include_edges: Arc::new(HashMap::new()),
-        include_closure: None,
         unused_attribute_macros: Arc::new(unused_attribute_macros),
         global_constants,
         closure_dependent_constants: Arc::new(closure_dependent_constants),
@@ -7022,6 +7021,7 @@ pub fn resolve_includes(
     let mut unresolved_seen: HashSet<(String, Option<PathBuf>)> = HashSet::new();
     // (spelling, includer) pairs already recorded as matched only by case.
     let mut case_seen: HashSet<(String, Option<Arc<str>>)> = HashSet::new();
+    let mut includer_real_paths: HashMap<Arc<str>, String> = HashMap::new();
 
     // Process queue: resolve each header, parse it, and enqueue its transitive includes
     while let Some((include_path, source_dir, includer)) = queue.pop() {
@@ -7043,19 +7043,12 @@ pub fn resolve_includes(
                 Err(_) => resolved.clone(),
             };
             let header_key = canonical.to_string_lossy().to_string();
-            {
-                // A forced include is every file's: it is filed under the
-                // empty name, which every closure also walks.
-                let from = includer.as_deref().map_or_else(String::new, |f| {
-                    crate::analyze::compile_commands::real_path(Path::new(f))
-                });
-                let edges = Arc::make_mut(&mut context.include_edges)
-                    .entry(from)
-                    .or_default();
-                if !edges.contains(&header_key) {
-                    edges.push(header_key.clone());
-                }
-            }
+            add_include_edge(
+                context,
+                &mut includer_real_paths,
+                includer.as_ref(),
+                header_key.clone(),
+            );
             if resolved_set.contains(&canonical) {
                 continue;
             }
@@ -7135,7 +7128,19 @@ pub fn resolve_includes(
                     queue.push((inc, header_dir.clone(), Some(Arc::clone(&includer))));
                 }
             }
-        } else if unresolved_seen.insert((include_path.clone(), source_dir.clone())) {
+        } else {
+            // It may name a header the prescan read under a search path this
+            // run lacks, and a closure that drops it would drop that
+            // header's definitions.
+            add_include_edge(
+                context,
+                &mut includer_real_paths,
+                includer.as_ref(),
+                format!("{}{include_path}", super::context::UNRESOLVED_INCLUDE),
+            );
+            if !unresolved_seen.insert((include_path.clone(), source_dir.clone())) {
+                continue;
+            }
             let project_header = is_missing_project_header(
                 &include_path,
                 source_dir.as_deref(),
@@ -7213,6 +7218,30 @@ pub fn resolve_includes(
     }
 
     Ok(())
+}
+
+/// File `to` in `include_edges` under the real path of `includer`, or under
+/// the empty name for a forced include, which is every file's and which
+/// every closure also walks.
+/// `real_paths` memoizes each includer's real path.
+fn add_include_edge(
+    context: &mut super::context::ProjectContext,
+    real_paths: &mut HashMap<Arc<str>, String>,
+    includer: Option<&Arc<str>>,
+    to: String,
+) {
+    let from = includer.map_or_else(String::new, |f| {
+        real_paths
+            .entry(Arc::clone(f))
+            .or_insert_with(|| crate::analyze::compile_commands::real_path(Path::new(&**f)))
+            .clone()
+    });
+    let edges = Arc::make_mut(&mut context.include_edges)
+        .entry(from)
+        .or_default();
+    if !edges.contains(&to) {
+        edges.push(to);
+    }
 }
 
 /// Extract `#include` directive paths from an AST.

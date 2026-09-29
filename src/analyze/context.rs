@@ -5,6 +5,56 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
+/// Marks an `include_edges` entry as an `#include` spelling that resolved to
+/// no file, rather than a file's real path.
+pub const UNRESOLVED_INCLUDE: &str = "?";
+
+/// What one translation unit may include: [`IncludeClosure::of`].
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct IncludeClosure {
+    /// Real paths of the file and every header it transitively includes.
+    pub files: HashSet<String>,
+    /// Spellings of the includes along the way that resolved to no file
+    /// (`/`-separated), each of which may name a header the prescan read
+    /// under some other search path.
+    pub unresolved: HashSet<String>,
+}
+
+impl IncludeClosure {
+    /// The file at `path`, the build's forced includes and everything those
+    /// transitively `#include`, by `edges` ([`ProjectContext::include_edges`]);
+    /// `None` when the graph has no edge out of the file, so which files it
+    /// sees is unknown.
+    pub fn of(edges: &HashMap<String, Vec<String>>, path: &Path) -> Option<Self> {
+        let file = crate::analyze::compile_commands::real_path(path);
+        edges.get(&file)?;
+        let mut closure = Self::default();
+        closure.files.insert(file.clone());
+        let mut stack = vec![file, String::new()];
+        while let Some(f) = stack.pop() {
+            for next in edges.get(&f).into_iter().flatten() {
+                if let Some(spelling) = next.strip_prefix(UNRESOLVED_INCLUDE) {
+                    closure.unresolved.insert(spelling.replace('\\', "/"));
+                } else if closure.files.insert(next.clone()) {
+                    stack.push(next.clone());
+                }
+            }
+        }
+        Some(closure)
+    }
+
+    /// Whether the translation unit may include the file at real path
+    /// `file`: it is in the closure, or an unresolved include spells a path
+    /// the file ends with.
+    pub fn may_include(&self, file: &str) -> bool {
+        self.files.contains(file)
+            || self.unresolved.iter().any(|spelling| {
+                file.strip_suffix(spelling.as_str())
+                    .is_some_and(|dir| dir.ends_with('/'))
+            })
+    }
+}
+
 /// Cross-file context gathered by pre-scanning additional directories.
 ///
 /// Holds function names found in `.c`/`.h` files so that rules like DCL31-C
@@ -248,15 +298,10 @@ pub struct ProjectContext {
     /// `file -> the files its #include directives resolve to`, real paths,
     /// from `resolve_includes` (so only when there are search paths or forced
     /// includes). The build's forced includes are filed under the empty
-    /// name. [`Self::as_seen_from`] walks it for a file's include closure.
+    /// name, and an include that resolved to no file under its spelling
+    /// behind [`UNRESOLVED_INCLUDE`]. [`IncludeClosure::of`] walks it.
     #[serde(default)]
     pub include_edges: Arc<HashMap<String, Vec<String>>>,
-    /// The file this view is for and everything it transitively includes,
-    /// when `include_edges` knows the file: which of `function_macro_arms`'
-    /// definitions its translation unit can be compiled with. Set only on
-    /// the per-file view [`Self::as_seen_from`] returns, never saved.
-    #[serde(skip)]
-    pub include_closure: Option<Arc<HashSet<String>>>,
     /// Names of every object-like `#define` whose replacement text is an
     /// unused-attribute annotation — `__attribute__((unused))`,
     /// `[[maybe_unused]]`, and the reserved spellings — collected across all
@@ -487,55 +532,29 @@ impl ProjectContext {
     }
 
     /// This context as the file at `path` may use it, or `None` when that is
-    /// this context unchanged -- a file that defines no name some other file
-    /// also defines `static`, and whose includes were not resolved.
+    /// this context unchanged -- which is every file but the handful that
+    /// define a name some other file also defines `static`.
     ///
-    /// The returned view differs in two places. In `function_summaries`,
-    /// this file's spelling of such a name resolves to its own definition;
-    /// the view is a scope over the shared table, not a copy of it. It used
-    /// to be a copy of the summary map, which was cheap only while few files
-    /// needed one; in Juliet nearly every file defines a `static void
-    /// goodG2B()`, and the copy per file cost more than the rules did. And
-    /// `include_closure` names the files its translation unit includes.
+    /// The returned view differs in one table, `function_summaries`: this
+    /// file's spelling of such a name resolves to its own definition. The
+    /// view is a scope over the shared table, not a copy of it. It used to be a copy of the summary map, which was
+    /// cheap only while few files needed one; in Juliet nearly every file
+    /// defines a `static void goodG2B()`, and the copy per file cost more
+    /// than the rules did.
     pub fn as_seen_from(&self, path: &Path) -> Option<Self> {
-        if self.scoped_names_by_file.is_empty() && self.include_edges.is_empty() {
+        if self.scoped_names_by_file.is_empty() {
             return None;
         }
         let key = crate::analyze::compile_commands::real_path(path);
-        let names = self.scoped_names_by_file.get(&key);
-        let closure = self.include_closure_of(&key);
-        if names.is_none() && closure.is_none() {
-            return None;
-        }
-        let function_summaries = match names {
-            Some(names) => self.function_summaries.scoped(FileScope {
-                file: Arc::from(key.as_str()),
-                names: Arc::clone(names),
-            }),
-            None => self.function_summaries.clone(),
+        let names = self.scoped_names_by_file.get(&key)?;
+        let scope = FileScope {
+            file: Arc::from(key.as_str()),
+            names: Arc::clone(names),
         };
         Some(Self {
-            function_summaries,
-            include_closure: closure.map(Arc::new),
+            function_summaries: self.function_summaries.scoped(scope),
             ..self.clone()
         })
-    }
-
-    /// `file`, the build's forced includes and every file those
-    /// transitively `#include`, by `include_edges`; `None` when the graph
-    /// has no edge out of `file`.
-    fn include_closure_of(&self, file: &str) -> Option<HashSet<String>> {
-        self.include_edges.get(file)?;
-        let mut seen: HashSet<String> = HashSet::from([file.to_string()]);
-        let mut stack = vec![file, ""];
-        while let Some(f) = stack.pop() {
-            for next in self.include_edges.get(f).into_iter().flatten() {
-                if seen.insert(next.clone()) {
-                    stack.push(next);
-                }
-            }
-        }
-        Some(seen)
     }
 
     /// Refuse a context loaded from `path` if it was built under a value of

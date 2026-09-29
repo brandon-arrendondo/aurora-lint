@@ -670,21 +670,21 @@ pub fn merge_function_macro_arms(
 }
 
 /// The arms of `name` a file whose include closure is `reachable` can be
-/// compiled with: those some reachable file defines. Every arm when the
+/// compiled with: those some file it may include defines. Every arm when the
 /// closure is unknown or reaches no definition, since the name then comes
 /// through an include the prescan could not follow.
 pub fn reachable_arms(
     table: &HashMap<String, Vec<ProjectMacroArm>>,
     name: &str,
-    reachable: Option<&HashSet<String>>,
+    reachable: Option<&crate::analyze::context::IncludeClosure>,
 ) -> Vec<MacroArm> {
     let Some(entries) = table.get(name) else {
         return Vec::new();
     };
     let seen: Vec<MacroArm> = match reachable {
-        Some(files) => entries
+        Some(closure) => entries
             .iter()
-            .filter(|e| e.files.iter().any(|f| files.contains(f)))
+            .filter(|e| e.files.iter().any(|f| closure.may_include(f)))
             .map(|e| e.arm.clone())
             .collect(),
         None => Vec::new(),
@@ -3448,6 +3448,7 @@ fn count_assignment_targets(text: &str, ident: &str, rhs_ok: impl Fn(usize) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analyze::context::IncludeClosure;
 
     #[test]
     fn function_macro_arms_merge_across_files_once_each() {
@@ -3486,16 +3487,27 @@ mod tests {
             collect_function_macro_arms("#define SQ(x) square(x)\n"),
             "/p/shapes.h",
         );
-        let bodies = |r: Option<&HashSet<String>>| -> Vec<String> {
+        let bodies = |r: Option<&IncludeClosure>| -> Vec<String> {
             reachable_arms(&project, "SQ", r)
                 .into_iter()
                 .map(|a| a.body)
                 .collect()
         };
-        let shapes: HashSet<String> = ["/p/main.c", "/p/shapes.h"].map(String::from).into();
+        let closure = |files: &[&str], unresolved: &[&str]| IncludeClosure {
+            files: files.iter().map(|f| f.to_string()).collect(),
+            unresolved: unresolved.iter().map(|f| f.to_string()).collect(),
+        };
+        let shapes = closure(&["/p/main.c", "/p/shapes.h"], &[]);
         assert_eq!(bodies(Some(&shapes)), ["square(x)"]);
+        // An include that resolved to nothing may be the header that makes
+        // the other definition; a spelling only some other path ends with
+        // may not.
+        let partial = closure(&["/p/main.c", "/p/shapes.h"], &["math_util.h"]);
+        assert_eq!(bodies(Some(&partial)).len(), 2);
+        let elsewhere = closure(&["/p/main.c", "/p/shapes.h"], &["util.h"]);
+        assert_eq!(bodies(Some(&elsewhere)), ["square(x)"]);
         // A closure with no definition of the name, or none at all: every arm.
-        let neither: HashSet<String> = ["/p/main.c"].map(String::from).into();
+        let neither = closure(&["/p/main.c"], &[]);
         assert_eq!(bodies(Some(&neither)).len(), 2);
         assert_eq!(bodies(None).len(), 2);
     }

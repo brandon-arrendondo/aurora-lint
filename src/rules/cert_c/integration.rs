@@ -585,8 +585,13 @@ fn run_fixture(
     let (tree, source) = parser
         .parse_source(&raw)
         .unwrap_or_else(|e| panic!("Failed to parse {:?}: {}", test_path, e));
-    let analysis =
-        crate::analyze::build_file_analysis(&tree.root_node(), &source, &context, rule.needs_vra());
+    let analysis = crate::analyze::build_file_analysis(
+        &test_path,
+        &tree.root_node(),
+        &source,
+        &context,
+        rule.needs_vra(),
+    );
     analysis.apply_to(rule);
 
     let violations = rule.check(&tree.root_node(), &source);

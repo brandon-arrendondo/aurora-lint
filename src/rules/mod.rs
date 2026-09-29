@@ -86,6 +86,12 @@ pub trait CertRule {
     /// either table replaces its project handle here. Default is a no-op.
     fn set_visible_types(&self, _types: &crate::analyze::context::VisibleTypes) {}
 
+    /// Inject the path of the file about to be checked, as the scan was given
+    /// it. Called with the rest of the per-file state. Default is a no-op; a
+    /// rule that asks the project context about this file's own place in it
+    /// (its include closure) keeps it.
+    fn set_file_path(&self, _path: &std::path::Path) {}
+
     /// Returns true if this rule applies to the given file path.
     /// Default: applies to all files. Override for rules that are
     /// specific to a file type (e.g. header-only rules like PRE06-C).

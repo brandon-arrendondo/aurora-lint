@@ -829,7 +829,13 @@ fn analyze_one_file(
         // CFGs for every function definition in this file, plus VRA if any
         // enabled rule needs it. The generated fixture tests build their state
         // through this same call (this repo).
-        let analysis = build_file_analysis(&root_node, &source, context, needs_vra);
+        let analysis = build_file_analysis(
+            std::path::Path::new(file_path),
+            &root_node,
+            &source,
+            context,
+            needs_vra,
+        );
 
         // Extract suppressions from the current file
         suppression_manager.extract_from_source(file_path, &source);
@@ -991,6 +997,7 @@ pub(crate) struct FileAnalysis {
     pub(crate) function_cfgs: HashMap<usize, cfg::FunctionCfg>,
     pub(crate) vra_results: HashMap<usize, value_range::RangeAnalysisResult>,
     pub(crate) visible_types: context::VisibleTypes,
+    pub(crate) file_path: std::path::PathBuf,
 }
 
 impl FileAnalysis {
@@ -999,6 +1006,7 @@ impl FileAnalysis {
     pub(crate) fn apply_to<R: crate::rules::CertRule + ?Sized>(&self, rule: &R) {
         rule.set_function_cfgs(&self.function_cfgs);
         rule.set_visible_types(&self.visible_types);
+        rule.set_file_path(&self.file_path);
         if !self.vra_results.is_empty() {
             rule.set_vra_results(&self.vra_results);
         }
@@ -1007,6 +1015,7 @@ impl FileAnalysis {
 
 /// Build the per-file analysis state for one already-parsed file.
 pub(crate) fn build_file_analysis(
+    file_path: &std::path::Path,
     root_node: &tree_sitter::Node,
     source: &str,
     context: &context::ProjectContext,
@@ -1028,6 +1037,7 @@ pub(crate) fn build_file_analysis(
         function_cfgs,
         vra_results,
         visible_types: context::VisibleTypes::for_file(context, root_node, source),
+        file_path: file_path.to_path_buf(),
     }
 }
 
