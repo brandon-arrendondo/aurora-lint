@@ -86,6 +86,9 @@ struct PointerTypes<'a> {
     /// parameter fails the width gate and the site is kept as
     /// unchecked arithmetic.
     typedef_types: &'a HashMap<String, String>,
+    /// The settings' integer data model: how wide such a type is
+    /// guaranteed to be.
+    data_model: crate::settings::DataModel,
 }
 
 pub struct Api00C {
@@ -171,6 +174,7 @@ impl CertRule for Api00C {
             struct_field_types: &struct_field_types,
             facts: &facts,
             typedef_types: &typedef_types,
+            data_model: self.settings.borrow().data_model,
         };
         for func in query::find_descendants_of_kind(*node, "function_definition") {
             self.check_function_parameter_validation(
@@ -588,7 +592,7 @@ impl Api00C {
                 param_name,
                 param_type,
                 source,
-                pointer_types.typedef_types,
+                pointer_types,
             )
             && !is_in_unevaluated_operand(node, source);
 
@@ -619,14 +623,17 @@ impl Api00C {
     /// count -- `x << n` for a parameter `n` is exactly the unbounded-count
     /// case this leaves alone -- and the count must be a literal, since a
     /// variable count is what the rule is there to ask about. An unrecognized
-    /// type spelling answers `None` and keeps the site.
+    /// type spelling answers `None` and keeps the site. The width is the one
+    /// the data model guarantees: a `uint64_t` is 64 bits everywhere, an
+    /// `unsigned long` only 32 unless a model is declared.
     fn is_defined_unsigned_shift(
         node: &Node,
         param_name: &str,
         param_type: &str,
         source: &str,
-        typedef_types: &HashMap<String, String>,
+        pointer_types: &PointerTypes,
     ) -> bool {
+        let typedef_types = pointer_types.typedef_types;
         let operator = node.child_by_field_name("operator").map(|op| op.kind());
         let (value, count) = match node.kind() {
             "binary_expression" if operator == Some("<<") => (
@@ -655,9 +662,10 @@ impl Api00C {
         if !is_unsigned_type(declared) {
             return false;
         }
-        let Some(width) = integer_type_width(declared) else {
+        let Some(width) = integer_type_width(declared, pointer_types.data_model) else {
             return false;
         };
+        let width = width.min;
         if count.kind() != "number_literal" {
             return false;
         }

@@ -34,18 +34,16 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
+use crate::settings::{AnalysisSettings, DataModel};
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::ast_utils::resolve_field_expression_type;
+use crate::utility::cert_c::data_model::{IntWidth, Rank};
 use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
 use lang_parsing_substrate::query;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tree_sitter::Node;
-
-/// Bit width at/above which integer promotion to `int` is a no-op (or the
-/// operand is already wider than `int`), so no promotion hazard exists.
-const INT_WIDTH: u32 = 32;
 
 #[derive(Default)]
 pub struct Exp14C {
@@ -60,6 +58,9 @@ pub struct Exp14C {
     /// otherwise a bitmask/capability field, which is how a narrow type
     /// most often appears in real code, never resolves at all.
     struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
+    /// The integer data model the settings credit: whether an operand may be
+    /// narrower than `int`.
+    data_model: Cell<DataModel>,
 }
 
 impl CertRule for Exp14C {
@@ -82,6 +83,10 @@ impl CertRule for Exp14C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
+    }
+
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        self.data_model.set(settings.data_model);
     }
 
     fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
@@ -145,12 +150,13 @@ impl Exp14C {
                 if let Some(operator) = node.child_by_field_name("operator") {
                     let op_text = ast_utils::get_node_text(&operator, source);
                     if op_text == "~" {
-                        // Only a genuinely narrower-than-int operand is at risk:
-                        // promoting int-or-wider changes nothing observable.
+                        // Only an operand that may be narrower than int is at
+                        // risk: promoting int-or-wider changes nothing
+                        // observable.
                         let is_narrow = node
                             .child_by_field_name("argument")
                             .and_then(|arg| self.resolve_operand_width(&arg, source, 0))
-                            .is_some_and(|width| width < INT_WIDTH);
+                            .is_some_and(|width| self.may_be_narrower_than_int(width));
 
                         if is_narrow && !is_wrapped_in_cast(node) {
                             violations.push(RuleViolation {
@@ -189,7 +195,7 @@ impl Exp14C {
                         let is_narrow = left
                             .as_ref()
                             .and_then(|l| self.resolve_operand_width(l, source, 0))
-                            .is_some_and(|width| width < INT_WIDTH);
+                            .is_some_and(|width| self.may_be_narrower_than_int(width));
 
                         if is_narrow && !left_has_cast && !is_wrapped_in_cast(node) {
                             violations.push(RuleViolation {
@@ -221,6 +227,15 @@ impl Exp14C {
         }
     }
 
+    /// Whether an operand of `width` may be narrower than `int` on some target
+    /// the data model allows, so the promotion changes its value's bits.
+    /// Under ISO C's widths an `unsigned short` may be (a 32-bit `int`) or may
+    /// not (a 16-bit one), and so may a `uint32_t` (a 64-bit `int`); on a
+    /// declared LP64 target only the types below 32 bits are.
+    fn may_be_narrower_than_int(&self, width: IntWidth) -> bool {
+        width.may_be_narrower_than(self.data_model.get().width_of(Rank::Int))
+    }
+
     /// Declared width (in bits) of the integer object `node` denotes, after
     /// peeling `unwrap` pointer/array levels (`p[i]`, `*p`). `None` when the
     /// type can't be resolved (unknown typedef, macro-substituted name with
@@ -228,7 +243,7 @@ impl Exp14C {
     /// as "narrow": the rule needs positive proof of a sub-int width before
     /// flagging, matching CERT's own premise that the hazard exists only for
     /// a genuinely narrower-than-int operand.
-    fn resolve_operand_width(&self, node: &Node, source: &str, unwrap: usize) -> Option<u32> {
+    fn resolve_operand_width(&self, node: &Node, source: &str, unwrap: usize) -> Option<IntWidth> {
         match node.kind() {
             "parenthesized_expression" => {
                 self.resolve_operand_width(&node.named_child(0)?, source, unwrap)
@@ -250,11 +265,12 @@ impl Exp14C {
                     .rev()
                     .take_while(|c| matches!(c, 'u' | 'U' | 'l' | 'L'))
                     .collect();
-                if suffix.contains(['l', 'L']) {
-                    Some(64)
-                } else {
-                    Some(INT_WIDTH)
-                }
+                let model = self.data_model.get();
+                Some(model.width_of(match suffix.matches(['l', 'L']).count() {
+                    0 => Rank::Int,
+                    1 => Rank::Long,
+                    _ => Rank::LongLong,
+                }))
             }
             "identifier" => {
                 let name = ast_utils::get_node_text(node, source);
@@ -333,7 +349,7 @@ impl Exp14C {
 
     /// Width of a declared type spelling, qualifiers dropped and typedefs
     /// followed project-wide (`u8`/`u16`-style project aliases included).
-    fn width_of_type_text(&self, text: &str) -> Option<u32> {
+    fn width_of_type_text(&self, text: &str) -> Option<IntWidth> {
         let base = text
             .split_whitespace()
             .filter(|t| {
@@ -351,7 +367,7 @@ impl Exp14C {
             .collect::<Vec<_>>()
             .join(" ");
         let resolved = resolve_typedef_chain(&base, &self.typedef_types.borrow());
-        ast_utils::integer_type_width(&resolved)
+        ast_utils::integer_type_width(&resolved, self.data_model.get())
     }
 }
 
