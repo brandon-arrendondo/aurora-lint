@@ -1,7 +1,7 @@
 use super::function_summary::FunctionSummary;
 use super::macro_expand::FunctionMacro;
 use super::null_state::NullState;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -26,10 +26,22 @@ pub struct ProjectContext {
     /// functions are declared `_Noreturn`, which are verified never to
     /// return), and the settings decide what a rule may conclude from them.
     /// A cache saved under one setting is therefore valid under every other,
-    /// and must stay so -- a table that bakes a setting in would need the
-    /// cache to record it.
+    /// and must stay so -- a table that bakes a setting in must record it in
+    /// [`built_under`](Self::built_under).
     #[serde(skip)]
     pub settings: Arc<crate::settings::AnalysisSettings>,
+    /// The settings the collected facts themselves depend on, by name and
+    /// value, such as `include_names`: which headers were found at all
+    /// depends on it. Recorded when the context is built; a cache loaded
+    /// under a different value for any of them is refused
+    /// ([`check_built_under`](Self::check_built_under)) rather than silently
+    /// mixing two scans.
+    ///
+    /// `#[serde(default)]` does not make an older cache readable: bincode
+    /// reads fields by position, so the cache format header is what refuses
+    /// a cache from before this field existed.
+    #[serde(default)]
+    pub built_under: BTreeMap<String, String>,
     /// Every function name found in the pre-scanned `.c`/`.h` files.
     pub known_functions: Arc<HashSet<String>>,
     /// Functions declared (prototyped) in `.h` header files.
@@ -454,6 +466,44 @@ impl ProjectContext {
         })
     }
 
+    /// Refuse a context loaded from `path` if it was built under a value of
+    /// some setting in `current` other than the one in force, naming both.
+    ///
+    /// A setting the cache does not record was written by a build that did
+    /// not yet track it, so its facts were collected the way that build
+    /// always collected them: [`BUILT_UNDER_IMPLICIT`] names that value, and
+    /// the cache is compared as if it recorded it. A setting with no
+    /// registered implicit value is refused when absent, since nothing says
+    /// what the cache was built under.
+    pub fn check_built_under(
+        &self,
+        current: &BTreeMap<String, String>,
+        path: &Path,
+    ) -> anyhow::Result<()> {
+        for (name, now) in current {
+            let then = self.built_under.get(name).map(String::as_str).or_else(|| {
+                BUILT_UNDER_IMPLICIT
+                    .iter()
+                    .find(|(key, _)| key == name)
+                    .map(|(_, value)| *value)
+            });
+            match then {
+                Some(then) if then == now => {}
+                Some(then) => anyhow::bail!(
+                    "prescan cache {} was built with {name} = {then}, but this run uses \
+                     {name} = {now}; re-create it with --save-prescan under the same settings",
+                    path.display()
+                ),
+                None => anyhow::bail!(
+                    "prescan cache {} does not record the {name} it was built under, and this \
+                     run uses {name} = {now}; re-create it with --save-prescan",
+                    path.display()
+                ),
+            }
+        }
+        Ok(())
+    }
+
     /// Save prescan context to a binary cache file.
     pub fn save_to_file(&self, path: &Path) -> anyhow::Result<()> {
         let mut encoded = cache_header().into_bytes();
@@ -481,6 +531,13 @@ impl ProjectContext {
         Ok(context)
     }
 }
+
+/// For each setting [`ProjectContext::built_under`] records, the value a cache
+/// written before the setting was recorded was built under: what the
+/// collection did before the setting existed. A new key registers its entry
+/// here, so an older cache that lacks the key is still judged correctly
+/// without a format bump (adding a key does not change the layout).
+pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[("include_names", "exact")];
 
 /// Version of the prescan cache's serialized layout. Bump it with any change
 /// to a serialized field of [`ProjectContext`] (or of a type it holds), or to
@@ -803,4 +860,54 @@ fn overlay<V: Clone + PartialEq>(
     let mut merged = (**project).clone();
     merged.extend(own);
     Arc::new(merged)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_recorded_setting_must_match() {
+        let ctx = ProjectContext {
+            built_under: map(&[("include_names", "case-insensitive")]),
+            ..Default::default()
+        };
+        let path = Path::new("cache.bin");
+        assert!(ctx
+            .check_built_under(&map(&[("include_names", "case-insensitive")]), path)
+            .is_ok());
+        let err = ctx
+            .check_built_under(&map(&[("include_names", "exact")]), path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("include_names = case-insensitive"), "{err}");
+        assert!(err.contains("include_names = exact"), "{err}");
+    }
+
+    #[test]
+    fn an_unrecorded_setting_is_judged_by_its_implicit_value() {
+        // A cache from a build that did not yet record include_names was
+        // built with exact matching.
+        let ctx = ProjectContext::default();
+        let path = Path::new("cache.bin");
+        assert!(ctx
+            .check_built_under(&map(&[("include_names", "exact")]), path)
+            .is_ok());
+        assert!(ctx
+            .check_built_under(&map(&[("include_names", "case-insensitive")]), path)
+            .is_err());
+        // A setting with no implicit value cannot be judged when absent.
+        let err = ctx
+            .check_built_under(&map(&[("declarations", "per-file")]), path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("does not record the declarations"), "{err}");
+    }
 }

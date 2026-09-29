@@ -213,8 +213,8 @@ found only by ignoring case, and each such ambiguity, is listed by
 visible. Two things are still matched exactly: a ``/FI`` name, which is looked
 up beside the database entry only when it is spelled as on disk, and the file
 names in ``#include "x.c"`` that decide which ``.c`` files are compiled into
-another. A ``--save-prescan`` cache does not record which rule built it, so
-reuse it only under the same ``include_names``.
+another. A ``--save-prescan`` cache records the rule it was built under, and
+``--load-prescan`` refuses it under the other one.
 
 Reaching the Compiler's Own Headers
 -----------------------------------

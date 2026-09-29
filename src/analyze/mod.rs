@@ -369,6 +369,13 @@ fn load_project_context(
         }
     }
 
+    // The settings the facts collected below depend on: a cache records them
+    // and is refused under different ones.
+    let built_under = std::collections::BTreeMap::from([(
+        "include_names".to_string(),
+        header_lookup.mode().to_string(),
+    )]);
+
     let mut context = if let Some(cache_path) = load_prescan {
         let path = std::path::Path::new(cache_path);
         if path.exists() {
@@ -376,6 +383,7 @@ fn load_project_context(
                 reporter.report_prescan_start(0);
             }
             let ctx = context::ProjectContext::load_from_file(path)?;
+            ctx.check_built_under(&built_under, path)?;
             if let Some(reporter) = progress {
                 reporter.report_prescan_complete(ctx.known_functions.len());
             }
@@ -405,6 +413,13 @@ fn load_project_context(
     } else {
         prescan::prescan_directories(directories, progress, needs_vra)?
     };
+
+    // Stamp only a context built here. A loaded one keeps the record it was
+    // saved with (already checked above), so re-saving it never claims
+    // settings it was not built under.
+    if load_prescan.is_none() {
+        context.built_under = built_under;
+    }
 
     // Resolve #include directives against include search paths, and the
     // build's forced includes, which need resolving even with no search path.

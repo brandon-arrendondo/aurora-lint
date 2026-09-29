@@ -588,6 +588,37 @@ fn prescan_save_load_round_trip() {
     );
 }
 
+/// A cache records the include-name rule it was built under, since which
+/// headers it read depends on it, and is refused under the other rule.
+#[test]
+fn prescan_cache_is_refused_under_other_include_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("prescan.bin");
+    let main_c = fixtures().join("project/main.c");
+    let scan = |names: &str, cache_flag: &str| {
+        run_aurora_lint(&[
+            main_c.to_str().unwrap(),
+            "-m",
+            manifest_dcl31().to_str().unwrap(),
+            "--include-names",
+            names,
+            cache_flag,
+            cache.to_str().unwrap(),
+        ])
+    };
+    let (code, _, stderr) = scan("case-insensitive", "--save-prescan");
+    assert_eq!(code, 0, "{stderr}");
+    let (code, _, stderr) = scan("case-insensitive", "--load-prescan");
+    assert_eq!(code, 0, "{stderr}");
+    let (code, _, stderr) = scan("exact", "--load-prescan");
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("include_names = case-insensitive")
+            && stderr.contains("include_names = exact"),
+        "{stderr}"
+    );
+}
+
 /// Regression (Phase 2c-i): a function-like macro invocation
 /// (`xfree(p)`, defined in a header reached via -d) must not be flagged by
 /// DCL31-C as an undeclared function. This is the curl `curlx_free`/`curlx_calloc`
