@@ -460,6 +460,10 @@ struct MemoryLeakAnalyzer<'a> {
     // variable, so a double free it causes says so rather than naming a
     // jump.
     released_in_one_build: HashMap<String, (usize, usize)>,
+    // Where a call released each variable in only some of the definitions
+    // it can link with (`FunctionSummary::at`, not `at_all`): a later free is
+    // a double free in those builds, and it still leaks in the others.
+    released_by_some_definition: HashMap<String, (usize, usize)>,
 }
 
 #[derive(Debug, Clone)]
@@ -834,6 +838,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             macro_aliases,
             realloc_in_one_build: None,
             released_in_one_build: HashMap::new(),
+            released_by_some_definition: HashMap::new(),
         }
     }
 
@@ -886,6 +891,15 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         self.function_summaries
             .get(func_name)
             .map(|summary| summary.at_all(site.0, site.1))
+    }
+
+    /// `func_name`'s summary as the call at `site` sees it when one
+    /// definition holding a fact is enough (`FunctionSummary::at`): what the
+    /// call may have freed, for judging a later free of the same block.
+    fn summary_at_any(&self, func_name: &str, site: Site) -> Option<Cow<'a, FunctionSummary>> {
+        self.function_summaries
+            .get(func_name)
+            .map(|summary| summary.at(site.0, site.1))
     }
 
     fn analyze_function(
@@ -2071,12 +2085,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             .get(var_name)
             .filter(|_| !self.guess_forbids_double_free(var_name, call_name))
         {
-            let how =
-                if self.released_in_one_build.get(var_name) == Some(&(freed_line, freed_column)) {
-                    "by a call that is realloc in some builds"
-                } else {
-                    "on a path that jumps to this label"
-                };
+            let at = Some(&(freed_line, freed_column));
+            let how = if self.released_in_one_build.get(var_name) == at {
+                "by a call that is realloc in some builds"
+            } else if self.released_by_some_definition.get(var_name) == at {
+                "by a call that frees it in some builds"
+            } else {
+                "on a path that jumps to this label"
+            };
             self.double_free_violations.push(RuleViolation {
                 rule_id: "MEM31-C".to_string(),
                 severity: Severity::High,
@@ -4092,9 +4108,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         // Use prescan function summaries to determine if the callee frees
         // the parameter at the corresponding index.
         // Only the facts of definitions this call can link against: one in
-        // an exclusive #if arm never meets it.
+        // an exclusive #if arm never meets it. A free every such definition
+        // makes kills the block; one only some make is a double free for a
+        // later free in those builds, and a leak in the rest.
         let site = site_of(node, source);
         let Some(summary) = self.summary_at(func_name, site) else {
+            return;
+        };
+        let Some(some) = self.summary_at_any(func_name, site) else {
             return;
         };
         let frees_here = &summary.frees_params;
@@ -4141,6 +4162,18 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         frees_here.contains(&param_idx)
                     };
                     let var_name = ast_utils::get_node_text_owned(&target, source);
+                    let frees_in_some = if through_address_of {
+                        some.frees_param_pointees.contains(&param_idx)
+                    } else {
+                        some.frees_params.contains(&param_idx)
+                    };
+                    if !frees && frees_in_some && self.allocated_memory.contains_key(&var_name) {
+                        let free_pos = node.start_position();
+                        let pos = (free_pos.row + 1, free_pos.column + 1);
+                        self.released_by_some_definition
+                            .insert(var_name.clone(), pos);
+                        self.maybe_freed.insert(var_name.clone(), pos);
+                    }
                     if frees && self.allocated_memory.contains_key(&var_name) {
                         let free_pos = node.start_position();
                         self.mark_freed_with_aliases(
