@@ -5,9 +5,9 @@ description = "Project rules manifest for Ventoy's Ventoy2Disk Windows installer
 cert_version = "2016"
 
 [environment]
-# The configuration of record is Ventoy's Windows build, LLP64: int and long
-# 32 bits, long long and pointers 64. See docs/design/realworld-corpus-scope.md.
-data_model = "llp64"
+# The configuration of record is windows-x86 with MSVC (primary_build_config),
+# ILP32: int, long and pointers 32 bits. See docs/design/realworld-corpus-scope.md.
+data_model = "ilp32"
 
 [rules.cert_c.API00-C]
 enabled = true
