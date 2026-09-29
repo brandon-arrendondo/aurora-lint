@@ -79,6 +79,26 @@ class TestIngestPerSettingsGroup(unittest.TestCase):
         self.assertEqual(db.attached, [("sqc-v-sha-cdb-default-bbbb", "ventoy", "cppcheck")])
         self.assertEqual(len(summary["run_ids"]), 2)
 
+    def test_a_codebase_that_declares_memory_functions_is_its_own_run(self):
+        # A manifest's declared allocators and deallocators move its settings
+        # hash, so mbedtls lands in its own directory. Scanned first, it must
+        # neither swallow the other corpora nor lend them its declarations.
+        declared = {"preset": "default", "hash": "cccc",
+                    "deallocators": {"MBEDTLS_PLATFORM_FREE_MACRO": 1}}
+        mbedtls = dict(_sqc("mbedtls", "sqc-v-sha-default-cccc", "cccc"),
+                       settings=declared)
+        db, summary = self._ingest([
+            mbedtls,
+            _sqc("curl", "sqc-v-sha-default-aaaa", "aaaa"),
+            _sqc("lua", "sqc-v-sha-default-aaaa", "aaaa"),
+        ])
+        by_run = {name: (projects, settings) for name, projects, settings in db.ingested}
+        self.assertEqual(by_run["sqc-v-sha-default-cccc"][0], {"mbedtls"})
+        self.assertEqual(by_run["sqc-v-sha-default-aaaa"][0], {"curl", "lua"})
+        self.assertIn("MBEDTLS_PLATFORM_FREE_MACRO", by_run["sqc-v-sha-default-cccc"][1])
+        self.assertNotIn("deallocators", by_run["sqc-v-sha-default-aaaa"][1])
+        self.assertEqual(len(summary["run_ids"]), 2)
+
 
 class TestDirsOut(unittest.TestCase):
     """`--dirs-out` names each export directory an invocation produced, so a
