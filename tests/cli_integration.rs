@@ -3954,3 +3954,14 @@ fn a_realloc_wrapper_releases_its_argument_only_once_declared() {
     assert!(!uaf(&[]));
     assert!(uaf(&["--allocator", "gdRealloc=realloc"]));
 }
+
+#[test]
+fn a_wrapper_over_an_alias_every_arm_frees_releases_its_argument() {
+    let leaks = |args: &[&str]| {
+        declared_memory_findings("two_arm_alias_wrapper.c", "manifest_mem30_mem31.toml", args)
+            .into_iter()
+            .any(|(r, _, m)| r == "MEM31-C" && m.contains("'p'"))
+    };
+    assert!(leaks(&[]), "an undeclared arm proves nothing");
+    assert!(!leaks(&["--deallocator", "HOOK_FREE"]));
+}

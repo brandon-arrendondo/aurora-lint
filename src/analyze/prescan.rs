@@ -1254,11 +1254,12 @@ fn prescan_file_list(
     // resolves to itself, and a consumer it accuses through asks the
     // alternatives (`const_eval::resolve_macro_alias_where`).
     let macro_aliases = const_eval::settled_aliases(&macro_alias_alternatives);
-    function_summary::propagate_transitive_frees(&mut function_summaries, &macro_aliases);
+    let free_aliases = aliases_for_frees(&macro_aliases, &macro_alias_alternatives);
+    function_summary::propagate_transitive_frees(&mut function_summaries, &free_aliases);
     function_summary::propagate_transitive_stores(&mut function_summaries, &macro_aliases);
     function_summary::propagate_returns_allocation(&mut function_summaries);
     function_summary::propagate_returned_value_escapes(&mut function_summaries, &macro_aliases);
-    function_summary::resolve_field_free_edges(&mut function_summaries, &macro_aliases);
+    function_summary::resolve_field_free_edges(&mut function_summaries, &free_aliases);
     function_summary::propagate_transitive_frees_param_fields(&mut function_summaries);
     function_summary::propagate_transitive_frees_param_pointees(&mut function_summaries);
     function_summary::propagate_transitive_closes(&mut function_summaries);
@@ -1632,6 +1633,27 @@ fn scoped_callee(scoped: &HashSet<String>, file: Option<&str>, callee: String) -
     } else {
         callee
     }
+}
+
+/// The alias map the free passes resolve callees through: every settled
+/// alias, plus an alias the project defines more than one way whose every
+/// definition frees the same argument -- `free`, or a declared deallocator
+/// (`const_eval::with_agreeing_alias_targets`). mbedtls's `mbedtls_free` is
+/// `free` in one configuration and `MBEDTLS_PLATFORM_FREE_MACRO` in the
+/// other; declared, the second frees its argument too, so a wrapper calling
+/// `mbedtls_free(buf)` frees `buf` in every build. A settled free is one
+/// every build performs, which is what an accusing consumer needs as well.
+fn aliases_for_frees(
+    settled: &HashMap<String, String>,
+    alternatives: &HashMap<String, Vec<String>>,
+) -> HashMap<String, String> {
+    let mut aliases = settled.clone();
+    const_eval::with_agreeing_alias_targets(
+        &mut aliases,
+        alternatives,
+        crate::utility::cert_c::call_roles::frees_argument,
+    );
+    aliases
 }
 
 /// Key the callees a summary names the way the fold keys their definitions,
@@ -7268,9 +7290,10 @@ pub fn resolve_includes(
     // that calls it is in library/), so the frees fixpoint runs once more
     // over the now-complete alias map. Monotone, so a rerun is harmless
     // when nothing new resolved.
+    let free_aliases = aliases_for_frees(&context.macro_aliases, &context.macro_alias_alternatives);
     function_summary::propagate_transitive_frees(
         context.function_summaries.make_mut(),
-        &context.macro_aliases,
+        &free_aliases,
     );
     function_summary::propagate_transitive_stores(
         context.function_summaries.make_mut(),
@@ -7280,7 +7303,7 @@ pub fn resolve_includes(
     // only once the rerun above credits the wrapper.
     function_summary::resolve_field_free_edges(
         context.function_summaries.make_mut(),
-        &context.macro_aliases,
+        &free_aliases,
     );
     function_summary::propagate_transitive_frees_param_fields(
         context.function_summaries.make_mut(),
