@@ -669,6 +669,14 @@ is in `src/**` and not excluded, so it is scored today; that earlier audit
 found it via INT02-C. Everything else in `lib/`, `src/` and `include/` is portable code
 whose Windows handling is intra-file and therefore in-configuration.
 
+### Declared memory functions
+
+`conf/realworld/mosquitto-rules.toml` declares `mosquitto_free = 1`,
+libmosquitto_common's documented free (`include/mosquitto/libcommon_memory.h`).
+Its definition is in `libcommon/`, outside the scan, and one arm calls
+`__libc_free`. Only the root is declared; `db__msg_store_free` and the other
+wrappers free by their bodies.
+
 ## sel4
 
 ### Candidate: seL4 microkernel
