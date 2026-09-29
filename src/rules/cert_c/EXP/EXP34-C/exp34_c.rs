@@ -1058,8 +1058,10 @@ fn is_safe_free_macro(name: &str, macros: &HashMap<String, FunctionMacro>) -> bo
 ///   declared environment honors those contracts (`free_null_is_noop`,
 ///   `realloc_null_is_malloc`; see `settings::OPTIONS`).
 /// - Juliet test harness print helpers (null-tolerant stubs).
-/// - SQLite's own documented NULL-safe C-API surface (see
-///   `is_sqlite_null_safe_api` below for the rationale and citations).
+///
+/// No project API is credited by name: whether sqlite3_mprintf's `%s`
+/// tolerates NULL is written in sqlite's own printf.c, not in ISO C, and a
+/// name says nothing about the body a given corpus links (ADR-0011).
 fn is_null_safe_function(name: &str, settings: &AnalysisSettings) -> bool {
     match name {
         "free" => return settings.flag("free_null_is_noop"),
@@ -1080,33 +1082,7 @@ fn is_null_safe_function(name: &str, settings: &AnalysisSettings) -> bool {
             | "printDoubleLine"
             | "printSizeTLine"
             | "printHexUnsignedCharLine"
-    ) || is_sqlite_null_safe_api(name)
-}
-
-/// SQLite's own C-API functions that are documented and implementation-verified
-/// (vdbeapi.c / printf.c) to tolerate a NULL or misused `sqlite3_stmt *` /
-/// pointer argument without dereferencing it unsafely (delta-adjudication
-/// in `data/precision_audit/DELTA_EXP34_TASK539.md`):
-///
-/// - `sqlite3_column_*` / `sqlite3_bind_*`: per the SQLite docs, "The pointer to
-///   [a destroyed] statement or with any other pointer used as a placeholder,
-///   these routines... behave as if [the argument] is a null pointer" — i.e.
-///   documented no-op/safe-return on a NULL or invalidated statement handle.
-/// - `sqlite3_step`, `sqlite3_sql`, `sqlite3_stmt_readonly`: all documented
-///   NULL-safe on a NULL/misused `stmt` (return an error code or NULL rather
-///   than dereferencing).
-/// - `sqlite3_mprintf`: its `%s` conversion substitutes `""` for a NULL
-///   argument (confirmed in `printf.c`), so a NULL flowing into it is not a
-///   dereference risk.
-///
-/// This is a narrow, named allowlist scoped to this specific documented API
-/// contract — it must not be broadened to arbitrary functions.
-fn is_sqlite_null_safe_api(name: &str) -> bool {
-    matches!(
-        name,
-        "sqlite3_step" | "sqlite3_sql" | "sqlite3_stmt_readonly" | "sqlite3_mprintf"
-    ) || name.starts_with("sqlite3_column_")
-        || name.starts_with("sqlite3_bind_")
+    )
 }
 
 // ---------------------------------------------------------------------------
