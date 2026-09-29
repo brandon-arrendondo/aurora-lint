@@ -2,6 +2,7 @@
  * Rule: INT08-C
  * Source: wiki (adapted)
  * Status: PASS - Should NOT trigger INT08-C violation
+ * Settings: data_model=lp64
  *
  * CERT's canonical noncompliant example for this pattern declares `i` as a
  * plain `int` and warns that `if (i + 1 <= i)` is an unreliable overflow

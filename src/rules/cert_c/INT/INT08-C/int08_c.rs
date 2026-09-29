@@ -7,10 +7,12 @@ use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
+use crate::settings::{AnalysisSettings, DataModel};
 use crate::utility::cert_c::ast_utils::{get_node_text, integer_type_width, is_unsigned_type};
+use crate::utility::cert_c::data_model::Rank;
 use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
 use lang_parsing_substrate::query;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -18,6 +20,9 @@ use tree_sitter::Node;
 pub struct Int08C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
+    /// The integer data model the settings credit: how wide `int` and the
+    /// narrow types are guaranteed to be.
+    data_model: Cell<DataModel>,
 }
 
 impl CertRule for Int08C {
@@ -35,6 +40,10 @@ impl CertRule for Int08C {
 
     fn cert_id(&self) -> &'static str {
         "INT08-C"
+    }
+
+    fn set_analysis_settings(&self, settings: &std::sync::Arc<AnalysisSettings>) {
+        self.data_model.set(settings.data_model);
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -209,14 +218,19 @@ impl Int08C {
                             // No narrow-typed operand at all -- not this
                             // rule's concern (plain `int`/`long` overflow is
                             // INT32-C's, see is_narrow_integer_type's doc).
-                        } else if op_text.trim() == "+" || op_text.trim() == "-" {
-                            // `+`/`-` of narrow (char/short) operands can
-                            // never overflow a >=32-bit promoted `int`: even
-                            // the widest narrow magnitude (unsigned short's
-                            // 65535) summed or differenced with another
-                            // narrow value tops out in the low hundred
-                            // thousands, nowhere near INT_MAX. Provably safe
-                            // by construction -- nothing to flag.
+                        } else if (op_text.trim() == "+" || op_text.trim() == "-")
+                            && self.narrow_sums_fit_int()
+                        {
+                            // `+`/`-` of narrow (char/short) operands cannot
+                            // overflow a promoted `int` twice as wide as the
+                            // widest of them: even unsigned short's 65535
+                            // summed or differenced with another narrow value
+                            // tops out in the low hundred thousands, nowhere
+                            // near a 32-bit INT_MAX. Provably safe by
+                            // construction -- nothing to flag. ISO C
+                            // guarantees `int` only 16 bits, where 32767 +
+                            // 1 already overflows, so without a declared data
+                            // model the sum goes to the range check below.
                         } else if self.promoted_arithmetic_overflows_int(
                             node, source, types, macros, variables,
                         ) {
@@ -321,19 +335,26 @@ impl Int08C {
             if !self.is_narrow_integer_type(var_type) {
                 continue;
             }
-            let Some(width) = integer_type_width(var_type) else {
+            let Some(width) = integer_type_width(var_type, self.data_model.get()) else {
                 continue;
             };
             let Some(range) = self.stored_value_range(&value, source, macros) else {
                 continue;
             };
-            if !Self::range_is_entirely_outside(&range, width, is_unsigned_type(var_type)) {
+            // The width it is guaranteed: a value outside that range is
+            // truncated on the narrowest target the data model allows.
+            if !Self::range_is_entirely_outside(&range, width.min, is_unsigned_type(var_type)) {
                 continue;
             }
+            let qualifier = if width.max.is_some() {
+                String::new()
+            } else {
+                format!(" where it has only the {} bits ISO C guarantees", width.min)
+            };
             violations.push(RuleViolation {
                 rule_id: self.rule_id().to_string(),
                 message: format!(
-                    "Value of '{}' is {} and cannot be represented in '{} {}' -- the store truncates",
+                    "Value of '{}' is {} and cannot be represented in '{} {}'{} -- the store truncates",
                     get_node_text(&value, source)
                         .split_whitespace()
                         .collect::<Vec<_>>()
@@ -344,7 +365,8 @@ impl Int08C {
                         format!("in [{}, {}]", range.min, range.max)
                     },
                     var_type,
-                    destination
+                    destination,
+                    qualifier
                 ),
                 severity: self.severity(),
                 line: value.start_position().row + 1,
@@ -450,7 +472,7 @@ impl Int08C {
 
     /// True only when interval arithmetic over the operands' promoted
     /// ranges *proves* that `expr` (a `*`/`<<` already known to involve a
-    /// narrow-typed operand) can leave a 32-bit `int`. Seeds every
+    /// narrow-typed operand) can leave the narrowest `int` the data model allows. Seeds every
     /// narrow-typed variable in scope with its promoted-type range so
     /// `const_eval::try_evaluate_range` can walk the whole expression tree,
     /// handling nested parens, literals and `#define` constants along the
@@ -500,15 +522,51 @@ impl Int08C {
             return false;
         }
 
+        // What the range engine knows at this point narrows each type range.
+        // A function it analyzed with no ranges reaching `expr` is a branch it
+        // proves never runs, and nothing computed there is a value the
+        // program holds (Juliet's `if (data < SHRT_MAX)` good sink after
+        // `data = SHRT_MAX`).
+        let (cfgs, vra) = (self.function_cfgs.borrow(), self.vra_results.borrow());
+        let flow = vra_access::var_ranges_replay_at(&cfgs, &vra, expr, source, macros);
+        let analyzed = crate::utility::cert_c::ast_utils::find_containing_function(expr)
+            .is_some_and(|f| {
+                vra.contains_key(&f.start_byte()) && cfgs.contains_key(&f.start_byte())
+            });
+        if analyzed && flow.is_none() {
+            return false;
+        }
         let mut var_ranges: VarRangeMap = HashMap::new();
         for (name, (var_type, _)) in variables {
             if let Some(range) = self.promoted_range_for_type(var_type) {
+                let range = match flow.as_ref().and_then(|f| f.get(name)) {
+                    Some(known) if known.min <= range.max && range.min <= known.max => {
+                        ValueRange::new(known.min.max(range.min), known.max.min(range.max))
+                    }
+                    _ => range,
+                };
                 var_ranges.insert(name.clone(), range);
             }
         }
 
+        // Against the narrowest `int` the data model allows: 32 bits on a
+        // declared model, 16 under ISO C's guarantees.
+        let int_bits = self.data_model.get().min_width(Rank::Int);
         const_eval::try_evaluate_range(expr, source, macros, &var_ranges)
-            .is_some_and(|range| !range.fits_in_signed(32))
+            .is_some_and(|range| !range.fits_in_signed(int_bits))
+    }
+
+    /// Whether `+` or `-` of two operands narrower than `int` always stays
+    /// inside `int`: `int` is known to be wider than twice the widest of them.
+    fn narrow_sums_fit_int(&self) -> bool {
+        let model = self.data_model.get();
+        match (
+            model.range(false, Rank::Short),
+            model.range(true, Rank::Int),
+        ) {
+            (Some((_, short_max)), Some((_, int_max))) => 2 * short_max <= int_max,
+            _ => false,
+        }
     }
 
     /// The value range a narrow integer type takes on after promotion to

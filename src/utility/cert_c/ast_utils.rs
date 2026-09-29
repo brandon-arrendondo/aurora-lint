@@ -1,6 +1,7 @@
 // Common AST utilities for CERT C rules
 // This module provides reusable functions for navigating and extracting information from the C AST
 
+use crate::utility::cert_c::data_model::{DataModel, IntWidth};
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -1686,72 +1687,17 @@ pub fn is_signed_type(type_str: &str) -> bool {
     )
 }
 
-/// The bit-width of a known integer type name, or `None` when the spelling is
-/// not one this table recognizes (a typedef out of a header, a struct, a
-/// pointer).
+/// What `model` knows about the width of a known integer type name, or `None`
+/// when the spelling is not one it recognizes (a typedef out of a header, a
+/// struct, a pointer). See [`DataModel::spelled_width`] for the spellings.
 ///
-/// Exact-match on the trimmed spelling, and the 64-bit family is tested before
-/// the 32-bit one so `long int` cannot match `int`. Widths are the pinned
-/// x86_64 LP64 model the benchmark corpus is built for.
-///
-/// Callers use this to *suppress*, so an unrecognized spelling answering
-/// `None` keeps whatever the caller would otherwise report.
-pub fn integer_type_width(type_str: &str) -> Option<u32> {
-    let t = type_str.trim();
-
-    if t == "char" || t == "signed char" || t == "unsigned char" || t == "int8_t" || t == "uint8_t"
-    {
-        return Some(8);
-    }
-
-    if t == "short"
-        || t == "signed short"
-        || t == "unsigned short"
-        || t == "short int"
-        || t == "signed short int"
-        || t == "unsigned short int"
-        || t == "int16_t"
-        || t == "uint16_t"
-    {
-        return Some(16);
-    }
-
-    // 64-bit types — check BEFORE 32-bit so "long int" doesn't match "int"
-    if t == "long"
-        || t == "signed long"
-        || t == "unsigned long"
-        || t == "long int"
-        || t == "signed long int"
-        || t == "unsigned long int"
-        || t == "long long"
-        || t == "signed long long"
-        || t == "unsigned long long"
-        || t == "long long int"
-        || t == "signed long long int"
-        || t == "unsigned long long int"
-        || t == "int64_t"
-        || t == "uint64_t"
-        || t == "size_t"
-        || t == "ssize_t"
-        || t == "ptrdiff_t"
-        || t == "intptr_t"
-        || t == "uintptr_t"
-    {
-        return Some(64);
-    }
-
-    if t == "int"
-        || t == "signed"
-        || t == "unsigned"
-        || t == "signed int"
-        || t == "unsigned int"
-        || t == "int32_t"
-        || t == "uint32_t"
-    {
-        return Some(32);
-    }
-
-    None
+/// The width is not a single number unless a data model is declared: under
+/// ISO C's widths an `int` is at least 16 bits and possibly more. A caller
+/// proving something safe from a width (a shift count below it, a value
+/// inside the type's range) uses `min`; one asking whether one type can be
+/// narrower than another uses [`IntWidth::may_be_narrower_than`].
+pub fn integer_type_width(type_str: &str, model: DataModel) -> Option<IntWidth> {
+    model.spelled_width(type_str).map(|(_, width)| width)
 }
 
 /// Check if a type string represents an unsigned integer type.
