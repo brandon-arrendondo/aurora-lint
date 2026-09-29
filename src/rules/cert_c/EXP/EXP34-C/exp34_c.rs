@@ -1081,6 +1081,13 @@ fn check_callsite_null_args(
         .and_then(|fmt_idx| arg_nodes.get(fmt_idx))
         .and_then(|node| format_slots::string_literal_text(node, source))
         .filter(|fmt| format_slots::format_consumes_arguments(fmt));
+    // A conversion dereferences by the ISO C contract, which binds a project
+    // formatter only once its body shows the format reaching an ISO C
+    // `v*printf`. One with its own engine may substitute for NULL (sqlite's
+    // `%s` prints ""), so its slots name no dereference to report.
+    if format.is_some() && callee_summary.iso_format_param != variadic_from.checked_sub(1) {
+        return;
+    }
 
     for (param_idx, arg) in arg_nodes.iter().enumerate() {
         // Only the vararg tail has no callee-side seed to rely on; a

@@ -1230,6 +1230,7 @@ fn prescan_file_list(
         &function_macros,
     );
     function_summary::propagate_may_leave_null(&mut function_summaries);
+    function_summary::propagate_iso_format_params(&mut function_summaries);
     let mut parser = CParser::new()?;
     propagate_param_null_states(
         &source_files,
@@ -7287,6 +7288,7 @@ pub fn resolve_includes(
         &context.function_macros,
     );
     function_summary::propagate_may_leave_null(context.function_summaries.make_mut());
+    function_summary::propagate_iso_format_params(context.function_summaries.make_mut());
     // A pointer-returning wrapper's allocating callee may only resolve once a
     // header defines that callee's own constructor (e.g. a static inline
     // constructor in a header), so this closure needs the same rerun as its

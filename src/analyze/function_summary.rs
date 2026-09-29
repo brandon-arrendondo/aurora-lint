@@ -614,6 +614,16 @@ pub struct FunctionSummary {
     /// Used for transitive free propagation (MEM31-C).
     #[serde(default)]
     pub param_passthroughs: HashMap<usize, Vec<(String, usize)>>,
+    /// The parameter this function hands, as the format, to an ISO C
+    /// `v*printf`/`v*scanf` function, directly or through project functions
+    /// that do (`propagate_iso_format_params`). A `%s` in that format then
+    /// dereferences its argument by the standard's contract (C11 7.21.6.1),
+    /// which is what lets EXP34-C claim the dereference at a caller of a
+    /// project formatter. A formatter with its own engine proves nothing
+    /// either way until its body is read: sqlite's substitutes `""` for a
+    /// NULL `%s`.
+    #[serde(default)]
+    pub iso_format_param: Option<usize>,
     /// Parameter indices this function's body forwards, as a bare
     /// identifier, into a call this build can never resolve to a specific
     /// function -- a call through a `field_expression` (`obj->cb(...)`,
@@ -4381,6 +4391,10 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, mut summary: Functi
     existing
         .null_stored_through_params
         .extend(summary.null_stored_through_params.iter().copied());
+    // MAY: a build whose definition formats through ISO C dereferences.
+    if existing.iso_format_param.is_none() {
+        existing.iso_format_param = summary.iso_format_param;
+    }
     existing
         .out_param_proof_calls
         .extend(summary.out_param_proof_calls.iter().cloned());
@@ -6884,6 +6898,60 @@ pub fn propagate_may_leave_null(summaries: &mut HashMap<String, FunctionSummary>
                 .collect();
             for idx in reached {
                 summary.may_leave_null_through_params.insert(idx);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// The index of the format argument of an ISO C function that formats from
+/// a `va_list` (C11 7.21.6.8-14, 7.29.2.7-10 for the wide forms left out
+/// here), whose conversions consume the arguments by the standard's rules.
+fn iso_vformat_index(name: &str) -> Option<usize> {
+    match name {
+        "vprintf" | "vscanf" => Some(0),
+        "vfprintf" | "vsprintf" | "vfscanf" | "vsscanf" | "vasprintf" | "vdprintf" => Some(1),
+        "vsnprintf" => Some(2),
+        _ => None,
+    }
+}
+
+/// Set `iso_format_param` for every function that forwards one of its
+/// parameters, as the format, to an ISO C `v*printf`/`v*scanf`
+/// (`iso_vformat_index`), or to the format parameter of a function that
+/// does: `wpa_printf(level, fmt, ...)` over `vprintf(fmt, ap)`. Read off
+/// `param_passthroughs`, so a format rewritten before it is handed on still
+/// counts; any forwarding path counts, since the conversion then exists on
+/// that path.
+pub fn propagate_iso_format_params(summaries: &mut HashMap<String, FunctionSummary>) {
+    for _pass in 0..10 {
+        let known: HashMap<String, usize> = summaries
+            .iter()
+            .filter_map(|(n, s)| s.iso_format_param.map(|i| (n.clone(), i)))
+            .collect();
+        let mut changed = false;
+        for summary in summaries.values_mut() {
+            if summary.iso_format_param.is_some() {
+                continue;
+            }
+            let mut forwarded: Vec<usize> = summary
+                .param_passthroughs
+                .iter()
+                .filter(|(_, edges)| {
+                    edges.iter().any(|(callee, callee_idx)| {
+                        iso_vformat_index(callee)
+                            .or_else(|| known.get(callee).copied())
+                            .is_some_and(|fmt| fmt == *callee_idx)
+                    })
+                })
+                .map(|(idx, _)| *idx)
+                .collect();
+            forwarded.sort_unstable();
+            if let Some(&idx) = forwarded.first() {
+                summary.iso_format_param = Some(idx);
                 changed = true;
             }
         }
