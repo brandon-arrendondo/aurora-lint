@@ -127,6 +127,21 @@ impl ScanScope {
             .cloned()
             .collect()
     }
+
+    /// The prescan's scope as both the settings identity and a prescan cache
+    /// record it: [`Self::prescan_globs`] plus `toolchain.toml`'s
+    /// `[ignore].paths`, sorted and deduplicated. One function for both, so a
+    /// toolchain ignore that narrows the prescan also moves the hash.
+    pub fn prescan_scope(&self, project_source: &ProjectSource) -> Result<Vec<String>> {
+        let mut scope = self.prescan_globs();
+        let root = std::path::Path::new(project_source.get_root_path());
+        if let Some(toolchain) = crate::toolchain::ToolchainConfig::discover(root)? {
+            scope.extend(toolchain.ignore.paths);
+        }
+        scope.sort();
+        scope.dedup();
+        Ok(scope)
+    }
 }
 
 /// Run every enabled rule over `project_source`, returning active and
@@ -397,7 +412,7 @@ fn load_project_context(
     // The files the prescan leaves out, and the same globs as a cache
     // records them: a context built without them holds other definitions.
     let prescan_ignore = build_path_ignore(project_source, &scope.prescan_globs())?;
-    let prescan_scope = prescan_scope_of(project_source, &scope.prescan_globs())?;
+    let prescan_scope = scope.prescan_scope(project_source)?;
     let root = project_source.get_root_path().to_string();
     let scoped_out = |path: &std::path::Path, base: &str| {
         prescan::is_scoped_out(&prescan_ignore, &root, base, path)
@@ -664,19 +679,6 @@ fn build_path_ignore(
 
     lang_parsing_substrate::PathIgnore::new(&valid)
         .map_err(|e| anyhow::anyhow!("Invalid ignore glob pattern: {e}"))
-}
-
-/// The globs the prescan leaves out, as a cache records them: `globs` plus
-/// `toolchain.toml`'s `[ignore].paths`, sorted and deduplicated.
-fn prescan_scope_of(project_source: &ProjectSource, globs: &[String]) -> Result<Vec<String>> {
-    let mut scope: Vec<String> = globs.to_vec();
-    let root = std::path::Path::new(project_source.get_root_path());
-    if let Some(toolchain) = crate::toolchain::ToolchainConfig::discover(root)? {
-        scope.extend(toolchain.ignore.paths);
-    }
-    scope.sort();
-    scope.dedup();
-    Ok(scope)
 }
 
 /// Strips `root` (and a leading path separator) from `path`, and normalizes

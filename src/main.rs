@@ -579,7 +579,7 @@ fn run() -> Result<i32> {
         compile_db.as_ref().is_some_and(|db| db.msvc),
     )?;
     let scope = scan_scope(&matches, &manifest);
-    analysis_settings.set_prescan_scope(scope.prescan_globs());
+    analysis_settings.set_prescan_scope(scope.prescan_scope(&project_source)?);
 
     // Handle suppression generation
     if let Some(gen_spec) = generate_suppression {

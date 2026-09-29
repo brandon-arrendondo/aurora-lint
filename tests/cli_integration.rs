@@ -3514,6 +3514,33 @@ fn a_header_an_in_scope_file_includes_is_read_though_its_tree_is_excluded() {
 }
 
 #[test]
+fn a_toolchain_ignore_that_narrows_the_prescan_moves_the_settings_hash() {
+    let settings = |toolchain: bool| {
+        let dir = tempfile::tempdir().unwrap();
+        write_scope_tree(dir.path());
+        if toolchain {
+            std::fs::write(
+                dir.path().join("toolchain.toml"),
+                "[ignore]\npaths = [\"tests/**\"]\n",
+            )
+            .unwrap();
+        }
+        let out = dir.path().join("out.sarif");
+        let root = dir.path().to_str().unwrap();
+        let (code, _, stderr) =
+            run_aurora_lint(&[root, "--rules", "MEM30-C", "-e", out.to_str().unwrap()]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        let sarif: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        sarif["runs"][0]["properties"]["aurora-lint/settings"].clone()
+    };
+    let plain = settings(false);
+    let ignored = settings(true);
+    assert_eq!(ignored["prescan_scope"], serde_json::json!(["tests/**"]));
+    assert_ne!(ignored["hash"], plain["hash"]);
+}
+
+#[test]
 fn manifest_scope_table_adds_to_the_command_line() {
     let dir = tempfile::tempdir().unwrap();
     write_scope_tree(dir.path());
