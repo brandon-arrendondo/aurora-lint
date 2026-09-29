@@ -793,6 +793,15 @@ outside `src/` was ever read.
 `linux-x86_64` — default Linux server build. Nothing is out of configuration;
 there are no platform-alternative sources in `src/*.c` scope.
 
+### Declared memory functions
+
+`conf/realworld/valkey-rules.toml` declares `valkey_free = 1` and
+`valkey_realloc = "realloc"`, the names `zmalloc.h` renames `zfree` and
+`zrealloc` to. `zfree` moves the pointer back over its size prefix before
+freeing it, so no summary shows its argument released, and the jemalloc arms
+are under the excluded `deps/`. They are declared as the free and realloc
+`zmalloc.h` documents them to be.
+
 ## libcrc
 
 ### Oracle polarity (Juliet OMITBAD / OMITGOOD mapping)
