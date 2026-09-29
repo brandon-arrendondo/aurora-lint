@@ -2365,6 +2365,7 @@ mod tests {
             None,
             false,
             &|_, _| false,
+            Default::default(),
         )
         .unwrap()
     }
