@@ -80,13 +80,22 @@ be set explicitly, down to single options:
     [environment.overrides]
     static_zero_init = false    # our startup code does not clear .bss
 
+    [environment.deallocators]
+    MBEDTLS_PLATFORM_FREE_MACRO = 1     # frees its first argument
+    [environment.allocators]
+    MBEDTLS_PLATFORM_CALLOC_MACRO = "calloc"
+
     [rules.cert_c.EXP34-C]
     enabled = true
 
 The same settings are available on the command line, where they win over the
 manifest: ``--profile``, ``--policy``, ``--environment``, ``--libc``,
-``--include-names`` and a repeatable ``--set NAME=VALUE``. A ``--profile`` given on the command line
-starts again from that preset, discarding the manifest's settings.
+``--include-names``, the repeatable ``--allocator NAME[=CONTRACT]`` and
+``--deallocator NAME[=ARG]``, and a repeatable ``--set NAME=VALUE``. A
+``--profile`` given on the command line starts again from that preset,
+discarding the manifest's settings except its declared allocators and
+deallocators: those say what the project's own functions do, which a preset
+never changes.
 
 ``aurora-lint --list-options`` lists every option with its value under each
 preset and under the current settings (``--list-options json`` for tooling).
@@ -104,6 +113,12 @@ neither preset sets it. Left unset, it is ``case-insensitive`` when
 ``exact`` otherwise. The file system of the machine running the scan never
 decides it. It enters the settings hash only when ``case-insensitive``, so
 settings that never mention it keep the hash they always had.
+
+``allocators`` and ``deallocators`` declare functions the scan has no body
+for, such as a platform hook the build supplies: a deallocator frees the
+argument its position names, and an allocator follows the contract of the
+standard allocator it names. :doc:`options` has the details. They enter the
+settings hash only when something is declared.
 
 Supported CERT C Rules
 ----------------------

@@ -171,6 +171,16 @@ Options:
       --libc &lt;MODEL&gt;               C library model whose documented contracts are
                                    trusted [iso-posix, glibc, musl, newlib,
                                    picolibc, custom]
+      --allocator &lt;NAME[=CONTRACT]&gt;
+                                   Declare a function the scan cannot see into as an
+                                   allocator following the named standard allocator&#39;s
+                                   contract [malloc, calloc, realloc, aligned_alloc,
+                                   strdup, strndup; default malloc]. Repeatable; same
+                                   as [environment.allocators] in the manifest
+      --deallocator &lt;NAME[=ARG]&gt;   Declare a function the scan cannot see into as
+                                   freeing its ARG-th argument (default 1).
+                                   Repeatable; same as [environment.deallocators] in
+                                   the manifest
       --set &lt;NAME=VALUE&gt;           Override one named option (repeatable); see
                                    --list-options
       --list-options [&lt;FORMAT&gt;]    List every policy and environment option with its

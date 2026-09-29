@@ -51,6 +51,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#policy-options">Policy options</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#environment-contracts">Environment contracts</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#toolchain">Toolchain</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#declared-memory-functions">Declared memory functions</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
@@ -217,6 +218,36 @@ and <code class="docutils literal notranslate"><span class="pre">exact</span></c
 <li><p>Part of the settings hash only when <code class="docutils literal notranslate"><span class="pre">case-insensitive</span></code></p></li>
 <li><p>Basis: Windows looks file names up case-insensitively unless a directory
 is marked case-sensitive (Microsoft Learn, “Case sensitivity”).</p></li>
+</ul>
+</dd>
+</dl>
+</section>
+<section id="declared-memory-functions">
+<h2>Declared memory functions<a class="headerlink" href="#declared-memory-functions" title="Link to this heading"></a></h2>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">allocators</span></code> and <code class="docutils literal notranslate"><span class="pre">deallocators</span></code></dt><dd><p>A function the scan has no body for (a platform hook supplied at build time,
+or a library outside the scanned tree) cannot be proven to allocate or to
+free. A project declares what such a function does: a deallocator frees
+the argument its position names (counting from 1), and an allocator
+returns fresh memory under the contract of the standard
+allocator it names (<code class="docutils literal notranslate"><span class="pre">malloc</span></code>, <code class="docutils literal notranslate"><span class="pre">calloc</span></code>, <code class="docutils literal notranslate"><span class="pre">realloc</span></code>, <code class="docutils literal notranslate"><span class="pre">aligned_alloc</span></code>,
+<code class="docutils literal notranslate"><span class="pre">strdup</span></code> or <code class="docutils literal notranslate"><span class="pre">strndup</span></code>). A <code class="docutils literal notranslate"><span class="pre">realloc</span></code>-like allocator also releases the
+block its first argument points at. The memory-lifetime rules (MEM00-C,
+MEM01-C, MEM03-C, MEM30-C, MEM31-C, MEM34-C) and the function summaries
+that credit a wrapper with what it frees read the declarations, whichever
+way they cut: a free through a declared hook excuses a leak and makes a
+second free a double free. A rule that only asks whether a call allocates
+at all counts a declared allocator too. Null-state, unchecked-result and
+allocation-size checks still recognize the standard names only. A function
+whose body the scan reads needs no declaration, and a C library function
+cannot be declared, since its contract is the library’s.</p>
+<ul class="simple">
+<li><p>Set with <code class="docutils literal notranslate"><span class="pre">[environment.allocators]</span></code> <code class="docutils literal notranslate"><span class="pre">NAME</span> <span class="pre">=</span> <span class="pre">&quot;CONTRACT&quot;</span></code> and
+<code class="docutils literal notranslate"><span class="pre">[environment.deallocators]</span></code> <code class="docutils literal notranslate"><span class="pre">NAME</span> <span class="pre">=</span> <span class="pre">ARG</span></code>, or <code class="docutils literal notranslate"><span class="pre">--allocator</span>
+<span class="pre">NAME[=CONTRACT]</span></code> (default <code class="docutils literal notranslate"><span class="pre">malloc</span></code>) and <code class="docutils literal notranslate"><span class="pre">--deallocator</span> <span class="pre">NAME[=ARG]</span></code>
+(default 1)</p></li>
+<li><p>Part of the settings hash only when something is declared</p></li>
+<li><p>Basis: the project’s own statement of its environment (ADR-0001, ADR-0015)</p></li>
 </ul>
 </dd>
 </dl>

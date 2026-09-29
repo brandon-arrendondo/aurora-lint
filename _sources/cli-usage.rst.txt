@@ -71,6 +71,16 @@ Full Command Reference
           --libc <MODEL>               C library model whose documented contracts are
                                        trusted [iso-posix, glibc, musl, newlib,
                                        picolibc, custom]
+          --allocator <NAME[=CONTRACT]>
+                                       Declare a function the scan cannot see into as an
+                                       allocator following the named standard allocator's
+                                       contract [malloc, calloc, realloc, aligned_alloc,
+                                       strdup, strndup; default malloc]. Repeatable; same
+                                       as [environment.allocators] in the manifest
+          --deallocator <NAME[=ARG]>   Declare a function the scan cannot see into as
+                                       freeing its ARG-th argument (default 1).
+                                       Repeatable; same as [environment.deallocators] in
+                                       the manifest
           --set <NAME=VALUE>           Override one named option (repeatable); see
                                        --list-options
           --list-options [<FORMAT>]    List every policy and environment option with its

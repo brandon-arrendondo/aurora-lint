@@ -171,14 +171,23 @@ be set explicitly, down to single options:</p>
 <span class="k">[environment.overrides]</span>
 <span class="n">static_zero_init</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="w">    </span><span class="c1"># our startup code does not clear .bss</span>
 
+<span class="k">[environment.deallocators]</span>
+<span class="n">MBEDTLS_PLATFORM_FREE_MACRO</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="w">     </span><span class="c1"># frees its first argument</span>
+<span class="k">[environment.allocators]</span>
+<span class="n">MBEDTLS_PLATFORM_CALLOC_MACRO</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;calloc&quot;</span>
+
 <span class="k">[rules.cert_c.EXP34-C]</span>
 <span class="n">enabled</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 </pre></div>
 </div>
 <p>The same settings are available on the command line, where they win over the
 manifest: <code class="docutils literal notranslate"><span class="pre">--profile</span></code>, <code class="docutils literal notranslate"><span class="pre">--policy</span></code>, <code class="docutils literal notranslate"><span class="pre">--environment</span></code>, <code class="docutils literal notranslate"><span class="pre">--libc</span></code>,
-<code class="docutils literal notranslate"><span class="pre">--include-names</span></code> and a repeatable <code class="docutils literal notranslate"><span class="pre">--set</span> <span class="pre">NAME=VALUE</span></code>. A <code class="docutils literal notranslate"><span class="pre">--profile</span></code> given on the command line
-starts again from that preset, discarding the manifest’s settings.</p>
+<code class="docutils literal notranslate"><span class="pre">--include-names</span></code>, the repeatable <code class="docutils literal notranslate"><span class="pre">--allocator</span> <span class="pre">NAME[=CONTRACT]</span></code> and
+<code class="docutils literal notranslate"><span class="pre">--deallocator</span> <span class="pre">NAME[=ARG]</span></code>, and a repeatable <code class="docutils literal notranslate"><span class="pre">--set</span> <span class="pre">NAME=VALUE</span></code>. A
+<code class="docutils literal notranslate"><span class="pre">--profile</span></code> given on the command line starts again from that preset,
+discarding the manifest’s settings except its declared allocators and
+deallocators: those say what the project’s own functions do, which a preset
+never changes.</p>
 <p><code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--list-options</span></code> lists every option with its value under each
 preset and under the current settings (<code class="docutils literal notranslate"><span class="pre">--list-options</span> <span class="pre">json</span></code> for tooling).
 <a class="reference internal" href="options.html"><span class="doc">Policy and Environment Options</span></a> is generated from the same table. An unknown option name, or
@@ -194,6 +203,11 @@ neither preset sets it. Left unset, it is <code class="docutils literal notransl
 <code class="docutils literal notranslate"><span class="pre">exact</span></code> otherwise. The file system of the machine running the scan never
 decides it. It enters the settings hash only when <code class="docutils literal notranslate"><span class="pre">case-insensitive</span></code>, so
 settings that never mention it keep the hash they always had.</p>
+<p><code class="docutils literal notranslate"><span class="pre">allocators</span></code> and <code class="docutils literal notranslate"><span class="pre">deallocators</span></code> declare functions the scan has no body
+for, such as a platform hook the build supplies: a deallocator frees the
+argument its position names, and an allocator follows the contract of the
+standard allocator it names. <a class="reference internal" href="options.html"><span class="doc">Policy and Environment Options</span></a> has the details. They enter the
+settings hash only when something is declared.</p>
 </section>
 <section id="supported-cert-c-rules">
 <h2>Supported CERT C Rules<a class="headerlink" href="#supported-cert-c-rules" title="Link to this heading"></a></h2>
