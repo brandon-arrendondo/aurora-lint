@@ -20,10 +20,12 @@ use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
 use crate::rules::cert_c::int_provenance;
+use crate::settings::{AnalysisSettings, DataModel};
 use crate::utility::cert_c::ast_utils::{self, get_node_text, is_function_parameter};
+use crate::utility::cert_c::data_model::IntWidth;
 use crate::utility::cert_c::declarator_utils;
 use lang_parsing_substrate::query;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
@@ -55,6 +57,9 @@ pub struct Int31C {
     /// instead of falling through as `None` (third consumer
     /// of an earlier fix's shared resolver).
     typedef_types: RefCell<Arc<HashMap<String, String>>>,
+    /// The integer data model the settings credit: how wide each side of a
+    /// conversion is, or may be.
+    data_model: Cell<DataModel>,
 }
 
 impl Int31C {
@@ -70,6 +75,7 @@ impl Int31C {
             risky_vars_cache: RefCell::new(HashMap::new()),
             param_names_cache: RefCell::new(HashMap::new()),
             typedef_types: RefCell::new(Arc::new(HashMap::new())),
+            data_model: Cell::new(DataModel::default()),
         }
     }
 
@@ -79,8 +85,9 @@ impl Int31C {
     /// tries again -- so `typedef double real_t;` or a
     /// `sqlite3_int64 -> long long int` chain lands on the same width
     /// row an unaliased spelling would.
-    fn get_type_width_resolved(&self, type_str: &str) -> Option<u32> {
-        if let Some(w) = get_type_width(type_str) {
+    fn get_type_width_resolved(&self, type_str: &str) -> Option<IntWidth> {
+        let model = self.data_model.get();
+        if let Some(w) = get_type_width(type_str, model) {
             return Some(w);
         }
         let typedefs = self.typedef_types.borrow();
@@ -92,7 +99,7 @@ impl Int31C {
         if resolved == type_str {
             return None;
         }
-        get_type_width(&resolved)
+        get_type_width(&resolved, model)
     }
 
     /// Opt-in provenance gate for lossy conversions: returns true when the
@@ -586,9 +593,9 @@ fn trailing_integer(s: &str) -> Option<i64> {
 /// The integer table itself is [`ast_utils::integer_type_width`] (shared since
 /// an earlier fix, which needed the same widths in API00-C); what stays here is the
 /// floating-type branch, which is an INT31-C convention rather than a width.
-fn get_type_width(type_str: &str) -> Option<u32> {
-    if let Some(bits) = ast_utils::integer_type_width(type_str) {
-        return Some(bits);
+fn get_type_width(type_str: &str, model: DataModel) -> Option<IntWidth> {
+    if let Some(width) = ast_utils::integer_type_width(type_str, model) {
+        return Some(width);
     }
 
     // Floating types: not an integer bit-width at all, but any conversion to
@@ -603,10 +610,28 @@ fn get_type_width(type_str: &str) -> Option<u32> {
     // owns floating-to-floating precision loss.
     let t = type_str.trim();
     if t == "float" || t == "double" || t == "long double" {
-        return Some(FLOAT_AS_INTEGER_WIDTH);
+        return Some(IntWidth {
+            rank: None,
+            min: FLOAT_AS_INTEGER_WIDTH,
+            max: Some(FLOAT_AS_INTEGER_WIDTH),
+        });
     }
 
     None
+}
+
+/// Whether a value of width `from` may not fit a target of width `to`: an
+/// integer target is narrower than any floating value, a floating target
+/// never narrower than an integer (a fraction or precision, not bits, is what
+/// it can lose, and FLP34-C owns floating-to-floating), and two integers
+/// compare as the data model allows ([`IntWidth::may_be_narrower_than`]).
+fn may_be_narrower(to: IntWidth, from: IntWidth) -> bool {
+    let is_float = |w: IntWidth| w.min == FLOAT_AS_INTEGER_WIDTH;
+    match (is_float(to), is_float(from)) {
+        (true, _) => false,
+        (false, true) => true,
+        (false, false) => to.may_be_narrower_than(from),
+    }
 }
 
 /// See [`get_type_width`]'s floating-type branch.
@@ -731,6 +756,10 @@ impl CertRule for Int31C {
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
 
         *self.callers.borrow_mut() = context.callers.clone();
+    }
+
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        self.data_model.set(settings.data_model);
     }
 
     fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
@@ -1620,7 +1649,9 @@ impl Int31C {
             return;
         }
 
-        let target_width = self.get_type_width_resolved(&target_clean);
+        // The width the target is guaranteed: a value inside it fits wherever
+        // the code is built.
+        let target_width = self.get_type_width_resolved(&target_clean).map(|w| w.min);
         let target_signed = self.is_signed_type(&target_clean);
         let operand_node = self.get_cast_operand_node(node);
 
@@ -1979,14 +2010,18 @@ impl Int31C {
             None => return,
         };
 
-        // No narrowing
-        if rhs_width <= lhs_width {
+        // No narrowing: the target cannot be narrower than the value on any
+        // target the data model allows (a `long long` into a `long` may lose
+        // bits on LLP64, so under ISO C's widths it is narrowing).
+        if !may_be_narrower(lhs_width, rhs_width) {
             return;
         }
+        let lhs_width_type = lhs_width;
+        let lhs_width = lhs_width.min;
 
         // Suppression: RHS has a narrowing cast whose target width <= LHS width
         // (check_cast_conversion already flags this)
-        if self.rhs_has_narrowing_cast_to(&rhs_node, source, lhs_width) {
+        if self.rhs_has_narrowing_cast_to(&rhs_node, source, lhs_width_type) {
             return;
         }
 
@@ -2056,7 +2091,7 @@ impl Int31C {
         node: &Node,
         source: &str,
         var_types: &HashMap<String, String>,
-    ) -> Option<u32> {
+    ) -> Option<IntWidth> {
         match node.kind() {
             "cast_expression" => {
                 // Extract the cast target type
@@ -2098,7 +2133,7 @@ impl Int31C {
 
     /// Check if RHS is a cast_expression whose target width <= LHS width.
     /// If so, check_cast_conversion() already handles it — don't double-flag.
-    fn rhs_has_narrowing_cast_to(&self, node: &Node, source: &str, lhs_width: u32) -> bool {
+    fn rhs_has_narrowing_cast_to(&self, node: &Node, source: &str, lhs_width: IntWidth) -> bool {
         let check = node;
         if check.kind() == "cast_expression" {
             for i in 0..check.child_count() {
@@ -2110,7 +2145,7 @@ impl Int31C {
                             .trim()
                             .to_string();
                         if let Some(cast_width) = self.get_type_width_resolved(&type_text) {
-                            return cast_width <= lhs_width;
+                            return !may_be_narrower(lhs_width, cast_width);
                         }
                     }
                 }
