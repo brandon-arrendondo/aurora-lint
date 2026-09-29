@@ -39,6 +39,40 @@ pub enum Rank {
     LongLong,
 }
 
+/// What a data model knows about one integer type's width: its rank when
+/// the model fixes it, the fewest bits it can have, and its exact width when
+/// that is known.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IntWidth {
+    /// Its conversion rank, when the model fixes it.
+    pub rank: Option<Rank>,
+    /// The width every implementation gives it at least.
+    pub min: u32,
+    /// Its exact width, when the model fixes it.
+    pub max: Option<u32>,
+}
+
+impl IntWidth {
+    /// Whether this type may be narrower than `other` on some target the
+    /// model allows. Never when it has the same or a higher rank (a higher
+    /// rank never has a smaller range, C11 6.3.1.1p1) or is at least as wide
+    /// as `other` can be; otherwise when its widths leave room.
+    ///
+    /// Two types the model describes identically (`size_t` and `size_t`)
+    /// count as the same width.
+    pub fn may_be_narrower_than(self, other: IntWidth) -> bool {
+        if self == other {
+            return false;
+        }
+        if let (Some(a), Some(b)) = (self.rank, other.rank) {
+            if a >= b {
+                return false;
+            }
+        }
+        other.max.is_none_or(|o| self.min < o)
+    }
+}
+
 /// The target's integer data model.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -113,6 +147,87 @@ impl DataModel {
         } else {
             (0, (1i128 << width) - 1)
         }
+    }
+
+    /// What the model knows about the width of an integer of `rank`.
+    pub fn width_of(self, rank: Rank) -> IntWidth {
+        IntWidth {
+            rank: Some(rank),
+            min: self.min_width(rank),
+            max: self.exact_width(rank),
+        }
+    }
+
+    /// The signedness (`true` for unsigned) and width of the integer type a
+    /// spelling names: a standard integer type in its usual spellings, an
+    /// exact-width `<stdint.h>` type, or `size_t`, `ssize_t`, `ptrdiff_t`,
+    /// `intptr_t` and `uintptr_t`. `None` for anything else: a typedef not
+    /// yet followed, a struct, a pointer. Plain `char` answers "not
+    /// unsigned" only in the sense that it is not declared so; whether it is
+    /// signed is implementation-defined.
+    pub fn spelled_width(self, spelling: &str) -> Option<(bool, IntWidth)> {
+        let exact = |unsigned, bits: u32| {
+            let rank = [
+                Rank::Char,
+                Rank::Short,
+                Rank::Int,
+                Rank::Long,
+                Rank::LongLong,
+            ]
+            .into_iter()
+            .find(|r| self.exact_width(*r) == Some(bits));
+            Some((
+                unsigned,
+                IntWidth {
+                    rank,
+                    min: bits,
+                    max: Some(bits),
+                },
+            ))
+        };
+        let word = |unsigned| {
+            let rank = match self {
+                DataModel::Iso => None,
+                DataModel::Ilp32 => Some(Rank::Int),
+                DataModel::Lp64 => Some(Rank::Long),
+                DataModel::Llp64 => Some(Rank::LongLong),
+            };
+            Some((
+                unsigned,
+                IntWidth {
+                    rank,
+                    min: self.pointer_width().unwrap_or(16),
+                    max: self.pointer_width(),
+                },
+            ))
+        };
+        let t = spelling.trim();
+        let rank = match t {
+            "char" | "signed char" | "unsigned char" => Rank::Char,
+            "short" | "signed short" | "unsigned short" | "short int" | "signed short int"
+            | "unsigned short int" => Rank::Short,
+            "int" | "signed" | "unsigned" | "signed int" | "unsigned int" => Rank::Int,
+            "long" | "signed long" | "unsigned long" | "long int" | "signed long int"
+            | "unsigned long int" => Rank::Long,
+            "long long"
+            | "signed long long"
+            | "unsigned long long"
+            | "long long int"
+            | "signed long long int"
+            | "unsigned long long int" => Rank::LongLong,
+            "int8_t" => return exact(false, 8),
+            "uint8_t" => return exact(true, 8),
+            "int16_t" => return exact(false, 16),
+            "uint16_t" => return exact(true, 16),
+            "int32_t" => return exact(false, 32),
+            "uint32_t" => return exact(true, 32),
+            "int64_t" => return exact(false, 64),
+            "uint64_t" => return exact(true, 64),
+            "ssize_t" | "ptrdiff_t" | "intptr_t" => return word(false),
+            "size_t" | "uintptr_t" => return word(true),
+            _ => return None,
+        };
+        Some((t.starts_with("unsigned"), self.width_of(rank)))
     }
 
     /// The width in bits of a pointer, or of `size_t`, `ptrdiff_t`,
@@ -210,6 +325,37 @@ mod tests {
         assert_eq!(iso.sizeof_bytes(Rank::Char), Some(1));
         assert_eq!(iso.sizeof_bytes(Rank::Int), None);
         assert_eq!(iso.pointer_width(), None);
+    }
+
+    #[test]
+    fn narrower_is_a_question_of_rank_and_width() {
+        let iso = DataModel::Iso;
+        let int = iso.width_of(Rank::Int);
+        // short may be narrower than int, or as wide.
+        assert!(iso.width_of(Rank::Short).may_be_narrower_than(int));
+        assert!(!iso.width_of(Rank::Long).may_be_narrower_than(int));
+        // int may be wider than 32 bits, so uint32_t may be the narrower.
+        let (unsigned, u32w) = iso.spelled_width("uint32_t").unwrap();
+        assert!(unsigned && u32w.may_be_narrower_than(int));
+        let lp64 = DataModel::Lp64;
+        let (_, u32w) = lp64.spelled_width("uint32_t").unwrap();
+        assert_eq!(u32w.rank, Some(Rank::Int));
+        assert!(!u32w.may_be_narrower_than(lp64.width_of(Rank::Int)));
+        assert!(lp64
+            .width_of(Rank::Short)
+            .may_be_narrower_than(lp64.width_of(Rank::Int)));
+        // On LLP64 long is not wider than int, and size_t is long long.
+        let llp64 = DataModel::Llp64;
+        assert_eq!(
+            llp64.spelled_width("size_t").unwrap().1.rank,
+            Some(Rank::LongLong)
+        );
+        assert_eq!(iso.spelled_width("size_t").unwrap().1.min, 16);
+        let size_t = iso.spelled_width("size_t").unwrap().1;
+        assert!(!size_t.may_be_narrower_than(size_t));
+        // LLP64's 64-bit size_t is wider than its 32-bit unsigned long.
+        assert!(iso.width_of(Rank::Long).may_be_narrower_than(size_t));
+        assert_eq!(iso.spelled_width("widget_t"), None);
     }
 
     #[test]

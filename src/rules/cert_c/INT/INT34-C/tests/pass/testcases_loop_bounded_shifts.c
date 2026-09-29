@@ -2,6 +2,10 @@
  * Rule: INT34-C
  * Source: testcases
  * Status: PASS - Shift amounts bounded by loop conditions
+ * Settings: data_model=lp64
+ *
+ * The bounds are 32 because the target is declared LP64, where unsigned
+ * int is 32 bits; ISO C guarantees it only 16.
  */
 
 /* for loop with i < 32 */

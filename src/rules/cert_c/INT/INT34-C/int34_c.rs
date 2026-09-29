@@ -10,10 +10,12 @@ use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::manifest::Severity;
+use crate::settings::{AnalysisSettings, DataModel};
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::data_model::{IntWidth, Rank};
 use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
 use lang_parsing_substrate::query;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
@@ -57,6 +59,9 @@ pub struct Int34C {
     /// `vptr_t` reaches `unsigned long` and is measured at 64 bits, not the
     /// 32-bit floor an unrecognized spelling falls back to.
     typedef_types: RefCell<Arc<HashMap<String, String>>>,
+    /// The integer data model the settings credit: how wide a shifted
+    /// operand is guaranteed to be.
+    data_model: Cell<DataModel>,
 }
 
 impl Int34C {
@@ -73,6 +78,7 @@ impl Int34C {
             function_summaries: RefCell::default(),
             constant_returning_functions: RefCell::new(HashSet::new()),
             typedef_types: RefCell::new(Arc::new(HashMap::new())),
+            data_model: Cell::new(DataModel::default()),
         }
     }
 }
@@ -112,6 +118,10 @@ impl CertRule for Int34C {
 
     fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
         *self.typedef_types.borrow_mut() = types.typedef_types.clone();
+    }
+
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        self.data_model.set(settings.data_model);
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -478,27 +488,31 @@ impl Int34C {
         range.min >= 0 && (range.min == range.max || range.max < width)
     }
 
-    /// Bit width of the shift's left operand, as the bound every range gate
-    /// compares against: 64 when the operand resolves to a 64-bit integer,
-    /// otherwise 32.
+    /// Bit width of the shift's left operand once promoted, as the bound
+    /// every range gate compares against: the width its type is guaranteed
+    /// under the data model (C11 5.2.4.2.1 unless one is declared), and no
+    /// less than `int`'s, which a narrower operand promotes to.
     ///
-    /// 32 is the floor, not a guess: an operand the rule cannot type (a
-    /// struct field, a call, an unknown typedef, a bare `long` whose width
-    /// is the data model's choice -- see `width_of_type_text`) keeps the
-    /// narrower bound, so widening is only ever the result of positive,
-    /// platform-independent evidence. The reverse default would assert
-    /// safety for `uint32_t x >> 40`.
+    /// `int`'s guaranteed width is the floor, not a guess: an operand the
+    /// rule cannot type (a struct field, a call, an unknown typedef) keeps
+    /// the narrowest bound, so widening is only ever the result of positive
+    /// evidence. The reverse default would assert safety for `uint32_t x >>
+    /// 40`. Under ISO C's widths that floor is 16 (`unsigned x >> 20` is
+    /// undefined where `int` is 16 bits) and a `long` is 32; a declared LP64
+    /// target makes them 32 and 64.
     fn operand_bit_width(&self, left: &Node, source: &str) -> i64 {
-        match self.resolve_operand_width(left, source, 0) {
-            Some(w) if w >= 64 => 64,
-            _ => 32,
-        }
+        let model = self.data_model.get();
+        let int = model.min_width(Rank::Int);
+        let width = self
+            .resolve_operand_width(left, source, 0)
+            .map_or(int, |w| w.min.max(int));
+        i64::from(width)
     }
 
     /// Declared width of the integer object `node` denotes, after peeling
     /// `unwrap` pointer/array levels (`p[i]`, `*p`). `None` for anything the
     /// rule cannot resolve to an integer scalar.
-    fn resolve_operand_width(&self, node: &Node, source: &str, unwrap: usize) -> Option<u32> {
+    fn resolve_operand_width(&self, node: &Node, source: &str, unwrap: usize) -> Option<IntWidth> {
         match node.kind() {
             "parenthesized_expression" => {
                 self.resolve_operand_width(&node.named_child(0)?, source, unwrap)
@@ -521,10 +535,11 @@ impl Int34C {
                     .rev()
                     .take_while(|c| matches!(c, 'u' | 'U' | 'l' | 'L'))
                     .collect();
-                if suffix.contains(['l', 'L']) {
-                    Some(64)
-                } else {
-                    None
+                let model = self.data_model.get();
+                match suffix.matches(['l', 'L']).count() {
+                    0 => None,
+                    1 => Some(model.width_of(Rank::Long)),
+                    _ => Some(model.width_of(Rank::LongLong)),
                 }
             }
             "identifier" => {
@@ -555,17 +570,12 @@ impl Int34C {
     }
 
     /// Width of a declared type spelling with qualifiers and storage class
-    /// dropped and typedefs followed project-wide.
-    ///
-    /// A bare `long` family spelling answers `None`, not 64: it is 64-bit on
-    /// LP64 and 32-bit on LLP64, and the corpus (curl) builds for both. The
-    /// same platform assumption INT30-C's `is_portable_64bit_unsigned`
-    /// declines to make is declined here for the same type -- a shift
-    /// safety claim has to be provable, not inferred from the target the
-    /// benchmark happens to run on. The types that are 64 bits under both
-    /// models (`uint64_t` and its family, `size_t`, `uintptr_t`, `long
-    /// long`) keep answering 64.
-    fn width_of_type_text(&self, text: &str) -> Option<u32> {
+    /// dropped and typedefs followed project-wide, as the data model knows it.
+    /// A bare `long` is 64 bits on LP64 and 32 on LLP64; unless a model is
+    /// declared, only its guaranteed 32 is credited -- a shift safety claim
+    /// has to be provable, not inferred from the target the benchmark
+    /// happens to run on.
+    fn width_of_type_text(&self, text: &str) -> Option<IntWidth> {
         let base = text
             .split_whitespace()
             .filter(|t| {
@@ -583,25 +593,7 @@ impl Int34C {
             .collect::<Vec<_>>()
             .join(" ");
         let resolved = resolve_typedef_chain(&base, &self.typedef_types.borrow());
-        if Self::is_platform_width_long(&resolved) {
-            return None;
-        }
-        ast_utils::integer_type_width(&resolved)
-    }
-
-    /// The `long` spellings whose width is a data-model choice (LP64 vs
-    /// LLP64) rather than a standard guarantee. `long long` is not among
-    /// them: C99 guarantees it at least 64 bits everywhere.
-    fn is_platform_width_long(base: &str) -> bool {
-        matches!(
-            base.trim(),
-            "long"
-                | "signed long"
-                | "unsigned long"
-                | "long int"
-                | "signed long int"
-                | "unsigned long int"
-        )
+        ast_utils::integer_type_width(&resolved, self.data_model.get())
     }
 
     fn is_likely_unsigned(&self, var_name: &str, node: &Node, source: &str) -> bool {
