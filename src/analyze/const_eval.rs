@@ -514,6 +514,41 @@ pub fn with_accusing_alias_targets(
     }
 }
 
+/// Add to `aliases` each name that `alternatives` does not settle but whose
+/// every live target (resolved through `aliases`) has the same `role`, mapped
+/// to the first such target. For a rule an alias SUPPRESSES through (ADR-0010
+/// D1, per consumer): one arm is not enough, but an alias that is `free` in
+/// one build and a declared deallocator of the same argument in the other
+/// frees that argument in every build. A target with no role, or two targets
+/// whose roles differ, leaves the name unsettled.
+pub fn with_agreeing_alias_targets<R: PartialEq>(
+    aliases: &mut HashMap<String, String>,
+    alternatives: &HashMap<String, Vec<String>>,
+    role: impl Fn(&str) -> Option<R>,
+) {
+    let mut agreed = Vec::new();
+    for (name, targets) in alternatives {
+        if targets.len() < 2 || aliases.contains_key(name) {
+            continue;
+        }
+        let resolved: Vec<&str> = targets
+            .iter()
+            .map(|t| resolve_macro_alias(aliases, t))
+            .collect();
+        let Some(first) = resolved.first().and_then(|t| role(t)) else {
+            continue;
+        };
+        if resolved[1..]
+            .iter()
+            .all(|t| role(t).is_some_and(|r| r == first))
+            && resolved[0] != name.as_str()
+        {
+            agreed.push((name.clone(), resolved[0].to_string()));
+        }
+    }
+    aliases.extend(agreed);
+}
+
 /// The first identifier reachable from `name` through any live alias
 /// definition (`alternatives`) that `accept` takes, trying `name` itself
 /// first; `None` when no chain reaches one. For a consumer an alias ACCUSES
@@ -3579,6 +3614,47 @@ int f(unsigned long s) { return LINEBITS(s); }
         let mut accusing = aliases.clone();
         with_accusing_alias_targets(&mut accusing, &alternatives, |t| t == "chdir");
         assert_eq!(accusing.get("CHDIR").map(String::as_str), Some("chdir"));
+    }
+
+    #[test]
+    fn an_alias_every_target_agrees_on_settles_for_a_suppressing_consumer() {
+        let alternatives: HashMap<String, Vec<String>> = [
+            (
+                "my_free".to_string(),
+                vec!["HOOK_FREE".to_string(), "free".to_string()],
+            ),
+            (
+                "odd_free".to_string(),
+                vec!["HOOK_PUT".to_string(), "free".to_string()],
+            ),
+            (
+                "maybe_free".to_string(),
+                vec!["unknown_hook".to_string(), "free".to_string()],
+            ),
+            (
+                "via".to_string(),
+                vec!["my_free".to_string(), "FREE_ALIAS".to_string()],
+            ),
+        ]
+        .into();
+        let role = |t: &str| match t {
+            "free" | "HOOK_FREE" => Some(0),
+            "HOOK_PUT" => Some(1),
+            _ => None,
+        };
+        let mut aliases: HashMap<String, String> =
+            [("FREE_ALIAS".to_string(), "free".to_string())].into();
+        with_agreeing_alias_targets(&mut aliases, &alternatives, role);
+        assert_eq!(
+            aliases.get("my_free").map(String::as_str),
+            Some("HOOK_FREE")
+        );
+        // The arms disagree on the argument, or one arm is unknown.
+        assert_eq!(aliases.get("odd_free"), None);
+        assert_eq!(aliases.get("maybe_free"), None);
+        // `my_free` is itself unsettled when `via` is read, and a target is
+        // resolved through the settled map only.
+        assert_eq!(aliases.get("via"), None);
     }
 
     #[test]

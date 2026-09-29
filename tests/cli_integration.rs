@@ -3290,3 +3290,35 @@ fn a_prescan_cache_built_under_other_declarations_is_refused() {
     assert_eq!(code, 2, "stderr: {stderr}");
     assert!(stderr.contains("declarations"), "{stderr}");
 }
+
+#[test]
+fn an_alias_frees_only_where_every_arm_frees_the_same_argument() {
+    let leaks = |args: &[&str]| {
+        declared_memory_findings("two_arm_alias.c", "manifest_mem30_mem31.toml", args)
+            .into_iter()
+            .any(|(r, _, m)| r == "MEM31-C" && m.contains("not freed"))
+    };
+    assert!(leaks(&[]), "an undeclared arm proves nothing");
+    assert!(!leaks(&["--deallocator", "HOOK_FREE"]));
+    // The hook frees its second argument and `free` its first: the arms
+    // disagree, so no build-independent free is proven.
+    assert!(leaks(&["--deallocator", "HOOK_FREE=2"]));
+}
+
+#[test]
+fn one_arm_that_is_a_declared_hook_accuses_a_double_free() {
+    let double = |args: &[&str]| {
+        has(
+            &declared_memory_findings(
+                "two_arm_hook_double_free.c",
+                "manifest_mem30_mem31.toml",
+                args,
+            ),
+            "MEM30-C",
+            15,
+            "Double-free",
+        )
+    };
+    assert!(!double(&[]), "no arm is a known free");
+    assert!(double(&["--deallocator", "HOOK_FREE"]));
+}

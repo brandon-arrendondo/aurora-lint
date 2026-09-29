@@ -201,20 +201,33 @@ impl CertRule for Mem31C {
         // which a later free makes a double free but which also stops that
         // pointer leaking. Through such an alias it keeps the first two and
         // not the third (`realloc_in_one_build`).
+        let alternatives = const_eval::merged_macro_alias_alternatives(
+            &self.project_alias_alternatives.borrow(),
+            node,
+            source,
+        );
         const_eval::with_accusing_alias_targets(
             &mut macro_aliases,
-            &const_eval::merged_macro_alias_alternatives(
-                &self.project_alias_alternatives.borrow(),
-                node,
-                source,
-            ),
+            &alternatives,
             call_roles::is_allocator_call,
+        );
+        // A free suppresses only where every build frees: mbedtls's
+        // `mbedtls_free` is `free` in one arm and the platform hook
+        // MBEDTLS_PLATFORM_FREE_MACRO in the other, which frees the same
+        // argument once the project declares it (`[environment.deallocators]`).
+        const_eval::with_agreeing_alias_targets(
+            &mut macro_aliases,
+            &alternatives,
+            call_roles::frees_argument,
         );
         let realloc_in_one_build: HashSet<String> = macro_aliases
             .iter()
             .filter(|(name, target)| {
-                target.as_str() == "realloc"
-                    && !const_eval::resolve_macro_alias(&settled_aliases, name).eq("realloc")
+                call_roles::is_realloc_like(target)
+                    && !call_roles::is_realloc_like(const_eval::resolve_macro_alias(
+                        &settled_aliases,
+                        name,
+                    ))
             })
             .map(|(name, _)| name.clone())
             .collect();

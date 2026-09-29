@@ -188,7 +188,8 @@ impl CertRule for Mem30C {
         let mut macro_aliases =
             const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
         // A free or realloc in one build starts the finding in that build
-        // (ADR-0010 D1), whatever the alias is in the others. An allocator
+        // (ADR-0010 D1), whatever the alias is in the others; a declared
+        // deallocator or realloc-like allocator is one too. An allocator
         // is left out: this rule only stops looking at a call it maps to
         // `malloc`/`calloc`, which would hide what the other build's callee
         // does to its arguments.
@@ -199,7 +200,7 @@ impl CertRule for Mem30C {
                 node,
                 source,
             ),
-            |t| matches!(t, "free" | "realloc"),
+            |t| call_roles::is_deallocator(t) || call_roles::is_realloc_like(t),
         );
 
         // Function-like macros this file defines more than one way under a
