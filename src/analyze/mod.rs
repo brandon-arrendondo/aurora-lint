@@ -41,6 +41,7 @@ pub mod macro_semantics;
 /// Noreturn-function detection shared by CFG construction.
 pub mod noreturn;
 pub mod null_state;
+pub mod out_param_nonnull;
 pub mod paren_preproc_guard;
 /// Points-to/alias analysis: resolving an lvalue expression to the set of
 /// storage locations it may refer to.

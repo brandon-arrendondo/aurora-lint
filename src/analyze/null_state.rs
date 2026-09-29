@@ -745,7 +745,16 @@ fn apply_cross_file_output_params_null(
         {
             let var_name = extract_output_arg_var(&arg, source);
             if !var_name.is_empty() && state.contains_key(&var_name) {
-                state.insert(var_name, NullState::NotNull);
+                // The write says the callee stored something, not what: a
+                // callee whose own body leaves NULL there on some path
+                // (`*ppStmt = 0; ... return rc;`) leaves the caller's
+                // pointer possibly NULL.
+                let after = if summary.may_leave_null_through_params.contains(&arg_idx) {
+                    NullState::PossiblyNull
+                } else {
+                    NullState::NotNull
+                };
+                state.insert(var_name, after);
             }
         }
         arg_idx += 1;

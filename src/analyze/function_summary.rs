@@ -257,6 +257,30 @@ pub struct FunctionSummary {
     /// sets.
     #[serde(default)]
     pub conditional_write_return_correlation_conflicted: HashSet<usize>,
+    /// For a parameter the caller passes as `&p`, the constant return values
+    /// after which this function has provably stored a non-null pointer
+    /// through it (`out_param_nonnull::nonnull_on_return`, keyed by
+    /// `out_param_nonnull::constant_key`). A caller that tests the status
+    /// against one of them (`rc == OK`) may read `p` as non-null on that
+    /// branch.
+    ///
+    /// Read off this function's own body, path by path, never off its name
+    /// or the convention that success means a usable result: sqlite's
+    /// `sqlite3_prepare` returns `SQLITE_OK` with `*ppStmt` NULL for an
+    /// empty statement. Absent means unproven. Definitions linked under one
+    /// name keep only the values every one of them proves.
+    #[serde(default)]
+    pub out_param_nonnull_on_return: HashMap<usize, Vec<String>>,
+    /// MAY: parameters through which some path out of this function leaves
+    /// a NULL it stored itself (`*ppStmt = 0; ... return rc;`), or that it
+    /// forwards to a callee that may (`propagate_may_leave_null`).
+    ///
+    /// Writing through an out-parameter says nothing about what was
+    /// written, so a caller's `p` after `f(&p)` is possibly NULL when this
+    /// holds, not the non-null the write alone used to earn it. Read off the
+    /// body (`out_param_nonnull::out_param_facts`), never a name.
+    #[serde(default)]
+    pub may_leave_null_through_params: HashSet<usize>,
     /// Parameter indices whose **pointee** this function frees — `free(*param)`,
     /// the `void **` "safe free" wrapper idiom:
     ///
@@ -1450,6 +1474,7 @@ fn analyze_function(
             function_macros,
             &mut summary,
         );
+        credit_out_param_facts(func_node, source, &params, is_void_return, &mut summary);
         let arms = crate::analyze::dead_regions::arm_assumptions(func_node, source);
         for &idx in &summary.frees_params {
             summary.free_arms.entry(idx).or_default().push(arms.clone());
@@ -4318,6 +4343,20 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, mut summary: Functi
     existing
         .definitions
         .extend(summary.definitions.iter().cloned());
+    existing
+        .may_leave_null_through_params
+        .extend(summary.may_leave_null_through_params.iter().copied());
+    // A status value proves the out-parameter only if every definition
+    // linked under this name proves it: keep the intersection.
+    existing.out_param_nonnull_on_return.retain(|idx, keys| {
+        match summary.out_param_nonnull_on_return.get(idx) {
+            Some(theirs) => {
+                keys.retain(|k| theirs.contains(k));
+                !keys.is_empty()
+            }
+            None => false,
+        }
+    });
     existing.has_env03_taint_source |= summary.has_env03_taint_source;
     existing.returns_tainted |= summary.returns_tainted;
     existing.has_relative_command_write |= summary.has_relative_command_write;
@@ -4778,6 +4817,34 @@ fn credit_modifies_params(
                     .conditional_write_return_correlation
                     .insert(idx, corr);
             }
+        }
+    }
+}
+
+/// What each out-parameter holds on return
+/// (`out_param_nonnull::out_param_facts`): the status values after which it
+/// is non-null, and whether some path leaves it NULL. Only a parameter the
+/// body writes through can have either, and only a non-void function
+/// returns a status.
+fn credit_out_param_facts(
+    func_node: &Node,
+    source: &str,
+    params: &[String],
+    is_void_return: bool,
+    summary: &mut FunctionSummary,
+) {
+    for (idx, name) in params.iter().enumerate() {
+        if name.is_empty() || !summary.modifies_params.contains(&idx) {
+            continue;
+        }
+        let facts = crate::analyze::out_param_nonnull::out_param_facts(func_node, name, source);
+        if !is_void_return && !facts.nonnull_on_return.is_empty() {
+            summary
+                .out_param_nonnull_on_return
+                .insert(idx, facts.nonnull_on_return);
+        }
+        if facts.may_leave_null {
+            summary.may_leave_null_through_params.insert(idx);
         }
     }
 }
@@ -6709,6 +6776,44 @@ pub fn propagate_transitive_frees(
             }
         }
 
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Carry `may_leave_null_through_params` through forwarding wrappers: a
+/// function that hands its out-parameter to a callee that may leave NULL in
+/// it may leave NULL in it too (`sqlite3_prepare_v2` forwards `ppStmt` to
+/// `sqlite3LockAndPrepare`, which stores `*ppStmt = 0` first). A MAY fact,
+/// so any forwarding counts, conditional or not.
+pub fn propagate_may_leave_null(summaries: &mut HashMap<String, FunctionSummary>) {
+    for _pass in 0..10 {
+        let snapshot: HashMap<String, HashSet<usize>> = summaries
+            .iter()
+            .filter(|(_, s)| !s.may_leave_null_through_params.is_empty())
+            .map(|(n, s)| (n.clone(), s.may_leave_null_through_params.clone()))
+            .collect();
+        let mut changed = false;
+        for summary in summaries.values_mut() {
+            let reached: Vec<usize> = summary
+                .param_passthroughs
+                .iter()
+                .filter(|(idx, _)| !summary.may_leave_null_through_params.contains(idx))
+                .filter(|(_, edges)| {
+                    edges.iter().any(|(callee, callee_idx)| {
+                        snapshot
+                            .get(callee)
+                            .is_some_and(|may| may.contains(callee_idx))
+                    })
+                })
+                .map(|(idx, _)| *idx)
+                .collect();
+            for idx in reached {
+                summary.may_leave_null_through_params.insert(idx);
+                changed = true;
+            }
+        }
         if !changed {
             break;
         }
