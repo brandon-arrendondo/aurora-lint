@@ -4033,3 +4033,24 @@ fn a_later_null_test_reports_only_the_first_dereference_by_default() {
     assert_eq!(lines("default"), ["20", "32", "46"]);
     assert_eq!(lines("strict"), ["20", "26", "32", "39", "46", "50"]);
 }
+
+#[test]
+fn a_compound_assignment_does_not_start_a_new_value() {
+    // `p += 4` moves the same unchecked malloc() result along, so its later
+    // use depends on the one missing check already reported at line 4.
+    let found = scan_project(
+        &[(
+            "a.c",
+            "#include <stdlib.h>\n\
+             void f(void) {\n\
+             \x20   char *p = malloc(10);\n\
+             \x20   p[0] = 'x';\n\
+             \x20   p += 4;\n\
+             \x20   p[1] = 'y';\n\
+             }\n",
+        )],
+        "EXP34-C",
+    );
+    let lines: Vec<&str> = found.iter().filter_map(|l| l.split(':').nth(1)).collect();
+    assert_eq!(lines, ["4"], "{found:?}");
+}

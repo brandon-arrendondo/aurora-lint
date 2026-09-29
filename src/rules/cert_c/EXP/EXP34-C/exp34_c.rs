@@ -391,8 +391,10 @@ fn value_origin(name: &str, site: &Node, source: &str) -> Option<usize> {
 }
 
 /// The last write to `name` that ends before `site` in the enclosing
-/// function, in byte order: an assignment whose left side is spelled
-/// `name`, or the declaration that initializes it.
+/// function, in byte order: a plain `=` assignment whose left side is
+/// spelled `name`, or the declaration that initializes it. A compound
+/// assignment (`p += n`) derives from the value already there, so it starts
+/// no new value.
 fn last_write_before<'t>(name: &str, site: &Node<'t>, source: &str) -> Option<Node<'t>> {
     let mut current = site.parent();
     while let Some(parent) = current {
@@ -417,7 +419,10 @@ fn collect_last_write<'t>(
     if node.start_byte() >= before {
         return;
     }
-    if node.end_byte() <= before && write_target_is(node, name, source) {
+    if node.end_byte() <= before
+        && write_target_is(node, name, source)
+        && !is_compound(node, source)
+    {
         if last.is_none_or(|l| l.start_byte() < node.start_byte()) {
             *last = Some(*node);
         }
@@ -427,6 +432,15 @@ fn collect_last_write<'t>(
             collect_last_write(&child, name, before, source, last);
         }
     }
+}
+
+/// True for a compound assignment (`+=`, `|=`, ...), which derives its
+/// value from the one already there.
+fn is_compound(node: &Node, source: &str) -> bool {
+    node.kind() == "assignment_expression"
+        && node
+            .child_by_field_name("operator")
+            .is_some_and(|op| ast_utils::get_node_text(&op, source) != "=")
 }
 
 /// True when `node` is an assignment to, or the initializing declarator of,
