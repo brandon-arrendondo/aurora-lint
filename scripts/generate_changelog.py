@@ -10,8 +10,15 @@ body carries two lines:
     release-note: <the bullet, written to be published>
     category: added | fixed | removed | changed
 
-The bullet goes under that heading. A tagged task missing either line, or
-naming another category, is refused with a stderr warning naming the task id
+The bullet goes under that heading. A body may carry several such pairs (a
+task that both adds an option and changes a default, or a follow-up that
+landed later): each `category:` line pairs with the `release-note:` line
+closest before it and after the previous `category:` line, and every pair is
+published as its own bullet. Order carries no meaning -- a later pair never
+replaces an earlier one, so a superseded note is reworded or removed from
+the body, not left above its replacement. A tagged task missing either
+line, a pair naming another category, or a `release-note:` line after the
+last `category:` line, is refused with a stderr warning naming the task id
 only (never its title) -- ADR-0009 calls an uncategorised note a defect in
 the note, not something to default into "Added". Task titles are never
 published: they are internal working notes, and a large share of them locate
@@ -71,8 +78,8 @@ COMPARE_BASE = "https://github.com/brandon-arrendondo/aurora-lint"
 # publish cannot be given by accident while filing.
 ALLOW_TAG = "release-note"
 
-# The two body lines a published task must carry. First match of each wins;
-# matched case-insensitively at line start.
+# The two body lines a published note is made of, matched case-insensitively
+# at line start. Each category line closes one note; see `publishable`.
 RELEASE_NOTE_START = re.compile(r"^[ \t]*release[- ]note:[ \t]*", re.IGNORECASE | re.MULTILINE)
 CATEGORY_LINE = re.compile(r"^\s*category:\s*([A-Za-z]+)\s*$", re.IGNORECASE | re.MULTILINE)
 
@@ -175,25 +182,43 @@ def load_tasks(db_path=DB_PATH):
 
 
 def publishable(task):
-    """(category, text) if the task may be published, else (None, why-not).
+    """Every note in the task, as a list of (category, text) or (None, why-not).
+
+    One entry per `category:` line, so a body carrying two pairs publishes
+    two bullets and a bad second pair does not take the good first one down
+    with it. A task-level refusal (a tag) is a single (None, why-not) entry.
 
     The reason is only reported for a task that carries the allow tag: an
-    untagged task being skipped is the default and not worth a line, but a
-    maintainer who tagged a task and does not see its bullet needs to know
-    which layer stopped it.
+    untagged task being skipped is the default and not worth a line (an
+    empty list), but a maintainer who tagged a task and does not see its
+    bullet needs to know which layer stopped it.
     """
     if ALLOW_TAG not in task.tags:
-        return None, None
+        return []
     denied = sorted(t for t in task.tags if any(f in t for f in DENY_TAG_FRAGMENTS))
     if denied:
-        return None, f"carries disclosure-family tag(s) {', '.join(denied)}"
+        return [(None, f"carries disclosure-family tag(s) {', '.join(denied)}")]
     never = sorted(task.tags & NEVER_SHIPPED)
     if never:
-        return None, f"carries never-shipped tag(s) {', '.join(never)}"
-    category = CATEGORY_LINE.search(task.details)
-    if not category:
-        return None, "has no `category: added|fixed|removed|changed` line"
-    note_text = extract_release_note(task.details, category)
+        return [(None, f"carries never-shipped tag(s) {', '.join(never)}")]
+    categories = list(CATEGORY_LINE.finditer(task.details))
+    if not categories:
+        return [(None, "has no `category: added|fixed|removed|changed` line")]
+    notes = []
+    lo = 0
+    for category in categories:
+        notes.append(_one_note(task.details, category, lo))
+        lo = category.end()
+    # A note written after the last category line pairs with nothing; say
+    # so rather than drop it without a word.
+    if RELEASE_NOTE_START.search(task.details, lo):
+        notes.append((None, "has a `release-note:` line with no `category:` line after it"))
+    return notes
+
+
+def _one_note(details, category, lo):
+    """(category, text) for the pair `category` closes, else (None, why-not)."""
+    note_text = extract_release_note(details, category, lo)
     if not note_text:
         return None, "has no `release-note: <bullet>` line; the title is never published"
     key = category.group(1).lower()
@@ -206,17 +231,19 @@ def publishable(task):
 
 
 def sections_for(tasks, warn=None):
-    """Bullets per heading, in ADR-0009 order; `warn(msg)` is called per tagged task dropped."""
+    """Bullets per heading, in ADR-0009 order; `warn(msg)` is called per tagged note dropped."""
     grouped = OrderedDict((name, []) for name in CATEGORIES.values())
     for task in tasks:
-        key, text = publishable(task)
-        if key is None:
-            if text and warn:
-                # The task id, never the title: this goes to stderr, and in
-                # the release workflow stderr is a public Actions log.
-                warn(f"generate_changelog.py: not publishing task {task.id}: {text}")
-            continue
-        grouped[CATEGORIES[key]].append(text)
+        notes = publishable(task)
+        for i, (key, text) in enumerate(notes, 1):
+            if key is None:
+                if warn:
+                    # The task id, never the title: this goes to stderr, and
+                    # in the release workflow stderr is a public Actions log.
+                    which = f" (note {i} of {len(notes)})" if len(notes) > 1 else ""
+                    warn(f"generate_changelog.py: not publishing task {task.id}{which}: {text}")
+                continue
+            grouped[CATEGORIES[key]].append(text)
     return OrderedDict((k, v) for k, v in grouped.items() if v)
 
 
@@ -232,9 +259,10 @@ def render_section(heading, tasks, warn=None):
     return lines
 
 
-def extract_release_note(details, category_match):
+def extract_release_note(details, category_match, lo=0):
     """The bullet text of the `release-note:` line immediately preceding
-    `category_match`, joining any wrapped continuation lines.
+    `category_match` (and after offset `lo`, the end of the previous pair's
+    category line), joining any wrapped continuation lines.
 
     Anchored on the release-note occurrence closest to (and before) the
     category line, not the first one in the body: a task sometimes discusses
@@ -242,8 +270,10 @@ def extract_release_note(details, category_match):
     directive lower down, and taking the first match would capture that
     prose instead. A blank line ends the bullet even without a category line
     right after it, so an unrelated paragraph further down is never pulled in.
+    `lo` keeps a pair whose own release-note line is missing from borrowing
+    the previous pair's.
     """
-    before = details[:category_match.start()]
+    before = details[lo:category_match.start()]
     starts = list(RELEASE_NOTE_START.finditer(before))
     if not starts:
         return None

@@ -237,7 +237,9 @@ in the public adjudication dataset are dataset identifiers and may be cited.
 but only from tasks tagged `release-note` whose body carries both a
 `release-note: <bullet>` line and a `category: added|fixed|removed|changed` line
 (`docs/adr/0009`: the changelog is for users of the tool, four headings,
-with "Changed" only for a change in what existing output or options mean). A note that locates a defect in a real-world corpus
+with "Changed" only for a change in what existing output or options mean). A body may
+carry several pairs and each publishes; order means nothing, so when a later
+note supersedes an earlier one, delete or reword the earlier one. A note that locates a defect in a real-world corpus
 (`file.c:123`, disclosure/maintainer/CVE wording) is refused even when
 tagged, and `scripts/check_changelog_safety.py` screens the committed file in
 pre-commit, CI and the release workflow (`docs/adr/0007`). So when a done

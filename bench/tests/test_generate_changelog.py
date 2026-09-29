@@ -11,7 +11,8 @@ hand-rolled fixture object, so a schema drift in `load_tasks` (a renamed
 column, a lost `details` read) fails here instead of on a release:
 
 1. only a task tagged `release-note` with a `release-note:` line AND a
-   `category:` line (added|fixed|removed) is published, under that heading;
+   `category:` line (added|changed|fixed|removed) is published, under that
+   heading -- every such pair in the body, each checked on its own;
 2. a tagged task is still dropped, by id, if it carries a disclosure-family
    tag, its bullet matches a content deny pattern, or its category is
    missing or unknown;
@@ -249,8 +250,107 @@ class TestGenerator(unittest.TestCase):
         self.assertEqual(safety.find_sensitive("\n".join(lines)), [])
 
 
+def pairs(*pairs):
+    """A body carrying several release-note/category pairs, prose between them."""
+    return "Body prose.\n" + "\nprose between pairs\n".join(
+        f"release-note: {text}\ncategory: {category}" for text, category in pairs
+    ) + "\nmore prose"
+
+
+MULTI = [
+    # (id, title, tags, details, project, status, completed_at)
+    (20, "one pair", {"release-note"}, pairs(("Single note.", "fixed")),
+     "aurora_lint", "done", T % 1),
+    (21, "two pairs, different categories", {"release-note"},
+     pairs(("New `--flag` option.", "added"), ("The default now skips vendored trees.", "changed")),
+     "aurora_lint", "done", T % 2),
+    (22, "two pairs, same category", {"release-note"},
+     pairs(("First fix.", "fixed"), ("Follow-up fix.", "fixed")),
+     "aurora_lint", "done", T % 3),
+    (23, "bad category in the second pair only", {"release-note"},
+     pairs(("Good first note.", "added"), ("Bad second note.", "deprecated")),
+     "aurora_lint", "done", T % 4),
+    (24, "second category line with no note of its own", {"release-note"},
+     "release-note: Only note.\ncategory: fixed\nprose\ncategory: added\n",
+     "aurora_lint", "done", T % 5),
+    (25, "a note after the last category line", {"release-note"},
+     "release-note: Paired note.\ncategory: fixed\n\nrelease-note: Orphan note.\n",
+     "aurora_lint", "done", T % 6),
+    (26, "sensitive second pair", {"release-note"},
+     pairs(("Clean note.", "fixed"), ("Fixed at conf.c:921 (real bug).", "fixed")),
+     "aurora_lint", "done", T % 7),
+]
+
+
+class TestMultiplePairs(unittest.TestCase):
+    """A body may carry several release-note/category pairs; each one publishes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.db = Path(cls.tmp.name) / "tasks.db"
+        seed_db(cls.db, MULTI)
+        cls.tasks = {t.id: t for t in gen.load_tasks(cls.db)}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def sections(self, task_id):
+        warnings = []
+        return gen.sections_for([self.tasks[task_id]], warn=warnings.append), warnings
+
+    def test_one_pair(self):
+        sections, warnings = self.sections(20)
+        self.assertEqual(sections, {"Fixed": ["Single note."]})
+        self.assertEqual(warnings, [])
+
+    def test_two_pairs_with_different_categories(self):
+        sections, warnings = self.sections(21)
+        self.assertEqual(sections, {"Added": ["New `--flag` option."],
+                                    "Changed": ["The default now skips vendored trees."]})
+        self.assertEqual(warnings, [])
+
+    def test_two_pairs_with_the_same_category(self):
+        sections, warnings = self.sections(22)
+        self.assertEqual(sections, {"Fixed": ["First fix.", "Follow-up fix."]})
+        self.assertEqual(warnings, [])
+
+    def test_bad_category_in_the_second_pair_drops_only_that_pair(self):
+        sections, warnings = self.sections(23)
+        self.assertEqual(sections, {"Added": ["Good first note."]})
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("task 23 (note 2 of 2)", warnings[0])
+        self.assertIn("deprecated", warnings[0])
+
+    def test_a_pair_never_borrows_the_previous_pairs_note(self):
+        sections, warnings = self.sections(24)
+        self.assertEqual(sections, {"Fixed": ["Only note."]})
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("task 24 (note 2 of 2)", warnings[0])
+        self.assertIn("release-note", warnings[0])
+
+    def test_a_note_after_the_last_category_line_is_warned_about(self):
+        sections, warnings = self.sections(25)
+        self.assertEqual(sections, {"Fixed": ["Paired note."]})
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("task 25 (note 2 of 2)", warnings[0])
+        self.assertIn("no `category:` line after it", warnings[0])
+
+    def test_content_scan_applies_per_pair(self):
+        sections, warnings = self.sections(26)
+        self.assertEqual(sections, {"Fixed": ["Clean note."]})
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("deny pattern", warnings[0])
+
+    def test_warnings_name_the_task_id_never_the_title(self):
+        for task_id in self.tasks:
+            for w in self.sections(task_id)[1]:
+                self.assertNotIn(self.tasks[task_id].title, w)
+
+
 class TestSplice(unittest.TestCase):
-    NEW_BLOCK = ["## [Unreleased]", "", "### Fixed", "", "- fresh bullet", ""]
+    NEW_BLOCK =["## [Unreleased]", "", "### Fixed", "", "- fresh bullet", ""]
 
     def test_curated_sections_survive_byte_for_byte(self):
         out = gen.splice_unreleased(CURATED, self.NEW_BLOCK, RELEASES[:1])
