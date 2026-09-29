@@ -444,20 +444,22 @@ pub struct EnvironmentConfig {
 impl SettingsConfig {
     /// Only what these settings say about the project itself rather than
     /// which preset or options it wants: its declared allocators and
-    /// deallocators. A `--profile` restarts from its preset and keeps these,
-    /// since a preset chooses policy and never erases what a project's own
-    /// functions do.
+    /// deallocators, and the data model of its target. A `--profile`
+    /// restarts from its preset and keeps these, since a preset chooses
+    /// policy and never erases what a project's own functions do or what it
+    /// is built for.
     pub fn project_facts(&self) -> SettingsConfig {
         let Some(env) = &self.environment else {
             return SettingsConfig::default();
         };
-        if env.allocators.is_empty() && env.deallocators.is_empty() {
+        if env.allocators.is_empty() && env.deallocators.is_empty() && env.data_model.is_none() {
             return SettingsConfig::default();
         }
         SettingsConfig {
             environment: Some(EnvironmentConfig {
                 allocators: env.allocators.clone(),
                 deallocators: env.deallocators.clone(),
+                data_model: env.data_model,
                 ..Default::default()
             }),
             ..Default::default()
@@ -1122,6 +1124,11 @@ mod tests {
         assert_eq!(env.allocators["hook_take"], AllocatorContract::Calloc);
         let bare: SettingsConfig = toml::from_str("[environment]\nlibc = \"musl\"\n").unwrap();
         assert_eq!(bare.project_facts(), SettingsConfig::default());
+        let target: SettingsConfig =
+            toml::from_str("[environment]\nlibc = \"musl\"\ndata_model = \"lp64\"\n").unwrap();
+        let facts = target.project_facts().environment.unwrap();
+        assert_eq!(facts.data_model, Some(DataModel::Lp64));
+        assert_eq!(facts.libc, None);
     }
 
     #[test]

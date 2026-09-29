@@ -95,8 +95,8 @@ manifest: ``--profile``, ``--policy``, ``--environment``, ``--libc``,
 ``--deallocator NAME[=ARG]``, and a repeatable ``--set NAME=VALUE``. A
 ``--profile`` given on the command line starts again from that preset,
 discarding the manifest's settings except its declared allocators and
-deallocators: those say what the project's own functions do, which a preset
-never changes.
+deallocators and its ``data_model``: those say what the project's own
+functions do and what it is built for, which a preset never changes.
 
 ``aurora-lint --list-options`` lists every option with its value under each
 preset and under the current settings (``--list-options json`` for tooling).

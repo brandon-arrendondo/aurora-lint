@@ -18,6 +18,11 @@ MBEDTLS_PLATFORM_CALLOC_MACRO = "calloc"
 [environment.deallocators]
 MBEDTLS_PLATFORM_FREE_MACRO = 1
 
+[environment]
+# The configuration of record is a Linux x86_64 build, LP64: int 32 bits, long
+# and pointers 64. See docs/design/realworld-corpus-scope.md.
+data_model = "lp64"
+
 [rules.cert_c.API00-C]
 enabled = true
 

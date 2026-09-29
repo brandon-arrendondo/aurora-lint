@@ -181,6 +181,34 @@ some Windows code. That is why its primary configuration is windows-x86
 rather than defaulting to the POSIX/Linux pattern every other corpus gets by
 construction — the choice follows from the reason ventoy is here at all.
 
+## Data model (ADR-0011)
+
+Integer widths are implementation-defined. aurora-lint credits only what ISO
+C guarantees (`int` at least 16 bits, `long` at least 32, `CHAR_BIT` at least
+8, exact-width types exactly) unless a project declares its target's data
+model (`[environment] data_model`, docs/options.rst). Without a declaration a
+scan reports what is possible on some conforming implementation, which is
+much more than any one target's truth (Brandon, 2026-09-29).
+
+The benchmark corpora are measured on their configuration of record, so each
+manifest declares that configuration's data model, as a stated fact about the
+code rather than an assumption the tool makes:
+
+| Corpus | Configuration of record | `data_model` |
+|---|---|---|
+| libcrc, sqlite, mosquitto, curl, hostap, lua, raylib, pureftpd, mbedtls, valkey | `linux-x86_64` | `lp64` |
+| sel4 | `linux-x86_64-pc99` | `lp64` |
+| ventoy | `windows-x86` (MSVC) | `llp64` |
+
+Juliet is declared `lp64` as well (`JULIET_SETTING_OVERRIDES` in
+`bench/config.py`): the testcases are built for Linux x86_64 with GCC.
+
+A declared corpus therefore reproduces the widths every earlier run assumed,
+except where a proof depended on a width the configuration does not have
+(ventoy's `long` is 32 bits, not 64). Declaring moves each corpus's settings
+hash, so runs from before and after the declaration carry different run ids.
+
+
 ## sqlite
 
 ### Precision scope (what counts as "sqlite")

@@ -4,6 +4,11 @@ version = "1.0.0"
 description = "Project rules manifest for valkey (in-memory database server, src/ scope), onboarded as the suite's 11th real-world oracle: a security-conscious server with real pthread concurrency (iothread.c, threads_mngr.c, the ae event loop) that fits the existing CON* vocabulary, chosen over Redis for upstream responsiveness. Pinned to 9.1.2 (7f1dffed). aurora-lint --detect-relevance reports threading=true (genuine) and windows=true (a detector false positive: the HANDLE identifier marker matched a comment in call_reply.c; valkey has no Windows port). WIN00-05/WIN30-C are the one categorical disable here (category 1, no Windows port; WIN03-C otherwise reports every POSIX fopen() for a missing Windows-only mode flag). Otherwise the full base manifest (rules_templates/rules-all.toml) with the suite-wide dead-config disables. Per-finding false positives among ENABLED rules are not suppressed here; they go to the ground_truth oracle. See data/precision_audit/valkey/README.md."
 cert_version = "2016"
 
+[environment]
+# The configuration of record is a Linux x86_64 build, LP64: int 32 bits, long
+# and pointers 64. See docs/design/realworld-corpus-scope.md.
+data_model = "lp64"
+
 [rules.cert_c.API00-C]
 enabled = true
 
