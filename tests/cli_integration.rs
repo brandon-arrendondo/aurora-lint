@@ -3703,3 +3703,62 @@ fn a_prescan_cache_is_refused_under_a_different_scope() {
     ]);
     assert_eq!(code, 0, "stderr: {stderr}");
 }
+
+fn pre31_findings(fixture: &str, file: &str, extra: &[&str]) -> Vec<(u64, String)> {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let fixture_dir = fixtures().join(fixture);
+    let project = fixture_dir.join("project");
+    let mut argv: Vec<String> = vec![
+        project.join(file).to_string_lossy().into_owned(),
+        "-m".into(),
+        fixtures()
+            .join("manifest_pre31.toml")
+            .to_string_lossy()
+            .into_owned(),
+        "-d".into(),
+        project.to_string_lossy().into_owned(),
+        "-I".into(),
+        fixture_dir.join("system").to_string_lossy().into_owned(),
+        "-e".into(),
+        out.to_string_lossy().into_owned(),
+    ];
+    argv.extend(extra.iter().map(|s| s.to_string()));
+    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (code, _, stderr) = run_aurora_lint(&args);
+    assert_eq!(code, 0, "{stderr}");
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    violations
+        .iter()
+        .filter(|v| v["rule_id"] == "PRE31-C")
+        .map(|v| {
+            (
+                v["line"].as_u64().unwrap(),
+                v["message"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_library_functions_own_macro_evaluates_each_argument_once() {
+    // The system tolower reads its argument twice in its replacement list,
+    // but C11 7.1.4 binds the implementation to evaluate it once. getc's
+    // stream is the standard's own exception and stays reported.
+    let found = pre31_findings("pre31_library_macro", "main.c", &[]);
+    let lines: Vec<u64> = found.iter().map(|(l, _)| *l).collect();
+    assert_eq!(lines, vec![11], "{found:?}");
+    assert!(found[0].1.contains("'getc'"), "{found:?}");
+}
+
+#[test]
+fn a_library_macro_is_judged_by_its_body_once_the_contract_is_withdrawn() {
+    let found = pre31_findings(
+        "pre31_library_macro",
+        "main.c",
+        &["--set", "library_macros_evaluate_once=false"],
+    );
+    let lines: Vec<u64> = found.iter().map(|(l, _)| *l).collect();
+    assert_eq!(lines, vec![6, 11], "{found:?}");
+}

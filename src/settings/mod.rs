@@ -299,6 +299,21 @@ pub static OPTIONS: &[OptionSpec] = &[
                 effect\".",
     },
     OptionSpec {
+        name: "library_macros_evaluate_once",
+        axis: Axis::Environment,
+        scope: Scope::Contract,
+        source: Source::Library(CONFORMING_LIBCS),
+        oracle_tag: "contract:library_macros_evaluate_once",
+        summary: "A C library function the implementation's headers define as a macro \
+                  (glibc's tolower) evaluates each argument exactly once, whatever its \
+                  replacement list looks like. Withdrawn, such a macro is judged by its \
+                  definition like any other.",
+        basis: "C11 7.1.4p1: \"Any invocation of a library function that is implemented \
+                as a macro shall expand to code that evaluates each of its arguments \
+                exactly once\". The standard's own exceptions (the stream argument of \
+                getc, putc, getwc and putwc, and assert) stay unsafe.",
+    },
+    OptionSpec {
         name: "main_argv_guarantees",
         axis: Axis::Environment,
         scope: Scope::Contract,
@@ -1029,16 +1044,17 @@ mod tests {
 
     #[test]
     fn exact_include_names_leave_every_preset_hash_as_it_was() {
-        // The presets' hashes with the current option table (`closed_program`
-        // added a declared option, which moved both). Benchmark run ids carry
+        // The presets' hashes with the current option table
+        // (`library_macros_evaluate_once` added a contract, which moved both).
+        // Benchmark run ids carry
         // them, so exact include-name matching must not move them.
         assert_eq!(
             AnalysisSettings::preset(Preset::Default).settings_hash(),
-            "6a42bd4cf1e02bd610c081ad24a69ebfc4a214e67a7f338449fd9651ddf24c8f"
+            "6a001173c239eb726f3ca4e2e73487042aa972f8ae7c3561b2d512a8905d473f"
         );
         assert_eq!(
             AnalysisSettings::preset(Preset::Strict).settings_hash(),
-            "b15a42e2ed2094bb968fc6ff764429d5f3e598d0103e91ab3ff660286dc648f9"
+            "5fa23c0fef79bc1d0337f4df67a0df0ee2e5a502841075133eefb24e8e307eab"
         );
         assert_eq!(
             with_names(Preset::Default, Some(IncludeNames::Exact)).settings_hash(),

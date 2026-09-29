@@ -12,8 +12,42 @@ pub fn is_known_standard_function(name: &str) -> bool {
 /// subset below: the names the ISO C and POSIX library contracts
 /// (`settings::Libc::IsoPosix`) speak for.
 pub fn is_iso_c_or_posix_function(name: &str) -> bool {
+    is_iso_c_name(name) || is_posix_subset_function(name)
+}
+
+/// Whether `name` is a C11 library function: one C11 7.1.4 binds, so that
+/// an implementation of it as a macro evaluates each argument exactly once.
+/// The facilities the standard specifies only as macros are not functions
+/// and are left out: `assert` (7.2.1.1), `setjmp` (7.13.1.1), the `va_`
+/// family (7.16.1), and the floating-point classification and comparison
+/// macros (7.12.3, 7.12.14).
+pub fn is_iso_c_function(name: &str) -> bool {
+    is_iso_c_name(name)
+        && !matches!(
+            name,
+            "assert"
+                | "setjmp"
+                | "va_start"
+                | "va_end"
+                | "va_arg"
+                | "va_copy"
+                | "isnan"
+                | "isinf"
+                | "isfinite"
+                | "isnormal"
+                | "signbit"
+                | "isgreater"
+                | "isgreaterequal"
+                | "isless"
+                | "islessequal"
+                | "islessgreater"
+                | "isunordered"
+        )
+}
+
+/// The C11 standard library names the tool knows, macros included.
+fn is_iso_c_name(name: &str) -> bool {
     match name {
-        // ===== C11 Standard Library =====
 
         // stdio.h
         "printf" | "fprintf" | "sprintf" | "snprintf" | "vprintf" | "vfprintf" | "vsprintf"
@@ -37,11 +71,6 @@ pub fn is_iso_c_or_posix_function(name: &str) -> bool {
         | "strcat" | "strncat" | "strcmp" | "strncmp" | "strchr" | "strrchr" | "strstr"
         | "strtok" | "strlen" | "strerror" | "strcoll" | "strxfrm" | "strpbrk" | "strspn"
         | "strcspn" => true,
-
-        // POSIX string extensions (string.h / strings.h under _POSIX_C_SOURCE)
-        "strdup" | "strndup" | "stpcpy" | "stpncpy"
-        | "strcasecmp" | "strncasecmp"
-        | "strtok_r" | "strerror_l" => true,
 
         // math.h
         "acos" | "asin" | "atan" | "atan2" | "cos" | "sin" | "tan" | "acosh" | "asinh"
@@ -129,16 +158,25 @@ pub fn is_iso_c_or_posix_function(name: &str) -> bool {
         | "csinhf" | "csinhl" | "csqrt" | "csqrtf" | "csqrtl" | "ctan" | "ctanf" | "ctanl"
         | "ctanh" | "ctanhf" | "ctanhl" => true,
 
-        // ===== POSIX Subset =====
+        _ => false,
+    }
+}
+
+/// The POSIX functions the tool knows beyond C11.
+fn is_posix_subset_function(name: &str) -> bool {
+    match name {
+        // POSIX string extensions (string.h / strings.h under _POSIX_C_SOURCE)
+        "strdup" | "strndup" | "stpcpy" | "stpncpy" | "strcasecmp" | "strncasecmp" | "strtok_r"
+        | "strerror_l" => true,
 
         // unistd.h
         "read" | "write" | "close" | "fork" | "execl" | "execle" | "execlp" | "execv"
         | "execve" | "execvp" | "pipe" | "dup" | "dup2" | "sleep" | "usleep" | "getpid"
         | "getppid" | "getuid" | "geteuid" | "getgid" | "getegid" | "access" | "chdir"
-        | "getcwd" | "chown" | "link" | "unlink" | "rmdir" | "symlink" | "readlink"
-        | "isatty" | "lseek" | "sysconf" | "pathconf" | "fpathconf" | "alarm" | "pause"
-        | "setsid" | "setpgid" | "getpgid" | "tcgetpgrp" | "tcsetpgrp" | "fsync"
-        | "fdatasync" | "truncate" | "ftruncate" | "nice" => true,
+        | "getcwd" | "chown" | "link" | "unlink" | "rmdir" | "symlink" | "readlink" | "isatty"
+        | "lseek" | "sysconf" | "pathconf" | "fpathconf" | "alarm" | "pause" | "setsid"
+        | "setpgid" | "getpgid" | "tcgetpgrp" | "tcsetpgrp" | "fsync" | "fdatasync"
+        | "truncate" | "ftruncate" | "nice" => true,
 
         // sys/socket.h
         "socket" | "bind" | "listen" | "accept" | "connect" | "send" | "recv" | "sendto"
@@ -154,30 +192,50 @@ pub fn is_iso_c_or_posix_function(name: &str) -> bool {
         | "getservbyport" | "gethostbyname" | "gethostbyaddr" => true,
 
         // pthread basics
-        "pthread_create" | "pthread_join" | "pthread_detach" | "pthread_exit" | "pthread_self"
-        | "pthread_equal" | "pthread_cancel" | "pthread_mutex_init" | "pthread_mutex_destroy"
-        | "pthread_mutex_lock" | "pthread_mutex_trylock" | "pthread_mutex_unlock"
-        | "pthread_cond_init" | "pthread_cond_destroy" | "pthread_cond_wait"
-        | "pthread_cond_signal" | "pthread_cond_broadcast" | "pthread_cond_timedwait"
-        | "pthread_rwlock_init" | "pthread_rwlock_destroy" | "pthread_rwlock_rdlock"
-        | "pthread_rwlock_wrlock" | "pthread_rwlock_unlock" | "pthread_key_create"
-        | "pthread_key_delete" | "pthread_getspecific" | "pthread_setspecific"
-        | "pthread_once" | "pthread_attr_init" | "pthread_attr_destroy" => true,
+        "pthread_create"
+        | "pthread_join"
+        | "pthread_detach"
+        | "pthread_exit"
+        | "pthread_self"
+        | "pthread_equal"
+        | "pthread_cancel"
+        | "pthread_mutex_init"
+        | "pthread_mutex_destroy"
+        | "pthread_mutex_lock"
+        | "pthread_mutex_trylock"
+        | "pthread_mutex_unlock"
+        | "pthread_cond_init"
+        | "pthread_cond_destroy"
+        | "pthread_cond_wait"
+        | "pthread_cond_signal"
+        | "pthread_cond_broadcast"
+        | "pthread_cond_timedwait"
+        | "pthread_rwlock_init"
+        | "pthread_rwlock_destroy"
+        | "pthread_rwlock_rdlock"
+        | "pthread_rwlock_wrlock"
+        | "pthread_rwlock_unlock"
+        | "pthread_key_create"
+        | "pthread_key_delete"
+        | "pthread_getspecific"
+        | "pthread_setspecific"
+        | "pthread_once"
+        | "pthread_attr_init"
+        | "pthread_attr_destroy" => true,
 
         // fcntl / stat / mmap
-        "open" | "creat" | "fcntl" | "stat" | "fstat" | "lstat" | "mkdir" | "chmod"
-        | "fchmod" | "umask" | "mmap" | "munmap" | "mprotect" | "msync" | "mlock"
-        | "munlock" => true,
+        "open" | "creat" | "fcntl" | "stat" | "fstat" | "lstat" | "mkdir" | "chmod" | "fchmod"
+        | "umask" | "mmap" | "munmap" | "mprotect" | "msync" | "mlock" | "munlock" => true,
 
         // select / poll / epoll
         "select" | "pselect" | "poll" | "ppoll" | "epoll_create" | "epoll_create1"
         | "epoll_ctl" | "epoll_wait" => true,
 
         // POSIX misc
-        "opendir" | "readdir" | "closedir" | "rewinddir" | "seekdir" | "telldir"
-        | "dlopen" | "dlclose" | "dlsym" | "dlerror" | "getopt" | "getopt_long"
-        | "strsignal" | "strerror_r" | "realpath" | "mkstemp" | "mkdtemp" | "glob"
-        | "globfree" | "regcomp" | "regexec" | "regfree" | "regerror" => true,
+        "opendir" | "readdir" | "closedir" | "rewinddir" | "seekdir" | "telldir" | "dlopen"
+        | "dlclose" | "dlsym" | "dlerror" | "getopt" | "getopt_long" | "strsignal"
+        | "strerror_r" | "realpath" | "mkstemp" | "mkdtemp" | "glob" | "globfree" | "regcomp"
+        | "regexec" | "regfree" | "regerror" => true,
 
         _ => false,
     }

@@ -10,6 +10,7 @@ use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, IdentifierBinding};
 use crate::utility::cert_c::library_effects::{library_call_effect, LibraryEffect};
+use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -33,13 +34,17 @@ pub struct Pre31C {
     function_macro_names: RefCell<Arc<HashSet<String>>>,
     /// Object-like aliases across the scanned files (`#define ASSERT assert`).
     macro_aliases: RefCell<Arc<HashMap<String, String>>>,
+    /// Names only a header outside the project defines: the C library's own
+    /// macros, which C11 7.1.4 binds (`library_macros_evaluate_once`).
+    outside_macros: RefCell<Arc<HashSet<String>>>,
     /// Which functions some scanned file defines.
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// Struct member and typedef types as this file sees them, for a read
     /// of a `volatile` member.
     types: RefCell<VisibleTypes>,
     /// `pre31_unknown_call_pure` and `stdlib_call_effects` decide how a
-    /// call inside an argument is classified.
+    /// call inside an argument is classified; `library_macros_evaluate_once`
+    /// whether the C library's own macros are single-evaluation.
     settings: RefCell<Arc<AnalysisSettings>>,
 }
 
@@ -50,6 +55,7 @@ impl Pre31C {
             function_macro_arms: RefCell::new(Arc::new(HashMap::new())),
             function_macro_names: RefCell::new(Arc::new(HashSet::new())),
             macro_aliases: RefCell::new(Arc::new(HashMap::new())),
+            outside_macros: RefCell::new(Arc::new(HashSet::new())),
             function_summaries: RefCell::default(),
             types: RefCell::default(),
             settings: RefCell::new(Arc::new(AnalysisSettings::default())),
@@ -85,6 +91,7 @@ impl CertRule for Pre31C {
         *self.function_macro_arms.borrow_mut() = context.function_macro_arms.clone();
         *self.function_macro_names.borrow_mut() = context.function_macro_names.clone();
         *self.macro_aliases.borrow_mut() = context.macro_aliases.clone();
+        *self.outside_macros.borrow_mut() = context.macros_defined_outside_project.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
     }
 
@@ -122,6 +129,7 @@ impl CertRule for Pre31C {
             arms: &macro_expand::collect_function_macro_arms(source),
             project_arms: &self.function_macro_arms.borrow(),
             aliases: &merged_macro_aliases(&self.macro_aliases.borrow(), node, source),
+            outside: &self.outside_macros.borrow(),
             local_functions: &local_functions,
             summaries: &summaries,
             types: &types,
@@ -193,6 +201,8 @@ struct Ctx<'a> {
     /// Every scanned header's definitions, the same way.
     project_arms: &'a HashMap<String, Vec<MacroArm>>,
     aliases: &'a HashMap<String, String>,
+    /// `Pre31C::outside_macros`.
+    outside: &'a HashSet<String>,
     /// This file's function definitions, by name: every `#if` arm's.
     local_functions: &'a HashMap<String, Vec<Node<'a>>>,
     summaries: &'a ScopedTable<FunctionSummary>,
@@ -700,6 +710,14 @@ impl Pre31C {
             Box::new(move |i| arms.iter().any(|a| !evaluates_once(a, i)))
         } else if let Some(k) = library_unsafe_argument(macro_name) {
             Box::new(move |i| i == k)
+        } else if ctx.outside.contains(macro_name)
+            && std_functions::is_iso_c_function(macro_name)
+            && ctx.settings.flag("library_macros_evaluate_once")
+        {
+            // The implementation's macro for a library function: whatever
+            // its body looks like, C11 7.1.4 has it evaluate each argument
+            // once (glibc's tolower reads `c` twice through __tobody).
+            return;
         } else if ctx.names.contains(macro_name) {
             let defs = ctx.definitions(macro_name);
             if defs.is_empty() {

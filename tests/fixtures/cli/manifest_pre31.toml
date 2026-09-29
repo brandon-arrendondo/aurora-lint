@@ -1,7 +1,7 @@
 [metadata]
 name = "CLI Integration Test - PRE31-C only"
 version = "1.0.0"
-description = "Minimal manifest for PRE31-C cross-file tests"
+description = "Minimal manifest for PRE31-C tests that need -I headers"
 cert_version = "2016"
 
 [rules.cert_c.PRE31-C]
