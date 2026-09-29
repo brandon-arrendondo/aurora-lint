@@ -613,7 +613,8 @@ pub fn resolve_macro_alias<'a>(aliases: &'a HashMap<String, String>, name: &'a s
 /// deallocator) ends it. So does a link with a body (`known`) whose alias is
 /// UNCONDITIONAL -- valkey's `#define zfree valkey_free` renames the very
 /// definition the scan read as `void zfree(void *ptr)`, so that body is what
-/// every call runs. A link with a body whose alias is defined only in some
+/// every call runs, and a role the renamed name has (a declared
+/// `valkey_free`) is its role. A link with a body whose alias is defined only in some
 /// configurations (`conditional`) is two builds: the body where the alias is
 /// absent, and wherever the rest of the chain leads where it is present --
 /// mbedtls's `mbedtls_free` is a function calling a pointer in one
@@ -641,8 +642,17 @@ pub fn alias_chain_builds<'a>(
             .map(String::as_str)
             .filter(|t| *t != current);
         if known(current) {
+            if next.is_some() && !conditional(current) {
+                // An unconditional rename: the body read under `current` is
+                // the definition every call reaches, spelled with the name
+                // the chain ends at. A role that name has (valkey declares
+                // `valkey_free`, which `zfree` is renamed to) is this body's.
+                let renamed = resolve_macro_alias(aliases, current);
+                builds.push(if role(renamed) { renamed } else { current });
+                return builds;
+            }
             builds.push(current);
-            if next.is_none() || !conditional(current) {
+            if next.is_none() {
                 return builds;
             }
         }
@@ -3710,6 +3720,17 @@ int f(unsigned long s) { return LINEBITS(s); }
         };
         // valkey: the unconditional rename's body is what every call runs.
         assert_eq!(builds("s_free"), vec!["zfree"]);
+        // Declared under the name it is renamed to, the body takes that role.
+        assert_eq!(
+            alias_chain_builds(
+                &aliases,
+                "zfree",
+                |n| n == "free" || n == "valkey_free",
+                |n| bodies.contains(&n),
+                |_| false,
+            ),
+            vec!["valkey_free"]
+        );
         // mbedtls: a body in one configuration, `free` in the other.
         assert_eq!(builds("mbedtls_free"), vec!["mbedtls_free", "free"]);
         // Nothing known anywhere: the chain's end, as `resolve_macro_alias`.
