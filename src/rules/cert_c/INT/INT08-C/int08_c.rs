@@ -62,7 +62,7 @@ impl CertRule for Int08C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        let macros = const_eval::collect_macro_constants(node, source);
+        let macros = const_eval::collect_macro_constants(node, source, self.data_model.get());
 
         // Each function gets its own `variables` scope: a same-named
         // variable in a different function is a different object, and
@@ -569,11 +569,12 @@ impl Int08C {
         }
     }
 
-    /// The value range a narrow integer type takes on after promotion to
-    /// `int`. Delegates to [`const_eval::promoted_range_for_type`], shared
-    /// with `INT32-C` since an earlier fix found the same inverted premise there.
+    /// The value range a narrow integer type holds on every target the data
+    /// model allows, after promotion to `int`: a witness range, since this
+    /// channel proves an overflow rather than its absence
+    /// ([`const_eval::guaranteed_range_for_type`]).
     fn promoted_range_for_type(&self, type_name: &str) -> Option<ValueRange> {
-        const_eval::promoted_range_for_type(type_name)
+        const_eval::guaranteed_range_for_type(type_name, self.data_model.get())
     }
 
     /// Extract variable names from an expression

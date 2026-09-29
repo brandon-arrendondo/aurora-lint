@@ -204,6 +204,7 @@ pub fn analyze_project(
         needs_vra,
         &header_lookup,
         scope,
+        settings.data_model,
     )?;
     context.settings = std::sync::Arc::new(settings.clone());
 
@@ -412,6 +413,7 @@ fn load_project_context(
     needs_vra: bool,
     header_lookup: &include_names::HeaderLookup,
     scope: &ScanScope,
+    data_model: crate::settings::DataModel,
 ) -> Result<context::ProjectContext> {
     // The globs the prescan leaves out, as a cache records them, and the
     // ignore built from exactly those: a context built without them holds
@@ -454,6 +456,8 @@ fn load_project_context(
             header_lookup.mode().to_string(),
         ),
         ("prescan_scope".to_string(), prescan_scope_key),
+        // The limit macros and sizeof the macro constants are resolved with.
+        ("data_model".to_string(), data_model.to_string()),
     ]);
 
     let mut context = if let Some(cache_path) = load_prescan {
@@ -500,9 +504,9 @@ fn load_project_context(
             files.extend(prescan::sibling_headers(&dir));
         }
         files.retain(|f| !scoped_out(f, &root));
-        prescan::prescan_files(files, progress, needs_vra)?
+        prescan::prescan_files(files, progress, needs_vra, data_model)?
     } else {
-        prescan::prescan_directories(directories, progress, needs_vra, &scoped_out)?
+        prescan::prescan_directories(directories, progress, needs_vra, &scoped_out, data_model)?
     };
 
     // Stamp only a context built here. A loaded one keeps the record it was
@@ -539,6 +543,7 @@ fn load_project_context(
             &mut context,
             progress,
             needs_vra,
+            data_model,
             header_lookup,
         )?;
     }
@@ -548,7 +553,7 @@ fn load_project_context(
     // (see `compile_commands`' gap-filling invariant). Runs before the cache
     // save so a saved prescan carries the same context a live run would build.
     if let Some(db) = compile_db {
-        db.merge_defines_into(&mut context)?;
+        db.merge_defines_into(&mut context, data_model)?;
     }
 
     // Save prescan cache if requested (after prescan + include resolution)
@@ -1035,6 +1040,7 @@ pub(crate) fn build_file_analysis(
         source,
         &context.function_summaries,
         &context.macro_constants,
+        context.settings.data_model,
     );
 
     FileAnalysis {
@@ -1058,6 +1064,7 @@ pub(crate) fn compute_vra_if_needed(
     source: &str,
     prescan_summaries: &(impl crate::analyze::context::SummaryLookup + ?Sized),
     project_macros: &const_eval::MacroConstantMap,
+    data_model: crate::settings::DataModel,
 ) -> HashMap<usize, value_range::RangeAnalysisResult> {
     if !needs_vra || function_cfgs.is_empty() {
         return HashMap::new();
@@ -1070,7 +1077,7 @@ pub(crate) fn compute_vra_if_needed(
     // NORMAL_IRQ_OFFSET) return;` where that macro lives in a driver header
     // -- refined nothing, so every variable derived from the guarded one
     // stayed at its full type range for the rest of the function.
-    let macros = const_eval::merged_macro_constants(project_macros, root_node, source);
+    let macros = const_eval::merged_macro_constants(project_macros, root_node, source, data_model);
     let mut file_summaries = function_summary::compute_summaries(
         root_node,
         source,
@@ -1162,7 +1169,7 @@ pub fn collect_function_cfgs(
     settings: &crate::settings::AnalysisSettings,
 ) {
     // Only values fixed in every configuration may prove a branch dead.
-    let constants = const_eval::cfg_prunable_constants(node, source);
+    let constants = const_eval::cfg_prunable_constants(node, source, settings.data_model);
     let noreturn_names = noreturn::collect_noreturn_function_names(node, source, settings);
     collect_function_cfgs_with_constants(node, source, cfgs, &constants, &noreturn_names);
 }
@@ -1363,6 +1370,7 @@ mod tests {
             &source,
             &summaries,
             &const_eval::MacroConstantMap::new(),
+            Default::default(),
         );
         assert!(results.is_empty());
     }
@@ -1380,6 +1388,7 @@ mod tests {
             &source,
             &summaries,
             &const_eval::MacroConstantMap::new(),
+            Default::default(),
         );
         assert!(results.is_empty());
     }

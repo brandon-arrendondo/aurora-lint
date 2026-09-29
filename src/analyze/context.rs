@@ -729,9 +729,14 @@ impl ProjectContext {
 /// without a format bump (adding a key does not change the layout).
 ///
 /// Before `prescan_scope` was recorded the prescan read every file it walked,
-/// so an older cache was built leaving nothing out.
-pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] =
-    &[("include_names", "exact"), ("prescan_scope", "")];
+/// so an older cache was built leaving nothing out. Before the data model was
+/// a setting, the macro constants were resolved with LP64's `INT_MAX` and
+/// `sizeof`.
+pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
+    ("include_names", "exact"),
+    ("prescan_scope", ""),
+    ("data_model", "lp64"),
+];
 
 /// Version of the prescan cache's serialized layout. Bump it with any change
 /// to a serialized field of [`ProjectContext`] (or of a type it holds), or to
@@ -1205,6 +1210,14 @@ mod tests {
             .is_ok());
         assert!(ctx
             .check_built_under(&map(&[("include_names", "case-insensitive")]), path)
+            .is_err());
+        // One from before the data model was a setting resolved its
+        // constants with LP64's limits, so only an LP64 scan may use it.
+        assert!(ctx
+            .check_built_under(&map(&[("data_model", "lp64")]), path)
+            .is_ok());
+        assert!(ctx
+            .check_built_under(&map(&[("data_model", "iso")]), path)
             .is_err());
         // A setting with no implicit value cannot be judged when absent.
         let err = ctx

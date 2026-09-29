@@ -140,8 +140,12 @@ impl CertRule for Int34C {
         let mut violations = Vec::new();
 
         // Merge project-level macros with per-file macros (per-file wins)
-        *self.current_macros.borrow_mut() =
-            const_eval::merged_macro_constants(&self.project_macros.borrow(), node, source);
+        *self.current_macros.borrow_mut() = const_eval::merged_macro_constants(
+            &self.project_macros.borrow(),
+            node,
+            source,
+            self.data_model.get(),
+        );
 
         let mut fmacros = HashMap::clone(&self.project_function_macros.borrow());
         fmacros.extend(macro_expand::collect_function_macros(node, source));
