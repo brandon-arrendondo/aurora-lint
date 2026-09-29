@@ -1133,8 +1133,9 @@ are private implementation detail behind the small public surface below.
 
 `FunctionSummary`'s fields (all `pub`) are the actual payload most rules
 read: `frees_params`/`unconditional_frees_params` (MAY-free vs. MUST-free;
-a free of a local that only ever holds the parameter, or the parameter moved
-by an integer constant, counts, as in `a = (T *) ptr - 1; free(a)`),
+a free of the parameter moved by an integer constant, or of a local that
+only ever holds either, counts, as in `free((T *) ptr - 1)` or
+`a = (T *) ptr - 1; free(a)`),
 `can_return_null`, `returns_allocation`, `checks_null_params`,
 `modifies_params`, `dereferences_params`, `never_returns`,
 `callsite_param_null_states`, `return_range`,

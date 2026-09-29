@@ -5038,6 +5038,13 @@ fn credit_frees_one_arg(
     summary: &mut FunctionSummary,
 ) {
     let Some((target, through_pointee)) = strip_free_argument(arg) else {
+        // The parameter moved by a constant, freed directly: `free((struct
+        // os_alloc_trace *) ptr - 1)`.
+        if init_state::strip_arg_casts(&arg).kind() == "binary_expression" {
+            if let Some(idx) = param_at_offset(&arg, body, source, params, true) {
+                credit_param_free(call, body, source, params, idx, summary);
+            }
+        }
         return;
     };
     let arg_name = target.utf8_text(source.as_bytes()).unwrap_or("");
@@ -8256,6 +8263,27 @@ void wrap_rel(void *p) { rel(p); }
         let s = summaries.get("os_free").unwrap();
         assert!(s.frees_params.contains(&0));
         assert!(s.unconditional_frees_params.contains(&0));
+    }
+
+    /// The parameter moved by a constant and freed directly, with no local
+    /// between; moved by a non-constant, or rewritten first, it is not.
+    #[test]
+    fn test_free_of_the_parameter_moved_by_a_constant() {
+        let code = r#"
+        void hdr_free(void *ptr) {
+            if (ptr == NULL)
+                return;
+            free((struct os_alloc_trace *) ptr - 1);
+        }
+        void by_var(char *p, int n) { free(p - n); }
+        void moved(char *p) { p += 4; free(p - 1); }
+        "#;
+        let summaries = parse_and_summarize(code);
+        let s = summaries.get("hdr_free").unwrap();
+        assert!(s.frees_params.contains(&0));
+        assert!(s.unconditional_frees_params.contains(&0));
+        assert!(summaries.get("by_var").unwrap().frees_params.is_empty());
+        assert!(summaries.get("moved").unwrap().frees_params.is_empty());
     }
 
     /// The same through an initializer, with a null guard on the parameter
