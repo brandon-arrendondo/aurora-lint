@@ -579,7 +579,9 @@ impl<'a> Ctx<'a> {
         defs.iter()
             .map(|arm| {
                 let body = macro_expand::macro_body_calls(arm);
-                if body.writes {
+                // Inside the argument, assigning even the caller's own local
+                // is the side effect.
+                if body.writes || !body.written_params.is_empty() {
                     return Effect::Definite;
                 }
                 let direct = body

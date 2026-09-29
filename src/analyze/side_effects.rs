@@ -57,7 +57,16 @@ pub enum ArgRoot {
 
 /// One call in a body.
 #[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Debug,
+    Clone,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 pub struct CallSite {
     /// The callee as spelled, or `None` for a call through a pointer or a
@@ -72,6 +81,12 @@ pub struct CallSite {
     /// is one.
     #[serde(default)]
     pub arg_functions: Vec<Option<String>>,
+    /// Per argument, the root its address would have (`&arg`): what a
+    /// header macro assigning that parameter as a whole writes (an iterator
+    /// macro stepping the caller's cursor). Empty when every argument's is
+    /// [`ArgRoot::Other`].
+    #[serde(default)]
+    pub arg_objects: Vec<ArgRoot>,
 }
 
 /// One step of a member-access chain, from its root identifier outwards.
@@ -567,6 +582,15 @@ impl<'t> Collector<'_, 't> {
                     if body.writes {
                         self.out.writes.insert(Loc::Unknown);
                     }
+                    // Assigning a parameter writes what was passed there:
+                    // nothing outside the frame for the caller's own local.
+                    for &k in &body.written_params {
+                        let written = match arg_nodes.get(k) {
+                            Some(arg) => self.write_location(arg),
+                            None => Some(Loc::Unknown),
+                        };
+                        self.out.writes.extend(written);
+                    }
                     let reached = body
                         .callees
                         .into_iter()
@@ -595,6 +619,7 @@ impl<'t> Collector<'_, 't> {
                             callee,
                             args: Vec::new(),
                             arg_functions: Vec::new(),
+                            arg_objects: Vec::new(),
                         });
                     }
                 }
@@ -607,11 +632,29 @@ impl<'t> Collector<'_, 't> {
         } else {
             Vec::new()
         };
+        let arg_objects: Vec<ArgRoot> = arg_nodes.iter().map(|a| self.object_root(a)).collect();
+        let arg_objects = if arg_objects.iter().any(|r| *r != ArgRoot::Other) {
+            arg_objects
+        } else {
+            Vec::new()
+        };
         self.out.calls.insert(CallSite {
             callee,
             args,
             arg_functions,
+            arg_objects,
         });
+    }
+
+    /// The root `&arg` would have: the caller's own storage, a named
+    /// object, or storage a parameter points to.
+    fn object_root(&self, arg: &Node<'t>) -> ArgRoot {
+        match self.write_location(arg) {
+            None => ArgRoot::AddrOfLocal,
+            Some(Loc::Global(g) | Loc::Static(g)) => ArgRoot::AddrOfGlobal(g),
+            Some(Loc::ParamPointee(j)) => ArgRoot::Param(j),
+            Some(Loc::Unknown) => ArgRoot::Other,
+        }
     }
 
     /// Where an assignment to `lvalue` lands; `None` for the function's own
@@ -926,17 +969,11 @@ impl<'t> Collector<'_, 't> {
                     .child_by_field_name("operator")
                     .is_some_and(|op| get_node_text(&op, self.source) == "&") =>
             {
-                let Some(operand) = arg.child_by_field_name("argument") else {
-                    return (ArgRoot::Other, None);
-                };
-                let root = match self.write_location(&operand) {
-                    None => ArgRoot::AddrOfLocal,
-                    Some(Loc::Global(g) | Loc::Static(g)) => ArgRoot::AddrOfGlobal(g),
-                    // `&p[i]`, `&p->f`: inside what parameter `j` points to.
-                    Some(Loc::ParamPointee(j)) => ArgRoot::Param(j),
-                    Some(Loc::Unknown) => ArgRoot::Other,
-                };
-                (root, None)
+                // `&p[i]`, `&p->f`: inside what parameter `j` points to.
+                match arg.child_by_field_name("argument") {
+                    Some(operand) => (self.object_root(&operand), None),
+                    None => (ArgRoot::Other, None),
+                }
             }
             _ => (ArgRoot::Other, None),
         }
@@ -1455,7 +1492,7 @@ impl EffectTable {
             };
             for call in &direct.calls {
                 match &call.callee {
-                    Some(name) => resolver.classify(name, &call.args, &call.arg_functions, 0),
+                    Some(name) => resolver.classify(name, call, 0),
                     None => resolver.own.opaque = true,
                 }
             }
@@ -1768,7 +1805,7 @@ impl Resolver<'_, '_> {
             self.own.opaque = true;
         }
         for c in &calls.callees {
-            self.classify(c, &[], &[], depth + 1);
+            self.classify(c, &CallSite::default(), depth + 1);
         }
         let names = self.inputs.names;
         for ident in macro_expand::body_identifiers(body) {
@@ -1795,25 +1832,42 @@ impl Resolver<'_, '_> {
         );
     }
 
-    /// What one definition of a function-like macro invoked with
-    /// `arg_functions` writes and calls.
-    fn macro_arm(&mut self, arm: &MacroArm, arg_functions: &[Option<String>], depth: usize) {
+    /// What one definition of a function-like macro, invoked as `call`,
+    /// writes and calls.
+    fn macro_arm(&mut self, arm: &MacroArm, call: &CallSite, depth: usize) {
         let body = macro_expand::macro_body_calls(arm);
         if body.writes {
             self.own.writes.insert(Loc::Unknown);
             self.own.writes_any = true;
         }
+        // Assigning a parameter writes what was passed there: nothing
+        // outside the frame for the caller's own local, the object for a
+        // named one, else something unknown.
+        for k in body.written_params {
+            let written = match call.arg_objects.get(k) {
+                Some(ArgRoot::AddrOfLocal) => None,
+                Some(ArgRoot::AddrOfGlobal(g)) => Some(Loc::Global(g.clone())),
+                Some(ArgRoot::Param(j)) => Some(Loc::ParamPointee(*j)),
+                Some(ArgRoot::Other) | None => Some(Loc::Unknown),
+            };
+            if let Some(loc) = written {
+                self.own.writes.insert(loc);
+                self.own.writes_any = true;
+            }
+        }
         if body.indirect {
             self.own.opaque = true;
         }
+        let none = CallSite::default();
         for c in body.callees {
-            self.classify(&c, &[], &[], depth + 1);
+            self.classify(&c, &none, depth + 1);
         }
         // A call through a parameter calls what the invocation passed there,
         // when that names a function.
+        let passed = |k: usize| call.arg_functions.get(k).cloned().flatten();
         for k in body.param_calls {
-            match arg_functions.get(k).cloned().flatten() {
-                Some(f) => self.classify(&f, &[], &[], depth + 1),
+            match passed(k) {
+                Some(f) => self.classify(&f, &none, depth + 1),
                 None => self.own.opaque = true,
             }
         }
@@ -1821,8 +1875,8 @@ impl Resolver<'_, '_> {
         // nothing known of the argument (an invocation inside another body),
         // it is a cast.
         for k in body.paren_param_calls {
-            if let Some(f) = arg_functions.get(k).cloned().flatten() {
-                self.classify(&f, &[], &[], depth + 1);
+            if let Some(f) = passed(k) {
+                self.classify(&f, &none, depth + 1);
             }
         }
     }
@@ -1830,13 +1884,10 @@ impl Resolver<'_, '_> {
     /// Resolve one callee name: a macro's body, a function being closed (an
     /// edge), a function the base table holds, a library function (by its
     /// contract, judged at query time), else something nothing summarizes.
-    fn classify(
-        &mut self,
-        name: &str,
-        args: &[ArgRoot],
-        arg_functions: &[Option<String>],
-        depth: usize,
-    ) {
+    /// `call` carries what the invocation passed; a callee reached through
+    /// a macro body, with nothing known of its arguments, passes an empty one.
+    fn classify(&mut self, name: &str, call: &CallSite, depth: usize) {
+        let args = call.args.as_slice();
         // A file-qualified key names a scanned static directly.
         if name.contains('\0') {
             match self.index.get(name) {
@@ -1873,7 +1924,7 @@ impl Resolver<'_, '_> {
                 self.unreadable();
             }
             for arm in arms {
-                self.macro_arm(arm, arg_functions, depth);
+                self.macro_arm(arm, call, depth);
             }
             // An `#if` arm that does not define the macro may leave the name
             // a real function: that body counts too.
@@ -2123,7 +2174,9 @@ mod tests {
     #[test]
     fn a_file_macro_is_expanded_into_what_it_calls() {
         let code = "#define LOG(x) log_it(x)\n#define BUMP(x) ((x)++)\n\
-            void f(int n) { LOG(n); BUMP(n); }\n";
+            #define ZAP(p) (*(p) = 0)\n\
+            void f(int n, int *q) { LOG(n); BUMP(n); ZAP(q); }\n\
+            void g(int n) { BUMP(n); }\n";
         let e = direct(code, "f");
         assert!(e
             .calls
@@ -2132,8 +2185,11 @@ mod tests {
         // The call itself is kept: an arm without the macro may leave the name a
         // function.
         assert!(e.calls.iter().any(|c| c.callee.as_deref() == Some("LOG")));
-        // A macro body's write is not located.
+        // A macro body's write through its parameter is not located.
         assert!(e.writes.contains(&Loc::Unknown));
+        // Assigning the parameter itself writes the argument: here the
+        // function's own parameter, so nothing.
+        assert!(direct(code, "g").writes.is_empty());
     }
 
     #[test]
@@ -2252,8 +2308,7 @@ mod tests {
                 if i > 0 {
                     d.calls.insert(CallSite {
                         callee: Some(format!("f{}", i - 1)),
-                        args: Vec::new(),
-                        arg_functions: Vec::new(),
+                        ..Default::default()
                     });
                 }
                 (format!("f{i}"), d)
@@ -2404,6 +2459,33 @@ mod tests {
             int f(int v) { log_it(v); return v; }\n";
         let ctx = scanned(&[("log.c", code)], "one-arm-macro");
         assert_eq!(ctx.effects().get("f").unwrap().proof(true), Proof::Impure);
+    }
+
+    #[test]
+    fn a_header_iterator_writes_what_its_cursor_argument_names() {
+        let header = "struct node { struct node *next; };\n\
+            extern const struct node *cursor;\n\
+            #define for_each_node(pos, head) \\\n\
+                for ((pos) = (head); (pos) != 0; pos = (pos)->next)\n";
+        let code = "#include \"list.h\"\n\
+            const struct node *cursor;\n\
+            int local(const struct node *h) { const struct node *n; int t = 0;\n\
+                for_each_node(n, h) { t++; } return t; }\n\
+            int global(const struct node *h) { int t = 0;\n\
+                for_each_node(cursor, h) { t++; } return t; }\n\
+            int member(struct node **pp, const struct node *h) { int t = 0;\n\
+                for_each_node(pp[0], h) { t++; } return t; }\n";
+        let ctx = scanned(&[("list.h", header), ("walk.c", code)], "iter");
+        let effects = ctx.effects();
+        // The caller's own cursor: nothing outside its frame is written.
+        assert_eq!(effects.get("local").unwrap().proof(true), Proof::Pure);
+        // A global cursor is that global.
+        let global = effects.get("global").unwrap();
+        assert!(global.writes.contains(&Loc::Global("cursor".into())));
+        // A cursor reached through a parameter is what it points to.
+        let member = effects.get("member").unwrap();
+        assert!(member.writes.contains(&Loc::ParamPointee(0)));
+        assert!(!member.writes.contains(&Loc::Unknown));
     }
 
     #[test]

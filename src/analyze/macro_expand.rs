@@ -1060,14 +1060,22 @@ fn nest(outer: ArgEvaluation, inner: ArgEvaluation) -> ArgEvaluation {
 /// this leaves out.
 pub fn macro_body_effects(arm: &MacroArm) -> (bool, Vec<String>) {
     let calls = macro_body_calls(arm);
-    (calls.writes, calls.callees)
+    (
+        calls.writes || !calls.written_params.is_empty(),
+        calls.callees,
+    )
 }
 
 /// What a macro body writes and calls, every kind of call included.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MacroBodyCalls {
-    /// The body writes (`=`, a compound assignment, `++`/`--`).
+    /// The body writes (`=`, a compound assignment, `++`/`--`) something
+    /// other than one of its parameters.
     pub writes: bool,
+    /// Positions of parameters the body assigns as a whole (`_elem = x`,
+    /// `(pos)++`), as an iterator macro steps its cursor: what is written is
+    /// whatever the invocation passes there.
+    pub written_params: Vec<usize>,
     /// Names called directly (`name(`).
     pub callees: Vec<String>,
     /// Positions of parameters the body calls (`fn(x)` in
@@ -1095,7 +1103,10 @@ pub fn macro_body_calls(arm: &MacroArm) -> MacroBodyCalls {
         let next = tokens.get(j + 1).map(|t| t.text.as_str());
         let after_member = j > 0 && matches!(tokens[j - 1].text.as_str(), "." | "->");
         match t.text.as_str() {
-            "++" | "--" => out.writes = true,
+            "++" | "--" => match update_target(&tokens, j, &arm.params) {
+                Some(k) => push_unique(&mut out.written_params, k),
+                None => out.writes = true,
+            },
             "=" => {
                 // `==`, `<=`, `>=`, `!=` tokenize as two single characters;
                 // `<<=`/`>>=` (a write) as three.
@@ -1114,7 +1125,20 @@ pub fn macro_body_calls(arm: &MacroArm) -> MacroBodyCalls {
                 // an initializer, not a write.
                 let initializer = declares_before(&tokens, j);
                 if !comparison && !equality_next && !initializer {
-                    out.writes = true;
+                    // The lvalue ends before a compound operator's own
+                    // characters (`+=`, `<<=`).
+                    let operator = if shift {
+                        2
+                    } else {
+                        usize::from(prev.is_some_and(|p| "+-*/%&|^".contains(p)))
+                    };
+                    let target = j
+                        .checked_sub(operator + 1)
+                        .and_then(|end| assigned_parameter(&tokens, end, &arm.params));
+                    match target {
+                        Some(k) => push_unique(&mut out.written_params, k),
+                        None => out.writes = true,
+                    }
                 }
             }
             // `handlers[i](0)`: in an expression, `](` can only be a call
@@ -1200,6 +1224,65 @@ pub fn body_identifiers(body: &str) -> Vec<String> {
 }
 
 /// The `(` a `)` at `close` closes, in the same token list.
+/// The parameter an lvalue ending at token `end` is, when the lvalue is that
+/// parameter as a whole (`_elem`, `(_elem)`), not something reached through
+/// it (`*_elem`, `o->_elem`, `_elem[i]`).
+fn assigned_parameter(tokens: &[BodyToken], end: usize, params: &[String]) -> Option<usize> {
+    let (name, start) = if tokens[end].text == ")" {
+        let open = matching_open(tokens, end)?;
+        if end != open + 2 {
+            return None;
+        }
+        (tokens[open + 1].text.as_str(), open)
+    } else {
+        (tokens[end].text.as_str(), end)
+    };
+    let k = params.iter().position(|p| p == name)?;
+    // Only a token that ends an expression or a statement may come first:
+    // `*`, `&`, `.`, `->` and `##` would make the parameter part of a
+    // larger lvalue or another token.
+    let whole = start.checked_sub(1).is_none_or(|p| {
+        matches!(
+            tokens[p].text.as_str(),
+            "(" | ")" | ";" | "," | "{" | "}" | "?" | ":" | "=" | "do" | "else" | "return"
+        )
+    });
+    whole.then_some(k)
+}
+
+/// The parameter a `++`/`--` at token `j` updates as a whole, postfix
+/// (`pos++`) or prefix (`++pos`).
+fn update_target(tokens: &[BodyToken], j: usize, params: &[String]) -> Option<usize> {
+    if let Some(k) = j
+        .checked_sub(1)
+        .and_then(|end| assigned_parameter(tokens, end, params))
+    {
+        return Some(k);
+    }
+    let operand_before = j.checked_sub(1).is_some_and(|p| {
+        let t = tokens[p].text.as_str();
+        matches!(t, ")" | "]")
+            || t.chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+    });
+    if operand_before {
+        return None;
+    }
+    let next = tokens.get(j + 1)?;
+    let k = params.iter().position(|p| *p == next.text)?;
+    let continues = tokens
+        .get(j + 2)
+        .is_some_and(|t| matches!(t.text.as_str(), "[" | "." | "->" | "(" | "##"));
+    (!continues).then_some(k)
+}
+
+fn push_unique(list: &mut Vec<usize>, k: usize) {
+    if !list.contains(&k) {
+        list.push(k);
+    }
+}
+
 fn matching_open(tokens: &[BodyToken], close: usize) -> Option<usize> {
     let mut depth = 0i32;
     for k in (0..=close).rev() {
@@ -4919,5 +5002,34 @@ mod macro_write_tests {
         let c = calls(&["a"], "f(a)(1)");
         assert_eq!(c.callees, vec!["f".to_string()]);
         assert!(c.param_calls.is_empty());
+    }
+
+    #[test]
+    fn body_writes_to_whole_parameters() {
+        let calls = |params: &[&str], body: &str| macro_body_calls(&arm(params, body));
+        // An iterator steps its cursor parameter: the argument is written.
+        let c = calls(
+            &["e", "d", "n"],
+            "for (e = (T *)(d); e < (T *)(d) + (n); e = e->next)",
+        );
+        assert_eq!(c.written_params, vec![0]);
+        assert!(!c.writes);
+        // Parenthesized, compound, shift-compound, prefix and postfix.
+        for body in ["(p) = 0", "p += 2", "p <<= 1", "++p", "p--", "q = p = 0"] {
+            let c = calls(&["p", "q"], body);
+            assert!(c.written_params.contains(&0) && !c.writes, "{body}");
+        }
+        // Something reached through the parameter is not the parameter.
+        for body in [
+            "*p = 0", "p[0] = 0", "p->n = 0", "o.p = 0", "(*p)++", "++p->n", "g = 0",
+        ] {
+            let c = calls(&["p"], body);
+            assert!(c.written_params.is_empty() && c.writes, "{body}");
+        }
+        // A comparison or an initializer writes nothing.
+        let c = calls(&["p"], "p == 0 || ({ int t = p; t; })");
+        assert!(c.written_params.is_empty() && !c.writes);
+        // `macro_body_effects` still counts the parameter write.
+        assert!(macro_body_effects(&arm(&["p"], "p = 0")).0);
     }
 }
