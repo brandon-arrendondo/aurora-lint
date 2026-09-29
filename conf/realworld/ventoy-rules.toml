@@ -4,6 +4,11 @@ version = "1.0.0"
 description = "Project rules manifest for Ventoy's Ventoy2Disk Windows installer (Ventoy2Disk/Ventoy2Disk/ top-level .c/.h only; the three vendored subdirs fat_io_lib/, ff14/ and xz-embedded-20130513/ are excluded by the runner). Onboarded as the suite's first genuine Win32-API oracle: every WIN*-C rule (WIN00-05, WIN30) had no true-positive-capable target across the eleven POSIX codebases. Based on rules_templates/rules-all.toml with only the four dead-config disables every manifest carries (ENV04/MSC18/MSC19/MSC25). The POS* family stays enabled on purpose: a POSIX-API rule on a Win32 target is expected to emit nothing, and an enabled rule that emits nothing is a measurement, whereas a disable would have to assert the codebase never reaches a POSIX call -- which the first scan should establish, not the manifest."
 cert_version = "2016"
 
+[environment]
+# The configuration of record is Ventoy's Windows build, LLP64: int and long
+# 32 bits, long long and pointers 64. See docs/design/realworld-corpus-scope.md.
+data_model = "llp64"
+
 [rules.cert_c.API00-C]
 enabled = true
 

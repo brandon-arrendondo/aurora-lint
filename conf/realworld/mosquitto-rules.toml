@@ -4,6 +4,11 @@ version = "1.0.0"
 description = "Project rules manifest for mosquitto (pinned commit d3ee5c5c) — MQTT broker daemon + client libraries. Based on the shared base rules_templates/rules-all.toml. A network broker DAEMON (handles untrusted client connections) plus client libs; cross-platform incl. Windows. Daemon-hardening (POS05 chroot, privilege drop), SIG*, CON* (multi-threaded), WIN*, FIO*, MEM* are all IN scope. No categorical disable beyond dead config. Per-finding analyzer misfires among ENABLED rules (DCL13, MEM30, INT30/32, API00, EXP33/34, ...) are NOT suppressed here — they are recorded in the ground_truth oracle so they stay measured. See data/precision_audit/."
 cert_version = "2016"
 
+[environment]
+# The configuration of record is a Linux x86_64 build, LP64: int 32 bits, long
+# and pointers 64. See docs/design/realworld-corpus-scope.md.
+data_model = "lp64"
+
 # mosquitto_free is libmosquitto_common's documented free
 # (include/mosquitto/libcommon_memory.h); its definition is in libcommon/,
 # outside the scan, and one arm of it calls __libc_free. Declared at the root:
