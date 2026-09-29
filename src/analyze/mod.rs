@@ -495,11 +495,16 @@ fn load_project_context(
     // build's forced includes, which need resolving even with no search path.
     let forced_includes: &[String] = compile_db.map_or(&[], |db| &db.forced_includes);
     if !include_paths.is_empty() || !forced_includes.is_empty() {
-        let c_files = if diff_only {
+        let mut c_files = if diff_only {
             project_source.get_modified_c_files()?
         } else {
             project_source.get_c_files()?
         };
+        // A file the scope leaves out of the prescan is no includer either:
+        // resolving its #includes would fold in the headers only it reads,
+        // and their definitions would stand for the functions other files
+        // call. A header an in-scope file includes is still read.
+        c_files.retain(|f| !scoped_out(std::path::Path::new(f), &root));
         // The project is the tree being scanned plus any -d directory: a
         // search root outside it cannot make an unresolvable include a
         // *project* header.

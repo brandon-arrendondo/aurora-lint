@@ -3438,6 +3438,81 @@ fn prescan_exclude_still_reports_a_tree_it_keeps_out_of_cross_file_facts() {
     );
 }
 
+/// A tree where `tests/inc/impl.h` holds the only definition of `rel2`,
+/// which frees its argument, and only `tests/t.c` includes it; `src/use.c`
+/// sees a prototype and uses a pointer after `rel2(p)`. With `-I tests/inc`,
+/// include resolution reaches the header only through t.c -- unless
+/// `use_includes` makes use.c include it too.
+fn write_include_scope_tree(dir: &std::path::Path, use_includes: bool) {
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("tests/inc")).unwrap();
+    let include = if use_includes {
+        "#include \"impl.h\"\n"
+    } else {
+        ""
+    };
+    std::fs::write(
+        dir.join("src/use.c"),
+        format!("{include}void rel2(char *p);\nvoid use(char *p) {{ rel2(p); p[0] = 1; }}\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("tests/inc/impl.h"),
+        "#include <stdlib.h>\nvoid rel2(char *p) { free(p); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("tests/t.c"),
+        "#include \"impl.h\"\nint main(void) { return 0; }\n",
+    )
+    .unwrap();
+}
+
+/// Whether MEM30-C reports use.c, scanning the tree with `-I tests/inc`,
+/// with or without `-d`, plus `args`.
+fn mem30_in_use_c_with_include_path(dir: &std::path::Path, with_d: bool, args: &[&str]) -> bool {
+    let root = dir.to_str().unwrap();
+    let inc = dir.join("tests/inc");
+    let mut all = vec![root, "--rules", "MEM30-C", "-I", inc.to_str().unwrap()];
+    if with_d {
+        all.extend_from_slice(&["-d", root]);
+    }
+    all.extend_from_slice(args);
+    let (code, stdout, stderr) = run_aurora_lint(&all);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    stdout
+        .lines()
+        .any(|l| l.contains("use.c") && l.contains("MEM30-C"))
+}
+
+#[test]
+fn an_excluded_file_is_no_includer_for_include_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    write_include_scope_tree(dir.path(), false);
+    for with_d in [true, false] {
+        assert!(mem30_in_use_c_with_include_path(dir.path(), with_d, &[]));
+        for flag in ["--exclude", "--prescan-exclude"] {
+            assert!(
+                !mem30_in_use_c_with_include_path(dir.path(), with_d, &[flag, "tests/**"]),
+                "{flag} (with -d: {with_d}) let the excluded t.c's header in"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_header_an_in_scope_file_includes_is_read_though_its_tree_is_excluded() {
+    let dir = tempfile::tempdir().unwrap();
+    write_include_scope_tree(dir.path(), true);
+    for with_d in [true, false] {
+        assert!(mem30_in_use_c_with_include_path(
+            dir.path(),
+            with_d,
+            &["--exclude", "tests/**"]
+        ));
+    }
+}
+
 #[test]
 fn manifest_scope_table_adds_to_the_command_line() {
     let dir = tempfile::tempdir().unwrap();
