@@ -177,6 +177,10 @@ pub fn analyze_project(
     // passes through is read once whichever pass asks.
     let header_lookup = include_names::HeaderLookup::new(settings.include_names);
 
+    // A suppression file the tool cannot read in full stops the scan before
+    // the prescan spends minutes on a run whose report would be wrong.
+    let mut suppression_manager = build_suppression_manager(suppress_file, project_source)?;
+
     // Declared allocators and deallocators reach the function summaries
     // prescan builds, so they are installed first.
     crate::settings::memory::declare(settings.memory.clone())?;
@@ -232,7 +236,6 @@ pub fn analyze_project(
             );
         }
     }
-    let mut suppression_manager = build_suppression_manager(suppress_file, project_source);
 
     // Independent of the rules: it reads the same files and context, so it
     // can run first and the findings loop below stays untouched.
@@ -705,7 +708,7 @@ fn relative_to_root(path: &str, root: &str) -> String {
 fn build_suppression_manager(
     suppress_file: Option<&str>,
     project_source: &ProjectSource,
-) -> SuppressionManager {
+) -> Result<SuppressionManager> {
     let mut suppression_manager = SuppressionManager::new();
 
     let toml_path = suppress_file.map(String::from).or_else(|| {
@@ -732,13 +735,11 @@ fn build_suppression_manager(
                     eprintln!("Loaded {} suppressions from {}", count, path);
                 }
             }
-            Err(e) => {
-                eprintln!("Warning: {}", e);
-            }
+            Err(e) => anyhow::bail!(e),
         }
     }
 
-    suppression_manager
+    Ok(suppression_manager)
 }
 
 /// Total order on violations, so two runs of one binary over one tree

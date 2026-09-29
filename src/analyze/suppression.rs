@@ -40,7 +40,7 @@ pub struct Suppression {
 /// A single `[[suppress]]` entry in the shared `suppress.toml` (see
 /// `lang_parsing_substrate/docs/unified-config-spec.md`). One file, all
 /// tools — `tool` scopes each entry to `"aurora-lint"` (or its legacy
-/// `"aurora-lint"` spelling) or the wildcard `"*"`; entries for other tools (e.g.
+/// `"sqc"` spelling) or the wildcard `"*"`; entries for other tools (e.g.
 /// `"knots"`) are loaded and ignored.
 ///
 /// `rule_glob` and `function_prefix` are aurora-lint-specific extensions
@@ -54,7 +54,7 @@ pub struct Suppression {
 pub struct SuppressEntry {
     /// Human-readable label, unique within the file.
     pub name: String,
-    /// `"aurora-lint"` (legacy: `"aurora-lint"`), or `"*"` to apply across every tool.
+    /// `"aurora-lint"` (legacy: `"sqc"`), or `"*"` to apply across every tool.
     pub tool: String,
     /// Exact rule ID this entry applies to.
     #[serde(default)]
@@ -109,6 +109,103 @@ pub struct SuppressFile {
     /// Every `[[suppress]]` entry in the file.
     #[serde(default)]
     pub suppress: Vec<SuppressEntry>,
+}
+
+/// The one top-level table a suppression file holds.
+const SUPPRESS_TABLE: &str = "suppress";
+
+/// Every key an entry this tool applies may carry: the shared spec's fields
+/// plus this tool's `rule_glob` and `function_prefix`.
+const ENTRY_KEYS: [&str; 9] = [
+    "name",
+    "tool",
+    "rule",
+    "file",
+    "file_glob",
+    "hash",
+    "rule_glob",
+    "function_prefix",
+    "justification",
+];
+
+/// Every problem with the entries in `content` this tool would apply, as
+/// one message each, so a file with several mistakes is fixed in one pass.
+///
+/// serde skips an unknown key without a word, so a file written in another
+/// shape would load no entries and suppress nothing. A top-level key other
+/// than `suppress` is always refused. An entry this tool applies (`tool`
+/// names it, or is `"*"`) is checked for a `name`, for keys outside
+/// [`ENTRY_KEYS`], and for the fields its kind needs. Another tool's entries
+/// are not checked: the file is shared, and they may carry keys only that
+/// tool reads.
+fn declaration_problems(content: &str) -> Result<Vec<String>, toml::de::Error> {
+    let table: toml::Table = toml::from_str(content)?;
+    let mut problems = Vec::new();
+    for key in table.keys().filter(|k| *k != SUPPRESS_TABLE) {
+        let hint = match key.as_str() {
+            "suppression" | "wildcard" => {
+                " (an older spelling: write each entry as a [[suppress]] table \
+                 with a `name` and `tool = \"aurora-lint\"`)"
+            }
+            _ => "",
+        };
+        problems.push(format!(
+            "unknown table `{}`; a suppression file holds only [[suppress]] entries{}",
+            key, hint
+        ));
+    }
+    let entries = table.get(SUPPRESS_TABLE).and_then(|v| v.as_array());
+    for (index, entry) in entries.into_iter().flatten().enumerate() {
+        let Some(entry) = entry.as_table() else {
+            continue;
+        };
+        let tool = entry.get("tool").and_then(|t| t.as_str()).unwrap_or("");
+        if !(is_own_tool(tool) || tool == "*") {
+            continue;
+        }
+        let label = match entry.get("name").and_then(|n| n.as_str()) {
+            Some(name) => format!("suppress entry '{}'", name),
+            None => format!("suppress entry #{}", index + 1),
+        };
+        if !entry.contains_key("name") {
+            problems.push(format!("{} has no `name`", label));
+        }
+        for key in entry.keys().filter(|k| !ENTRY_KEYS.contains(&k.as_str())) {
+            let hint = if key == "reason" {
+                " (did you mean `justification`?)"
+            } else {
+                ""
+            };
+            problems.push(format!(
+                "{} has unknown key `{}`{}; allowed: {}",
+                label,
+                key,
+                hint,
+                ENTRY_KEYS.join(", ")
+            ));
+        }
+        let has = |key: &str| entry.contains_key(key);
+        if has("hash") {
+            let missing: Vec<&str> = ["file", "rule"].into_iter().filter(|k| !has(k)).collect();
+            if !missing.is_empty() {
+                problems.push(format!(
+                    "{} has a `hash` but no `{}`; a hash-matched entry needs `file`, `rule` and `hash`",
+                    label,
+                    missing.join("` or `")
+                ));
+            }
+        } else if !["file_glob", "file", "rule", "rule_glob", "function_prefix"]
+            .into_iter()
+            .any(has)
+        {
+            problems.push(format!(
+                "{} matches everything; an entry without a `hash` needs at least one of \
+                 file_glob (or file), rule, rule_glob, function_prefix",
+                label
+            ));
+        }
+    }
+    Ok(problems)
 }
 
 impl Suppression {
@@ -237,12 +334,24 @@ impl SuppressionManager {
     }
 
     /// Load suppressions from a `suppress.toml` (or legacy
-    /// `.aurora-lint-suppress.toml` / `.aurora-lint-suppress.toml`) file.
+    /// `.aurora-lint-suppress.toml` / `.sqc-suppress.toml`) file.
+    ///
+    /// A table or key the file declares but this tool would not read, or an
+    /// entry missing what its kind needs, is an error naming each problem,
+    /// never an entry dropped in silence.
     pub fn load_from_toml(&mut self, toml_path: &str) -> Result<usize, String> {
         let content = std::fs::read_to_string(toml_path)
             .map_err(|e| format!("Cannot read {}: {}", toml_path, e))?;
-        let parsed: SuppressFile = toml::from_str(&content)
-            .map_err(|e| format!("Invalid TOML in {}: {}", toml_path, e))?;
+        let invalid = |e: toml::de::Error| format!("Invalid TOML in {}: {}", toml_path, e);
+        let problems = declaration_problems(&content).map_err(invalid)?;
+        if !problems.is_empty() {
+            return Err(format!(
+                "{} is not a valid suppression file:\n  {}",
+                toml_path,
+                problems.join("\n  ")
+            ));
+        }
+        let parsed: SuppressFile = toml::from_str(&content).map_err(invalid)?;
 
         let mut count = 0;
         for entry in parsed.suppress {
@@ -251,12 +360,13 @@ impl SuppressionManager {
             }
             match entry.hash.clone() {
                 Some(hash) => {
+                    // declaration_problems has already refused a hash entry
+                    // without both, naming it alongside every other problem.
                     let (Some(file), Some(rule)) = (entry.file.clone(), entry.rule.clone()) else {
-                        eprintln!(
-                            "Warning: suppress entry '{}' has a hash but is missing file/rule; skipping",
-                            entry.name
-                        );
-                        continue;
+                        return Err(format!(
+                            "{}: suppress entry '{}' has a `hash` but no `file` or `rule`",
+                            toml_path, entry.name
+                        ));
                     };
                     let suppression = Suppression {
                         rule_id: rule,
@@ -1527,5 +1637,243 @@ justification = "Third-party code"
             mgr.should_suppress("test.c", "MEM30-C", 5, source, ""),
             None
         );
+    }
+
+    /// Load `content` as a suppression file through the real loader.
+    fn load_toml_str(content: &str) -> Result<usize, String> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("suppress.toml");
+        std::fs::write(&path, content).unwrap();
+        SuppressionManager::new().load_from_toml(path.to_str().unwrap())
+    }
+
+    /// The shape the documentation once described loads nothing today, so
+    /// it must fail and name the table, not load 0 entries.
+    #[test]
+    fn test_suppress_toml_older_spelling_is_an_error() {
+        for table in ["suppression", "wildcard"] {
+            let err = load_toml_str(&format!(
+                "[[{table}]]\nfile_glob = \"vendor/**\"\nrule = \"DCL31-C\"\n\
+                 justification = \"vendor\"\n"
+            ))
+            .unwrap_err();
+            assert!(err.contains(&format!("unknown table `{table}`")), "{err}");
+            assert!(err.contains("[[suppress]]"), "{err}");
+        }
+    }
+
+    #[test]
+    fn test_suppress_toml_unknown_top_level_key_is_an_error() {
+        let err = load_toml_str(
+            "version = 2\n\n[[suppress]]\nname = \"a\"\ntool = \"aurora-lint\"\n\
+             rule = \"DCL31-C\"\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("unknown table `version`"), "{err}");
+    }
+
+    /// Each misspelled or unsupported key in an entry this tool applies is
+    /// named, with the allowed set, whichever key it is.
+    #[test]
+    fn test_suppress_toml_unknown_entry_key_is_an_error() {
+        for (key, tool) in [
+            ("reason", "aurora-lint"),
+            ("file_regex", "aurora-lint"),
+            ("rules", "sqc"),
+            ("functon_prefix", "*"),
+        ] {
+            let err = load_toml_str(&format!(
+                "[[suppress]]\nname = \"e\"\ntool = \"{tool}\"\nfile_glob = \"src/**\"\n\
+                 {key} = \"x\"\n"
+            ))
+            .unwrap_err();
+            assert!(
+                err.contains(&format!("suppress entry 'e' has unknown key `{key}`")),
+                "{err}"
+            );
+            assert!(err.contains("allowed: name, tool,"), "{err}");
+        }
+        let err =
+            load_toml_str("[[suppress]]\nname = \"e\"\ntool = \"aurora-lint\"\nreason = \"x\"\n")
+                .unwrap_err();
+        assert!(err.contains("did you mean `justification`?"), "{err}");
+    }
+
+    /// A hash entry that cannot say which line it covers is an error, not a
+    /// skipped entry.
+    #[test]
+    fn test_suppress_toml_hash_without_file_is_an_error() {
+        let err = load_toml_str(
+            "[[suppress]]\nname = \"h\"\ntool = \"aurora-lint\"\nrule = \"INT30-C\"\n\
+             hash = \"a1f5861150a1e5b8\"\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("suppress entry 'h' has a `hash` but no `file`;"),
+            "{err}"
+        );
+    }
+
+    /// An entry this tool applies needs a `name`; the problem is reported
+    /// with the entry's position, alongside the entry's other problems.
+    #[test]
+    fn test_suppress_toml_entry_without_name_is_an_error() {
+        let err = load_toml_str(
+            "[[suppress]]\nname = \"a\"\ntool = \"aurora-lint\"\nrule = \"X\"\n\n\
+             [[suppress]]\ntool = \"aurora-lint\"\nreason = \"x\"\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("suppress entry #2 has no `name`"), "{err}");
+        assert!(
+            err.contains("suppress entry #2 has unknown key `reason`"),
+            "{err}"
+        );
+    }
+
+    /// An entry without a hash and without anything to match on would match
+    /// every finding.
+    #[test]
+    fn test_suppress_toml_entry_matching_everything_is_an_error() {
+        let err =
+            load_toml_str("[[suppress]]\nname = \"all\"\ntool = \"*\"\njustification = \"x\"\n")
+                .unwrap_err();
+        assert!(
+            err.contains("suppress entry 'all' matches everything"),
+            "{err}"
+        );
+    }
+
+    /// Every problem is reported at once, not only the first.
+    #[test]
+    fn test_suppress_toml_reports_every_unknown_key() {
+        let err = load_toml_str(
+            "[[wildcard]]\nrule = \"X\"\n\n[[suppress]]\nname = \"a\"\n\
+             tool = \"aurora-lint\"\nrule = \"X\"\nreason = \"x\"\nfile_regex = \"y\"\n",
+        )
+        .unwrap_err();
+        assert_eq!(err.lines().count(), 4, "{err}");
+    }
+
+    /// Problems of every kind, across entries, arrive in one message.
+    #[test]
+    fn test_suppress_toml_reports_every_kind_of_problem() {
+        let err = load_toml_str(
+            "[[suppress]]\nname = \"h\"\ntool = \"aurora-lint\"\nrule = \"X\"\nhash = \"ab\"\n\n\
+             [[suppress]]\ntool = \"aurora-lint\"\nrule = \"X\"\n\n\
+             [[suppress]]\nname = \"w\"\ntool = \"*\"\n\n\
+             [[suppress]]\nname = \"k\"\ntool = \"sqc\"\nrule = \"X\"\nreason = \"x\"\n",
+        )
+        .unwrap_err();
+        for expected in [
+            "suppress entry 'h' has a `hash` but no `file`;",
+            "suppress entry #2 has no `name`",
+            "suppress entry 'w' matches everything",
+            "suppress entry 'k' has unknown key `reason`",
+        ] {
+            assert!(err.contains(expected), "{expected}: {err}");
+        }
+        assert_eq!(err.lines().count(), 5, "{err}");
+    }
+
+    /// ENTRY_KEYS and SuppressEntry name the same fields. An entry with every
+    /// allowed key loads with each value in its field, and the exhaustive
+    /// destructuring stops compiling when the struct gains or loses one.
+    #[test]
+    fn test_suppress_toml_every_allowed_key_loads() {
+        let content = format!(
+            "[[suppress]]\n{}",
+            ENTRY_KEYS
+                .iter()
+                .map(|k| match *k {
+                    "tool" => "tool = \"aurora-lint\"\n".to_string(),
+                    _ => format!("{k} = \"{k}-value\"\n"),
+                })
+                .collect::<String>()
+        );
+        assert_eq!(load_toml_str(&content), Ok(1));
+        let parsed: SuppressFile = toml::from_str(&content).unwrap();
+        let SuppressEntry {
+            name,
+            tool,
+            rule,
+            file,
+            file_glob,
+            hash,
+            rule_glob,
+            function_prefix,
+            justification,
+        } = parsed.suppress.into_iter().next().unwrap();
+        let loaded = [
+            ("name", Some(name)),
+            ("tool", Some(tool)),
+            ("rule", rule),
+            ("file", file),
+            ("file_glob", file_glob),
+            ("hash", hash),
+            ("rule_glob", rule_glob),
+            ("function_prefix", function_prefix),
+            ("justification", Some(justification)),
+        ];
+        let loaded_keys: Vec<&str> = loaded.iter().map(|(k, _)| *k).collect();
+        assert_eq!(loaded_keys, ENTRY_KEYS);
+        for (key, value) in loaded {
+            let expected = match key {
+                "tool" => "aurora-lint".to_string(),
+                _ => format!("{key}-value"),
+            };
+            assert_eq!(value, Some(expected), "{key}");
+        }
+    }
+
+    /// The file is shared: another tool's entry may carry keys only that tool
+    /// reads, and they are not this tool's to refuse.
+    #[test]
+    fn test_suppress_toml_other_tools_keys_are_not_checked() {
+        let count = load_toml_str(
+            "[[suppress]]\nname = \"k\"\ntool = \"knots\"\nfile_glob = \"src/**\"\n\
+             threshold = 25\n",
+        )
+        .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    /// Every TOML example in the suppression documentation loads, so the
+    /// page cannot drift back to a shape the loader refuses.
+    #[test]
+    fn test_suppression_docs_examples_load() {
+        let doc = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/suppression.rst"),
+        )
+        .unwrap();
+        let mut examples = Vec::new();
+        let mut current: Option<String> = None;
+        for line in doc.lines() {
+            match current.as_mut() {
+                Some(block) if line.is_empty() || line.starts_with(' ') => {
+                    block.push_str(line.trim_start());
+                    block.push('\n');
+                }
+                Some(_) => examples.push(current.take().unwrap()),
+                None => {}
+            }
+            // A `::` paragraph or a TOML code block; other directives
+            // (`.. warning::`) hold prose.
+            let opens_literal = (line.trim_end().ends_with("::")
+                && !line.trim_start().starts_with(".."))
+                || line.starts_with(".. code-block:: toml");
+            if current.is_none() && opens_literal {
+                current = Some(String::new());
+            }
+        }
+        examples.extend(current);
+        let toml_examples: Vec<&String> = examples
+            .iter()
+            .filter(|b| b.contains("[[suppress]]"))
+            .collect();
+        assert!(toml_examples.len() >= 3, "found {}", toml_examples.len());
+        for block in toml_examples {
+            let entries = block.matches("[[suppress]]").count();
+            assert_eq!(load_toml_str(block), Ok(entries), "{block}");
+        }
     }
 }

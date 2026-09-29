@@ -1028,6 +1028,47 @@ fn toml_suppression_accepts_canonical_tool_name() {
     assert!(violations.is_empty());
 }
 
+/// A suppression file in a shape aurora-lint does not read stops the run
+/// with a configuration error (exit 2) naming the table, instead of loading
+/// no entries and reporting the findings it was written to suppress.
+#[test]
+fn suppress_file_with_unknown_table_is_an_error() {
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        fixtures().join("violation.c").to_str().unwrap(),
+        "-m",
+        manifest_msc04().to_str().unwrap(),
+        "--suppress-file",
+        fixtures()
+            .join("suppress_older_spelling.toml")
+            .to_str()
+            .unwrap(),
+    ]);
+    assert_eq!(code, 2, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains("suppress_older_spelling.toml"), "{stderr}");
+    assert!(stderr.contains("unknown table `wildcard`"), "{stderr}");
+    assert!(!stdout.contains("Total violations"), "{stdout}");
+}
+
+#[test]
+fn suppress_file_with_unknown_key_is_an_error() {
+    let (code, _, stderr) = run_aurora_lint(&[
+        fixtures().join("violation.c").to_str().unwrap(),
+        "-m",
+        manifest_msc04().to_str().unwrap(),
+        "--suppress-file",
+        fixtures()
+            .join("suppress_unknown_key.toml")
+            .to_str()
+            .unwrap(),
+    ]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(
+        stderr.contains("suppress entry 'violation-msc04' has unknown key `reason`"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("allowed: name, tool,"), "{stderr}");
+}
+
 #[test]
 fn fail_on_violation_ignores_suppressed() {
     // Suppressed violations should NOT trigger exit code 1

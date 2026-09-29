@@ -1,0 +1,6 @@
+# The shape the documentation once described. aurora-lint reads only
+# [[suppress]] tables, so this must fail rather than load 0 entries.
+[[wildcard]]
+file_glob = "**"
+rule = "MSC04-C"
+justification = "Bounded by external call limit"

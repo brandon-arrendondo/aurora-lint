@@ -175,13 +175,22 @@ A hash-matched entry needs ``file``, ``rule`` and ``hash``;
 matches by path suffix: ``ringbuffer.c`` matches any path ending in
 ``/ringbuffer.c``.
 
-.. warning::
+aurora-lint reads only ``[[suppress]]`` tables. An invalid suppression file
+stops the run with exit status 2, so a file is never read in part. A file is
+invalid when it holds:
 
-    aurora-lint reads only ``[[suppress]]`` tables. A table under any other
-    name, such as ``[[suppression]]`` or ``[[wildcard]]``, is not read and
-    suppresses nothing. When a file loads, aurora-lint prints how many entries
-    it read (``Loaded N suppressions from FILE``) on standard error; check that
-    count after editing the file.
+- a table under any other name, such as ``[[suppression]]`` or ``[[wildcard]]``;
+- an entry with no ``name``;
+- an entry with a key it does not take, such as ``reason`` in place of
+  ``justification``;
+- a ``hash`` entry without ``file`` and ``rule``;
+- an entry with no ``hash`` and nothing to match on, which would suppress
+  every finding.
+
+The error names the file and every problem in it at once, with the allowed
+keys. Entries are checked only when their ``tool`` is ``"aurora-lint"`` or
+``"*"``, since another tool's entries in the shared file may carry keys only
+that tool reads. A file that is not valid TOML stops the run the same way.
 
 Wildcard Suppression
 --------------------

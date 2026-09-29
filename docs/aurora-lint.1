@@ -259,7 +259,7 @@ Violations found and \fB\-\-fail\-on\-violation\fR or \fB\-\-fail\-on\-severity\
 was set.
 .TP
 .B 2
-Analysis error (invalid path, bad manifest, parse failure).
+Analysis error (invalid path, bad manifest, invalid suppression file, parse failure).
 .SH CONFIGURATION
 .SS "Rules Manifest"
 The rules manifest is a TOML file that controls which rules are enabled.
@@ -310,9 +310,13 @@ justification = "External code"
 .fi
 .RE
 .PP
-Tables under any other name, such as \fB[[suppression]]\fR or
-\fB[[wildcard]]\fR, are not read. The count on the \fBLoaded N suppressions\fR
-line on standard error shows how many entries were read.
+The suppression file is invalid, and the run exits with status 2, when it
+holds a table under any other name, such as \fB[[suppression]]\fR or
+\fB[[wildcard]]\fR, or an entry with no \fBname\fR, with a key it does not
+take, with a \fBhash\fR but no \fBfile\fR and \fBrule\fR, or with no
+\fBhash\fR and nothing to match on. The error names every problem in the
+file at once. Entries are checked only when their \fBtool\fR is
+\fB"aurora-lint"\fR or \fB"*"\fR.
 .SH EXAMPLES
 Analyze a project directory:
 .PP

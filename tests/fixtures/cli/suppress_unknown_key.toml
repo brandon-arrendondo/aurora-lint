@@ -1,0 +1,6 @@
+[[suppress]]
+name = "violation-msc04"
+tool = "aurora-lint"
+file_glob = "**"
+rule = "MSC04-C"
+reason = "Bounded by external call limit"

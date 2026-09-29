@@ -561,5 +561,5 @@ Code    Meaning
 ======  ==========================================================================
 ``0``   Success (no violations, or none meeting the failure threshold)
 ``1``   Violations found (when ``--fail-on-violation`` or ``--fail-on-severity`` is set)
-``2``   Analysis error (invalid path, bad manifest, parse failure)
+``2``   Analysis error (invalid path, bad manifest, invalid suppression file, parse failure)
 ======  ==========================================================================
