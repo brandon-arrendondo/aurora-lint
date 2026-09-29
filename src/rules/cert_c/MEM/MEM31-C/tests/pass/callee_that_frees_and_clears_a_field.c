@@ -27,3 +27,19 @@ void session_reset(struct session *s)
     free(s->label);
     s->label = NULL;
 }
+
+/* The same, with the release inside a configuration arm: the credit keeps
+ * its limit below the `#endif`. */
+void session_flush(struct session *s)
+{
+#ifdef CONFIG_SESSION
+    session_deinit(s);
+#ifdef CONFIG_SESSION_V2
+    s->active = 2;
+#else
+    s->active = 1;
+#endif
+#endif
+    free(s->label);
+    s->label = NULL;
+}

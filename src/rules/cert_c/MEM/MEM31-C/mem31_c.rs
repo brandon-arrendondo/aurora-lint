@@ -672,6 +672,11 @@ impl PreprocArmState {
         for (var, pos) in other.branch.freed_memory {
             self.branch.freed_memory.entry(var).or_insert(pos);
         }
+        // A mark that cannot accuse in the arm that made it cannot accuse
+        // below the `#endif` either.
+        self.branch
+            .unaccusable_frees
+            .extend(other.branch.unaccusable_frees);
         for (var, pos) in other.branch.maybe_freed {
             self.branch.maybe_freed.entry(var).or_insert(pos);
         }
