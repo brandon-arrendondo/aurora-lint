@@ -3223,17 +3223,16 @@ fn clears_param_indices_in(table: &dyn MacroLookup, name: &str) -> Vec<usize> {
 /// ([`macro_frees_param_indices`]) knows `free`/`fclose`/`close` by
 /// spelling, which misses a project's own: curl's `Curl_safefree(ptr)`
 /// frees through `curlx_free`, and `mosquitto_FREE(A)` through
-/// `mosquitto_free`, each a free by name shape or by alias. A rule that
+/// `mosquitto_free`, each a free by alias or by a wrapper's body. A rule that
 /// already classifies a direct call by such a predicate passes the same
 /// one here, so a macro invocation and the call it expands to are read
 /// alike.
 ///
 /// Expansion is one level at a time, asking `releases` about each callee
 /// BEFORE rescanning it, because the spelling that identifies a free can
-/// be an intermediate macro's name: curl's `curlx_free(ptr)` is itself a
-/// macro for `curl_dbg_free(ptr, __LINE__, __FILE__)`, whose body frees
-/// through a function pointer no summary can read, so a fully rescanned
-/// text would show only a callee the predicate cannot accept. A callee the
+/// be an intermediate macro's name: an object-like alias of `free` spelled
+/// as a macro the predicate resolves, which a fully rescanned text would
+/// replace with whatever the alias's own definition says. A callee the
 /// predicate rejects that is a macro is recursed into and its released
 /// parameters mapped back onto the arguments it was given.
 pub fn macro_param_indices_released_by(
@@ -3242,18 +3241,19 @@ pub fn macro_param_indices_released_by(
     releases: impl Fn(&str) -> bool,
     live: Live,
 ) -> Vec<usize> {
-    macro_param_indices_released_at(table, name, |callee| releases(callee).then_some(None), live)
+    macro_param_indices_released_at(table, name, |callee, _| releases(callee), live)
 }
 
 /// [`macro_param_indices_released_by`] for a predicate that knows which
-/// argument a callee releases: `Some(None)` for every argument (as `free`'s
-/// one argument, or a name the caller cannot place), `Some(Some(k))` for
-/// argument `k` only (a declared deallocator, `settings::memory`), `None` for
-/// a callee that releases nothing.
+/// argument a callee releases: `releases(callee, k)` is whether a call to
+/// `callee` releases its argument `k` (0-based) -- `free`'s one argument,
+/// the argument a declared deallocator names (`settings::memory`), or one a
+/// wrapper's summary shows its body freeing. A callee it accepts at no
+/// position is not a release; one that is a macro is recursed into.
 pub fn macro_param_indices_released_at(
     table: &HashMap<String, FunctionMacro>,
     name: &str,
-    releases: impl Fn(&str) -> Option<Option<usize>>,
+    releases: impl Fn(&str, usize) -> bool,
     live: Live,
 ) -> Vec<usize> {
     let merge = match live {
@@ -3269,7 +3269,7 @@ pub fn macro_param_indices_released_at(
 fn released_param_indices(
     table: &dyn MacroLookup,
     name: &str,
-    releases: &impl Fn(&str) -> Option<Option<usize>>,
+    releases: &impl Fn(&str, usize) -> bool,
     active: &mut HashSet<String>,
     depth: usize,
 ) -> Vec<usize> {
@@ -3308,11 +3308,10 @@ fn released_param_indices(
     active.insert(name.to_string());
     let mut out = Vec::new();
     for (callee, args) in calls_in(&body) {
-        if let Some(position) = releases(&callee) {
-            for (k, arg) in args.iter().enumerate() {
-                if position.is_none_or(|p| p == k) {
-                    out.extend(sentinel_indices_in(arg));
-                }
+        let released: Vec<usize> = (0..args.len()).filter(|&k| releases(&callee, k)).collect();
+        if !released.is_empty() {
+            for k in released {
+                out.extend(sentinel_indices_in(&args[k]));
             }
         } else if table.lookup(&callee).is_some() {
             for j in released_param_indices(table, &callee, releases, active, depth + 1) {

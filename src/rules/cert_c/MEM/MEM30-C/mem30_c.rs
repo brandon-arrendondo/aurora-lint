@@ -145,7 +145,7 @@ impl CertRule for Mem30C {
         // MEM31-C ownership an earlier fix). Collecting from the file is one AST
         // walk; the old "skip when the prescan table is empty" shortcut is
         // what hid the macro.
-        let (macro_null_params, macro_clear_params) = {
+        let (macro_null_params, macro_clear_params, function_macros) = {
             let mut macros = HashMap::clone(&self.function_macros.borrow());
             macros.extend(crate::analyze::macro_expand::collect_function_macros(
                 node, source,
@@ -177,7 +177,7 @@ impl CertRule for Mem30C {
                     clears.insert(name, idx);
                 }
             }
-            (nulls, clears)
+            (nulls, clears, Arc::new(macros))
         };
 
         // Names of union typedefs in this file, so the analyzer can restrict
@@ -239,6 +239,7 @@ impl CertRule for Mem30C {
         let mut analyzer = MemoryAnalyzer::new(
             macro_null_params,
             macro_clear_params,
+            function_macros,
             union_typedef_names,
             self.function_summaries.borrow().clone(),
             macro_aliases,
@@ -336,14 +337,6 @@ fn is_fresh_allocation_name(name: &str) -> bool {
 /// first argument rather than returning a new pointer to assign back) is
 /// not that idiom, and must not be treated as invalidating its first
 /// argument.
-/// The `<stem>` of a `<stem>_init` callee name, the in-place initializer
-/// half of the `X_init(obj)` / `X_free(obj)` convention.
-fn init_stem(function_name: &str) -> Option<&str> {
-    function_name
-        .strip_suffix("_init")
-        .filter(|stem| !stem.is_empty())
-}
-
 fn call_result_is_assigned(call_node: &Node) -> bool {
     let mut current = *call_node;
     loop {
@@ -487,23 +480,6 @@ fn address_of_operand<'a>(node: &Node<'a>) -> Option<Node<'a>> {
     }
     let op = node.child_by_field_name("operator")?;
     (op.kind() == "&").then(|| node.child_by_field_name("argument"))?
-}
-
-/// A call passing exactly ONE argument, by value: `sqlite3_free(p)` and not
-/// `sqlite3_free(&p)`.
-///
-/// Both halves guard the same credit. Arity one is the summary's
-/// one-nameable-argument rule: a deallocator NAME says a release happened
-/// and never says through which parameter, so with a second argument there
-/// is nothing to attach it to (`Curl_hash_delete(h, key, key_len)` reported
-/// the lookup KEY freed when MEM31-C tried it without the guard). And an
-/// `&var` argument is a claim about the pointee, not the parameter -- the
-/// same line MEM31-C draws with `through_address_of` -- so it is left to
-/// `process_address_of_args`, which already treats an unknown callee's
-/// `&var` as a possible refill.
-fn sole_by_value_argument(call: &Node) -> bool {
-    let args = crate::analyze::macro_semantics::positional_args(call);
-    matches!(args.as_slice(), [arg] if address_of_operand(arg).is_none())
 }
 
 fn is_address_of(node: &Node, source: &str) -> bool {
@@ -1821,13 +1797,6 @@ struct MemoryAnalyzer {
     // name freed. Consulted only on a candidate double-free, to detect whether a
     // preprocessor conditional directive separates the two free sites.
     freed_at: HashMap<LValue, usize>,
-    // The callee whose summary marked each name freed on a NAME GUESS alone
-    // (`FunctionSummary::frees_params_guessed`): the free was credited because
-    // some callee down the chain is spelled like a deallocator, not because
-    // any body was seen to release the parameter. Like
-    // `freed_at`, consulted only while the name is in `freed_vars`; a later
-    // free backed by real evidence removes the entry.
-    guessed_freed: HashMap<LValue, String>,
     // Track aliases: if alias = ptr, then aliases[alias] = ptr
     aliases: AliasMap,
     // Track which variables have been set to NULL after free
@@ -1854,6 +1823,9 @@ struct MemoryAnalyzer {
     // `os_memset`): macro name -> destination parameter indices. The macro
     // half of `clear_freed_paths_overwritten_by_clearing_call`.
     macro_clear_params: HashMap<String, Vec<usize>>,
+    // Function-like macros, the project's merged with this file's own: what
+    // `macro_freed_param_indices` expands.
+    function_macros: Arc<HashMap<String, FunctionMacro>>,
     // Names of union *typedefs* in this translation unit (e.g.
     // `typedef union {...} ptr_union_t;` -> "ptr_union_t"). Used to recognize
     // union-typed variable declarations. File-global; cloned per function.
@@ -1873,20 +1845,6 @@ struct MemoryAnalyzer {
     // `#define ALIAS target` map (project-wide plus this file); a callee is
     // dispatched on the name its alias chain ends at.
     macro_aliases: HashMap<String, String>,
-    // Objects this function has handed to a `<stem>_init(obj)` callee, keyed
-    // by canonical lvalue, with the set of stems: `mbedtls_x509_crt_init(p)`
-    // records `p -> {"mbedtls_x509_crt"}`. A later name-shaped
-    // `<stem>_free(obj)` with the SAME stem on the SAME object does not end
-    // obj's lifetime for this caller: either the init was handed
-    // caller-owned storage and the free releases its contents (mbedtls's
-    // `X_init`/`X_free` on a malloc'd struct, followed by the real
-    // `free(p)`), or the init took a functional reference and the free drops
-    // a structural one (OpenSSL's `ENGINE_init`/`ENGINE_free`, after which
-    // `ENGINE_finish(engine)` is still legitimate). An earlier fix.
-    // Function-scoped and monotone: it is evidence about the API's
-    // ownership convention, not path state, so it is not forked or merged
-    // with the branch state.
-    init_stems: HashMap<LValue, HashSet<String>>,
     // Function-like macros with more than one live definition (project-wide
     // plus this file). A callee named here whose only claim to being a free
     // is its NAME is treated as an opaque call, not a free.
@@ -1918,6 +1876,7 @@ impl MemoryAnalyzer {
     fn new(
         macro_null_params: HashMap<String, Vec<usize>>,
         macro_clear_params: HashMap<String, Vec<usize>>,
+        function_macros: Arc<HashMap<String, FunctionMacro>>,
         union_typedef_names: HashSet<String>,
         function_summaries: ScopedTable<FunctionSummary>,
         macro_aliases: HashMap<String, String>,
@@ -1931,7 +1890,6 @@ impl MemoryAnalyzer {
             freed_vars: HashSet::new(),
             freed_under: HashMap::new(),
             freed_at: HashMap::new(),
-            guessed_freed: HashMap::new(),
             aliases: HashMap::new(),
             nullified_vars: HashSet::new(),
             realloc_updated: HashSet::new(),
@@ -1940,13 +1898,13 @@ impl MemoryAnalyzer {
             union_members: HashMap::new(),
             macro_null_params,
             macro_clear_params,
+            function_macros,
             union_typedef_names,
             pointer_typedef_names,
             typedef_types,
             union_typed_vars: HashSet::new(),
             function_summaries,
             macro_aliases,
-            init_stems: HashMap::new(),
             ambiguous_macros,
             noreturn_names,
             breakables: Vec::new(),
@@ -1964,6 +1922,7 @@ impl MemoryAnalyzer {
             let mut func_analyzer = MemoryAnalyzer::new(
                 self.macro_null_params.clone(),
                 self.macro_clear_params.clone(),
+                Arc::clone(&self.function_macros),
                 self.union_typedef_names.clone(),
                 self.function_summaries.clone(),
                 self.macro_aliases.clone(),
@@ -3547,11 +3506,11 @@ impl MemoryAnalyzer {
 
             match function_name {
                 "free" => {
-                    return self.process_free_call(node, source, None, violations);
+                    return self.process_free_call(node, source, violations);
                 }
                 declared if call_roles::frees_argument(declared).is_some() => {
                     let k = call_roles::frees_argument(declared);
-                    return self.process_free_call_at(node, source, k, None, violations);
+                    return self.process_free_call_at(node, source, k, violations);
                 }
                 "malloc" | "calloc" => {
                     // Allocation will be tracked via assignment
@@ -3565,20 +3524,6 @@ impl MemoryAnalyzer {
                 }
                 _ => {
                     let upper_name = function_name.to_uppercase();
-                    // `<stem>_init(obj, ...)`: record every plain-lvalue
-                    // argument as initialized in place under `stem` (consumed by
-                    // `is_contents_free_of_initialized`).
-                    // `function_name` borrows `self.macro_aliases`, so the
-                    // insert is on the field, not through a `&mut self` call.
-                    if let Some(stem) = init_stem(function_name) {
-                        for lv in self.call_arg_lvalues(node, source) {
-                            self.init_stems
-                                .entry(lv)
-                                .or_default()
-                                .insert(stem.to_string());
-                        }
-                    }
-
                     // A realloc-*named* wrapper (hostap's `os_realloc`: malloc
                     // new, copy, free old) is used at call sites via the
                     // standard `x = os_realloc(x, n)` / `nbuf = os_realloc(old,
@@ -3607,14 +3552,11 @@ impl MemoryAnalyzer {
                     }
 
                     // A cross-file FunctionSummary (real analysis of the callee's
-                    // body) is authoritative over the name-based heuristic below —
-                    // it fixes both false positives (e.g. hostap's
-                    // `plink_free_count`, a pure counter whose name happens to
-                    // contain "FREE") and misattribution (freeing the wrong
-                    // parameter of a multi-arg call like `ap_free_sta(hapd, sta)`,
-                    // an earlier fix). Only fall back to the name heuristic when we have
-                    // no summary for this callee (library/system function, or no
-                    // -d cross-file scan).
+                    // body) says which arguments the call releases: a pure
+                    // counter whose name happens to contain "free" (hostap's
+                    // `plink_free_count`) releases nothing, and a multi-argument
+                    // call releases only the parameters its body frees
+                    // (`ap_free_sta(hapd, sta)`).
                     //
                     // Uses `unconditional_frees_params`, NOT the broader (MAY-free)
                     // `frees_params`: a callee that only frees its argument on some
@@ -3622,166 +3564,58 @@ impl MemoryAnalyzer {
                     // free it at every call site, and marking it as freed
                     // unconditionally here caused cascading false UAF/double-free
                     // reports at callers who took a different path.
-                    // The callee that credits the free below on its NAME
-                    // alone, when its own body could not be read past a
-                    // function-pointer call. `None` for every other route.
-                    let mut escaped_sole_param: Option<String> = None;
                     if let Some(summary) = self.function_summaries.get(function_name).cloned() {
                         // Only the frees of definitions this call can link
                         // against: one in an exclusive #if arm never meets it.
                         let must_free =
                             summary.unconditional_frees_at(source, node.start_position().row + 1);
                         if !must_free.is_empty() {
-                            let callee = function_name.to_string();
-                            let freed = self.process_summary_free_call(
-                                node,
-                                source,
-                                &must_free,
-                                &summary.frees_params_guessed,
-                                &callee,
-                                violations,
-                            );
+                            let freed = self
+                                .process_summary_free_call(node, source, &must_free, violations);
                             self.process_address_of_args(node, source, Some(&summary), violations);
                             return freed;
-                        } else if summary.sole_param_escapes_unnamed_call
-                            && sole_by_value_argument(node)
-                        {
-                            // An empty free set refutes the name only when the
-                            // body was READABLE throughout. `sqlite3_free(void
-                            // *p)` releases through
-                            // `sqlite3GlobalConfig.m.xFree(p)`, so every free
-                            // set comes out empty and the summary -- present,
-                            // and therefore trusted over the name -- said
-                            // sqlite's one deallocator frees nothing. MEM31-C
-                            // reads that as a leak it must not report; here
-                            // the polarity is inverted, so it is a
-                            // use-after-free this rule never got to see. Fall
-                            // through to the name heuristic, which is the
-                            // reading a callee with NO summary already gets,
-                            // and carry the callee so the finding says the
-                            // free was inferred from a name.
-                            //
-                            // A body that was read all the way through and
-                            // releases nothing -- mbedtls's
-                            // `mbedtls_gcm_free(ctx)`, which only zeroizes
-                            // members -- still refutes its name.
-                            escaped_sole_param = Some(function_name.to_string());
-                        } else {
-                            self.check_function_args_for_freed(node, source, violations);
-                            self.process_address_of_args(node, source, Some(&summary), violations);
-                            return HashSet::new();
                         }
+                        self.check_function_args_for_freed(node, source, violations);
+                        self.process_address_of_args(node, source, Some(&summary), violations);
+                        return HashSet::new();
                     }
 
-                    // Check for common free-related macros. A name is the
-                    // weakest evidence of a free, and it is overruled when the
-                    // callee is a macro this file defines more than one way
-                    // under a condition no platform profile settles (curl's
-                    // `FREE_ON_WINLDAP`: a real free in one arm, a no-op in the
-                    // other, with the non-Windows arm's `attr = attribute`
-                    // alias visible in the same walk -- so the guess produced a
-                    // "double-free" of `attribute` on every error branch of
-                    // ldap.c). Such a call is opaque: its argument
-                    // is still checked for prior frees like any other call.
-                    let ambiguous_free_macro = (upper_name.contains("FREE")
-                        || upper_name == "XFREE"
-                        || upper_name == "G_FREE"
-                        || upper_name == "SAFE_DELETE"
-                        || upper_name == "DELETE")
-                        && self.ambiguous_macros.contains(spelled_name);
-                    if !ambiguous_free_macro
-                        && (upper_name.contains("FREE")
-                            || upper_name == "XFREE"
-                            || upper_name == "G_FREE"
-                            || upper_name == "SAFE_DELETE"
-                            || upper_name == "DELETE")
-                    {
-                        // `<stem>_free(obj)` after `<stem>_init(obj)` in this
-                        // function does not release obj itself (contents-free
-                        // of caller-owned storage, or a structural-reference
-                        // drop; see `init_stems`), so obj is not marked freed
-                        // and the real `free(p)` that follows is not a double
-                        // free. It is still a use of obj, so a
-                        // prior free of it is reported.
-                        if self.is_contents_free_of_initialized(function_name, node, source) {
-                            self.check_function_args_for_freed(node, source, violations);
-                            return HashSet::new();
-                        }
-                        // Treat as free() call
-                        let freed_arg_ids = self.process_free_call(
-                            node,
-                            source,
-                            escaped_sole_param.as_deref(),
-                            violations,
-                        );
-                        // "Safe free" macros (curl Curl_safefree, mosquitto
-                        // mosquitto_FREE, …) also set the argument to NULL inside
-                        // the macro body — invisible to us without expansion. If
-                        // the macro engine flagged this macro as nulling a
-                        // parameter, clear that argument's freed state, exactly
-                        // as an explicit `p = NULL;` would. Phase 2c-iii.
+                    // A function-like macro whose every live definition
+                    // expands to a release of an argument -- `free`, a
+                    // declared deallocator, or a function whose body always
+                    // frees it -- is that release. A macro this file defines
+                    // more than one way under a condition no platform profile
+                    // settles is not read at all: curl's `FREE_ON_WINLDAP` is
+                    // a real free in one arm and a no-op in the other, and the
+                    // collector keeps only one body. Its argument is still
+                    // checked for prior frees like any other call.
+                    let macro_frees = if self.ambiguous_macros.contains(spelled_name) {
+                        Vec::new()
+                    } else {
+                        self.macro_freed_param_indices(spelled_name, node, source)
+                    };
+                    if !macro_frees.is_empty() {
+                        let indices: HashSet<usize> = macro_frees.into_iter().collect();
+                        let freed_arg_ids =
+                            self.process_summary_free_call(node, source, &indices, violations);
+                        // A "safe free" macro (curl `Curl_safefree`, mosquitto
+                        // `mosquitto_FREE`, …) also sets the argument to NULL
+                        // inside its body. If the macro engine flagged this
+                        // macro as nulling a parameter, clear that argument's
+                        // freed state, exactly as an explicit `p = NULL;` would.
                         if let Some(indices) = self.macro_null_params.get(spelled_name).cloned() {
                             self.clear_freed_for_nulled_args(node, source, &indices);
                         }
                         return freed_arg_ids;
-                    } else {
-                        // Check if any argument is a freed pointer
-                        self.check_function_args_for_freed(node, source, violations);
-                        self.process_address_of_args(node, source, None, violations);
                     }
+
+                    // Check if any argument is a freed pointer
+                    self.check_function_args_for_freed(node, source, violations);
+                    self.process_address_of_args(node, source, None, violations);
                 }
             }
         }
         HashSet::new()
-    }
-
-    /// The canonical lvalues of a call's plain `identifier` / `field_expression`
-    /// arguments (cast-unwrapped), in argument order.
-    fn call_arg_lvalues(&self, call: &Node, source: &str) -> Vec<LValue> {
-        let Some(arguments) = call.child_by_field_name("arguments") else {
-            return Vec::new();
-        };
-        let mut out = Vec::new();
-        for i in 0..arguments.child_count() {
-            let Some(mut arg) = arguments.child(i) else {
-                continue;
-            };
-            if matches!(arg.kind(), "," | "(" | ")") {
-                continue;
-            }
-            if arg.kind() == "cast_expression" {
-                if let Some(value) = arg.child_by_field_name("value") {
-                    arg = value;
-                }
-            }
-            if arg.kind() != "identifier" && arg.kind() != "field_expression" {
-                continue;
-            }
-            if let Some(lv) = lvalue_of(&arg, source) {
-                out.push(resolve_canonical(&self.aliases, &lv));
-            }
-        }
-        out
-    }
-
-    /// Is this name-shaped free a `<stem>_free(obj)` whose `obj` this function
-    /// earlier passed to `<stem>_init`? The freed operand is the last argument,
-    /// as `process_free_call` assumes.
-    fn is_contents_free_of_initialized(
-        &self,
-        function_name: &str,
-        call: &Node,
-        source: &str,
-    ) -> bool {
-        let Some(stem) = function_name.strip_suffix("_free") else {
-            return false;
-        };
-        let Some(target) = self.call_arg_lvalues(call, source).pop() else {
-            return false;
-        };
-        self.init_stems
-            .get(&target)
-            .is_some_and(|stems| stems.contains(stem))
     }
 
     /// Process free() call - mark variable as freed
@@ -3789,10 +3623,9 @@ impl MemoryAnalyzer {
         &mut self,
         node: &Node,
         source: &str,
-        guessed_by: Option<&str>,
         violations: &mut Vec<RuleViolation>,
     ) -> HashSet<usize> {
-        self.process_free_call_at(node, source, None, guessed_by, violations)
+        self.process_free_call_at(node, source, None, violations)
     }
 
     /// [`Self::process_free_call`] with the freed argument's position known:
@@ -3803,7 +3636,6 @@ impl MemoryAnalyzer {
         node: &Node,
         source: &str,
         position: Option<usize>,
-        guessed_by: Option<&str>,
         violations: &mut Vec<RuleViolation>,
     ) -> HashSet<usize> {
         let Some(arguments) = node.child_by_field_name("arguments") else {
@@ -3837,7 +3669,7 @@ impl MemoryAnalyzer {
         if !self.arg_can_be_freed(arg, source) {
             return HashSet::new();
         }
-        self.mark_arg_freed(node, arg, source, guessed_by, violations)
+        self.mark_arg_freed(node, arg, source, violations)
             .into_iter()
             .collect()
     }
@@ -3915,8 +3747,6 @@ impl MemoryAnalyzer {
         node: &Node,
         source: &str,
         param_indices: &HashSet<usize>,
-        guessed_indices: &HashSet<usize>,
-        callee: &str,
         violations: &mut Vec<RuleViolation>,
     ) -> HashSet<usize> {
         let Some(arguments) = node.child_by_field_name("arguments") else {
@@ -3933,8 +3763,7 @@ impl MemoryAnalyzer {
         let mut freed_arg_ids = HashSet::new();
         for &idx in param_indices {
             if let Some(&arg) = arg_nodes.get(idx) {
-                let guessed_by = guessed_indices.contains(&idx).then_some(callee);
-                if let Some(id) = self.mark_arg_freed(node, arg, source, guessed_by, violations) {
+                if let Some(id) = self.mark_arg_freed(node, arg, source, violations) {
                     freed_arg_ids.insert(id);
                 }
             }
@@ -3951,7 +3780,6 @@ impl MemoryAnalyzer {
         node: &Node,
         arg: Node,
         source: &str,
-        guessed_by: Option<&str>,
         violations: &mut Vec<RuleViolation>,
     ) -> Option<usize> {
         // For pointer dereference expressions like free(*ptr),
@@ -4030,7 +3858,7 @@ impl MemoryAnalyzer {
             && !self.nullified_vars.contains(&canonical)
             && !preproc_split
         {
-            let mut violation = RuleViolation {
+            violations.push(RuleViolation {
                 rule_id: "MEM30-C".to_string(),
                 severity: Severity::Critical,
                 message: format!("Double-free: '{}' freed multiple times", display_name),
@@ -4041,26 +3869,7 @@ impl MemoryAnalyzer {
                     "Set pointer to NULL after freeing to prevent double-free.".to_string(),
                 ),
                 ..Default::default()
-            };
-            // Either free resting on a name guess makes the pair an
-            // inference, so the finding is marked the way `uaf` marks one.
-            let prior = self
-                .guessed_free_of(&canonical)
-                .or_else(|| self.guessed_free_of(&lv))
-                .map(String::as_str);
-            let mut callees: Vec<&str> = prior.into_iter().chain(guessed_by).collect();
-            callees.dedup();
-            if !callees.is_empty() {
-                violation.requires_manual_review = Some(true);
-                if std::env::var_os("AURORA_MEM30_GUESS_DEBUG").is_some() {
-                    violation.message = format!(
-                        "{} [guessed-free via {}]",
-                        violation.message,
-                        callees.join(", ")
-                    );
-                }
-            }
-            violations.push(violation);
+            });
         }
 
         // Mark as freed
@@ -4070,20 +3879,6 @@ impl MemoryAnalyzer {
         let free_byte = node.start_byte();
         self.freed_at.insert(canonical.clone(), free_byte);
         self.freed_at.insert(lv.clone(), free_byte);
-        // Record -- or, on real evidence, retract -- that this free is a name
-        // guess.
-        match guessed_by {
-            Some(callee) => {
-                self.guessed_freed
-                    .insert(canonical.clone(), callee.to_string());
-                self.guessed_freed.insert(lv.clone(), callee.to_string());
-            }
-            None => {
-                self.guessed_freed.remove(&canonical);
-                self.guessed_freed.remove(&lv);
-            }
-        }
-
         // For union support: track union member relationships
         // When free(u.member) is called, all u.* accesses become invalid.
         // GATED on the base being a genuine union-typed variable: freeing a
@@ -4109,14 +3904,6 @@ impl MemoryAnalyzer {
             .map(|(k, _)| k.clone())
             .collect();
         for alias in aliases_to_free {
-            match guessed_by {
-                Some(callee) => {
-                    self.guessed_freed.insert(alias.clone(), callee.to_string());
-                }
-                None => {
-                    self.guessed_freed.remove(&alias);
-                }
-            }
             self.freed_vars.insert(alias);
         }
 
@@ -4168,7 +3955,7 @@ impl MemoryAnalyzer {
                 continue;
             }
             if summary.is_some_and(|s| s.frees_param_pointees.contains(&idx)) {
-                self.mark_arg_freed(call, inner, source, None, violations);
+                self.mark_arg_freed(call, inner, source, violations);
                 continue;
             }
             if summary.is_some_and(|s| s.conditional_modifies_params.contains(&idx)) {
@@ -4187,11 +3974,33 @@ impl MemoryAnalyzer {
             self.nullified_vars.remove(&lv);
             self.realloc_invalidated.remove(&lv);
             self.freed_at.remove(&lv);
-            self.guessed_freed.remove(&lv);
             if inner.kind() == "identifier" {
                 self.sever_aliases_of(&lv);
             }
         }
+    }
+
+    /// Parameter indices the function-like macro `spelled` releases in
+    /// EVERY live definition (the accusing merge), by expanding its body and
+    /// reading each call in it as the walk reads a direct one:
+    /// alias-resolved, then `free`, a declared deallocator, or a function
+    /// whose summary always frees that argument at this call. Empty when
+    /// `spelled` is no such macro.
+    fn macro_freed_param_indices(&self, spelled: &str, call: &Node, source: &str) -> Vec<usize> {
+        let line = call.start_position().row + 1;
+        crate::analyze::macro_expand::macro_param_indices_released_at(
+            &self.function_macros,
+            spelled,
+            |callee, k| {
+                let resolved = const_eval::resolve_macro_alias(&self.macro_aliases, callee);
+                call_roles::frees_argument(resolved) == Some(k)
+                    || self
+                        .function_summaries
+                        .get(resolved)
+                        .is_some_and(|s| s.unconditional_frees_at(source, line).contains(&k))
+            },
+            crate::analyze::macro_expand::Live::All,
+        )
     }
 
     /// For a "safe free" macro call (frees AND nulls its argument), clear the
@@ -4583,7 +4392,6 @@ impl MemoryAnalyzer {
         self.freed_vars.remove(lv);
         self.freed_at.remove(lv);
         self.freed_under.remove(lv);
-        self.guessed_freed.remove(lv);
         self.nullified_vars.remove(lv);
         self.realloc_invalidated.remove(lv);
     }
@@ -4628,7 +4436,6 @@ impl MemoryAnalyzer {
             // use-after-free of `h`. For a plain identifier
             // LHS the path IS the root, so that case is unchanged.
             self.freed_vars.insert(left_lv.clone());
-            self.copy_guessed_free(left_lv, right_var);
             self.aliases.insert(left_lv.clone(), right_var.clone());
         } else {
             // Reassigning the pointer to a live value overwrites any
@@ -4792,7 +4599,6 @@ impl MemoryAnalyzer {
                 self.aliases.insert(left_var.clone(), right_var.clone());
                 // If source is freed, the new variable is also freed
                 if self.is_freed(&right_var) {
-                    self.copy_guessed_free(&left_var, &right_var);
                     self.freed_vars.insert(left_var);
                 }
             }
@@ -5121,10 +4927,9 @@ impl MemoryAnalyzer {
                         if let Some(func) = grandparent.child_by_field_name("function") {
                             let func_name = get_node_text(&func, source);
                             let upper_func_name = func_name.to_uppercase();
-                            // Skip for free, realloc, and custom variants
+                            // Skip for free, realloc, and their declared variants
                             if call_roles::is_deallocator(func_name)
                                 || call_roles::is_realloc_like(func_name)
-                                || upper_func_name.contains("FREE")
                                 || upper_func_name.contains("REALLOC")
                             {
                                 return;
@@ -5193,23 +4998,10 @@ impl MemoryAnalyzer {
         }
     }
 
-    /// Finish a use-after-free finding on `lv` with what is known about how
-    /// `lv` came to be freed.
-    ///
-    /// A free that reached this rule on a callee's NAME alone -- `frees_params_
-    /// guessed` in the summary that credited it -- is a MAY-free, the same
-    /// evidence 1269 judged insufficient for MEM31-C to accuse a double free.
-    /// For a use-after-free it is still the only evidence the analyzer will
-    /// ever have for a wrapper whose body frees through a function pointer
-    /// (`sqlite3_free`), so the finding is kept and marked for manual review
-    /// rather than dropped: the reader sees that the "free" is an inference
-    /// from a name, and the oracle keeps the key.
-    fn uaf(
-        &self,
-        mut violation: RuleViolation,
-        lv: &LValue,
-        source: &str,
-    ) -> Option<RuleViolation> {
+    /// Finish a use-after-free finding on `lv`: `None` when a preprocessor
+    /// conditional separates the free from this use, since the two may sit
+    /// in builds that never compile together.
+    fn uaf(&self, violation: RuleViolation, lv: &LValue, source: &str) -> Option<RuleViolation> {
         // A preprocessor conditional between the free and this use puts the
         // two in what may be mutually exclusive build configurations --
         // curl's `curl_dbg_freeaddrinfo` frees `freethis` in each arm of an
@@ -5228,36 +5020,7 @@ impl MemoryAnalyzer {
                 return None;
             }
         }
-        if let Some(callee) = self.guessed_free_of(lv) {
-            violation.requires_manual_review = Some(true);
-            if std::env::var_os("AURORA_MEM30_GUESS_DEBUG").is_some() {
-                violation.message = format!("{} [guessed-free via {}]", violation.message, callee);
-            }
-        }
         Some(violation)
-    }
-
-    /// The callee whose name alone credited the free of `lv`, looked up on
-    /// `lv` itself or, one hop, on what it aliases.
-    fn guessed_free_of(&self, lv: &LValue) -> Option<&String> {
-        self.guessed_freed
-            .get(lv)
-            .or_else(|| self.aliases.get(lv).and_then(|c| self.guessed_freed.get(c)))
-    }
-
-    /// `to` just took its freed state from `from` by copy (`q = p;`,
-    /// `h->head = p;`, `T *q = p;`): the guess mark travels with it. The
-    /// one-hop alias lookup in [`Self::guessed_free_of`] does not cover a
-    /// chain, and `r = q;` after `q = p;` links `r` to `q`, not to `p`.
-    fn copy_guessed_free(&mut self, to: &LValue, from: &LValue) {
-        match self.guessed_free_of(from).cloned() {
-            Some(callee) => {
-                self.guessed_freed.insert(to.clone(), callee);
-            }
-            None => {
-                self.guessed_freed.remove(to);
-            }
-        }
     }
 
     /// Check if a variable is in freed state (considering aliases and realloc invalidation)

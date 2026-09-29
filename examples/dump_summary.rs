@@ -32,15 +32,15 @@ fn main() {
     for name in &args[2..] {
         match ctx.function_summaries.get(name) {
             Some(s) => println!(
-                "{name}:\n  returns_allocation={} returns_pointer={} returned_callees={:?}\n  returned_value_escapes={} returned_value_passthroughs={:?}\n  frees_params={:?} frees_params_guessed={:?} frees_param_pointees={:?} frees_param_fields={:?}\n  stores_params={:?} param_passthroughs={:?}",
+                "{name}:\n  returns_allocation={} returns_pointer={} returned_callees={:?}\n  returned_value_escapes={} returned_value_passthroughs={:?}\n  frees_params={:?} frees_param_pointees={:?} nulls_param_pointees={:?} frees_param_fields={:?}\n  stores_params={:?} param_passthroughs={:?}",
                 s.returns_allocation,
                 s.returns_pointer,
                 s.returned_callees,
                 s.returned_value_escapes,
                 s.returned_value_passthroughs,
                 s.frees_params,
-                s.frees_params_guessed,
                 s.frees_param_pointees,
+                s.nulls_param_pointees,
                 s.frees_param_fields,
                 s.stores_params,
                 s.param_passthroughs

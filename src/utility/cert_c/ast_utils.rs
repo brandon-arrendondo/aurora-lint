@@ -14,13 +14,14 @@ pub fn get_node_text<'a>(node: &Node, source: &'a str) -> &'a str {
     query::node_text(*node, source.as_bytes())
 }
 
-/// Heuristic: does this call's name look like a custom deallocator
-/// (destroy_*, free_*, delete_*, cleanup_*, release_*, close_*, or the
-/// matching suffix forms)? Shared between MEM31-C's own custom-deallocator
-/// handling and the prescan field-frees collector (`frees_param_fields`),
-/// so a macro-wrapped free like `#define mosquitto_FREE(A) free(A)` is
-/// recognized consistently in both places (an earlier fix: MEM31-C ownership model —
-/// aurora-lint has no preprocessor, so such wrapper calls are otherwise invisible).
+/// Does this call's name look like a custom deallocator (destroy_*, free_*,
+/// delete_*, cleanup_*, release_*, close_*, or the matching suffix forms)?
+///
+/// A name is not evidence of a free, and no analysis reads this: a call
+/// frees only where a body, a macro expansion or a project declaration shows
+/// it (`call_roles::frees_argument`, `FunctionSummary::frees_params`). It
+/// survives for `--report-deallocator-candidates`, which lists callees of
+/// this shape that nothing proves, so a user can declare the real ones.
 pub fn is_deallocation_call_name(func_name: &str) -> bool {
     if crate::analyze::macro_semantics::is_container_unlink_macro(func_name) {
         return false;

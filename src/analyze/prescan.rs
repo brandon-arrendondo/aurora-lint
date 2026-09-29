@@ -1258,6 +1258,7 @@ fn prescan_file_list(
     function_summary::propagate_transitive_stores(&mut function_summaries, &macro_aliases);
     function_summary::propagate_returns_allocation(&mut function_summaries);
     function_summary::propagate_returned_value_escapes(&mut function_summaries, &macro_aliases);
+    function_summary::resolve_field_free_edges(&mut function_summaries, &macro_aliases);
     function_summary::propagate_transitive_frees_param_fields(&mut function_summaries);
     function_summary::propagate_transitive_frees_param_pointees(&mut function_summaries);
     function_summary::propagate_transitive_closes(&mut function_summaries);
@@ -1661,8 +1662,8 @@ fn scope_summary_callees(
             key(callee);
         }
     }
-    for guesses in summary.frees_params_by_name.values_mut() {
-        for (callee, _, _) in guesses.iter_mut() {
+    for edges in summary.field_free_edges.values_mut() {
+        for (_, callee, _) in edges.iter_mut() {
             key(callee);
         }
     }
@@ -7274,6 +7275,15 @@ pub fn resolve_includes(
     function_summary::propagate_transitive_stores(
         context.function_summaries.make_mut(),
         &context.macro_aliases,
+    );
+    // A field handed to a wrapper that frees through such an alias is freed
+    // only once the rerun above credits the wrapper.
+    function_summary::resolve_field_free_edges(
+        context.function_summaries.make_mut(),
+        &context.macro_aliases,
+    );
+    function_summary::propagate_transitive_frees_param_fields(
+        context.function_summaries.make_mut(),
     );
     // A pointer-returning wrapper's allocating callee may only resolve once a
     // header defines that callee's own constructor (e.g. a static inline

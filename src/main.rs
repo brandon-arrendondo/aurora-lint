@@ -257,6 +257,15 @@ fn run() -> Result<i32> {
                 .action(clap::ArgAction::Append),
         )
         .arg(
+            Arg::new("report_deallocator_candidates")
+                .long("report-deallocator-candidates")
+                .help("After the scan, list callees worth declaring as deallocators: each is shaped like one by name (*_free, destroy_*, ...), nothing in the scan shows it freeing anything, and an allocation handed to it was reported leaked by MEM31-C. Declare the real ones under [environment.deallocators] or with --deallocator. Prints a summary to stdout; --report-deallocator-candidates=FILE also writes every row as JSON. Never changes a finding")
+                .value_name("JSON_FILE")
+                .num_args(0..=1)
+                .default_missing_value("")
+                .require_equals(true),
+        )
+        .arg(
             Arg::new("exclude")
                 .long("exclude")
                 .help("Deprecated: same as --report-exclude. Use --report-exclude, or --exclude-all to leave files out of everything (repeatable)")
@@ -528,6 +537,12 @@ fn run() -> Result<i32> {
     // Some(path) when the flag was given; the path is empty for the bare
     // flag (summary only) and a file name when the user wants the JSON too.
     let report_macro_gaps: Option<String> = matches.get_one::<String>("report_macro_gaps").cloned();
+    let report_deallocator_candidates: Option<String> = matches
+        .get_one::<String>("report_deallocator_candidates")
+        .cloned();
+    if report_deallocator_candidates.is_some() {
+        analyze::deallocator_candidates::enable();
+    }
     let fail_on_violation = matches.get_flag("fail_on_violation");
     let fail_on_severity: Option<Severity> = matches
         .get_one::<String>("fail_on_severity")
@@ -734,6 +749,24 @@ fn run() -> Result<i32> {
             println!(
                 "Wrote macro-gap report ({} rows) to: {}",
                 report.gaps.len(),
+                json_path
+            );
+        }
+    }
+
+    if let Some(json_path) = &report_deallocator_candidates {
+        const ROWS: usize = 25;
+        let report = analyze::deallocator_candidates::take_report();
+        println!();
+        print!("{}", report.render_text(ROWS));
+        if !json_path.is_empty() {
+            let json = serde_json::to_string_pretty(&report)?;
+            fs::write(json_path, json).with_context(|| {
+                format!("Failed to write deallocator-candidate report to {json_path}")
+            })?;
+            println!(
+                "Wrote deallocator-candidate report ({} rows) to: {}",
+                report.candidates.len(),
                 json_path
             );
         }

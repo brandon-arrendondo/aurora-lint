@@ -2,15 +2,13 @@
  * Rule: MEM31-C
  * Source: custom
  * Status: PASS - Should NOT trigger MEM31-C violation
- * Description: A callee with no body in the scan leaves its NAME as the only
- * evidence, and `is_deallocation_call_name` reads six verbs of which only
- * free/destroy/delete mean deallocation. librtmp's `RTMP_Close(r)` shuts the
- * stream down and `RTMP_Free(r)` is what frees `r` (curl lib/curl_rtmp.c's
- * rtmp_conn_dtor); a COM `_Release` decrements a refcount; and
- * `mbedtls_gcm_free(ctx); free(ctx);` releases contents and then the struct.
- * Two DIFFERENT deallocator names on one pointer is the paired-teardown
- * idiom, so a guessed mark from the first does not make the second a double
- * free. An earlier fix.
+ * Description: None of these callees has a body in the scan, so none of
+ * them is shown to release anything, and a second call on the same pointer
+ * is not a double free. Their names would say otherwise and be wrong:
+ * librtmp's `RTMP_Close(r)` shuts the stream down and `RTMP_Free(r)` is
+ * what frees `r` (curl lib/curl_rtmp.c's rtmp_conn_dtor); a COM `_Release`
+ * decrements a refcount; and `mbedtls_gcm_free(ctx); free(ctx);` releases
+ * contents and then the struct. Paired teardown is an idiom, not a defect.
  */
 
 #include <stdlib.h>

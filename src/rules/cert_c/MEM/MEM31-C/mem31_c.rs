@@ -4,6 +4,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval;
 use crate::analyze::context::{self, ProjectContext, ScopedTable};
+use crate::analyze::deallocator_candidates;
 use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::init_state;
 use crate::analyze::macro_expand::{self, FunctionMacro};
@@ -306,17 +307,18 @@ struct MemoryLeakAnalyzer<'a> {
     // call a later free of that name a double free -- see
     // `mark_freed_with_aliases`.
     freed_via_alias: HashSet<String>,
-    // Names whose freed mark rests on nothing but the callee's NAME: a
-    // deallocator shape with no body in the scan, so no summary to consult.
-    // Maps the name to the callee that guessed it -- see
-    // `guess_forbids_double_free`.
-    freed_by_guess: HashMap<String, String>,
     // Track variables that are returned or stored globally
     escaped_memory: HashSet<String>,
     // Track variables known to be NULL in current scope (from NULL checks)
     null_variables: HashSet<String>,
     // Collect double-free violations during analysis
     double_free_violations: Vec<RuleViolation>,
+    // Calls, in the function being walked, that handed a tracked allocation
+    // to an unproven callee shaped like a deallocator: (variable, callee,
+    // 1-based argument, line). Collected only for
+    // `--report-deallocator-candidates`, and read back once the function's
+    // leaks are known; never an input to a finding.
+    deallocator_candidates: Vec<(String, String, usize, usize)>,
     // Collect leak violations found at early returns
     leak_violations: Vec<RuleViolation>,
     // Track if we're inside a loop (for double-free detection)
@@ -347,15 +349,6 @@ struct MemoryLeakAnalyzer<'a> {
     // at the label of a pointer in here but not in the intersection is a
     // double free on that path. See `visit_labeled_statement`.
     goto_maybe_freed: HashMap<String, HashMap<String, (usize, usize)>>,
-    // Per label, which of those frees rest on a callee's NAME alone
-    // (`freed_by_guess`) on EVERY jump that had the pointer freed: `Some`
-    // (the guessing callee) when so, `None` once any jump freed it for
-    // real. The snapshots above carry positions only, so without this a
-    // guess made before `goto fail` arrived at `fail:` as a fact and
-    // `curl_url_cleanup(u)` there was a "possible double free" of a handle
-    // `curl_url_set(u, ...)` had never freed (curl tool_xattr.c,
-    // tool_operhlp.c). See `visit_labeled_statement`.
-    goto_freed_by_guess: HashMap<String, HashMap<String, Option<String>>>,
     // Pointers freed on some, not every, path into the label the walk is
     // currently below -- consulted only by the free handlers, never by the
     // leak sweeps, which keep their must-freed reading of `freed_memory`.
@@ -482,7 +475,6 @@ struct AllocInfo {
 struct LeakBranchState {
     freed_memory: HashMap<String, (usize, usize)>,
     freed_via_alias: HashSet<String>,
-    freed_by_guess: HashMap<String, String>,
     maybe_freed: HashMap<String, (usize, usize)>,
     null_variables: HashSet<String>,
 }
@@ -492,7 +484,6 @@ impl LeakBranchState {
         Self {
             freed_memory: analyzer.freed_memory.clone(),
             freed_via_alias: analyzer.freed_via_alias.clone(),
-            freed_by_guess: analyzer.freed_by_guess.clone(),
             maybe_freed: analyzer.maybe_freed.clone(),
             null_variables: analyzer.null_variables.clone(),
         }
@@ -501,7 +492,6 @@ impl LeakBranchState {
     fn restore(&self, analyzer: &mut MemoryLeakAnalyzer) {
         analyzer.freed_memory = self.freed_memory.clone();
         analyzer.freed_via_alias = self.freed_via_alias.clone();
-        analyzer.freed_by_guess = self.freed_by_guess.clone();
         analyzer.maybe_freed = self.maybe_freed.clone();
         analyzer.null_variables = self.null_variables.clone();
     }
@@ -618,7 +608,6 @@ struct PreprocArmState {
     allocated_memory: HashMap<String, AllocInfo>,
     goto_freed_states: HashMap<String, HashMap<String, (usize, usize)>>,
     goto_maybe_freed: HashMap<String, HashMap<String, (usize, usize)>>,
-    goto_freed_by_guess: HashMap<String, HashMap<String, Option<String>>>,
 }
 
 impl PreprocArmState {
@@ -628,7 +617,6 @@ impl PreprocArmState {
             allocated_memory: analyzer.allocated_memory.clone(),
             goto_freed_states: analyzer.goto_freed_states.clone(),
             goto_maybe_freed: analyzer.goto_maybe_freed.clone(),
-            goto_freed_by_guess: analyzer.goto_freed_by_guess.clone(),
         }
     }
 
@@ -637,7 +625,6 @@ impl PreprocArmState {
         analyzer.allocated_memory = self.allocated_memory.clone();
         analyzer.goto_freed_states = self.goto_freed_states.clone();
         analyzer.goto_maybe_freed = self.goto_maybe_freed.clone();
-        analyzer.goto_freed_by_guess = self.goto_freed_by_guess.clone();
     }
 
     /// Fold the state one arm ended on into this one, as the state the code
@@ -657,9 +644,6 @@ impl PreprocArmState {
         for (var, pos) in other.branch.maybe_freed {
             self.branch.maybe_freed.entry(var).or_insert(pos);
         }
-        for (var, callee) in other.branch.freed_by_guess {
-            self.branch.freed_by_guess.entry(var).or_insert(callee);
-        }
         self.branch
             .null_variables
             .extend(other.branch.null_variables);
@@ -678,27 +662,6 @@ impl PreprocArmState {
             let union = self.goto_maybe_freed.entry(label).or_default();
             for (var, pos) in state {
                 union.entry(var).or_insert(pos);
-            }
-        }
-        for (label, state) in other.goto_freed_by_guess {
-            let mine = self.goto_freed_by_guess.entry(label).or_default();
-            for (var, guess) in state {
-                Self::fold_guess(mine, var, guess);
-            }
-        }
-    }
-
-    /// Fold one jump's reading of `var` into a label's: a guess stays a
-    /// guess only while every jump agrees.
-    fn fold_guess(into: &mut HashMap<String, Option<String>>, var: String, guess: Option<String>) {
-        match into.get_mut(&var) {
-            Some(existing) => {
-                if guess.is_none() {
-                    *existing = None;
-                }
-            }
-            None => {
-                into.insert(var, guess);
             }
         }
     }
@@ -808,10 +771,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             allocated_memory: HashMap::new(),
             freed_memory: HashMap::new(),
             freed_via_alias: HashSet::new(),
-            freed_by_guess: HashMap::new(),
             escaped_memory: HashSet::new(),
             null_variables: HashSet::new(),
             double_free_violations: Vec::new(),
+            deallocator_candidates: Vec::new(),
             leak_violations: Vec::new(),
             in_loop: false,
             loop_depth: 0,
@@ -820,7 +783,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             arms: PreprocArms::default(),
             goto_freed_states: HashMap::new(),
             goto_maybe_freed: HashMap::new(),
-            goto_freed_by_guess: HashMap::new(),
             maybe_freed: HashMap::new(),
             discarded_label_frees: HashMap::new(),
             realloc_relations: HashMap::new(),
@@ -860,11 +822,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
     /// Parameter indices the function-like macro `func_name` frees, by
     /// expanding its body and reading each call in it the way the walk
-    /// reads a direct one: alias-resolved, then `free` or a name-shaped
-    /// deallocator. curl's `Curl_safefree(ptr)` frees through `curlx_free`,
-    /// an object-like alias of `free`, which the fixed-list
-    /// `macro_frees_param_indices` cannot see. Empty when `func_name` is
-    /// not a function-like macro at all.
+    /// reads a direct one: alias-resolved, then `free`, a declared
+    /// deallocator, or a function whose summary frees that argument. curl's
+    /// `Curl_safefree(ptr)` frees through `curlx_free`, an object-like alias
+    /// of `free`, which the fixed-list `macro_frees_param_indices` cannot
+    /// see. Empty when `func_name` is not a function-like macro at all.
     fn macro_freed_param_indices(&self, func_name: &str, site: Site) -> Vec<usize> {
         if self.function_macros.is_empty() {
             return Vec::new();
@@ -872,13 +834,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         macro_expand::macro_param_indices_released_at(
             self.function_macros,
             func_name,
-            |callee| {
+            |callee, k| {
                 let resolved = const_eval::resolve_macro_alias(self.macro_aliases, callee);
                 // A declaration names its argument; `free` has only one.
-                match call_roles::frees_argument(resolved) {
-                    Some(k) => Some(Some(k)),
-                    None => self.is_named_deallocator(resolved, site).then_some(None),
-                }
+                call_roles::frees_argument(resolved) == Some(k)
+                    || self.callee_releases_arg(resolved, k, false, site)
             },
             macro_expand::Live::All,
         )
@@ -913,6 +873,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         violations: &mut Vec<RuleViolation>,
     ) {
         if let Some(body) = func_node.child_by_field_name("body") {
+            let first_violation = violations.len();
+            self.deallocator_candidates.clear();
             self.function_params = function_summary::collect_param_names(func_node, source)
                 .into_iter()
                 .filter(|n| !n.is_empty())
@@ -931,7 +893,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             self.arms = PreprocArms::collect(&body);
             self.goto_freed_states.clear();
             self.goto_maybe_freed.clear();
-            self.goto_freed_by_guess.clear();
             self.maybe_freed.clear();
             self.discarded_label_frees.clear();
             self.collect_label_frees(&body, source);
@@ -957,6 +918,58 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 self.freed_memory.entry(var).or_insert(pos);
             }
             self.detect_leaks(violations);
+            self.record_deallocator_candidates(&violations[first_violation..]);
+        }
+    }
+
+    /// Hand `--report-deallocator-candidates` every call noted by
+    /// [`Self::note_deallocator_candidate`] whose allocation this function
+    /// then reported leaked: declaring that callee would change the verdict.
+    fn record_deallocator_candidates(&mut self, found: &[RuleViolation]) {
+        for (var, callee, argument, line) in std::mem::take(&mut self.deallocator_candidates) {
+            let quoted = format!("'{}'", var);
+            let leaked = found.iter().any(|v| {
+                let m = v.message.to_lowercase();
+                (m.contains("leak") || m.contains("not freed")) && v.message.contains(&quoted)
+            });
+            if leaked {
+                deallocator_candidates::record(&callee, argument, line);
+            }
+        }
+    }
+
+    /// Note a call that hands a tracked allocation to a callee shaped like a
+    /// deallocator by NAME that nothing proves frees anything: no body that
+    /// releases or escapes it, and no macro. The name is read for the report
+    /// only; the walk has already treated the call as the ordinary call it is.
+    fn note_deallocator_candidate(&mut self, node: &Node, source: &str, func_name: &str) {
+        if !deallocator_candidates::enabled()
+            || !ast_utils::is_deallocation_call_name(func_name)
+            || self.function_macros.contains_key(func_name)
+        {
+            return;
+        }
+        let site = site_of(node, source);
+        if let Some(summary) = self.summary_at(func_name, site) {
+            if !summary.frees_params.is_empty()
+                || !summary.frees_param_pointees.is_empty()
+                || !summary.frees_param_fields.is_empty()
+                || !summary.stores_params.is_empty()
+                || summary.sole_param_escapes_unnamed_call
+            {
+                return;
+            }
+        }
+        let line = node.start_position().row + 1;
+        for (idx, arg) in Self::call_args(*node).enumerate() {
+            let Some((target, false)) = strip_call_argument(arg) else {
+                continue;
+            };
+            let var = ast_utils::get_node_text_owned(&target, source);
+            if self.allocated_memory.contains_key(&var) {
+                self.deallocator_candidates
+                    .push((var, func_name.to_string(), idx + 1, line));
+            }
         }
     }
 
@@ -1097,7 +1110,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             let callee = self.callee_name(&function, source);
             let site = site_of(&n, source);
             let summary = self.summary_at(&callee, site);
-            let by_name = callee == "free" || self.is_named_deallocator(&callee, site);
             let declared = call_roles::frees_argument(&callee);
             let by_macro = self.macro_freed_param_indices(&callee, site);
             Self::call_args(n).enumerate().any(|(idx, arg)| {
@@ -1106,7 +1118,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     && arg.child_by_field_name("argument").is_some_and(|b| {
                         ast_utils::get_node_text(&peel_casts_and_parens(b), source) == base_text
                     })
-                    && (declared.map_or(by_name, |k| k == idx)
+                    && (declared == Some(idx)
                         || by_macro.contains(&idx)
                         || summary
                             .as_ref()
@@ -1641,13 +1653,13 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// walking the full (unbounded) ancestor chain from each call cannot
     /// cross above `node` and pick up an unrelated `return_statement`.
     ///
-    /// A custom deallocator counts here for the same reason it counts in the
-    /// main walk (`process_custom_deallocator`): hostap's cleanup labels free
-    /// through `EVP_PKEY_free`/`EC_POINT_new`-style wrappers, never through
-    /// bare `free`, so a prescan that recognized only `free` claimed those
-    /// labels cleaned up nothing and every `goto` into one looked like a
-    /// leaked allocation. Reading the same predicate keeps the prescan and
-    /// the walk from disagreeing about what a free is.
+    /// A wrapper whose summary frees an argument counts here for the same
+    /// reason it counts in the main walk (`process_summarized_deallocator`):
+    /// hostap's cleanup labels free through wrappers, never through bare
+    /// `free`, so a prescan that recognized only `free` claimed those labels
+    /// cleaned up nothing and every `goto` into one looked like a leaked
+    /// allocation. Reading the same predicate keeps the prescan and the walk
+    /// from disagreeing about what a free is.
     fn collect_frees_in_label(&self, node: &Node, source: &str, freed_vars: &mut HashSet<String>) {
         for call in query::find_descendants_of_kind(*node, "call_expression") {
             if query::find_ancestor(call, |a| a.kind() == "return_statement").is_some() {
@@ -1681,18 +1693,28 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 }
                 // A callee the prescan SAW free a parameter counts whatever
                 // it is called: hostap's `fail:` blocks release through
-                // `crypto_ec_key_deinit`/`tls_deinit`, and `_deinit` is no
-                // shape the name heuristic knows. The main walk already
-                // reaches such a callee through `process_freeing_callee`
-                // on its summary alone; gating this scan on the name first
-                // left every `goto` into those labels reading as a leak
-                // . `named_deallocator_releases_arg` below then
-                // asks the same summary WHICH argument.
+                // `crypto_ec_key_deinit`/`tls_deinit`. `callee_releases_arg`
+                // below then asks the same summary WHICH argument.
                 let declared = call_roles::frees_argument(&func_name);
-                if declared.is_some()
-                    || self.is_named_deallocator(&func_name, site)
-                    || self.summary_frees_some_param(&func_name, site)
+                // A one-parameter callee whose body hands the parameter to a
+                // call through a function pointer disposes of it where
+                // nothing can follow (`sqlite3_free` -> `xFree`): the walk
+                // reads that as an escape (`process_storing_callee`), and a
+                // label doing it is not a label that leaks the block. This
+                // set only ever withholds a goto leak report.
+                if declared.is_none()
+                    && self
+                        .summary_at(&func_name, site)
+                        .is_some_and(|s| s.sole_param_escapes_unnamed_call)
                 {
+                    if let Some((target, false)) =
+                        Self::call_args(call).next().and_then(strip_call_argument)
+                    {
+                        freed_vars.insert(ast_utils::get_node_text_owned(&target, source));
+                    }
+                    continue;
+                }
+                if declared.is_some() || self.summary_frees_some_param(&func_name, site) {
                     if let Some(arguments) = call.child_by_field_name("arguments") {
                         let mut param_idx = 0usize;
                         for i in 0..arguments.child_count() {
@@ -1715,7 +1737,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                                     continue;
                                 }
                                 if declared.is_none()
-                                    && !self.named_deallocator_releases_arg(
+                                    && !self.callee_releases_arg(
                                         &func_name,
                                         this_param_idx,
                                         through_address_of,
@@ -2032,16 +2054,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     }
                 }
             }
-            // A free that every jump in only guessed is still a guess here,
-            // and `guess_forbids_double_free` must be able to see that at
-            // the label's own release of the pointer.
-            if let Some(guesses) = self.goto_freed_by_guess.get(&name).cloned() {
-                for (var, guess) in guesses {
-                    if let Some(callee) = guess {
-                        self.freed_by_guess.entry(var).or_insert(callee);
-                    }
-                }
-            }
         }
         push_children(stack, &n);
     }
@@ -2065,14 +2077,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         for (var, pos) in &self.freed_memory {
             union.entry(var.clone()).or_insert(*pos);
         }
-        let guesses = self
-            .goto_freed_by_guess
-            .entry(target_label.to_string())
-            .or_default();
-        for var in self.freed_memory.keys() {
-            let guess = self.freed_by_guess.get(var).cloned();
-            PreprocArmState::fold_guess(guesses, var.clone(), guess);
-        }
     }
 
     /// Report a free of `var_name` that is a double free on some, not every,
@@ -2084,11 +2088,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         free_pos: tree_sitter::Point,
         call_name: &str,
     ) {
-        if let Some(&(freed_line, freed_column)) = self
-            .maybe_freed
-            .get(var_name)
-            .filter(|_| !self.guess_forbids_double_free(var_name, call_name))
-        {
+        if let Some(&(freed_line, freed_column)) = self.maybe_freed.get(var_name) {
             let at = Some(&(freed_line, freed_column));
             let how = if self.released_in_one_build.get(var_name) == at {
                 "by a call that is realloc in some builds"
@@ -2285,7 +2285,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         };
         self.freed_memory.remove(&old_ptr);
         self.freed_via_alias.remove(&old_ptr);
-        self.freed_by_guess.remove(&old_ptr);
         self.maybe_freed.remove(&old_ptr);
         self.released_by_some_definition.remove(&old_ptr);
     }
@@ -2332,7 +2331,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 return;
             }
             let pos = if_node.start_position();
-            self.freed_by_guess.remove(&old_ptr);
             self.freed_memory
                 .insert(old_ptr, (pos.row + 1, pos.column + 1));
         }
@@ -2614,11 +2612,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
             self.freed_via_alias
                 .extend(other.state.freed_via_alias.iter().cloned());
-            for (k, v) in &other.state.freed_by_guess {
-                self.freed_by_guess
-                    .entry(k.clone())
-                    .or_insert_with(|| v.clone());
-            }
             for (k, v) in &other.state.maybe_freed {
                 self.maybe_freed.entry(k.clone()).or_insert(*v);
             }
@@ -2760,11 +2753,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 .union(&else_state.freed_via_alias)
                 .cloned()
                 .collect();
-            let mut guessed = true_state.freed_by_guess.clone();
-            for (k, v) in else_state.freed_by_guess.clone() {
-                guessed.entry(k).or_insert(v);
-            }
-            analyzer.freed_by_guess = guessed;
             let mut maybe = true_state.maybe_freed.clone();
             for (k, v) in else_state.maybe_freed.clone() {
                 maybe.entry(k).or_insert(v);
@@ -2824,13 +2812,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // `free` releases it. Dropping the record can only withhold a
             // leak report, the safe direction for an accusation this rule
             // cannot scope precisely.
-            if self.freed_memory.contains_key(&var_name)
-                || self.maybe_freed.contains_key(&var_name)
-                || self.freed_by_guess.contains_key(&var_name)
+            if self.freed_memory.contains_key(&var_name) || self.maybe_freed.contains_key(&var_name)
             {
                 self.freed_memory.remove(&var_name);
                 self.maybe_freed.remove(&var_name);
-                self.freed_by_guess.remove(&var_name);
                 self.freed_via_alias.remove(&var_name);
                 self.allocated_memory.remove(&var_name);
             }
@@ -3214,7 +3199,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     let key = ast_utils::get_node_text_owned(&left, source);
                     let was_freed = self.freed_memory.remove(&key).is_some();
                     self.maybe_freed.remove(&key);
-                    self.freed_by_guess.remove(&key);
                     let is_null = right.kind() == "null"
                         || ast_utils::get_node_text_owned(&right, source) == "NULL";
                     if was_freed && is_null {
@@ -3295,7 +3279,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // New allocation clears freed status (variable now points to valid memory)
                 self.freed_memory.remove(&var_name);
                 self.maybe_freed.remove(&var_name);
-                self.freed_by_guess.remove(&var_name);
                 // ... and escaped status: whatever the name handed away, this
                 // block is a fresh one the function owns again.
                 self.escaped_memory.remove(&var_name);
@@ -3326,7 +3309,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // (e.g., buffer = temp after realloc)
                 self.freed_memory.remove(&var_name);
                 self.maybe_freed.remove(&var_name);
-                self.freed_by_guess.remove(&var_name);
 
                 if self.allocated_memory.contains_key(&right_var) {
                     // Transfer ownership
@@ -3369,7 +3351,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // leaks belongs to the ownership-escape work, not here.
                 self.freed_memory.remove(&var_name);
                 self.maybe_freed.remove(&var_name);
-                self.freed_by_guess.remove(&var_name);
                 // an earlier fix: this name now holds whatever the unreadable
                 // right-hand side handed back -- a lookup/registry accessor
                 // (`dev = p2p_create_device(...)`) or a field/subscript read
@@ -3410,7 +3391,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         self.allocated_memory.remove(var_name);
         self.freed_memory.remove(var_name);
         self.maybe_freed.remove(var_name);
-        self.freed_by_guess.remove(var_name);
         self.escaped_memory.remove(var_name);
     }
 
@@ -3446,11 +3426,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             return;
         }
 
-        // Check for custom deallocation functions: destroy_*, free_*, delete_*, cleanup_*, release_*
+        // A function whose body was seen to release what it is handed.
         if call_roles::frees_argument(&func_name).is_none()
-            && self.is_named_deallocator(&func_name, site_of(node, source))
+            && self.summary_proves_release(&func_name, site_of(node, source))
         {
-            self.process_custom_deallocator(node, source, &func_name);
+            self.process_summarized_deallocator(node, source, &func_name);
         }
 
         if func_name == "free" {
@@ -3469,6 +3449,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 .is_some_and(|names| names.contains(spelled));
             self.process_realloc_call(node, source, in_one_build);
         } else {
+            self.note_deallocator_candidate(node, source, &func_name);
             self.process_freeing_callee(node, source, &func_name);
             self.process_storing_callee(node, source, &func_name);
             self.process_reobtaining_callee(node, source, &func_name);
@@ -3540,13 +3521,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             let var_name = ast_utils::get_node_text_owned(&target, source);
             if !self.freed_memory.contains_key(&var_name)
                 && !self.maybe_freed.contains_key(&var_name)
-                && !self.freed_by_guess.contains_key(&var_name)
             {
                 continue;
             }
             self.freed_memory.remove(&var_name);
             self.maybe_freed.remove(&var_name);
-            self.freed_by_guess.remove(&var_name);
             self.freed_via_alias.remove(&var_name);
             self.allocated_memory.remove(&var_name);
         }
@@ -3608,7 +3587,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// so `he = hash_elem_create(...); hash_elem_link(h, slot, he);` reported
     /// `he` leaked on the very statement that gives it away.
     ///
-    /// Reads `stores_params` and nothing else -- no name shape. The summary
+    /// Reads `stores_params`, and `sole_param_escapes_unnamed_call` for a
+    /// one-parameter callee -- no name shape. The summary
     /// is a MAY fact, which is the polarity a suppression needs: hostap's
     /// `eap_peer_method_register` frees its argument on two error paths and
     /// links it into a list on the rest, and neither half alone covers every
@@ -3617,7 +3597,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         let Some(summary) = self.summary_at(func_name, site_of(node, source)) else {
             return;
         };
-        if summary.stores_params.is_empty() {
+        // A sole parameter the body hands to a call through a function
+        // pointer went somewhere nothing can read (`sqlite3_free(p)` releases
+        // through `xFree`). Neither a free nor a leak of it can be shown, so
+        // the block escapes: no leak, and no later double free on its account.
+        let sole_escapes = summary.sole_param_escapes_unnamed_call;
+        if summary.stores_params.is_empty() && !sole_escapes {
             return;
         }
         let Some(arguments) = node.child_by_field_name("arguments") else {
@@ -3636,7 +3621,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // `&p` hands over the caller's VARIABLE, not the block's value;
             // that is `frees_param_pointees`' shape and not a store of the
             // pointer this walk is tracking.
-            if summary.stores_params.contains(&param_idx) {
+            if summary.stores_params.contains(&param_idx) || (sole_escapes && param_idx == 0) {
                 if let Some((target, false)) = strip_call_argument(arg) {
                     let name = ast_utils::get_node_text_owned(&target, source);
                     if self.allocated_memory.contains_key(&name) {
@@ -3700,9 +3685,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             let nulled = nulls.contains(&idx);
             if nulled {
                 self.maybe_freed.remove(&var_name);
-            } else if self.freed_memory.contains_key(&var_name)
-                && !self.guess_forbids_double_free(&var_name, func_name)
-            {
+            } else if self.freed_memory.contains_key(&var_name) {
                 self.double_free_violations.push(RuleViolation {
                     rule_id: "MEM31-C".to_string(),
                     severity: Severity::High,
@@ -3764,46 +3747,24 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         }
     }
 
-    /// Handle a custom deallocator call (destroy_*, free_*, etc.): record double-frees
-    /// for non-idempotent deallocators and mark the argument as freed.
-    fn process_custom_deallocator(&mut self, node: &Node, source: &str, func_name: &str) {
-        // Heuristic: functions with "safe" in the name or "destroy" prefix are typically
-        // designed to be idempotent (set pointer to NULL after freeing)
-        // Other custom deallocators like "cleanup_*" may not be safe to call twice
-        let is_safe_deallocator = {
-            let lower = func_name.to_lowercase();
-            lower.contains("safe") || lower.starts_with("destroy_") || lower.ends_with("_destroy")
-        };
-
+    /// Handle a call to a function whose prescan summary shows its body
+    /// releasing an argument -- by value (`frees_params`), through a `&var`
+    /// pointee (`frees_param_pointees`), or only fields off it
+    /// (`frees_param_fields`): report a release of an argument this walk
+    /// already saw freed, mark the argument freed, and credit the fields.
+    ///
+    /// Only the body is evidence. A callee with no summary releases nothing
+    /// this rule can show, whatever it is called; a project whose
+    /// deallocator has no body in the scan declares it, and the call is then
+    /// `process_free_call`'s.
+    fn process_summarized_deallocator(&mut self, node: &Node, source: &str, func_name: &str) {
         let Some(arguments) = node.child_by_field_name("arguments") else {
             return;
         };
-
-        // With no summary for the callee, the name shape is the only
-        // evidence -- and it says a release happened, never WHICH argument
-        // was released. One nameable argument is unambiguous, so the
-        // `sqlite3_free(p)` / `RTMP_Free(r)` fallback keeps working. Several
-        // are a guess with no basis: `Curl_req_free(&data->req, data)` does
-        // not free `data`, `robust_close(pNew, h, __LINE__)` frees neither
-        // the int fd nor the macro token, and `sk_X509_pop_free(certs,
-        // X509_free)` frees no variable called `X509_free` -- that one is a
-        // misfire under ADR-0005, naming a construct that is not there.
-        // Credit nothing rather than credit everything.
-        if self.function_summaries.get(func_name).is_none() {
-            let nameable = (0..arguments.child_count())
-                .filter_map(|i| arguments.child(i))
-                .filter(|arg| match arg.kind() {
-                    "identifier" => true,
-                    "pointer_expression" => arg
-                        .child_by_field_name("argument")
-                        .is_some_and(|op| op.kind() == "identifier"),
-                    _ => false,
-                })
-                .count();
-            if nameable > 1 {
-                return;
-            }
-        }
+        let site = site_of(node, source);
+        let Some(summary) = self.summary_at(func_name, site) else {
+            return;
+        };
 
         let mut param_idx = 0usize;
         for i in 0..arguments.child_count() {
@@ -3815,7 +3776,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
             let this_param_idx = param_idx;
             param_idx += 1;
-            let var_name = if arg.kind() == "pointer_expression" {
+            let through_address_of = arg.kind() == "pointer_expression";
+            let var_name = if through_address_of {
                 // Handle &var pattern (address-of expression)
                 arg.child_by_field_name("argument")
                     .filter(|op| op.kind() == "identifier")
@@ -3831,13 +3793,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             };
             let free_pos = node.start_position();
 
-            let site = site_of(node, source);
-            if !self.named_deallocator_releases_arg(
-                func_name,
-                this_param_idx,
-                arg.kind() == "pointer_expression",
-                site,
-            ) {
+            if !Self::summary_releases_arg(&summary, this_param_idx, through_address_of) {
                 self.credit_callee_freed_fields(
                     func_name,
                     this_param_idx,
@@ -3848,12 +3804,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 continue;
             }
 
-            // Check for double-free only for non-safe deallocators
-            if is_safe_deallocator {
+            // A callee that frees `*p` and then sets `*p = NULL` leaves the
+            // caller's variable NULL, so calling it again releases nothing.
+            let nulls_pointee =
+                through_address_of && summary.nulls_param_pointees.contains(&this_param_idx);
+            if nulls_pointee {
                 self.maybe_freed.remove(&var_name);
             } else if self.freed_memory.contains_key(&var_name)
                 && !self.freed_via_alias.contains(&var_name)
-                && !self.guess_forbids_double_free(&var_name, func_name)
             {
                 self.double_free_violations.push(RuleViolation {
                     rule_id: "MEM31-C".to_string(),
@@ -3872,26 +3830,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 self.report_possible_double_free(&var_name, free_pos, func_name);
             }
 
-            // Mark as freed (for leak detection). With no summary behind
-            // it the mark rests on the callee's name alone, so remember who
-            // guessed it -- `guess_forbids_double_free` needs to know whether
-            // a later deallocator is the same one repeated or a second step
-            // in a teardown pair. A summary can carry the same guess one hop
-            // removed (`frees_params_guessed`): curl's `Curl_req_free` is
-            // credited with `data` only because it calls
-            // `Curl_client_cleanup(data)`, and that is no more evidence here
-            // than it was there.
-            if self.free_is_name_guess(
-                func_name,
-                this_param_idx,
-                arg.kind() == "pointer_expression",
-                site,
-            ) {
-                self.freed_by_guess
-                    .insert(var_name.clone(), func_name.to_string());
-            } else {
-                self.freed_by_guess.remove(&var_name);
-            }
             self.freed_memory
                 .insert(var_name.clone(), (free_pos.row + 1, free_pos.column + 1));
 
@@ -3953,7 +3891,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // see `mark_freed_with_aliases`.
             if self.freed_memory.contains_key(&var_name)
                 && !self.freed_via_alias.contains(&var_name)
-                && !self.guess_forbids_double_free(&var_name, "free")
             {
                 self.double_free_violations.push(RuleViolation {
                     rule_id: "MEM31-C".to_string(),
@@ -3997,33 +3934,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             .collect()
     }
 
-    /// True if the freed mark on `var_name` is a NAME-SHAPE GUESS made by a
-    /// different callee than `call_name` -- in which case a double free is
-    /// not what the evidence shows.
-    ///
-    /// A callee with no body in the scan leaves the name shape as the only
-    /// evidence, and `is_deallocation_call_name` reads six verbs, of which
-    /// only `free`/`destroy`/`delete` actually mean deallocation.
-    /// `close`/`release`/`cleanup` mean "stop using", which may or may not
-    /// release the block: librtmp's `RTMP_Close(r)` shuts the stream down and
-    /// `RTMP_Free(r)` is what frees `r`, and a COM `_Release` decrements a
-    /// refcount. Two DIFFERENT deallocator names applied to one pointer is
-    /// the paired-teardown idiom, not a defect -- `mbedtls_gcm_free(ctx)`
-    /// then `free(ctx)` releases contents and then the struct.
-    ///
-    /// Only the double-free direction is relaxed, and only against a guess.
-    /// The mark itself stands, so a leak stays suppressed: the block probably
-    /// did die, and the same asymmetry `mark_freed_with_aliases` documents
-    /// for alias-derived marks applies for the same reason. Repeating ONE
-    /// name (`sqlite3_free(p); sqlite3_free(p);`) still reports, which is
-    /// what the load-bearing 1-argument fallback rests on, and a mark written
-    /// by a literal `free()` or backed by a summary is not a guess at all.
-    fn guess_forbids_double_free(&self, var_name: &str, call_name: &str) -> bool {
-        self.freed_by_guess
-            .get(var_name)
-            .is_some_and(|guessed_by| guessed_by != call_name)
-    }
-
     /// Mark `var_name` freed, and with it every other name holding the block.
     ///
     /// An alias-derived mark is remembered in `freed_via_alias`, because the
@@ -4036,11 +3946,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     fn mark_freed_with_aliases(&mut self, var_name: &str, free_pos: (usize, usize)) {
         self.freed_memory.insert(var_name.to_string(), free_pos);
         self.freed_via_alias.remove(var_name);
-        self.freed_by_guess.remove(var_name);
 
         for alias in self.block_aliases_of(var_name) {
             self.freed_memory.insert(alias.clone(), free_pos);
-            self.freed_by_guess.remove(&alias);
             self.freed_via_alias.insert(alias);
         }
     }
@@ -4098,7 +4006,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             self.maybe_freed.insert(first_arg, pos);
         } else if !first_arg.is_empty() {
             // realloc frees the old memory and allocates new
-            self.freed_by_guess.remove(&first_arg);
             self.freed_memory
                 .insert(first_arg.clone(), (free_pos.row + 1, free_pos.column + 1));
         }
@@ -4132,32 +4039,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         let Some(arguments) = node.child_by_field_name("arguments") else {
             return;
         };
-
-        // With no summary for the callee, the name shape is the only
-        // evidence -- and it says a release happened, never WHICH argument
-        // was released. One nameable argument is unambiguous, so the
-        // `sqlite3_free(p)` / `RTMP_Free(r)` fallback keeps working. Several
-        // are a guess with no basis: `Curl_req_free(&data->req, data)` does
-        // not free `data`, `robust_close(pNew, h, __LINE__)` frees neither
-        // the int fd nor the macro token, and `sk_X509_pop_free(certs,
-        // X509_free)` frees no variable called `X509_free` -- that one is a
-        // misfire under ADR-0005, naming a construct that is not there.
-        // Credit nothing rather than credit everything.
-        if self.function_summaries.get(func_name).is_none() {
-            let nameable = (0..arguments.child_count())
-                .filter_map(|i| arguments.child(i))
-                .filter(|arg| match arg.kind() {
-                    "identifier" => true,
-                    "pointer_expression" => arg
-                        .child_by_field_name("argument")
-                        .is_some_and(|op| op.kind() == "identifier"),
-                    _ => false,
-                })
-                .count();
-            if nameable > 1 {
-                return;
-            }
-        }
 
         let mut param_idx = 0usize;
         for i in 0..arguments.child_count() {
@@ -4199,10 +4080,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             &var_name,
                             (free_pos.row + 1, free_pos.column + 1),
                         );
-                        if self.free_is_name_guess(func_name, param_idx, through_address_of, site) {
-                            self.freed_by_guess
-                                .insert(var_name.clone(), func_name.to_string());
-                        }
                         // A callee that frees a pointer argument AND hands
                         // back a fresh block is realloc-shaped, and it can
                         // only have taken the old block if it succeeded.
@@ -4525,119 +4402,56 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         None
     }
 
-    /// Check if a function name suggests it's a deallocation function
-    /// A deallocator recognised by its NAME (`*_free`, `destroy_*`, ...),
-    /// which is only a guess about what the body does. When the prescan saw
-    /// that body, the guess has nothing to add: the summary says whether any
-    /// parameter is released (`frees_params`, `frees_param_pointees`) or
-    /// only fields off one are (`frees_param_fields`), and a callee that
-    /// releases nothing it was handed -- mbedtls's `mbedtls_gcm_free(ctx)`
-    /// zeroizes the members and frees no pointer -- must not mark its
-    /// argument freed, or the `mbedtls_free(ctx)` that follows in every
-    /// `*_ctx_free` destructor reads as a double free. The name shape is
-    /// the fallback for a callee with no body in the scan.
     /// The prescan saw `func_name`'s body release a parameter -- by value
-    /// or through a `&var` pointee. Evidence, not a name guess.
+    /// or through a `&var` pointee.
     fn summary_frees_some_param(&self, func_name: &str, site: Site) -> bool {
         self.summary_at(func_name, site).is_some_and(|summary| {
             !summary.frees_params.is_empty() || !summary.frees_param_pointees.is_empty()
         })
     }
 
-    fn is_named_deallocator(&self, func_name: &str, site: Site) -> bool {
-        if !ast_utils::is_deallocation_call_name(func_name) {
-            return false;
-        }
-        match self.summary_at(func_name, site) {
-            Some(summary) => {
-                !summary.frees_params.is_empty()
-                    || !summary.frees_param_pointees.is_empty()
-                    || !summary.frees_param_fields.is_empty()
-                    // Silence only refutes the name when the body was
-                    // READABLE throughout. `sqlite3_free(void *p)` releases
-                    // through `sqlite3GlobalConfig.m.xFree(p)`, so all three
-                    // sets above are empty and the summary -- present, and
-                    // therefore trusted over the name -- said the corpus's
-                    // one deallocator frees nothing. Every `sqlite3_free(a)`
-                    // then counted for nothing, in the walk and in the label
-                    // prescan alike, so both a plain `sqlite3_free(a); return`
-                    // and a `goto decode_out` into a label that frees that way
-                    // reported a leak. Falling back to the name
-                    // here restores the no-summary reading for exactly the
-                    // case where the body had nothing to say; a body that was
-                    // read through and releases nothing -- mbedtls's
-                    // `mbedtls_gcm_free(ctx)`, which only zeroizes members --
-                    // still refutes its name.
-                    || summary.sole_param_escapes_unnamed_call
-            }
-            None => true,
+    /// The prescan saw `func_name`'s body release something it was handed:
+    /// a parameter, a parameter's pointee, or fields off one. A callee that
+    /// releases nothing it was handed -- mbedtls's `mbedtls_gcm_free(ctx)`
+    /// zeroizes the members and frees no pointer -- is not a deallocator,
+    /// whatever it is called.
+    fn summary_proves_release(&self, func_name: &str, site: Site) -> bool {
+        self.summary_at(func_name, site).is_some_and(|summary| {
+            !summary.frees_params.is_empty()
+                || !summary.frees_param_pointees.is_empty()
+                || !summary.frees_param_fields.is_empty()
+        })
+    }
+
+    /// Does `summary`'s body release the object its argument at `param_idx`
+    /// names -- by value, or through the pointee when the argument is
+    /// `&var`? A callee whose body frees only FIELDS off the parameter
+    /// (`mbedtls_cipher_free(ctx)` releasing `ctx->cipher_ctx`) leaves the
+    /// parameter itself alive, and the fields are credited separately.
+    fn summary_releases_arg(
+        summary: &FunctionSummary,
+        param_idx: usize,
+        through_address_of: bool,
+    ) -> bool {
+        if through_address_of {
+            summary.frees_param_pointees.contains(&param_idx)
+        } else {
+            summary.frees_params.contains(&param_idx)
         }
     }
 
-    /// Does a call to the named deallocator `func_name` release the object
-    /// its argument at `param_idx` names? With no summary the name shape
-    /// is all there is, so yes. With one, only when the body was seen to
-    /// free that parameter -- by value, or through the pointee when the
-    /// argument is `&var`. A callee whose summary shows it frees only
-    /// FIELDS off the parameter (`mbedtls_cipher_free(ctx)` releasing
-    /// `ctx->cipher_ctx`) leaves the parameter itself alive, and the fields
-    /// are credited separately.
-    fn named_deallocator_releases_arg(
+    /// [`Self::summary_releases_arg`] for the summary of `func_name` as the
+    /// call at `site` sees it; `false` with no summary.
+    fn callee_releases_arg(
         &self,
         func_name: &str,
         param_idx: usize,
         through_address_of: bool,
         site: Site,
     ) -> bool {
-        match self.summary_at(func_name, site) {
-            None => true,
-            Some(summary) => {
-                if through_address_of {
-                    summary.frees_param_pointees.contains(&param_idx)
-                } else {
-                    summary.frees_params.contains(&param_idx)
-                        // The sole parameter, handed to a call the body
-                        // cannot be read past, is the only thing the name
-                        // could be about -- nothing else in
-                        // `sqlite3_free(void *p)` touches `p`. Asked only
-                        // for a by-value argument: the fact is about the
-                        // parameter, and an `&var` argument is a claim about
-                        // its pointee, which it says nothing about.
-                        || (summary.sole_param_escapes_unnamed_call && param_idx == 0)
-                }
-            }
-        }
-    }
-
-    /// Whether crediting `func_name` with freeing its argument at
-    /// `param_idx` rests on a NAME alone: no summary, or a summary whose
-    /// free of that index is itself only name-guessed
-    /// (`FunctionSummary::frees_params_guessed`). A pointee free (`&var`)
-    /// is never guessed -- that set is built from bodies only.
-    ///
-    /// A credit that rests on `sole_param_escapes_unnamed_call` is a guess too,
-    /// and for the same reason: the name said a release happened and the
-    /// body only declined to contradict it. That is enough to withhold a
-    /// leak report -- what an earlier fix is about -- and not enough to accuse a
-    /// later `free(p)` of being a double free, which is the polarity
-    /// `guess_forbids_double_free` already enforces.
-    fn free_is_name_guess(
-        &self,
-        func_name: &str,
-        param_idx: usize,
-        through_address_of: bool,
-        site: Site,
-    ) -> bool {
-        match self.summary_at(func_name, site) {
-            None => true,
-            Some(summary) => {
-                !through_address_of
-                    && (summary.frees_params_guessed.contains(&param_idx)
-                        || (!summary.frees_params.contains(&param_idx)
-                            && summary.sole_param_escapes_unnamed_call
-                            && param_idx == 0))
-            }
-        }
+        self.summary_at(func_name, site).is_some_and(|summary| {
+            Self::summary_releases_arg(&summary, param_idx, through_address_of)
+        })
     }
 
     fn is_allocation_call(&self, node: &Node, source: &str) -> bool {

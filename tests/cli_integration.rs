@@ -1587,61 +1587,6 @@ fn safe_free_macro_not_flagged_double_free() {
     );
 }
 
-/// A free credited on the deallocator's name alone marks every finding that
-/// rests on it `requires_manual_review` -- a double free where either free is
-/// the guess, and a use reached through a copy of a copy -- while the same
-/// shapes over plain `free` stay unmarked. The generated fixture test only
-/// sees whether MEM30-C fires, so the mark is asserted here, per line, from
-/// the fixture's own MARKED / UNMARKED tags.
-#[test]
-fn guessed_free_mark_reaches_double_free_and_copies() {
-    let dir = tempfile::tempdir().unwrap();
-    let out = dir.path().join("out.json");
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-        "src/rules/cert_c/MEM/MEM30-C/tests/fail/\
-         guessed_free_mark_survives_double_free_and_copies.c",
-    );
-
-    let (code, _, _) = run_aurora_lint(&[
-        fixture.to_str().unwrap(),
-        "-m",
-        manifest_mem30().to_str().unwrap(),
-        "-e",
-        out.to_str().unwrap(),
-    ]);
-    assert_eq!(code, 0);
-
-    let violations: Vec<serde_json::Value> =
-        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
-    let source = std::fs::read_to_string(&fixture).unwrap();
-    let mut tagged = 0;
-    for (idx, text) in source.lines().enumerate() {
-        let want = if text.contains("VIOLATION MARKED") {
-            true
-        } else if text.contains("VIOLATION UNMARKED") {
-            false
-        } else {
-            continue;
-        };
-        tagged += 1;
-        let line = idx as u64 + 1;
-        let here: Vec<_> = violations
-            .iter()
-            .filter(|v| v["line"].as_u64() == Some(line))
-            .collect();
-        assert!(!here.is_empty(), "line {line}: no MEM30-C finding");
-        for v in here {
-            assert_eq!(
-                v["requires_manual_review"].as_bool(),
-                Some(want),
-                "line {line}: {}",
-                v["message"]
-            );
-        }
-    }
-    assert_eq!(tagged, 7, "fixture tags changed; update this count");
-}
-
 // ─── DCL18-C message value ──────────────────────────────────────────────────
 
 /// DCL18-C states an octal constant's decimal value with its integer suffix
@@ -3925,4 +3870,67 @@ fn a_computed_include_may_bring_any_definition() {
     // defs.h's definition of SQ may be the one compiled.
     let found = pre31_findings("pre31_partial_include", "computed.c", &[]);
     assert_eq!(pre31_lines(&found), vec![7], "{found:?}");
+}
+
+#[test]
+fn a_release_the_scan_cannot_read_is_a_free_only_once_declared() {
+    let uaf = |args: &[&str]| {
+        has(
+            &declared_memory_findings("opaque_release.c", "manifest_mem30_mem31.toml", args),
+            "MEM30-C",
+            23,
+            "Use-after-free",
+        )
+    };
+    assert!(!uaf(&[]), "a `_free` name is not evidence of a free");
+    assert!(uaf(&["--deallocator", "amalg_free"]));
+}
+
+#[test]
+fn a_bodiless_deallocator_leaks_until_declared() {
+    let leaks = |args: &[&str]| {
+        declared_memory_findings("opaque_release.c", "manifest_mem30_mem31.toml", args)
+            .into_iter()
+            .any(|(r, _, m)| r == "MEM31-C" && m.contains("'b'"))
+    };
+    assert!(leaks(&[]));
+    assert!(!leaks(&["--deallocator", "lib_obj_free"]));
+}
+
+#[test]
+fn the_deallocator_candidate_report_names_a_bodiless_free_and_changes_no_finding() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fixtures().join("declared_memory").join("opaque_release.c");
+    let manifest = fixtures().join("manifest_mem30_mem31.toml");
+    let scan = |extra: &[&str]| {
+        let out = dir.path().join("out.json");
+        let mut args = vec![
+            path.to_str().unwrap(),
+            "-m",
+            manifest.to_str().unwrap(),
+            "-e",
+            out.to_str().unwrap(),
+        ];
+        args.extend(extra);
+        let (code, stdout, stderr) = run_aurora_lint(&args);
+        assert!(code == 0 || code == 1, "stderr: {stderr}");
+        let findings = std::fs::read_to_string(&out).unwrap();
+        (findings, stdout)
+    };
+    let report = dir.path().join("candidates.json");
+    let flag = format!("--report-deallocator-candidates={}", report.display());
+    let (plain, _) = scan(&[]);
+    let (reported, stdout) = scan(&[&flag]);
+    assert_eq!(plain, reported, "the report must not change a finding");
+    assert!(stdout.contains("[environment.deallocators]"), "{stdout}");
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report).unwrap()).unwrap();
+    let rows = json["candidates"].as_array().unwrap();
+    // `amalg_free`'s body hands its one parameter to a function pointer, so
+    // the block escapes and nothing leaks: it is not a candidate.
+    assert_eq!(rows.len(), 1, "{json}");
+    assert_eq!(rows[0]["callee"], "lib_obj_free");
+    assert_eq!(rows[0]["argument"], 1);
+    assert_eq!(rows[0]["count"], 1);
+    assert_eq!(rows[0]["sample_line"], 35);
 }

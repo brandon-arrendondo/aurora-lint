@@ -25,6 +25,7 @@ pub mod dataflow;
 /// collectors that must keep one of several same-named conditional
 /// definitions.
 pub mod dead_regions;
+pub mod deallocator_candidates;
 pub mod embedded_js_blank;
 pub mod empty_macro_blank;
 pub mod function_summary;
@@ -890,6 +891,7 @@ fn analyze_one_file(
                 }
             }
         }
+        deallocator_candidates::flush_file(file_path);
     }
 
     (file_violations, file_suppressed)

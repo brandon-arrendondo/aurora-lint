@@ -51,7 +51,7 @@ substitution + recursive rescanning (C11 6.10.3).
 | `macro_nulls_param_indices` | `(table, name) -> Vec<usize>` | Parameter indices the macro **frees-and-nulls** (`(param) = NULL` after freeing) — the "safe free" idiom (`Curl_safefree`, `mosquitto_FREE`, `SAFE_FREE`). Feeds MEM30-C to clear freed-state as if the caller wrote `free(p); p = NULL;`. |
 | `macro_writes_param_indices` | `(table, name) -> Vec<usize>` | Superset of `macro_output_param_indices`: also covers writes *through* the pointer/array itself (`param->field = …`, `param[i] = …`, `*param = …`). Feeds EXP34-C (null-pointer) / ARR00-C (bounds) — a successful write through `param` proves it was non-null/in-bounds. |
 | `macro_frees_param_indices` | `(table, name) -> Vec<usize>` | Parameter indices the macro releases via `free`/`fclose`/`close`, without requiring the null-clearing signal `macro_nulls_param_indices` needs. Used by leak checks (e.g. MEM12-C early-return). |
-| `macro_param_indices_released_by` | `(table, name, releases: Fn(&str) -> bool, live: Live) -> Vec<usize>` | Same question with the caller's own notion of a releasing callee, asked of each call in the body one expansion level at a time (before rescanning it), so a project's spelling counts: curl's `Curl_safefree(ptr)` frees through `curlx_free`, itself a macro for `curl_dbg_free(...)`. The argument must be the parameter itself (modulo parens/casts), not merely mention it. MEM31-C passes its direct-call classifier (alias-resolved `free` or name-shaped deallocator). `macro_param_indices_released_at` takes a predicate that also says WHICH argument a callee releases (`Some(Some(k))`), for a declared deallocator. |
+| `macro_param_indices_released_by` | `(table, name, releases: Fn(&str) -> bool, live: Live) -> Vec<usize>` | Same question with the caller's own notion of a releasing callee, asked of each call in the body one expansion level at a time (before rescanning it), so a project's spelling counts: curl's `Curl_safefree(ptr)` frees through `curlx_free`, an alias of `free`. The argument must be the parameter itself (modulo parens/casts), not merely mention it. `macro_param_indices_released_at` takes `releases(callee, k)`, asked per argument position: MEM31-C passes alias-resolved `free`, a declared deallocator, or a function whose summary frees that argument; MEM30-C the same with the MUST-free set, merged with `Live::All`. |
 | `macro_clears_param_indices` | `(table, name) -> Vec<usize>` | Parameter indices the macro overwrites: after expansion, one of `call_roles::MEMORY_CLEARING_FUNCS` is called with the parameter as its FIRST argument (the destination — a fill or length parameter does not count). hostap's `#define os_memset(s, c, n) memset(s, c, n)`. The macro half of MEM03-C's clearer recognition; the function half is `FunctionSummary::clears_params`. |
 | `collect_function_macro_alternatives` | `(source: &str) -> HashMap<String, Vec<FunctionMacro>>` | **All** definitions of each name, not just the first — for callers asking "could a call to this macro touch a variable named `x`?", where the mutually exclusive `#ifdef` alternatives cannot be collapsed to one (sqlite's `IdChar`, defined once for ASCII and once for EBCDIC, only the latter touching the caller's `c`). Textual scan only. Use `collect_function_macros` for anything that must *expand*; use this only to ask a question about every branch. |
 | `collect_function_macro_names` | `(source: &str, out: &mut HashSet<String>)` | The name of every function-like `#define`, in every branch, **including** variadic and `#`/`##` macros the expansion tables skip. This, not spelling, is what says a call is a macro invocation: `int FOO(int);` makes `FOO(i++)` a function call, and a lowercase `#define mymax(a, b)` makes its calls macro invocations. Merged project-wide into `ProjectContext::function_macro_names`. PRE31-C and PRE32-C read it. |
@@ -92,7 +92,6 @@ alternative that matters is not the one it kept (ADR-0010).
 | `abort_check_macros` | `(defs, noreturn) -> HashMap<String, usize>` | Assert-style macros no configuration compiles out, and the parameter each checks (EXP34-C). |
 | `collect_conditional_macro_names` | `(source: &str) -> HashSet<String>` | Names `#define`d inside a live `#if`/`#ifdef`/`#ifndef` arm, at any depth, unless every configuration still has a definition: each live arm of an `#if` ... `#else` group defines it (nested groups count for their arm), or the file also defines it outside any conditional. An include guard and a proven-dead region do not count. Such a name has a build in which that definition is absent, and with no other arm supplying one the name is not a macro there at all: sqlite's `memcpy` is a `{ }` block only under `SQLITE_INLINE_MEMCPY`. Project-wide in `ProjectContext::conditional_macro_names`. |
 | `expands_to_block_everywhere` | `(defs: &[&HashMap<..>], conditional: &[&HashSet<..>], name) -> bool` | Whether an invocation of `name` is one `{ ... }` block in every configuration, over the union of several tables (project + one file). Adopted by EXP19-C, which counts such an invocation as a braced body. |
-| `defines_function_macro` | `(source: &str, name: &str) -> bool` | Whether the file `#define`s `name` as a function-like macro in any arm, including one the expander cannot use (`##`, variadic). "Is there a body to read?": `function_summary` makes no name-shaped free guess for such a callee (mbedtls's `LOCAL_INPUT_FREE` frees a `##`-pasted local copy, not its argument). |
 
 ### `src/utility/cert_c/pp_tokens.rs`
 **Problem solved:** reading a `#define` body as text sees operators,
@@ -862,7 +861,7 @@ preprocessor.
 | `resolve_macro_alias_where` / `with_accusing_alias_targets` | `(alternatives, name, accept) -> Option<String>` / `(&mut aliases, alternatives, accept)` | For a rule an alias ACCUSES through (ADR-0010 D1, per consumer): the first identifier any live definition chain reaches that `accept` takes; the second adds such unsettled names to a rule's alias map so its own resolution finds them (MEM30-C free/realloc/malloc/calloc, MEM31-C allocators, ENV33-C, STR02-C, ERR33-C, WIN05-C). A rule an alias suppresses through keeps the settled map, widened only by `with_agreeing_alias_targets`. |
 | `with_agreeing_alias_targets` | `(&mut aliases, alternatives, role: Fn(&str) -> Option<R>)` | For a rule an alias SUPPRESSES through (ADR-0010 D1, per consumer): settles an unsettled name whose every live target, resolved through the alias map it is given (in MEM31-C the settled map plus the accusing allocator entries, which have no free role), has the same `role`, mapped to the first such target. MEM31-C passes `call_roles::frees_argument`, so an alias that is `free` in one arm and a hook declared to free its first argument in the other frees in every build. A target with no role, or roles that differ, leaves the name unsettled. |
 | `merged_macro_aliases` | `(project, root, source) -> HashMap<String, String>` | `ProjectContext::macro_aliases` plus this file's own, per-file winning — the `set_project_context` + `check` idiom every alias-consuming rule uses. |
-| `resolve_macro_alias` | `(aliases, name: &str) -> &str` | Follows `#define ALIAS target` chains to the identifier they end at (`mbedtls_calloc` → `calloc`, `port_free` → `mbedtls_free` → `free`), bounded against cycles; a non-alias comes back unchanged. **Any rule that dispatches on a callee's name** (`free`, an allocator list, a summary lookup, a `*_free` name shape) should classify the resolved name, not the spelling: an object-like alias is the one renaming no other engine sees — `macro_expand` covers function-like macros only, and a bare-identifier body is not a constant. mbedtls's whole allocator API is this shape, and every `mbedtls_calloc` site was invisible to MEM31-C until it resolved. MEM30-C, MEM31-C and `propagate_transitive_frees` read it. |
+| `resolve_macro_alias` | `(aliases, name: &str) -> &str` | Follows `#define ALIAS target` chains to the identifier they end at (`mbedtls_calloc` → `calloc`, `port_free` → `mbedtls_free` → `free`), bounded against cycles; a non-alias comes back unchanged. **Any rule that dispatches on a callee's name** (`free`, an allocator list, a summary lookup, a declared deallocator) should classify the resolved name, not the spelling: an object-like alias is the one renaming no other engine sees — `macro_expand` covers function-like macros only, and a bare-identifier body is not a constant. mbedtls's whole allocator API is this shape, and every `mbedtls_calloc` site was invisible to MEM31-C until it resolved. MEM30-C, MEM31-C and `propagate_transitive_frees` read it. |
 | `collect_string_literal_macros` | `(root: &Node, source: &str) -> HashMap<String, String>` | Collects `#define NAME "string"` patterns, raw quoted value. |
 | `is_relative_command_macro` / `is_safe_command_macro` | `(string_macros, name: &str) -> bool` | Classifies a string-literal macro as a relative-path OS command (unsafe as a `strcpy`/`strcat` source) vs. an absolute path or argument fragment (safe). |
 | `try_evaluate_expr` | `(node: &Node, source: &str, macros: &MacroConstantMap) -> Option<i64>` | Evaluates an AST expression node to an exact integer constant. |
@@ -1124,6 +1123,7 @@ are private implementation detail behind the small public surface below.
 | `propagate_transitive_param_taint` | `(summaries: &mut ...)` | Same transitive propagation for tainted-parameter status. |
 | `propagate_transitive_closes` | `(summaries: &mut ...)` | Same transitive propagation for "closes param N" (fclose/close/CloseHandle). |
 | `propagate_transitive_clears` | `(summaries: &mut ..., macro_aliases)` | Same for `clears_params`: a wrapper forwarding its buffer to a clearer clears it. Edges resolve through the alias map and an edge landing on a `MEMORY_CLEARING_FUNCS` name at argument 0 counts by itself. Re-run after `resolve_includes`, like `propagate_transitive_frees`. |
+| `resolve_field_free_edges` | `(summaries: &mut ..., macro_aliases)` | Credits `frees_param_fields` from `field_free_edges`: a field handed to a named callee (`x_release(m->will)`) is freed when that callee's own summary frees the argument, or it is `free`/a declared deallocator. Runs after `propagate_transitive_frees`, before the field propagation below, and again after `resolve_includes`. The body is the evidence; the callee's name is never read. |
 | `propagate_transitive_frees_param_fields` | `(summaries: &mut ...)` | Same transitive propagation, but for field-level frees (`frees_param_fields`, e.g. `free(x->will)`). |
 | `propagate_transitive_frees_param_pointees` | `(summaries: &mut ...)` | Same transitive propagation, but for pointee-level frees (`frees_param_pointees`, e.g. `free(*p)` reached through a forwarding wrapper). |
 | `propagate_return_taint` | `(summaries: &mut ...)` | Propagates "return value is tainted" through call chains. |
@@ -1145,11 +1145,13 @@ none of them folds — the fact `return_range` cannot carry),
 `frees_param_fields`, `frees_param_pointees` (the `void **` "safe free"
 wrapper — `free(*param)`, called as `safe_free(&p)`, so the caller's own
 variable dies and an argument match by identifier never sees it),
+`nulls_param_pointees` (the subset that also assigns `*param = NULL`, read off
+the AST: calling such a wrapper twice on `&p` is not a double free),
 `sole_param_escapes_unnamed_call` (the function's ONLY parameter went into
 a call through a function POINTER — `sqlite3GlobalConfig.m.xFree(p)`, lua's
 `(*g->frealloc)(...)` — so the body stops being readable there; not a free
-fact, it exists only to separate "releases nothing" from "the release, if
-any, is unreadable"),
+fact: MEM31-C reads the argument as escaping, so neither a leak nor a double
+free is reported on its account),
 `has_env03_taint_source`, `returns_tainted`,
 `closes_params`, `credential_sink_params` / `locks_params` / `returns_locked` /
 `protects_process_memory` / `conditional_sink_hits` / `unconditional_callees` /
@@ -1165,38 +1167,26 @@ body counts, and unlike the free facts it is NOT withheld for a
 `distinct_object_param_pairs`, and several more callsite-specific
 maps.
 
-**A summary beats a name shape.** `ast_utils::is_deallocation_call_name`
-(`*_free`, `destroy_*`, ...) is a guess about a body nobody has seen. When
-the prescan HAS seen the body, `frees_params` / `frees_param_pointees` /
-`frees_param_fields` say what it releases and the guess has nothing to add:
-a `*_free` callee whose summary frees nothing it was handed must not mark
-its argument freed. mbedtls's `mbedtls_gcm_free(ctx)` zeroizes the members
-and frees no pointer, and every `*_ctx_free` destructor follows it with
-`mbedtls_free(ctx)` — 47 false double frees from the name guess alone
-. MEM30-C and MEM31-C both fall back to the name only
-for a callee with no summary.
+**Only a body, a macro or a declaration frees.** A callee's name is never
+evidence of a free: a call releases an argument when `free` does, when a
+function's summary shows its body freeing it (directly, or through wrappers
+`propagate_transitive_frees` follows), when a macro's expansion does, or when
+the project declares the callee (`call_roles::frees_argument`). A `*_free`
+whose body was read and releases nothing (mbedtls's `mbedtls_gcm_free(ctx)`
+only zeroizes members) frees nothing, and one with no body in the scan
+(`SSL_free`) frees nothing the rules can show either: MEM31-C reports the
+allocation handed to it leaked, and MEM30-C reports no use-after-free after it.
+`ast_utils::is_deallocation_call_name` survives only in
+`--report-deallocator-candidates` (`analyze::deallocator_candidates`), which
+lists such callees where MEM31-C reported the leak, for the user to declare.
 
-**But silence is only a refutation where the body could be read.** A summary
-whose free sets are empty because the release went through a function pointer
-says nothing, and reading it as "frees nothing" is worse than having no
-summary at all — `sqlite3_free(void *p)` frees exactly through
-`sqlite3GlobalConfig.m.xFree(p)`, so sqlite's one deallocator refuted its own
-`*_free` name and every `sqlite3_free(a)` in the corpus counted for nothing,
-reporting the block leaked at the `return` and at every `goto` into a label
-that frees it. `sole_param_escapes_unnamed_call` is the
-distinction: MEM31-C falls back to the name when the summary records it, and
-keeps the resulting credit in `free_is_name_guess`, so it withholds a leak
-report without licensing a double-free accusation.
-
-**Arity one is the whole guard there**, and it is
-`process_custom_deallocator`'s one-nameable-argument rule a level
-down. An escape into an unreadable call does not say a release happened — a
-comparator, a callback and a trace hook read their argument and are spelled
-identically — so with a second parameter the name cannot say which one it is
-about. Measured, on the version of the fix that lacked the guard:
-`Curl_conn_close(data, sockindex)` and `Curl_cwriter_free(data, writer)`
-reported curl's `data` as double-freed and `Curl_hash_delete(h, key,
-key_len)` reported the lookup KEY freed.
+A body that releases through a function pointer (`sqlite3_free(void *p)`
+calling `sqlite3GlobalConfig.m.xFree(p)`) is `sole_param_escapes_unnamed_call`:
+MEM31-C reads the argument as escaping, the way a store escapes it, so it is
+not reported leaked, and nothing after the call is a double free. With a
+second parameter the fact is not recorded, since which parameter went into
+the unreadable call is then a separate question (`Curl_conn_close(data,
+sockindex)` would make every caller's `data` escape).
 
 **Wiring pattern:** `compute_summaries` runs once (typically during
 prescan) over the whole translation unit, then the `propagate_transitive_*`
@@ -1291,6 +1281,18 @@ node the parse-time passes didn't catch) should check
 `query::find_first_descendant(node, |n| n.is_missing())`/`is_error()`
 directly, as MSC12-C's `check_no_effect_expression` does for the BOOT_BSS
 and object-macro cases.
+
+### `src/analyze/deallocator_candidates.rs`
+**Problem solved:** telling a user which callees to declare as
+deallocators, once a callee's name stopped counting as a free.
+`--report-deallocator-candidates[=FILE]` enables it (`enable`); MEM31-C notes
+each call that hands a tracked allocation to an unproven callee shaped like a
+deallocator by name (`ast_utils::is_deallocation_call_name`, the only reader
+of that heuristic), and `record`s it once the function's leaks are known and
+that allocation is among them. `flush_file` tags the thread's rows with the
+file the driver is scanning, and `take_report` groups them by callee and
+1-based argument with a count and the first sample. Never an input to a
+finding, the settings hash or the run id; a no-op unless enabled.
 
 ## Suppression / manual-review infrastructure
 

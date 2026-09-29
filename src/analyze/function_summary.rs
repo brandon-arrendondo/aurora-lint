@@ -59,18 +59,9 @@ pub struct DefinitionFacts {
     pub passthroughs: HashMap<usize, Vec<(String, usize)>>,
     /// ... of those, the forwards every path makes (for the MUST-free fact).
     pub unconditional_passthroughs: HashMap<usize, Vec<(String, usize)>>,
-    /// The parameters this definition hands to a callee whose NAME is shaped
-    /// like a deallocator (`BN_clear_free(n)`), as `frees_params_by_name`
-    /// records them: `(callee, argument position, unconditional, kept)`.
-    /// `kept` is set when `resolve_name_shaped_frees` keeps that guess for
-    /// that callee, and only a kept guess releases the parameter here: a
-    /// guess the callee's body contradicts is not credited because a sibling
-    /// definition frees.
-    pub name_shaped_frees: HashMap<usize, Vec<(String, usize, bool, bool)>>,
     /// The parameters this definition releases: freed, a pointee freed,
-    /// stored or closed by its own body, handed to a name-shaped deallocator
-    /// the name's resolution kept, or forwarded to a callee that releases
-    /// it. Settled by [`settle_definition_facts`].
+    /// stored or closed by its own body, or forwarded to a callee that
+    /// releases it. Settled by [`settle_definition_facts`].
     ///
     /// One predicate, not one per kind: a definition that stores a
     /// parameter and one that frees it both release it, and asking each kind
@@ -98,32 +89,17 @@ impl DefinitionFacts {
             escapes: summary.returned_value_escapes,
             passthroughs: summary.param_passthroughs.clone(),
             unconditional_passthroughs: summary.unconditional_param_passthroughs.clone(),
-            name_shaped_frees: summary
-                .frees_params_by_name
-                .iter()
-                .map(|(idx, calls)| {
-                    let calls = calls.iter().map(|(c, pos, u)| (c.clone(), *pos, *u, false));
-                    (*idx, calls.collect())
-                })
-                .collect(),
             ..Self::default()
         }
     }
 
-    /// Every callee name this definition forwards to or guesses frees, for
-    /// re-keying.
+    /// Every callee name this definition forwards to, for re-keying.
     pub fn forward_callees_mut(&mut self) -> impl Iterator<Item = &mut String> {
         self.passthroughs
             .values_mut()
             .chain(self.unconditional_passthroughs.values_mut())
             .flatten()
             .map(|(callee, _)| callee)
-            .chain(
-                self.name_shaped_frees
-                    .values_mut()
-                    .flatten()
-                    .map(|(callee, ..)| callee),
-            )
     }
 }
 
@@ -134,46 +110,6 @@ pub struct FunctionSummary {
     /// This is a MAY-free fact: the free can be nested inside a conditional
     /// (if/switch/loop/ternary), so it does not mean every call reaches it.
     pub frees_params: HashSet<usize>,
-    /// Parameters this function hands, as the one parameter-naming argument,
-    /// to a callee whose NAME is shaped like a deallocator (`free_*`,
-    /// `*_cleanup`, ...): `(callee, position of the argument in that call,
-    /// whether the call site is unconditionally reached)`.
-    ///
-    /// Held apart from `frees_params` while a file is summarised, and folded
-    /// in by `resolve_name_shaped_frees` once every summary exists, so the
-    /// fold can also record in `frees_params_guessed` that a name was the
-    /// only evidence.
-    #[serde(default)]
-    pub frees_params_by_name: HashMap<usize, Vec<(String, usize, bool)>>,
-    /// The subset of `frees_params` whose only evidence is a callee's NAME --
-    /// no body of this function, or of anything it forwards the parameter
-    /// to, was seen to release it.
-    ///
-    /// A name is a MAY-free at best. It is enough to stop a leak report,
-    /// which is what the guess is for, and it is what makes `sqlite3_free`
-    /// -- whose body frees through the `xFree` function pointer the prescan
-    /// cannot follow -- still count as a free. It is not enough to ACCUSE: a
-    /// later `free(p)` after `x_cleanup(p)` is a teardown pair unless
-    /// `x_cleanup` was seen to free `p`. curl's `Curl_req_free(&data->req,
-    /// data)` was summarised as freeing `data` because it calls
-    /// `Curl_client_cleanup(data)`, and hostap's `wpa_supplicant_cleanup`
-    /// because it calls `free_hw_features(wpa_s)` (which frees fields of it),
-    /// so the owner's one real free at the end of `Curl_close` /
-    /// `wpa_supplicant_deinit_iface` was a double free. MEM31-C
-    /// reads this to keep such a credit in `freed_by_guess`, where
-    /// `guess_forbids_double_free` already knows what to do with it. MEM30-C
-    /// reads it to mark a use-after-free that rests on such a credit
-    /// `requires_manual_review`: the finding stands -- for a wrapper whose
-    /// body frees through a function pointer the name is the only evidence
-    /// there will be -- but the reader is told the free is an inference
-    /// . A guess the callee's own body CONTRADICTS never gets
-    /// here at all; see `resolve_name_shaped_frees`.
-    ///
-    /// Cleared for an index the moment real evidence arrives -- a literal
-    /// free in this body, or a forwarding to a callee whose own free of it
-    /// is not itself a guess.
-    #[serde(default)]
-    pub frees_params_guessed: HashSet<usize>,
     /// Parameter indices that this function UNCONDITIONALLY frees — the free
     /// is not nested inside any conditional construct other than a null test
     /// on the very pointer being freed (`if (p != NULL) free(p);`, whose
@@ -336,6 +272,13 @@ pub struct FunctionSummary {
     /// A MAY-free fact, like `frees_params`.
     #[serde(default)]
     pub frees_param_pointees: HashSet<usize>,
+    /// The subset of `frees_param_pointees` whose pointee the body also sets
+    /// to NULL -- an assignment `*param = NULL` (or `0`) read off the AST,
+    /// the free-and-null idiom `void destroy(T **pp) { free(*pp); *pp =
+    /// NULL; }`. A caller's variable handed in as `&p` holds NULL afterwards,
+    /// so calling it again releases nothing.
+    #[serde(default)]
+    pub nulls_param_pointees: HashSet<usize>,
     /// This function takes exactly ONE parameter and hands it to a call whose
     /// callee is not a plain name: a function pointer reached through a
     /// field, a deref or a parameter (`sqlite3GlobalConfig.m.xFree(p)`,
@@ -349,26 +292,19 @@ pub struct FunctionSummary {
     /// unreadable" -- two states an empty `frees_params` conflates.
     /// `sqlite3_free(void *p)` frees exactly through `xFree`, so its summary
     /// is empty in every free set, which read as a REFUTATION of its
-    /// `*_free` name and made every `sqlite3_free(a)` in the corpus count
-    /// for nothing. The same "unseen, not nothing" reading
-    /// `resolve_name_shaped_frees` already applies to an empty `may_free`.
+    /// `*_free` name and made every `sqlite3_free(a)` in the corpus a leak.
     ///
-    /// ARITY ONE IS THE WHOLE GUARD, and it is the one-nameable-argument
-    /// rule of an earlier fix a level down. A name shape says a release happened
-    /// and never says through WHICH parameter, and an escape into an
-    /// unreadable call is no better: a comparator, a callback or a trace
-    /// hook reads its argument and is spelled identically. With a second
-    /// parameter the two questions come apart and the guess has no basis --
-    /// measured, on the fix that lacked this guard: `Curl_conn_close(data,
-    /// sockindex)` and `Curl_cwriter_free(data, writer)` reported curl's
-    /// `data` as double-freed, and `Curl_hash_delete(h, key, key_len)`
-    /// reported the lookup KEY freed. With one parameter there is nothing
-    /// else the name could be about.
+    /// So a consumer reads it as the argument ESCAPING into that call, the
+    /// way it reads a callee with no summary at all: a leak of it is not
+    /// shown, and neither is a free of it, so nothing after the call is a
+    /// use-after-free or a double free on its account. A project whose
+    /// deallocator is such a function declares it.
     ///
-    /// A consumer that combines this with a deallocator NAME is still making
-    /// a guess, not reading evidence, and must treat the credit as one --
-    /// enough to withhold a leak report, never enough to accuse a later
-    /// `free(p)` of being a double free.
+    /// ARITY ONE IS THE WHOLE GUARD. With a second parameter, which of the
+    /// two went into the unreadable call is a separate question the fact
+    /// does not answer: a comparator, a callback or a trace hook reads its
+    /// argument and is spelled identically, and curl's `Curl_conn_close(data,
+    /// sockindex)` would make every caller's `data` escape.
     #[serde(default)]
     pub sole_param_escapes_unnamed_call: bool,
     /// Parameter indices whose VALUE this function stores somewhere that
@@ -637,6 +573,18 @@ pub struct FunctionSummary {
     /// MEM31-C ownership model).
     #[serde(default)]
     pub frees_param_fields: HashMap<usize, HashSet<String>>,
+    /// Fields off a parameter this body hands to a named callee, as
+    /// `(arrow-joined field path, callee, position of the argument in that
+    /// call)`: `x_release(m->will)` is `("will", "x_release", 0)` against
+    /// `m`. Whether the callee frees that argument is known only once every
+    /// summary exists, so `resolve_field_free_edges` credits
+    /// `frees_param_fields` from it then.
+    #[serde(default)]
+    pub field_free_edges: HashMap<usize, Vec<(String, String, usize)>>,
+    /// [`Self::free_arms`] for the definitions holding `field_free_edges`
+    /// off each parameter.
+    #[serde(default)]
+    pub field_edge_arms: HashMap<usize, ArmSets>,
     /// True if the function body contains a call to a known taint-source
     /// function (recv, fgets, scanf, getenv, ...). Used by ENV03-C to
     /// decide whether a helper function's callers are passing in
@@ -1486,6 +1434,13 @@ fn analyze_function(
         for &idx in summary.frees_param_fields.keys() {
             summary
                 .field_free_arms
+                .entry(idx)
+                .or_default()
+                .push(arms.clone());
+        }
+        for &idx in summary.field_free_edges.keys() {
+            summary
+                .field_edge_arms
                 .entry(idx)
                 .or_default()
                 .push(arms.clone());
@@ -2688,6 +2643,56 @@ fn is_unconditionally_reached_modulo_null_guard(
     }
 }
 
+/// Whether `body` assigns a null pointer through `param`: `*param = NULL`,
+/// `*param = 0`, `(*param) = nullptr`, casts and parentheses peeled. Read off
+/// the AST, so a comment or a string saying so does not count.
+fn assigns_null_through(body: &Node, source: &str, param: &str) -> bool {
+    fn peel(mut n: Node) -> Node {
+        loop {
+            let inner = match n.kind() {
+                "parenthesized_expression" => n.named_child(0),
+                "cast_expression" => n.child_by_field_name("value"),
+                _ => None,
+            };
+            match inner {
+                Some(i) => n = i,
+                None => return n,
+            }
+        }
+    }
+    lang_parsing_substrate::query::find_descendants_of_kind(*body, "assignment_expression")
+        .into_iter()
+        .any(|assign| {
+            let is_plain = assign
+                .child_by_field_name("operator")
+                .is_some_and(|op| op.kind() == "=");
+            let (Some(left), Some(right)) = (
+                assign.child_by_field_name("left"),
+                assign.child_by_field_name("right"),
+            ) else {
+                return false;
+            };
+            let left = peel(left);
+            let through_param = left.kind() == "pointer_expression"
+                && left
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "*")
+                && left
+                    .child_by_field_name("argument")
+                    .map(peel)
+                    .is_some_and(|a| {
+                        a.kind() == "identifier" && a.utf8_text(source.as_bytes()) == Ok(param)
+                    });
+            let right = peel(right);
+            let null = right.kind() == "null"
+                || matches!(
+                    right.utf8_text(source.as_bytes()),
+                    Ok("NULL" | "0" | "nullptr")
+                );
+            is_plain && through_param && null
+        })
+}
+
 /// Reduce a `free()` argument to the identifier it releases, reporting whether
 /// the release goes through the identifier's pointee.
 ///
@@ -3873,7 +3878,6 @@ impl FunctionSummary {
         seen.frees_params.retain(|idx| !frees.contains(idx));
         seen.unconditional_frees_params
             .retain(|idx| !frees.contains(idx));
-        seen.frees_params_guessed.retain(|idx| !frees.contains(idx));
         seen.frees_param_pointees
             .retain(|idx| !pointees.contains(idx));
         seen.stores_params.retain(|idx| !stores.contains(idx));
@@ -4002,7 +4006,6 @@ impl FunctionSummary {
         }
         let mut all = seen.into_owned();
         all.frees_params.retain(|i| !released.contains(i));
-        all.frees_params_guessed.retain(|i| !released.contains(i));
         all.unconditional_frees_params
             .retain(|i| !released.contains(i) && !unconditional.contains(i));
         all.frees_param_pointees.retain(|i| !released.contains(i));
@@ -4138,33 +4141,18 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, mut summary: Functi
     existing
         .returns_from_callees
         .extend(summary.returns_from_callees);
-    // A guess in one variant that another variant backs with evidence is
-    // not a guess for the merged name. Each variant's evidence is read from
-    // that variant alone, BEFORE the union, so the fold does not depend on
-    // which side is folded into which: reading `existing.frees_params` after
-    // the union credited every index `summary` contributed as
-    // evidence-backed, whichever variant it came from, and so silently
-    // dropped the guess flag on a name only `summary` guessed at. Order
-    // independence is the point — the caller may swap the two variants to
-    // pick which definition governs the fields this fold does not merge
-    // .
-    let backed = &(&existing.frees_params - &existing.frees_params_guessed)
-        | &(&summary.frees_params - &summary.frees_params_guessed);
     existing.frees_params.extend(summary.frees_params);
-    for (idx, guesses) in summary.frees_params_by_name {
-        existing
-            .frees_params_by_name
-            .entry(idx)
-            .or_default()
-            .extend(guesses);
-    }
     // OR, for the same reason the free facts are unioned: if ANY definition
     // under this name hands its parameter to a call nothing can be read
     // past, the merged summary's silence is not evidence of a release that
     // did not happen.
     existing.sole_param_escapes_unnamed_call |= summary.sole_param_escapes_unnamed_call;
-    existing.frees_params_guessed =
-        &(&existing.frees_params_guessed | &summary.frees_params_guessed) - &backed;
+    // Unioned: a consumer reads it only to withhold an accusation, and a
+    // definition that nulls the pointee makes a second call harmless in the
+    // build that links it.
+    existing
+        .nulls_param_pointees
+        .extend(summary.nulls_param_pointees);
     // Unioned with the free facts it sits beside: if ANY definition linked
     // under this name takes ownership of the argument, a caller that reports
     // the block leaked afterwards is wrong on that build.
@@ -4186,6 +4174,9 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, mut summary: Functi
     // The same for the other facts a caller filters by arm (`at`).
     for (idx, arms) in summary.store_arms {
         merge_arms(existing.store_arms.entry(idx).or_default(), arms);
+    }
+    for (idx, arms) in summary.field_edge_arms {
+        merge_arms(existing.field_edge_arms.entry(idx).or_default(), arms);
     }
     for (idx, arms) in summary.field_free_arms {
         merge_arms(existing.field_free_arms.entry(idx).or_default(), arms);
@@ -4356,6 +4347,13 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, mut summary: Functi
             .entry(idx)
             .or_default()
             .extend(fields);
+    }
+    for (idx, edges) in summary.field_free_edges {
+        existing
+            .field_free_edges
+            .entry(idx)
+            .or_default()
+            .extend(edges);
     }
     for (idx, callees) in summary.param_passthroughs {
         existing
@@ -5083,6 +5081,9 @@ fn credit_frees_one_arg(
     };
     if through_pointee {
         summary.frees_param_pointees.insert(idx);
+        if assigns_null_through(body, source, arg_name) {
+            summary.nulls_param_pointees.insert(idx);
+        }
         return;
     }
     credit_param_free(call, body, source, params, idx, summary);
@@ -5262,24 +5263,22 @@ fn param_at_offset(
 /// `summary.unconditional_frees_params` (MUST-free) for every call in the
 /// body that releases one of `params`.
 ///
-/// Three ways a call is recognized as freeing its argument, in the same
-/// preference order as the sibling `collect_frees_param_fields` (field-level
-/// frees) uses, and for the same reason: a wrapper's own summary must
-/// reflect what it actually releases, not just literal `free(param)`, or a
-/// project-local deallocator that frees through a macro or by a name-shaped
-/// helper (`crypto_ec_key_deinit` calling `EVP_PKEY_free`, hostap's
-/// `tls_deinit`, ...) reports every caller that hands it an allocation as a
-/// leak. `propagate_transitive_frees` then carries this outward through any
-/// further wrapper chain, so fixing it here is enough — no separate
-/// crediting is needed at each transitive call site.
+/// Two ways a call in this body is recognized as freeing its argument, in
+/// the same preference order as the sibling `collect_frees_param_fields`
+/// (field-level frees):
 ///
-///  1. Literal `free` — exactly one argument, as C requires.
+///  1. `free` -- exactly one argument, as C requires -- or a deallocator the
+///     project declares (`call_roles::frees_argument`), on the argument its
+///     declaration names.
 ///  2. A function-like macro that frees (not necessarily nulls) one of its
 ///     own parameter positions (`macro_expand::macro_frees_param_indices`).
-///  3. A plain call whose name matches `ast_utils::is_deallocation_call_name`
-///     (`destroy_*`/`free_*`/`..._free`/etc.) — a name-heuristic fallback
-///     for ordinary C helper functions, where the engine has nothing to
-///     say. Every argument is a candidate, as for literal `free`.
+///
+/// A call to a function with a body is neither: this body forwards the
+/// parameter to it (`param_passthroughs`), and `propagate_transitive_frees`
+/// credits the free once every summary exists, through any chain of
+/// wrappers. What a callee's NAME looks like is never evidence: a callee
+/// whose body the scan does not hold frees nothing that can be shown, and a
+/// project whose deallocator is such a callee declares it.
 fn credit_frees_params(
     calls: &[Node],
     body: &Node,
@@ -5289,7 +5288,6 @@ fn credit_frees_params(
     summary: &mut FunctionSummary,
 ) {
     use crate::analyze::macro_expand::{macro_frees_param_indices, Live};
-    use crate::utility::cert_c::ast_utils;
 
     for &call in calls {
         let Some(function) = call.child_by_field_name("function") else {
@@ -5342,210 +5340,6 @@ fn credit_frees_params(
                 }
             }
             continue;
-        }
-
-        if ast_utils::is_deallocation_call_name(func_name) {
-            // A name shape is a guess, not evidence: this tier exists
-            // precisely because the callee has no body to read. Two limits
-            // keep the guess defensible.
-            //
-            // The callee must be spelled as a plain identifier. In
-            // `writer->cwt->do_close(data, writer)` the `_close` belongs to a
-            // struct FIELD holding a function pointer; the name says nothing
-            // about which function actually runs, so the shape is not even
-            // evidence about the right callee.
-            if function.kind() != "identifier" {
-                continue;
-            }
-            // Nor may the callee be a function-like macro this file defines.
-            // Then there is a body to read: if it frees the argument,
-            // `macro_frees_param_indices` above already said so; if the
-            // expander could not use it (`##`, variadic) the text is still
-            // there, and the name is not evidence about it. mbedtls's
-            // `LOCAL_INPUT_FREE(input_external, input)` frees a local copy
-            // whose name is pasted from the parameter, and guessing from its
-            // `_FREE` made every PSA entry point free its caller's buffers.
-            if crate::analyze::check_macros::defines_function_macro(source, func_name) {
-                continue;
-            }
-            // Exactly one argument may name a parameter. The wrappers this
-            // tier is for release one object (`EVP_PKEY_free(key)`), and an
-            // argument that is not a bare parameter name (`sizeof(*ctx)` in
-            // `bin_clear_free(ctx, sizeof(*ctx))`) never resolves anyway. But
-            // when SEVERAL arguments name parameters, the name says nothing
-            // about which one is released, and crediting them all makes the
-            // summary claim the function frees parameters it merely reads --
-            // curl's `Curl_cwriter_free(data, writer)` then reports every
-            // caller's `data` as freed.
-            let mut resolving = real.iter().filter(|&&arg| {
-                strip_free_argument(arg)
-                    .map(|(t, _)| t.utf8_text(source.as_bytes()).unwrap_or(""))
-                    .is_some_and(|n| params.iter().any(|p| !p.is_empty() && p == n))
-            });
-            let (Some(&arg), None) = (resolving.next(), resolving.next()) else {
-                continue;
-            };
-            // Recorded as a guess against the callee's name, not credited:
-            // `resolve_name_shaped_frees` folds it in once it can tell
-            // whether anything backs it.
-            let Some((target, false)) = strip_free_argument(arg) else {
-                continue;
-            };
-            let arg_name = target.utf8_text(source.as_bytes()).unwrap_or("");
-            let Some(idx) = params.iter().position(|p| !p.is_empty() && p == arg_name) else {
-                continue;
-            };
-            let Some(arg_pos) = real.iter().position(|a| a.id() == arg.id()) else {
-                continue;
-            };
-            let unconditional =
-                is_unconditionally_reached_modulo_null_guard(&call, body, source, arg_name);
-            summary.frees_params_by_name.entry(idx).or_default().push((
-                func_name.to_string(),
-                arg_pos,
-                unconditional,
-            ));
-        }
-    }
-}
-
-/// Fold every `frees_params_by_name` guess into `frees_params` now that all
-/// summaries exist, recording in `frees_params_guessed` the indices for which
-/// the name was the only evidence.
-///
-/// The guess is promoted unless the callee's own body contradicts it. It was
-/// credited before the guesses were held apart, it is what stops a leak
-/// report at every caller of a name-shaped wrapper, and a callee with a body
-/// the prescan could not see through (`sqlite3_free` releasing via the
-/// `xFree` function pointer) has an empty summary that means "unseen", not
-/// "frees nothing". What the fold adds is the guess-ness, and the fixpoint
-/// that follows clears it wherever a forwarded callee's own free of the
-/// parameter is real. `macro_aliases` are resolved the way the fixpoint
-/// resolves them.
-///
-/// The contradiction: a callee whose body was seen to work
-/// THROUGH that argument -- freeing its fields (`frees_param_fields`) or
-/// writing them (`modifies_params`) -- and not to free the argument itself.
-/// curl's `up_free(data)` releases `data->state.up.scheme` and seven
-/// siblings; hostap's `free_hw_features(wpa_s)` releases `wpa_s->hw.modes`;
-/// hostap's `p2p_free_sd_queries(p2p)` walks a list off `p2p->sd_queries`
-/// and then writes `p2p->sd_queries = NULL`. Those bodies are not opaque --
-/// the analyzer watched them manage the object's parts -- and they hand the
-/// object back intact, so the name is wrong about the parameter and
-/// crediting it made every later `data->x` at the caller a use-after-free
-/// (310 MEM30-C findings sat on such guesses, 0 labeled TP). A body that
-/// neither frees nor writes anything of the argument stays a MAY-free:
-/// `sqlite3_free`'s says nothing either way. A callee with a still-unfolded
-/// guess of its own on that index is not "fields only" -- the fold is one
-/// pass, and order must not decide.
-fn resolve_name_shaped_frees(
-    summaries: &mut HashMap<String, FunctionSummary>,
-    macro_aliases: &HashMap<String, String>,
-) {
-    let corroborated: HashMap<String, HashSet<usize>> = summaries
-        .iter()
-        .map(|(n, s)| (n.clone(), &s.frees_params - &s.frees_params_guessed))
-        .collect();
-    // Every parameter index the callee is known OR still guessed to release.
-    // Pending `frees_params_by_name` keys count: this fold is one pass, and a
-    // callee whose own free is itself an unresolved guess must not read as
-    // "frees nothing" merely because it has not been folded yet.
-    let may_free: HashMap<String, HashSet<usize>> = summaries
-        .iter()
-        .map(|(n, s)| {
-            (
-                n.clone(),
-                s.frees_params
-                    .iter()
-                    .chain(s.frees_params_by_name.keys())
-                    .copied()
-                    .collect(),
-            )
-        })
-        .collect();
-    let works_through_only: HashMap<String, HashSet<usize>> = summaries
-        .iter()
-        .map(|(n, s)| {
-            let through: HashSet<usize> = s
-                .frees_param_fields
-                .keys()
-                .chain(s.modifies_params.iter())
-                .copied()
-                .collect();
-            let empty = HashSet::new();
-            (n.clone(), &through - may_free.get(n).unwrap_or(&empty))
-        })
-        .collect();
-    for summary in summaries.values_mut() {
-        let guesses = std::mem::take(&mut summary.frees_params_by_name);
-        for (idx, callees) in guesses {
-            for (callee_name, arg_pos, unconditional) in callees {
-                let callee = edge_target(macro_aliases, &callee_name, |n| {
-                    corroborated.contains_key(n)
-                });
-                let backed = call_roles::frees_argument(callee) == Some(arg_pos)
-                    || corroborated
-                        .get(callee)
-                        .is_some_and(|f| f.contains(&arg_pos));
-                // The callee's body was read well enough to establish which
-                // parameter it releases, and this is not that one. That is not
-                // an unsupported guess, it is a CONTRADICTED one: the same
-                // analysis that saw the free also saw this argument and did not
-                // conclude anything was released through it. hostap's
-                // `bin_clear_free(void *bin, size_t len)` releases param 0, so
-                // the `bin_clear_free(bin, prime_len)` inside
-                // `debug_print_bignum` -- where `bin` is a local and
-                // `prime_len` the only argument naming a parameter, so the
-                // one-resolving-argument rule picks it -- must not make
-                // `prime_len` a freed parameter of `debug_print_bignum`, and
-                // every one of its callers' `prime_len` a double free (34
-                // findings, hostap sae.c, 0 labeled TP).
-                //
-                // Asked against `may_free`, which counts the callee's own
-                // STILL-PENDING name guesses as well as its settled frees.
-                // `corroborated` alone is empty for exactly the callees this is
-                // about: `bin_clear_free`'s own `os_free(bin)` is itself a
-                // guess waiting in this same fold, and the fold is one pass, so
-                // order must not decide (the same reason `works_through_only`
-                // below is asked that way).
-                //
-                // An EMPTY `may_free` still licenses the guess: it means the
-                // body was never read, or releases through a function pointer
-                // the prescan cannot follow (`sqlite3_free`'s `xFree`, lua's
-                // `(*g->frealloc)`), which is the "unseen, not nothing" case
-                // this tier exists for.
-                if !backed
-                    && may_free
-                        .get(callee)
-                        .is_some_and(|f| !f.is_empty() && !f.contains(&arg_pos))
-                {
-                    continue;
-                }
-                if !backed
-                    && works_through_only
-                        .get(callee)
-                        .is_some_and(|f| f.contains(&arg_pos))
-                {
-                    continue;
-                }
-                // Kept for this callee: so are the definitions' own copies of
-                // the guess.
-                for def in &mut summary.definitions {
-                    let calls = def.name_shaped_frees.get_mut(&idx).into_iter().flatten();
-                    for call in calls.filter(|c| c.0 == callee_name && c.1 == arg_pos) {
-                        call.3 = true;
-                    }
-                }
-                let newly = summary.frees_params.insert(idx);
-                if unconditional {
-                    summary.unconditional_frees_params.insert(idx);
-                }
-                if backed {
-                    summary.frees_params_guessed.remove(&idx);
-                } else if newly {
-                    summary.frees_params_guessed.insert(idx);
-                }
-            }
         }
     }
 }
@@ -6045,26 +5839,19 @@ fn closes_param_before_reassignment(sweep: &BodySweep, source: &str, param_name:
 /// sibling `free(param)` text scan above) because the chain must be
 /// extracted precisely, not just detected.
 ///
-/// Three ways a call is recognized as freeing its argument, in preference
-/// order:
-///  1. Literal `free` — every argument is a candidate.
+/// A release is recognised in one of three ways, in preference order:
+///  1. `free` -- every argument is a candidate -- or a deallocator the
+///     project declares, on the argument its declaration names.
 ///  2. A function-like macro matching the "safe free" idiom (frees AND nulls
 ///     its parameter — `macro_expand::macro_nulls_param_indices`), e.g.
 ///     mosquitto's `#define mosquitto_FREE(A) do{ mosquitto_free(A); (A) =
-///     NULL; }while(0)`. This is genuine engine-based detection (the macro
-///     body is expanded and inspected), independent of the macro's name —
-///     "engine, not allowlist", matching MEM30-C's existing use of the same
-///     API. Only the argument position(s) the engine identifies are
-///     credited.
-///  3. A plain call whose name matches `ast_utils::is_deallocation_call_name`
-///     (destroy_*/free_*/..._free/etc.) — a name-heuristic fallback for
-///     ordinary C helper functions (not macros) and free-shaped macros that
-///     don't null their argument, where the engine has nothing to say.
-///     Every argument is a candidate, as for literal `free`.
-///
-/// aurora-lint has no preprocessor, so for (2)/(3) the macro/helper call itself is
-/// the only AST evidence available that a free happened inside it (an earlier fix:
-/// MEM31-C ownership model).
+///     NULL; }while(0)`. The macro body is expanded and inspected,
+///     independent of the macro's name. Only the argument position(s) the
+///     engine identifies are credited.
+///  3. Any other named call handed a field (`x_release(m->will)`) is an edge
+///     in `field_free_edges`, and `resolve_field_free_edges` credits the
+///     field once every summary exists, if the callee's body is seen to free
+///     that argument. The callee's name is not evidence either way.
 fn collect_frees_param_fields(
     calls: &[Node],
     source: &str,
@@ -6074,7 +5861,6 @@ fn collect_frees_param_fields(
 ) {
     use crate::analyze::macro_expand::{macro_nulls_param_indices, Live};
     use crate::analyze::points_to::LValue;
-    use crate::utility::cert_c::ast_utils;
 
     // Flatten a field-access chain into (root variable, arrow-joined field
     // path), e.g. `m->will->topic` -> ("m", "will->topic").
@@ -6149,10 +5935,25 @@ fn collect_frees_param_fields(
             continue;
         }
 
-        if ast_utils::is_deallocation_call_name(func_name) {
-            for arg in &args {
-                credit_field(summary, arg);
+        if function.kind() != "identifier" {
+            continue;
+        }
+        for (arg_pos, arg) in args.iter().enumerate() {
+            let Some(lv) = crate::analyze::points_to::lvalue_of(arg, source) else {
+                continue;
+            };
+            let (root_name, fields) = flatten(&lv);
+            if fields.is_empty() {
+                continue;
             }
+            let Some(idx) = params.iter().position(|p| p == &root_name) else {
+                continue;
+            };
+            summary.field_free_edges.entry(idx).or_default().push((
+                fields.join("->"),
+                func_name.to_string(),
+                arg_pos,
+            ));
         }
     }
 }
@@ -6592,18 +6393,11 @@ pub fn propagate_transitive_frees(
     summaries: &mut HashMap<String, FunctionSummary>,
     macro_aliases: &HashMap<String, String>,
 ) {
-    resolve_name_shaped_frees(summaries, macro_aliases);
-
     for _pass in 0..10 {
         let mut changed = false;
-        let frees_snapshot: HashMap<String, (HashSet<usize>, HashSet<usize>)> = summaries
+        let frees_snapshot: HashMap<String, HashSet<usize>> = summaries
             .iter()
-            .map(|(n, s)| {
-                (
-                    n.clone(),
-                    (s.frees_params.clone(), s.frees_params_guessed.clone()),
-                )
-            })
+            .map(|(n, s)| (n.clone(), s.frees_params.clone()))
             .collect();
 
         for summary in summaries.values_mut() {
@@ -6612,17 +6406,10 @@ pub fn propagate_transitive_frees(
                     let callee = edge_target(macro_aliases, callee_name, |n| {
                         frees_snapshot.contains_key(n)
                     });
-                    let (callee_frees, callee_guessed) =
-                        if call_roles::frees_argument(callee) == Some(*callee_idx) {
-                            (true, false)
-                        } else {
-                            match frees_snapshot.get(callee) {
-                                Some((frees, guessed)) => {
-                                    (frees.contains(callee_idx), guessed.contains(callee_idx))
-                                }
-                                None => (false, false),
-                            }
-                        };
+                    let callee_frees = call_roles::frees_argument(callee) == Some(*callee_idx)
+                        || frees_snapshot
+                            .get(callee)
+                            .is_some_and(|frees| frees.contains(callee_idx));
                     if !callee_frees {
                         continue;
                     }
@@ -6633,14 +6420,7 @@ pub fn propagate_transitive_frees(
                         summary.frees_params.contains(caller_idx),
                         edge,
                     );
-                    if !summary.frees_params.contains(caller_idx) {
-                        summary.frees_params.insert(*caller_idx);
-                        if callee_guessed {
-                            summary.frees_params_guessed.insert(*caller_idx);
-                        }
-                        changed = true;
-                    } else if !callee_guessed && summary.frees_params_guessed.remove(caller_idx) {
-                        // Real evidence for an index a name had only guessed.
+                    if summary.frees_params.insert(*caller_idx) {
                         changed = true;
                     }
                 }
@@ -7030,8 +6810,7 @@ pub fn propagate_transitive_clears(
 /// ([`DefinitionFacts::settled_releases`] and its siblings), for
 /// [`FunctionSummary::at_all`]. Run after every other propagation.
 ///
-/// A definition releases what its own body frees, stores or closes, what it
-/// hands to a name-shaped deallocator the name's resolution kept, and what
+/// A definition releases what its own body frees, stores or closes, and what
 /// it forwards to a callee that releases it -- read from the callee's
 /// union, which the transitive passes have already settled: a wrapper over
 /// a callee some of whose definitions free is credited as the union is.
@@ -7086,14 +6865,6 @@ pub fn settle_definition_facts(
                 .collect();
             let mut must_free = def.unconditional_frees.clone();
             let mut cleared = def.clears.clone();
-            for (idx, calls) in &def.name_shaped_frees {
-                for (_, _, is_unconditional, _) in calls.iter().filter(|c| c.3) {
-                    releases.insert(*idx);
-                    if *is_unconditional {
-                        must_free.insert(*idx);
-                    }
-                }
-            }
             for (idx, callees) in &def.passthroughs {
                 for (callee_name, callee_idx) in callees {
                     let callee = target(callee_name);
@@ -7324,6 +7095,10 @@ pub fn propagate_transitive_frees_param_pointees(summaries: &mut HashMap<String,
             .iter()
             .map(|(n, s)| (n.clone(), s.frees_param_pointees.clone()))
             .collect();
+        let nulls_snapshot: HashMap<String, HashSet<usize>> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.nulls_param_pointees.clone()))
+            .collect();
 
         for summary in summaries.values_mut() {
             for (caller_idx, callees) in &summary.param_passthroughs {
@@ -7333,6 +7108,12 @@ pub fn propagate_transitive_frees_param_pointees(summaries: &mut HashMap<String,
                         .is_some_and(|s| s.contains(callee_idx));
                     if frees_pointee && !summary.frees_param_pointees.contains(caller_idx) {
                         summary.frees_param_pointees.insert(*caller_idx);
+                        if nulls_snapshot
+                            .get(callee_name)
+                            .is_some_and(|s| s.contains(callee_idx))
+                        {
+                            summary.nulls_param_pointees.insert(*caller_idx);
+                        }
                         changed = true;
                     }
                 }
@@ -7342,6 +7123,49 @@ pub fn propagate_transitive_frees_param_pointees(summaries: &mut HashMap<String,
         if !changed {
             break;
         }
+    }
+}
+
+/// Credit `frees_param_fields` from every `field_free_edges` entry whose
+/// callee frees that argument: `free` or a declared deallocator, or a
+/// function whose own summary frees it (`frees_params`, final once
+/// `propagate_transitive_frees` has run). `x_release(m->will)` then frees
+/// `m`'s field `will` because `x_release`'s body was seen to free its
+/// argument, whatever `x_release` is called. The callee is resolved through
+/// `macro_aliases` as a pass-through edge's is.
+pub fn resolve_field_free_edges(
+    summaries: &mut HashMap<String, FunctionSummary>,
+    macro_aliases: &HashMap<String, String>,
+) {
+    let frees: HashMap<String, HashSet<usize>> = summaries
+        .iter()
+        .map(|(n, s)| (n.clone(), s.frees_params.clone()))
+        .collect();
+    for summary in summaries.values_mut() {
+        let edges = std::mem::take(&mut summary.field_free_edges);
+        for (idx, fields) in &edges {
+            for (field, callee_name, arg_pos) in fields {
+                let callee = edge_target(macro_aliases, callee_name, |n| frees.contains_key(n));
+                let frees_it = call_roles::frees_argument(callee) == Some(*arg_pos)
+                    || frees.get(callee).is_some_and(|f| f.contains(arg_pos));
+                if !frees_it {
+                    continue;
+                }
+                let present = summary.frees_param_fields.contains_key(idx);
+                let edge = summary
+                    .field_edge_arms
+                    .get(idx)
+                    .cloned()
+                    .unwrap_or_else(|| vec![Vec::new()]);
+                credit_arms(&mut summary.field_free_arms, *idx, present, edge);
+                summary
+                    .frees_param_fields
+                    .entry(*idx)
+                    .or_default()
+                    .insert(field.clone());
+            }
+        }
+        summary.field_free_edges = edges;
     }
 }
 
@@ -7784,6 +7608,65 @@ mod tests {
         )
     }
 
+    /// A callee's name is not evidence of a free. `release_it` hands its
+    /// parameter to a `_free`-shaped function with no body in the scan, and
+    /// nothing shows that function releasing anything.
+    #[test]
+    fn a_bodiless_callee_shaped_like_a_deallocator_frees_nothing() {
+        let code = r#"
+        extern void thing_free(void *p);
+        void release_it(void *p) { thing_free(p); }
+        "#;
+        let mut summaries = parse_and_summarize(code);
+        propagate_transitive_frees(&mut summaries, &HashMap::new());
+        let s = summaries.get("release_it").unwrap();
+        assert!(s.frees_params.is_empty());
+        assert!(s.unconditional_frees_params.is_empty());
+    }
+
+    /// A field handed to a callee is freed when the callee's BODY frees that
+    /// argument, whatever the callee is called, and not otherwise.
+    #[test]
+    fn a_field_handed_to_a_callee_is_freed_only_by_its_body() {
+        let code = r#"
+        struct msg { char *topic; char *payload; };
+        extern void opaque_free(char *p);
+        void let_go(char *p) { free(p); }
+        void msg_clear(struct msg *m) {
+            let_go(m->topic);
+            opaque_free(m->payload);
+        }
+        "#;
+        let mut summaries = parse_and_summarize(code);
+        propagate_transitive_frees(&mut summaries, &HashMap::new());
+        resolve_field_free_edges(&mut summaries, &HashMap::new());
+        let fields = summaries
+            .get("msg_clear")
+            .unwrap()
+            .frees_param_fields
+            .get(&0)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(fields, HashSet::from(["topic".to_string()]));
+    }
+
+    /// `*pp = NULL` after `free(*pp)` is read off the tree; a comment saying
+    /// the same thing is not.
+    #[test]
+    fn a_pointee_nulled_after_its_free_is_recorded() {
+        let code = r#"
+        void destroy(void **pp) { free(*pp); *pp = NULL; }
+        void forget(void **pp) { free(*pp); /* *pp = NULL; */ }
+        "#;
+        let summaries = parse_and_summarize(code);
+        let destroy = summaries.get("destroy").unwrap();
+        assert!(destroy.frees_param_pointees.contains(&0));
+        assert!(destroy.nulls_param_pointees.contains(&0));
+        let forget = summaries.get("forget").unwrap();
+        assert!(forget.frees_param_pointees.contains(&0));
+        assert!(forget.nulls_param_pointees.is_empty());
+    }
+
     #[test]
     fn ifdef_variants_in_one_file_merge_rather_than_last_one_winning() {
         // aurora-lint does not preprocess, so both arms of an `#ifdef` are
@@ -8120,12 +8003,12 @@ void caller(void) { }
         }
     }
 
-    /// A definition whose free is a name-shaped guess (a library
-    /// deallocator with no body, as an OpenSSL backend's `BN_clear_free`)
-    /// frees as much as one calling `free` itself, once the name's resolution
-    /// keeps the guess for that callee.
+    /// A definition that hands its parameter to a library deallocator with
+    /// no body and no declaration (an OpenSSL backend's `BN_clear_free`)
+    /// does not release it: the name is no evidence, so not every
+    /// definition frees.
     #[test]
-    fn test_at_all_credits_a_definitions_kept_name_shaped_free() {
+    fn test_at_all_does_not_credit_a_bodiless_name_shaped_callee() {
         let code = r#"
 #ifdef USE_OPENSSL
 void bignum_deinit(void *n) { BN_clear_free(n); }
@@ -8139,12 +8022,13 @@ void caller(void) { }
         settle_definition_facts(&mut summaries, &HashMap::new());
         let deinit = summaries.get("bignum_deinit").unwrap();
         assert_eq!(deinit.definitions.len(), 2);
-        assert!(deinit.at_all(code, 7).frees_params.contains(&0));
+        assert!(deinit.at(code, 7).frees_params.contains(&0));
+        assert!(!deinit.at_all(code, 7).frees_params.contains(&0));
     }
 
-    /// A guess the callee's own body contradicts is that definition's no
-    /// free, although a sibling definition frees: `up_free` releases only a
-    /// field of what it is handed, so the `#else` build leaks.
+    /// A callee that frees only a field of what it is handed is that
+    /// definition's no free, although a sibling definition frees: `up_free`
+    /// releases `b->data` alone, so the `#else` build leaks.
     #[test]
     fn test_at_all_does_not_credit_a_rejected_name_shaped_free() {
         let code = r#"
@@ -8391,60 +8275,6 @@ void wrap_rel(void *p) { rel(p); }
         };
         merge_summary_variant(&mut stub, real);
         assert!(stub.returns_allocation);
-    }
-
-    /// The fold must give the same answer whichever variant is folded into
-    /// which, because the caller swaps them to choose which definition
-    /// governs the fields the fold does not merge. The guess
-    /// bookkeeping was the one asymmetric field: evidence in one variant
-    /// clears the other's guess, and that must not depend on the side it
-    /// sits on.
-    #[test]
-    fn a_free_one_variant_backs_with_evidence_is_no_guess_either_way() {
-        let guessed = FunctionSummary {
-            frees_params: HashSet::from([1]),
-            frees_params_guessed: HashSet::from([1]),
-            ..Default::default()
-        };
-        let backed = FunctionSummary {
-            frees_params: HashSet::from([1]),
-            ..Default::default()
-        };
-
-        let mut folded = guessed.clone();
-        merge_summary_variant(&mut folded, backed.clone());
-        assert!(folded.frees_params.contains(&1));
-        assert!(
-            !folded.frees_params_guessed.contains(&1),
-            "evidence in the folded-in variant clears the guess"
-        );
-
-        let mut swapped = backed;
-        merge_summary_variant(&mut swapped, guessed);
-        assert!(swapped.frees_params.contains(&1));
-        assert!(
-            !swapped.frees_params_guessed.contains(&1),
-            "and clears it the other way round too"
-        );
-    }
-
-    /// The mirror case: an index only ONE variant frees, and only as a
-    /// name guess, keeps its guess flag. Reading the evidence off the union
-    /// counted that index as backed by the variant that never freed it.
-    #[test]
-    fn a_guess_no_variant_backs_stays_a_guess() {
-        let quiet = FunctionSummary::default();
-        let guessed = FunctionSummary {
-            frees_params: HashSet::from([2]),
-            frees_params_guessed: HashSet::from([2]),
-            ..Default::default()
-        };
-        let mut folded = quiet.clone();
-        merge_summary_variant(&mut folded, guessed.clone());
-        assert!(folded.frees_params_guessed.contains(&2));
-        let mut swapped = guessed;
-        merge_summary_variant(&mut swapped, quiet);
-        assert!(swapped.frees_params_guessed.contains(&2));
     }
 
     /// A summary no body built (false, no obligation clauses) is no evidence

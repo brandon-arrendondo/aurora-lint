@@ -19,7 +19,11 @@
 
 struct wpabuf;
 struct wpabuf *wpabuf_alloc(size_t len);
-void wpabuf_free(struct wpabuf *buf);
+/* hostap's own, with the body the scan reads it by. */
+void wpabuf_free(struct wpabuf *buf)
+{
+	free(buf);
+}
 int keygen(void);
 
 /* hostap crypto_openssl.c:1125 vs :1188 -- the free on the OpenSSL-3 arm's
