@@ -7,9 +7,9 @@ use crate::analyze::context::{EffectView, IncludeClosure, ProjectContext, Visibl
 use crate::analyze::function_summary::extract_function_name;
 use crate::analyze::macro_expand::{self, ArgEvaluation, FunctionMacro, MacroArm, ProjectMacroArm};
 use crate::analyze::side_effects::{
-    collect_direct_effects, dereferences_applied, designates_object, is_type_name_text,
-    is_volatile_read, names_a_type, typedef_is_volatile, typedef_read, EffectInputs, EffectTable,
-    FileScope, Proof, PURE_BUILTINS,
+    collect_direct_effects, dereferences_applied, designates_object, is_null_pointer_constant,
+    is_type_name_text, is_volatile_read, names_a_type, typedef_is_volatile, typedef_read,
+    EffectInputs, EffectTable, FileScope, Proof, PURE_BUILTINS,
 };
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
@@ -513,12 +513,12 @@ impl<'a> Ctx<'a> {
             // An `#if` arm that does not define the macro may leave the name
             // a real function: the worse of the two.
             let as_macro = self.macro_effect(name, arguments, depth);
-            return match self.function_effect(name) {
+            return match self.function_effect(name, arguments) {
                 Some(f) => as_macro.max(f),
                 None => as_macro,
             };
         }
-        if let Some(effect) = self.function_effect(name) {
+        if let Some(effect) = self.function_effect(name, arguments) {
             return effect;
         }
         // A type "called" in a macro body is a cast (`(T)(x)`).
@@ -542,7 +542,7 @@ impl<'a> Ctx<'a> {
     }
 
     /// What calling a scanned function can change, when the scan defines it.
-    fn function_effect(&self, name: &str) -> Option<Effect> {
+    fn function_effect(&self, name: &str, arguments: Option<&Node<'a>>) -> Option<Effect> {
         let stdlib_contract = self.settings.flag("stdlib_call_effects");
         let local = self.local_table.and_then(|t| t.get(name));
         let project = self.effects.and_then(|v| v.get(name));
@@ -551,12 +551,28 @@ impl<'a> Ctx<'a> {
             (l, p) => l.or(p).cloned(),
         };
         // The conservative reading: a callee writing through a pointer it
-        // was handed counts, whatever the caller handed it.
-        closed.map(|closed| match closed.proof(stdlib_contract) {
-            Proof::Pure => Effect::None,
-            Proof::Unproven => Effect::Unknown,
-            Proof::Impure => Effect::Definite,
-        })
+        // was handed counts, whatever the caller handed it -- except a null
+        // pointer, through which nothing is written.
+        let passed: Vec<Node<'a>> = arguments
+            .map(|a| {
+                let mut cursor = a.walk();
+                a.named_children(&mut cursor)
+                    .filter(|c| c.kind() != "comment")
+                    .collect()
+            })
+            .unwrap_or_default();
+        let null = |k: usize| {
+            passed
+                .get(k)
+                .is_some_and(|a| is_null_pointer_constant(a, self.source))
+        };
+        closed.map(
+            |closed| match closed.past_null_arguments(null).proof(stdlib_contract) {
+                Proof::Pure => Effect::None,
+                Proof::Unproven => Effect::Unknown,
+                Proof::Impure => Effect::Definite,
+            },
+        )
     }
 
     /// A function-like macro invoked inside the argument: its body is its

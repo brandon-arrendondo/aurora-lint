@@ -53,6 +53,9 @@ pub enum ArgRoot {
     AddrOfGlobal(String),
     /// Anything else.
     Other,
+    /// A null pointer constant (`0`, `NULL`, `(void *)0`): nothing is
+    /// written through it in a defined execution.
+    Null,
 }
 
 /// One call in a body.
@@ -938,6 +941,9 @@ impl<'t> Collector<'_, 't> {
     /// bare identifier not declared as an object.
     fn arg_root(&self, arg: &Node<'t>) -> (ArgRoot, Option<String>) {
         let arg = crate::analyze::init_state::strip_arg_casts(arg);
+        if is_null_pointer_constant(&arg, self.source) {
+            return (ArgRoot::Null, None);
+        }
         match arg.kind() {
             "identifier" => {
                 let name = get_node_text(&arg, self.source);
@@ -977,6 +983,29 @@ impl<'t> Collector<'_, 't> {
             }
             _ => (ArgRoot::Other, None),
         }
+    }
+}
+
+/// Whether an argument is a null pointer constant (C11 6.3.2.3p3), casts
+/// aside: `NULL` or `nullptr` unless a declaration in scope binds the name,
+/// or an integer constant `0` in any spelling.
+pub fn is_null_pointer_constant(arg: &Node, source: &str) -> bool {
+    let arg = crate::analyze::init_state::strip_arg_casts(arg);
+    match arg.kind() {
+        "null" => true,
+        "identifier" => {
+            let name = get_node_text(&arg, source);
+            name == "NULL" && ast_utils::resolve_identifier_binding(&arg, name, source).is_none()
+        }
+        "number_literal" => {
+            let digits = get_node_text(&arg, source).trim_end_matches(['u', 'U', 'l', 'L']);
+            let digits = digits
+                .strip_prefix("0x")
+                .or_else(|| digits.strip_prefix("0X"))
+                .unwrap_or(digits);
+            !digits.is_empty() && digits.chars().all(|c| c == '0')
+        }
+        _ => false,
     }
 }
 
@@ -1300,11 +1329,17 @@ pub struct ClosedEffects {
     /// (the caller's own parameter, a local's address -- dropped -- or a
     /// global's), anything else to [`Loc::Unknown`].
     pub writes: BTreeSet<Loc>,
-    /// Some write happens, this function's own or any callee's, before any
-    /// argument mapping: the conservative reading, in which a callee that
-    /// writes through a pointer it was handed counts even when the caller
-    /// handed it a local.
+    /// Some write happens: one in [`Self::writes`], or one that lands in
+    /// the storage of a function on the call path ([`Self::frame_write`]).
+    /// The conservative reading, in which a callee that writes through a
+    /// pointer it was handed counts even when the caller handed it a local.
+    /// A write through a null pointer argument is not one: it does not
+    /// happen in a defined execution.
     pub writes_any: bool,
+    /// Some callee writes through a pointer to a local of a function on the
+    /// call path (`int v; fill(&v);`), which no caller of that function
+    /// sees.
+    pub frame_write: bool,
     /// A volatile object is read.
     pub volatile_read: bool,
     /// A library callee whose contract has a side effect is reached.
@@ -1356,16 +1391,31 @@ impl ClosedEffects {
         }
     }
 
+    /// These effects for one call whose argument `k` is a null pointer
+    /// constant wherever `null(k)`: a write through that parameter does not
+    /// happen in a defined execution.
+    pub fn past_null_arguments(&self, null: impl Fn(usize) -> bool) -> ClosedEffects {
+        let mut out = self.clone();
+        out.writes
+            .retain(|loc| !matches!(loc, Loc::ParamPointee(k) if null(*k)));
+        out.writes_any = !out.writes.is_empty() || out.frame_write;
+        out
+    }
+
     /// Everything either may change: the worse of two definitions.
     pub fn union(&self, other: &ClosedEffects) -> ClosedEffects {
         let mut out = self.clone();
         out.absorb_flags(other);
+        out.writes_any |= other.writes_any;
         out.writes.extend(other.writes.iter().cloned());
         out
     }
 
+    /// The flags a caller inherits whatever it passes. `writes_any` is not
+    /// among them: a callee's writes reach the caller only as mapped
+    /// through its arguments.
     fn absorb_flags(&mut self, other: &ClosedEffects) {
-        self.writes_any |= other.writes_any;
+        self.frame_write |= other.frame_write;
         self.volatile_read |= other.volatile_read;
         self.lib_side_effect |= other.lib_side_effect;
         self.lib_own_buffer |= other.lib_own_buffer;
@@ -1541,12 +1591,15 @@ impl EffectTable {
                         } else {
                             closed[*t].as_ref().map(|c| &c.writes)
                         };
-                        add.extend(
-                            callee_writes
-                                .into_iter()
-                                .flatten()
-                                .filter_map(|loc| map_through(loc, args)),
-                        );
+                        for loc in callee_writes.into_iter().flatten() {
+                            match map_through(loc, args) {
+                                Mapped::To(loc) => {
+                                    add.insert(loc);
+                                }
+                                Mapped::CallerFrame => flags.frame_write = true,
+                                Mapped::Nowhere => {}
+                            }
+                        }
                     }
                     let own = writes.get_mut(&m).expect("member");
                     for loc in add {
@@ -1560,7 +1613,7 @@ impl EffectTable {
             for &m in &scc {
                 let mut result = flags.clone();
                 result.writes = writes.remove(&m).unwrap_or_default();
-                result.writes_any |= !result.writes.is_empty();
+                result.writes_any = !result.writes.is_empty() || result.frame_write;
                 closed[m] = Some(result);
             }
         }
@@ -1673,20 +1726,32 @@ pub fn name_effects(
         out: &mut out,
     };
     resolver.free_name(name, 0);
+    own.writes_any |= !own.writes.is_empty() || own.frame_write;
     own
 }
 
-/// A callee's written location as its caller sees it; `None` when the
-/// caller handed the callee its own automatic storage.
-fn map_through(loc: &Loc, args: &[ArgRoot]) -> Option<Loc> {
+/// Where a callee's write lands, as its caller sees it.
+enum Mapped {
+    /// A location outside the caller's frame.
+    To(Loc),
+    /// The caller's own automatic storage, handed down by address.
+    CallerFrame,
+    /// Nowhere: the write goes through a null pointer argument, which a
+    /// defined execution never does.
+    Nowhere,
+}
+
+/// A callee's written location as its caller sees it.
+fn map_through(loc: &Loc, args: &[ArgRoot]) -> Mapped {
     match loc {
         Loc::ParamPointee(k) => match args.get(*k) {
-            Some(ArgRoot::Param(j)) => Some(Loc::ParamPointee(*j)),
-            Some(ArgRoot::AddrOfGlobal(g)) => Some(Loc::Global(g.clone())),
-            Some(ArgRoot::AddrOfLocal) => None,
-            _ => Some(Loc::Unknown),
+            Some(ArgRoot::Param(j)) => Mapped::To(Loc::ParamPointee(*j)),
+            Some(ArgRoot::AddrOfGlobal(g)) => Mapped::To(Loc::Global(g.clone())),
+            Some(ArgRoot::AddrOfLocal) => Mapped::CallerFrame,
+            Some(ArgRoot::Null) => Mapped::Nowhere,
+            Some(ArgRoot::Other) | None => Mapped::To(Loc::Unknown),
         },
-        other => Some(other.clone()),
+        other => Mapped::To(other.clone()),
     }
 }
 
@@ -1824,12 +1889,16 @@ impl Resolver<'_, '_> {
     /// Take a callee's closed effects from the base table as they are.
     fn absorb(&mut self, closed: &ClosedEffects, args: &[ArgRoot]) {
         self.own.absorb_flags(closed);
-        self.own.writes.extend(
-            closed
-                .writes
-                .iter()
-                .filter_map(|loc| map_through(loc, args)),
-        );
+        for loc in &closed.writes {
+            match map_through(loc, args) {
+                Mapped::To(loc) => {
+                    self.own.writes.insert(loc);
+                    self.own.writes_any = true;
+                }
+                Mapped::CallerFrame => self.own.frame_write = true,
+                Mapped::Nowhere => {}
+            }
+        }
     }
 
     /// What one definition of a function-like macro, invoked as `call`,
@@ -1848,7 +1917,7 @@ impl Resolver<'_, '_> {
                 Some(ArgRoot::AddrOfLocal) => None,
                 Some(ArgRoot::AddrOfGlobal(g)) => Some(Loc::Global(g.clone())),
                 Some(ArgRoot::Param(j)) => Some(Loc::ParamPointee(*j)),
-                Some(ArgRoot::Other) | None => Some(Loc::Unknown),
+                Some(ArgRoot::Other | ArgRoot::Null) | None => Some(Loc::Unknown),
             };
             if let Some(loc) = written {
                 self.own.writes.insert(loc);
@@ -2459,6 +2528,36 @@ mod tests {
             int f(int v) { log_it(v); return v; }\n";
         let ctx = scanned(&[("log.c", code)], "one-arm-macro");
         assert_eq!(ctx.effects().get("f").unwrap().proof(true), Proof::Impure);
+    }
+
+    #[test]
+    fn a_write_through_a_null_argument_does_not_happen() {
+        let code = "int hw;\n\
+            int used(int *h) { if (h) *h = 3; return 1; }\n\
+            int zero(void) { return used(0); }\n\
+            int null(void) { return used(NULL); }\n\
+            int cast(void) { return used((int *)0UL); }\n\
+            int global(void) { return used(&hw); }\n\
+            int local(void) { int v; return used(&v); }\n";
+        let ctx = scanned(&[("s.c", code)], "null-arg");
+        let effects = ctx.effects();
+        for f in ["zero", "null", "cast"] {
+            let e = effects.get(f).unwrap();
+            assert_eq!(e.proof(true), Proof::Pure, "{f}");
+            assert!(!e.writes_any, "{f}");
+        }
+        assert_eq!(effects.get("global").unwrap().proof(true), Proof::Impure);
+        // The caller's own local is still written: unproven, not impure.
+        let local = effects.get("local").unwrap();
+        assert_eq!(local.proof(true), Proof::Unproven);
+        assert!(local.frame_write);
+        // At one call, the same judgement from the callee's own effects.
+        let used = effects.get("used").unwrap();
+        assert_eq!(used.proof(true), Proof::Impure);
+        assert_eq!(
+            used.past_null_arguments(|k| k == 0).proof(true),
+            Proof::Pure
+        );
     }
 
     #[test]
