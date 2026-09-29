@@ -389,7 +389,15 @@ impl CompileDb {
     /// Call this *after* prescan and `#include` resolution so real definitions
     /// take precedence — see the "gap-filling, never overriding" invariant in
     /// the module docs. Returns the number of macro names newly contributed.
-    pub fn merge_defines_into(&self, context: &mut ProjectContext) -> Result<usize> {
+    ///
+    /// `model` resolves a value written in terms of a limit (`-DCAP=INT_MAX`);
+    /// only the names the database itself defines are merged, never the
+    /// builtin constants the evaluation starts from.
+    pub fn merge_defines_into(
+        &self,
+        context: &mut ProjectContext,
+        model: crate::settings::DataModel,
+    ) -> Result<usize> {
         if self.defines.is_empty() {
             return Ok(0);
         }
@@ -401,7 +409,10 @@ impl CompileDb {
 
         let mut added = 0usize;
 
-        for (name, value) in super::const_eval::collect_macro_constants(&root, &source) {
+        for (name, value) in super::const_eval::collect_macro_constants(&root, &source, model) {
+            if !self.defines.iter().any(|d| d.spelling == name) {
+                continue;
+            }
             if let std::collections::hash_map::Entry::Vacant(e) =
                 Arc::make_mut(&mut context.macro_constants).entry(name)
             {
@@ -1089,7 +1100,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        db.merge_defines_into(&mut ctx).unwrap();
+        db.merge_defines_into(&mut ctx, Default::default()).unwrap();
 
         assert_eq!(ctx.macro_constants.get("BUFSZ"), Some(&64));
         assert_eq!(ctx.macro_constants.get("NEWSZ"), Some(&16));
@@ -1105,7 +1116,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        db.merge_defines_into(&mut ctx).unwrap();
+        db.merge_defines_into(&mut ctx, Default::default()).unwrap();
         assert!(ctx.function_macros.contains_key("SQUARE"));
     }
 
@@ -1156,6 +1167,7 @@ mod tests {
             &mut ctx,
             None,
             false,
+            Default::default(),
             &super::super::include_names::HeaderLookup::default(),
         )
         .unwrap();
@@ -1273,7 +1285,10 @@ mod tests {
     fn merge_defines_is_a_noop_without_defines() {
         let mut ctx = ProjectContext::new();
         let db = CompileDb::default();
-        assert_eq!(db.merge_defines_into(&mut ctx).unwrap(), 0);
+        assert_eq!(
+            db.merge_defines_into(&mut ctx, Default::default()).unwrap(),
+            0
+        );
         assert!(ctx.macro_constants.is_empty());
     }
 
@@ -1629,6 +1644,7 @@ mod tests {
             &mut ctx,
             None,
             false,
+            Default::default(),
             &super::super::include_names::HeaderLookup::default(),
         )
         .unwrap();
@@ -1661,6 +1677,7 @@ mod tests {
             &mut ctx,
             None,
             false,
+            Default::default(),
             &super::super::include_names::HeaderLookup::default(),
         )
         .unwrap();

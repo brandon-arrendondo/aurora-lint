@@ -7,6 +7,7 @@ use super::include_names::{HeaderLookup, HeaderMatch};
 use crate::analyze::null_state::NullState;
 use crate::parser::CParser;
 use crate::progress::ProgressReporter;
+use crate::settings::DataModel;
 use crate::settings::IncludeNames;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::ast_utils::get_node_text;
@@ -205,7 +206,12 @@ impl FilePrescanResult {
     }
 }
 
-fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePrescanResult {
+fn process_file(
+    file_path: &Path,
+    is_header: bool,
+    needs_vra: bool,
+    model: DataModel,
+) -> FilePrescanResult {
     let mut result = FilePrescanResult::empty();
     result.display_path = file_path.to_string_lossy().to_string();
 
@@ -239,7 +245,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
             collect_header_declarations(&root, &source, &mut result.header_declared_functions);
         }
 
-        let file_macros = const_eval::collect_macro_constants(&root, &source);
+        let file_macros = const_eval::collect_macro_constants(&root, &source, model);
         // A `.c` file's own statics are its alone: exported project-wide they
         // would fold a same-named, written static in another file (ADR-0006).
         // A header's statics are compiled into every includer, so they stay.
@@ -456,6 +462,7 @@ pub fn prescan_directories(
     progress: Option<&dyn ProgressReporter>,
     needs_vra: bool,
     scoped_out: &dyn Fn(&Path, &str) -> bool,
+    model: DataModel,
 ) -> Result<ProjectContext> {
     // Phase 1: collect all file paths (sequential — WalkDir is not parallel-safe).
     //
@@ -491,7 +498,12 @@ pub fn prescan_directories(
         }
     }
 
-    prescan_file_list(all_files, dirs.len(), progress, needs_vra)
+    prescan_file_list(
+        all_files,
+        dirs.len(),
+        progress,
+        Collect { needs_vra, model },
+    )
 }
 
 /// Whether `ignore` leaves `path` out of the prescan. The globs are relative
@@ -524,8 +536,12 @@ pub fn is_scoped_out(
 /// shipped analysis is clean on that input, rather than a test-only
 /// reimplementation of it being clean (this repo).
 #[cfg(test)]
-pub fn prescan_single_file(path: &Path, needs_vra: bool) -> Result<ProjectContext> {
-    prescan_files(vec![path.to_path_buf()], None, needs_vra)
+pub fn prescan_single_file(
+    path: &Path,
+    needs_vra: bool,
+    model: DataModel,
+) -> Result<ProjectContext> {
+    prescan_files(vec![path.to_path_buf()], None, needs_vra, model)
 }
 
 /// Build a [`ProjectContext`] from an explicit list of `.c`/`.h` files,
@@ -542,6 +558,7 @@ pub fn prescan_files(
     files: Vec<PathBuf>,
     progress: Option<&dyn ProgressReporter>,
     needs_vra: bool,
+    model: DataModel,
 ) -> Result<ProjectContext> {
     // A `.h` target names itself twice (once as the scan set, once among its
     // own sibling headers, spelled `foo.h` vs `./foo.h`); prescanning it twice
@@ -556,17 +573,34 @@ pub fn prescan_files(
             (p, is_header)
         })
         .collect();
-    prescan_file_list(all_files, 1, progress, needs_vra)
+    prescan_file_list(all_files, 1, progress, Collect { needs_vra, model })
+}
+
+/// What a prescan collects under, for [`prescan_file_list`].
+#[derive(Clone, Copy)]
+struct Collect {
+    /// Whether some enabled rule reads value ranges, which the function
+    /// summaries then compute.
+    needs_vra: bool,
+    /// The data model the macro constants are resolved under, so a project
+    /// `#define` written in terms of `INT_MAX` or `sizeof(long)` has the
+    /// value the scan's settings give it.
+    model: DataModel,
 }
 
 /// Shared by [`prescan_directories`] and [`prescan_single_file`] so that a
 /// single-file context can never drift from a directory one.
+///
+///
+/// - `all_files`: each file to read, and whether it is a header.
+/// - `unit_count`: what the progress report counts (directories or files).
 fn prescan_file_list(
     all_files: Vec<(PathBuf, bool)>,
     unit_count: usize,
     progress: Option<&dyn ProgressReporter>,
-    needs_vra: bool,
+    collect: Collect,
 ) -> Result<ProjectContext> {
+    let Collect { needs_vra, model } = collect;
     if let Some(reporter) = progress {
         reporter.report_prescan_start(unit_count);
     }
@@ -574,7 +608,7 @@ fn prescan_file_list(
     // Phase 2: parse and collect per-file data in parallel
     let file_results: Vec<FilePrescanResult> = all_files
         .par_iter()
-        .map(|(path, is_header)| process_file(path, *is_header, needs_vra))
+        .map(|(path, is_header)| process_file(path, *is_header, needs_vra, model))
         .collect();
 
     // Which names are defined `static` in more than one file, known before
@@ -6848,11 +6882,12 @@ fn harvest_header_macros(
     hsource: &str,
     header_path: &str,
     needs_vra: bool,
+    model: DataModel,
     origins: &mut MacroOrigins,
     outside_project: bool,
 ) {
     // Collect macro constants and aliases from resolved headers
-    let header_macros = const_eval::collect_macro_constants(root, hsource);
+    let header_macros = const_eval::collect_macro_constants(root, hsource, model);
     Arc::make_mut(&mut context.macro_constants).extend(header_macros.clone());
 
     let header_alias_alternatives = const_eval::collect_macro_alias_alternatives(root, hsource);
@@ -7035,6 +7070,7 @@ pub fn resolve_includes(
     context: &mut super::context::ProjectContext,
     progress: Option<&dyn ProgressReporter>,
     needs_vra: bool,
+    model: DataModel,
     lookup: &HeaderLookup,
 ) -> Result<()> {
     if let Some(reporter) = progress {
@@ -7147,6 +7183,7 @@ pub fn resolve_includes(
                     &hsource,
                     &header_path,
                     needs_vra,
+                    model,
                     &mut origins,
                     outside_project,
                 );
@@ -7602,6 +7639,7 @@ mod tests {
             None,
             false,
             &|_, _| false,
+            Default::default(),
         )
         .unwrap();
         assert_eq!(
@@ -7656,6 +7694,7 @@ mod tests {
             None,
             false,
             &|_, _| false,
+            Default::default(),
         )
         .unwrap();
         let summary = ctx
@@ -7707,6 +7746,7 @@ mod tests {
             None,
             false,
             &|_, _| false,
+            Default::default(),
         )
         .unwrap();
         let summary = ctx
@@ -8786,6 +8826,7 @@ no_mem:
                 &mut ctx,
                 None,
                 false,
+                Default::default(),
                 &HeaderLookup::new(mode),
             )
             .unwrap();
@@ -9173,7 +9214,8 @@ void caller(char *other) {
         std::fs::write(dir.path().join("a.c"), "void func_a(void) { func_b(); }").unwrap();
         std::fs::write(dir.path().join("b.c"), "void func_b(void) {}").unwrap();
         let dirs = vec![dir.path().to_string_lossy().to_string()];
-        let ctx = prescan_directories(&dirs, None, false, &|_, _| false).unwrap();
+        let ctx =
+            prescan_directories(&dirs, None, false, &|_, _| false, Default::default()).unwrap();
         assert!(ctx.known_functions.contains("func_a"));
         assert!(ctx.known_functions.contains("func_b"));
         assert!(ctx.call_graph.get("func_a").unwrap().contains("func_b"));
@@ -9196,7 +9238,8 @@ void caller(char *other) {
         )
         .unwrap();
         let dirs = vec![dir.path().to_string_lossy().to_string()];
-        let ctx = prescan_directories(&dirs, None, false, &|_, _| false).unwrap();
+        let ctx =
+            prescan_directories(&dirs, None, false, &|_, _| false, Default::default()).unwrap();
         assert!(ctx.ambiguous_call_targets.contains("timer_cb"));
         // The edge recording that run_a calls (some) timer_cb is untouched --
         // consumers that must not chase it filter on ambiguous_call_targets.
@@ -9223,7 +9266,8 @@ void caller(char *other) {
         )
         .unwrap();
         let dirs = vec![dir.path().to_string_lossy().to_string()];
-        let ctx = prescan_directories(&dirs, None, false, &|_, _| false).unwrap();
+        let ctx =
+            prescan_directories(&dirs, None, false, &|_, _| false, Default::default()).unwrap();
         assert!(ctx.known_functions.contains("public_api"));
         assert!(ctx.header_declared_functions.contains("public_api"));
     }
@@ -9237,7 +9281,8 @@ void caller(char *other) {
         )
         .unwrap();
         let dirs = vec![dir.path().to_string_lossy().to_string()];
-        let ctx = prescan_directories(&dirs, None, false, &|_, _| false).unwrap();
+        let ctx =
+            prescan_directories(&dirs, None, false, &|_, _| false, Default::default()).unwrap();
         assert!(ctx
             .struct_field_types
             .get("Config")
@@ -9258,7 +9303,8 @@ void caller(char *other) {
         )
         .unwrap();
         let dirs = vec![dir.path().to_string_lossy().to_string()];
-        let ctx = prescan_directories(&dirs, None, false, &|_, _| false).unwrap();
+        let ctx =
+            prescan_directories(&dirs, None, false, &|_, _| false, Default::default()).unwrap();
         assert!(
             ctx.global_writers.contains_key("g_clean"),
             "g_clean should be tracked as a file-scope global: {:?}",
@@ -9424,6 +9470,7 @@ void caller(char *other) {
                 None,
                 false,
                 &|_, _| false,
+                Default::default(),
             )
             .unwrap();
             let summary = ctx.function_summaries.get("save_file_text").unwrap();
@@ -9463,6 +9510,7 @@ void caller(char *other) {
             None,
             false,
             &|_, _| false,
+            Default::default(),
         )
         .unwrap();
         let summary = ctx.function_summaries.get("os_write").unwrap();
@@ -9494,6 +9542,7 @@ void caller(char *other) {
             None,
             false,
             &|_, _| false,
+            Default::default(),
         )
         .unwrap();
 
@@ -9546,6 +9595,7 @@ void caller(char *other) {
             None,
             false,
             &|_, _| false,
+            Default::default(),
         )
         .unwrap();
         assert!(ctx.function_summaries.contains_key("helper"));
@@ -9584,6 +9634,7 @@ void caller(char *other) {
             None,
             false,
             &|_, _| false,
+            Default::default(),
         )
         .unwrap();
         let one = ctx.as_seen_from(&dir.join("a_one.c")).expect("a view");
@@ -9650,6 +9701,7 @@ void caller(char *other) {
             None,
             false,
             &|_, _| false,
+            Default::default(),
         )
         .unwrap();
         assert_eq!(
@@ -9721,6 +9773,7 @@ void caller(char *other) {
             None,
             false,
             &|_, _| false,
+            Default::default(),
         )
         .unwrap();
         assert_eq!(
@@ -9780,6 +9833,7 @@ void caller(char *other) {
             None,
             false,
             &|_, _| false,
+            Default::default(),
         )
         .unwrap();
         for file in ["a_mysql.c", "b_pgsql.c"] {
@@ -9830,6 +9884,7 @@ void caller(char *other) {
             None,
             false,
             &|_, _| false,
+            Default::default(),
         )
         .unwrap();
         let tainted = |file: &str| {
@@ -9873,6 +9928,7 @@ void caller(char *other) {
             None,
             false,
             &|_, _| false,
+            Default::default(),
         )
         .unwrap();
         let sink_of = |file: &str| {
@@ -9912,6 +9968,7 @@ void caller(char *other) {
             None,
             false,
             &|_, _| false,
+            Default::default(),
         )
         .unwrap();
         let bad = ctx.function_summaries.get("bad_sink").unwrap();

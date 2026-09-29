@@ -10,6 +10,7 @@
 use crate::analyze::dead_regions::DeadRegions;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::data_model::{DataModel, Rank};
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use tree_sitter::Node;
@@ -218,123 +219,273 @@ impl ValueRange {
 
 /// The value range a narrow integer type takes on after C's usual arithmetic
 /// conversions promote it to `int` — i.e. its own full representable range,
-/// since integer promotion is value-preserving. `None` for anything already
-/// `int`-wide or wider, which promotion leaves alone.
+/// since integer promotion is value-preserving — when `model` fixes it. `None`
+/// for anything already `int`-wide or wider, which promotion leaves alone, and
+/// for a type whose width `model` leaves open: under ISO C's widths a `short`
+/// is at least 16 bits and possibly more, so its range is not known, while an
+/// `int16_t` is exactly 16 everywhere.
 ///
 /// Plain `char`'s signedness is implementation-defined, so it is given the
-/// union of both interpretations (still tiny next to `int`'s range).
+/// union of both interpretations.
 ///
 /// Seeding a [`VarRangeMap`] with these before calling
 /// [`try_evaluate_range`] is what lets a rule prove the thing promotion
-/// guarantees: no `+`, `-` or `*` over two promoted narrow operands can leave
-/// `int` (the widest such product, `-32768 * -32768`, is under `INT_MAX`).
-/// Shared by `INT08-C` and `INT32-C`, which each reached the same inverted
-/// premise — treating `char + char` as 8-bit arithmetic — independently.
-pub fn promoted_range_for_type(type_name: &str) -> Option<ValueRange> {
-    match type_name.trim() {
-        "char" => Some(ValueRange::new(-128, 255)),
-        "signed char" | "int8_t" => Some(ValueRange::new(-128, 127)),
-        "unsigned char" | "uint8_t" => Some(ValueRange::new(0, 255)),
-        "short" | "signed short" | "short int" | "signed short int" | "int16_t" => {
-            Some(ValueRange::new(-32768, 32767))
+/// guarantees on a declared model: no `+`, `-` or `*` over two promoted narrow
+/// operands can leave a 32-bit `int` (the widest such product, `-32768 *
+/// -32768`, is under `INT_MAX`). The range is exact, so it bounds every value
+/// the type holds: what a proof that something cannot overflow needs. A rule
+/// that wants a witness instead wants [`guaranteed_range_for_type`].
+pub fn promoted_range_for_type(type_name: &str, model: DataModel) -> Option<ValueRange> {
+    narrow_range(type_name, model, false)
+}
+
+/// The range a narrow integer type holds on every implementation `model`
+/// allows: its exact range on a declared model, and under ISO C's widths the
+/// C11 5.2.4.2.1 minimum magnitudes (`short` at least `[-32767, 32767]`, plain
+/// `char` at least the `[0, 127]` both signednesses share). Every value in it
+/// is one the type can hold wherever the code is built, so arithmetic over
+/// these ranges that leaves `int` is a witness of overflow on some target.
+pub fn guaranteed_range_for_type(type_name: &str, model: DataModel) -> Option<ValueRange> {
+    narrow_range(type_name, model, true)
+}
+
+fn narrow_range(type_name: &str, model: DataModel, guaranteed: bool) -> Option<ValueRange> {
+    let t = type_name.trim();
+    let range = |r: (i128, i128)| Some(ValueRange::new(r.0 as i64, r.1 as i64));
+    let exact_width = |signed: bool, bits: u32| {
+        range(if signed {
+            (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
+        } else {
+            (0, (1i128 << bits) - 1)
+        })
+    };
+    let ranked = |signed: bool, rank: Rank| match model.range(signed, rank) {
+        Some(r) => range(r),
+        None if guaranteed => range(model.guaranteed_range(signed, rank)),
+        None => None,
+    };
+    match t {
+        "char" => {
+            let (s, u) = (ranked(true, Rank::Char)?, ranked(false, Rank::Char)?);
+            Some(if guaranteed {
+                ValueRange::new(s.min.max(u.min), s.max.min(u.max))
+            } else {
+                ValueRange::new(s.min.min(u.min), s.max.max(u.max))
+            })
         }
-        "unsigned short" | "unsigned short int" | "uint16_t" => Some(ValueRange::new(0, 65535)),
+        "signed char" => ranked(true, Rank::Char),
+        "unsigned char" => ranked(false, Rank::Char),
+        "int8_t" => exact_width(true, 8),
+        "uint8_t" => exact_width(false, 8),
+        "short" | "signed short" | "short int" | "signed short int" => ranked(true, Rank::Short),
+        "unsigned short" | "unsigned short int" => ranked(false, Rank::Short),
+        "int16_t" => exact_width(true, 16),
+        "uint16_t" => exact_width(false, 16),
         _ => None,
     }
 }
 
 // ---------------------------------------------------------------------------
-// Built-in C standard limit macros (<limits.h>, <stdint.h>)
+// Built-in constants: limit macros (<limits.h>, <stdint.h>) and sizeof
 // ---------------------------------------------------------------------------
 
-/// Returns a map of C standard limit macros to their platform values.
-/// Uses LP64 data model (64-bit long) which is standard on modern Linux/macOS.
-/// Lazily-initialized built-in C limit macros — allocated once, reused across all files.
-static BUILTIN_LIMIT_MACROS: LazyLock<MacroConstantMap> = LazyLock::new(|| {
-    let mut m = MacroConstantMap::new();
-    // <limits.h> — char
-    m.insert("CHAR_BIT".into(), 8);
-    m.insert("CHAR_MAX".into(), 127);
-    m.insert("CHAR_MIN".into(), -128);
-    m.insert("SCHAR_MAX".into(), 127);
-    m.insert("SCHAR_MIN".into(), -128);
-    m.insert("UCHAR_MAX".into(), 255);
-    // <limits.h> — short (16-bit)
-    m.insert("SHRT_MAX".into(), 32767);
-    m.insert("SHRT_MIN".into(), -32768);
-    m.insert("USHRT_MAX".into(), 65535);
-    // <limits.h> — int (32-bit)
-    m.insert("INT_MAX".into(), 2147483647);
-    m.insert("INT_MIN".into(), -2147483648);
-    m.insert("UINT_MAX".into(), 4294967295);
-    // <limits.h> — long (64-bit on LP64)
-    m.insert("LONG_MAX".into(), i64::MAX);
-    m.insert("LONG_MIN".into(), i64::MIN);
-    // <limits.h> — long long (64-bit)
-    m.insert("LLONG_MAX".into(), i64::MAX);
-    m.insert("LLONG_MIN".into(), i64::MIN);
-    // <stdint.h> — fixed-width
-    m.insert("INT8_MAX".into(), 127);
-    m.insert("INT8_MIN".into(), -128);
-    m.insert("INT16_MAX".into(), 32767);
-    m.insert("INT16_MIN".into(), -32768);
-    m.insert("INT32_MAX".into(), 2147483647);
-    m.insert("INT32_MIN".into(), -2147483648);
-    m.insert("INT64_MAX".into(), i64::MAX);
-    m.insert("INT64_MIN".into(), i64::MIN);
-    m.insert("UINT8_MAX".into(), 255);
-    m.insert("UINT16_MAX".into(), 65535);
-    m.insert("UINT32_MAX".into(), 4294967295);
-    m
-});
+/// The builtin type spellings whose `sizeof` a data model may fix, with what
+/// decides each.
+const SIZEOF_SPELLINGS: &[(&str, SizeOf)] = &[
+    ("char", SizeOf::Char),
+    ("signed char", SizeOf::Char),
+    ("unsigned char", SizeOf::Char),
+    ("int8_t", SizeOf::Char),
+    ("uint8_t", SizeOf::Char),
+    ("bool", SizeOf::Rank(Rank::Bool)),
+    ("_Bool", SizeOf::Rank(Rank::Bool)),
+    ("short", SizeOf::Rank(Rank::Short)),
+    ("short int", SizeOf::Rank(Rank::Short)),
+    ("signed short", SizeOf::Rank(Rank::Short)),
+    ("unsigned short", SizeOf::Rank(Rank::Short)),
+    ("int16_t", SizeOf::Exact(16)),
+    ("uint16_t", SizeOf::Exact(16)),
+    ("int", SizeOf::Rank(Rank::Int)),
+    ("signed int", SizeOf::Rank(Rank::Int)),
+    ("unsigned int", SizeOf::Rank(Rank::Int)),
+    ("signed", SizeOf::Rank(Rank::Int)),
+    ("unsigned", SizeOf::Rank(Rank::Int)),
+    ("int32_t", SizeOf::Exact(32)),
+    ("uint32_t", SizeOf::Exact(32)),
+    ("long", SizeOf::Rank(Rank::Long)),
+    ("signed long", SizeOf::Rank(Rank::Long)),
+    ("unsigned long", SizeOf::Rank(Rank::Long)),
+    ("long int", SizeOf::Rank(Rank::Long)),
+    ("signed long int", SizeOf::Rank(Rank::Long)),
+    ("unsigned long int", SizeOf::Rank(Rank::Long)),
+    ("long long", SizeOf::Rank(Rank::LongLong)),
+    ("signed long long", SizeOf::Rank(Rank::LongLong)),
+    ("unsigned long long", SizeOf::Rank(Rank::LongLong)),
+    ("long long int", SizeOf::Rank(Rank::LongLong)),
+    ("signed long long int", SizeOf::Rank(Rank::LongLong)),
+    ("unsigned long long int", SizeOf::Rank(Rank::LongLong)),
+    ("int64_t", SizeOf::Exact(64)),
+    ("uint64_t", SizeOf::Exact(64)),
+    ("size_t", SizeOf::Pointer),
+    ("ssize_t", SizeOf::Pointer),
+    ("ptrdiff_t", SizeOf::Pointer),
+    ("void *", SizeOf::Pointer),
+    ("wchar_t", SizeOf::WideChar),
+    ("float", SizeOf::Float),
+    ("double", SizeOf::Double),
+    ("long double", SizeOf::LongDouble),
+    ("time_t", SizeOf::Lp64Only(8)),
+    ("off_t", SizeOf::Lp64Only(8)),
+];
+
+/// What decides one builtin type's `sizeof`.
+#[derive(Clone, Copy)]
+enum SizeOf {
+    /// 1, by definition (C11 6.5.3.4p4).
+    Char,
+    /// The data model's size for an integer of this rank.
+    Rank(Rank),
+    /// An exact-width type: its width over an 8-bit `char`, which only a
+    /// declared model states (ISO C guarantees `CHAR_BIT` at least 8).
+    Exact(u32),
+    /// A pointer's size, which `size_t` and `ptrdiff_t` share on every
+    /// declared model.
+    Pointer,
+    /// `wchar_t`: 4 bytes on the Unix models, 2 on Windows.
+    WideChar,
+    /// `float`: implementation-defined like the integers, 4 on every
+    /// declared model's ABI.
+    Float,
+    /// `double`: 8 on every declared model's ABI.
+    Double,
+    /// `long double`: 12 on i386, 16 on x86-64, 8 with MSVC.
+    LongDouble,
+    /// A POSIX type with this size on LP64 only (`time_t`, `off_t`, whose
+    /// 32-bit sizes depend on build flags).
+    Lp64Only(i64),
+}
+
+/// `size`'s bytes under `model`, or `None` when the model leaves it open.
+fn sizeof_under(model: DataModel, size: SizeOf) -> Option<i64> {
+    let declared = model != DataModel::Iso;
+    let bytes = match size {
+        SizeOf::Char => 1,
+        SizeOf::Rank(rank) => model.sizeof_bytes(rank)?.into(),
+        SizeOf::Exact(bits) if declared => i64::from(bits / 8),
+        SizeOf::Pointer => (model.pointer_width()? / 8).into(),
+        SizeOf::WideChar => match model {
+            DataModel::Iso => return None,
+            DataModel::Llp64 => 2,
+            DataModel::Ilp32 | DataModel::Lp64 => 4,
+        },
+        SizeOf::Float if declared => 4,
+        SizeOf::Double if declared => 8,
+        SizeOf::LongDouble => match model {
+            DataModel::Iso => return None,
+            DataModel::Ilp32 => 12,
+            DataModel::Lp64 => 16,
+            DataModel::Llp64 => 8,
+        },
+        SizeOf::Lp64Only(bytes) if model == DataModel::Lp64 => bytes,
+        _ => return None,
+    };
+    Some(bytes)
+}
+
+/// The `<limits.h>` and `<stdint.h>` macros a data model may fix.
+const LIMIT_MACROS: &[&str] = &[
+    "CHAR_BIT",
+    "SCHAR_MAX",
+    "SCHAR_MIN",
+    "UCHAR_MAX",
+    "SHRT_MAX",
+    "SHRT_MIN",
+    "USHRT_MAX",
+    "INT_MAX",
+    "INT_MIN",
+    "UINT_MAX",
+    "LONG_MAX",
+    "LONG_MIN",
+    "ULONG_MAX",
+    "LLONG_MAX",
+    "LLONG_MIN",
+    "INT8_MAX",
+    "INT8_MIN",
+    "INT16_MAX",
+    "INT16_MIN",
+    "INT32_MAX",
+    "INT32_MIN",
+    "INT64_MAX",
+    "INT64_MIN",
+    "UINT8_MAX",
+    "UINT16_MAX",
+    "UINT32_MAX",
+];
+
+/// The constants every translation unit has under `model`: the limit macros
+/// it fixes ([`DataModel::limit_macro`]) and, under `sizeof(T)` keys no C
+/// identifier can collide with, the `sizeof` of each builtin type it fixes.
+/// Under [`DataModel::Iso`], the default, that is the exact-width limits
+/// (`INT32_MAX`) and `sizeof` the `char` types: `INT_MAX` and `sizeof(long)`
+/// are not constants a scan may assume (ADR-0011). Built once per model.
+pub fn builtin_constants(model: DataModel) -> &'static MacroConstantMap {
+    static TABLES: LazyLock<[MacroConstantMap; 4]> = LazyLock::new(|| {
+        [
+            DataModel::Iso,
+            DataModel::Ilp32,
+            DataModel::Lp64,
+            DataModel::Llp64,
+        ]
+        .map(|model| {
+            let mut m = MacroConstantMap::new();
+            for name in LIMIT_MACROS {
+                if let Some(v) = model.limit_macro(name) {
+                    m.insert((*name).into(), v);
+                }
+            }
+            for (spelling, size) in SIZEOF_SPELLINGS {
+                if let Some(v) = sizeof_under(model, *size) {
+                    m.insert(format!("sizeof({spelling})"), v);
+                }
+            }
+            m
+        })
+    });
+    &TABLES[match model {
+        DataModel::Iso => 0,
+        DataModel::Ilp32 => 1,
+        DataModel::Lp64 => 2,
+        DataModel::Llp64 => 3,
+    }]
+}
 
 // ---------------------------------------------------------------------------
 // sizeof resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve sizeof(type) to a constant value.
-/// Uses conservative sizes (LP64 model). Returns None for unknown types.
-fn resolve_sizeof_type(type_text: &str) -> Option<i64> {
-    let t = type_text.trim();
-    match t {
-        "char" | "signed char" | "unsigned char" | "int8_t" | "uint8_t" | "bool" | "_Bool" => {
-            Some(1)
-        }
-        "short" | "short int" | "signed short" | "unsigned short" | "int16_t" | "uint16_t" => {
-            Some(2)
-        }
-        "int" | "signed int" | "unsigned int" | "signed" | "unsigned" | "int32_t" | "uint32_t"
-        | "wchar_t" | "float" => Some(4),
-        "long"
-        | "signed long"
-        | "unsigned long"
-        | "long int"
-        | "signed long int"
-        | "unsigned long int"
-        | "long long"
-        | "signed long long"
-        | "unsigned long long"
-        | "long long int"
-        | "signed long long int"
-        | "unsigned long long int"
-        | "int64_t"
-        | "uint64_t"
-        | "size_t"
-        | "ssize_t"
-        | "ptrdiff_t"
-        | "double"
-        | "time_t"
-        | "off_t" => Some(8),
-        "long double" => Some(16),
-        _ => {
-            // Pointer types: any type ending with '*' is pointer-sized (8 on LP64)
-            if t.ends_with('*') {
-                Some(8)
-            } else {
-                None
-            }
-        }
+/// Resolve `sizeof(type)` to a constant from `macros`, where
+/// [`builtin_constants`] filed the sizes the data model fixes. The `char`
+/// types are 1 everywhere; a pointer type has the size of `void *`. `None`
+/// for a type whose size is not fixed or not known.
+fn resolve_sizeof_type(type_text: &str, macros: &MacroConstantMap) -> Option<i64> {
+    let t = type_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if matches!(t.as_str(), "char" | "signed char" | "unsigned char") {
+        return Some(1);
     }
+    let key = if t.ends_with('*') {
+        "sizeof(void *)".to_string()
+    } else {
+        format!("sizeof({t})")
+    };
+    macros.get(&key).copied()
+}
+
+/// Whether `type_text` names a builtin type whose `sizeof` only the data
+/// model can fix, so an unknown answer is not "some object of at least one
+/// byte".
+fn is_builtin_sized_type(type_text: &str) -> bool {
+    let t = type_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    SIZEOF_SPELLINGS.iter().any(|(s, _)| *s == t)
 }
 
 // ---------------------------------------------------------------------------
@@ -713,9 +864,11 @@ pub fn merged_macro_aliases(
 /// Walk `preproc_def` nodes in the AST to collect `#define NAME value` constants.
 /// Handles decimal, hex, octal literals, expressions, and references to other macros.
 /// Recurses into `preproc_ifdef/if/ifndef` blocks.
-/// Includes built-in C standard limit macros (CHAR_MAX, INT_MAX, etc.).
-pub fn collect_macro_constants(root: &Node, source: &str) -> MacroConstantMap {
-    let mut macros = BUILTIN_LIMIT_MACROS.clone();
+/// Includes the [`builtin_constants`] `model` fixes (`INT_MAX` on a declared
+/// model, `sizeof(T)`); a file's own `#define` of such a name wins over the
+/// builtin, since that definition is what its code compiles with (ADR-0006).
+pub fn collect_macro_constants(root: &Node, source: &str, model: DataModel) -> MacroConstantMap {
+    let mut macros = builtin_constants(model).clone();
     // Two-pass: first collect all raw definitions, then resolve references
     let mut raw_defs: Vec<(String, String)> = Vec::new();
     collect_preproc_defs(root, source, &mut raw_defs);
@@ -725,6 +878,9 @@ pub fn collect_macro_constants(root: &Node, source: &str) -> MacroConstantMap {
     collect_non_const_static_defs(root, source, &mut raw_defs);
     // Collect `enum { NAME = VALUE, ... }` enumerators as compile-time constants
     collect_enum_constants(root, source, &mut raw_defs);
+    for (name, _) in &raw_defs {
+        macros.remove(name);
+    }
 
     // Iteratively resolve — handles forward references and chains
     let mut changed = true;
@@ -755,9 +911,10 @@ pub fn merged_macro_constants(
     project: &MacroConstantMap,
     root: &Node,
     source: &str,
+    model: DataModel,
 ) -> MacroConstantMap {
     let mut macros = project.clone();
-    macros.extend(collect_macro_constants(root, source));
+    macros.extend(collect_macro_constants(root, source, model));
     macros
 }
 
@@ -779,8 +936,8 @@ pub fn merged_macro_constants(
 ///   (`#ifdef FAST #define MODE 1 #else #define MODE 0 #endif`);
 /// - an overridable default, defined only under `#ifndef NAME` /
 ///   `#if !defined(NAME)`: a build passing `-DNAME=1` gets another value.
-pub fn cfg_prunable_constants(root: &Node, source: &str) -> MacroConstantMap {
-    let mut constants = collect_macro_constants(root, source);
+pub fn cfg_prunable_constants(root: &Node, source: &str, model: DataModel) -> MacroConstantMap {
+    let mut constants = collect_macro_constants(root, source, model);
     for name in config_dependent_constant_names(root, source) {
         constants.remove(&name);
     }
@@ -1436,11 +1593,13 @@ fn try_evaluate_text(text: &str, macros: &MacroConstantMap) -> Option<i64> {
     // Try sizeof(type_or_expr) — resolve known types exactly, fall back to
     // conservative minimum of 1 for unknown identifiers (sizeof >= 1 always).
     if let Some(inner) = strip_sizeof_call(text) {
-        if let Some(sz) = resolve_sizeof_type(inner) {
+        if let Some(sz) = resolve_sizeof_type(inner, macros) {
             return Some(sz);
         }
-        // Unknown type/variable: sizeof(x) >= 1 on all platforms
-        if is_c_identifier(inner) {
+        // Unknown type/variable: sizeof(x) >= 1 on all platforms. Not for a
+        // builtin type whose size the data model leaves open: `sizeof(long)`
+        // is not 1 anywhere.
+        if is_c_identifier(inner) && !is_builtin_sized_type(inner) {
             return Some(1);
         }
     }
@@ -1704,7 +1863,7 @@ pub fn try_evaluate_expr(node: &Node, source: &str, macros: &MacroConstantMap) -
         }
         "sizeof_expression" => {
             // sizeof(type) or sizeof(expr)
-            resolve_sizeof_node(node, source)
+            resolve_sizeof_node(node, source, macros)
         }
         "call_expression" => {
             // Zero-argument calls to known constant functions (e.g., staticReturnsTrue())
@@ -1724,7 +1883,7 @@ pub fn try_evaluate_expr(node: &Node, source: &str, macros: &MacroConstantMap) -
 }
 
 /// Resolve a sizeof_expression AST node to a constant value.
-fn resolve_sizeof_node(node: &Node, source: &str) -> Option<i64> {
+fn resolve_sizeof_node(node: &Node, source: &str, macros: &MacroConstantMap) -> Option<i64> {
     // sizeof_expression children: "sizeof" "(" type_descriptor ")" or "sizeof" "(" expression ")"
     // The type is in a parenthesized_expression or type_descriptor child.
     for i in 0..node.child_count() {
@@ -1732,7 +1891,7 @@ fn resolve_sizeof_node(node: &Node, source: &str) -> Option<i64> {
             match child.kind() {
                 "type_descriptor" | "primitive_type" | "sized_type_specifier" => {
                     let type_text = child.utf8_text(source.as_bytes()).ok()?;
-                    return resolve_sizeof_type(type_text);
+                    return resolve_sizeof_type(type_text, macros);
                 }
                 "parenthesized_expression" => {
                     // sizeof(expr) — check if inner is a type-like identifier
@@ -1740,7 +1899,7 @@ fn resolve_sizeof_node(node: &Node, source: &str) -> Option<i64> {
                         if inner.kind() == "identifier" {
                             let text = inner.utf8_text(source.as_bytes()).ok()?;
                             // Could be a typedef name like wchar_t, int64_t, etc.
-                            return resolve_sizeof_type(text);
+                            return resolve_sizeof_type(text, macros);
                         }
                     }
                 }
@@ -2041,7 +2200,7 @@ fn try_evaluate_range_inner(
             let value = node.child_by_field_name("value")?;
             try_evaluate_range_inner(&value, source, macros, var_ranges, fmacros)
         }
-        "sizeof_expression" => resolve_sizeof_node(node, source).map(ValueRange::exact),
+        "sizeof_expression" => resolve_sizeof_node(node, source, macros).map(ValueRange::exact),
         // A function-like macro invocation parses as a call. When the caller
         // supplied the macro table, expand it and bound the replacement list
         // instead of treating it as an opaque call. Failing that, a standard
@@ -3420,7 +3579,7 @@ int f(unsigned long s) { return LINEBITS(s); }
         let tree = parser.parse(source, None).unwrap();
         let root = tree.root_node();
         let fmacros = macro_expand::collect_function_macros(&root, source);
-        let macros = collect_macro_constants(&root, source);
+        let macros = collect_macro_constants(&root, source, crate::settings::DataModel::Lp64);
         let var_ranges = VarRangeMap::new();
 
         let call = lang_parsing_substrate::query::find_descendants_of_kind(root, "call_expression")
@@ -3559,7 +3718,7 @@ int f(unsigned long s) { return LINEBITS(s); }
 
     #[test]
     fn test_try_evaluate_text_builtin_macros() {
-        let macros = BUILTIN_LIMIT_MACROS.clone();
+        let macros = builtin_constants(DataModel::Lp64).clone();
         assert_eq!(try_evaluate_text("INT_MAX", &macros), Some(2147483647));
         assert_eq!(try_evaluate_text("CHAR_BIT", &macros), Some(8));
         assert_eq!(try_evaluate_text("INT_MAX + 1", &macros), Some(2147483648));
@@ -3653,7 +3812,8 @@ int f(unsigned long s) { return LINEBITS(s); }
         parser.set_language(&crate::parser::c_language()).unwrap();
         let code = "#define MY_CONST 42\n#define DOUBLE_CONST (MY_CONST * 2)\nint x;\n";
         let tree = parser.parse(code, None).unwrap();
-        let macros = collect_macro_constants(&tree.root_node(), code);
+        let macros =
+            collect_macro_constants(&tree.root_node(), code, crate::settings::DataModel::Lp64);
         assert_eq!(macros.get("MY_CONST"), Some(&42));
         assert_eq!(macros.get("DOUBLE_CONST"), Some(&84));
     }
@@ -3816,7 +3976,8 @@ int f(unsigned long s) { return LINEBITS(s); }
         let tree = parser.parse(code, None).unwrap();
         let aliases = collect_macro_aliases(&tree.root_node(), code);
         assert!(!aliases.contains_key("close"), "{:?}", aliases);
-        let macros = collect_macro_constants(&tree.root_node(), code);
+        let macros =
+            collect_macro_constants(&tree.root_node(), code, crate::settings::DataModel::Lp64);
         assert_eq!(macros.get("PATH_MAX_LEN"), Some(&4096));
         // A build-config guard stays unsettled: the constant resolver's
         // first-wins tie-break applies exactly as before.
@@ -3844,7 +4005,12 @@ int f(unsigned long s) { return LINEBITS(s); }
         let mut project = MacroConstantMap::new();
         project.insert("MY_CONST".to_string(), 0); // overridden by the file's definition
         project.insert("PROJECT_ONLY".to_string(), 99);
-        let merged = merged_macro_constants(&project, &tree.root_node(), code);
+        let merged = merged_macro_constants(
+            &project,
+            &tree.root_node(),
+            code,
+            crate::settings::DataModel::Lp64,
+        );
         assert_eq!(merged.get("MY_CONST"), Some(&42));
         assert_eq!(merged.get("FILE_ONLY"), Some(&7));
         assert_eq!(merged.get("PROJECT_ONLY"), Some(&99));
@@ -3904,34 +4070,70 @@ int f(unsigned long s) { return LINEBITS(s); }
 
     #[test]
     fn test_resolve_sizeof_type_basic() {
-        assert_eq!(resolve_sizeof_type("char"), Some(1));
-        assert_eq!(resolve_sizeof_type("unsigned char"), Some(1));
-        assert_eq!(resolve_sizeof_type("int8_t"), Some(1));
-        assert_eq!(resolve_sizeof_type("bool"), Some(1));
-        assert_eq!(resolve_sizeof_type("_Bool"), Some(1));
-        assert_eq!(resolve_sizeof_type("short"), Some(2));
-        assert_eq!(resolve_sizeof_type("uint16_t"), Some(2));
-        assert_eq!(resolve_sizeof_type("int"), Some(4));
-        assert_eq!(resolve_sizeof_type("unsigned int"), Some(4));
-        assert_eq!(resolve_sizeof_type("float"), Some(4));
-        assert_eq!(resolve_sizeof_type("wchar_t"), Some(4));
-        assert_eq!(resolve_sizeof_type("long"), Some(8));
-        assert_eq!(resolve_sizeof_type("double"), Some(8));
-        assert_eq!(resolve_sizeof_type("size_t"), Some(8));
-        assert_eq!(resolve_sizeof_type("long double"), Some(16));
+        let lp64 = builtin_constants(DataModel::Lp64);
+        let size = |t: &str| resolve_sizeof_type(t, lp64);
+        assert_eq!(size("char"), Some(1));
+        assert_eq!(size("unsigned char"), Some(1));
+        assert_eq!(size("int8_t"), Some(1));
+        assert_eq!(size("bool"), Some(1));
+        assert_eq!(size("_Bool"), Some(1));
+        assert_eq!(size("short"), Some(2));
+        assert_eq!(size("uint16_t"), Some(2));
+        assert_eq!(size("int"), Some(4));
+        assert_eq!(size("unsigned int"), Some(4));
+        assert_eq!(size("float"), Some(4));
+        assert_eq!(size("wchar_t"), Some(4));
+        assert_eq!(size("long"), Some(8));
+        assert_eq!(size("double"), Some(8));
+        assert_eq!(size("size_t"), Some(8));
+        assert_eq!(size("long double"), Some(16));
+        let llp64 = builtin_constants(DataModel::Llp64);
+        assert_eq!(resolve_sizeof_type("long", llp64), Some(4));
+        assert_eq!(resolve_sizeof_type("wchar_t", llp64), Some(2));
     }
 
     #[test]
     fn test_resolve_sizeof_type_pointers() {
-        assert_eq!(resolve_sizeof_type("int *"), Some(8));
-        assert_eq!(resolve_sizeof_type("char *"), Some(8));
-        assert_eq!(resolve_sizeof_type("void *"), Some(8));
+        let lp64 = builtin_constants(DataModel::Lp64);
+        assert_eq!(resolve_sizeof_type("int *", lp64), Some(8));
+        assert_eq!(resolve_sizeof_type("char *", lp64), Some(8));
+        assert_eq!(resolve_sizeof_type("void *", lp64), Some(8));
+        let ilp32 = builtin_constants(DataModel::Ilp32);
+        assert_eq!(resolve_sizeof_type("void *", ilp32), Some(4));
+    }
+
+    #[test]
+    fn iso_fixes_only_the_char_sizes_and_the_exact_width_limits() {
+        let iso = builtin_constants(DataModel::Iso);
+        assert_eq!(resolve_sizeof_type("unsigned char", iso), Some(1));
+        assert_eq!(resolve_sizeof_type("int", iso), None);
+        assert_eq!(resolve_sizeof_type("void *", iso), None);
+        assert_eq!(try_evaluate_text("INT_MAX", iso), None);
+        assert_eq!(try_evaluate_text("INT32_MAX", iso), Some(2147483647));
+        // sizeof(long) is not "some object of at least one byte".
+        assert_eq!(try_evaluate_text("sizeof(long)", iso), None);
+        assert_eq!(try_evaluate_text("sizeof(widget)", iso), Some(1));
+    }
+
+    #[test]
+    fn a_files_own_definition_of_a_limit_wins_over_the_builtin() {
+        let code = "#define INT_MAX 32767\n#define HALF (INT_MAX / 2)\n";
+        let (tree, source) = crate::parser::CParser::new()
+            .unwrap()
+            .parse_source(code)
+            .unwrap();
+        let macros = collect_macro_constants(&tree.root_node(), &source, DataModel::Lp64);
+        assert_eq!(macros.get("INT_MAX"), Some(&32767));
+        assert_eq!(macros.get("HALF"), Some(&16383));
+        let iso = collect_macro_constants(&tree.root_node(), &source, DataModel::Iso);
+        assert_eq!(iso.get("HALF"), Some(&16383));
     }
 
     #[test]
     fn test_resolve_sizeof_type_unknown() {
-        assert_eq!(resolve_sizeof_type("struct foo"), None);
-        assert_eq!(resolve_sizeof_type("my_custom_type"), None);
+        let lp64 = builtin_constants(DataModel::Lp64);
+        assert_eq!(resolve_sizeof_type("struct foo", lp64), None);
+        assert_eq!(resolve_sizeof_type("my_custom_type", lp64), None);
     }
 
     #[test]
@@ -3947,9 +4149,11 @@ int f(unsigned long s) { return LINEBITS(s); }
             if let Some(child) = decl.child(i) {
                 if child.kind() == "init_declarator" {
                     if let Some(value) = child.child_by_field_name("value") {
-                        let macros = MacroConstantMap::new();
-                        let result = try_evaluate_expr(&value, code, &macros);
-                        assert_eq!(result, Some(4), "sizeof(int) should be 4");
+                        let macros = builtin_constants(DataModel::Lp64);
+                        let result = try_evaluate_expr(&value, code, macros);
+                        assert_eq!(result, Some(4), "sizeof(int) should be 4 on LP64");
+                        let iso = builtin_constants(DataModel::Iso);
+                        assert_eq!(try_evaluate_expr(&value, code, iso), None);
                     }
                 }
             }

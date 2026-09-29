@@ -33,7 +33,9 @@ use crate::analyze::const_eval::{
     collect_macro_constants, try_evaluate_text_public, MacroConstantMap,
 };
 use crate::manifest::Severity;
+use crate::settings::DataModel;
 use lang_parsing_substrate::query;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -55,9 +57,18 @@ struct EnumValue {
     column: usize,
 }
 
-pub struct Int09C;
+#[derive(Default)]
+pub struct Int09C {
+    /// The integer data model the settings credit: which limit macros and
+    /// `sizeof` values are constants.
+    data_model: Cell<DataModel>,
+}
 
 impl CertRule for Int09C {
+    fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
+        self.data_model.set(settings.data_model);
+    }
+
     fn rule_id(&self) -> &'static str {
         "INT09-C"
     }
@@ -86,7 +97,7 @@ impl Int09C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        let macros = collect_macro_constants(node, source);
+        let macros = collect_macro_constants(node, source, self.data_model.get());
         let line_starts = Self::build_line_starts(source);
         // Names of every enumerator in the whole file, not just the current
         // enum -- some codebases (e.g. hostap/QCA's netlink-attribute

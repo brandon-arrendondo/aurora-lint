@@ -7,9 +7,10 @@ use crate::analyze::buffer_size;
 use crate::analyze::const_eval::{collect_macro_constants, MacroConstantMap};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
+use crate::settings::DataModel;
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -37,6 +38,9 @@ pub struct Str31C {
     /// resolver (see [`crate::analyze::array_size::resolve_declared_array_size`],
     /// an earlier fix). Built once per file in `check()`.
     macros: RefCell<MacroConstantMap>,
+    /// The integer data model the settings credit: which limit macros and
+    /// `sizeof` values are constants.
+    data_model: Cell<DataModel>,
 }
 
 impl Str31C {
@@ -2258,6 +2262,10 @@ impl Str31C {
 }
 
 impl CertRule for Str31C {
+    fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
+        self.data_model.set(settings.data_model);
+    }
+
     fn rule_id(&self) -> &'static str {
         "STR31-C"
     }
@@ -2296,7 +2304,7 @@ impl CertRule for Str31C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         // node is always the translation_unit root when called by the framework.
         // Pass it down to avoid re-finding root on every call.
-        *self.macros.borrow_mut() = collect_macro_constants(node, source);
+        *self.macros.borrow_mut() = collect_macro_constants(node, source, self.data_model.get());
         let mut violations = Vec::new();
         for n in query::find_descendants(*node, |_| true) {
             self.check_node(&n, source, node, &mut violations);

@@ -47,10 +47,11 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
+use crate::settings::DataModel;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, misparsed_cast_type_name};
 use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tree_sitter::Node;
@@ -79,6 +80,9 @@ pub struct Int10C {
     /// guard-bounded parameter.
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
+    /// The integer data model the settings credit: which limit macros and
+    /// `sizeof` values are constants.
+    data_model: Cell<DataModel>,
 }
 
 impl Int10C {
@@ -89,11 +93,16 @@ impl Int10C {
             current_macros: RefCell::new(MacroConstantMap::new()),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
+            data_model: Cell::new(DataModel::default()),
         }
     }
 }
 
 impl CertRule for Int10C {
+    fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
+        self.data_model.set(settings.data_model);
+    }
+
     fn rule_id(&self) -> &'static str {
         "INT10-C"
     }
@@ -134,8 +143,12 @@ impl CertRule for Int10C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
         let type_map = overflow_helpers::collect_variable_types(node, source);
-        *self.current_macros.borrow_mut() =
-            const_eval::merged_macro_constants(&self.project_macros.borrow(), node, source);
+        *self.current_macros.borrow_mut() = const_eval::merged_macro_constants(
+            &self.project_macros.borrow(),
+            node,
+            source,
+            self.data_model.get(),
+        );
         // Held immutably for the whole walk; `vra_var_ranges_at` borrows the
         // same cell immutably again, which is fine.
         let macros = self.current_macros.borrow();

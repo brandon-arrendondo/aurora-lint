@@ -2,6 +2,9 @@
  * Rule: INT30-C
  * Source: real-world (dev-180's repro; mosquitto fuzzing/ calloc sites)
  * Status: PASS - Should NOT trigger INT30-C violation
+ * Settings: data_model=lp64
+ *
+ * The bound comes from sizeof's value, which a declared model fixes.
  * Reason: The calloc() size-calculation check reported every call that had
  *         no SIZE_MAX / size guard, including ones whose product no input
  *         can reach: `calloc(1, sizeof(struct cfg))` multiplies by one and
