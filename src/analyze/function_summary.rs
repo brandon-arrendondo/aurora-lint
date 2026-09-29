@@ -56,6 +56,11 @@ pub struct DefinitionFacts {
     /// The definition's own parameter forwards, by which a later pass
     /// credits a callee's fact ([`settle_definition_facts`]).
     pub passthroughs: HashMap<usize, Vec<(String, usize)>>,
+    /// The parameters this definition hands to a name-shaped deallocator
+    /// with no body to read (`BN_clear_free(n)`), and whether that call is
+    /// unconditional: its share of what `resolve_name_shaped_frees` settles
+    /// for the name, from `frees_params_by_name`.
+    pub name_shaped_frees: HashMap<usize, bool>,
 }
 
 impl DefinitionFacts {
@@ -73,6 +78,16 @@ impl DefinitionFacts {
             nulls: summary.nulls_params.clone(),
             escapes: summary.returned_value_escapes,
             passthroughs: summary.param_passthroughs.clone(),
+            name_shaped_frees: summary
+                .frees_params_by_name
+                .iter()
+                .map(|(idx, calls)| {
+                    (
+                        *idx,
+                        calls.iter().any(|(_, _, unconditional)| *unconditional),
+                    )
+                })
+                .collect(),
         }
     }
 }
@@ -4990,10 +5005,12 @@ fn credit_frees_one_arg(
         // moved by a constant, frees the object the parameter points into:
         // hostap's traced `os_free` frees `a = (struct os_alloc_trace *) ptr
         // - 1`, the header its `os_malloc` returned the block past.
-        None if !through_pointee => match param_behind_local(call, target, body, source, params) {
-            Some(idx) => idx,
-            None => return,
-        },
+        None if !through_pointee => {
+            match param_behind_local(call, target, body, source, params, true) {
+                Some(idx) => idx,
+                None => return,
+            }
+        }
         None => return,
     };
     if through_pointee {
@@ -5011,11 +5028,16 @@ fn credit_frees_one_arg(
 
 /// The parameter a local pointer stands for at `use_site`: the local is
 /// declared in this function and set exactly once before `use_site`, to a
-/// parameter or to a parameter plus or minus an integer literal (casts and
-/// parentheses aside), and neither the local nor that parameter is written
-/// anywhere else in `body` or has its address taken. Then the local points
-/// into the object the parameter points to whenever the use runs, so
-/// releasing it releases that object.
+/// parameter or -- with `allow_offset` -- to a parameter plus or minus an
+/// integer literal (casts and parentheses aside), and neither the local nor
+/// that parameter is written anywhere else in `body` or has its address
+/// taken. Then the local points into the object the parameter points to
+/// whenever the use runs, so releasing it releases that object.
+///
+/// An offset copy is only the parameter for a release (the header-before-
+/// block allocator frees `p - 1`); for a forward in general it names other
+/// storage (`memset(p + 4, ...)` clears part of the object), so forwards ask
+/// for exact copies.
 ///
 /// Occurrences are matched by binding ([`ast_utils::resolve_identifier_binding`]),
 /// never by spelling alone, so a shadowing local of the same name in an inner
@@ -5026,6 +5048,7 @@ fn param_behind_local(
     body: &Node,
     source: &str,
     params: &[String],
+    allow_offset: bool,
 ) -> Option<usize> {
     use crate::utility::cert_c::ast_utils;
     use lang_parsing_substrate::query;
@@ -5093,7 +5116,7 @@ fn param_behind_local(
     let value = init_state::strip_arg_casts(value);
     let base = match value.kind() {
         "identifier" => value,
-        "binary_expression" => {
+        "binary_expression" if allow_offset => {
             let op = text(&value.child_by_field_name("operator")?);
             let right = init_state::strip_arg_casts(&value.child_by_field_name("right")?);
             if !matches!(op.as_str(), "+" | "-") || right.kind() != "number_literal" {
@@ -5259,29 +5282,33 @@ fn credit_frees_params(
             // summary claim the function frees parameters it merely reads --
             // curl's `Curl_cwriter_free(data, writer)` then reports every
             // caller's `data` as freed.
-            let mut resolving = real.iter().filter(|&&arg| {
-                strip_free_argument(arg)
-                    .map(|(t, _)| t.utf8_text(source.as_bytes()).unwrap_or(""))
-                    .is_some_and(|n| params.iter().any(|p| !p.is_empty() && p == n))
-            });
+            // A local that only holds a parameter names it as well
+            // (`EVP_CIPHER_CTX *c = ctx; ... EVP_CIPHER_CTX_free(c)`).
+            let names_param = |arg: Node| -> Option<usize> {
+                let (t, false) = strip_free_argument(arg)? else {
+                    return None;
+                };
+                let n = t.utf8_text(source.as_bytes()).unwrap_or("");
+                params
+                    .iter()
+                    .position(|p| !p.is_empty() && p == n)
+                    .or_else(|| param_behind_local(&call, t, body, source, params, true))
+            };
+            let mut resolving = real.iter().filter(|&&arg| names_param(arg).is_some());
             let (Some(&arg), None) = (resolving.next(), resolving.next()) else {
                 continue;
             };
             // Recorded as a guess against the callee's name, not credited:
             // `resolve_name_shaped_frees` folds it in once it can tell
             // whether anything backs it.
-            let Some((target, false)) = strip_free_argument(arg) else {
-                continue;
-            };
-            let arg_name = target.utf8_text(source.as_bytes()).unwrap_or("");
-            let Some(idx) = params.iter().position(|p| !p.is_empty() && p == arg_name) else {
+            let Some(idx) = names_param(arg) else {
                 continue;
             };
             let Some(arg_pos) = real.iter().position(|a| a.id() == arg.id()) else {
                 continue;
             };
             let unconditional =
-                is_unconditionally_reached_modulo_null_guard(&call, body, source, arg_name);
+                is_unconditionally_reached_modulo_null_guard(&call, body, source, &params[idx]);
             summary.frees_params_by_name.entry(idx).or_default().push((
                 func_name.to_string(),
                 arg_pos,
@@ -6319,8 +6346,21 @@ fn collect_param_passthroughs(
                             let stripped = init_state::strip_arg_casts(&arg);
                             if stripped.kind() == "identifier" {
                                 let arg_text = stripped.utf8_text(source.as_bytes()).unwrap_or("");
+                                // A local that is an exact copy of a
+                                // parameter forwards it as well
+                                // (`struct aes_ctx *actx = ctx;
+                                // bin_clear_free(actx, ...)`).
+                                let copy_of = (!params
+                                    .iter()
+                                    .any(|p| !p.is_empty() && p == arg_text))
+                                .then(|| {
+                                    param_behind_local(node, stripped, body, source, params, false)
+                                })
+                                .flatten();
                                 for (param_idx, param_name) in params.iter().enumerate() {
-                                    if !param_name.is_empty() && arg_text == param_name {
+                                    if !param_name.is_empty()
+                                        && (arg_text == param_name || copy_of == Some(param_idx))
+                                    {
                                         summary
                                             .param_passthroughs
                                             .entry(param_idx)
@@ -6913,6 +6953,14 @@ pub fn settle_definition_facts(
         }
         for (i, def) in summary.definitions.iter().enumerate() {
             let mut got = DefinitionFacts::default();
+            // A name-shaped guess this definition made is its own free once
+            // the name's resolution kept it (the union cap below).
+            for (idx, unconditional) in &def.name_shaped_frees {
+                got.frees.insert(*idx);
+                if *unconditional {
+                    got.unconditional_frees.insert(*idx);
+                }
+            }
             for (idx, callees) in &def.passthroughs {
                 for (callee_name, callee_idx) in callees {
                     let callee = edge_target(macro_aliases, callee_name, |n| {
@@ -7933,6 +7981,27 @@ void other(void) { }
         assert!(rel.at_all(code, 8).frees_params.contains(&0));
     }
 
+    /// A definition whose free is a name-shaped guess (a library
+    /// deallocator with no body, as hostap's OpenSSL `crypto_bignum_deinit`
+    /// calls `BN_clear_free`) frees as much as one calling `free` itself.
+    #[test]
+    fn test_at_all_credits_a_definitions_name_shaped_free() {
+        let code = r#"
+#ifdef USE_OPENSSL
+void bignum_deinit(void *n) { BN_clear_free(n); }
+#else
+void bignum_deinit(void *n) { free(n); }
+#endif
+void caller(void) { }
+"#;
+        let mut summaries = parse_and_summarize(code);
+        propagate_transitive_frees(&mut summaries, &HashMap::new());
+        settle_definition_facts(&mut summaries, &HashMap::new());
+        let deinit = summaries.get("bignum_deinit").unwrap();
+        assert_eq!(deinit.definitions.len(), 2);
+        assert!(deinit.at_all(code, 7).frees_params.contains(&0));
+    }
+
     /// A fact no definition holds itself (credited by name folding, which
     /// does not say whose it is) applies everywhere.
     #[test]
@@ -7949,6 +8018,48 @@ void drop(void *p) { (void)p; }
         let drop = summaries.get_mut("drop").unwrap();
         drop.frees_params.insert(0);
         assert!(drop.at_all(code, 1).frees_params.contains(&0));
+    }
+
+    /// A copy of the parameter handed to a library deallocator with no body
+    /// is guessed to free it, as the parameter itself would be.
+    #[test]
+    fn test_name_shaped_free_through_a_copy_of_the_parameter() {
+        let code = r#"
+        void aes_encrypt_deinit(void *ctx) {
+            EVP_CIPHER_CTX *c = ctx;
+            finish(c);
+            EVP_CIPHER_CTX_free(c);
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        let s = summaries.get("aes_encrypt_deinit").unwrap();
+        assert!(s.frees_params_by_name.contains_key(&0));
+    }
+
+    /// A copy of the parameter forwarded to a callee is a forward of the
+    /// parameter; a copy moved by an offset is not (it names other storage).
+    #[test]
+    fn test_forward_through_a_copy_of_the_parameter() {
+        let code = r#"
+        void aes_deinit(void *ctx) {
+            struct aes_ctx *actx = ctx;
+            bin_clear_free(actx, sizeof(*actx));
+        }
+        void part_clear(char *p) {
+            char *q = p + 4;
+            wipe(q, 8);
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        let fwd = &summaries.get("aes_deinit").unwrap().param_passthroughs;
+        assert!(fwd
+            .get(&0)
+            .is_some_and(|c| c.contains(&("bin_clear_free".to_string(), 0))));
+        assert!(summaries
+            .get("part_clear")
+            .unwrap()
+            .param_passthroughs
+            .is_empty());
     }
 
     /// A local that only holds the parameter frees what the parameter
