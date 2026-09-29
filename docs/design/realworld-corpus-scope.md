@@ -30,6 +30,13 @@ and which one decides what the files that remain are analysed against:
   otherwise feed the function summaries and call-site facts the product's own
   code is judged by, and stand in for the definitions the product actually
   links.
+- **`--exclude-all`** also for platform port code that is BOTH outside the
+  oracle's scored tree AND not built in the configuration of record (the
+  project's primary build configuration, below). Such code cannot link into
+  the build being evaluated. Platform files inside the scored tree (curl's
+  `lib/vtls/schannel.c`, hostap's `src/utils/os_win32.c`) stay read: they are
+  in-tree variants of the product, scored under their own configuration
+  boundary.
 - **`--report-exclude`** for code the product compiles in: vendored
   libraries and shared helpers. Nothing is reported in them, but the prescan
   still reads them, because their definitions ARE the ones the product's
@@ -244,9 +251,11 @@ so all of them are `--exclude-all`: `autosetup/` (vendored Jim Tcl, run only by
 `configure`), `tool/` (build tools: `main.mk` builds `lemon` from
 `tool/lemon.c` as a host program), `test/` and `src/test*.c` (the Tcl test
 glue: `main.mk`'s `TESTSRC` list, linked only into `testfixture`), and
-`ext/jni/`, `ext/wasm/` (language bindings with their own builds). The
-library's objects are `main.mk`'s `LIBOBJS0` list (or the amalgamation), which
-names none of them.
+`ext/jni/`, `ext/wasm/` (language bindings with their own builds). Two of the
+`src/test*.c` files, `test_loadext.c` and `test_sqllog.c`, are not in
+`TESTSRC` either; they are test-support sources outside every product build.
+The library's objects are `main.mk`'s `LIBOBJS0` list (or the amalgamation),
+which names none of these files.
 
 The case that motivated it: `src/test_wsd.c` holds the only body of
 `sqlite3_wsd_find`, which `sqlite3GlobalConfig` calls behind the
@@ -392,10 +401,15 @@ builds libcurl from `lib/` and the tool from `src/`; `tests/` and
 that link libcurl, never the reverse). `projects/` is a different kind: beside
 the Windows IDE project files it holds the OS/400 and VMS port glue
 (`projects/OS400/os400sys.c`, `ccsidcurl.c`, `projects/vms/*.c`), which only
-those platforms' builds compile. The primary build configuration (Linux,
-below) links none of it, and its wrappers would otherwise stand in for the
-library's own functions. `include/` stays `--report-exclude`: the public API
-headers `lib/` and `src/` compile against.
+those platforms' builds compile: `projects/OS400/make-lib.sh` (lines 64-65)
+builds `os400sys.c` and `ccsidcurl.c` into libcurl on OS/400 only. That code
+adds new entry points (`*_ccsid`, `*_a` variants) rather than replacing the
+library's functions; what skews the analysis is its calls into libcurl, whose
+arguments feed the call-site facts `lib/` is judged by. It meets the
+platform-port criterion in [Scan exclusion](#scan-exclusion-what-the-prescan-reads):
+outside the oracle's scored tree and not built in the configuration of record.
+`include/` stays `--report-exclude`: the public API headers `lib/` and `src/`
+compile against.
 
 ### Primary build configuration
 
@@ -557,11 +571,20 @@ another concurrent session used for the sqlite FP-reduction benchmark gate
 
 ### Scan exclusion
 
-Per the rule in [Scan exclusion](#scan-exclusion-what-the-prescan-reads): `test/`, `client/`, `apps/` and `plugins/` are `--exclude-all`.
-The top-level `CMakeLists.txt` adds each as its own subdirectory, building the
-test suite, the `mosquitto_pub`/`mosquitto_sub` clients, the auxiliary apps and
-the example plugins, and none of them is linked into the library or the
-broker.
+Per the rule in [Scan exclusion](#scan-exclusion-what-the-prescan-reads):
+`test/`, `client/` and `apps/` are `--exclude-all`. The top-level
+`CMakeLists.txt` adds each as its own subdirectory, building the test suite,
+the `mosquitto_pub`/`mosquitto_sub` clients and the auxiliary apps, and none of
+them is linked into the library or the broker.
+
+`plugins/` is split. The broker compiles four of its files in:
+`plugins/acl-file/acl_check.c`, `acl_parse.c` and
+`plugins/password-file/password_check.c`, `password_parse.c` are sources of the
+`mosquitto` executable in `src/CMakeLists.txt` and objects in `src/Makefile`'s
+`OBJS_EXTERNAL`. So `plugins/**` stays `--report-exclude`, and the plugin trees
+the broker does not build in (`dynamic-security/`, `examples/`,
+`persist-sqlite/`, `sparkplug-aware/`, each its own loadable plugin) are
+`--exclude-all`, which wins for a file both globs match.
 
 `deps/`, `common/` and `libcommon/` stay `--report-exclude`, because the
 product compiles them in: `picohttpparser.c` from `deps/` is a source of both

@@ -147,10 +147,12 @@ CODEBASES = {
             # the scan (it only adds cross-file pre-scan context; the primary
             # scan root is still the whole repo when scan_path is None), so
             # out-of-scope trees are dropped from the report. test/, client/,
-            # apps/ and plugins/ (example plugins) link into neither target, so
-            # they are --exclude-all: out of the cross-file prescan too. deps/
-            # (vendored picohttpparser), common/ and libcommon/ ARE compiled
-            # into the library and the broker, so they stay --report-exclude:
+            # apps/ and the plugin trees the broker does not compile in
+            # (dynamic-security, examples, persist-sqlite, sparkplug-aware)
+            # link into neither target, so they are --exclude-all: out of the
+            # cross-file prescan too. deps/ (vendored picohttpparser), common/,
+            # libcommon/ and plugins/acl-file + plugins/password-file (whose
+            # check/parse sources the broker builds in) stay --report-exclude:
             # still read, since their definitions are the ones the product's
             # calls reach. Link evidence: docs/design/realworld-corpus-scope.md.
             "extra_args": [
@@ -158,7 +160,15 @@ CODEBASES = {
                 "--exclude-all", "test/**",
                 "--exclude-all", "client/**",
                 "--exclude-all", "apps/**",
-                "--exclude-all", "plugins/**",
+                # --exclude-all wins over --report-exclude for a file both
+                # match: plugins/ as a whole stays read, because the broker
+                # compiles acl-file/ and password-file/ sources in; the
+                # plugin trees it does not are dark.
+                "--report-exclude", "plugins/**",
+                "--exclude-all", "plugins/dynamic-security/**",
+                "--exclude-all", "plugins/examples/**",
+                "--exclude-all", "plugins/persist-sqlite/**",
+                "--exclude-all", "plugins/sparkplug-aware/**",
                 "--report-exclude", "common/**",
                 "--report-exclude", "libcommon/**",
             ],
