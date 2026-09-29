@@ -837,7 +837,7 @@ impl<'t> Collector<'_, 't> {
                 typedef_declaration(decl, name, self.source)?
             }
         };
-        (dereferences_applied(ident, self.source) >= levels).then_some(ty)
+        typedef_level(&ty, dereferences_applied(ident, self.source) - levels)
     }
 
     /// Whether an identifier read names something neither the function nor
@@ -1498,13 +1498,19 @@ impl EffectTable {
     }
 }
 
-/// Whether a typedef name denotes a volatile-qualified type: its own
-/// definition says `volatile`, or it aliases, through `typedefs`, one that
-/// does.
-pub fn typedef_is_volatile(name: &str, names: &ProjectNames) -> bool {
-    let mut current = name;
+/// Whether a typedef read (as [`typedef_read`] spells it: the name, then
+/// one `*` per dereference past it) reads a volatile-qualified object: the
+/// typedef's own definition is volatile at that level, or it aliases,
+/// through `typedefs`, one that is.
+pub fn typedef_is_volatile(read: &str, names: &ProjectNames) -> bool {
+    let base = read.trim_end_matches('*');
+    let past = &read[base.len()..];
+    let mut current = base;
     for _ in 0..8 {
-        if names.volatile_typedefs.contains(current) {
+        if names
+            .volatile_typedefs
+            .contains(&format!("{current}{past}"))
+        {
             return true;
         }
         match names.typedefs.get(current) {
@@ -1515,10 +1521,10 @@ pub fn typedef_is_volatile(name: &str, names: &ProjectNames) -> bool {
     false
 }
 
-/// The typedef names `root` defines with `volatile` in their type
-/// (`typedef volatile uint32_t reg_t;`), `#if` blocks included. A pointer
-/// typedef (`typedef volatile int *vptr;`) is not one: the typedef names the
-/// pointer, not the volatile object.
+/// The typedef names `root` defines with `volatile` in their type, `#if`
+/// blocks included, each spelled at the level the volatile object lies: the
+/// name for `typedef volatile uint32_t reg_t;`, and `vptr*` for `typedef
+/// volatile int *vptr;`, whose pointer is not volatile but whose pointee is.
 pub fn volatile_typedefs(root: &Node, source: &str) -> std::collections::HashSet<String> {
     lang_parsing_substrate::query::find_descendants(*root, |n| n.kind() == "type_definition")
         .into_iter()
@@ -1532,21 +1538,38 @@ pub fn volatile_typedefs(root: &Node, source: &str) -> std::collections::HashSet
         .flat_map(|def| {
             let mut cursor = def.walk();
             def.children_by_field_name("declarator", &mut cursor)
-                .filter(|d| d.kind() == "type_identifier")
-                .map(|d| get_node_text(&d, source).to_string())
+                .filter_map(|d| {
+                    let mut d = d;
+                    let mut levels = 0;
+                    while d.kind() == "pointer_declarator" {
+                        levels += 1;
+                        d = d.child_by_field_name("declarator")?;
+                    }
+                    (d.kind() == "type_identifier")
+                        .then(|| format!("{}{}", get_node_text(&d, source), "*".repeat(levels)))
+                })
                 .collect::<Vec<_>>()
         })
         .collect()
 }
 
-/// The typedef an identifier read reads an object of at the level the
-/// typedef names, resolved to its declaration (ADR-0006): for a rule judging
-/// an expression it has in hand.
+/// The typedef an identifier read reads an object of, from the level the
+/// typedef names on, resolved to its declaration (ADR-0006): the name, then
+/// one `*` per dereference past that level. For a rule judging an expression
+/// it has in hand.
 pub fn typedef_read(ident: &Node, source: &str) -> Option<String> {
     let name = get_node_text(ident, source);
     let (decl, _) = ast_utils::resolve_identifier_declarator(ident, name, source)?;
     let (ty, levels) = typedef_declaration(&decl, name, source)?;
-    (dereferences_applied(ident, source) >= levels).then_some(ty)
+    typedef_level(&ty, dereferences_applied(ident, source) - levels)
+}
+
+/// A read `past` dereferences into typedef `ty`, spelled as the typedef
+/// name followed by one `*` per dereference (`vptr*` for `*P` given `vptr
+/// P`); `None` when the read stops short of the level the typedef names.
+fn typedef_level(ty: &str, past: isize) -> Option<String> {
+    let past = usize::try_from(past).ok()?;
+    Some(format!("{ty}{}", "*".repeat(past)))
 }
 
 /// What reading `name` -- one no declaration in scope binds -- can change,
@@ -1867,11 +1890,13 @@ fn chain_is_volatile(chain: &MemberChain, inputs: &EffectInputs) -> bool {
             None => return false,
         }
     }
+    // A member whose type is a volatile typedef (`reg_t ctrl;`) is as
+    // volatile as one spelled `volatile`.
     matches!(chain.steps.last(), Some(Step::Field(_)))
         && !ty.contains('*')
         && ty
             .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .any(|w| w == "volatile")
+            .any(|w| w == "volatile" || (!w.is_empty() && typedef_is_volatile(w, inputs.names)))
 }
 
 /// Strongly connected components of a graph given as adjacency lists, in
@@ -2277,6 +2302,30 @@ mod tests {
         let use_c = "int f(void) { return counter; }\n";
         let ctx = scanned(&[("c.h", header), ("use.c", use_c)], "self-referential");
         assert_eq!(ctx.effects().get("f").unwrap().proof(true), Proof::Pure);
+    }
+
+    #[test]
+    fn a_pointer_typedef_or_member_typedef_to_volatile_is_a_volatile_read() {
+        let header = "typedef volatile int *vptr;\n\
+            typedef volatile unsigned reg_t;\n\
+            struct regs { reg_t ctrl; unsigned plain; };\n";
+        let a = "#include \"regs.h\"\n\
+            vptr P;\n\
+            struct regs *R;\n\
+            int rd1(void) { return *P; }\n\
+            unsigned rd2(void) { return R->ctrl; }\n\
+            vptr rd3(void) { return P; }\n\
+            unsigned rd4(void) { return R->plain; }\n";
+        let ctx = scanned(
+            &[("regs.h", header), ("a.c", a)],
+            "volatile-typedef-siblings",
+        );
+        let proof = |n: &str| ctx.effects().get(n).unwrap().proof(true);
+        assert_eq!(proof("rd1"), Proof::Impure);
+        assert_eq!(proof("rd2"), Proof::Impure);
+        // The pointer itself is not volatile, nor is a plain member.
+        assert_eq!(proof("rd3"), Proof::Pure);
+        assert_eq!(proof("rd4"), Proof::Pure);
     }
 
     #[test]
