@@ -22,6 +22,61 @@ pub const PROTECTS_PROCESS_MARKER: &str = "<protects-process-memory>";
 /// definition; an empty set is a definition no arm constrains.
 pub type ArmSets = Vec<Vec<(String, bool)>>;
 
+/// One definition's own share of the facts a caller can be credited with, so
+/// a consumer can ask whether EVERY definition a call can link with holds a
+/// fact, not only whether one does ([`FunctionSummary::at_all`]).
+///
+/// The summary-level sets union these across definitions (a MAY answer:
+/// some build frees). A consumer that SUPPRESSES a finding on a fact -- a
+/// leak is not reported because the callee frees -- needs it in every
+/// build the call can be compiled into, since the tool cannot tell which
+/// definition links (ADR-0010, per consumer).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DefinitionFacts {
+    /// The definition's `#if` arm assumptions; empty when no arm constrains it.
+    pub arms: Vec<(String, bool)>,
+    /// This definition's share of [`FunctionSummary::frees_params`].
+    pub frees: HashSet<usize>,
+    /// ... of [`FunctionSummary::unconditional_frees_params`].
+    pub unconditional_frees: HashSet<usize>,
+    /// ... of [`FunctionSummary::frees_param_pointees`].
+    pub pointee_frees: HashSet<usize>,
+    /// ... of [`FunctionSummary::frees_param_fields`].
+    pub field_frees: HashMap<usize, HashSet<String>>,
+    /// ... of [`FunctionSummary::stores_params`].
+    pub stores: HashSet<usize>,
+    /// ... of [`FunctionSummary::clears_params`].
+    pub clears: HashSet<usize>,
+    /// ... of [`FunctionSummary::closes_params`].
+    pub closes: HashSet<usize>,
+    /// ... of [`FunctionSummary::nulls_params`].
+    pub nulls: HashSet<usize>,
+    /// ... of [`FunctionSummary::returned_value_escapes`].
+    pub escapes: bool,
+    /// The definition's own parameter forwards, by which a later pass
+    /// credits a callee's fact ([`settle_definition_facts`]).
+    pub passthroughs: HashMap<usize, Vec<(String, usize)>>,
+}
+
+impl DefinitionFacts {
+    /// What `summary`, built from one definition under `arms`, holds itself.
+    fn own(summary: &FunctionSummary, arms: Vec<(String, bool)>) -> Self {
+        Self {
+            arms,
+            frees: summary.frees_params.clone(),
+            unconditional_frees: summary.unconditional_frees_params.clone(),
+            pointee_frees: summary.frees_param_pointees.clone(),
+            field_frees: summary.frees_param_fields.clone(),
+            stores: summary.stores_params.clone(),
+            clears: summary.clears_params.clone(),
+            closes: summary.closes_params.clone(),
+            nulls: summary.nulls_params.clone(),
+            escapes: summary.returned_value_escapes,
+            passthroughs: summary.param_passthroughs.clone(),
+        }
+    }
+}
+
 /// Summary of a function's behavior relevant to CERT C rules.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct FunctionSummary {
@@ -121,6 +176,13 @@ pub struct FunctionSummary {
     /// `returned_callees`.
     #[serde(default)]
     pub return_edge_arms: Vec<Vec<(String, bool)>>,
+    /// Each definition's own facts, in the order the definitions were
+    /// folded, kept only while a name has more than one definition
+    /// ([`settle_definition_facts`] drops a lone one: the summary-level
+    /// sets already are that definition's). Read through
+    /// [`Self::at_all`].
+    #[serde(default)]
+    pub definitions: Vec<DefinitionFacts>,
     /// Subset of `modifies_params` whose write through the parameter is not
     /// known to be conditional — the MUST-write fact, and the output-param
     /// counterpart of `unconditional_frees_params`.
@@ -1395,6 +1457,7 @@ fn analyze_function(
         }
         credit_clears_params(&sweep.calls, source, &params, clearing_names, &mut summary);
         credit_credential_facts(func_node, &body, &sweep.calls, source, &mut summary);
+        summary.definitions = vec![DefinitionFacts::own(&summary, arms)];
 
         // Compute return value range for integer-returning functions (only when VRA is needed)
         if compute_return_ranges && !is_void_return && !is_pointer_return {
@@ -3772,6 +3835,121 @@ impl FunctionSummary {
 }
 
 impl FunctionSummary {
+    /// The summary as a call on 1-based `line` of `source` sees it when a
+    /// fact must hold in EVERY build: [`Self::at`], with each suppressive
+    /// fact -- a free, a pointee or field free, a store, a clear, a close, a
+    /// nulling, an escaping result -- kept only if every definition that can
+    /// compile together with that line holds it.
+    ///
+    /// For a consumer that stops reporting because of the fact (a leak is
+    /// not reported because the callee frees): the tool cannot tell which
+    /// definition links, so a build whose definition does not free still
+    /// leaks (ADR-0010, per consumer). A consumer that ACCUSES through a
+    /// fact reads [`Self::at`], where one definition that frees is enough.
+    ///
+    /// A fact no definition holds itself was added by a pass that does not
+    /// say which definition it belongs to (name folding); it applies
+    /// everywhere, as a fact with no arm entry does. Borrowed when nothing
+    /// is dropped, which is every name with one definition.
+    pub fn at_all(&self, source: &str, line: usize) -> std::borrow::Cow<'_, FunctionSummary> {
+        use std::borrow::Cow;
+        let seen = self.at(source, line);
+        if self.definitions.len() < 2 {
+            return seen;
+        }
+        let live: Vec<&DefinitionFacts> = self
+            .definitions
+            .iter()
+            .filter(|d| {
+                d.arms.is_empty()
+                    || crate::analyze::dead_regions::line_compiles_under(source, line, &d.arms)
+            })
+            .collect();
+        if live.is_empty() {
+            return seen;
+        }
+        let dropped = |set: &HashSet<usize>, of: fn(&DefinitionFacts) -> &HashSet<usize>| {
+            set.iter()
+                .copied()
+                .filter(|idx| {
+                    self.definitions.iter().any(|d| of(d).contains(idx))
+                        && !live.iter().all(|d| of(d).contains(idx))
+                })
+                .collect::<HashSet<usize>>()
+        };
+        let frees = dropped(&seen.frees_params, |d| &d.frees);
+        let unconditional = dropped(&seen.unconditional_frees_params, |d| &d.unconditional_frees);
+        let pointees = dropped(&seen.frees_param_pointees, |d| &d.pointee_frees);
+        let stores = dropped(&seen.stores_params, |d| &d.stores);
+        let clears = dropped(&seen.clears_params, |d| &d.clears);
+        let closes = dropped(&seen.closes_params, |d| &d.closes);
+        let nulls = dropped(&seen.nulls_params, |d| &d.nulls);
+        // A field free holds for the fields every live definition frees.
+        let mut fields: HashMap<usize, Option<HashSet<String>>> = HashMap::new();
+        for (idx, names) in &seen.frees_param_fields {
+            if !self
+                .definitions
+                .iter()
+                .any(|d| d.field_frees.contains_key(idx))
+            {
+                continue;
+            }
+            let common = live.iter().try_fold(names.clone(), |acc, d| {
+                d.field_frees
+                    .get(idx)
+                    .map(|theirs| acc.intersection(theirs).cloned().collect::<HashSet<_>>())
+            });
+            match common {
+                Some(common) if common == *names => {}
+                Some(common) if !common.is_empty() => {
+                    fields.insert(*idx, Some(common));
+                }
+                _ => {
+                    fields.insert(*idx, None);
+                }
+            }
+        }
+        let escape = seen.returned_value_escapes
+            && self.definitions.iter().any(|d| d.escapes)
+            && !live.iter().all(|d| d.escapes);
+        if frees.is_empty()
+            && unconditional.is_empty()
+            && pointees.is_empty()
+            && stores.is_empty()
+            && clears.is_empty()
+            && closes.is_empty()
+            && nulls.is_empty()
+            && fields.is_empty()
+            && !escape
+        {
+            return seen;
+        }
+        let mut all = seen.into_owned();
+        all.frees_params.retain(|i| !frees.contains(i));
+        all.frees_params_guessed.retain(|i| !frees.contains(i));
+        all.unconditional_frees_params
+            .retain(|i| !frees.contains(i) && !unconditional.contains(i));
+        all.frees_param_pointees.retain(|i| !pointees.contains(i));
+        all.stores_params.retain(|i| !stores.contains(i));
+        all.clears_params.retain(|i| !clears.contains(i));
+        all.closes_params.retain(|i| !closes.contains(i));
+        all.nulls_params.retain(|i| !nulls.contains(i));
+        for (idx, common) in fields {
+            match common {
+                Some(common) => {
+                    all.frees_param_fields.insert(idx, common);
+                }
+                None => {
+                    all.frees_param_fields.remove(&idx);
+                }
+            }
+        }
+        if escape {
+            all.returned_value_escapes = false;
+        }
+        Cow::Owned(all)
+    }
+
     /// The arms of the definitions that forward parameter `idx` to
     /// `callee`; unconstrained when the edge carries none.
     fn edge_arms(&self, idx: usize, callee: &str) -> Vec<Vec<(String, bool)>> {
@@ -3844,6 +4022,10 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, mut summary: Functi
     // Any definition may be the one compiled: what calling the name can
     // change is the union of what each can.
     existing.effects.merge(std::mem::take(&mut summary.effects));
+    // Each definition keeps its own facts beside the union (`at_all`).
+    existing
+        .definitions
+        .extend(summary.definitions.iter().cloned());
     existing.has_env03_taint_source |= summary.has_env03_taint_source;
     existing.returns_tainted |= summary.returns_tainted;
     existing.has_relative_command_write |= summary.has_relative_command_write;
@@ -6705,6 +6887,102 @@ pub fn propagate_transitive_clears(
     }
 }
 
+/// Give each definition of a multiply-defined name the facts the transitive
+/// passes credited through ITS forwards, and drop the definition list of a
+/// name with only one definition. Run after every other propagation.
+///
+/// `propagate_transitive_frees` and its siblings credit the summary-level
+/// union: a wrapper whose `#ifdef A` body forwards `p` to a freeing callee
+/// and whose `#else` body does not, frees `p` for the union. For
+/// [`FunctionSummary::at_all`] only the first definition does, so each
+/// definition is credited from its own `passthroughs` against the settled
+/// callee summaries -- and only with what the union already holds, so the
+/// all-definitions view never claims more than the any-definition one.
+///
+/// A name with one definition needs no list: the union is that definition,
+/// and `at_all` reads it as `at`. Dropping it keeps the saved context the
+/// size it was for every such name.
+pub fn settle_definition_facts(
+    summaries: &mut HashMap<String, FunctionSummary>,
+    macro_aliases: &HashMap<String, String>,
+) {
+    let mut credits: Vec<(String, usize, DefinitionFacts)> = Vec::new();
+    for (name, summary) in summaries.iter() {
+        if summary.definitions.len() < 2 {
+            continue;
+        }
+        for (i, def) in summary.definitions.iter().enumerate() {
+            let mut got = DefinitionFacts::default();
+            for (idx, callees) in &def.passthroughs {
+                for (callee_name, callee_idx) in callees {
+                    let callee = edge_target(macro_aliases, callee_name, |n| {
+                        summaries.contains_key(n)
+                            || call_roles::is_deallocator(n)
+                            || call_roles::is_memory_clearing_call(n)
+                    });
+                    let theirs = summaries.get(callee);
+                    let has = |of: fn(&FunctionSummary) -> &HashSet<usize>| {
+                        theirs.is_some_and(|s| of(s).contains(callee_idx))
+                    };
+                    if call_roles::frees_argument(callee) == Some(*callee_idx)
+                        || has(|s| &s.frees_params)
+                    {
+                        got.frees.insert(*idx);
+                    }
+                    if call_roles::frees_argument(callee) == Some(*callee_idx)
+                        || has(|s| &s.unconditional_frees_params)
+                    {
+                        got.unconditional_frees.insert(*idx);
+                    }
+                    if has(|s| &s.frees_param_pointees) {
+                        got.pointee_frees.insert(*idx);
+                    }
+                    if has(|s| &s.stores_params) {
+                        got.stores.insert(*idx);
+                    }
+                    if (*callee_idx == 0 && call_roles::is_memory_clearing_call(callee))
+                        || has(|s| &s.clears_params)
+                    {
+                        got.clears.insert(*idx);
+                    }
+                    if has(|s| &s.closes_params) {
+                        got.closes.insert(*idx);
+                    }
+                }
+            }
+            credits.push((name.clone(), i, got));
+        }
+    }
+    for (name, i, got) in credits {
+        let Some(summary) = summaries.get_mut(&name) else {
+            continue;
+        };
+        let union = |set: &HashSet<usize>, add: HashSet<usize>| {
+            add.into_iter()
+                .filter(|idx| set.contains(idx))
+                .collect::<Vec<_>>()
+        };
+        let frees = union(&summary.frees_params, got.frees);
+        let unconditional = union(&summary.unconditional_frees_params, got.unconditional_frees);
+        let pointees = union(&summary.frees_param_pointees, got.pointee_frees);
+        let stores = union(&summary.stores_params, got.stores);
+        let clears = union(&summary.clears_params, got.clears);
+        let closes = union(&summary.closes_params, got.closes);
+        let def = &mut summary.definitions[i];
+        def.frees.extend(frees);
+        def.unconditional_frees.extend(unconditional);
+        def.pointee_frees.extend(pointees);
+        def.stores.extend(stores);
+        def.clears.extend(clears);
+        def.closes.extend(closes);
+    }
+    for summary in summaries.values_mut() {
+        if summary.definitions.len() < 2 {
+            summary.definitions = Vec::new();
+        }
+    }
+}
+
 /// Propagate the MEM06-C facts across functions, to a fixpoint.
 ///
 /// `credential_sink_params` rides `param_passthroughs`, the way
@@ -7620,6 +7898,59 @@ mod tests {
 
     /// hostap's traced os_malloc: the block comes back offset past a
     /// bookkeeping header. Still the block.
+    /// A free that reaches one definition through a wrapper is that
+    /// definition's alone: the all-definitions view drops it for a call
+    /// both definitions can link with, and keeps it where only the
+    /// forwarding one compiles.
+    #[test]
+    fn test_at_all_needs_every_definition_including_through_a_wrapper() {
+        let code = r#"
+void rel(void *p) { free(p); }
+#ifdef POOLED
+void drop(void *p) { (void)p; }
+#else
+void drop(void *p) { rel(p); }
+#endif
+void caller(void) { }
+#ifndef POOLED
+void other(void) { }
+#endif
+"#;
+        let mut summaries = parse_and_summarize(code);
+        propagate_transitive_frees(&mut summaries, &HashMap::new());
+        settle_definition_facts(&mut summaries, &HashMap::new());
+        let drop = summaries.get("drop").unwrap();
+        assert_eq!(drop.definitions.len(), 2);
+        // The union: some build frees.
+        assert!(drop.at(code, 8).frees_params.contains(&0));
+        // Line 8 (`caller`) compiles with both definitions.
+        assert!(!drop.at_all(code, 8).frees_params.contains(&0));
+        // Line 10 (`other`) compiles only without POOLED.
+        assert!(drop.at_all(code, 10).frees_params.contains(&0));
+        // One definition: nothing kept, and nothing dropped.
+        let rel = summaries.get("rel").unwrap();
+        assert!(rel.definitions.is_empty());
+        assert!(rel.at_all(code, 8).frees_params.contains(&0));
+    }
+
+    /// A fact no definition holds itself (credited by name folding, which
+    /// does not say whose it is) applies everywhere.
+    #[test]
+    fn test_at_all_keeps_a_fact_no_definition_owns() {
+        let code = r#"
+#ifdef A
+void drop(void *p) { (void)p; }
+#else
+void drop(void *p) { (void)p; }
+#endif
+"#;
+        let mut summaries = parse_and_summarize(code);
+        settle_definition_facts(&mut summaries, &HashMap::new());
+        let drop = summaries.get_mut("drop").unwrap();
+        drop.frees_params.insert(0);
+        assert!(drop.at_all(code, 1).frees_params.contains(&0));
+    }
+
     /// A local that only holds the parameter frees what the parameter
     /// points to.
     #[test]

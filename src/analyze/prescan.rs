@@ -1267,6 +1267,7 @@ fn prescan_file_list(
         &macro_aliases,
     );
     function_summary::propagate_return_taint(&mut function_summaries);
+    function_summary::settle_definition_facts(&mut function_summaries, &macro_aliases);
 
     // CON03-C/CON07-C reachability gate: needs the fully merged,
     // cross-file `function_macros` table to resolve macro-forwarded
@@ -7284,6 +7285,10 @@ pub fn resolve_includes(
         &context.macro_aliases,
     );
     function_summary::propagate_transitive_credential_facts(
+        context.function_summaries.make_mut(),
+        &context.macro_aliases,
+    );
+    function_summary::settle_definition_facts(
         context.function_summaries.make_mut(),
         &context.macro_aliases,
     );
