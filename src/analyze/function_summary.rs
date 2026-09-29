@@ -4802,17 +4802,160 @@ fn credit_frees_one_arg(
         return;
     };
     let arg_name = target.utf8_text(source.as_bytes()).unwrap_or("");
-    let Some(idx) = params.iter().position(|p| !p.is_empty() && p == arg_name) else {
-        return;
+    let idx = match params.iter().position(|p| !p.is_empty() && p == arg_name) {
+        Some(idx) => idx,
+        // A local that only ever holds the parameter, or the parameter
+        // moved by a constant, frees the object the parameter points into:
+        // hostap's traced `os_free` frees `a = (struct os_alloc_trace *) ptr
+        // - 1`, the header its `os_malloc` returned the block past.
+        None if !through_pointee => match param_behind_local(call, target, body, source, params) {
+            Some(idx) => idx,
+            None => return,
+        },
+        None => return,
     };
     if through_pointee {
         summary.frees_param_pointees.insert(idx);
         return;
     }
     summary.frees_params.insert(idx);
-    if is_unconditionally_reached_modulo_null_guard(call, body, source, arg_name) {
+    // The guard that matters is on the parameter: a local set from it is
+    // null exactly when it is (or points just past null, which no path
+    // frees).
+    if is_unconditionally_reached_modulo_null_guard(call, body, source, &params[idx]) {
         summary.unconditional_frees_params.insert(idx);
     }
+}
+
+/// The parameter a local pointer stands for at `use_site`: the local is
+/// declared in this function and set exactly once before `use_site`, to a
+/// parameter or to a parameter plus or minus an integer literal (casts and
+/// parentheses aside), and neither the local nor that parameter is written
+/// anywhere else in `body` or has its address taken. Then the local points
+/// into the object the parameter points to whenever the use runs, so
+/// releasing it releases that object.
+///
+/// Occurrences are matched by binding ([`ast_utils::resolve_identifier_binding`]),
+/// never by spelling alone, so a shadowing local of the same name in an inner
+/// block is another object (ADR-0006).
+fn param_behind_local(
+    use_site: &Node,
+    local: Node,
+    body: &Node,
+    source: &str,
+    params: &[String],
+) -> Option<usize> {
+    use crate::utility::cert_c::ast_utils;
+    use lang_parsing_substrate::query;
+    let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+    let name = text(&local);
+    let ast_utils::IdentifierBinding::Local(decl) =
+        ast_utils::resolve_identifier_binding(&local, &name, source)?
+    else {
+        return None;
+    };
+    let binds_to_decl = |n: &Node| {
+        matches!(
+            ast_utils::resolve_identifier_binding(n, &name, source),
+            Some(ast_utils::IdentifierBinding::Local(d)) if d.id() == decl.id()
+        )
+    };
+
+    // The value the local is set to: its initializer, or its one assignment.
+    let mut sets: Vec<(Node, Node)> = Vec::new();
+    for init in query::find_descendants_of_kind(decl, "init_declarator") {
+        let declares_local = init.child_by_field_name("declarator").is_some_and(|d| {
+            ast_utils::find_identifier_in_declarator(&d, source).as_deref() == Some(name.as_str())
+        });
+        if declares_local {
+            sets.push((init, init.child_by_field_name("value")?));
+        }
+    }
+    for ident in query::find_descendants_of_kind(*body, "identifier") {
+        if text(&ident) != name || !binds_to_decl(&ident) {
+            continue;
+        }
+        let Some(parent) = ident.parent() else {
+            continue;
+        };
+        match parent.kind() {
+            "assignment_expression"
+                if parent
+                    .child_by_field_name("left")
+                    .is_some_and(|l| l.id() == ident.id()) =>
+            {
+                if text(&parent.child_by_field_name("operator")?) != "=" {
+                    return None;
+                }
+                sets.push((parent, parent.child_by_field_name("right")?));
+            }
+            "update_expression" => return None,
+            "pointer_expression"
+                if parent
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "&") =>
+            {
+                return None
+            }
+            _ => {}
+        }
+    }
+    let [(set, value)] = sets.as_slice() else {
+        return None;
+    };
+    if set.start_byte() >= use_site.start_byte() {
+        return None;
+    }
+
+    // `p`, or `p + k` / `p - k` with `k` an integer literal.
+    let value = init_state::strip_arg_casts(value);
+    let base = match value.kind() {
+        "identifier" => value,
+        "binary_expression" => {
+            let op = text(&value.child_by_field_name("operator")?);
+            let right = init_state::strip_arg_casts(&value.child_by_field_name("right")?);
+            if !matches!(op.as_str(), "+" | "-") || right.kind() != "number_literal" {
+                return None;
+            }
+            init_state::strip_arg_casts(&value.child_by_field_name("left")?)
+        }
+        _ => return None,
+    };
+    if base.kind() != "identifier" {
+        return None;
+    }
+    let param = text(&base);
+    let idx = params.iter().position(|p| !p.is_empty() && *p == param)?;
+    if !matches!(
+        ast_utils::resolve_identifier_binding(&base, &param, source),
+        Some(ast_utils::IdentifierBinding::Parameter(_))
+    ) {
+        return None;
+    }
+
+    // The parameter itself still holds what the caller passed.
+    let param_written = query::find_descendants_of_kind(*body, "identifier")
+        .into_iter()
+        .filter(|n| text(n) == param)
+        .filter(|n| {
+            matches!(
+                ast_utils::resolve_identifier_binding(n, &param, source),
+                Some(ast_utils::IdentifierBinding::Parameter(_))
+            )
+        })
+        .any(|n| {
+            n.parent().is_some_and(|p| match p.kind() {
+                "assignment_expression" => p
+                    .child_by_field_name("left")
+                    .is_some_and(|l| l.id() == n.id()),
+                "update_expression" => true,
+                "pointer_expression" => p
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "&"),
+                _ => false,
+            })
+        });
+    (!param_written).then_some(idx)
 }
 
 /// Credit `summary.frees_params`/`frees_param_pointees` (MAY-free) and
@@ -7477,6 +7620,113 @@ mod tests {
 
     /// hostap's traced os_malloc: the block comes back offset past a
     /// bookkeeping header. Still the block.
+    /// A local that only holds the parameter frees what the parameter
+    /// points to.
+    #[test]
+    fn test_free_through_a_copy_of_the_parameter() {
+        let code = r#"
+        void rel(void *p) {
+            void *q;
+            q = p;
+            free(q);
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        let s = summaries.get("rel").unwrap();
+        assert!(s.frees_params.contains(&0));
+        assert!(s.unconditional_frees_params.contains(&0));
+    }
+
+    /// hostap's traced os_free: the block starts one header before the
+    /// pointer the caller holds, and the null guard is on the parameter.
+    #[test]
+    fn test_free_of_the_header_before_the_parameter() {
+        let code = r#"
+        void os_free(void *ptr) {
+            struct os_alloc_trace *a;
+            if (ptr == NULL)
+                return;
+            a = (struct os_alloc_trace *) ptr - 1;
+            if (a->magic != 0x1234)
+                abort();
+            a->magic = 0;
+            free(a);
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        let s = summaries.get("os_free").unwrap();
+        assert!(s.frees_params.contains(&0));
+        assert!(s.unconditional_frees_params.contains(&0));
+    }
+
+    /// The same through an initializer, with a null guard on the parameter
+    /// around the free.
+    #[test]
+    fn test_free_through_an_initialized_offset_local() {
+        let code = r#"
+        void rel(char *p) {
+            char *base = p - 8;
+            if (p != NULL)
+                free(base);
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        let s = summaries.get("rel").unwrap();
+        assert!(s.frees_params.contains(&0));
+        assert!(s.unconditional_frees_params.contains(&0));
+    }
+
+    /// A local set twice, or moved by something other than a constant, no
+    /// longer says which object it points into.
+    #[test]
+    fn test_free_through_a_local_that_is_not_only_the_parameter() {
+        for body in [
+            "char *q = p; q = other(); free(q);",
+            "char *q = p; q++; free(q);",
+            "char *q = p + n; free(q);",
+            "char *q = p; reset(&q); free(q);",
+            "char *q; free(q); q = p;",
+        ] {
+            let code = format!("void rel(char *p, int n) {{ {body} }}");
+            let summaries = parse_and_summarize(&code);
+            let s = summaries.get("rel").unwrap();
+            assert!(!s.frees_params.contains(&0), "{body}");
+        }
+    }
+
+    /// Nor does a copy taken after the parameter was moved on.
+    #[test]
+    fn test_free_through_a_copy_of_a_rewritten_parameter() {
+        let code = r#"
+        void rel(struct node *p) {
+            struct node *q;
+            p = p->next;
+            q = p;
+            free(q);
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        assert!(!summaries.get("rel").unwrap().frees_params.contains(&0));
+    }
+
+    /// A same-named local in an inner block is another object: freeing it
+    /// frees nothing the caller passed.
+    #[test]
+    fn test_free_through_a_shadowing_local_is_not_the_copy() {
+        let code = r#"
+        void rel(char *p) {
+            char *q = p;
+            use(q);
+            {
+                char *q = make();
+                free(q);
+            }
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        assert!(!summaries.get("rel").unwrap().frees_params.contains(&0));
+    }
+
     #[test]
     fn test_returns_allocation_offset_past_header() {
         let code = r#"
