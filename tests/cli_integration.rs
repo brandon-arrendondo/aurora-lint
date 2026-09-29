@@ -3353,3 +3353,18 @@ fn a_profile_keeps_the_manifests_declared_memory_functions() {
     assert!(plain["deallocators"].is_null(), "{plain}");
     assert_ne!(declared["hash"], plain["hash"]);
 }
+
+#[test]
+fn a_leak_through_a_two_arm_allocator_names_the_standard_allocator() {
+    let found = declared_memory_findings(
+        "two_arm_allocator.c",
+        "manifest_mem30_mem31.toml",
+        &["--allocator", "HOOK_CALLOC=calloc"],
+    );
+    let leaks: Vec<_> = found.iter().filter(|(r, _, _)| r == "MEM31-C").collect();
+    assert!(!leaks.is_empty(), "{found:?}");
+    assert!(
+        leaks.iter().all(|(_, _, m)| m.contains("'calloc'")),
+        "{found:?}"
+    );
+}

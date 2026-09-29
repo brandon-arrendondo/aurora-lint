@@ -206,6 +206,12 @@ impl CertRule for Mem31C {
             node,
             source,
         );
+        // A standard allocator first, so a finding names `calloc` where one
+        // arm is `calloc` and another a declared platform hook; a name no
+        // arm of which is standard then maps to its declared allocator.
+        const_eval::with_accusing_alias_targets(&mut macro_aliases, &alternatives, |t| {
+            call_roles::is_heap_allocator(t) || call_roles::is_string_duplicator(t)
+        });
         const_eval::with_accusing_alias_targets(
             &mut macro_aliases,
             &alternatives,
