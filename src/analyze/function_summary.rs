@@ -6347,31 +6347,26 @@ fn collect_param_forwards_to_indirect_call(
     }
 }
 
-/// The name an edge to `callee_name` is looked up under. Through the alias
-/// map when that lands on something the scan knows -- `#define mbedtls_free
-/// free`, or an alias onto a function with a body -- and otherwise the
-/// spelling itself. `#define zfree valkey_free` renames a symbol at link
-/// time, but the only body the scan ever saw is `void zfree(void *ptr)`, so
+/// The name an edge to `callee_name` is looked up under: `free` or a
+/// declared deallocator anywhere in its alias chain (`#define mbedtls_free
+/// free`), else the first link with a body, else the chain's end
+/// (`const_eval::resolve_macro_alias_preferring`). `#define zfree valkey_free` renames a symbol at link time,
+/// but the only body the scan ever saw is `void zfree(void *ptr)`, so
 /// resolving the edge to `valkey_free` reached nothing, and valkey's
-/// `decrRefCount` -> `zfree(o)` freed nothing in any summary.
-/// `free` itself always wins: an alias onto the literal is the mbedtls case
-/// and needs no body.
+/// `decrRefCount` -> `zfree(o)` freed nothing in any summary. The walk is
+/// link by link because the name with the body can sit mid-chain: valkey's
+/// `s_free` is `zfree`, which is `valkey_free`.
 fn edge_target<'a>(
     macro_aliases: &'a HashMap<String, String>,
     callee_name: &'a str,
     known: impl Fn(&str) -> bool,
 ) -> &'a str {
-    use crate::analyze::const_eval::resolve_macro_alias;
-    let resolved = resolve_macro_alias(macro_aliases, callee_name);
-    if resolved != callee_name
-        && !call_roles::is_deallocator(resolved)
-        && !known(resolved)
-        && known(callee_name)
-    {
-        callee_name
-    } else {
-        resolved
-    }
+    crate::analyze::const_eval::resolve_macro_alias_preferring(
+        macro_aliases,
+        callee_name,
+        call_roles::is_deallocator,
+        known,
+    )
 }
 
 /// Propagate transitive frees through param pass-through chains.

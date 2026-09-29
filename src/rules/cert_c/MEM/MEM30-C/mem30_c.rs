@@ -3472,7 +3472,7 @@ impl MemoryAnalyzer {
             // (`macro_null_params`); everything else classifies the callee
             // by the name its `#define` alias chain ends at.
             let spelled_name = get_node_text(&function_node, source);
-            let function_name = const_eval::resolve_macro_alias(&self.macro_aliases, spelled_name);
+            let function_name = self.callee(spelled_name);
 
             match function_name {
                 "free" => {
@@ -3493,6 +3493,16 @@ impl MemoryAnalyzer {
                     return HashSet::new();
                 }
                 _ => {
+                    // A wrapper whose body releases its first argument and hands
+                    // back a fresh block is realloc by what it does (hostap's
+                    // `os_realloc_array`), and a failed call leaves the old
+                    // block live: `n = os_realloc_array(freq, ...); if (!n) {
+                    // os_free(freq); ... }` is no double free.
+                    if self.releases_like_realloc(function_name) {
+                        self.track_realloc_old_pointer(node, source);
+                        return HashSet::new();
+                    }
+
                     // A cross-file FunctionSummary (real analysis of the callee's
                     // body) says which arguments the call releases: a pure
                     // counter whose name happens to contain "free" (hostap's
@@ -3922,6 +3932,42 @@ impl MemoryAnalyzer {
         }
     }
 
+    /// The name a call spelled `spelled` is classified under: a role (`free`,
+    /// a declared deallocator, realloc's contract, `malloc`/`calloc`)
+    /// anywhere in its `#define` alias chain, else the first link with a
+    /// body, else the chain's end. valkey's `zfree` is `valkey_free`, and
+    /// only `zfree` has a summary. Every site that classifies a callee asks
+    /// this, so a call and the assignment it sits in agree on what it is.
+    fn callee<'s>(&'s self, spelled: &'s str) -> &'s str {
+        const_eval::resolve_macro_alias_preferring(
+            &self.macro_aliases,
+            spelled,
+            |n| {
+                call_roles::is_deallocator(n)
+                    || call_roles::is_realloc_like(n)
+                    || matches!(n, "malloc" | "calloc")
+            },
+            |n| self.function_summaries.contains_key(n),
+        )
+    }
+
+    /// Whether a call to `name` releases its first argument and hands back
+    /// a fresh block, as `realloc` does: `realloc` itself or a callee
+    /// declared with its contract, or a function whose body always frees its
+    /// first parameter and returns an allocation (hostap's
+    /// `os_realloc_array`). Such a call invalidates the old pointer only once
+    /// its result is known to be non-NULL, which `track_realloc_old_pointer`
+    /// tracks. A body that only MAY free the parameter is no realloc: valkey's
+    /// `lookupStringForBitCommand(c, ...)` returns an object and frees the
+    /// client only on an error path.
+    fn releases_like_realloc(&self, name: &str) -> bool {
+        call_roles::is_realloc_like(name)
+            || self
+                .function_summaries
+                .get(name)
+                .is_some_and(|s| s.returns_allocation && s.unconditional_frees_params.contains(&0))
+    }
+
     /// Parameter indices the function-like macro `spelled` releases in
     /// EVERY live definition (the accusing merge), by expanding its body and
     /// reading each call in it as the walk reads a direct one:
@@ -3934,7 +3980,7 @@ impl MemoryAnalyzer {
             &self.function_macros,
             spelled,
             |callee, k| {
-                let resolved = const_eval::resolve_macro_alias(&self.macro_aliases, callee);
+                let resolved = self.callee(callee);
                 call_roles::frees_argument(resolved) == Some(k)
                     || self
                         .function_summaries
@@ -4146,11 +4192,8 @@ impl MemoryAnalyzer {
             };
             if alloc_rhs.kind() == "call_expression" {
                 if let Some(func) = alloc_rhs.child_by_field_name("function") {
-                    let func_name = const_eval::resolve_macro_alias(
-                        &self.macro_aliases,
-                        get_node_text(&func, source),
-                    );
-                    if call_roles::is_realloc_like(func_name) {
+                    let func_name = self.callee(get_node_text(&func, source));
+                    if self.releases_like_realloc(func_name) {
                         // Track the old pointer passed to realloc as invalidated
                         let old_ptrs = self.track_realloc_old_pointer(&alloc_rhs, source);
                         // For realloc, track that the result location holds the
@@ -4489,11 +4532,8 @@ impl MemoryAnalyzer {
             // Check if this is a realloc initialization
             if value.kind() == "call_expression" {
                 if let Some(func) = value.child_by_field_name("function") {
-                    let func_name = const_eval::resolve_macro_alias(
-                        &self.macro_aliases,
-                        get_node_text(&func, source),
-                    );
-                    if call_roles::is_realloc_like(func_name) {
+                    let func_name = self.callee(get_node_text(&func, source));
+                    if self.releases_like_realloc(func_name) {
                         // Track that left_var is the result of realloc
                         self.realloc_updated.insert(left_var.clone());
                         // Also track what pointer was passed to realloc (it's now invalidated)
@@ -4514,11 +4554,8 @@ impl MemoryAnalyzer {
                 if let Some(inner_value) = value.child_by_field_name("value") {
                     if inner_value.kind() == "call_expression" {
                         if let Some(func) = inner_value.child_by_field_name("function") {
-                            let func_name = const_eval::resolve_macro_alias(
-                                &self.macro_aliases,
-                                get_node_text(&func, source),
-                            );
-                            if call_roles::is_realloc_like(func_name) {
+                            let func_name = self.callee(get_node_text(&func, source));
+                            if self.releases_like_realloc(func_name) {
                                 self.realloc_updated.insert(left_var.clone());
                                 let old_ptrs = self.track_realloc_old_pointer(&inner_value, source);
                                 if !old_ptrs.is_empty() {
@@ -4870,13 +4907,10 @@ impl MemoryAnalyzer {
                 if let Some(grandparent) = parent.parent() {
                     if grandparent.kind() == "call_expression" {
                         if let Some(func) = grandparent.child_by_field_name("function") {
-                            let func_name = const_eval::resolve_macro_alias(
-                                &self.macro_aliases,
-                                get_node_text(&func, source),
-                            );
+                            let func_name = self.callee(get_node_text(&func, source));
                             // Skip for free, realloc, and their declared variants
                             if call_roles::is_deallocator(func_name)
-                                || call_roles::is_realloc_like(func_name)
+                                || self.releases_like_realloc(func_name)
                             {
                                 return;
                             }

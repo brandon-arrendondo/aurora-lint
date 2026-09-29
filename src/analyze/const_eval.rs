@@ -605,6 +605,36 @@ pub fn resolve_macro_alias<'a>(aliases: &'a HashMap<String, String>, name: &'a s
     current
 }
 
+/// [`resolve_macro_alias`] for a consumer that looks names up in a table
+/// keyed by definitions: of the links in `name`'s alias chain (`name` itself
+/// included), the first `role` accepts; else the first `known` accepts; else
+/// the chain's end. valkey's `#define zfree valkey_free` renames the symbol
+/// at link time, but the body the scan read is `void zfree(void *ptr)`, so a
+/// lookup of the fully resolved `valkey_free` finds nothing while `zfree`
+/// finds the body. A role anywhere in the chain still wins over a body:
+/// mbedtls's `mbedtls_free` is `free` in one configuration and, in another,
+/// a function the scan also read that calls a function pointer.
+pub fn resolve_macro_alias_preferring<'a>(
+    aliases: &'a HashMap<String, String>,
+    name: &'a str,
+    role: impl Fn(&str) -> bool,
+    known: impl Fn(&str) -> bool,
+) -> &'a str {
+    let mut chain = vec![name];
+    for _ in 0..8 {
+        match aliases.get(*chain.last().unwrap()) {
+            Some(target) if target != chain.last().unwrap() => chain.push(target.as_str()),
+            _ => break,
+        }
+    }
+    chain
+        .iter()
+        .find(|n| role(n))
+        .or_else(|| chain.iter().find(|n| known(n)))
+        .copied()
+        .unwrap_or(chain[chain.len() - 1])
+}
+
 /// Merge cross-file macro aliases (`project`, from [`super::context::ProjectContext::macro_aliases`])
 /// with aliases collected from the current file, with per-file definitions
 /// winning on name collisions. This is the common `set_project_context` +
@@ -3614,6 +3644,31 @@ int f(unsigned long s) { return LINEBITS(s); }
         let mut accusing = aliases.clone();
         with_accusing_alias_targets(&mut accusing, &alternatives, |t| t == "chdir");
         assert_eq!(accusing.get("CHDIR").map(String::as_str), Some("chdir"));
+    }
+
+    #[test]
+    fn an_alias_chain_lands_on_a_role_then_on_a_body() {
+        let aliases: HashMap<String, String> = [
+            ("s_free", "zfree"),
+            ("zfree", "valkey_free"),
+            ("mbedtls_free", "free"),
+        ]
+        .iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+        let bodies = ["zfree", "mbedtls_free"];
+        let pick = |name| {
+            resolve_macro_alias_preferring(&aliases, name, |n| n == "free", |n| bodies.contains(&n))
+        };
+        // valkey: the body sits mid-chain, and the chain's end has none.
+        assert_eq!(pick("s_free"), "zfree");
+        // mbedtls: `free` wins over the body the other configuration has.
+        assert_eq!(pick("mbedtls_free"), "free");
+        // Nothing known anywhere: the chain's end, as `resolve_macro_alias`.
+        assert_eq!(
+            resolve_macro_alias_preferring(&aliases, "s_free", |_| false, |_| false),
+            "valkey_free"
+        );
     }
 
     #[test]

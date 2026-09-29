@@ -817,7 +817,19 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// .
     fn callee_name(&self, function: &Node, source: &str) -> String {
         let raw = ast_utils::get_node_text(function, source);
-        const_eval::resolve_macro_alias(self.macro_aliases, raw).to_string()
+        // A role anywhere in the chain, else the first link with a body:
+        // valkey's `zfree` is `valkey_free`, and only `zfree` has a summary.
+        const_eval::resolve_macro_alias_preferring(
+            self.macro_aliases,
+            raw,
+            |n| {
+                call_roles::is_deallocator(n)
+                    || call_roles::is_realloc_like(n)
+                    || call_roles::is_allocator_call(n)
+            },
+            |n| self.function_summaries.contains_key(n),
+        )
+        .to_string()
     }
 
     /// Parameter indices the function-like macro `func_name` frees, by
@@ -3808,8 +3820,18 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // caller's variable NULL, so calling it again releases nothing.
             let nulls_pointee =
                 through_address_of && summary.nulls_param_pointees.contains(&this_param_idx);
+            // A double free is an accusation, so the second release must be
+            // one the body always performs: `frees_params` is a MAY fact,
+            // and valkey's `addReplyBulkSds(c, ...)` frees `c` only on the
+            // error path that closes the client -- every later reply to
+            // `c` read as a second free. The mark below still records the
+            // release, which is all a leak needs.
+            let must_free =
+                through_address_of || summary.unconditional_frees_params.contains(&this_param_idx);
             if nulls_pointee {
                 self.maybe_freed.remove(&var_name);
+            } else if !must_free {
+                // Not an accusation either way; see above.
             } else if self.freed_memory.contains_key(&var_name)
                 && !self.freed_via_alias.contains(&var_name)
             {
