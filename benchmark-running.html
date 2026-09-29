@@ -326,7 +326,7 @@ and <code class="docutils literal notranslate"><span class="pre">-D</span></code
 <h2>Real-World Benchmark<a class="headerlink" href="#real-world-benchmark" title="Link to this heading"></a></h2>
 <p>Local and sequential, by design: one person running one benchmark in their
 own terminal, against their own SQLite DB. See <code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code>.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-run<span class="w"> </span><span class="o">[</span>--tool<span class="w"> </span>sqc,cppcheck,clang-tidy<span class="o">]</span><span class="w"> </span><span class="o">[</span>--codebase<span class="w"> </span>C,C<span class="o">]</span><span class="w"> </span><span class="o">[</span>--compile-commands<span class="o">]</span><span class="w"> </span><span class="o">[</span>--profile<span class="w"> </span>P<span class="o">]</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-run<span class="w"> </span><span class="o">[</span>--tool<span class="w"> </span>sqc,cppcheck,clang-tidy<span class="o">]</span><span class="w"> </span><span class="o">[</span>--codebase<span class="w"> </span>C,C<span class="o">]</span><span class="w"> </span><span class="o">[</span>--compile-commands<span class="o">]</span><span class="w"> </span><span class="o">[</span>--profile<span class="w"> </span>P<span class="o">]</span><span class="w"> </span><span class="o">[</span>--dirs-out<span class="w"> </span>PATH<span class="o">]</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld<span class="w"> </span><span class="o">[</span>RUN<span class="o">]</span><span class="w"> </span><span class="o">[</span>--compare<span class="w"> </span>BASE<span class="o">]</span><span class="w">   </span><span class="c1"># FP dashboard</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-runs<span class="w">                     </span><span class="c1"># list runs</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-score<span class="w"> </span><span class="o">[</span>RUN<span class="o">]</span><span class="w">               </span><span class="c1"># measured precision/recall</span>
@@ -460,6 +460,15 @@ nonzero, and the run is simply absent (or partial) in <code class="docutils lite
 <code class="docutils literal notranslate"><span class="pre">bench</span> <span class="pre">realworld-score</span></code> until the ingest is repeated. Two runs can still be
 compared straight from their JSON exports, finding for finding, without the
 database.</p>
+<p>One invocation can write more than one export directory: a codebase’s compile
+database or a settings option in its <code class="docutils literal notranslate"><span class="pre">extra_args</span></code> can change the settings it
+is scanned under, and each set of settings is its own directory and its own
+run. <code class="docutils literal notranslate"><span class="pre">--dirs-out</span> <span class="pre">PATH</span></code> writes a JSON list of the directories the aurora-lint
+scans produced – each with its name (which is also its <code class="docutils literal notranslate"><span class="pre">run_id</span></code>), path,
+settings and settings hash, and the codebases scanned into it – before the
+ingest starts, so a caller that ingests the exports somewhere else reads the
+names instead of predicting them. Write it outside <code class="docutils literal notranslate"><span class="pre">results/realworld/</span></code>: an
+export directory’s <code class="docutils literal notranslate"><span class="pre">*.json</span></code> files are read as scan results.</p>
 <p>Typical real-world workflow:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-run<span class="w"> </span>--tool<span class="w"> </span>sqc<span class="w">                  </span><span class="c1"># blocks until every codebase is done</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld<span class="w"> </span>latest<span class="w">                   </span><span class="c1"># view results</span>
