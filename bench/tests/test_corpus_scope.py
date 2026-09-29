@@ -130,3 +130,14 @@ class TestScanExcludes(unittest.TestCase):
             patterns = corpus._scan_excludes("libcrc")
             self.assertEqual(patterns, [])
             self.assertFalse(corpus._excluded("anything.c", patterns))
+
+    def test_report_exclude_is_not_harmless(self):
+        # A --report-exclude tree is still read by the prescan, so a stray
+        # generated file there feeds cross-file facts: contamination.
+        with mock.patch("bench.realworld_runner.CODEBASES",
+                        {"curl": {"sqc": {"extra_args":
+                            ["--report-exclude", "include/**",
+                             "--exclude", "tests/**"]}}}):
+            patterns = corpus._scan_excludes("curl")
+            self.assertFalse(corpus._excluded("include/curl/gen.c", patterns))
+            self.assertTrue(corpus._excluded("tests/unit/gen.c", patterns))

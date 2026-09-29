@@ -43,7 +43,10 @@ Both untracked and gitignored counts are run through the SAME --exclude globs
 real scan: a stray .c/.h sitting under an already-excluded tree
 (hostap's tests/fuzzing/, curl's tests/, ...) never reaches the scanner, so it
 is split into its own harmless bucket instead of being counted as
-contamination it cannot actually cause. This is a different mechanism from
+contamination it cannot actually cause. Only --exclude counts: a tree under
+--report-exclude gets no findings but is still read for cross-file facts, so a
+generated file there contaminates the scan as surely as one in plain view.
+This is a different mechanism from
 in_scope()/scope_include above -- that filters *findings* after the fact;
 this filters the *fileset the scan itself walks*, which is what "will this
 untracked file get scanned" actually depends on.
@@ -171,13 +174,14 @@ def _match(relpath: str, pat: str) -> bool:
 
 
 def _scan_excludes(project):
-    """This project's compiled sqc --exclude patterns from
-    bench/realworld_runner.py's CODEBASES registry, or [] if the project
-    isn't registered there (data/benchmark_repos.json and CODEBASES are
-    expected to agree on names, but don't assume it)."""
-    from bench.realworld_runner import CODEBASES, _sqc_exclude_patterns
+    """This project's compiled sqc --exclude patterns (not --report-exclude,
+    whose files the prescan still reads) from bench/realworld_runner.py's
+    CODEBASES registry, or [] if the project isn't registered there
+    (data/benchmark_repos.json and CODEBASES are expected to agree on names,
+    but don't assume it)."""
+    from bench.realworld_runner import CODEBASES, _sqc_untouched_patterns
     cfg = CODEBASES.get(project)
-    return _sqc_exclude_patterns(cfg) if cfg else []
+    return _sqc_untouched_patterns(cfg) if cfg else []
 
 
 def _excluded(relpath, patterns):

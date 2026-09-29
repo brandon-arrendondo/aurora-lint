@@ -889,6 +889,13 @@ def _sqc_glob_to_regex(pattern: str) -> "re.Pattern":
     return re.compile(f"(?:^|/){''.join(out)}$")
 
 
+def _sqc_flag_patterns(cfg: dict, flags: tuple[str, ...]) -> list["re.Pattern"]:
+    """The compiled globs sqc is given under any of `flags`."""
+    args = cfg.get("sqc", {}).get("extra_args", [])
+    return [_sqc_glob_to_regex(args[i + 1]) for i in range(len(args) - 1)
+            if args[i] in flags]
+
+
 def _sqc_exclude_patterns(cfg: dict) -> list["re.Pattern"]:
     """The globs whose files sqc scans and reports nothing in: --exclude
     (out of everything) and --report-exclude (still read for cross-file
@@ -898,9 +905,14 @@ def _sqc_exclude_patterns(cfg: dict) -> list["re.Pattern"]:
     so their scope and every past run stay as they were. Taking a tree out
     of the cross-file facts as well is a per-corpus decision, recorded in
     docs/design/realworld-corpus-scope.md with its own A/B."""
-    args = cfg.get("sqc", {}).get("extra_args", [])
-    return [_sqc_glob_to_regex(args[i + 1]) for i in range(len(args) - 1)
-            if args[i] in ("--exclude", "--report-exclude")]
+    return _sqc_flag_patterns(cfg, ("--exclude", "--report-exclude"))
+
+
+def _sqc_untouched_patterns(cfg: dict) -> list["re.Pattern"]:
+    """The globs whose files sqc neither scans nor reads for cross-file
+    facts: --exclude only. A file under --report-exclude still feeds the
+    prescan, and one under --prescan-exclude is still scanned."""
+    return _sqc_flag_patterns(cfg, ("--exclude",))
 
 
 def _count_c_source(cfg: dict) -> tuple[int, int]:
