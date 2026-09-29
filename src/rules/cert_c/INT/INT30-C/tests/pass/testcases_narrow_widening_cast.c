@@ -2,6 +2,9 @@
  * Rule: INT30-C
  * Source: testcases
  * Status: PASS - Should NOT trigger INT30-C violation
+ * Settings: data_model=lp64
+ *
+ * Each product is bounded by a 32-bit int's range, which a declared model fixes.
  *
  * Tests narrow-operand arithmetic through widening casts. When a
  * uint8_t or uint16_t value is cast to uint32_t and combined with another

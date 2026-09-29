@@ -10,6 +10,11 @@
  * declared 8 or 16 bits rather than the width the arithmetic actually
  * happens at. Storing the result back into something narrow is a different
  * question and still reported; see tests/fail/narrow_truncating_store.c.
+ *
+ * Settings: data_model=lp64
+ *
+ * On the declared LP64 target int is 32 bits; ISO C guarantees only 16,
+ * where short * short can overflow (tests/fail/iso_short_product_may_overflow.c).
  */
 
 /* char + char, consumed as int. */

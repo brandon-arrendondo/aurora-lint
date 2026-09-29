@@ -134,7 +134,7 @@ impl CertRule for Int33C {
         // declaration, so a floating operand suppresses the integer
         // divide-by-zero check.
         let visible = self.visible.borrow();
-        let env = TypeEnv::visible(&visible);
+        let env = TypeEnv::visible(&visible, self.settings.borrow().data_model);
         self.check_node(
             node,
             source,

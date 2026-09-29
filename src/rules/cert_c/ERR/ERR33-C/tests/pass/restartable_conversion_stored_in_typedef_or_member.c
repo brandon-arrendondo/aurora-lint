@@ -1,5 +1,6 @@
 /*
  * Rule: ERR33-C
+ * Settings: data_model=lp64
  * Status: PASS - an ordering against a negative constant below -1 tests a
  * restartable conversion stored unsigned. The object's type decides, through
  * a typedef of size_t or of unsigned long, and for a size_t struct member
