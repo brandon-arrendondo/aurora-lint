@@ -4,6 +4,23 @@ version = "1.0.0"
 description = "Project rules manifest for curl/libcurl (pinned commit 3e198f7586) — cross-platform HTTP/transfer client library + CLI. Based on the shared base rules_templates/rules-all.toml. Cross-platform (incl. Windows) network client that parses untrusted server input; NOT a privileged daemon. WIN*, FIO*, MEM* (incl. sensitive-data), POSIX socket/thread, SIG* and CON* rules are all IN scope. The only non-dead-config disable is POS05-C (category 1: curl never runs privileged). Per-finding analyzer misfires among ENABLED rules (DCL13, MEM30, INT30/32, API00, EXP33/34, ...) are NOT suppressed here — they are recorded in the ground_truth oracle so they stay measured. See data/precision_audit/."
 cert_version = "2016"
 
+# curlx_free is Curl_cfree (curl_setup.h), a global curl_free_callback that
+# defaults to free and is replaceable through curl_global_init_mem, or
+# curl_dbg_free under CURLDEBUG (memdebug). Neither body can be followed, so
+# both roots are declared; curl's own wrappers (curl_free, curl_url_cleanup,
+# cf_ctx_free, ...) then free by their bodies. The TLS backends' documented
+# frees are declared too; BIO_up_ref/X509_STORE_up_ref sites in vtls/ were
+# checked: each up_ref hands the extra reference to SSL_set0_*bio or pairs
+# with its own error-path free, so no second free of one reference follows.
+[environment.deallocators]
+Curl_cfree = 1
+curl_dbg_free = 1
+BIO_free = 1
+SSL_free = 1
+OSSL_LIB_CTX_free = 1
+rustls_root_cert_store_builder_free = 1
+rustls_web_pki_server_cert_verifier_builder_free = 1
+
 [rules.cert_c.API00-C]
 enabled = true
 

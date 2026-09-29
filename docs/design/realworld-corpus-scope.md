@@ -455,6 +455,18 @@ They are recorded in `out_of_config`, **not** added to `scope_exclude`:
 whether curl's Windows boundary should move is a scope decision with labeled
 rows behind it, not a typo to fix.
 
+### Declared memory functions
+
+`conf/realworld/curl-rules.toml` declares the two roots `curlx_free` resolves
+to: `Curl_cfree` (a global `curl_free_callback`, `free` unless the application
+replaces it through `curl_global_init_mem`) and `curl_dbg_free` (the CURLDEBUG
+memdebug arm). curl's own wrappers (`curl_free`, `curl_url_cleanup`,
+`cf_ctx_free`, ...) are not declared: they free by their bodies once the roots
+are known. The TLS backends' documented frees (`BIO_free`, `SSL_free`,
+`OSSL_LIB_CTX_free`, the two rustls builder frees) are declared too, after
+checking `vtls/`'s `BIO_up_ref`/`X509_STORE_up_ref` sites: each extra reference
+goes to `SSL_set0_*bio` or pairs with its own error-path free.
+
 ## hostap
 
 ### Scope
