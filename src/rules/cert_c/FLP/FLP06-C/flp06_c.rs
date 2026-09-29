@@ -93,6 +93,7 @@ impl Flp06C {
     }
 }
 
+/// The first `init_declarator` of a `declaration` node, if it has one.
 fn first_init_declarator<'a>(decl: &Node<'a>) -> Option<Node<'a>> {
     let mut cursor = decl.walk();
     let found = decl
@@ -101,6 +102,15 @@ fn first_init_declarator<'a>(decl: &Node<'a>) -> Option<Node<'a>> {
     found
 }
 
+/// True if `node` (after unwrapping parentheses) is *integer* arithmetic: a
+/// `+ - * /` binary expression whose type by declaration (`expr_type`) is an
+/// integer type.
+///
+/// An expression whose type is not in reach is not integer arithmetic, so it
+/// is not reported: a float-typed operand, a float-returning call, an
+/// unresolved identifier or a field with no recorded type all leave the
+/// expression unproven. This is the integer-then-implicitly-converted-to-float
+/// pattern FLP06-C targets.
 fn is_integer_arithmetic(node: &Node, source: &str, env: &TypeEnv) -> bool {
     let inner = unwrap_parens(node);
     if inner.kind() != "binary_expression" {
@@ -121,6 +131,7 @@ fn is_integer_arithmetic(node: &Node, source: &str, env: &TypeEnv) -> bool {
     expr_type::expr_type(&inner, source, env).is_some_and(|t| t.is_integer())
 }
 
+/// Peel away `( … )` wrappers to reach the underlying expression.
 fn unwrap_parens<'a>(node: &Node<'a>) -> Node<'a> {
     let mut n = *node;
     while n.kind() == "parenthesized_expression" {
