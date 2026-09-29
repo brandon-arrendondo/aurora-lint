@@ -133,7 +133,7 @@ environment and no library model.</p></li>
 <li><p>Basis: C11 6.7.4p8, 7.23; C23 6.7.13.7. A GNU noreturn attribute, [[gnu::noreturn]] included, is proof under neither policy.</p></li>
 </ul>
 </dd>
-<dt><code class="docutils literal notranslate"><span class="pre">pre31_unknown_call_pure</span></code></dt><dd><p>PRE31-C: an unproven call, in an argument an unsafe macro may evaluate other than once, is not treated as a side effect: a call to a function with no definition in the scanned files and no library contract, a call through a pointer, a call to a function another scanned file defines that is not yet proven pure or impure, or strerror, inet_ntoa, strsignal, gai_strerror, getenv, gmtime and asctime (whose only effect is the static buffer they return). A callee shown to have a side effect is reported either way.</p>
+<dt><code class="docutils literal notranslate"><span class="pre">pre31_unknown_call_pure</span></code></dt><dd><p>PRE31-C: an unproven call, in an argument an unsafe macro may evaluate other than once, is not treated as a side effect: a call to a function with no definition in the scanned files and no library contract, a call through a pointer, strerror, inet_ntoa, strsignal, gai_strerror, getenv, gmtime and asctime (whose only effect is the static buffer they return), or a call to a scanned function that reaches one of these and nothing shown to have a side effect. A callee shown to have a side effect, in whichever scanned file it is defined, is reported either way.</p>
 <ul class="simple">
 <li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
 <li><p>Scope: PRE31-C</p></li>
