@@ -1225,14 +1225,20 @@ pub enum Proof {
 }
 
 impl ClosedEffects {
-    /// The conservative verdict: any write counts, a callee's write through
-    /// a pointer argument included. `stdlib_contract` is the
+    /// The verdict. A write is proven only when it lands outside this
+    /// function's own frame ([`Self::writes`]); one that lands only in its
+    /// own storage (`int v; fill(&v);`) is [`Self::writes_any`] alone and
+    /// unproven, left to the consumer's policy. `stdlib_contract` is the
     /// `stdlib_call_effects` environment contract: withdrawn, a library
     /// callee is as unknown as any other body-less one.
     pub fn proof(&self, stdlib_contract: bool) -> Proof {
-        if self.writes_any || self.volatile_read || (stdlib_contract && self.lib_side_effect) {
+        if !self.writes.is_empty()
+            || self.volatile_read
+            || (stdlib_contract && self.lib_side_effect)
+        {
             Proof::Impure
-        } else if self.opaque
+        } else if self.writes_any
+            || self.opaque
             || (stdlib_contract && self.lib_own_buffer)
             || (!stdlib_contract && self.lib_any)
         {
@@ -2062,6 +2068,8 @@ mod tests {
         let writes = |n: &str| effects.get(n).unwrap().writes.clone();
         assert!(writes("fills_local").is_empty());
         assert!(effects.get("fills_local").unwrap().writes_any);
+        assert_eq!(proof("fills_local", true), Proof::Unproven);
+        assert_eq!(proof("fills_global", true), Proof::Impure);
         assert_eq!(
             writes("forwards"),
             [Loc::ParamPointee(0)].into_iter().collect()
