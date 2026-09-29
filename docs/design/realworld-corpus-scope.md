@@ -216,14 +216,14 @@ code rather than an assumption the tool makes:
 |---|---|---|
 | libcrc, sqlite, mosquitto, curl, hostap, lua, raylib, pureftpd, mbedtls, valkey | `linux-x86_64` | `lp64` |
 | sel4 | `linux-x86_64-pc99` | `lp64` |
-| ventoy | `windows-x86` (MSVC) | `llp64` |
+| ventoy | `windows-x86` (MSVC) | `ilp32`, following `primary_build_config` |
 
 Juliet is declared `lp64` as well (`JULIET_SETTING_OVERRIDES` in
 `bench/config.py`): the testcases are built for Linux x86_64 with GCC.
 
 A declared corpus therefore reproduces the widths every earlier run assumed,
 except where a proof depended on a width the configuration does not have
-(ventoy's `long` is 32 bits, not 64). Declaring moves each corpus's settings
+(ventoy's `long`, `size_t` and pointers are 32 bits, not 64). Declaring moves each corpus's settings
 hash, so runs from before and after the declaration carry different run ids.
 
 
