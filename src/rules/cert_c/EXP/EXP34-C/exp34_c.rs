@@ -1168,8 +1168,13 @@ fn is_unsafe_at(
 }
 
 /// Check if a dereference is guarded by expression-level null checks
-/// that the CFG cannot model (&&, ternary) or by pragmatic null-check
-/// patterns (if (ptr == NULL) { /* handle error */ } — no explicit return).
+/// that the CFG cannot model (&&, ternary).
+///
+/// An earlier `if (ptr == NULL) { ... }` whose NULL branch falls through is
+/// no guard: the pointer reaches the dereference NULL along that branch. A
+/// test that leaves (return/goto/break/noreturn call) is credited by the
+/// CFG dataflow itself, which also sees any write between the test and the
+/// dereference.
 fn is_in_expression_guard(var_name: &str, node: &Node, source: &str) -> bool {
     let mut current = node.parent();
 
@@ -1230,15 +1235,6 @@ fn is_in_expression_guard(var_name: &str, node: &Node, source: &str) -> bool {
     // opaque block (e.g., inside switch_statement case bodies), so CFG-based
     // edge refinement cannot see the null guard.
     if is_inside_ast_null_guard(var_name, node, source) {
-        return true;
-    }
-
-    // Pragmatic dominance check: if there's an if-statement earlier in the same
-    // function that checks (var == NULL) and the dereference is AFTER that
-    // if-statement, treat it as safe. This matches the common pattern:
-    //   if (ptr == NULL) { /* Handle error */ }
-    //   use(ptr);  // programmer assumes error was handled
-    if is_dominated_by_null_check(var_name, node, source) {
         return true;
     }
 
@@ -1315,64 +1311,6 @@ fn is_inside_ast_null_guard(var_name: &str, node: &Node, source: &str) -> bool {
         }
         current = parent.parent();
     }
-    false
-}
-
-/// Walk up the AST to find the enclosing function body, then search for
-/// if-statements that check `var_name == NULL` and occur before the
-/// dereference (byte-position dominance).
-fn is_dominated_by_null_check(var_name: &str, node: &Node, source: &str) -> bool {
-    let deref_byte = node.start_byte();
-
-    // Find the enclosing compound_statement (function body)
-    let mut current = node.parent();
-    let mut func_body = None;
-    while let Some(parent) = current {
-        if parent.kind() == "function_definition" {
-            func_body = parent.child_by_field_name("body");
-            break;
-        }
-        current = parent.parent();
-    }
-
-    let body = match func_body {
-        Some(b) => b,
-        None => return false,
-    };
-
-    // Search for if-statements that null-check this variable
-    has_dominating_null_check(&body, var_name, deref_byte, source)
-}
-
-fn has_dominating_null_check(node: &Node, var_name: &str, deref_byte: usize, source: &str) -> bool {
-    if node.kind() == "if_statement" {
-        // Must be BEFORE the dereference
-        if node.end_byte() <= deref_byte {
-            if let Some(condition) = node.child_by_field_name("condition") {
-                if let Some(checked_var) = get_null_check_var(&condition, source) {
-                    if checked_var == var_name {
-                        // Check that the condition checks FOR null (== NULL, !ptr)
-                        if !analyze_condition_for_safety(&condition, var_name, source, false) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            // Don't search past the dereference point
-            if child.start_byte() > deref_byte {
-                break;
-            }
-            if has_dominating_null_check(&child, var_name, deref_byte, source) {
-                return true;
-            }
-        }
-    }
-
     false
 }
 
