@@ -1091,6 +1091,12 @@ pub struct MacroBodyCalls {
     /// (`o->vt->run(o)`, `ops.f(x)`) or a parenthesized pointer
     /// (`(*fp)(x)`, `(o->fn)(x)`).
     pub indirect: bool,
+    /// Calls that pass one of the body's own parameters whole
+    /// (`for_each_element(element, data, len)` inside
+    /// `for_each_element_id`), with, per argument, the parameter it is:
+    /// whatever the callee does to that argument, it does to what the
+    /// invocation passed.
+    pub forwarded: Vec<(String, Vec<Option<usize>>)>,
 }
 
 /// [`macro_body_effects`], with the calls through parameters, members and
@@ -1209,7 +1215,25 @@ pub fn macro_body_calls(arm: &MacroArm) -> MacroBodyCalls {
             _ => {}
         }
     }
+    for (callee, args) in calls_in(&arm.body) {
+        let passed: Vec<Option<usize>> = args
+            .iter()
+            .map(|a| whole_parameter(a, &arm.params))
+            .collect();
+        if passed.iter().any(Option::is_some) {
+            out.forwarded.push((callee, passed));
+        }
+    }
     out
+}
+
+/// The parameter an argument's text is as a whole, parentheses aside.
+fn whole_parameter(text: &str, params: &[String]) -> Option<usize> {
+    let mut text = text.trim();
+    while let Some(inner) = text.strip_prefix('(').and_then(|t| t.strip_suffix(')')) {
+        text = inner.trim();
+    }
+    params.iter().position(|p| p == text)
 }
 
 /// The identifiers in a replacement list, in order, string and character
@@ -5031,5 +5055,28 @@ mod macro_write_tests {
         assert!(c.written_params.is_empty() && !c.writes);
         // `macro_body_effects` still counts the parameter write.
         assert!(macro_body_effects(&arm(&["p"], "p = 0")).0);
+    }
+
+    #[test]
+    fn body_calls_that_hand_on_a_parameter() {
+        let calls = |params: &[&str], body: &str| macro_body_calls(&arm(params, body));
+        let c = calls(
+            &["element", "_id", "data", "datalen"],
+            "for_each_element(element, data, datalen) if (element->id == (_id))",
+        );
+        assert_eq!(
+            c.forwarded,
+            vec![(
+                "for_each_element".to_string(),
+                vec![Some(0), Some(2), Some(3)]
+            )]
+        );
+        // Parenthesized counts; an expression built from it does not.
+        let c = calls(&["p"], "f((p), p + 1, *p)");
+        assert_eq!(
+            c.forwarded,
+            vec![("f".to_string(), vec![Some(0), None, None])]
+        );
+        assert!(calls(&["p"], "f(p->n)").forwarded.is_empty());
     }
 }

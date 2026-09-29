@@ -596,7 +596,8 @@ impl<'t> Collector<'_, 't> {
                     }
                     let reached = body
                         .callees
-                        .into_iter()
+                        .iter()
+                        .cloned()
                         .map(Some)
                         // A call through a parameter calls what is passed
                         // there; an argument that names no function, or a
@@ -617,13 +618,16 @@ impl<'t> Collector<'_, 't> {
                             (!is_type_name_text(get_node_text(arg, self.source))).then_some(None)
                         }))
                         .chain(body.indirect.then_some(None));
+                    let objects: Vec<ArgRoot> =
+                        arg_nodes.iter().map(|a| self.object_root(a)).collect();
                     for callee in reached {
-                        self.out.calls.insert(CallSite {
+                        let site = callee
+                            .as_deref()
+                            .and_then(|c| forwarded_site(&body, c, &objects));
+                        self.out.calls.insert(site.unwrap_or(CallSite {
                             callee,
-                            args: Vec::new(),
-                            arg_functions: Vec::new(),
-                            arg_objects: Vec::new(),
-                        });
+                            ..Default::default()
+                        }));
                     }
                 }
                 // The call itself stays too: an `#if` arm that does not
@@ -1772,6 +1776,29 @@ pub fn name_effects(
     own
 }
 
+/// The call `callee` in a macro body makes, when it hands on one of the
+/// body's own parameters whole, as the invocation's `arg_objects` make it:
+/// each such argument has the root the invocation's argument has.
+fn forwarded_site(
+    body: &macro_expand::MacroBodyCalls,
+    callee: &str,
+    arg_objects: &[ArgRoot],
+) -> Option<CallSite> {
+    let (_, passed) = body.forwarded.iter().find(|(c, _)| c == callee)?;
+    let arg_objects = passed
+        .iter()
+        .map(|k| {
+            k.and_then(|k| arg_objects.get(k).cloned())
+                .unwrap_or(ArgRoot::Other)
+        })
+        .collect();
+    Some(CallSite {
+        callee: Some(callee.to_string()),
+        arg_objects,
+        ..Default::default()
+    })
+}
+
 /// Where a callee's write lands, as its caller sees it.
 enum Mapped {
     /// A location outside the caller's frame.
@@ -1954,7 +1981,7 @@ impl Resolver<'_, '_> {
         // Assigning a parameter writes what was passed there: nothing
         // outside the frame for the caller's own local, the object for a
         // named one, else something unknown.
-        for k in body.written_params {
+        for &k in &body.written_params {
             let written = match call.arg_objects.get(k) {
                 Some(ArgRoot::AddrOfLocal) => None,
                 Some(ArgRoot::AddrOfGlobal(g)) => Some(Loc::Global(g.clone())),
@@ -1970,8 +1997,11 @@ impl Resolver<'_, '_> {
             self.own.opaque = true;
         }
         let none = CallSite::default();
-        for c in body.callees {
-            self.classify(&c, &none, depth + 1);
+        for c in &body.callees {
+            // A parameter handed on whole carries what the invocation
+            // passed, so a nested macro assigning it writes that.
+            let site = forwarded_site(&body, c, &call.arg_objects);
+            self.classify(c, site.as_ref().unwrap_or(&none), depth + 1);
         }
         // A call through a parameter calls what the invocation passed there,
         // when that names a function.
@@ -2607,7 +2637,8 @@ mod tests {
         let header = "struct node { struct node *next; };\n\
             extern const struct node *cursor;\n\
             #define for_each_node(pos, head) \\\n\
-                for ((pos) = (head); (pos) != 0; pos = (pos)->next)\n";
+                for ((pos) = (head); (pos) != 0; pos = (pos)->next)\n\
+            #define for_each_live(pos, head) for_each_node(pos, head) if ((pos)->next)\n";
         let code = "#include \"list.h\"\n\
             const struct node *cursor;\n\
             int local(const struct node *h) { const struct node *n; int t = 0;\n\
@@ -2615,7 +2646,11 @@ mod tests {
             int global(const struct node *h) { int t = 0;\n\
                 for_each_node(cursor, h) { t++; } return t; }\n\
             int member(struct node **pp, const struct node *h) { int t = 0;\n\
-                for_each_node(pp[0], h) { t++; } return t; }\n";
+                for_each_node(pp[0], h) { t++; } return t; }\n\
+            int nested(const struct node *h) { const struct node *n; int t = 0;\n\
+                for_each_live(n, h) { t++; } return t; }\n\
+            int nested_global(const struct node *h) { int t = 0;\n\
+                for_each_live(cursor, h) { t++; } return t; }\n";
         let ctx = scanned(&[("list.h", header), ("walk.c", code)], "iter");
         let effects = ctx.effects();
         // The caller's own cursor: nothing outside its frame is written.
@@ -2627,6 +2662,10 @@ mod tests {
         let member = effects.get("member").unwrap();
         assert!(member.writes.contains(&Loc::ParamPointee(0)));
         assert!(!member.writes.contains(&Loc::Unknown));
+        // Handed on to the macro that assigns it, the same.
+        assert_eq!(effects.get("nested").unwrap().proof(true), Proof::Pure);
+        let nested = effects.get("nested_global").unwrap();
+        assert!(nested.writes.contains(&Loc::Global("cursor".into())));
     }
 
     #[test]
