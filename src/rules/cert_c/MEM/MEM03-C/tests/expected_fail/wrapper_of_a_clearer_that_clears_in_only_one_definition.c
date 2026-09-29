@@ -1,12 +1,16 @@
 /*
  * Rule: MEM03-C
  * Source: custom
- * Status: FAIL - Should trigger MEM03-C violation
+ * Status: EXPECTED_FAIL - a known gap, not detected yet
  * Description: scrub() has one definition, which hands its buffer to wipe();
  * wipe() overwrites it in one #if arm only. In a build that links the empty
  * wipe() neither function clears, so the secret is freed with its contents
- * intact: a wrapper clears in every build only what its callee clears in
- * every build.
+ * intact.
+ *
+ * A definition is credited through a forward from what SOME definition of
+ * the callee does, so scrub() reads as clearing. Asking every definition of
+ * the callee waits on modelling which definitions link together, as the
+ * same gap in MEM31-C does.
  */
 
 #include <stdlib.h>
