@@ -1373,6 +1373,10 @@ pub struct EffectInputs<'a> {
     pub names: &'a ProjectNames,
     /// One definition per function-like macro name, project-wide.
     pub function_macros: &'a HashMap<String, macro_expand::FunctionMacro>,
+    /// Every definition of every function-like macro the scanned headers
+    /// give, each `#if` alternative its own
+    /// (`ProjectContext::function_macro_arms`).
+    pub function_macro_arms: &'a HashMap<String, Vec<macro_expand::ProjectMacroArm>>,
     /// Every function-like macro name: what makes a call a macro invocation.
     pub function_macro_names: &'a std::collections::HashSet<String>,
     /// Object-like aliases (`#define ASSERT assert`).
@@ -1791,6 +1795,38 @@ impl Resolver<'_, '_> {
         );
     }
 
+    /// What one definition of a function-like macro invoked with
+    /// `arg_functions` writes and calls.
+    fn macro_arm(&mut self, arm: &MacroArm, arg_functions: &[Option<String>], depth: usize) {
+        let body = macro_expand::macro_body_calls(arm);
+        if body.writes {
+            self.own.writes.insert(Loc::Unknown);
+            self.own.writes_any = true;
+        }
+        if body.indirect {
+            self.own.opaque = true;
+        }
+        for c in body.callees {
+            self.classify(&c, &[], &[], depth + 1);
+        }
+        // A call through a parameter calls what the invocation passed there,
+        // when that names a function.
+        for k in body.param_calls {
+            match arg_functions.get(k).cloned().flatten() {
+                Some(f) => self.classify(&f, &[], &[], depth + 1),
+                None => self.own.opaque = true,
+            }
+        }
+        // `(t)(x)` calls a function passed there; with anything else, or
+        // nothing known of the argument (an invocation inside another body),
+        // it is a cast.
+        for k in body.paren_param_calls {
+            if let Some(f) = arg_functions.get(k).cloned().flatten() {
+                self.classify(&f, &[], &[], depth + 1);
+            }
+        }
+    }
+
     /// Resolve one callee name: a macro's body, a function being closed (an
     /// edge), a function the base table holds, a library function (by its
     /// contract, judged at query time), else something nothing summarizes.
@@ -1823,37 +1859,21 @@ impl Resolver<'_, '_> {
                 self.unreadable();
                 return;
             }
-            match inputs.function_macros.get(resolved) {
-                Some(def) => {
-                    let body = macro_expand::macro_body_calls(&MacroArm::from(def));
-                    if body.writes {
-                        self.own.writes.insert(Loc::Unknown);
-                        self.own.writes_any = true;
-                    }
-                    if body.indirect {
-                        self.own.opaque = true;
-                    }
-                    for c in body.callees {
-                        self.classify(&c, &[], &[], depth + 1);
-                    }
-                    // A call through a parameter calls what the invocation
-                    // passed there, when that names a function.
-                    for k in body.param_calls {
-                        match arg_functions.get(k).cloned().flatten() {
-                            Some(f) => self.classify(&f, &[], &[], depth + 1),
-                            None => self.own.opaque = true,
-                        }
-                    }
-                    // `(t)(x)` calls a function passed there; with anything
-                    // else, or nothing known of the argument (an invocation
-                    // inside another body), it is a cast.
-                    for k in body.paren_param_calls {
-                        if let Some(f) = arg_functions.get(k).cloned().flatten() {
-                            self.classify(&f, &[], &[], depth + 1);
-                        }
-                    }
+            // Any header alternative may be the one compiled, so every arm
+            // counts; a macro no header defines has its one definition.
+            let one: Option<MacroArm>;
+            let arms: Vec<&MacroArm> = match inputs.function_macro_arms.get(resolved) {
+                Some(arms) if !arms.is_empty() => arms.iter().map(|p| &p.arm).collect(),
+                _ => {
+                    one = inputs.function_macros.get(resolved).map(MacroArm::from);
+                    one.iter().collect()
                 }
-                None => self.unreadable(),
+            };
+            if arms.is_empty() {
+                self.unreadable();
+            }
+            for arm in arms {
+                self.macro_arm(arm, arg_functions, depth);
             }
             // An `#if` arm that does not define the macro may leave the name
             // a real function: that body counts too.
@@ -2247,6 +2267,7 @@ mod tests {
             &EffectInputs {
                 names: &ProjectNames::default(),
                 function_macros: &HashMap::new(),
+                function_macro_arms: &HashMap::new(),
                 function_macro_names: &names,
                 macro_aliases: &empty,
                 struct_field_types: &HashMap::new(),
@@ -2383,6 +2404,33 @@ mod tests {
             int f(int v) { log_it(v); return v; }\n";
         let ctx = scanned(&[("log.c", code)], "one-arm-macro");
         assert_eq!(ctx.effects().get("f").unwrap().proof(true), Proof::Impure);
+    }
+
+    #[test]
+    fn every_header_definition_of_a_macro_counts() {
+        // One macro's empty alternative comes first, the other's last, so
+        // no single kept definition sees both effects.
+        let header = "void log_write(int x);\n\
+            int hits;\n\
+            #ifdef NDEBUG\n\
+            #define LOG(x) ((void)0)\n\
+            #else\n\
+            #define LOG(x) log_write(x)\n\
+            #endif\n\
+            #ifdef COUNT\n\
+            #define TICK() (hits++)\n\
+            #else\n\
+            #define TICK() ((void)0)\n\
+            #endif\n";
+        let code = "#include \"log.h\"\n\
+            int f(int k) { LOG(k); return k; }\n\
+            int t(void) { TICK(); return 0; }\n";
+        let ctx = scanned(&[("log.h", header), ("use.c", code)], "header-arms");
+        let effects = ctx.effects();
+        // The logging alternative calls a function nothing defines.
+        assert_eq!(effects.get("f").unwrap().proof(true), Proof::Unproven);
+        // The counting alternative writes.
+        assert_eq!(effects.get("t").unwrap().proof(true), Proof::Impure);
     }
 
     #[test]

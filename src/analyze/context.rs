@@ -553,6 +553,7 @@ impl ProjectContext {
                 complete: true,
             },
             function_macros: Arc::clone(&self.function_macros),
+            function_macro_arms: Arc::clone(&self.function_macro_arms),
             function_macro_names: Arc::clone(&self.function_macro_names),
             macro_aliases: Arc::clone(&self.macro_aliases),
             struct_field_types: Arc::clone(&self.struct_field_types),
@@ -947,6 +948,7 @@ pub struct EffectView {
     /// What the project knows about undeclared names.
     pub names: crate::analyze::side_effects::ProjectNames,
     function_macros: Arc<HashMap<String, FunctionMacro>>,
+    function_macro_arms: Arc<HashMap<String, Vec<crate::analyze::macro_expand::ProjectMacroArm>>>,
     function_macro_names: Arc<HashSet<String>>,
     macro_aliases: Arc<HashMap<String, String>>,
     struct_field_types: Arc<HashMap<String, HashMap<String, String>>>,
@@ -979,6 +981,7 @@ impl EffectView {
         crate::analyze::side_effects::EffectInputs {
             names: &self.names,
             function_macros: &self.function_macros,
+            function_macro_arms: &self.function_macro_arms,
             function_macro_names: &self.function_macro_names,
             macro_aliases: &self.macro_aliases,
             struct_field_types: &self.struct_field_types,

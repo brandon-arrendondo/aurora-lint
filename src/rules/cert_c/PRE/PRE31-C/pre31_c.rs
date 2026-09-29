@@ -135,6 +135,7 @@ impl CertRule for Pre31C {
         let macro_names = macro_expand::FunctionMacroNames::new(source, &project_names);
         let settings = Arc::clone(&self.settings.borrow());
         let arms = macro_expand::collect_function_macro_arms(source);
+        let project_arms = Arc::clone(&self.function_macro_arms.borrow());
         let aliases = merged_macro_aliases(&self.macro_aliases.borrow(), node, source);
         let types = self.types.borrow();
         // The file's own functions, closed here with their calls into the
@@ -169,6 +170,7 @@ impl CertRule for Pre31C {
                 &EffectInputs {
                     names: &names_known,
                     function_macros: &function_macros,
+                    function_macro_arms: &project_arms,
                     function_macro_names: &names,
                     macro_aliases: &aliases,
                     struct_field_types: &types.struct_field_types,
@@ -182,7 +184,7 @@ impl CertRule for Pre31C {
             names: &macro_names,
             first: &function_macros,
             arms: &arms,
-            project_arms: &self.function_macro_arms.borrow(),
+            project_arms: &project_arms,
             include_edges: &include_edges,
             file_path: file_path.as_deref(),
             include_closure: OnceCell::new(),
