@@ -133,6 +133,22 @@ Toolchain
    - Basis: Windows looks file names up case-insensitively unless a directory
      is marked case-sensitive (Microsoft Learn, "Case sensitivity").
 
+``data_model``
+   How wide the integer types are: ``iso``, the default, credits only what ISO C
+   guarantees (``CHAR_BIT`` at least 8, ``short`` and ``int`` at least 16 bits,
+   ``long`` at least 32, ``long long`` at least 64, and the exact width of
+   ``int32_t`` and its kind); ``ilp32``, ``lp64`` or ``llp64`` declares the
+   target's model, so ``INT_MAX``, ``sizeof(long)`` and the like have their
+   values there. Under ``iso`` a limit such as ``INT_MAX`` is unknown, a value is
+   proven to fit a type only within the guaranteed range, and a defect that
+   occurs on some conforming width is reported. Neither preset sets it.
+
+   - Set with ``[environment] data_model`` or ``--data-model``
+   - Part of the settings hash only when not ``iso``
+   - Basis: C11 5.2.4.2.1 (minimum magnitudes), 6.3.1.1 (rank order) and
+     7.20.1.1 (exact-width types); integer widths are otherwise
+     implementation-defined.
+
 Declared memory functions
 -------------------------
 

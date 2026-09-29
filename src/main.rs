@@ -103,6 +103,12 @@ fn settings_from_cli(matches: &clap::ArgMatches) -> Result<SettingsConfig> {
             .get_or_insert_with(Default::default)
             .include_names = Some(names.parse().map_err(anyhow::Error::msg)?);
     }
+    if let Some(model) = parse("data_model") {
+        config
+            .environment
+            .get_or_insert_with(Default::default)
+            .data_model = Some(model.parse().map_err(anyhow::Error::msg)?);
+    }
     for assignment in matches.get_many::<String>("set").into_iter().flatten() {
         config.set(assignment).context("--set")?;
     }
@@ -377,6 +383,13 @@ fn run() -> Result<i32> {
                 .help("How #include names match files: exact, or case-insensitive as cl does on Windows. Default: case-insensitive with an MSVC --compile-commands database, exact otherwise; never taken from the scanning host")
                 .value_name("MODE")
                 .value_parser(["exact", "case-insensitive"]),
+        )
+        .arg(
+            Arg::new("data_model")
+                .long("data-model")
+                .help("The integer data model the code is built for: iso (default: only the widths ISO C guarantees, so INT_MAX and sizeof(long) are unknown), ilp32, lp64 or llp64")
+                .value_name("MODEL")
+                .value_parser(["iso", "ilp32", "lp64", "llp64"]),
         )
         .arg(
             Arg::new("allocator")

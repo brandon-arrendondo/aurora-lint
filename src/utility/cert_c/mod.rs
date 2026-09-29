@@ -12,6 +12,9 @@ pub mod clearing_extent;
 /// and the page-locking calls, so a rule asks whether a buffer is sensitive
 /// by what it reaches rather than by its name.
 pub mod credential_sinks;
+/// The integer data model a scan credits: ISO C's guaranteed minimums unless
+/// a project declares ILP32, LP64 or LLP64.
+pub mod data_model;
 /// Reusable functions for analyzing C declarators (arrays, pointers, function pointers).
 pub mod declarator_utils;
 /// The C type of an expression, read from the declarations it names and
