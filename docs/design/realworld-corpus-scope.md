@@ -559,6 +559,19 @@ anything here. `src/drivers/driver_bsd.c:403`'s `#ifdef WORDS_BIGENDIAN` arm is
 intra-file and not expressible; `endianness: little` is declared so the axis at
 least has a name.
 
+### Declared memory functions
+
+`conf/realworld/hostap-rules.toml` declares the documented frees of the
+libraries hostap links against, whose bodies are outside the scan: OpenSSL
+(and wolfSSL through its OpenSSL-compatible names), `wc_PKCS7_Free`, and
+libnl's `nlmsg_free`/`nl_socket_free`. `EC_COMP_PUBKEY_free` is generated
+in-tree by OpenSSL's `IMPLEMENT_ASN1_FUNCTIONS` and follows the documented
+ASN.1 `TYPE_free` contract. hostap takes no `*_up_ref` on these objects; its
+one `nlmsg_get` queues a message that a different function frees. `os_free` is
+not declared: it has a body and frees by it. `X509_STORE_CTX_cleanup`,
+`rtnl_link_delete` and `wpa_driver_ndis_adapter_close` are not frees and are
+not declared, although `--report-deallocator-candidates` lists them by name.
+
 ## mosquitto
 
 ### Scope

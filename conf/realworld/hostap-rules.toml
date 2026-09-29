@@ -4,6 +4,45 @@ version = "1.0.0"
 description = "Project rules manifest for hostap (pinned commit dcee60436) — hostapd (AP) + wpa_supplicant (station): WPA/EAP, crypto, 802.11. Based on the shared base rules_templates/rules-all.toml. A security-critical networking DAEMON parsing untrusted 802.11/EAP frames, with crypto. Daemon-hardening (POS*), SIG*, MEM* (incl. MEM06 clear-sensitive-data for keys), MSC30/32 (randomness), and WIN* (wpa_supplicant has a Windows/NDIS port) are IN scope. No categorical disable beyond dead config. Per-finding analyzer misfires among ENABLED rules (DCL13, MEM30, INT30/32, API00, EXP33/34, ...) are NOT suppressed here — they are recorded in the ground_truth oracle so they stay measured. See data/precision_audit/."
 cert_version = "2016"
 
+# The documented frees of the crypto and netlink libraries hostap links
+# against, whose bodies are outside the scan: OpenSSL (and wolfSSL through
+# its OpenSSL-compatible names), wolfSSL's own wc_PKCS7_Free, and libnl.
+# EC_COMP_PUBKEY_free is generated in crypto_openssl.c by OpenSSL's
+# IMPLEMENT_ASN1_FUNCTIONS and follows the documented ASN.1 TYPE_free
+# contract. hostap takes no extra reference to any of these objects
+# (no *_up_ref); its one nlmsg_get (driver_nl80211.c) queues a message a
+# different function frees. os_free is NOT declared: it has a body, and
+# frees by it. X509_STORE_CTX_cleanup (keeps the context), rtnl_link_delete
+# (a kernel operation) and wpa_driver_ndis_adapter_close are not frees.
+[environment.deallocators]
+EVP_PKEY_free = 1
+EVP_PKEY_CTX_free = 1
+EVP_CIPHER_CTX_free = 1
+EVP_MAC_CTX_free = 1
+wolfSSL_EVP_MD_CTX_free = 1
+BIO_free = 1
+BN_CTX_free = 1
+BN_free = 1
+BN_clear_free = 1
+X509_free = 1
+X509_STORE_free = 1
+X509_STORE_CTX_free = 1
+ASN1_OCTET_STRING_free = 1
+DH_free = 1
+RSA_free = 1
+EC_KEY_free = 1
+EC_POINT_free = 1
+EC_POINT_clear_free = 1
+ECDSA_SIG_free = 1
+EC_COMP_PUBKEY_free = 1
+CMAC_CTX_free = 1
+OSSL_HPKE_CTX_free = 1
+OSSL_PARAM_BLD_free = 1
+SSL_free = 1
+wc_PKCS7_Free = 1
+nlmsg_free = 1
+nl_socket_free = 1
+
 [rules.cert_c.API00-C]
 enabled = true
 
