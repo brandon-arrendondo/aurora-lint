@@ -1615,6 +1615,16 @@ impl Resolver<'_, '_> {
     /// replacement lists read, write and call; any other name the scan or the
     /// standard headers declare reads nothing; anything else is unknown.
     fn free_name(&mut self, name: &str, depth: usize) {
+        let mut expanding = Vec::new();
+        self.free_name_within(name, depth, &mut expanding);
+    }
+
+    /// [`Self::free_name`] inside the expansion of the object-like macros
+    /// `expanding` names. A macro's own name in its replacement list is not
+    /// replaced again (C11 6.10.3.4p2: `#define counter counter`, glibc's
+    /// `#define stdin stdin`), so a name already being expanded is judged
+    /// as the plain name it then is.
+    fn free_name_within(&mut self, name: &str, depth: usize, expanding: &mut Vec<String>) {
         let names = self.inputs.names;
         if names.volatile_globals.contains(name) {
             // Matched by spelling across the scan (ADR-0006): when another
@@ -1627,7 +1637,11 @@ impl Resolver<'_, '_> {
             }
             return;
         }
-        if let Some(defs) = names.macro_definitions.get(name) {
+        if let Some(defs) = names
+            .macro_definitions
+            .get(name)
+            .filter(|_| !expanding.iter().any(|e| e == name))
+        {
             use crate::analyze::check_macros::MacroDefinition;
             for def in defs {
                 match def {
@@ -1636,7 +1650,9 @@ impl Resolver<'_, '_> {
                             self.unreadable();
                             continue;
                         }
-                        self.object_macro(body, depth);
+                        expanding.push(name.to_string());
+                        self.object_macro(body, depth, expanding);
+                        expanding.pop();
                     }
                     // Named without a call: a function designator.
                     MacroDefinition::Function { .. } => {}
@@ -1674,7 +1690,7 @@ impl Resolver<'_, '_> {
     /// What an object-like macro's replacement list reads, writes and calls:
     /// `(*(volatile unsigned *)0x40000000u)` reads a volatile object,
     /// `get_tick()` calls, a nested macro recurses.
-    fn object_macro(&mut self, body: &str, depth: usize) {
+    fn object_macro(&mut self, body: &str, depth: usize, expanding: &mut Vec<String>) {
         let arm = MacroArm {
             params: Vec::new(),
             variadic: None,
@@ -1700,7 +1716,7 @@ impl Resolver<'_, '_> {
             } else if names.volatile_globals.contains(&ident)
                 || names.macro_definitions.contains_key(&ident)
             {
-                self.free_name(&ident, depth + 1);
+                self.free_name_within(&ident, depth + 1, expanding);
             }
         }
     }
@@ -2253,6 +2269,14 @@ mod tests {
             ctx.effects().get("get").unwrap().proof(true),
             Proof::Unproven
         );
+    }
+
+    #[test]
+    fn a_self_referential_object_macro_is_the_plain_name() {
+        let header = "extern int counter;\n#define counter counter\n";
+        let use_c = "int f(void) { return counter; }\n";
+        let ctx = scanned(&[("c.h", header), ("use.c", use_c)], "self-referential");
+        assert_eq!(ctx.effects().get("f").unwrap().proof(true), Proof::Pure);
     }
 
     #[test]
