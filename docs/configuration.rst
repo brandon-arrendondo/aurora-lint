@@ -76,6 +76,7 @@ be set explicitly, down to single options:
     kind = "freestanding"       # "hosted" | "freestanding"; overrides the preset
     libc = "newlib"             # iso-posix | glibc | musl | newlib | picolibc | custom
     include_names = "exact"     # "exact" | "case-insensitive" (as cl on Windows)
+    data_model = "lp64"         # "iso" (the default) | "ilp32" | "lp64" | "llp64"
 
     [environment.overrides]
     static_zero_init = false    # our startup code does not clear .bss
@@ -90,7 +91,7 @@ be set explicitly, down to single options:
 
 The same settings are available on the command line, where they win over the
 manifest: ``--profile``, ``--policy``, ``--environment``, ``--libc``,
-``--include-names``, the repeatable ``--allocator NAME[=CONTRACT]`` and
+``--include-names``, ``--data-model``, the repeatable ``--allocator NAME[=CONTRACT]`` and
 ``--deallocator NAME[=ARG]``, and a repeatable ``--set NAME=VALUE``. A
 ``--profile`` given on the command line starts again from that preset,
 discarding the manifest's settings except its declared allocators and
@@ -104,7 +105,7 @@ one set on the wrong axis, is an error naming the allowed set. A SARIF
 export records the settings in ``runs[0].properties["aurora-lint/settings"]``,
 so a report always says which reading produced it. Its ``hash`` is the SHA-256
 of the settings' canonical JSON (sorted keys): equal settings always hash
-equally, and adding or changing any option changes it.
+equally, and changing any option's value changes it.
 
 ``include_names`` says how an ``#include`` name is matched against the files on
 disk. It describes the toolchain rather than an assumption the rules trust, so
@@ -113,6 +114,18 @@ neither preset sets it. Left unset, it is ``case-insensitive`` when
 ``exact`` otherwise. The file system of the machine running the scan never
 decides it. It enters the settings hash only when ``case-insensitive``, so
 settings that never mention it keep the hash they always had.
+
+``data_model`` says how wide the target's integer types are. Integer widths
+are implementation-defined, so by default (``iso``) only what ISO C guarantees
+is credited: ``CHAR_BIT`` at least 8, ``short`` and ``int`` at least 16 bits,
+``long`` at least 32, ``long long`` at least 64, and the exact width of
+``int32_t`` and its kind. ``INT_MAX``, ``LONG_MAX`` and ``sizeof(long)`` are then
+unknown: a value is proven to fit a type only inside its guaranteed range, and
+a defect that occurs at some conforming width (``unsigned char * unsigned
+char`` overflowing a 16-bit ``int``) is reported. Declaring ``ilp32``, ``lp64``
+or ``llp64`` gives every width its value on that target. It enters the
+settings hash only when declared. ``--set data_model=MODEL`` is the same as
+``--data-model MODEL``.
 
 ``allocators`` and ``deallocators`` declare functions the scan has no body
 for, such as a platform hook the build supplies: a deallocator frees the

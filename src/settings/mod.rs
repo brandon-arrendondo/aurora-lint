@@ -16,6 +16,7 @@
 
 pub mod memory;
 
+pub use crate::utility::cert_c::data_model::DataModel;
 use anyhow::{bail, Result};
 pub use memory::{AllocatorContract, MemoryDeclarations};
 use serde::{Deserialize, Serialize};
@@ -423,6 +424,10 @@ pub struct EnvironmentConfig {
     /// makes it case-insensitive and anything else exact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_names: Option<IncludeNames>,
+    /// The integer data model the target is built for. Unset, only what ISO
+    /// C guarantees about integer widths is credited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_model: Option<DataModel>,
     /// Declared allocators: `name = "malloc"` (or another standard
     /// allocator whose contract the function follows). See [`memory`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -493,6 +498,9 @@ impl SettingsConfig {
             if e.include_names.is_some() {
                 mine.include_names = e.include_names;
             }
+            if e.data_model.is_some() {
+                mine.data_model = e.data_model;
+            }
             mine.allocators
                 .extend(e.allocators.iter().map(|(k, v)| (k.clone(), *v)));
             mine.deallocators
@@ -503,11 +511,21 @@ impl SettingsConfig {
     }
 
     /// Record a `NAME=VALUE` override, routed to the axis `NAME` belongs to.
+    /// `data_model=MODEL` declares the environment's data model.
     pub fn set(&mut self, assignment: &str) -> Result<()> {
         let Some((name, value)) = assignment.split_once('=') else {
             bail!("expected NAME=VALUE, got '{assignment}'");
         };
         let (name, value) = (name.trim(), value.trim());
+        if name == "data_model" {
+            let model = value
+                .parse()
+                .map_err(|e: String| anyhow::anyhow!("data_model: {e}"))?;
+            self.environment
+                .get_or_insert_with(Default::default)
+                .data_model = Some(model);
+            return Ok(());
+        }
         let value: bool = match value {
             "true" => true,
             "false" => false,
@@ -549,6 +567,8 @@ pub struct AnalysisSettings {
     pub libc: Option<Libc>,
     /// How `#include` names match files.
     pub include_names: IncludeNames,
+    /// The integer data model credited (`DataModel::Iso` unless declared).
+    pub data_model: DataModel,
     /// The project's declared allocators and deallocators.
     pub memory: MemoryDeclarations,
     /// The path globs whose files the cross-file prescan does not read
@@ -586,6 +606,7 @@ impl AnalysisSettings {
         };
         let mut libc = None;
         let mut include_names = IncludeNames::default();
+        let mut data_model = DataModel::default();
         let mut memory = MemoryDeclarations::default();
         if let Some(p) = &config.policy {
             policy = p.level.unwrap_or(policy);
@@ -594,6 +615,7 @@ impl AnalysisSettings {
             environment = e.kind.unwrap_or(environment);
             libc = e.libc;
             include_names = e.include_names.unwrap_or_default();
+            data_model = e.data_model.unwrap_or_default();
             memory = MemoryDeclarations {
                 allocators: e.allocators.clone(),
                 deallocators: e.deallocators.clone(),
@@ -647,6 +669,7 @@ impl AnalysisSettings {
             environment,
             libc,
             include_names,
+            data_model,
             memory,
             prescan_scope: Vec::new(),
             values,
@@ -675,14 +698,15 @@ impl AnalysisSettings {
     }
 
     /// The preset these settings equal, if any. A preset says nothing about
-    /// how `#include` names match, which functions a project declares or
-    /// which files the prescan reads, so
-    /// those fields are not compared.
+    /// how `#include` names match, the data model, which functions a
+    /// project declares or which files the prescan reads, so those fields
+    /// are not compared.
     pub fn matching_preset(&self) -> Option<Preset> {
         [Preset::Default, Preset::Strict].into_iter().find(|p| {
             *self
                 == Self {
                     include_names: self.include_names,
+                    data_model: self.data_model,
                     memory: self.memory.clone(),
                     prescan_scope: self.prescan_scope.clone(),
                     ..Self::preset(*p)
@@ -748,6 +772,10 @@ impl AnalysisSettings {
         if self.include_names != IncludeNames::Exact {
             identity["include_names"] = serde_json::json!(self.include_names);
         }
+        // Likewise only when a model is declared.
+        if self.data_model != DataModel::Iso {
+            identity["data_model"] = serde_json::json!(self.data_model);
+        }
         // Likewise present only when something is declared.
         if !self.memory.allocators.is_empty() {
             identity["allocators"] = serde_json::json!(self.memory.allocators);
@@ -785,7 +813,14 @@ macro_rules! display_via_serde {
     )*};
 }
 
-display_via_serde!(Preset, Policy, EnvironmentKind, Libc, IncludeNames);
+display_via_serde!(
+    Preset,
+    Policy,
+    EnvironmentKind,
+    Libc,
+    IncludeNames,
+    DataModel
+);
 
 /// `v` serialized with every object's keys in sorted order and no
 /// whitespace, whatever order the map preserved.
@@ -837,13 +872,14 @@ pub fn render_text(current: &AnalysisSettings) -> String {
     let default = AnalysisSettings::preset(Preset::Default);
     let strict = AnalysisSettings::preset(Preset::Strict);
     let mut out = format!(
-        "Current: policy={}, environment={}, libc={}, include_names={}\n\n",
+        "Current: policy={}, environment={}, libc={}, include_names={}, data_model={}\n\n",
         current.policy,
         current.environment,
         current
             .libc
             .map_or_else(|| "none".to_string(), |l| l.to_string()),
         current.include_names,
+        current.data_model,
     );
     for (name, contract) in &current.memory.allocators {
         out.push_str(&format!("Declared allocator: {name} (as {contract})\n"));
@@ -953,7 +989,21 @@ pub fn render_rst() -> String {
          - Set with ``[environment] include_names`` or ``--include-names``\n   \
          - Part of the settings hash only when ``case-insensitive``\n   \
          - Basis: Windows looks file names up case-insensitively unless a directory\n     \
-         is marked case-sensitive (Microsoft Learn, \"Case sensitivity\").\n",
+         is marked case-sensitive (Microsoft Learn, \"Case sensitivity\").\n\n\
+         ``data_model``\n   \
+         How wide the integer types are: ``iso``, the default, credits only what ISO C\n   \
+         guarantees (``CHAR_BIT`` at least 8, ``short`` and ``int`` at least 16 bits,\n   \
+         ``long`` at least 32, ``long long`` at least 64, and the exact width of\n   \
+         ``int32_t`` and its kind); ``ilp32``, ``lp64`` or ``llp64`` declares the\n   \
+         target's model, so ``INT_MAX``, ``sizeof(long)`` and the like have their\n   \
+         values there. Under ``iso`` a limit such as ``INT_MAX`` is unknown, a value is\n   \
+         proven to fit a type only within the guaranteed range, and a defect that\n   \
+         occurs on some conforming width is reported. Neither preset sets it.\n\n   \
+         - Set with ``[environment] data_model`` or ``--data-model``\n   \
+         - Part of the settings hash only when not ``iso``\n   \
+         - Basis: C11 5.2.4.2.1 (minimum magnitudes), 6.3.1.1 (rank order) and\n     \
+         7.20.1.1 (exact-width types); integer widths are otherwise\n     \
+         implementation-defined.\n",
     );
     out.push_str(
         "\nDeclared memory functions\n\
@@ -1195,5 +1245,43 @@ mod tests {
         );
         assert!("exact".parse::<IncludeNames>().is_ok());
         assert!("insensitive".parse::<IncludeNames>().is_err());
+    }
+
+    #[test]
+    fn only_a_declared_data_model_is_named_and_hashed() {
+        let with = |model: Option<DataModel>| {
+            AnalysisSettings::resolve(&SettingsConfig {
+                environment: Some(EnvironmentConfig {
+                    data_model: model,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .unwrap()
+        };
+        let base = AnalysisSettings::preset(Preset::Default);
+        assert_eq!(base.data_model, DataModel::Iso);
+        let iso = with(Some(DataModel::Iso));
+        assert_eq!(iso.settings_hash(), base.settings_hash());
+        assert!(iso.to_json()["data_model"].is_null());
+        let lp64 = with(Some(DataModel::Lp64));
+        assert_eq!(lp64.matching_preset(), Some(Preset::Default));
+        assert_ne!(lp64.settings_hash(), base.settings_hash());
+        assert_eq!(lp64.to_json()["data_model"], "lp64");
+        let config: SettingsConfig =
+            toml::from_str("[environment]\ndata_model = \"llp64\"\n").unwrap();
+        assert_eq!(
+            AnalysisSettings::resolve(&config).unwrap().data_model,
+            DataModel::Llp64
+        );
+        let mut set = SettingsConfig::default();
+        set.set("data_model=lp64").unwrap();
+        assert_eq!(
+            AnalysisSettings::resolve(&set).unwrap().data_model,
+            DataModel::Lp64
+        );
+        assert!(set.set("data_model=ilp64").is_err());
+        assert!("ilp32".parse::<DataModel>().is_ok());
+        assert!("ilp64".parse::<DataModel>().is_err());
     }
 }
