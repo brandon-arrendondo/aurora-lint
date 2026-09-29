@@ -735,11 +735,20 @@ fn check_call_expression_cfg(
     // call of the same name, so the macro table decides. Only the arguments
     // spelled as a plain pointer: `M(&v)` stores into `v` instead.
     if function.kind() == "identifier" && macros.contains_key(&func_name) {
-        let through = macro_expand::macro_writes_through_param_indices(
+        // A parameter the macro also assigns as a whole (an iterator's loop
+        // variable, `HASH_FIND`'s result) is dereferenced only after the
+        // macro has given it a new value, so the argument's incoming value
+        // is not what is dereferenced.
+        let reassigned =
+            macro_expand::macro_output_param_indices(macros, &func_name, macro_expand::Live::Any);
+        let through: Vec<usize> = macro_expand::macro_writes_through_param_indices(
             macros,
             &func_name,
             macro_expand::Live::Any,
-        );
+        )
+        .into_iter()
+        .filter(|idx| !reassigned.contains(idx))
+        .collect();
         if !through.is_empty() {
             if let Some(args) = node.child_by_field_name("arguments") {
                 check_macro_dereferenced_arguments(
