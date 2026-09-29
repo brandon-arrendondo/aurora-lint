@@ -3946,7 +3946,13 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 for field in fields {
                     let field_key = format!("{}->{}", var_name, field);
                     self.freed_memory
-                        .insert(field_key, (free_pos.row + 1, free_pos.column + 1));
+                        .insert(field_key.clone(), (free_pos.row + 1, free_pos.column + 1));
+                    // `frees_param_fields` is a MAY fact, and says nothing of
+                    // the NULL the callee often writes back: hostap's
+                    // `wpas_dpp_deinit(wpa_s)` frees and clears
+                    // `wpa_s->dpp_config_obj_override`, so the caller's own
+                    // os_free() of it that follows releases NULL.
+                    self.unaccusable_frees.insert(field_key);
                 }
             }
         }

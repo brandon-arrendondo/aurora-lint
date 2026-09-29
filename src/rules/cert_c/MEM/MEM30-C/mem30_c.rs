@@ -3920,6 +3920,17 @@ impl MemoryAnalyzer {
             }
             if summary.is_some_and(|s| s.frees_param_pointees.contains(&idx)) {
                 self.mark_arg_freed(call, inner, source, violations);
+                // hostap's `nl_destroy_handles(&bss->nl_mgmt)` frees `*handle`
+                // and then writes `*handle = NULL`: the caller's pointer is
+                // left NULL, as after `free(p); p = NULL;`, not dangling.
+                if summary.is_some_and(|s| s.nulls_param_pointees.contains(&idx)) {
+                    if let Some(lv) = lvalue_of(&inner, source) {
+                        self.freed_vars.remove(&lv);
+                        self.realloc_invalidated.remove(&lv);
+                        self.freed_at.remove(&lv);
+                        self.nullified_vars.insert(lv);
+                    }
+                }
                 continue;
             }
             if summary.is_some_and(|s| s.conditional_modifies_params.contains(&idx)) {
