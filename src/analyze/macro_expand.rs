@@ -1074,6 +1074,11 @@ pub struct MacroBodyCalls {
     /// `#define APPLY(fn, x) fn(x)`): the callee is whatever the invocation
     /// passes there.
     pub param_calls: Vec<usize>,
+    /// Positions of parameters the body calls parenthesized (`(fn)(x)`),
+    /// which is a call of what the invocation passes there when that names
+    /// a function, and otherwise usually a cast (`#define cast(t, exp)
+    /// ((t)(exp))`).
+    pub paren_param_calls: Vec<usize>,
     /// A call through something no name designates: a member
     /// (`o->vt->run(o)`, `ops.f(x)`) or a parenthesized pointer
     /// (`(*fp)(x)`, `(o->fn)(x)`).
@@ -1143,7 +1148,7 @@ pub fn macro_body_calls(arm: &MacroArm) -> MacroBodyCalls {
                         continue;
                     }
                     if let Some(k) = arm.params.iter().position(|p| p == w) {
-                        out.param_calls.push(k);
+                        out.paren_param_calls.push(k);
                     } else {
                         out.callees.push(w.to_string());
                     }
@@ -4906,7 +4911,8 @@ mod macro_write_tests {
         // A parenthesized parameter or name is the callee, or a cast the
         // consumer recognises by its type.
         let c = calls(&["fn", "x"], "(fn)(x) + (run)(x)");
-        assert_eq!(c.param_calls, vec![0]);
+        assert_eq!(c.paren_param_calls, vec![0]);
+        assert!(c.param_calls.is_empty());
         assert_eq!(c.callees, vec!["run".to_string()]);
         assert!(!c.indirect);
         // `f(a)(b)`: `(a)` is f's argument list, not a callee.

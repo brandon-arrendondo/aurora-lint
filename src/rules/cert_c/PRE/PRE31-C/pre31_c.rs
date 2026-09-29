@@ -7,9 +7,9 @@ use crate::analyze::context::{EffectView, IncludeClosure, ProjectContext, Visibl
 use crate::analyze::function_summary::extract_function_name;
 use crate::analyze::macro_expand::{self, ArgEvaluation, FunctionMacro, MacroArm, ProjectMacroArm};
 use crate::analyze::side_effects::{
-    collect_direct_effects, dereferences_applied, designates_object, is_volatile_read,
-    names_a_type, typedef_is_volatile, typedef_read, EffectInputs, EffectTable, FileScope, Proof,
-    PURE_BUILTINS,
+    collect_direct_effects, dereferences_applied, designates_object, is_type_name_text,
+    is_volatile_read, names_a_type, typedef_is_volatile, typedef_read, EffectInputs, EffectTable,
+    FileScope, Proof, PURE_BUILTINS,
 };
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
@@ -597,9 +597,28 @@ impl<'a> Ctx<'a> {
                         _ => Effect::Unknown,
                     }
                 });
+                // `(t)(x)`: a function passed there is called; a type is a
+                // cast; another expression is a call through it; nothing
+                // passed (an invocation inside another body) is a cast.
+                let through_paren_params = body.paren_param_calls.iter().map(|&k| {
+                    let Some(a) = passed
+                        .get(k)
+                        .map(crate::analyze::init_state::strip_arg_casts)
+                    else {
+                        return Effect::None;
+                    };
+                    if a.kind() == "identifier" && !designates_object(&a, self.source) {
+                        self.callee_effect(get_node_text(&a, self.source), depth + 1)
+                    } else if is_type_name_text(get_node_text(&a, self.source)) {
+                        Effect::None
+                    } else {
+                        Effect::Unknown
+                    }
+                });
                 let indirect = body.indirect.then_some(Effect::Unknown);
                 direct
                     .chain(through_params)
+                    .chain(through_paren_params)
                     .chain(indirect)
                     .max()
                     .unwrap_or(Effect::None)

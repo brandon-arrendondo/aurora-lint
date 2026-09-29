@@ -549,16 +549,17 @@ impl<'t> Collector<'_, 't> {
             }
             _ => None,
         };
-        let (args, arg_functions): (Vec<ArgRoot>, Vec<Option<String>>) = node
+        let arg_nodes: Vec<Node<'t>> = node
             .child_by_field_name("arguments")
             .map(|a| {
                 let mut cursor = a.walk();
                 a.named_children(&mut cursor)
                     .filter(|c| c.kind() != "comment")
-                    .map(|c| self.arg_root(&c))
-                    .unzip()
+                    .collect()
             })
             .unwrap_or_default();
+        let (args, arg_functions): (Vec<ArgRoot>, Vec<Option<String>>) =
+            arg_nodes.iter().map(|c| self.arg_root(c)).unzip();
         if let Some(name) = &callee {
             if let Some(arms) = self.arms.get(name).filter(|a| !a.is_empty()) {
                 for arm in arms {
@@ -578,6 +579,16 @@ impl<'t> Collector<'_, 't> {
                                 .iter()
                                 .map(|&k| arg_functions.get(k).cloned().flatten()),
                         )
+                        // `(t)(x)`: a function passed there is called; a
+                        // type is a cast; another expression is a call
+                        // through it.
+                        .chain(body.paren_param_calls.iter().filter_map(|&k| {
+                            if let Some(f) = arg_functions.get(k).cloned().flatten() {
+                                return Some(Some(f));
+                            }
+                            let arg = arg_nodes.get(k)?;
+                            (!is_type_name_text(get_node_text(arg, self.source))).then_some(None)
+                        }))
                         .chain(body.indirect.then_some(None));
                     for callee in reached {
                         self.out.calls.insert(CallSite {
@@ -1192,27 +1203,52 @@ pub const PURE_BUILTINS: &[&str] = &[
 
 /// Callees that change nothing the program goes on with: an assertion
 /// evaluates its condition (judged where it is written) or aborts.
-/// Whether `name` names a type rather than a function: a C type keyword, a
-/// typedef the scan knows, or an ISO C/POSIX `_t` name (POSIX reserves the
-/// suffix for types). A "call" of one in a macro body is a cast
-/// (`#define CAST(T, x) (T)(x)`), which evaluates nothing.
+/// Whether `name` names a type rather than a function: a type name
+/// [`is_type_name_text`] recognises, a typedef the scan knows, or an ISO
+/// C/POSIX `_t` name (POSIX reserves the suffix for types). A "call" of one
+/// in a macro body is a cast (`#define CAST(T, x) (T)(x)`), which evaluates
+/// nothing.
 pub fn names_a_type(name: &str, typedefs: &HashMap<String, String>) -> bool {
-    matches!(
-        name,
-        "char"
-            | "short"
-            | "int"
-            | "long"
-            | "float"
-            | "double"
-            | "void"
-            | "signed"
-            | "unsigned"
-            | "_Bool"
-            | "_Complex"
-            | "bool"
-    ) || typedefs.contains_key(name)
-        || name.ends_with("_t")
+    is_type_name_text(name) || typedefs.contains_key(name) || name.ends_with("_t")
+}
+
+/// Whether a macro argument's text is a type name by its spelling alone:
+/// it ends in `*` (`union GCUnion *`, which no expression does), starts with
+/// `struct`/`union`/`enum`, or is only type keywords and qualifiers
+/// (`unsigned long`, `const char`).
+pub fn is_type_name_text(text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() {
+        return false;
+    }
+    if text.ends_with('*') {
+        return true;
+    }
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if matches!(words.first(), Some(&("struct" | "union" | "enum"))) {
+        return true;
+    }
+    words.iter().all(|w| {
+        matches!(
+            *w,
+            "char"
+                | "short"
+                | "int"
+                | "long"
+                | "float"
+                | "double"
+                | "void"
+                | "signed"
+                | "unsigned"
+                | "_Bool"
+                | "_Complex"
+                | "bool"
+                | "const"
+                | "volatile"
+                | "restrict"
+                | "_Atomic"
+        )
+    })
 }
 
 fn is_effect_free_builtin(name: &str) -> bool {
@@ -1806,6 +1842,14 @@ impl Resolver<'_, '_> {
                         match arg_functions.get(k).cloned().flatten() {
                             Some(f) => self.classify(&f, &[], &[], depth + 1),
                             None => self.own.opaque = true,
+                        }
+                    }
+                    // `(t)(x)` calls a function passed there; with anything
+                    // else, or nothing known of the argument (an invocation
+                    // inside another body), it is a cast.
+                    for k in body.paren_param_calls {
+                        if let Some(f) = arg_functions.get(k).cloned().flatten() {
+                            self.classify(&f, &[], &[], depth + 1);
                         }
                     }
                 }
