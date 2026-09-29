@@ -480,6 +480,18 @@ fn resolve_sizeof_type(type_text: &str, macros: &MacroConstantMap) -> Option<i64
     macros.get(&key).copied()
 }
 
+/// What every conforming implementation guarantees of `sizeof(type)` when
+/// [`resolve_sizeof_type`] cannot fix it: an exact-width type has exactly N
+/// bits and no padding (C11 7.20.1.1) over a `char` of at least 8 bits
+/// (5.2.4.2.1), so its size is between 1 and N/8. `None` for any other type.
+fn sizeof_type_bounds(type_text: &str) -> Option<ValueRange> {
+    let t = type_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    SIZEOF_SPELLINGS.iter().find_map(|(s, size)| match size {
+        SizeOf::Exact(bits) if *s == t => Some(ValueRange::new(1, i64::from(bits / 8))),
+        _ => None,
+    })
+}
+
 /// Whether `type_text` names a builtin type whose `sizeof` only the data
 /// model can fix, so an unknown answer is not "some object of at least one
 /// byte".
@@ -1884,22 +1896,22 @@ pub fn try_evaluate_expr(node: &Node, source: &str, macros: &MacroConstantMap) -
 
 /// Resolve a sizeof_expression AST node to a constant value.
 fn resolve_sizeof_node(node: &Node, source: &str, macros: &MacroConstantMap) -> Option<i64> {
-    // sizeof_expression children: "sizeof" "(" type_descriptor ")" or "sizeof" "(" expression ")"
-    // The type is in a parenthesized_expression or type_descriptor child.
+    resolve_sizeof_type(sizeof_node_type(node, source)?, macros)
+}
+
+/// The type a sizeof_expression names: its type_descriptor, or a
+/// parenthesized identifier that may be a typedef name (`sizeof(wchar_t)`).
+fn sizeof_node_type<'a>(node: &Node, source: &'a str) -> Option<&'a str> {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             match child.kind() {
                 "type_descriptor" | "primitive_type" | "sized_type_specifier" => {
-                    let type_text = child.utf8_text(source.as_bytes()).ok()?;
-                    return resolve_sizeof_type(type_text, macros);
+                    return child.utf8_text(source.as_bytes()).ok();
                 }
                 "parenthesized_expression" => {
-                    // sizeof(expr) — check if inner is a type-like identifier
                     if let Some(inner) = child.child(1) {
                         if inner.kind() == "identifier" {
-                            let text = inner.utf8_text(source.as_bytes()).ok()?;
-                            // Could be a typedef name like wchar_t, int64_t, etc.
-                            return resolve_sizeof_type(text, macros);
+                            return inner.utf8_text(source.as_bytes()).ok();
                         }
                     }
                 }
@@ -2200,7 +2212,12 @@ fn try_evaluate_range_inner(
             let value = node.child_by_field_name("value")?;
             try_evaluate_range_inner(&value, source, macros, var_ranges, fmacros)
         }
-        "sizeof_expression" => resolve_sizeof_node(node, source, macros).map(ValueRange::exact),
+        "sizeof_expression" => {
+            let type_text = sizeof_node_type(node, source)?;
+            resolve_sizeof_type(type_text, macros)
+                .map(ValueRange::exact)
+                .or_else(|| sizeof_type_bounds(type_text))
+        }
         // A function-like macro invocation parses as a call. When the caller
         // supplied the macro table, expand it and bound the replacement list
         // instead of treating it as an opaque call. Failing that, a standard
@@ -4127,6 +4144,14 @@ int f(unsigned long s) { return LINEBITS(s); }
         assert_eq!(macros.get("HALF"), Some(&16383));
         let iso = collect_macro_constants(&tree.root_node(), &source, DataModel::Iso);
         assert_eq!(iso.get("HALF"), Some(&16383));
+    }
+
+    #[test]
+    fn test_sizeof_type_bounds_exact_width() {
+        assert_eq!(sizeof_type_bounds("uint64_t"), Some(ValueRange::new(1, 8)));
+        assert_eq!(sizeof_type_bounds("int16_t"), Some(ValueRange::new(1, 2)));
+        assert_eq!(sizeof_type_bounds("long"), None);
+        assert_eq!(sizeof_type_bounds("struct foo"), None);
     }
 
     #[test]
