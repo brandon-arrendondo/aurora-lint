@@ -339,7 +339,7 @@ mod tests {
         let tree = parse_c_code(&code);
         let empty = HashMap::new();
         let (fields, shapes, aliases) = (HashMap::new(), HashMap::new(), HashMap::new());
-        let env = TypeEnv::new(&empty, &fields, &shapes, &aliases);
+        let env = TypeEnv::new(&empty, &fields, &shapes, &aliases, Default::default());
         let decl = lang_parsing_substrate::query::find_descendants_of_kinds(
             tree.root_node(),
             &["init_declarator"],

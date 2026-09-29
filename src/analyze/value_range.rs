@@ -26,7 +26,8 @@ use tree_sitter::Node;
 pub struct VarType {
     /// Whether the type is signed.
     pub is_signed: bool,
-    /// Bit width of the type (8/16/32/64).
+    /// Bit width of the type (8/16/32/64), or 0 when the data model leaves
+    /// it open, whose range is then unbounded.
     pub bit_width: u32,
 }
 
@@ -165,7 +166,11 @@ fn widen_typed(old: &TypedRange, new: &TypedRange) -> TypedRange {
 // ---------------------------------------------------------------------------
 
 /// Extract type info from a declaration node's type specifiers.
-fn extract_var_type_from_declaration(decl_node: &Node, source: &str) -> Option<VarType> {
+fn extract_var_type_from_declaration(
+    decl_node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+) -> Option<VarType> {
     let mut is_unsigned = false;
     let mut is_signed = false;
     let mut base_type: Option<String> = None;
@@ -197,88 +202,89 @@ fn extract_var_type_from_declaration(decl_node: &Node, source: &str) -> Option<V
     }
 
     let type_text = base_type?;
-    let t = type_text.trim();
+    let t = type_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let t = t.as_str();
 
-    // Determine signedness and bit width
-    let (signed, bits) = match t {
-        "char" | "signed char" => (true, 8u32),
-        "unsigned char" => (false, 8),
-        "short" | "short int" | "signed short" | "signed short int" => (true, 16),
-        "unsigned short" | "unsigned short int" => (false, 16),
-        "int" | "signed" | "signed int" => (true, 32),
-        "unsigned" | "unsigned int" => (false, 32),
-        "long" | "long int" | "signed long" | "signed long int" => (true, 64),
-        "unsigned long" | "unsigned long int" => (false, 64),
-        "long long" | "long long int" | "signed long long" | "signed long long int" => (true, 64),
-        "unsigned long long" | "unsigned long long int" => (false, 64),
-        _ => {
-            // Typedef names
-            if t.starts_with("uint") || t.starts_with("size_t") {
-                let bits = if t.contains("8") {
-                    8
-                } else if t.contains("16") {
-                    16
-                } else if t.contains("32") {
-                    32
-                } else {
-                    64
-                };
-                (false, bits)
-            } else if t.starts_with("int") && t.ends_with("_t") {
-                let bits = if t.contains("8") {
-                    8
-                } else if t.contains("16") {
-                    16
-                } else if t.contains("32") {
-                    32
-                } else {
-                    64
-                };
-                (true, bits)
-            } else {
-                // Unknown type: assume signed 32
-                // Check explicit unsigned/signed keywords
-                if is_unsigned {
-                    (false, 32)
-                } else if is_signed {
-                    (true, 32)
-                } else {
-                    return None;
-                }
-            }
-        }
+    // Signedness from the spelling; the width from what this translation
+    // unit's constants say (`declared_width`).
+    let signed = match t {
+        "char"
+        | "signed char"
+        | "short"
+        | "short int"
+        | "signed short"
+        | "signed short int"
+        | "int"
+        | "signed"
+        | "signed int"
+        | "long"
+        | "long int"
+        | "signed long"
+        | "signed long int"
+        | "long long"
+        | "long long int"
+        | "signed long long"
+        | "signed long long int" => true,
+        "unsigned char"
+        | "unsigned short"
+        | "unsigned short int"
+        | "unsigned"
+        | "unsigned int"
+        | "unsigned long"
+        | "unsigned long int"
+        | "unsigned long long"
+        | "unsigned long long int" => false,
+        _ if t.starts_with("uint") || t.starts_with("size_t") => false,
+        _ if t.starts_with("int") && t.ends_with("_t") => true,
+        // Some other spelling with an explicit sign keyword.
+        _ if is_unsigned => false,
+        _ if is_signed => true,
+        _ => return None,
     };
-
+    let known = !(is_unsigned || is_signed)
+        || t.split_whitespace()
+            .any(|w| matches!(w, "char" | "short" | "int" | "long"))
+        || t == "signed"
+        || t == "unsigned";
+    let spelling = if known {
+        t
+    } else if is_unsigned {
+        "unsigned int"
+    } else {
+        "int"
+    };
     Some(VarType {
         is_signed: signed,
-        bit_width: bits,
+        bit_width: declared_width(spelling, macros),
     })
 }
 
-/// Infer type from a cast expression's type descriptor.
-fn extract_cast_type(cast_node: &Node, source: &str) -> Option<VarType> {
-    let type_desc = cast_node.child_by_field_name("type")?;
-    let text = type_desc
-        .utf8_text(source.as_bytes())
-        .ok()?
-        .trim()
-        .to_string();
-
-    let (signed, bits) = match text.as_str() {
-        "char" | "signed char" | "int8_t" => (true, 8u32),
-        "unsigned char" | "uint8_t" => (false, 8),
-        "short" | "signed short" | "int16_t" => (true, 16),
-        "unsigned short" | "uint16_t" => (false, 16),
-        "int" | "signed int" | "int32_t" => (true, 32),
-        "unsigned int" | "unsigned" | "uint32_t" => (false, 32),
-        "long" | "long int" | "int64_t" | "long long" => (true, 64),
-        "unsigned long" | "size_t" | "uint64_t" | "unsigned long long" => (false, 64),
-        _ => return None,
+/// The width in bits of the type `spelling` names, as this translation unit's
+/// constants fix it, or 0 when they do not: an exact-width `<stdint.h>` type
+/// is its width everywhere (C11 7.20.1.1), and any other type is
+/// `sizeof(T) * CHAR_BIT`, which only a declared data model supplies
+/// ([`crate::analyze::const_eval::builtin_constants`]). Under ISO C's widths
+/// an `int` is at least 16 bits and possibly more, so its range here is
+/// unbounded rather than a guess. The `least`/`fast` types are never read off
+/// their names: glibc's `uint_fast16_t` is 64 bits on x86-64.
+fn declared_width(spelling: &str, macros: &MacroConstantMap) -> u32 {
+    let exact = match spelling {
+        "int8_t" | "uint8_t" => Some(8),
+        "int16_t" | "uint16_t" => Some(16),
+        "int32_t" | "uint32_t" => Some(32),
+        "int64_t" | "uint64_t" => Some(64),
+        _ => None,
     };
-    Some(VarType {
-        is_signed: signed,
-        bit_width: bits,
-    })
+    if let Some(bits) = exact {
+        return bits;
+    }
+    let (Some(bytes), Some(char_bit)) = (
+        macros.get(&format!("sizeof({spelling})")),
+        macros.get("CHAR_BIT"),
+    ) else {
+        return 0;
+    };
+    u32::try_from(bytes * char_bit).unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -478,9 +484,9 @@ fn apply_unsigned_wrapping(range: ValueRange, vt: &VarType) -> ValueRange {
     if vt.is_signed || range.min >= 0 {
         return range;
     }
-    if vt.bit_width >= 64 {
-        // Can't represent wrapped value in i64 (UINT64_MAX overflows).
-        // Return full unsigned 64-bit range as representable in i64.
+    if vt.bit_width >= 64 || vt.bit_width == 0 {
+        // Can't represent wrapped value in i64 (UINT64_MAX overflows), or
+        // the width is unknown. Return the full unsigned range i64 holds.
         return ValueRange::new(0, i64::MAX);
     }
     let modulus = 1i64 << vt.bit_width;
@@ -527,7 +533,7 @@ fn process_declaration_range(
     summaries: &(impl SummaryLookup + ?Sized),
     state: &mut RangeMap,
 ) {
-    let var_type = extract_var_type_from_declaration(node, source);
+    let var_type = extract_var_type_from_declaration(node, source, macros);
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
@@ -1392,14 +1398,14 @@ pub fn analyze_value_ranges(
         None => return empty_range_result(),
     };
 
-    let initial_state = build_initial_state(func_node, source, summaries);
+    let initial_state = build_initial_state(func_node, source, macros, summaries);
 
     // Collect types for uninitialized local declarations (e.g. `int data;`).
     // These are NOT added to the initial state (would cause stale entry ranges),
     // but passed as a fallback type lookup so that assignments like `data = atoi()`
     // use [INT_MIN, INT_MAX] instead of [i64::MIN, i64::MAX].
     let mut local_types: HashMap<String, VarType> = HashMap::new();
-    collect_local_decl_types(&body, source, &mut local_types);
+    collect_local_decl_types(&body, source, macros, &mut local_types);
 
     let mut entry_ranges: HashMap<BlockId, RangeMap> = HashMap::new();
     let mut exit_ranges: HashMap<BlockId, RangeMap> = HashMap::new();
@@ -1554,12 +1560,13 @@ fn empty_range_result() -> RangeAnalysisResult {
 fn build_initial_state(
     func_node: &Node,
     source: &str,
+    macros: &MacroConstantMap,
     summaries: &(impl SummaryLookup + ?Sized),
 ) -> RangeMap {
     // Build initial state from function parameters
     let mut initial_state = RangeMap::new();
     if let Some(declarator) = func_node.child_by_field_name("declarator") {
-        collect_param_ranges(&declarator, source, &mut initial_state);
+        collect_param_ranges(&declarator, source, macros, &mut initial_state);
     }
     // Narrow parameter ranges when ALL callers pass the same integer constant.
     // This suppresses goodG2B-style FPs where data=2 is always safe but VRA
@@ -2133,7 +2140,12 @@ fn get_update_info(node: &Node, source: &str) -> (Option<String>, String) {
 }
 
 /// Collect parameter ranges from a function declarator.
-fn collect_param_ranges(declarator: &Node, source: &str, state: &mut RangeMap) {
+fn collect_param_ranges(
+    declarator: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    state: &mut RangeMap,
+) {
     // Look for parameter_list in the function_declarator
     let func_decl = if declarator.kind() == "function_declarator" {
         Some(*declarator)
@@ -2151,7 +2163,7 @@ fn collect_param_ranges(declarator: &Node, source: &str, state: &mut RangeMap) {
         for i in 0..params.child_count() {
             if let Some(param) = params.child(i) {
                 if param.kind() == "parameter_declaration" {
-                    let var_type = extract_var_type_from_declaration(&param, source);
+                    let var_type = extract_var_type_from_declaration(&param, source, macros);
                     if let Some(decl) = param.child_by_field_name("declarator") {
                         let name = get_declarator_name(&decl, source);
                         if !name.is_empty() && !is_pointer_or_array(&decl) {
@@ -2171,11 +2183,16 @@ fn collect_param_ranges(declarator: &Node, source: &str, state: &mut RangeMap) {
 /// Collect types for uninitialized local variable declarations (e.g., `int data;`).
 /// The type information is used as a fallback in assignment processing so that
 /// `data = atoi(buf)` uses [INT_MIN, INT_MAX] instead of [i64::MIN, i64::MAX].
-fn collect_local_decl_types(body: &Node, source: &str, types: &mut HashMap<String, VarType>) {
+fn collect_local_decl_types(
+    body: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    types: &mut HashMap<String, VarType>,
+) {
     for i in 0..body.named_child_count() {
         if let Some(child) = body.named_child(i) {
             if child.kind() == "declaration" {
-                if let Some(var_type) = extract_var_type_from_declaration(&child, source) {
+                if let Some(var_type) = extract_var_type_from_declaration(&child, source, macros) {
                     if let Some(decl) = child.child_by_field_name("declarator") {
                         if !is_pointer_or_array(&decl) {
                             let name = get_declarator_name(&decl, source);
@@ -2198,7 +2215,7 @@ fn collect_local_decl_types(body: &Node, source: &str, types: &mut HashMap<Strin
                 }
             }
             if child.kind() == "compound_statement" || child.kind().starts_with("preproc_") {
-                collect_local_decl_types(&child, source, types);
+                collect_local_decl_types(&child, source, macros, types);
             }
         }
     }

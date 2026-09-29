@@ -1,5 +1,6 @@
 /*
  * Rule: ERR33-C
+ * Settings: data_model=lp64
  * Status: PASS - mbrtowc(), mbrlen(), mbrtoc16() and mbrtoc32() return
  * (size_t)-1 on an encoding error and (size_t)-2 (or -3) for an incomplete
  * or pending sequence. All of these sit above every byte count, so an

@@ -676,7 +676,7 @@ the single largest duplicated surface found in an audit sweep. Fixed.
 | `is_short_unsigned_typedef` | `(s: &str) -> bool` | `u8`/`u16`/`u32`/`u64`/`u128` (Rust-style short aliases, not the C11 `uintN_t` family). |
 | `resolve_typedef_chain` | `(type_name: &str, typedef_types: &HashMap<String, String>) -> String` | The **shared** typedef-chain walker: follow `ProjectContext::typedef_types` (one-level alias map, cross-file) recursively until a builtin, an unresolved leaf, or a cycle. Returns the terminal name. Every rule that asks a **per-type question** (`is unsigned?` INT10-C/INT32-C via `typedef_chain_is_unsigned` below; `alignment?` EXP36-C; `width?` INT31-C/API00-C when added) now walks the same chain rather than exact-matching a rule-local table. Consumers apply their own question to the resolved terminal — do NOT bake alignment/width/signedness into the resolver itself. |
 | `typedef_chain_is_unsigned` | `(type_name: &str, typedef_types: &HashMap<String, String>) -> bool` | The `is unsigned?` consumer of `resolve_typedef_chain`. Short-circuits on any already-unsigned intermediate; returns `false` on a chain that bottoms out in a struct, opaque alias, or non-unsigned builtin. |
-| `is_portable_64bit_signed` | `(type_name: &str, typedef_types: &HashMap<String, String>) -> bool` | The `is this 64-bit signed?` consumer of `resolve_typedef_chain`: resolves the alias chain first, so sqlite's `i64` and valkey's `mstime_t` count, then matches `int64_t`/`intmax_t`/`intptr_t`/`ptrdiff_t`/`long long`. **Plain `long` is deliberately absent** — 64-bit on LP64, 32-bit on LLP64, and curl builds both, so widening on it silently drops an overflow that is real on Windows; hostap's `os_time_t` is that shape. Same exclusion and same reason as INT30-C's rule-local `is_portable_64bit_unsigned`, which does NOT resolve chains — a known asymmetry, not a decision. |
+| `is_64bit_signed` | `(type_name: &str, typedef_types: &HashMap<String, String>, model: DataModel) -> bool` | The `is this at least 64-bit signed?` consumer of `resolve_typedef_chain`: resolves the alias chain first, so sqlite's `i64` and valkey's `mstime_t` count, then asks the data model. `long long`, `int64_t` and the `least`/`fast`/`max` 64-bit types are on every model; plain `long`, `ptrdiff_t` and `intptr_t` only where the model makes them 64 bits (LP64's `long`; not LLP64's, and not under `iso`), so hostap's `typedef long os_time_t` keeps its overflow findings unless a model declares otherwise. |
 
 **Deliberately NOT folded in here** (confirmed by a dedicated read-through,
 not assumed from matching names): the `has_overflow_check_*` family and
@@ -905,7 +905,10 @@ branch edges from conditions.
 
 Mostly internal transfer-function machinery; the type surface a rule
 actually consumes:
-- `VarType` (signedness + bit width), `TypedRange` (range + optional type),
+- `VarType` (signedness + bit width, 0 when the data model leaves it open:
+  its width is `sizeof(T) * CHAR_BIT` from the macro map, which only a
+  declared model supplies, or an exact-width type's own), `TypedRange`
+  (range + optional type),
   `RangeAnalysisResult` (per-function VRA result) — consumed by
   `const_eval.rs`'s `*_vra` functions above rather than called directly by
   most rules.

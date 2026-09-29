@@ -1,5 +1,6 @@
 /*
  * Rule: ERR33-C
+ * Settings: data_model=lp64
  * Status: PASS - an ordering against a negative constant below -1 tests a
  * restartable conversion when the comparison is unsigned: the result is
  * stored in a size_t, where (size_t)-1 is above every count, or the
