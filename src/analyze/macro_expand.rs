@@ -795,6 +795,32 @@ fn matching_close(tokens: &[BodyToken], open: usize) -> usize {
 /// An argument past the arm's arity, with no variadic parameter to absorb
 /// it, cannot be judged and comes back [`ArgEvaluation::Unpredictable`].
 pub fn argument_evaluation(arm: &MacroArm, arg: usize) -> ArgEvaluation {
+    argument_evaluation_through(arm, arg, &|_| Vec::new())
+}
+
+/// [`argument_evaluation`], following the argument into the function-like
+/// macros the body passes it to: `definitions` gives a name's arms (empty
+/// for anything that is not a function-like macro). An occurrence inside
+/// argument `p` of such a call is evaluated as that macro evaluates `p`, so
+/// `#define W(lvl, ...) LOG(lvl, "w: " __VA_ARGS__)` skips its arguments
+/// whenever `LOG` does.
+pub fn argument_evaluation_through(
+    arm: &MacroArm,
+    arg: usize,
+    definitions: &dyn Fn(&str) -> Vec<MacroArm>,
+) -> ArgEvaluation {
+    evaluation_at_depth(arm, arg, definitions, 0)
+}
+
+/// How deep [`argument_evaluation_through`] follows macros into macros.
+const MAX_MACRO_FORWARDING: usize = 4;
+
+fn evaluation_at_depth(
+    arm: &MacroArm,
+    arg: usize,
+    definitions: &dyn Fn(&str) -> Vec<MacroArm>,
+    depth: usize,
+) -> ArgEvaluation {
     let target = match &arm.variadic {
         Some((at, spelling)) if arg >= *at => spelling.as_str(),
         _ => match arm.params.get(arg) {
@@ -839,6 +865,54 @@ pub fn argument_evaluation(arm: &MacroArm, arg: usize) -> ArgEvaluation {
         } else if matches!(word, "while" | "for") && next_is_open {
             let close = matching_close(&tokens, j + 1);
             looped[j + 1..=close].iter_mut().for_each(|l| *l = true);
+        }
+    }
+
+    // How the macros the body calls evaluate each occurrence of the target
+    // passed to them, folded over every call enclosing it.
+    let mut forwarded: Vec<Option<ArgEvaluation>> = vec![None; n];
+    if depth < MAX_MACRO_FORWARDING {
+        for j in 0..n {
+            if tokens.get(j + 1).is_none_or(|t| t.text != "(")
+                || !tokens[j].text.starts_with(|c: char| is_ident_start(c))
+                || (j > 0 && matches!(tokens[j - 1].text.as_str(), "#" | "##"))
+            {
+                continue;
+            }
+            let close = matching_close(&tokens, j + 1);
+            if !tokens[j + 2..close].iter().any(|t| t.text == target) {
+                continue;
+            }
+            let callee = definitions(&tokens[j].text);
+            if callee.is_empty() {
+                continue;
+            }
+            let (mut position, mut level) = (0usize, 0i32);
+            for k in j + 2..close {
+                match tokens[k].text.as_str() {
+                    "(" | "[" | "{" => level += 1,
+                    ")" | "]" | "}" => level -= 1,
+                    "," if level == 0 => position += 1,
+                    t if t == target => {
+                        // The variadic arguments fill the callee's positions
+                        // from where `__VA_ARGS__` stands, in order.
+                        let inner = match &arm.variadic {
+                            Some((at, _)) if arg >= *at => position + (arg - at),
+                            _ => position,
+                        };
+                        let verdict = fold_arms(
+                            callee
+                                .iter()
+                                .map(|c| evaluation_at_depth(c, inner, definitions, depth + 1)),
+                        );
+                        forwarded[k] = Some(match forwarded[k] {
+                            Some(prior) => nest(prior, verdict),
+                            None => verdict,
+                        });
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -887,9 +961,14 @@ pub fn argument_evaluation(arm: &MacroArm, arg: usize) -> ArgEvaluation {
                 let stringized = j > 0 && tokens[j - 1].text == "#";
                 let pasted = (j > 0 && tokens[j - 1].text == "##")
                     || tokens.get(j + 1).is_some_and(|t| t.text == "##");
-                if !(stringized || pasted || unevaluated[j]) {
+                if !(stringized || pasted || unevaluated[j])
+                    && forwarded[j] != Some(ArgEvaluation::Never)
+                {
                     evaluations += 1;
-                    conditional |= top.conditional || governed[tokens[j].start] || looped[j];
+                    conditional |= top.conditional
+                        || governed[tokens[j].start]
+                        || looped[j]
+                        || forwarded[j] == Some(ArgEvaluation::Unpredictable);
                 }
             }
             _ => {}
@@ -898,6 +977,30 @@ pub fn argument_evaluation(arm: &MacroArm, arg: usize) -> ArgEvaluation {
     match (evaluations, conditional) {
         (0, _) => ArgEvaluation::Never,
         (1, false) => ArgEvaluation::Once,
+        _ => ArgEvaluation::Unpredictable,
+    }
+}
+
+/// One verdict over several arms of a macro: agreed, or else it depends on
+/// which arm is compiled.
+fn fold_arms(verdicts: impl Iterator<Item = ArgEvaluation>) -> ArgEvaluation {
+    let mut folded = None;
+    for v in verdicts {
+        folded = match folded {
+            None => Some(v),
+            Some(f) if f == v => Some(f),
+            Some(_) => return ArgEvaluation::Unpredictable,
+        };
+    }
+    folded.unwrap_or(ArgEvaluation::Unpredictable)
+}
+
+/// The evaluation of text inside a call nested in another: never evaluated
+/// if either skips it, exactly once only if both evaluate it once.
+fn nest(outer: ArgEvaluation, inner: ArgEvaluation) -> ArgEvaluation {
+    match (outer, inner) {
+        (ArgEvaluation::Never, _) | (_, ArgEvaluation::Never) => ArgEvaluation::Never,
+        (ArgEvaluation::Once, ArgEvaluation::Once) => ArgEvaluation::Once,
         _ => ArgEvaluation::Unpredictable,
     }
 }
@@ -4469,6 +4572,53 @@ mod macro_write_tests {
         // After the block the exit leaves, evaluation is unconditional again.
         let after = arm(&["x"], "{ { if (a) break; } use(x); }");
         assert_eq!(argument_evaluation(&after, 0), ArgEvaluation::Once);
+    }
+
+    #[test]
+    fn an_argument_forwarded_to_a_macro_is_evaluated_as_that_macro_does() {
+        // valkey's dualChannelServerLog hands its arguments to serverLog.
+        let log = MacroArm {
+            params: vec!["level".to_string()],
+            variadic: Some((1, "__VA_ARGS__".to_string())),
+            body: "do { if ((level) < verbosity) break; _log(level, __VA_ARGS__); } while (0)"
+                .to_string(),
+        };
+        let wrapper = MacroArm {
+            params: vec!["level".to_string()],
+            variadic: Some((1, "__VA_ARGS__".to_string())),
+            body: "LOG(level, \"dual: \" __VA_ARGS__)".to_string(),
+        };
+        let logs = |name: &str| {
+            if name == "LOG" {
+                vec![log.clone()]
+            } else {
+                Vec::new()
+            }
+        };
+        assert_eq!(argument_evaluation(&wrapper, 2), ArgEvaluation::Once);
+        assert_eq!(
+            argument_evaluation_through(&wrapper, 2, &logs),
+            ArgEvaluation::Unpredictable
+        );
+        // LOG reads the level in its guard and again in the call.
+        assert_eq!(
+            argument_evaluation_through(&wrapper, 0, &logs),
+            ArgEvaluation::Unpredictable
+        );
+        // A macro that only stringizes its argument never evaluates it.
+        let name = arm(&["x"], "#x");
+        let show = arm(&["x"], "puts(NAME(x))");
+        let names = |n: &str| {
+            if n == "NAME" {
+                vec![name.clone()]
+            } else {
+                Vec::new()
+            }
+        };
+        assert_eq!(
+            argument_evaluation_through(&show, 0, &names),
+            ArgEvaluation::Never
+        );
     }
 
     #[test]
