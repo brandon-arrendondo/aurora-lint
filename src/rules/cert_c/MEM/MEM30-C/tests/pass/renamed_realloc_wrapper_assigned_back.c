@@ -4,12 +4,12 @@
  *         zrealloc(eventLoop->events, ...)`, `#define zrealloc valkey_realloc`)
  * Status: PASS - Should NOT trigger MEM30-C violation
  * Description: `zrealloc` is renamed at link time, but the body the scan
- * reads is `zrealloc`'s, which releases its first argument and returns a
- * fresh block. Assigned back to the same field, the field holds the new
- * block, and the call and the assignment must agree on what `zrealloc` is.
+ * reads is `zrealloc`'s, which returns realloc called on its first
+ * parameter. Assigned back to the same field, the field holds the new block,
+ * and the call and the assignment must agree on what `zrealloc` is. The
+ * twin FAIL fixture uses the old pointer after a successful call.
  */
 #include <stdlib.h>
-#include <string.h>
 
 #define zrealloc valkey_realloc
 
@@ -19,13 +19,7 @@ struct loop {
 
 void *zrealloc(void *ptr, size_t n)
 {
-    void *fresh = malloc(n);
-    if (fresh == NULL) {
-        return NULL;
-    }
-    memcpy(fresh, ptr, 1);
-    free(ptr);
-    return fresh;
+    return realloc(ptr, n);
 }
 
 int resize(struct loop *l, size_t n)

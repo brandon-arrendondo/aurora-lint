@@ -28,17 +28,14 @@ pub struct Mem30C {
     /// engine). Used to recognize "safe free" macros that free AND null their
     /// argument (e.g. curl `Curl_safefree`).
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
-    /// Cross-file function summaries from prescan. When a callee's `frees_params`
-    /// is known from real analysis of its body, that's authoritative over the
-    /// "does the function's NAME contain FREE" heuristic below — the name
-    /// heuristic false-positives on functions like hostap's `plink_free_count`
-    /// (a pure counter, no free at all) and misattributes multi-arg frees to
-    /// the wrong parameter.
+    /// Cross-file function summaries from prescan: which arguments a callee's
+    /// body releases (`unconditional_frees_params`), and whether it follows
+    /// realloc's contract (`reallocates_first_param`). A callee's name is not
+    /// evidence of either -- hostap's `plink_free_count` is a pure counter.
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// Project-wide `#define ALIAS target` map, merged in `check` with this
     /// file's own, so `mbedtls_free(p)` dispatches as the literal `free` it
-    /// expands to rather than through the name-contains-FREE guess
-    /// .
+    /// expands to.
     project_aliases: RefCell<Arc<HashMap<String, String>>>,
     /// Every live target of each project alias
     /// (`ProjectContext::macro_alias_alternatives`): a name that is `free`
@@ -3532,15 +3529,18 @@ impl MemoryAnalyzer {
                         return HashSet::new();
                     }
 
-                    // A function-like macro whose every live definition
+                    // A function-like macro with a live definition that
                     // expands to a release of an argument -- `free`, a
                     // declared deallocator, or a function whose body always
-                    // frees it -- is that release. A macro this file defines
-                    // more than one way under a condition no platform profile
-                    // settles is not read at all: curl's `FREE_ON_WINLDAP` is
-                    // a real free in one arm and a no-op in the other, and the
-                    // collector keeps only one body. Its argument is still
-                    // checked for prior frees like any other call.
+                    // frees it -- is that release in that build. A macro this
+                    // file defines more than one way under a condition no
+                    // platform profile settles is not read at all: curl's
+                    // `FREE_ON_WINLDAP` is a real free in one arm and a no-op
+                    // in the other, and the walk would pair the free with
+                    // what the no-op arm's code does to the same names (its
+                    // `attr = attribute` alias made every error branch of
+                    // ldap.c a double free). Its argument is still checked
+                    // for prior frees like any other call.
                     let macro_frees = if self.ambiguous_macros.contains(spelled_name) {
                         Vec::new()
                     } else {
@@ -3948,28 +3948,32 @@ impl MemoryAnalyzer {
                     || matches!(n, "malloc" | "calloc")
             },
             |n| self.function_summaries.contains_key(n),
+            // An accusation needs a release in one build, so any build the
+            // chain distinguishes may supply it.
+            |_| true,
         )
     }
 
-    /// Whether a call to `name` releases its first argument and hands back
-    /// a fresh block, as `realloc` does: `realloc` itself or a callee
-    /// declared with its contract, or a function whose body always frees its
-    /// first parameter and returns an allocation (hostap's
-    /// `os_realloc_array`). Such a call invalidates the old pointer only once
-    /// its result is known to be non-NULL, which `track_realloc_old_pointer`
-    /// tracks. A body that only MAY free the parameter is no realloc: valkey's
-    /// `lookupStringForBitCommand(c, ...)` returns an object and frees the
-    /// client only on an error path.
+    /// Whether a call to `name` follows realloc's contract on its first
+    /// argument: `realloc` itself or a callee declared with its contract, or
+    /// a function whose body returns such a call made on its first parameter
+    /// (`FunctionSummary::reallocates_first_param`, hostap's
+    /// `os_realloc_array`). The old pointer is invalidated only once the
+    /// result is known to be non-NULL, which `track_realloc_old_pointer`
+    /// tracks. A body that frees its argument and returns some other fresh
+    /// block (`free(old); return malloc(n);`) is not this: the old block is
+    /// gone whatever the result.
     fn releases_like_realloc(&self, name: &str) -> bool {
         call_roles::is_realloc_like(name)
             || self
                 .function_summaries
                 .get(name)
-                .is_some_and(|s| s.returns_allocation && s.unconditional_frees_params.contains(&0))
+                .is_some_and(|s| s.reallocates_first_param)
     }
 
-    /// Parameter indices the function-like macro `spelled` releases in
-    /// EVERY live definition (the accusing merge), by expanding its body and
+    /// Parameter indices the function-like macro `spelled` releases in SOME
+    /// live definition -- the accusing merge (ADR-0010 D1): a free in one
+    /// build starts a finding there -- by expanding its body and
     /// reading each call in it as the walk reads a direct one:
     /// alias-resolved, then `free`, a declared deallocator, or a function
     /// whose summary always frees that argument at this call. Empty when
@@ -3987,7 +3991,7 @@ impl MemoryAnalyzer {
                         .get(resolved)
                         .is_some_and(|s| s.unconditional_frees_at(source, line).contains(&k))
             },
-            crate::analyze::macro_expand::Live::All,
+            crate::analyze::macro_expand::Live::Any,
         )
     }
 

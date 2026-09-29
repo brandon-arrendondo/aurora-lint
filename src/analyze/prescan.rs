@@ -1260,6 +1260,11 @@ fn prescan_file_list(
     function_summary::propagate_returns_allocation(&mut function_summaries);
     function_summary::propagate_returned_value_escapes(&mut function_summaries, &macro_aliases);
     function_summary::resolve_field_free_edges(&mut function_summaries, &free_aliases);
+    function_summary::resolve_reallocating(
+        &mut function_summaries,
+        &free_aliases,
+        &function_macros,
+    );
     function_summary::propagate_transitive_frees_param_fields(&mut function_summaries);
     function_summary::propagate_transitive_frees_param_pointees(&mut function_summaries);
     function_summary::propagate_transitive_closes(&mut function_summaries);
@@ -1683,6 +1688,9 @@ fn scope_summary_callees(
         for (callee, _) in edges.iter_mut() {
             key(callee);
         }
+    }
+    for callee in summary.realloc_candidates.iter_mut() {
+        key(callee);
     }
     for edges in summary.field_free_edges.values_mut() {
         for (_, callee, _) in edges.iter_mut() {
@@ -7304,6 +7312,11 @@ pub fn resolve_includes(
     function_summary::resolve_field_free_edges(
         context.function_summaries.make_mut(),
         &free_aliases,
+    );
+    function_summary::resolve_reallocating(
+        context.function_summaries.make_mut(),
+        &free_aliases,
+        &context.function_macros,
     );
     function_summary::propagate_transitive_frees_param_fields(
         context.function_summaries.make_mut(),

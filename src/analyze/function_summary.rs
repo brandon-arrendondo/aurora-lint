@@ -279,6 +279,32 @@ pub struct FunctionSummary {
     /// so calling it again releases nothing.
     #[serde(default)]
     pub nulls_param_pointees: HashSet<usize>,
+    /// The subset of `frees_param_pointees` the body always frees: the
+    /// `free(*param)` is reached on every path except one guarded on
+    /// `param` or `*param` being null, where there is nothing to free
+    /// (`if (ptr && *ptr) free(*ptr);`). The MUST fact a double-free
+    /// accusation through `&var` needs, as `unconditional_frees_params` is
+    /// for a by-value argument.
+    #[serde(default)]
+    pub unconditional_frees_param_pointees: HashSet<usize>,
+    /// Callees this function calls with its FIRST parameter as their first
+    /// argument and whose result it returns -- `return C(p, ...)`, or `n =
+    /// C(p, ...); ... return n;`. Whether any of them has realloc's contract
+    /// is known only once every summary exists; `resolve_reallocating` then
+    /// sets `reallocates_first_param`.
+    #[serde(default)]
+    pub realloc_candidates: Vec<String>,
+    /// The function follows realloc's contract on its first parameter, by
+    /// proof: it returns the result of `realloc` (or a declared reallocator,
+    /// or another function proven the same) called on that parameter.
+    /// hostap's `os_realloc_array` is `return os_realloc(ptr, nmemb *
+    /// size)`. A caller reads a call to it as it reads `realloc`: the old
+    /// block is released only when the call succeeds. Returning a fresh
+    /// allocation after freeing the argument (`free(old); return malloc(n);`)
+    /// is NOT this contract, and a NULL result there does not keep the old
+    /// block alive.
+    #[serde(default)]
+    pub reallocates_first_param: bool,
     /// This function takes exactly ONE parameter and hands it to a call whose
     /// callee is not a plain name: a function pointer reached through a
     /// field, a deref or a parameter (`sqlite3GlobalConfig.m.xFree(p)`,
@@ -1386,6 +1412,9 @@ fn analyze_function(
         // return statements. Consumed by `propagate_return_taint` after all
         // summaries are computed.
         collect_returns_from_callees(&body, source, &mut summary.returns_from_callees);
+        if let Some(first) = params.first().filter(|p| !p.is_empty()) {
+            collect_realloc_candidates(&body, source, first, &mut summary.realloc_candidates);
+        }
 
         // Check for NULL return
         if !summary.can_return_null {
@@ -2625,6 +2654,92 @@ fn is_unconditionally_reached_modulo_null_guard(
                 return false;
             };
             if !reached_when_non_null {
+                return false;
+            }
+        } else if matches!(
+            parent.kind(),
+            "switch_statement"
+                | "case_statement"
+                | "conditional_expression"
+                | "for_statement"
+                | "while_statement"
+                | "do_statement"
+        ) || parent.kind().starts_with("preproc_if")
+        {
+            return false;
+        }
+        current = parent;
+    }
+}
+
+/// Whether `condition`, when true, says `name` and/or `*name` is non-null
+/// and nothing else: `ptr`, `*ptr`, `ptr != NULL`, `*ptr != NULL`, or a
+/// conjunction of those.
+fn pointee_non_null_guard(condition: &Node, source: &str, name: &str) -> bool {
+    let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").trim();
+    let is_deref = |n: &Node| {
+        n.kind() == "pointer_expression"
+            && n.child_by_field_name("operator")
+                .is_some_and(|o| o.kind() == "*")
+            && n.child_by_field_name("argument")
+                .is_some_and(|a| a.kind() == "identifier" && text(&a) == name)
+    };
+    let is_null_literal = |n: &Node| matches!(text(n), "NULL" | "0" | "nullptr");
+    match condition.kind() {
+        "parenthesized_expression" => condition
+            .named_child(0)
+            .is_some_and(|inner| pointee_non_null_guard(&inner, source, name)),
+        "pointer_expression" => is_deref(condition),
+        "binary_expression" => {
+            let (Some(left), Some(right), Some(operator)) = (
+                condition.child_by_field_name("left"),
+                condition.child_by_field_name("right"),
+                condition.child_by_field_name("operator"),
+            ) else {
+                return false;
+            };
+            match text(&operator) {
+                "&&" => {
+                    pointee_non_null_guard(&left, source, name)
+                        && pointee_non_null_guard(&right, source, name)
+                }
+                "!=" => {
+                    (is_deref(&left) && is_null_literal(&right))
+                        || (is_null_literal(&left) && is_deref(&right))
+                        || null_guard_on(condition, source, name) == Some(true)
+                }
+                _ => false,
+            }
+        }
+        _ => null_guard_on(condition, source, name) == Some(true),
+    }
+}
+
+/// `is_unconditionally_reached`, except that the consequence of an `if`
+/// guarding only on `name` or `*name` being non-null is transparent: a
+/// `free(*name)` skipped there has nothing to free.
+fn is_unconditionally_reached_modulo_pointee_guard(
+    node: &Node,
+    body: &Node,
+    source: &str,
+    name: &str,
+) -> bool {
+    let mut current = *node;
+    loop {
+        let Some(parent) = current.parent() else {
+            return true;
+        };
+        if parent.id() == body.id() {
+            return true;
+        }
+        if parent.kind() == "if_statement" {
+            let through_consequence = parent
+                .child_by_field_name("consequence")
+                .is_some_and(|arm| arm.id() == current.id());
+            let guarded = parent
+                .child_by_field_name("condition")
+                .is_some_and(|c| pointee_non_null_guard(&c, source, name));
+            if !(through_consequence && guarded) {
                 return false;
             }
         } else if matches!(
@@ -4153,6 +4268,15 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, mut summary: Functi
     existing
         .nulls_param_pointees
         .extend(summary.nulls_param_pointees);
+    // Unioned for the reason `unconditional_frees_params` is: each
+    // definition is its own configuration (ADR-0010).
+    existing
+        .unconditional_frees_param_pointees
+        .extend(summary.unconditional_frees_param_pointees);
+    existing
+        .realloc_candidates
+        .extend(summary.realloc_candidates);
+    existing.reallocates_first_param |= summary.reallocates_first_param;
     // Unioned with the free facts it sits beside: if ANY definition linked
     // under this name takes ownership of the argument, a caller that reports
     // the block leaked afterwards is wrong on that build.
@@ -5081,6 +5205,9 @@ fn credit_frees_one_arg(
     };
     if through_pointee {
         summary.frees_param_pointees.insert(idx);
+        if is_unconditionally_reached_modulo_pointee_guard(call, body, source, arg_name) {
+            summary.unconditional_frees_param_pointees.insert(idx);
+        }
         if assigns_null_through(body, source, arg_name) {
             summary.nulls_param_pointees.insert(idx);
         }
@@ -6361,11 +6488,15 @@ fn edge_target<'a>(
     callee_name: &'a str,
     known: impl Fn(&str) -> bool,
 ) -> &'a str {
+    // A summary's free facts are a union over definitions, so a release in
+    // any build the chain distinguishes counts, and whether an alias is
+    // conditional does not change which name that is.
     crate::analyze::const_eval::resolve_macro_alias_preferring(
         macro_aliases,
         callee_name,
         call_roles::is_deallocator,
         known,
+        |_| true,
     )
 }
 
@@ -7094,6 +7225,10 @@ pub fn propagate_transitive_frees_param_pointees(summaries: &mut HashMap<String,
             .iter()
             .map(|(n, s)| (n.clone(), s.nulls_param_pointees.clone()))
             .collect();
+        let must_snapshot: HashMap<String, HashSet<usize>> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.unconditional_frees_param_pointees.clone()))
+            .collect();
 
         for summary in summaries.values_mut() {
             for (caller_idx, callees) in &summary.param_passthroughs {
@@ -7109,6 +7244,21 @@ pub fn propagate_transitive_frees_param_pointees(summaries: &mut HashMap<String,
                         {
                             summary.nulls_param_pointees.insert(*caller_idx);
                         }
+                        changed = true;
+                    }
+                }
+            }
+            // The MUST subset travels only along a forwarding call that is
+            // itself unconditionally reached.
+            for (caller_idx, callees) in &summary.unconditional_param_passthroughs {
+                for (callee_name, callee_idx) in callees {
+                    if must_snapshot
+                        .get(callee_name)
+                        .is_some_and(|s| s.contains(callee_idx))
+                        && summary
+                            .unconditional_frees_param_pointees
+                            .insert(*caller_idx)
+                    {
                         changed = true;
                     }
                 }
@@ -7203,6 +7353,130 @@ pub fn propagate_transitive_frees_param_fields(summaries: &mut HashMap<String, F
             }
         }
 
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Callees whose result `body` returns after calling them with `first`
+/// (the function's first parameter, casts and parentheses peeled) as their
+/// first argument: `return C(first, ...)` directly, or through a local the
+/// return names that some assignment or initializer in the body takes from
+/// such a call. See `FunctionSummary::realloc_candidates`.
+fn collect_realloc_candidates(body: &Node, source: &str, first: &str, out: &mut Vec<String>) {
+    let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+    // A call `C(first, ...)`: its callee's name.
+    let call_on_first = |n: Node| -> Option<String> {
+        let call = unwrap_to_call_node(n);
+        if call.kind() != "call_expression" {
+            return None;
+        }
+        let function = call.child_by_field_name("function")?;
+        if function.kind() != "identifier" {
+            return None;
+        }
+        let arguments = call.child_by_field_name("arguments")?;
+        let arg0 = (0..arguments.child_count())
+            .filter_map(|i| arguments.child(i))
+            .find(|a| !matches!(a.kind(), "(" | ")" | "," | "comment"))?;
+        let arg0 = unwrap_to_call_node(arg0);
+        (arg0.kind() == "identifier" && text(&arg0) == first).then(|| text(&function))
+    };
+    let mut returns = Vec::new();
+    collect_return_expressions(body, source, &mut returns);
+    for ret in returns {
+        if let Some(callee) = call_on_first(ret) {
+            out.push(callee);
+            continue;
+        }
+        let ret = unwrap_to_call_node(ret);
+        if ret.kind() != "identifier" {
+            continue;
+        }
+        let local = text(&ret);
+        for assign in
+            lang_parsing_substrate::query::find_descendants_of_kind(*body, "assignment_expression")
+        {
+            let (Some(left), Some(right)) = (
+                assign.child_by_field_name("left"),
+                assign.child_by_field_name("right"),
+            ) else {
+                continue;
+            };
+            if left.kind() == "identifier" && text(&left) == local {
+                out.extend(call_on_first(right));
+            }
+        }
+        for init in
+            lang_parsing_substrate::query::find_descendants_of_kind(*body, "init_declarator")
+        {
+            let (Some(decl), Some(value)) = (
+                init.child_by_field_name("declarator"),
+                init.child_by_field_name("value"),
+            ) else {
+                continue;
+            };
+            let name = lang_parsing_substrate::query::find_descendants_of_kind(decl, "identifier")
+                .into_iter()
+                .next()
+                .map(|n| text(&n));
+            if name.as_deref() == Some(local.as_str()) {
+                out.extend(call_on_first(value));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+}
+
+/// Settle `reallocates_first_param` for every summary, to a fixpoint: a
+/// function reallocates its first parameter when one of its
+/// `realloc_candidates` has realloc's contract -- through the alias map
+/// (`realloc`, or a declared reallocator), as a function-like macro whose
+/// every live definition hands its own first parameter to one as that
+/// callee's first argument (hostap's `#define os_realloc(p, s) realloc((p),
+/// (s))`), or as a function already proven to reallocate its first
+/// parameter.
+pub fn resolve_reallocating(
+    summaries: &mut HashMap<String, FunctionSummary>,
+    macro_aliases: &HashMap<String, String>,
+    function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+) {
+    use crate::analyze::const_eval::resolve_macro_alias;
+    use crate::analyze::macro_expand::{macro_param_indices_released_at, Live};
+    let contract =
+        |name: &str| call_roles::is_realloc_like(resolve_macro_alias(macro_aliases, name));
+    let by_macro = |name: &str| {
+        macro_param_indices_released_at(
+            function_macros,
+            name,
+            |c, k| k == 0 && contract(c),
+            Live::All,
+        )
+        .contains(&0)
+    };
+    for _pass in 0..10 {
+        let proven: HashSet<String> = summaries
+            .iter()
+            .filter(|(_, s)| s.reallocates_first_param)
+            .map(|(n, _)| n.clone())
+            .collect();
+        let mut changed = false;
+        for summary in summaries.values_mut() {
+            if summary.reallocates_first_param {
+                continue;
+            }
+            let reallocates = summary.realloc_candidates.iter().any(|c| {
+                contract(c)
+                    || by_macro(c)
+                    || proven.contains(edge_target(macro_aliases, c, |n| proven.contains(n)))
+            });
+            if reallocates {
+                summary.reallocates_first_param = true;
+                changed = true;
+            }
+        }
         if !changed {
             break;
         }

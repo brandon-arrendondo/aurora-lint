@@ -54,6 +54,23 @@ fn peel_casts_and_parens(mut n: Node) -> Node {
     }
 }
 
+/// The name of the object a call argument hands over for release, as the
+/// walk keys it, and whether it is handed over by address: a variable
+/// (`p`), a field or element by value (`d.handles`, `x->handles`,
+/// `paths[i]`, spelled as `process_free_call` spells them), or `&var`. Casts
+/// and parentheses are transparent. `None` for anything else.
+fn released_argument_name(arg: Node, source: &str) -> Option<(String, bool)> {
+    let node = peel_casts_and_parens(arg);
+    match node.kind() {
+        "identifier" | "field_expression" | "subscript_expression" => {
+            Some((ast_utils::get_node_text_owned(&node, source), false))
+        }
+        _ => strip_call_argument(arg)
+            .filter(|(_, by_address)| *by_address)
+            .map(|(target, _)| (ast_utils::get_node_text_owned(&target, source), true)),
+    }
+}
+
 fn strip_call_argument(arg: Node) -> Option<(Node, bool)> {
     let peel = peel_casts_and_parens;
     let node = peel(arg);
@@ -105,6 +122,11 @@ pub struct Mem31C {
     /// Every live target of each project alias
     /// (`ProjectContext::macro_alias_alternatives`), for allocators.
     project_alias_alternatives: RefCell<Arc<HashMap<String, Vec<String>>>>,
+    /// Names `#define`d only in some configurations
+    /// (`ProjectContext::conditional_macro_names`), unioned per file with the
+    /// file's own: an alias among them and a body under the same name are
+    /// two builds (`const_eval::alias_chain_builds`).
+    project_conditional_macros: RefCell<Arc<HashSet<String>>>,
 }
 
 impl Mem31C {
@@ -120,6 +142,7 @@ impl Mem31C {
             settings: RefCell::default(),
             project_aliases: RefCell::new(Arc::new(HashMap::new())),
             project_alias_alternatives: RefCell::new(Arc::new(HashMap::new())),
+            project_conditional_macros: RefCell::new(Arc::new(HashSet::new())),
         }
     }
 }
@@ -155,6 +178,7 @@ impl CertRule for Mem31C {
         *self.noreturn_functions.borrow_mut() = context.noreturn_functions.clone();
         *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
         *self.project_alias_alternatives.borrow_mut() = context.macro_alias_alternatives.clone();
+        *self.project_conditional_macros.borrow_mut() = context.conditional_macro_names.clone();
     }
 
     fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
@@ -180,6 +204,9 @@ impl CertRule for Mem31C {
         );
         let known_functions = self.known_functions.borrow();
         let function_macros = self.function_macros.borrow();
+        let mut conditional_macros = HashSet::clone(&self.project_conditional_macros.borrow());
+        conditional_macros
+            .extend(crate::analyze::check_macros::collect_conditional_macro_names(source));
 
         // A call that never returns ends its branch exactly as `return` does.
         // The prescan set carries declarations from headers this parse never
@@ -267,6 +294,7 @@ impl CertRule for Mem31C {
                 &function_macros,
                 &noreturn_names,
                 &macro_aliases,
+                &conditional_macros,
             );
             analyzer.realloc_in_one_build = Some(&realloc_in_one_build);
             analyzer.analyze_function(&func, source, &mut violations);
@@ -446,6 +474,8 @@ struct MemoryLeakAnalyzer<'a> {
     // `#define ALIAS target` map (project-wide plus this file); see
     // `callee_name`.
     macro_aliases: &'a HashMap<String, String>,
+    // See `Mem31C::project_conditional_macros`.
+    conditional_macros: &'a HashSet<String>,
     // Aliases that are `realloc` in some builds only: a call through one
     // allocates and may release its argument, but does not prove it did.
     realloc_in_one_build: Option<&'a HashSet<String>>,
@@ -766,6 +796,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         function_macros: &'a HashMap<String, FunctionMacro>,
         noreturn_names: &'a HashSet<String>,
         macro_aliases: &'a HashMap<String, String>,
+        conditional_macros: &'a HashSet<String>,
     ) -> Self {
         Self {
             allocated_memory: HashMap::new(),
@@ -801,6 +832,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             function_macros,
             noreturn_names,
             macro_aliases,
+            conditional_macros,
             realloc_in_one_build: None,
             released_in_one_build: HashMap::new(),
             released_by_some_definition: HashMap::new(),
@@ -809,27 +841,47 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     }
 
     /// The name a call's callee resolves to once object-like aliases are
-    /// followed: `mbedtls_free` is `free` when the project says
-    /// `#define mbedtls_free free`. Every classification below (literal
-    /// free/realloc, allocator, summary lookup, deallocator name shape)
-    /// reads this, never the raw spelling, so a renamed allocator is seen by
-    /// what it is rather than by what its name happens to contain
-    /// .
+    /// followed: `mbedtls_calloc` is `calloc` when the project says
+    /// `#define mbedtls_calloc calloc`. Every classification below (literal
+    /// free/realloc, allocator, summary lookup) reads this, never the raw
+    /// spelling, so a renamed allocator is seen by what it is rather than by
+    /// what its name happens to contain.
     fn callee_name(&self, function: &Node, source: &str) -> String {
         let raw = ast_utils::get_node_text(function, source);
-        // A role anywhere in the chain, else the first link with a body:
-        // valkey's `zfree` is `valkey_free`, and only `zfree` has a summary.
-        const_eval::resolve_macro_alias_preferring(
-            self.macro_aliases,
-            raw,
-            |n| {
-                call_roles::is_deallocator(n)
-                    || call_roles::is_realloc_like(n)
-                    || call_roles::is_allocator_call(n)
-            },
-            |n| self.function_summaries.contains_key(n),
-        )
-        .to_string()
+        let role = |n: &str| {
+            call_roles::is_deallocator(n)
+                || call_roles::is_realloc_like(n)
+                || call_roles::is_allocator_call(n)
+        };
+        let known = |n: &str| self.function_summaries.contains_key(n);
+        // One name per configuration the chain distinguishes: valkey's
+        // unconditional `#define zfree valkey_free` is `zfree`'s body in
+        // every build, an alias defined only under `#ifdef` beside a body is
+        // two builds.
+        let builds = const_eval::alias_chain_builds(self.macro_aliases, raw, role, known, |n| {
+            self.conditional_macros.contains(n)
+        });
+        // This rule both suppresses (a leak) and accuses (a double free) on
+        // a release, so one build's release is not enough for either: where
+        // the builds disagree, the call is read as the build that releases
+        // nothing (ADR-0010 D1).
+        let releases = |n: &str| {
+            call_roles::is_deallocator(n)
+                || call_roles::is_realloc_like(n)
+                || self.function_summaries.get(n).is_some_and(|s| {
+                    !s.frees_params.is_empty() || !s.frees_param_pointees.is_empty()
+                })
+        };
+        let split = builds.iter().any(|n| releases(n)) && builds.iter().any(|n| !releases(n));
+        let chosen = if split {
+            builds.iter().find(|n| !releases(n))
+        } else {
+            builds
+                .iter()
+                .find(|n| role(n))
+                .or_else(|| builds.iter().find(|n| known(n)))
+        };
+        chosen.copied().unwrap_or(raw).to_string()
     }
 
     /// Parameter indices the function-like macro `func_name` frees, by
@@ -1719,10 +1771,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         .summary_at(&func_name, site)
                         .is_some_and(|s| s.sole_param_escapes_unnamed_call)
                 {
-                    if let Some((target, false)) =
-                        Self::call_args(call).next().and_then(strip_call_argument)
+                    if let Some((name, false)) = Self::call_args(call)
+                        .next()
+                        .and_then(|arg| released_argument_name(arg, source))
                     {
-                        freed_vars.insert(ast_utils::get_node_text_owned(&target, source));
+                        freed_vars.insert(name);
                     }
                     continue;
                 }
@@ -2838,7 +2891,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     let alloc_type = self.get_allocation_type(&value, source);
 
                     // Special handling for realloc: track relationship for later
-                    if call_roles::is_realloc_like(&alloc_type) {
+                    if self.reallocates(&alloc_type, site_of(&value, source)) {
                         self.handle_realloc_in_decl(&var_name, &value, source);
                     }
 
@@ -3438,8 +3491,13 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             return;
         }
 
-        // A function whose body was seen to release what it is handed.
+        let reallocates = self.reallocates(&func_name, site_of(node, source));
+
+        // A function whose body was seen to release what it is handed. One
+        // that follows realloc's contract is `process_realloc_call`'s: its
+        // release of the old block happens only when it succeeds.
         if call_roles::frees_argument(&func_name).is_none()
+            && !reallocates
             && self.summary_proves_release(&func_name, site_of(node, source))
         {
             self.process_summarized_deallocator(node, source, &func_name);
@@ -3451,7 +3509,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // A declared deallocator frees the argument its declaration
             // names, as `free` frees its one: proof, not a name guess.
             self.process_free_call(node, source, Some(k));
-        } else if call_roles::is_realloc_like(&func_name) {
+        } else if reallocates {
             let spelled = node
                 .child_by_field_name("function")
                 .map(|f| ast_utils::get_node_text(&f, source))
@@ -3567,7 +3625,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// that takes ownership. `for`/`while`/`do` need nothing: they push
     /// their children, so a call in their condition is already reached.
     ///
-    /// Only `realloc` is skipped, because the enclosing construct runs its
+    /// Only `realloc` (and a callee with its contract, `Self::reallocates`)
+    /// is skipped, because the enclosing construct runs its
     /// own handler for the old block and entering `process_realloc_call` on
     /// top of that frees the same pointer twice in the walk's own state.
     /// Allocation calls in general are NOT skipped -- a function can
@@ -3579,7 +3638,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             .filter(|call| {
                 call.child_by_field_name("function")
                     .map(|f| self.callee_name(&f, source))
-                    .is_none_or(|name| !call_roles::is_realloc_like(&name))
+                    .is_none_or(|name| !self.reallocates(&name, site_of(call, source)))
             })
             .collect();
         for call in calls {
@@ -3634,8 +3693,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // that is `frees_param_pointees`' shape and not a store of the
             // pointer this walk is tracking.
             if summary.stores_params.contains(&param_idx) || (sole_escapes && param_idx == 0) {
-                if let Some((target, false)) = strip_call_argument(arg) {
-                    let name = ast_utils::get_node_text_owned(&target, source);
+                // A field or element handed over by value escapes as a
+                // variable does: mbedtls's `mbedtls_free(oid.p)`.
+                if let Some((name, false)) = released_argument_name(arg, source) {
                     if self.allocated_memory.contains_key(&name) {
                         escaped.push(name);
                     }
@@ -3654,11 +3714,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// `mosquitto_FREE(p)`. Returns false when `func_name` is no such macro,
     /// leaving the call to the ordinary dispatch.
     ///
-    /// The walk recognized a free by three spellings -- literal `free`, a
-    /// summary that says the callee frees its parameter, and a name shaped
-    /// like a deallocator -- and a safe-free macro is none of them: it is a
-    /// macro, so no summary exists, and `curl_safefree` neither starts with
-    /// `free_` nor ends with `_free`. So `Curl_safefree(no_proxy)` at the
+    /// The walk recognizes a free as literal `free`, a declared deallocator,
+    /// or a callee whose summary frees its parameter, and a safe-free macro
+    /// is none of them: it is a macro, so no summary exists. So
+    /// `Curl_safefree(no_proxy)` at the
     /// tail of curl's `create_conn_helper_init_proxy` released nothing as
     /// far as this rule could see, and `no_proxy` was reported leaked at the
     /// end of the function. The macro table already knows what the body
@@ -3788,19 +3847,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
             let this_param_idx = param_idx;
             param_idx += 1;
-            let through_address_of = arg.kind() == "pointer_expression";
-            let var_name = if through_address_of {
-                // Handle &var pattern (address-of expression)
-                arg.child_by_field_name("argument")
-                    .filter(|op| op.kind() == "identifier")
-                    .map(|op| ast_utils::get_node_text_owned(&op, source))
-            } else if arg.kind() == "identifier" {
-                Some(ast_utils::get_node_text_owned(&arg, source))
-            } else {
-                None
-            };
-
-            let Some(var_name) = var_name else {
+            // A field or element handed over by value is released as surely
+            // as a variable: hostap's `os_free(d.handles)`, `os_free(paths[i])`.
+            let Some((var_name, through_address_of)) = released_argument_name(arg, source) else {
                 continue;
             };
             let free_pos = node.start_position();
@@ -3821,13 +3870,19 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             let nulls_pointee =
                 through_address_of && summary.nulls_param_pointees.contains(&this_param_idx);
             // A double free is an accusation, so the second release must be
-            // one the body always performs: `frees_params` is a MAY fact,
-            // and valkey's `addReplyBulkSds(c, ...)` frees `c` only on the
-            // error path that closes the client -- every later reply to
-            // `c` read as a second free. The mark below still records the
-            // release, which is all a leak needs.
-            let must_free =
-                through_address_of || summary.unconditional_frees_params.contains(&this_param_idx);
+            // one the body always performs, by value or through `&var`:
+            // `frees_params`/`frees_param_pointees` are MAY facts, and
+            // valkey's `addReplyBulkSds(c, ...)` frees `c` only on the error
+            // path that closes the client -- every later reply to `c` read as
+            // a second free. The mark below still records the release, which
+            // is all a leak needs.
+            let must_free = if through_address_of {
+                summary
+                    .unconditional_frees_param_pointees
+                    .contains(&this_param_idx)
+            } else {
+                summary.unconditional_frees_params.contains(&this_param_idx)
+            };
             if nulls_pointee {
                 self.maybe_freed.remove(&var_name);
             } else if !must_free {
@@ -4068,13 +4123,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
                     continue;
                 }
-                if let Some((target, through_address_of)) = strip_call_argument(arg) {
+                if let Some((var_name, through_address_of)) = released_argument_name(arg, source) {
                     let frees = if through_address_of {
                         summary.frees_param_pointees.contains(&param_idx)
                     } else {
                         frees_here.contains(&param_idx)
                     };
-                    let var_name = ast_utils::get_node_text_owned(&target, source);
                     let frees_in_some = if through_address_of {
                         some.frees_param_pointees.contains(&param_idx)
                     } else {
@@ -4422,6 +4476,18 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
         }
         None
+    }
+
+    /// A call to `func_name` follows realloc's contract on its first
+    /// argument: `realloc` or a declared reallocator, or a function whose
+    /// body returns one called on its first parameter
+    /// (`FunctionSummary::reallocates_first_param`, hostap's
+    /// `os_realloc_array`). The old block dies only when the call succeeds.
+    fn reallocates(&self, func_name: &str, site: Site) -> bool {
+        call_roles::is_realloc_like(func_name)
+            || self
+                .summary_at(func_name, site)
+                .is_some_and(|s| s.reallocates_first_param)
     }
 
     /// The prescan saw `func_name`'s body release a parameter -- by value

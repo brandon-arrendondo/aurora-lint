@@ -1,24 +1,17 @@
 /*
  * Rule: MEM30-C
- * Source: real-world (hostap os_realloc_array under WPA_TRACE)
+ * Source: real-world (hostap os.h: `os_realloc_array` returns
+ *         `os_realloc(ptr, nmemb * size)`)
  * Status: PASS - Should NOT trigger MEM30-C violation
- * Description: `grow` releases its first argument and hands back a fresh
- * block, so it is realloc by what its body does. When it returns NULL the
- * old block is still the caller's, and freeing it on that branch is not a
- * double free.
+ * Description: `grow` returns realloc called on its first parameter, so it
+ * follows realloc's contract by proof. When it returns NULL the old block is
+ * still the caller's, and freeing it on that branch is not a double free.
  */
 #include <stdlib.h>
-#include <string.h>
 
-void *grow(void *ptr, size_t n)
+void *grow(void *ptr, size_t nmemb, size_t size)
 {
-    void *fresh = malloc(n);
-    if (fresh == NULL) {
-        return NULL;
-    }
-    memcpy(fresh, ptr, 1);
-    free(ptr);
-    return fresh;
+    return realloc(ptr, nmemb * size);
 }
 
 int extend(void)
@@ -29,7 +22,7 @@ int extend(void)
     if (buf == NULL) {
         return -1;
     }
-    bigger = grow(buf, 8);
+    bigger = grow(buf, 8, 1);
     if (bigger == NULL) {
         free(buf);
         return -1;

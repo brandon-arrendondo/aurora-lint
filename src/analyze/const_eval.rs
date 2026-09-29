@@ -605,34 +605,75 @@ pub fn resolve_macro_alias<'a>(aliases: &'a HashMap<String, String>, name: &'a s
     current
 }
 
-/// [`resolve_macro_alias`] for a consumer that looks names up in a table
-/// keyed by definitions: of the links in `name`'s alias chain (`name` itself
-/// included), the first `role` accepts; else the first `known` accepts; else
-/// the chain's end. valkey's `#define zfree valkey_free` renames the symbol
-/// at link time, but the body the scan read is `void zfree(void *ptr)`, so a
-/// lookup of the fully resolved `valkey_free` finds nothing while `zfree`
-/// finds the body. A role anywhere in the chain still wins over a body:
-/// mbedtls's `mbedtls_free` is `free` in one configuration and, in another,
-/// a function the scan also read that calls a function pointer.
+/// The names a call spelled `name` reaches through its `#define` alias
+/// chain, one per configuration the chain distinguishes, for a consumer that
+/// looks names up in a table keyed by definitions.
+///
+/// Walking the chain link by link: a link `role` accepts (`free`, a declared
+/// deallocator) ends it. So does a link with a body (`known`) whose alias is
+/// UNCONDITIONAL -- valkey's `#define zfree valkey_free` renames the very
+/// definition the scan read as `void zfree(void *ptr)`, so that body is what
+/// every call runs. A link with a body whose alias is defined only in some
+/// configurations (`conditional`) is two builds: the body where the alias is
+/// absent, and wherever the rest of the chain leads where it is present --
+/// mbedtls's `mbedtls_free` is a function calling a pointer in one
+/// configuration and `free` in another. With nothing known, the chain's end.
+///
+/// A consumer reads the result by its polarity (ADR-0010 D1): an accusing
+/// one may act on any of the names, a suppressing one only on what all of
+/// them agree on.
+pub fn alias_chain_builds<'a>(
+    aliases: &'a HashMap<String, String>,
+    name: &'a str,
+    role: impl Fn(&str) -> bool,
+    known: impl Fn(&str) -> bool,
+    conditional: impl Fn(&str) -> bool,
+) -> Vec<&'a str> {
+    let mut builds = Vec::new();
+    let mut current = name;
+    for _ in 0..8 {
+        if role(current) {
+            builds.push(current);
+            return builds;
+        }
+        let next = aliases
+            .get(current)
+            .map(String::as_str)
+            .filter(|t| *t != current);
+        if known(current) {
+            builds.push(current);
+            if next.is_none() || !conditional(current) {
+                return builds;
+            }
+        }
+        match next {
+            Some(target) => current = target,
+            None => break,
+        }
+    }
+    if !builds.contains(&current) {
+        builds.push(current);
+    }
+    builds
+}
+
+/// [`alias_chain_builds`] read the way an accusing consumer or a summary's
+/// union of facts reads it: the first name `role` accepts, else the first
+/// `known` accepts, else the first.
 pub fn resolve_macro_alias_preferring<'a>(
     aliases: &'a HashMap<String, String>,
     name: &'a str,
     role: impl Fn(&str) -> bool,
     known: impl Fn(&str) -> bool,
+    conditional: impl Fn(&str) -> bool,
 ) -> &'a str {
-    let mut chain = vec![name];
-    for _ in 0..8 {
-        match aliases.get(*chain.last().unwrap()) {
-            Some(target) if target != chain.last().unwrap() => chain.push(target.as_str()),
-            _ => break,
-        }
-    }
-    chain
+    let builds = alias_chain_builds(aliases, name, &role, &known, conditional);
+    builds
         .iter()
         .find(|n| role(n))
-        .or_else(|| chain.iter().find(|n| known(n)))
+        .or_else(|| builds.iter().find(|n| known(n)))
         .copied()
-        .unwrap_or(chain[chain.len() - 1])
+        .unwrap_or(name)
 }
 
 /// Merge cross-file macro aliases (`project`, from [`super::context::ProjectContext::macro_aliases`])
@@ -3657,17 +3698,35 @@ int f(unsigned long s) { return LINEBITS(s); }
         .map(|(a, b)| (a.to_string(), b.to_string()))
         .collect();
         let bodies = ["zfree", "mbedtls_free"];
-        let pick = |name| {
-            resolve_macro_alias_preferring(&aliases, name, |n| n == "free", |n| bodies.contains(&n))
+        let conditional = ["mbedtls_free"];
+        let builds = |name| {
+            alias_chain_builds(
+                &aliases,
+                name,
+                |n| n == "free",
+                |n| bodies.contains(&n),
+                |n| conditional.contains(&n),
+            )
         };
-        // valkey: the body sits mid-chain, and the chain's end has none.
-        assert_eq!(pick("s_free"), "zfree");
-        // mbedtls: `free` wins over the body the other configuration has.
-        assert_eq!(pick("mbedtls_free"), "free");
+        // valkey: the unconditional rename's body is what every call runs.
+        assert_eq!(builds("s_free"), vec!["zfree"]);
+        // mbedtls: a body in one configuration, `free` in the other.
+        assert_eq!(builds("mbedtls_free"), vec!["mbedtls_free", "free"]);
         // Nothing known anywhere: the chain's end, as `resolve_macro_alias`.
         assert_eq!(
-            resolve_macro_alias_preferring(&aliases, "s_free", |_| false, |_| false),
-            "valkey_free"
+            alias_chain_builds(&aliases, "s_free", |_| false, |_| false, |_| false),
+            vec!["valkey_free"]
+        );
+        // An accusing reading takes the build that frees.
+        assert_eq!(
+            resolve_macro_alias_preferring(
+                &aliases,
+                "mbedtls_free",
+                |n| n == "free",
+                |n| bodies.contains(&n),
+                |n| conditional.contains(&n),
+            ),
+            "free"
         );
     }
 
