@@ -2,10 +2,11 @@
  * Rule: INT02-C
  * Source: regression
  * Status: PASS - Should NOT trigger INT02-C violation
+ * Settings: data_model=lp64
  *
- * Two 8-bit operands reach at most 255 * 255 = 65025, which fits in int, so
- * the promotion is harmless. Signed 16-bit is safe for the same reason:
- * 32767 * 32767 also fits.
+ * The target is declared LP64, where int is 32 bits. Two 8-bit operands reach
+ * at most 255 * 255 = 65025, which fits, so the promotion is harmless. Signed
+ * 16-bit is safe for the same reason: 32767 * 32767 also fits.
  */
 
 unsigned int byte_product(unsigned char a, unsigned char b) {

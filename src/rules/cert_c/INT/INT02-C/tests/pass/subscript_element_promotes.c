@@ -2,10 +2,12 @@
  * Rule: INT02-C
  * Source: regression
  * Status: PASS - Should NOT trigger INT02-C violation
+ * Settings: data_model=lp64
  *
- * The indexed element is an unsigned char, which promotes to int, so the
- * comparison is signed-vs-signed. Resolving the element type is what makes
- * this answerable either way rather than silently skipped.
+ * The indexed element is an unsigned char, which on the declared LP64 target
+ * promotes to int, so the comparison is signed-vs-signed. Resolving the
+ * element type is what makes this answerable either way rather than silently
+ * skipped.
  */
 
 int scan(unsigned char *buf, int limit) {

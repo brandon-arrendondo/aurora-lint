@@ -4,8 +4,9 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::VisibleTypes;
 use crate::manifest::Severity;
+use crate::settings::{AnalysisSettings, DataModel};
 use crate::utility::cert_c::expr_type::{self, TypeEnv};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use tree_sitter::Node;
 
 #[derive(Default)]
@@ -14,6 +15,8 @@ pub struct Flp06C {
     /// `real` (a typedef of double) and an operand declared `u32` are typed by
     /// their declarations.
     visible: RefCell<VisibleTypes>,
+    /// The integer data model the settings credit, for typing.
+    data_model: Cell<DataModel>,
 }
 
 impl CertRule for Flp06C {
@@ -34,9 +37,13 @@ impl CertRule for Flp06C {
         *self.visible.borrow_mut() = types.clone();
     }
 
+    fn set_analysis_settings(&self, settings: &std::sync::Arc<AnalysisSettings>) {
+        self.data_model.set(settings.data_model);
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let visible = self.visible.borrow();
-        let env = TypeEnv::visible(&visible);
+        let env = TypeEnv::visible(&visible, self.data_model.get());
         let mut violations = Vec::new();
         for decl in lang_parsing_substrate::query::find_descendants_of_kind(*node, "declaration") {
             self.check_declaration(&decl, source, &env, &mut violations);
