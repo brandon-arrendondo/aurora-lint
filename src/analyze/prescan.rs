@@ -6597,7 +6597,8 @@ fn find_anonymous_inner_body<'a>(field_decl: &Node<'a>) -> Option<Node<'a>> {
 /// that spelling. It is lossy: `double v[4]` is `"double"` and `double **p` is
 /// `"double *"`. `shape` is the exact [`expr_type::declarator_shape`] of the
 /// declarator the field is named by, so the specifiers and the shape together
-/// give the field's type.
+/// give the field's type; a bit-field's shape is `:` and its width as written
+/// (`":4"`, `":LRU_BITS"`).
 fn extract_field_decl(node: &Node, source: &str) -> Option<(String, String, String)> {
     // Collect type specifier text (everything before the declarator)
     let mut type_parts = Vec::new();
@@ -6631,6 +6632,14 @@ fn extract_field_decl(node: &Node, source: &str) -> Option<(String, String, Stri
                     // e.g., `char name[64];` — extract field_identifier
                     field_name = extract_field_id_from_declarator(&child, source);
                     shape = expr_type::declarator_shape(&child);
+                }
+                "bitfield_clause" => {
+                    // `unsigned type : 4;` -- the width, after the name.
+                    let width = child
+                        .named_child(0)
+                        .and_then(|w| w.utf8_text(source.as_bytes()).ok())
+                        .unwrap_or("");
+                    shape = format!(":{}", width.trim());
                 }
                 "function_declarator" => {
                     // Function pointer fields — skip for type resolution purposes

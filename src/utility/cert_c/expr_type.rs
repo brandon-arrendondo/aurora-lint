@@ -845,7 +845,34 @@ fn field_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
     let spelling = env.fields.get(&record)?.get(field)?;
     let shape = env.shapes.get(&record)?.get(field)?;
     // The spelling's ` *` stands for the pointer levels the shape states.
-    apply_shape(classify_spelling(&spelling.replace('*', " "), env), shape)
+    let base = classify_spelling(&spelling.replace('*', " "), env);
+    match shape.strip_prefix(':') {
+        Some(width) => bit_field_type(base?, width, env.model),
+        None => apply_shape(base, shape),
+    }
+}
+
+/// The type a bit-field's value has in an expression. A bit-field narrower
+/// than `int` promotes to `int` whatever its declared signedness, since `int`
+/// holds every value it can have (C11 6.3.1.1p2), so `o->type != type` with
+/// `unsigned type : 4` compares two ints. One exactly as wide as `int` keeps
+/// its declared type. A width that is not a decimal constant (a macro), or
+/// a bit-field of a type other than `int`, `unsigned int` or `_Bool`, whose
+/// promotion is implementation-defined, is unknown.
+fn bit_field_type(declared: CType, width: &str, model: DataModel) -> Option<CType> {
+    let width: u32 = width.parse().ok()?;
+    let int_width = model.width(Rank::Int);
+    match declared {
+        CType::Int { rank, .. }
+            if rank == Rank::Bool || (rank == Rank::Int && width < int_width) =>
+        {
+            Some(int_type())
+        }
+        CType::Int {
+            rank: Rank::Int, ..
+        } if width == int_width => Some(declared),
+        _ => None,
+    }
 }
 
 /// An integer or floating constant's type (C11 6.4.4.1, 6.4.4.2).
@@ -1144,6 +1171,20 @@ mod tests {
         let code = "struct u { double *a, b; };\n\
                     int f(struct u *s) { return s->b; }";
         assert_eq!(returned(code, &[]), Some(CType::Float(FloatKind::Double)));
+    }
+
+    #[test]
+    fn a_narrow_bit_field_is_an_int() {
+        let code =
+            "struct o { unsigned type : 4; unsigned full : 32; unsigned lru : LRU_BITS; };\n\
+                    int f(struct o *p) { return p->type; }";
+        assert_eq!(returned(code, &[]), int(Sign::Signed, Rank::Int));
+        let code = "struct o { unsigned type : 4; unsigned full : 32; };\n\
+                    int f(struct o *p) { return p->full; }";
+        assert_eq!(returned(code, &[]), int(Sign::Unsigned, Rank::Int));
+        let code = "struct o { unsigned lru : LRU_BITS; };\n\
+                    int f(struct o *p) { return p->lru; }";
+        assert_eq!(returned(code, &[]), None);
     }
 
     #[test]
