@@ -3885,3 +3885,23 @@ fn a_computed_include_may_bring_any_definition() {
     let found = pre31_findings("pre31_partial_include", "computed.c", &[]);
     assert_eq!(pre31_lines(&found), vec![7], "{found:?}");
 }
+
+#[test]
+fn a_profile_keeps_the_manifests_data_model() {
+    // A preset chooses policy, not what the project is built for.
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("rules.toml");
+    std::fs::write(
+        &manifest,
+        "[metadata]\nname = \"t\"\nversion = \"1\"\ncert_version = \"2016\"\n\n[environment]\ndata_model = \"lp64\"\n\n[rules.cert_c]\n",
+    )
+    .unwrap();
+    let m = manifest.to_str().unwrap();
+    for profile in ["default", "strict"] {
+        let (code, stdout, stderr) =
+            run_aurora_lint(&["--list-options", "json", "-m", m, "--profile", profile]);
+        assert_eq!(code, 0, "{stderr}");
+        let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(json["current"]["data_model"], "lp64", "{profile}: {stdout}");
+    }
+}
