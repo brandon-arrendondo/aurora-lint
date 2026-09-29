@@ -5,7 +5,9 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval::{merged_macro_aliases, resolve_macro_alias};
 use crate::analyze::context::{EffectView, IncludeClosure, ProjectContext, VisibleTypes};
 use crate::analyze::function_summary::extract_function_name;
-use crate::analyze::macro_expand::{self, ArgEvaluation, FunctionMacro, MacroArm, ProjectMacroArm};
+use crate::analyze::macro_expand::{
+    self, ArgEvaluation, FunctionMacro, MacroArm, Pasting, ProjectMacroArm,
+};
 use crate::analyze::side_effects::{
     collect_direct_effects, dereferences_applied, designates_object, is_null_pointer_constant,
     is_type_name_text, is_volatile_read, names_a_type, typedef_is_volatile, typedef_read,
@@ -219,6 +221,50 @@ fn library_unsafe_argument(name: &str) -> Option<usize> {
         "assert" | "getc" | "getwc" => Some(0),
         "putc" | "putwc" => Some(1),
         _ => None,
+    }
+}
+
+/// How the call `name(...)` evaluates the arguments of `call`, when a paste
+/// renamed `call`'s callee to `name`: once each for a function or a C
+/// library macro 7.1.4 binds, and for a function-like macro by every arm
+/// it has at every position `call` fills. A macro whose body nobody can
+/// read proves nothing, so the argument is not credited at all.
+fn pasted_call_evaluation(ctx: &Ctx, name: &str, call: &Node) -> ArgEvaluation {
+    let name = ctx.resolve(name);
+    let arms = match ctx.arms.get(name).filter(|a| !a.is_empty()) {
+        Some(arms) => arms.clone(),
+        None if library_unsafe_argument(name).is_some() => return ArgEvaluation::Unpredictable,
+        None if ctx.bound_by_library_contract(name) || !ctx.names.contains(name) => {
+            return ArgEvaluation::Once;
+        }
+        None => ctx.definitions(name),
+    };
+    if arms.is_empty() {
+        return ArgEvaluation::Never;
+    }
+    let count = call.child_by_field_name("arguments").map_or(0, |a| {
+        let mut cursor = a.walk();
+        a.named_children(&mut cursor)
+            .filter(|n| n.kind() != "comment")
+            .count()
+    });
+    let forward = |inner: &str| {
+        let inner = ctx.resolve(inner);
+        if ctx.names.contains(inner) && !ctx.bound_by_library_contract(inner) {
+            ctx.definitions(inner)
+        } else {
+            Vec::new()
+        }
+    };
+    let once = (0..count).all(|k| {
+        arms.iter().all(|a| {
+            macro_expand::argument_evaluation_through(a, k, &forward) == ArgEvaluation::Once
+        })
+    });
+    if once {
+        ArgEvaluation::Once
+    } else {
+        ArgEvaluation::Unpredictable
     }
 }
 
@@ -673,14 +719,15 @@ impl Pre31C {
                 Vec::new()
             }
         };
-        let evaluates_once = move |a: &MacroArm, i| {
-            macro_expand::argument_evaluation_through(a, i, &forward) == ArgEvaluation::Once
+        let evaluates_once = move |a: &MacroArm, i, pasting: Pasting<'_>| {
+            macro_expand::argument_evaluation_pasting(a, i, &forward, pasting)
+                == ArgEvaluation::Once
         };
-        let unsafe_at: Box<dyn Fn(usize) -> bool + '_> = if let Some(arms) = arms {
+        let unsafe_at: Box<dyn Fn(usize, Pasting<'_>) -> bool + '_> = if let Some(arms) = arms {
             let arms = arms.clone();
-            Box::new(move |i| arms.iter().any(|a| !evaluates_once(a, i)))
+            Box::new(move |i, p| arms.iter().any(|a| !evaluates_once(a, i, p)))
         } else if let Some(k) = library_unsafe_argument(macro_name) {
-            Box::new(move |i| i == k)
+            Box::new(move |i, _| i == k)
         } else if ctx.bound_by_library_contract(macro_name) {
             // The implementation's macro for a library function: whatever
             // its body looks like, C11 7.1.4 has it evaluate each argument
@@ -689,9 +736,9 @@ impl Pre31C {
         } else if ctx.names.contains(macro_name) {
             let defs = ctx.definitions(macro_name);
             if defs.is_empty() {
-                Box::new(|_| true)
+                Box::new(|_, _| true)
             } else {
-                Box::new(move |i| defs.iter().any(|a| !evaluates_once(a, i)))
+                Box::new(move |i, p| defs.iter().any(|a| !evaluates_once(a, i, p)))
             }
         } else {
             return;
@@ -705,7 +752,20 @@ impl Pre31C {
             .named_children(&mut cursor)
             .filter(|a| a.kind() != "comment");
         for (i, arg) in args.enumerate() {
-            if !unsafe_at(i) || !ctx.reported(ctx.expression_effect(&arg)) {
+            // `prefix ## CALL` pastes only a call's name; its argument list
+            // stays, evaluated as the pasted name evaluates it.
+            let callee = arg
+                .child_by_field_name("function")
+                .filter(|f| arg.kind() == "call_expression" && f.kind() == "identifier");
+            let judge = |name: &str| pasted_call_evaluation(ctx, name, &arg);
+            let pasting = match callee {
+                Some(f) => Pasting::CallKeepsArguments {
+                    callee: get_node_text(&f, ctx.source),
+                    judge: &judge,
+                },
+                None => Pasting::ConsumesArgument,
+            };
+            if !unsafe_at(i, pasting) || !ctx.reported(ctx.expression_effect(&arg)) {
                 continue;
             }
             let start_point = node.start_position();

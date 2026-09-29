@@ -589,7 +589,8 @@ impl From<&FunctionMacro> for MacroArm {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArgEvaluation {
     /// Never: the parameter is absent, or used only as a `#`/`##` operand
-    /// or inside an operand C11 leaves unevaluated (`sizeof`, `_Alignof`,
+    /// (but see [`Pasting::CallKeepsArguments`]) or inside an operand C11
+    /// leaves unevaluated (`sizeof`, `_Alignof`,
     /// `typeof`, a `_Generic` controlling expression).
     Never,
     /// Exactly once, on every path through the expansion.
@@ -856,7 +857,41 @@ pub fn argument_evaluation_through(
     arg: usize,
     definitions: &dyn Fn(&str) -> Vec<MacroArm>,
 ) -> ArgEvaluation {
-    evaluation_at_depth(arm, arg, definitions, 0)
+    argument_evaluation_pasting(arm, arg, definitions, Pasting::ConsumesArgument)
+}
+
+/// What a `##` does to the argument an invocation passes for a parameter it
+/// pastes.
+#[derive(Clone, Copy)]
+pub enum Pasting<'a> {
+    /// The paste takes the whole argument: an identifier, or anything whose
+    /// effect rides on its first token (`n++` pasted after `id_` is
+    /// `id_n++`, which never touches `n`).
+    ConsumesArgument,
+    /// The argument is a call `callee(a, b)`. `prefix ## P` pastes only its
+    /// first token, `##` operands are not expanded, and the rescan sees
+    /// `prefix_callee(a, b)`: the call's arguments are evaluated as that
+    /// pasted name evaluates them, which `judge` answers given the name
+    /// (once for a function; a function-like macro by its own arms).
+    CallKeepsArguments {
+        /// The call's callee, the token the paste takes.
+        callee: &'a str,
+        /// How a call to the pasted name evaluates its arguments.
+        judge: &'a dyn Fn(&str) -> ArgEvaluation,
+    },
+}
+
+/// [`argument_evaluation_through`], told what the invocation passes: under
+/// [`Pasting::CallKeepsArguments`] a parameter that is the right operand of
+/// `##` after an identifier, and no left operand of another, is evaluated
+/// as the pasted call evaluates its arguments.
+pub fn argument_evaluation_pasting(
+    arm: &MacroArm,
+    arg: usize,
+    definitions: &dyn Fn(&str) -> Vec<MacroArm>,
+    pasting: Pasting,
+) -> ArgEvaluation {
+    evaluation_at_depth(arm, arg, definitions, pasting, 0)
 }
 
 /// How deep [`argument_evaluation_through`] follows macros into macros.
@@ -866,6 +901,7 @@ fn evaluation_at_depth(
     arm: &MacroArm,
     arg: usize,
     definitions: &dyn Fn(&str) -> Vec<MacroArm>,
+    pasting: Pasting,
     depth: usize,
 ) -> ArgEvaluation {
     let target = match &arm.variadic {
@@ -947,11 +983,9 @@ fn evaluation_at_depth(
                             Some((at, _)) if arg >= *at => position + (arg - at),
                             _ => position,
                         };
-                        let verdict = fold_arms(
-                            callee
-                                .iter()
-                                .map(|c| evaluation_at_depth(c, inner, definitions, depth + 1)),
-                        );
+                        let verdict = fold_arms(callee.iter().map(|c| {
+                            evaluation_at_depth(c, inner, definitions, pasting, depth + 1)
+                        }));
                         forwarded[k] = Some(match forwarded[k] {
                             Some(prior) => nest(prior, verdict),
                             None => verdict,
@@ -1006,16 +1040,19 @@ fn evaluation_at_depth(
             }
             t if t == target => {
                 let stringized = j > 0 && tokens[j - 1].text == "#";
-                let pasted = (j > 0 && tokens[j - 1].text == "##")
-                    || tokens.get(j + 1).is_some_and(|t| t.text == "##");
+                let pasted_before = tokens.get(j + 1).is_some_and(|t| t.text == "##");
+                let pasted_after = j > 0 && tokens[j - 1].text == "##";
+                let pasted_call = pasted_call_evaluation(&tokens, j, pasting);
+                let pasted = pasted_before || (pasted_after && pasted_call.is_none());
+                let through = pasted_call.or(forwarded[j]);
                 if !(stringized || pasted || unevaluated[j])
-                    && forwarded[j] != Some(ArgEvaluation::Never)
+                    && through != Some(ArgEvaluation::Never)
                 {
                     evaluations += 1;
                     conditional |= top.conditional
                         || governed[tokens[j].start]
                         || looped[j]
-                        || forwarded[j] == Some(ArgEvaluation::Unpredictable);
+                        || through == Some(ArgEvaluation::Unpredictable);
                 }
             }
             _ => {}
@@ -1026,6 +1063,27 @@ fn evaluation_at_depth(
         (1, false) => ArgEvaluation::Once,
         _ => ArgEvaluation::Unpredictable,
     }
+}
+
+/// How the occurrence at `j`, the right operand of `prefix ##` and no left
+/// operand of another `##`, is evaluated when the invocation passes a call:
+/// as the pasted name `prefixcallee` evaluates the call's arguments. `None`
+/// when the paste consumes the argument instead.
+fn pasted_call_evaluation(
+    tokens: &[BodyToken],
+    j: usize,
+    pasting: Pasting,
+) -> Option<ArgEvaluation> {
+    let Pasting::CallKeepsArguments { callee, judge } = pasting else {
+        return None;
+    };
+    if j < 2 || tokens[j - 1].text != "##" || tokens.get(j + 1).is_some_and(|t| t.text == "##") {
+        return None;
+    }
+    let prefix = tokens[j - 2].text.as_str();
+    prefix
+        .starts_with(is_ident_char)
+        .then(|| judge(&format!("{prefix}{callee}")))
 }
 
 /// One verdict over several arms of a macro: agreed, or else it depends on
@@ -4966,6 +5024,48 @@ mod macro_write_tests {
         assert_eq!(argument_evaluation(&stringize, 0), ArgEvaluation::Never);
         let empty = arm(&["x"], "");
         assert_eq!(argument_evaluation(&empty, 0), ArgEvaluation::Never);
+    }
+
+    #[test]
+    fn a_pasted_call_still_evaluates_its_arguments() {
+        let none = |_: &str| Vec::new();
+        let function = |_: &str| ArgEvaluation::Once;
+        let call = Pasting::CallKeepsArguments {
+            callee: "snprintf",
+            judge: &function,
+        };
+        let check = arm(&["CALL", "SIZE"], "(workaround_ ## CALL)");
+        assert_eq!(argument_evaluation(&check, 0), ArgEvaluation::Never);
+        assert_eq!(
+            argument_evaluation_pasting(&check, 0, &none, call),
+            ArgEvaluation::Once
+        );
+        // The pasted name is what gets called.
+        let asked = std::cell::RefCell::new(String::new());
+        let twice_macro = |name: &str| {
+            *asked.borrow_mut() = name.to_string();
+            ArgEvaluation::Unpredictable
+        };
+        let to_macro = Pasting::CallKeepsArguments {
+            callee: "snprintf",
+            judge: &twice_macro,
+        };
+        assert_eq!(
+            argument_evaluation_pasting(&check, 0, &none, to_macro),
+            ArgEvaluation::Unpredictable
+        );
+        assert_eq!(asked.borrow().as_str(), "workaround_snprintf");
+        // A parameter pasted on its right as well is consumed either way.
+        let both = arm(&["x"], "pre_ ## x ## _post");
+        assert_eq!(
+            argument_evaluation_pasting(&both, 0, &none, call),
+            ArgEvaluation::Never
+        );
+        let twice = arm(&["x"], "(x) + (w_ ## x)");
+        assert_eq!(
+            argument_evaluation_pasting(&twice, 0, &none, call),
+            ArgEvaluation::Unpredictable
+        );
     }
 
     #[test]
