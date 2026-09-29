@@ -3511,6 +3511,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             return;
         }
 
+        self.process_rebinding_macro(node, source, &func_name);
+
         // A function-like macro whose body frees an argument is a free by
         // what it expands to, whatever it is called. `free` and `realloc`
         // keep their own handlers even where a project redefines them as
@@ -3758,6 +3760,36 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// reads); a free-and-null macro is `free(p); p = NULL;` in one call and
     /// leaves the name exactly as that sequence does, so a second
     /// `Curl_safefree(p)` is `free(NULL)` rather than a double free.
+    /// A function-like macro whose body assigns a whole argument
+    /// (`macro_output_param_indices`) leaves that name holding a new value,
+    /// so no release recorded against the old one carries over. hostap's
+    /// `dl_list_for_each_safe(item, n, list, type, member)` opens with
+    /// `item = dl_list_entry(...)`: a second loop over the list visits
+    /// other elements than the ones the first loop released. Forgetting a
+    /// mark suppresses an accusation, so the assignment must be in every
+    /// live definition (`Live::All`).
+    fn process_rebinding_macro(&mut self, node: &Node, source: &str, func_name: &str) {
+        let rebound = macro_expand::macro_output_param_indices(
+            self.function_macros,
+            func_name,
+            macro_expand::Live::All,
+        );
+        if rebound.is_empty() {
+            return;
+        }
+        let args: Vec<Node> = Self::call_args(*node).collect();
+        for idx in rebound {
+            let Some(arg) = args.get(idx) else { continue };
+            if arg.kind() != "identifier" {
+                continue;
+            }
+            let name = ast_utils::get_node_text_owned(arg, source);
+            self.freed_memory.remove(&name);
+            self.maybe_freed.remove(&name);
+            self.unaccusable_frees.remove(&name);
+        }
+    }
+
     fn process_freeing_macro(&mut self, node: &Node, source: &str, func_name: &str) -> bool {
         let frees = self.macro_freed_param_indices(func_name, site_of(node, source));
         if frees.is_empty() {
