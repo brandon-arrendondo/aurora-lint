@@ -1,13 +1,13 @@
 /*
  * Rule: API00-C
  * Source: mbedtls include/mbedtls/aes.h
- * Status: PASS - Should NOT trigger API00-C violation
- * Description: The function's own doc comment states that `ctx` must be
- * initialized and `key` must be a readable buffer -- the published contract
- * places validation on the caller, the "validate on one side of the
- * interface" discipline written down. Only the function's own statement
- * counts (never an inference from its callers), and only explicit
- * wording: see fail/documented_without_precondition.c.
+ * Status: FAIL - Should trigger API00-C violation
+ * Description: The function's own doc comment says `ctx` must be
+ * initialized and `key` must be a readable buffer, but C has no contract
+ * language for a project's own functions: the comment states an intended
+ * precondition, and nothing makes a caller honour it (ADR-0011). The
+ * parameters are dereferenced unvalidated, so they are reported like any
+ * others.
  */
 
 typedef struct { unsigned int rk[60]; int nr; } aes_context;

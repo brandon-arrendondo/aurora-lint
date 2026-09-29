@@ -168,9 +168,10 @@ callee's job is to fill it in. Misfire C (§3) is one manifestation of this
 at the InitState-tracking layer, but there's a separate, policy-level
 question of whether the read-only/write classification should special-case
 functions whose own documented contract is "this parameter is an out
-parameter I initialize" — closer in shape to the existing
-`documented_nonnull_params` doc-comment convention scan than to a
-body-write heuristic. Worth scoping as its own follow-up once (a)/(b) land
+parameter I initialize". ADR-0011 has since settled that a project's own
+documented contract is not proof, and the doc-comment non-NULL scan that
+once credited one was removed, so such a special case would need a basis in
+the code itself. Worth scoping as its own follow-up once (a)/(b) land
 and the residual FP shape at that point is re-measured; folding it in now
 would confound the measurement of (a)/(b)'s actual effect.
 

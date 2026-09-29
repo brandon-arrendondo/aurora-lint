@@ -38,7 +38,6 @@ direction varies by table:
 | `function_summaries`, every other field | **first** definition wins | `prescan.rs`, the `get_mut`/`insert` arm |
 | `function_macros` | **first** wins, and a later differing expansion is recorded as a `conflicting-definition` macro gap | `prescan.rs`, the `Entry` match |
 | `restrict_params` | **first** wins (`or_insert`) | `prescan.rs` |
-| `documented_nonnull_params` | unions the indices | `merge_documented_params` |
 | `typedef_types`, `struct_field_types`, `struct_typedef_aliases`, `macro_constants`, `macro_aliases`, `global_constants`, `global_var_null_states` | **last** wins (`HashMap::extend` overwrites) | `prescan.rs` |
 | `known_functions`, `noreturn_functions`, `packed_structs`, … | set unions, order-free | `prescan.rs` |
 

@@ -2,10 +2,9 @@
  * Rule: API00-C
  * Source: mbedtls include/mbedtls/aes.h
  * Status: FAIL - Should trigger API00-C violation
- * Description: A doc comment that merely describes a pointer parameter
- * ("The AES context to use") states no precondition, so the caller-side
- * contract that pass/documented_nonnull_precondition.c relies on is not
- * there and the unguarded dereference is reported.
+ * Description: A doc comment that describes a pointer parameter ("The AES
+ * context to use") states nothing that validates it, so the unguarded
+ * dereference is reported.
  */
 
 typedef struct { unsigned int rk[60]; int nr; } aes_context;
