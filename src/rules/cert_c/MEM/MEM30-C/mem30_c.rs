@@ -3927,9 +3927,11 @@ impl MemoryAnalyzer {
             if summary.is_some_and(|s| s.unconditional_frees_param_pointees.contains(&idx)) {
                 self.mark_arg_freed(call, inner, source, violations);
                 // hostap's `nl_destroy_handles(&bss->nl_mgmt)` frees `*handle`
-                // and then writes `*handle = NULL`: the caller's pointer is
-                // left NULL, as after `free(p); p = NULL;`, not dangling.
-                if summary.is_some_and(|s| s.nulls_param_pointees.contains(&idx)) {
+                // and then writes `*handle = NULL` on every path: the caller's
+                // pointer is left NULL, as after `free(p); p = NULL;`, not
+                // dangling. A NULL write some path skips leaves it dangling
+                // there, so it cannot clear the release.
+                if summary.is_some_and(|s| s.unconditional_nulls_param_pointees.contains(&idx)) {
                     if let Some(lv) = lvalue_of(&inner, source) {
                         self.freed_vars.remove(&lv);
                         self.realloc_invalidated.remove(&lv);
@@ -4940,6 +4942,17 @@ impl MemoryAnalyzer {
         // Skip if parent is a subscript_expression (checked in check_subscript_access)
         if let Some(parent) = node.parent() {
             if parent.kind() == "subscript_expression" {
+                return;
+            }
+            // `&o->h` names the slot holding the pointer without reading the
+            // pointer: handing it to a callee that frees `*hp` is the release
+            // itself, not a use of what it released. `&o->h->fd` still reads
+            // `o->h`, through its own field access.
+            if parent.kind() == "pointer_expression"
+                && parent
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "&")
+            {
                 return;
             }
         }

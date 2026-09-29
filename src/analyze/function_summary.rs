@@ -279,6 +279,14 @@ pub struct FunctionSummary {
     /// so calling it again releases nothing.
     #[serde(default)]
     pub nulls_param_pointees: HashSet<usize>,
+    /// The subset of `nulls_param_pointees` whose NULL write follows the free
+    /// on every path, so the caller's `&p` is NULL whenever the call returns
+    /// (hostap's `nl_destroy_handles`). A `*param = NULL` under a flag the
+    /// caller passes leaves `p` dangling when the flag is clear, so it does
+    /// not count. The fact a SUPPRESSING consumer needs; `nulls_param_pointees`
+    /// only withholds an accusation.
+    #[serde(default)]
+    pub unconditional_nulls_param_pointees: HashSet<usize>,
     /// The subset of `frees_param_pointees` the body always frees: the
     /// `free(*param)` is reached on every path except one guarded on
     /// `param` or `*param` being null, where there is nothing to free
@@ -2849,10 +2857,11 @@ fn is_unconditionally_reached_modulo_pointee_guard(
     }
 }
 
-/// Whether `body` assigns a null pointer through `param`: `*param = NULL`,
-/// `*param = 0`, `(*param) = nullptr`, casts and parentheses peeled. Read off
-/// the AST, so a comment or a string saying so does not count.
-fn assigns_null_through(body: &Node, source: &str, param: &str) -> bool {
+/// Every assignment in `body` of a null pointer through `param`:
+/// `*param = NULL`, `*param = 0`, `(*param) = nullptr`, casts and
+/// parentheses peeled. Read off the AST, so a comment or a string saying so
+/// does not count.
+fn null_writes_through<'t>(body: &Node<'t>, source: &str, param: &str) -> Vec<Node<'t>> {
     fn peel(mut n: Node) -> Node {
         loop {
             let inner = match n.kind() {
@@ -2868,7 +2877,7 @@ fn assigns_null_through(body: &Node, source: &str, param: &str) -> bool {
     }
     lang_parsing_substrate::query::find_descendants_of_kind(*body, "assignment_expression")
         .into_iter()
-        .any(|assign| {
+        .filter(|assign| {
             let is_plain = assign
                 .child_by_field_name("operator")
                 .is_some_and(|op| op.kind() == "=");
@@ -2897,6 +2906,7 @@ fn assigns_null_through(body: &Node, source: &str, param: &str) -> bool {
                 );
             is_plain && through_param && null
         })
+        .collect()
 }
 
 /// Reduce a `free()` argument to the identifier it releases, reporting whether
@@ -4359,6 +4369,11 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, mut summary: Functi
     existing
         .nulls_param_pointees
         .extend(summary.nulls_param_pointees);
+    // Intersected: a consumer reads it to suppress, which every build that
+    // can link under this name has to support (ADR-0010).
+    existing
+        .unconditional_nulls_param_pointees
+        .retain(|i| summary.unconditional_nulls_param_pointees.contains(i));
     // Unioned for the reason `unconditional_frees_params` is: each
     // definition is its own configuration (ADR-0010).
     existing
@@ -5299,8 +5314,15 @@ fn credit_frees_one_arg(
         if is_unconditionally_reached_modulo_pointee_guard(call, body, source, arg_name) {
             summary.unconditional_frees_param_pointees.insert(idx);
         }
-        if assigns_null_through(body, source, arg_name) {
+        let null_writes = null_writes_through(body, source, arg_name);
+        if !null_writes.is_empty() {
             summary.nulls_param_pointees.insert(idx);
+        }
+        if null_writes.iter().any(|w| {
+            w.start_byte() >= call.end_byte()
+                && is_unconditionally_reached_modulo_pointee_guard(w, body, source, arg_name)
+        }) {
+            summary.unconditional_nulls_param_pointees.insert(idx);
         }
         return;
     }
@@ -7324,6 +7346,10 @@ pub fn propagate_transitive_frees_param_pointees(summaries: &mut HashMap<String,
             .iter()
             .map(|(n, s)| (n.clone(), s.unconditional_frees_param_pointees.clone()))
             .collect();
+        let must_nulls_snapshot: HashMap<String, HashSet<usize>> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.unconditional_nulls_param_pointees.clone()))
+            .collect();
 
         for summary in summaries.values_mut() {
             for (caller_idx, callees) in &summary.param_passthroughs {
@@ -7352,6 +7378,15 @@ pub fn propagate_transitive_frees_param_pointees(summaries: &mut HashMap<String,
                         .is_some_and(|s| s.contains(callee_idx))
                         && summary
                             .unconditional_frees_param_pointees
+                            .insert(*caller_idx)
+                    {
+                        changed = true;
+                    }
+                    if must_nulls_snapshot
+                        .get(callee_name)
+                        .is_some_and(|s| s.contains(callee_idx))
+                        && summary
+                            .unconditional_nulls_param_pointees
                             .insert(*caller_idx)
                     {
                         changed = true;
