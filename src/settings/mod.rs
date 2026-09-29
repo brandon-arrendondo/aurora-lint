@@ -508,7 +508,7 @@ pub struct AnalysisSettings {
     /// The project's declared allocators and deallocators.
     pub memory: MemoryDeclarations,
     /// The path globs whose files the cross-file prescan does not read
-    /// (`--exclude` and `--prescan-exclude`, with their manifest keys),
+    /// (`--exclude-all` and `--prescan-exclude`, with their manifest keys),
     /// sorted and deduplicated. What a summary, a macro's alternatives or a
     /// noreturn set can hold depends on them.
     pub prescan_scope: Vec<String>,

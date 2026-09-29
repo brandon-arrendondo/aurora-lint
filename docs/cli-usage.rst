@@ -414,7 +414,9 @@ leave the files out of the cross-file facts too.
 .. important::
 
     ``--exclude-all`` and ``--report-exclude`` (and the deprecated
-    ``--exclude``) are the only flags that remove files from the scan.
+    ``--exclude``) are the only flags that remove files from the scan; a
+    manifest's ``[scope]`` table and ``toolchain.toml``'s ``[ignore].paths``
+    do the same from a file.
     ``-d``/``--directories`` does the opposite: it *adds* directories to
     pre-scan for cross-file context (function summaries, macro aliases, ...)
     and has no effect on which files are actually analyzed and reported on.
