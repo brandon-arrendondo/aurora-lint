@@ -2,6 +2,7 @@
  * Source: testcases (moved from tests/fail)
  * Status: PASS - narrow-typed arithmetic that provably cannot exceed a
  * >=32-bit promoted `int`'s range.
+ * Settings: data_model=lp64
  *
  * These were originally written as FAIL cases on the theory that any
  * arithmetic on a narrow (char/short) operand without a visible guard is
