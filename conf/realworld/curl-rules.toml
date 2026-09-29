@@ -4,6 +4,11 @@ version = "1.0.0"
 description = "Project rules manifest for curl/libcurl (pinned commit 3e198f7586) — cross-platform HTTP/transfer client library + CLI. Based on the shared base rules_templates/rules-all.toml. Cross-platform (incl. Windows) network client that parses untrusted server input; NOT a privileged daemon. WIN*, FIO*, MEM* (incl. sensitive-data), POSIX socket/thread, SIG* and CON* rules are all IN scope. The only non-dead-config disable is POS05-C (category 1: curl never runs privileged). Per-finding analyzer misfires among ENABLED rules (DCL13, MEM30, INT30/32, API00, EXP33/34, ...) are NOT suppressed here — they are recorded in the ground_truth oracle so they stay measured. See data/precision_audit/."
 cert_version = "2016"
 
+[environment]
+# The configuration of record is a Linux x86_64 build, LP64: int 32 bits, long
+# and pointers 64. See docs/design/realworld-corpus-scope.md.
+data_model = "lp64"
+
 # curlx_free is Curl_cfree (curl_setup.h), a global curl_free_callback that
 # defaults to free and is replaceable through curl_global_init_mem, or
 # curl_dbg_free under CURLDEBUG (memdebug). Neither body can be followed, so

@@ -5,6 +5,11 @@ version = "1.0.0"
 description = "Project rules manifest for Lua 5.5 (pinned to commit 40b76de2d77e66b70a9d4bf989c3f5340919973f, git describe v5.5.0-34-g40b76de2), based on the shared base rules_templates/rules-all.toml. Lua is a small (~19K SLOC), permissively-licensed (MIT) bytecode VM / interpreter — a new domain for the suite alongside the crypto/DB/MQTT/HTTP/wifi codebases. NOTE: adopted as a general-purpose oracle, NOT to validate structural-C99 conformance rules; Lua is portability-C99 (long long / snprintf / strtod / %a gated behind !LUA_USE_C89) but uses NONE of the structural C99 idioms (designated initializers, compound literals, _Bool/stdbool, restrict, flexible array members, conformant array parameters) — so API05-C and the other C99-conformance checks still lack a positive-validation target here. Precision SCOPE for the ground-truth oracle is the shipped library + the lua.c interpreter main, EXCLUDING the checked-in amalgamation (onelua.c), the internal test/debug harness (ltests.c) and the C test fixtures (testes/) — the runner drops the test material from aurora-lint with --exclude-all (out of the cross-file prescan too) and onelua.c with --report-exclude (the product itself as one unit: unreported, still read), and all three from cppcheck/clang-tidy via -i/find-prune so all three tools scan the same fileset. No categorical disable beyond dead config; categorical disables grow as adjudication finds whole rules that do not apply; per-finding false positives among enabled rules are recorded in the ground_truth oracle (data/benchmarks.db), not suppressed here."
 cert_version = "2016"
 
+[environment]
+# The configuration of record is a Linux x86_64 build, LP64: int 32 bits, long
+# and pointers 64. See docs/design/realworld-corpus-scope.md.
+data_model = "lp64"
+
 [rules.cert_c.API00-C]
 enabled = true
 
