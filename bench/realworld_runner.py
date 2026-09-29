@@ -106,16 +106,16 @@ CODEBASES = {
             # `-d` doesn't restrict the scan (it only adds cross-file pre-scan
             # context; the primary scan root is still the whole repo when
             # scan_path is None), so out-of-scope trees are dropped via
-            # --exclude instead: autosetup/ (vendored Jim Tcl), tool/ (lemon
+            # --report-exclude instead: autosetup/ (vendored Jim Tcl), tool/ (lemon
             # parser-gen, build tools), test/ + src/test*.c (Tcl test glue),
             # and ext/jni + ext/wasm (language bindings, not the engine).
             "extra_args": [
-                "--exclude", "autosetup/**",
-                "--exclude", "tool/**",
-                "--exclude", "test/**",
-                "--exclude", "src/test*.c",
-                "--exclude", "ext/jni/**",
-                "--exclude", "ext/wasm/**",
+                "--report-exclude", "autosetup/**",
+                "--report-exclude", "tool/**",
+                "--report-exclude", "test/**",
+                "--report-exclude", "src/test*.c",
+                "--report-exclude", "ext/jni/**",
+                "--report-exclude", "ext/wasm/**",
             ],
         },
         "cppcheck": {
@@ -142,18 +142,18 @@ CODEBASES = {
             # (docs/design/realworld-corpus-scope.md, mosquitto section). `-d` doesn't restrict
             # the scan (it only adds cross-file pre-scan context; the primary
             # scan root is still the whole repo when scan_path is None), so
-            # out-of-scope trees are dropped via --exclude instead: deps/
+            # out-of-scope trees are dropped via --report-exclude instead: deps/
             # (vendored picohttpparser), test/, client/, apps/, plugins/
             # (example plugins), common/ and libcommon/ (shared helpers, pulled
             # in only as cross-file context).
             "extra_args": [
-                "--exclude", "deps/**",
-                "--exclude", "test/**",
-                "--exclude", "client/**",
-                "--exclude", "apps/**",
-                "--exclude", "plugins/**",
-                "--exclude", "common/**",
-                "--exclude", "libcommon/**",
+                "--report-exclude", "deps/**",
+                "--report-exclude", "test/**",
+                "--report-exclude", "client/**",
+                "--report-exclude", "apps/**",
+                "--report-exclude", "plugins/**",
+                "--report-exclude", "common/**",
+                "--report-exclude", "libcommon/**",
             ],
         },
         "cppcheck": {
@@ -192,25 +192,25 @@ CODEBASES = {
             # `-d` doesn't restrict the scan (it only adds cross-file pre-scan
             # context; the primary scan root is still the whole repo when
             # scan_path is None), so out-of-scope trees are dropped via
-            # --exclude instead: tests/, docs/ (incl. docs/examples/*.c
+            # --report-exclude instead: tests/, docs/ (incl. docs/examples/*.c
             # snippets), scripts/, CMake/, projects/, include/ (vendored/build
             # tooling + public API headers). Excluding include/ from the
             # target list doesn't lose type/macro resolution for lib/+src/ --
             # the `-d {path}` full-repo prescan walk (added automatically
             # whenever extra_args has no explicit `-d`) already indexes
-            # include/'s macros/enums/types independently of --exclude, which
+            # include/'s macros/enums/types independently of --report-exclude, which
             # only filters which files get reported, not which get parsed.
             # Does NOT exclude the WIN_MAC files (14 files under lib/vtls,
             # lib/curlx) — those stay in the scan since the oracle treats them
             # as a distinct build-config boundary, excluded only from
             # *scoring*, not from the scan itself.
             "extra_args": [
-                "--exclude", "tests/**",
-                "--exclude", "docs/**",
-                "--exclude", "scripts/**",
-                "--exclude", "CMake/**",
-                "--exclude", "projects/**",
-                "--exclude", "include/**",
+                "--report-exclude", "tests/**",
+                "--report-exclude", "docs/**",
+                "--report-exclude", "scripts/**",
+                "--report-exclude", "CMake/**",
+                "--report-exclude", "projects/**",
+                "--report-exclude", "include/**",
             ],
         },
         "cppcheck": {
@@ -245,17 +245,17 @@ CODEBASES = {
             # wpa_supplicant/ + hostapd/. `-d` doesn't restrict the scan (it
             # only adds cross-file pre-scan context; the primary scan root is
             # still the whole repo when scan_path is None), so out-of-scope
-            # trees are dropped via --exclude instead: tests/, wlantest/
+            # trees are dropped via --report-exclude instead: tests/, wlantest/
             # (separate test/monitoring tool), eap_example/, hs20/,
             # radius_example/, wpaspy/ — none of these ship as part of either
             # daemon.
             "extra_args": [
-                "--exclude", "tests/**",
-                "--exclude", "wlantest/**",
-                "--exclude", "eap_example/**",
-                "--exclude", "hs20/**",
-                "--exclude", "radius_example/**",
-                "--exclude", "wpaspy/**",
+                "--report-exclude", "tests/**",
+                "--report-exclude", "wlantest/**",
+                "--report-exclude", "eap_example/**",
+                "--report-exclude", "hs20/**",
+                "--report-exclude", "radius_example/**",
+                "--report-exclude", "wpaspy/**",
             ],
         },
         "cppcheck": {
@@ -290,10 +290,10 @@ CODEBASES = {
             # onelua.c wouldn't double-count, but excluding keeps the scanned
             # fileset identical to the competitor tools below.
             "extra_args": [
-                "--exclude", "**/onelua.c",
-                "--exclude", "**/ltests.c",
-                "--exclude", "**/ltests.h",
-                "--exclude", "testes/**",
+                "--report-exclude", "**/onelua.c",
+                "--report-exclude", "**/ltests.c",
+                "--report-exclude", "**/ltests.h",
+                "--report-exclude", "testes/**",
             ],
         },
         "cppcheck": {
@@ -325,7 +325,7 @@ CODEBASES = {
             "manifest": "conf/realworld/raylib-rules.toml",
             "includes": ["-I", "{path}/src"],
             "extra_args": [
-                "--exclude", "**/external/**",
+                "--report-exclude", "**/external/**",
             ],
         },
         "cppcheck": {
@@ -368,7 +368,7 @@ CODEBASES = {
             "extra_args": [
                 "-d", "{path}/src",
                 "-d", "{path}/puredb",
-                "--exclude", "gui/**",
+                "--report-exclude", "gui/**",
             ],
         },
         "cppcheck": {
@@ -472,7 +472,7 @@ CODEBASES = {
             # on -I so the types resolve. version.h, commands.def and
             # fmtargs.h are TRACKED at this pin (not build-generated), so the
             # bare clone scans without a build and corpus-check has nothing
-            # to flag. --exclude globs resolve relative to the scan root.
+            # to flag. --report-exclude globs resolve relative to the scan root.
             "scan_path": "{path}/src",
             "manifest": "conf/realworld/valkey-rules.toml",
             "includes": [
@@ -486,8 +486,8 @@ CODEBASES = {
             ],
             "extra_args": [
                 "-d", "{path}/src",
-                "--exclude", "modules/hello*.c",
-                "--exclude", "unit/**",
+                "--report-exclude", "modules/hello*.c",
+                "--report-exclude", "unit/**",
             ],
         },
         # Same scope as sqc above, for a fair cross-tool comparison.
@@ -547,9 +547,9 @@ CODEBASES = {
             "includes": [],
             "extra_args": [
                 "-d", "{path}/Ventoy2Disk/Ventoy2Disk",
-                "--exclude", "fat_io_lib/**",
-                "--exclude", "ff14/**",
-                "--exclude", "xz-embedded-20130513/**",
+                "--report-exclude", "fat_io_lib/**",
+                "--report-exclude", "ff14/**",
+                "--report-exclude", "xz-embedded-20130513/**",
             ],
         },
         # Same top-level-only scope for the competitor tools. Neither can
@@ -890,15 +890,23 @@ def _sqc_glob_to_regex(pattern: str) -> "re.Pattern":
 
 
 def _sqc_exclude_patterns(cfg: dict) -> list["re.Pattern"]:
+    """The globs whose files sqc scans and reports nothing in: --exclude
+    (out of everything) and --report-exclude (still read for cross-file
+    facts). --prescan-exclude files are still scanned, so they are not here.
+
+    The corpora pass --report-exclude: what the old --exclude always meant,
+    so their scope and every past run stay as they were. Taking a tree out
+    of the cross-file facts as well is a per-corpus decision, recorded in
+    docs/design/realworld-corpus-scope.md with its own A/B."""
     args = cfg.get("sqc", {}).get("extra_args", [])
     return [_sqc_glob_to_regex(args[i + 1]) for i in range(len(args) - 1)
-            if args[i] == "--exclude"]
+            if args[i] in ("--exclude", "--report-exclude")]
 
 
 def _count_c_source(cfg: dict) -> tuple[int, int]:
     """(c_files, loc) for a codebase's own C source, using the curated
     cppcheck source_dirs (excludes vendored deps/test scaffolding) so the LOC
-    denominator is identical across tools, with sqc's --exclude globs applied
+    denominator is identical across tools, with sqc's excluding globs applied
     so the count matches the post-exclude set sqc actually scanned."""
     path = str(cfg["path"])
     dirs = _expand(cfg.get("cppcheck", {}).get("source_dirs", []), path) or [path]
@@ -929,7 +937,7 @@ def _count_c_source(cfg: dict) -> tuple[int, int]:
 
 def _count_sqc_scanned(cfg: dict) -> tuple[int, int]:
     """(c_files, loc) for the fileset sqc itself walked: the same scan_path
-    `_build_sqc_cmd` passes, minus the same --exclude globs.
+    `_build_sqc_cmd` passes, minus the same excluding globs.
 
     Distinct from `_count_c_source`, which counts the curated cppcheck
     source_dirs so the LOC denominator is comparable across the three tools.
@@ -979,7 +987,7 @@ def _count_sqc_scanned(cfg: dict) -> tuple[int, int]:
 # compiles, which is wider than the curated cross-tool comparison scope
 # (vendored deps, test harnesses, tooling). We filter it down to exactly the
 # fileset `_count_c_source` counts -- cppcheck's source_dirs minus sqc's
-# --exclude globs -- so all five tools are measured over one denominator. The
+# excluding globs -- so all five tools are measured over one denominator. The
 # filtered database is written next to the run's other artifacts, so what was
 # analysed is recoverable from the results directory alone.
 
@@ -999,7 +1007,7 @@ def _load_compile_db(cfg: dict) -> list[dict]:
 def _in_comparison_scope(cfg: dict):
     """Predicate over absolute source paths matching `_count_c_source`'s
     fileset: under a curated cppcheck source_dir, and not hit by one of sqc's
-    --exclude globs."""
+    excluding globs."""
     path = str(cfg["path"])
     dirs = [os.path.realpath(d)
             for d in (_expand(cfg.get("cppcheck", {}).get("source_dirs", []), path) or [path])]
