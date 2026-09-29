@@ -944,7 +944,7 @@ fn check_macro_dereferenced_arguments(
             rule_id: "EXP34-C".to_string(),
             severity: Severity::High,
             message: format!(
-                "Macro '{}' writes through potentially null pointer '{}'",
+                "Macro '{}' dereferences potentially null pointer '{}'",
                 macro_name, var_name
             ),
             file_path: String::new(),
