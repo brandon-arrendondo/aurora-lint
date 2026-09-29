@@ -464,6 +464,9 @@ struct MemoryLeakAnalyzer<'a> {
     // it can link with (`FunctionSummary::at`, not `at_all`): a later free is
     // a double free in those builds, and it still leaks in the others.
     released_by_some_definition: HashMap<String, (usize, usize)>,
+    // The `realloc_relations` result variables whose call frees the old
+    // block in only some builds: success does not free it everywhere.
+    realloc_in_some_builds: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -839,6 +842,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             realloc_in_one_build: None,
             released_in_one_build: HashMap::new(),
             released_by_some_definition: HashMap::new(),
+            realloc_in_some_builds: HashSet::new(),
         }
     }
 
@@ -2282,6 +2286,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         self.freed_memory.remove(&old_ptr);
         self.freed_via_alias.remove(&old_ptr);
         self.freed_by_guess.remove(&old_ptr);
+        self.maybe_freed.remove(&old_ptr);
+        self.released_by_some_definition.remove(&old_ptr);
     }
 
     /// The variable a call's result is bound to, reading through the casts
@@ -2321,6 +2327,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             return;
         };
         if let Some(old_ptr) = self.realloc_relations.get(result_var).cloned() {
+            // Freed in only some builds: it stays that way on success.
+            if self.realloc_in_some_builds.contains(result_var) {
+                return;
+            }
             let pos = if_node.start_position();
             self.freed_by_guess.remove(&old_ptr);
             self.freed_memory
@@ -4173,6 +4183,15 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         self.released_by_some_definition
                             .insert(var_name.clone(), pos);
                         self.maybe_freed.insert(var_name.clone(), pos);
+                        // Realloc-shaped in those builds: the caller's
+                        // `if (!result)` branch still holds the old block.
+                        if some.returns_allocation && !through_address_of {
+                            if let Some(result) = Self::assigned_result_var(node, source) {
+                                self.realloc_relations
+                                    .insert(result.clone(), var_name.clone());
+                                self.realloc_in_some_builds.insert(result);
+                            }
+                        }
                     }
                     if frees && self.allocated_memory.contains_key(&var_name) {
                         let free_pos = node.start_position();
@@ -4191,6 +4210,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         // branch undo the mark.
                         if summary.returns_allocation && !through_address_of {
                             if let Some(result) = Self::assigned_result_var(node, source) {
+                                self.realloc_in_some_builds.remove(&result);
                                 self.realloc_relations.insert(result, var_name.clone());
                             }
                         }
