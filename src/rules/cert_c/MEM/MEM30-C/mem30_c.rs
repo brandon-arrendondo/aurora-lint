@@ -3899,10 +3899,11 @@ impl MemoryAnalyzer {
     /// Two kinds of positive evidence. A summary proving a returning path
     /// writes nothing through the parameter
     /// (`conditional_modifies_params`) keeps `p` freed, because that path
-    /// leaves it dangling. And a callee that frees the POINTEE
-    /// (`frees_param_pointees`, the `void **` safe-free wrapper) is a second
-    /// free of `p`, not a refill, so `free(p); safe_free(&p);` stays a
-    /// double free rather than being silently cleared.
+    /// leaves it dangling. And a callee that frees the POINTEE on every
+    /// path (`unconditional_frees_param_pointees`, the `void **` safe-free
+    /// wrapper) is a second free of `p`, not a refill, so `free(p);
+    /// safe_free(&p);` stays a double free rather than being silently
+    /// cleared.
     fn process_address_of_args(
         &mut self,
         call: &Node,
@@ -3918,7 +3919,12 @@ impl MemoryAnalyzer {
             if inner.kind() != "identifier" && inner.kind() != "field_expression" {
                 continue;
             }
-            if summary.is_some_and(|s| s.frees_param_pointees.contains(&idx)) {
+            // Only a pointee the body frees on EVERY path is a release to
+            // accuse from, as for a by-value argument: sqlite's
+            // `fts3Appendf(pRc, &zRet, ...)` frees and replaces `*pz` only
+            // while `*pRc` is SQLITE_OK. A MAY release falls through to the
+            // refill below.
+            if summary.is_some_and(|s| s.unconditional_frees_param_pointees.contains(&idx)) {
                 self.mark_arg_freed(call, inner, source, violations);
                 // hostap's `nl_destroy_handles(&bss->nl_mgmt)` frees `*handle`
                 // and then writes `*handle = NULL`: the caller's pointer is
