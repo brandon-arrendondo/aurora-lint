@@ -5,7 +5,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval::{merged_macro_aliases, resolve_macro_alias};
 use crate::analyze::context::{ProjectContext, ScopedTable, VisibleTypes};
 use crate::analyze::function_summary::{extract_function_name, FunctionSummary};
-use crate::analyze::macro_expand::{self, ArgEvaluation, FunctionMacro, MacroArm};
+use crate::analyze::macro_expand::{self, ArgEvaluation, FunctionMacro, MacroArm, ProjectMacroArm};
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, IdentifierBinding};
@@ -26,8 +26,12 @@ pub struct Pre31C {
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     /// Every definition of every function-like macro across the scanned
     /// headers (`ProjectContext::function_macro_arms`): a header's `#ifdef`
-    /// alternatives, which `function_macros` reduces to one.
-    function_macro_arms: RefCell<Arc<HashMap<String, Vec<MacroArm>>>>,
+    /// alternatives, which `function_macros` reduces to one, each with the
+    /// files that make it.
+    function_macro_arms: RefCell<Arc<HashMap<String, Vec<ProjectMacroArm>>>>,
+    /// The files this file's translation unit includes
+    /// (`ProjectContext::include_closure`), when its includes were resolved.
+    include_closure: RefCell<Option<Arc<HashSet<String>>>>,
     /// Every function-like macro name across the scanned files
     /// (`ProjectContext::function_macro_names`): what makes a call a macro
     /// invocation at all, whatever its spelling.
@@ -53,6 +57,7 @@ impl Pre31C {
         Self {
             function_macros: RefCell::new(Arc::new(HashMap::new())),
             function_macro_arms: RefCell::new(Arc::new(HashMap::new())),
+            include_closure: RefCell::new(None),
             function_macro_names: RefCell::new(Arc::new(HashSet::new())),
             macro_aliases: RefCell::new(Arc::new(HashMap::new())),
             outside_macros: RefCell::new(Arc::new(HashSet::new())),
@@ -89,6 +94,7 @@ impl CertRule for Pre31C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_macros.borrow_mut() = context.function_macros.clone();
         *self.function_macro_arms.borrow_mut() = context.function_macro_arms.clone();
+        *self.include_closure.borrow_mut() = context.include_closure.clone();
         *self.function_macro_names.borrow_mut() = context.function_macro_names.clone();
         *self.macro_aliases.borrow_mut() = context.macro_aliases.clone();
         *self.outside_macros.borrow_mut() = context.macros_defined_outside_project.clone();
@@ -122,12 +128,14 @@ impl CertRule for Pre31C {
         let settings = Arc::clone(&self.settings.borrow());
         let summaries = self.function_summaries.borrow();
         let types = self.types.borrow();
+        let include_closure = self.include_closure.borrow().clone();
         let ctx = Ctx {
             source,
             names: &macro_names,
             first: &function_macros,
             arms: &macro_expand::collect_function_macro_arms(source),
             project_arms: &self.function_macro_arms.borrow(),
+            include_closure: include_closure.as_deref(),
             aliases: &merged_macro_aliases(&self.macro_aliases.borrow(), node, source),
             outside: &self.outside_macros.borrow(),
             local_functions: &local_functions,
@@ -198,8 +206,10 @@ struct Ctx<'a> {
     /// This file's definitions, every preprocessor branch, variadic and
     /// `#`/`##` arms included.
     arms: &'a HashMap<String, Vec<MacroArm>>,
-    /// Every scanned header's definitions, the same way.
-    project_arms: &'a HashMap<String, Vec<MacroArm>>,
+    /// Every scanned header's definitions, the same way, with their files.
+    project_arms: &'a HashMap<String, Vec<ProjectMacroArm>>,
+    /// `Pre31C::include_closure`.
+    include_closure: Option<&'a HashSet<String>>,
     aliases: &'a HashMap<String, String>,
     /// `Pre31C::outside_macros`.
     outside: &'a HashSet<String>,
@@ -226,20 +236,23 @@ struct Ctx<'a> {
 
 impl<'a> Ctx<'a> {
     /// The definitions a call to `name` may expand to: every arm in this
-    /// file, else every arm the project has, else the one expandable
-    /// definition the project keeps.
+    /// file, else every arm of the headers this file includes (every arm the
+    /// project has when that is unknown), else the one expandable definition
+    /// the project keeps. Two headers may define one name two ways; a call
+    /// is compiled with the one its translation unit includes (ADR-0006).
     fn definitions(&self, name: &str) -> Vec<MacroArm> {
-        [self.arms, self.project_arms]
+        if let Some(arms) = self.arms.get(name).filter(|arms| !arms.is_empty()) {
+            return arms.clone();
+        }
+        let arms = macro_expand::reachable_arms(self.project_arms, name, self.include_closure);
+        if !arms.is_empty() {
+            return arms;
+        }
+        self.first
+            .get(name)
+            .map(MacroArm::from)
             .into_iter()
-            .find_map(|table| table.get(name).filter(|arms| !arms.is_empty()))
-            .cloned()
-            .unwrap_or_else(|| {
-                self.first
-                    .get(name)
-                    .map(MacroArm::from)
-                    .into_iter()
-                    .collect()
-            })
+            .collect()
     }
 
     /// The name a call's callee spelling denotes: a function-like macro's own

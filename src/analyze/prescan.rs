@@ -644,9 +644,13 @@ fn prescan_file_list(
     let mut static_macro_names: HashSet<String> = HashSet::new();
     let mut macro_operand_params: HashMap<String, crate::analyze::macro_expand::OperandParams> =
         HashMap::new();
-    let mut function_macro_arms: HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>> =
-        HashMap::new();
+    let mut function_macro_arms: HashMap<
+        String,
+        Vec<crate::analyze::macro_expand::ProjectMacroArm>,
+    > = HashMap::new();
+    // (file name, real path, arms) of each .c file.
     let mut c_file_macro_arms: Vec<(
+        String,
         String,
         HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>,
     )> = Vec::new();
@@ -948,15 +952,18 @@ fn prescan_file_list(
         // A `#define` in a .c file is live only in that translation unit,
         // so its arms stay out of the project-wide table unless another file
         // #includes the .c file, which is resolved after the loop.
+        let arm_file = crate::analyze::compile_commands::real_path(Path::new(&r.display_path));
         match (is_c_file, &r.source_path) {
             (true, Some(path)) => c_file_macro_arms.push((
                 file_name_of(&path.to_string_lossy()).to_string(),
+                arm_file,
                 r.function_macro_arms,
             )),
             (true, None) => {}
             (false, _) => crate::analyze::macro_expand::merge_function_macro_arms(
                 &mut function_macro_arms,
                 r.function_macro_arms,
+                &arm_file,
             ),
         }
         unused_attribute_macros.extend(r.unused_attribute_macros);
@@ -1324,9 +1331,13 @@ fn prescan_file_list(
         &returning_functions.map(|names| names.difference(&keyword_noreturn).cloned().collect()),
     );
 
-    for (file_name, arms) in c_file_macro_arms {
+    for (file_name, arm_file, arms) in c_file_macro_arms {
         if included_c_files.contains(&file_name) {
-            crate::analyze::macro_expand::merge_function_macro_arms(&mut function_macro_arms, arms);
+            crate::analyze::macro_expand::merge_function_macro_arms(
+                &mut function_macro_arms,
+                arms,
+                &arm_file,
+            );
         }
     }
     let mut abort_check_noreturn = noreturn_functions.clone();
@@ -1397,6 +1408,8 @@ fn prescan_file_list(
         static_macro_names: Arc::new(static_macro_names),
         macro_operand_params: Arc::new(macro_operand_params),
         function_macro_arms: Arc::new(function_macro_arms),
+        include_edges: Arc::new(HashMap::new()),
+        include_closure: None,
         unused_attribute_macros: Arc::new(unused_attribute_macros),
         global_constants,
         closure_dependent_constants: Arc::new(closure_dependent_constants),
@@ -7029,6 +7042,20 @@ pub fn resolve_includes(
                 Ok(c) => c,
                 Err(_) => resolved.clone(),
             };
+            let header_key = canonical.to_string_lossy().to_string();
+            {
+                // A forced include is every file's: it is filed under the
+                // empty name, which every closure also walks.
+                let from = includer.as_deref().map_or_else(String::new, |f| {
+                    crate::analyze::compile_commands::real_path(Path::new(f))
+                });
+                let edges = Arc::make_mut(&mut context.include_edges)
+                    .entry(from)
+                    .or_default();
+                if !edges.contains(&header_key) {
+                    edges.push(header_key.clone());
+                }
+            }
             if resolved_set.contains(&canonical) {
                 continue;
             }
@@ -7091,9 +7118,10 @@ pub fn resolve_includes(
                     &hsource,
                     Arc::make_mut(&mut context.macro_operand_params),
                 );
-                crate::analyze::macro_expand::extend_function_macro_arms(
-                    &hsource,
+                crate::analyze::macro_expand::merge_function_macro_arms(
                     Arc::make_mut(&mut context.function_macro_arms),
+                    crate::analyze::macro_expand::collect_function_macro_arms(&hsource),
+                    &header_key,
                 );
                 crate::utility::cert_c::ast_utils::collect_unused_attribute_macro_names(
                     &hsource,

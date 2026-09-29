@@ -636,16 +636,63 @@ pub fn extend_function_macro_arms(source: &str, out: &mut HashMap<String, Vec<Ma
     }
 }
 
-/// Fold one file's arms into the project-wide table, keeping each distinct
-/// definition of a name once.
+/// One definition in `ProjectContext::function_macro_arms`, with the files
+/// that make it (their real paths). Two unrelated headers may define one name
+/// two ways; a call is compiled with whichever its translation unit includes.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProjectMacroArm {
+    /// The definition.
+    pub arm: MacroArm,
+    /// Real paths of the files that define it this way.
+    pub files: Vec<String>,
+}
+
+/// Fold `file`'s arms into the project-wide table, keeping each distinct
+/// definition of a name once, with every file that makes it.
 pub fn merge_function_macro_arms(
-    into: &mut HashMap<String, Vec<MacroArm>>,
+    into: &mut HashMap<String, Vec<ProjectMacroArm>>,
     from: HashMap<String, Vec<MacroArm>>,
+    file: &str,
 ) {
     for (name, arms) in from {
+        let entries = into.entry(name).or_default();
         for arm in arms {
-            push_arm(into, name.clone(), arm);
+            match entries.iter_mut().find(|e| e.arm == arm) {
+                Some(e) if !e.files.iter().any(|f| f == file) => e.files.push(file.to_string()),
+                Some(_) => {}
+                None => entries.push(ProjectMacroArm {
+                    arm,
+                    files: vec![file.to_string()],
+                }),
+            }
         }
+    }
+}
+
+/// The arms of `name` a file whose include closure is `reachable` can be
+/// compiled with: those some reachable file defines. Every arm when the
+/// closure is unknown or reaches no definition, since the name then comes
+/// through an include the prescan could not follow.
+pub fn reachable_arms(
+    table: &HashMap<String, Vec<ProjectMacroArm>>,
+    name: &str,
+    reachable: Option<&HashSet<String>>,
+) -> Vec<MacroArm> {
+    let Some(entries) = table.get(name) else {
+        return Vec::new();
+    };
+    let seen: Vec<MacroArm> = match reachable {
+        Some(files) => entries
+            .iter()
+            .filter(|e| e.files.iter().any(|f| files.contains(f)))
+            .map(|e| e.arm.clone())
+            .collect(),
+        None => Vec::new(),
+    };
+    if seen.is_empty() {
+        entries.iter().map(|e| e.arm.clone()).collect()
+    } else {
+        seen
     }
 }
 
@@ -3413,15 +3460,44 @@ mod tests {
         let other = "#define DBG(x) record(x)\n#define DBG(y) note(y)\n\
                      #if 0\n#define DBG(z) never(z)\n#endif\n";
         let mut project = HashMap::new();
-        extend_function_macro_arms(header, &mut project);
-        merge_function_macro_arms(&mut project, collect_function_macro_arms(other));
-        let bodies: Vec<&str> = project["DBG"].iter().map(|a| a.body.as_str()).collect();
+        merge_function_macro_arms(&mut project, collect_function_macro_arms(header), "/p/a.h");
+        merge_function_macro_arms(&mut project, collect_function_macro_arms(other), "/p/b.h");
+        let bodies: Vec<&str> = project["DBG"].iter().map(|a| a.arm.body.as_str()).collect();
         // An `#if 0` arm is no build's.
         assert_eq!(bodies, ["record(x)", "((void)0)", "note(y)"]);
+        // A definition two files make is one arm, made by both.
+        assert_eq!(project["DBG"][0].files, ["/p/a.h", "/p/b.h"]);
         assert_eq!(
-            project["LOG"][0].variadic,
+            project["LOG"][0].arm.variadic,
             Some((1, "__VA_ARGS__".to_string()))
         );
+    }
+
+    #[test]
+    fn reachable_arms_are_the_ones_the_include_closure_defines() {
+        let mut project = HashMap::new();
+        merge_function_macro_arms(
+            &mut project,
+            collect_function_macro_arms("#define SQ(x) ((x) * (x))\n"),
+            "/p/math_util.h",
+        );
+        merge_function_macro_arms(
+            &mut project,
+            collect_function_macro_arms("#define SQ(x) square(x)\n"),
+            "/p/shapes.h",
+        );
+        let bodies = |r: Option<&HashSet<String>>| -> Vec<String> {
+            reachable_arms(&project, "SQ", r)
+                .into_iter()
+                .map(|a| a.body)
+                .collect()
+        };
+        let shapes: HashSet<String> = ["/p/main.c", "/p/shapes.h"].map(String::from).into();
+        assert_eq!(bodies(Some(&shapes)), ["square(x)"]);
+        // A closure with no definition of the name, or none at all: every arm.
+        let neither: HashSet<String> = ["/p/main.c"].map(String::from).into();
+        assert_eq!(bodies(Some(&neither)).len(), 2);
+        assert_eq!(bodies(None).len(), 2);
     }
 
     #[test]

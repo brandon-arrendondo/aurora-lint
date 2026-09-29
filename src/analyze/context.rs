@@ -243,7 +243,20 @@ pub struct ProjectContext {
     /// how many times it evaluates an argument. See
     /// [`crate::analyze::macro_expand::collect_function_macro_arms`].
     #[serde(default)]
-    pub function_macro_arms: Arc<HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>>,
+    pub function_macro_arms:
+        Arc<HashMap<String, Vec<crate::analyze::macro_expand::ProjectMacroArm>>>,
+    /// `file -> the files its #include directives resolve to`, real paths,
+    /// from `resolve_includes` (so only when there are search paths or forced
+    /// includes). The build's forced includes are filed under the empty
+    /// name. [`Self::as_seen_from`] walks it for a file's include closure.
+    #[serde(default)]
+    pub include_edges: Arc<HashMap<String, Vec<String>>>,
+    /// The file this view is for and everything it transitively includes,
+    /// when `include_edges` knows the file: which of `function_macro_arms`'
+    /// definitions its translation unit can be compiled with. Set only on
+    /// the per-file view [`Self::as_seen_from`] returns, never saved.
+    #[serde(skip)]
+    pub include_closure: Option<Arc<HashSet<String>>>,
     /// Names of every object-like `#define` whose replacement text is an
     /// unused-attribute annotation — `__attribute__((unused))`,
     /// `[[maybe_unused]]`, and the reserved spellings — collected across all
@@ -474,29 +487,55 @@ impl ProjectContext {
     }
 
     /// This context as the file at `path` may use it, or `None` when that is
-    /// this context unchanged -- which is every file but the handful that
-    /// define a name some other file also defines `static`.
+    /// this context unchanged -- a file that defines no name some other file
+    /// also defines `static`, and whose includes were not resolved.
     ///
-    /// The returned view differs in one table, `function_summaries`: this
-    /// file's spelling of such a name resolves to its own definition. The
-    /// view is a scope over the shared table, not a copy of it. It used to be a copy of the summary map, which was
-    /// cheap only while few files needed one; in Juliet nearly every file
-    /// defines a `static void goodG2B()`, and the copy per file cost more
-    /// than the rules did.
+    /// The returned view differs in two places. In `function_summaries`,
+    /// this file's spelling of such a name resolves to its own definition;
+    /// the view is a scope over the shared table, not a copy of it. It used
+    /// to be a copy of the summary map, which was cheap only while few files
+    /// needed one; in Juliet nearly every file defines a `static void
+    /// goodG2B()`, and the copy per file cost more than the rules did. And
+    /// `include_closure` names the files its translation unit includes.
     pub fn as_seen_from(&self, path: &Path) -> Option<Self> {
-        if self.scoped_names_by_file.is_empty() {
+        if self.scoped_names_by_file.is_empty() && self.include_edges.is_empty() {
             return None;
         }
         let key = crate::analyze::compile_commands::real_path(path);
-        let names = self.scoped_names_by_file.get(&key)?;
-        let scope = FileScope {
-            file: Arc::from(key.as_str()),
-            names: Arc::clone(names),
+        let names = self.scoped_names_by_file.get(&key);
+        let closure = self.include_closure_of(&key);
+        if names.is_none() && closure.is_none() {
+            return None;
+        }
+        let function_summaries = match names {
+            Some(names) => self.function_summaries.scoped(FileScope {
+                file: Arc::from(key.as_str()),
+                names: Arc::clone(names),
+            }),
+            None => self.function_summaries.clone(),
         };
         Some(Self {
-            function_summaries: self.function_summaries.scoped(scope),
+            function_summaries,
+            include_closure: closure.map(Arc::new),
             ..self.clone()
         })
+    }
+
+    /// `file`, the build's forced includes and every file those
+    /// transitively `#include`, by `include_edges`; `None` when the graph
+    /// has no edge out of `file`.
+    fn include_closure_of(&self, file: &str) -> Option<HashSet<String>> {
+        self.include_edges.get(file)?;
+        let mut seen: HashSet<String> = HashSet::from([file.to_string()]);
+        let mut stack = vec![file, ""];
+        while let Some(f) = stack.pop() {
+            for next in self.include_edges.get(f).into_iter().flatten() {
+                if seen.insert(next.clone()) {
+                    stack.push(next);
+                }
+            }
+        }
+        Some(seen)
     }
 
     /// Refuse a context loaded from `path` if it was built under a value of

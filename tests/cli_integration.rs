@@ -3762,3 +3762,18 @@ fn a_library_macro_is_judged_by_its_body_once_the_contract_is_withdrawn() {
     let lines: Vec<u64> = found.iter().map(|(l, _)| *l).collect();
     assert_eq!(lines, vec![6, 11], "{found:?}");
 }
+
+#[test]
+fn a_project_macro_is_judged_by_the_header_its_file_includes() {
+    // math_util.h and shapes.h define SQ two ways. stats.c includes the
+    // first, which evaluates its argument twice; geometry.c reaches only the
+    // second, through area.h, which evaluates it once.
+    let stats = pre31_findings("pre31_include_closure", "stats.c", &[]);
+    assert_eq!(
+        stats.iter().map(|(l, _)| *l).collect::<Vec<_>>(),
+        vec![7],
+        "{stats:?}"
+    );
+    let geometry = pre31_findings("pre31_include_closure", "geometry.c", &[]);
+    assert!(geometry.is_empty(), "{geometry:?}");
+}
