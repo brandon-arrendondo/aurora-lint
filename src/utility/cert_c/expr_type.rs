@@ -16,8 +16,10 @@
 //! "unsigned" when it would raise one.
 //!
 //! Widths and the standard aliases come from a [`DataModel`], so the integer
-//! model of the target is a parameter rather than a constant. Only LP64 is
-//! implemented; an LLP64 target (a Windows build) is typed as LP64 for now.
+//! model of the target is a parameter rather than a constant. Under the
+//! default, [`DataModel::Iso`], a type whose rank no model fixes (`uint32_t`,
+//! `size_t`) is an [`CType::IntOfWidth`], and a promotion or conversion whose
+//! result depends on a width ISO C leaves open is unknown.
 //!
 //! A struct field is typed from its specifiers (`struct_field_types`) with its
 //! declarator shape applied (`struct_field_shapes`): the spelling alone drops
@@ -44,22 +46,7 @@ pub enum Sign {
     PlainChar,
 }
 
-/// Integer conversion rank (C11 6.3.1.1), `Bool` lowest.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Rank {
-    /// `_Bool`.
-    Bool,
-    /// The three `char` types.
-    Char,
-    /// `short`.
-    Short,
-    /// `int`.
-    Int,
-    /// `long`.
-    Long,
-    /// `long long`.
-    LongLong,
-}
+pub use crate::utility::cert_c::data_model::{DataModel, Rank};
 
 /// A real floating type, ordered by range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -84,6 +71,18 @@ pub enum CType {
         sign: Sign,
         /// Its conversion rank.
         rank: Rank,
+    },
+    /// An integer type whose rank the data model does not fix: under
+    /// [`DataModel::Iso`], an exact-width type (`uint32_t`, which may be
+    /// `unsigned int` or `unsigned long`) or a library type of unspecified
+    /// width (`size_t`).
+    IntOfWidth {
+        /// Its signedness.
+        sign: Sign,
+        /// The fewest value and sign bits it can have.
+        min_bits: u32,
+        /// Its exact width, when that is known.
+        max_bits: Option<u32>,
     },
     /// A real floating type.
     Float(FloatKind),
@@ -112,7 +111,7 @@ impl CType {
     /// An integer type (`_Bool` and the `char` types included, enumerations
     /// not).
     pub fn is_integer(&self) -> bool {
-        matches!(self, CType::Int { .. })
+        matches!(self, CType::Int { .. } | CType::IntOfWidth { .. })
     }
 
     /// A pointer (an array is not one until it decays).
@@ -122,7 +121,10 @@ impl CType {
 
     /// Arithmetic: an integer (enumerations included) or a real float.
     pub fn is_arithmetic(&self) -> bool {
-        matches!(self, CType::Int { .. } | CType::Float(_) | CType::Enum)
+        matches!(
+            self,
+            CType::Int { .. } | CType::IntOfWidth { .. } | CType::Float(_) | CType::Enum
+        )
     }
 
     /// `Some(true)` for an unsigned integer, `Some(false)` for a signed one,
@@ -132,15 +134,22 @@ impl CType {
             CType::Int {
                 sign: Sign::Unsigned,
                 ..
+            }
+            | CType::IntOfWidth {
+                sign: Sign::Unsigned,
+                ..
             } => Some(true),
             CType::Int {
+                sign: Sign::Signed, ..
+            }
+            | CType::IntOfWidth {
                 sign: Sign::Signed, ..
             } => Some(false),
             _ => None,
         }
     }
 
-    /// The conversion rank of an integer type.
+    /// The conversion rank of an integer type, when the data model fixes it.
     pub fn rank(&self) -> Option<Rank> {
         match self {
             CType::Int { rank, .. } => Some(*rank),
@@ -149,53 +158,69 @@ impl CType {
     }
 }
 
-/// The target's integer data model: the width of each rank and what the
-/// standard aliases name.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum DataModel {
-    /// `int` 32, `long` and pointers 64 (Linux, the BSDs, macOS).
-    #[default]
-    Lp64,
-}
-
-impl DataModel {
-    /// Width in bits of an integer of `rank`.
-    pub fn width(self, rank: Rank) -> u32 {
-        match (self, rank) {
-            (_, Rank::Bool) | (_, Rank::Char) => 8,
-            (_, Rank::Short) => 16,
-            (_, Rank::Int) => 32,
-            (DataModel::Lp64, Rank::Long) => 64,
-            (_, Rank::LongLong) => 64,
-        }
-    }
-
-    /// The type a standard library alias names on this model, or `None` for a
-    /// name that is not one. Only the aliases whose definition is fixed by the
-    /// data model are listed: `int_fastN_t` and `int_leastN_t` vary by C
-    /// library and are left unknown.
-    pub fn standard_alias(self, name: &str) -> Option<CType> {
-        use Rank::*;
-        let int = |sign, rank| Some(CType::Int { sign, rank });
-        let signed = |rank| int(Sign::Signed, rank);
-        let unsigned = |rank| int(Sign::Unsigned, rank);
-        match name {
-            "int8_t" => signed(Char),
-            "uint8_t" => unsigned(Char),
-            "int16_t" => signed(Short),
-            "uint16_t" => unsigned(Short),
-            "int32_t" => signed(Int),
-            "uint32_t" => unsigned(Int),
-            "int64_t" | "intmax_t" | "intptr_t" | "ptrdiff_t" | "ssize_t" => signed(Long),
-            "uint64_t" | "uintmax_t" | "uintptr_t" | "size_t" | "rsize_t" => unsigned(Long),
-            "wchar_t" => signed(Int),
-            "char16_t" => unsigned(Short),
-            "char32_t" => unsigned(Int),
-            "bool" => unsigned(Bool),
-            "float_t" => Some(CType::Float(FloatKind::Float)),
-            "double_t" => Some(CType::Float(FloatKind::Double)),
-            _ => None,
-        }
+/// The type a standard library alias names on `model`, or `None` for a name
+/// that is not one, or one whose type the model leaves open (`wchar_t`'s sign
+/// under [`DataModel::Iso`]). Only the aliases whose definition the data
+/// model fixes are listed: `int_fastN_t` and `int_leastN_t` vary by C library
+/// and are left unknown.
+pub fn standard_alias(model: DataModel, name: &str) -> Option<CType> {
+    use Rank::*;
+    let ranked = |sign, rank| Some(CType::Int { sign, rank });
+    let unranked = |sign, min_bits, max_bits| {
+        Some(CType::IntOfWidth {
+            sign,
+            min_bits,
+            max_bits,
+        })
+    };
+    // The rank the model gives a type exactly `bits` wide, or an unranked
+    // type of that width.
+    let exact = |sign, bits: u32| {
+        [Char, Short, Int, Long, LongLong]
+            .into_iter()
+            .find(|r| model.exact_width(*r) == Some(bits))
+            .map_or_else(|| unranked(sign, bits, Some(bits)), |r| ranked(sign, r))
+    };
+    // size_t and its kin: as wide as a pointer on every declared model.
+    let word = |sign| match model {
+        DataModel::Iso => unranked(sign, 16, None),
+        DataModel::Ilp32 => ranked(sign, Int),
+        DataModel::Lp64 => ranked(sign, Long),
+        DataModel::Llp64 => ranked(sign, LongLong),
+    };
+    let at_least = |sign, bits: u32, declared: Rank| match model {
+        DataModel::Iso => unranked(sign, bits, None),
+        _ => ranked(sign, declared),
+    };
+    let signed = Sign::Signed;
+    let unsigned = Sign::Unsigned;
+    match name {
+        "int8_t" => exact(signed, 8),
+        "uint8_t" => exact(unsigned, 8),
+        "int16_t" => exact(signed, 16),
+        "uint16_t" => exact(unsigned, 16),
+        "int32_t" => exact(signed, 32),
+        "uint32_t" => exact(unsigned, 32),
+        "int64_t" => exact(signed, 64),
+        "uint64_t" => exact(unsigned, 64),
+        // At least 64 bits, and 64 on every declared model.
+        "intmax_t" if model == DataModel::Iso => unranked(signed, 64, None),
+        "uintmax_t" if model == DataModel::Iso => unranked(unsigned, 64, None),
+        "intmax_t" => exact(signed, 64),
+        "uintmax_t" => exact(unsigned, 64),
+        "intptr_t" | "ptrdiff_t" | "ssize_t" => word(signed),
+        "uintptr_t" | "size_t" | "rsize_t" => word(unsigned),
+        "wchar_t" => match model {
+            DataModel::Iso => None,
+            DataModel::Llp64 => ranked(unsigned, Short),
+            DataModel::Ilp32 | DataModel::Lp64 => ranked(signed, Int),
+        },
+        "char16_t" => at_least(unsigned, 16, Short),
+        "char32_t" => at_least(unsigned, 32, Int),
+        "bool" => ranked(unsigned, Bool),
+        "float_t" => Some(CType::Float(FloatKind::Float)),
+        "double_t" => Some(CType::Float(FloatKind::Double)),
+        _ => None,
     }
 }
 
@@ -222,30 +247,33 @@ pub struct TypeEnv<'a> {
 }
 
 impl<'a> TypeEnv<'a> {
-    /// An environment over these tables with the default data model.
+    /// An environment over these tables under `model`.
     pub fn new(
         typedefs: &'a HashMap<String, String>,
         fields: &'a HashMap<String, HashMap<String, String>>,
         shapes: &'a HashMap<String, HashMap<String, String>>,
         struct_aliases: &'a HashMap<String, String>,
+        model: DataModel,
     ) -> Self {
         Self {
             typedefs,
             fields,
             shapes,
             struct_aliases,
-            model: DataModel::default(),
+            model,
             file_functions: OnceCell::new(),
         }
     }
 
-    /// An environment over what one file sees.
-    pub fn visible(types: &'a VisibleTypes) -> Self {
+    /// An environment over what one file sees, under `model` (the settings'
+    /// `data_model`).
+    pub fn visible(types: &'a VisibleTypes, model: DataModel) -> Self {
         Self::new(
             &types.typedef_types,
             &types.struct_field_types,
             &types.struct_field_shapes,
             &types.struct_typedef_aliases,
+            model,
         )
     }
 }
@@ -330,10 +358,10 @@ fn classify_name(name: &str, env: &TypeEnv, depth: u32) -> Option<CType> {
         }
     }
     let terminal = resolve_typedef_chain(name, env.typedefs);
-    if let Some(t) = env.model.standard_alias(&terminal) {
+    if let Some(t) = standard_alias(env.model, &terminal) {
         return Some(t);
     }
-    if let Some(t) = env.model.standard_alias(name) {
+    if let Some(t) = standard_alias(env.model, name) {
         return Some(t);
     }
     if env.fields.contains_key(name) {
@@ -603,7 +631,7 @@ pub fn expr_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
     match node.kind() {
         "number_literal" => number_literal_type(get_node_text(node, source), env.model),
         // A character constant has type int (C11 6.4.4.4p10).
-        "char_literal" => Some(char_literal_type(get_node_text(node, source), env.model)),
+        "char_literal" => char_literal_type(get_node_text(node, source), env.model),
         "string_literal" | "concatenated_string" => {
             Some(CType::Array(Some(Box::new(CType::Int {
                 sign: Sign::PlainChar,
@@ -620,13 +648,13 @@ pub fn expr_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
         "compound_literal_expression" => {
             type_descriptor_type(&node.child_by_field_name("type")?, source, env)
         }
-        "sizeof_expression" | "alignof_expression" => env.model.standard_alias("size_t"),
+        "sizeof_expression" | "alignof_expression" => standard_alias(env.model, "size_t"),
         "unary_expression" => {
             let op = get_node_text(&node.child_by_field_name("operator")?, source);
             let operand = expr_type(&node.child_by_field_name("argument")?, source, env);
             match op {
                 "!" => Some(int_type()),
-                "-" | "+" | "~" => operand.and_then(promote),
+                "-" | "+" | "~" => operand.and_then(|t| promote(t, env.model)),
                 _ => None,
             }
         }
@@ -699,13 +727,45 @@ fn int_type() -> CType {
     }
 }
 
-/// The integer promotions (C11 6.3.1.1p2): below `int` becomes `int` (every
-/// narrower type fits in a 32-bit `int`); floats are unchanged.
-fn promote(t: CType) -> Option<CType> {
+/// The integer promotions (C11 6.3.1.1p2): a type below `int` becomes `int`
+/// when `int` holds all its values, else `unsigned int`; floats are
+/// unchanged. `None` when `model` leaves that open: under
+/// [`DataModel::Iso`] an `unsigned short` is as wide as `int` on a 16-bit
+/// target, so it may promote to either.
+fn promote(t: CType, model: DataModel) -> Option<CType> {
+    let unsigned_int = CType::Int {
+        sign: Sign::Unsigned,
+        rank: Rank::Int,
+    };
     match t {
-        CType::Int { rank, .. } if rank < Rank::Int => Some(int_type()),
-        CType::Enum => Some(int_type()),
+        CType::Int {
+            rank: Rank::Bool, ..
+        }
+        | CType::Enum => Some(int_type()),
+        // A lower rank never has a greater range (6.3.1.1p1), so `int` holds
+        // every signed type below it.
+        CType::Int {
+            sign: Sign::Signed,
+            rank,
+        } if rank < Rank::Int => Some(int_type()),
+        CType::Int { rank, .. } if rank < Rank::Int => {
+            let (w, int) = (model.exact_width(rank)?, model.exact_width(Rank::Int)?);
+            Some(if w < int { int_type() } else { unsigned_int })
+        }
         CType::Int { .. } | CType::Float(_) => Some(t),
+        // Promoted, a signed type no wider than `int` is guaranteed to be is
+        // `int` (it is either below `int` or `int` itself), and so is an
+        // unsigned one narrower than that.
+        CType::IntOfWidth {
+            sign: Sign::Signed,
+            max_bits: Some(bits),
+            ..
+        } if bits <= model.min_width(Rank::Int) => Some(int_type()),
+        CType::IntOfWidth {
+            sign: Sign::Unsigned,
+            max_bits: Some(bits),
+            ..
+        } if bits < model.min_width(Rank::Int) => Some(int_type()),
         _ => None,
     }
 }
@@ -724,7 +784,7 @@ fn usual_arithmetic_conversions(a: CType, b: CType, model: DataModel) -> Option<
         _ => {}
     }
     let (CType::Int { sign: sa, rank: ra }, CType::Int { sign: sb, rank: rb }) =
-        (promote(a)?, promote(b)?)
+        (promote(a, model)?, promote(b, model)?)
     else {
         return None;
     };
@@ -742,7 +802,9 @@ fn usual_arithmetic_conversions(a: CType, b: CType, model: DataModel) -> Option<
     if ru >= rs {
         return Some(CType::Int { sign: su, rank: ru });
     }
-    if model.width(rs) > model.width(ru) {
+    // The signed type wins only if it holds every value of the unsigned
+    // one, which needs both widths.
+    if model.exact_width(rs)? > model.exact_width(ru)? {
         return Some(CType::Int { sign: ss, rank: rs });
     }
     Some(CType::Int {
@@ -759,7 +821,7 @@ fn binary_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
     let left = expr_type(&node.child_by_field_name("left")?, source, env);
     let right = expr_type(&node.child_by_field_name("right")?, source, env);
     match op {
-        "<<" | ">>" => left.and_then(promote),
+        "<<" | ">>" => left.and_then(|t| promote(t, env.model)),
         "+" | "-" => {
             let (l, r) = (left?, right?);
             let decays = |t: &CType| match t {
@@ -767,7 +829,7 @@ fn binary_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
                 _ => None,
             };
             match (decays(&l), decays(&r)) {
-                (Some(_), Some(_)) if op == "-" => env.model.standard_alias("ptrdiff_t"),
+                (Some(_), Some(_)) if op == "-" => standard_alias(env.model, "ptrdiff_t"),
                 (Some(p), None) if r.is_integer() || r == CType::Enum => Some(p),
                 (None, Some(p)) if op == "+" && (l.is_integer() || l == CType::Enum) => Some(p),
                 (None, None) if l.is_arithmetic() && r.is_arithmetic() => {
@@ -858,19 +920,29 @@ fn field_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
 /// `unsigned type : 4` compares two ints. One exactly as wide as `int` keeps
 /// its declared type. A width that is not a decimal constant (a macro), or
 /// a bit-field of a type other than `int`, `unsigned int` or `_Bool`, whose
-/// promotion is implementation-defined, is unknown.
+/// promotion is implementation-defined, is unknown. One `model` leaves as
+/// possibly as wide as `int` (16 bits or more under [`DataModel::Iso`]) is
+/// an [`CType::IntOfWidth`] of exactly its width: it promotes to `int`, or
+/// keeps its declared type, depending on the target.
 fn bit_field_type(declared: CType, width: &str, model: DataModel) -> Option<CType> {
     let width: u32 = width.parse().ok()?;
-    let int_width = model.width(Rank::Int);
     match declared {
         CType::Int { rank, .. }
-            if rank == Rank::Bool || (rank == Rank::Int && width < int_width) =>
+            if rank == Rank::Bool || (rank == Rank::Int && width < model.min_width(Rank::Int)) =>
         {
             Some(int_type())
         }
         CType::Int {
             rank: Rank::Int, ..
-        } if width == int_width => Some(declared),
+        } if model.exact_width(Rank::Int) == Some(width) => Some(declared),
+        CType::Int {
+            rank: Rank::Int,
+            sign,
+        } if model.exact_width(Rank::Int).is_none() => Some(CType::IntOfWidth {
+            sign,
+            min_bits: width,
+            max_bits: Some(width),
+        }),
         _ => None,
     }
 }
@@ -929,7 +1001,11 @@ pub fn number_literal_type(text: &str, model: DataModel) -> Option<CType> {
         if rank < min_rank {
             continue;
         }
-        let w = model.width(rank);
+        // Where the width is not fixed, a value inside the guaranteed range
+        // has this type everywhere, and one outside it has this type or a
+        // later one depending on the target.
+        let w = model.min_width(rank);
+        let exact = model.exact_width(rank).is_some();
         if !unsigned_suffix && value < (1u128 << (w - 1)) {
             return Some(CType::Int {
                 sign: Sign::Signed,
@@ -937,24 +1013,29 @@ pub fn number_literal_type(text: &str, model: DataModel) -> Option<CType> {
             });
         }
         if (unsigned_suffix || !decimal) && value < (1u128 << w) {
+            if !unsigned_suffix && !exact {
+                return None;
+            }
             return Some(CType::Int {
                 sign: Sign::Unsigned,
                 rank,
             });
         }
+        if !exact {
+            return None;
+        }
     }
     None
 }
 
-fn char_literal_type(text: &str, model: DataModel) -> CType {
+fn char_literal_type(text: &str, model: DataModel) -> Option<CType> {
     let prefix = text.split('\'').next().unwrap_or("");
     match prefix {
-        "L" => model.standard_alias("wchar_t"),
-        "u" => model.standard_alias("char16_t"),
-        "U" => model.standard_alias("char32_t"),
-        _ => None,
+        "L" => standard_alias(model, "wchar_t"),
+        "u" => standard_alias(model, "char16_t"),
+        "U" => standard_alias(model, "char32_t"),
+        _ => Some(int_type()),
     }
-    .unwrap_or_else(int_type)
 }
 
 #[cfg(test)]
@@ -967,8 +1048,13 @@ mod tests {
         parser.parse(code, None).unwrap()
     }
 
-    /// The type of the expression in the last `return` of `code`.
+    /// The type of the expression in the last `return` of `code`, on LP64.
     fn returned(code: &str, typedefs: &[(&str, &str)]) -> Option<CType> {
+        returned_on(DataModel::Lp64, code, typedefs)
+    }
+
+    /// The type of the expression in the last `return` of `code`, on `model`.
+    fn returned_on(model: DataModel, code: &str, typedefs: &[(&str, &str)]) -> Option<CType> {
         let tree = parse(code);
         let typedefs: HashMap<String, String> = typedefs
             .iter()
@@ -979,7 +1065,7 @@ mod tests {
         let root = tree.root_node();
         crate::analyze::prescan::collect_struct_tables(&root, code, &mut fields, &mut shapes);
         crate::analyze::prescan::collect_struct_typedef_aliases(&root, code, &mut aliases);
-        let env = TypeEnv::new(&typedefs, &fields, &shapes, &aliases);
+        let env = TypeEnv::new(&typedefs, &fields, &shapes, &aliases, model);
         let ret = lang_parsing_substrate::query::find_descendants_of_kind(
             tree.root_node(),
             "return_statement",
@@ -1197,7 +1283,7 @@ mod tests {
         )]
         .into();
         let (typedefs, shapes, aliases) = (HashMap::new(), HashMap::new(), HashMap::new());
-        let env = TypeEnv::new(&typedefs, &fields, &shapes, &aliases);
+        let env = TypeEnv::new(&typedefs, &fields, &shapes, &aliases, DataModel::Lp64);
         let ret = lang_parsing_substrate::query::find_descendants_of_kind(
             tree.root_node(),
             "return_statement",
@@ -1287,5 +1373,100 @@ mod tests {
                     static double scale(double v) { return v * 2.0; }\n\
                     int same(double a) { return scale(a); }";
         assert_eq!(returned(code, &[]), Some(CType::Float(FloatKind::Double)));
+    }
+
+    #[test]
+    fn iso_leaves_the_rank_of_a_width_alias_open() {
+        let iso = |code: &str| returned_on(DataModel::Iso, code, &[]);
+        let width = |sign, min_bits, max_bits| {
+            Some(CType::IntOfWidth {
+                sign,
+                min_bits,
+                max_bits,
+            })
+        };
+        assert_eq!(
+            iso("long f(uint32_t n) { return n; }"),
+            width(Sign::Unsigned, 32, Some(32))
+        );
+        assert_eq!(
+            iso("long f(size_t n) { return n; }"),
+            width(Sign::Unsigned, 16, None)
+        );
+        assert_eq!(
+            iso("long f(uint8_t n) { return n; }"),
+            width(Sign::Unsigned, 8, Some(8))
+        );
+        assert_eq!(
+            iso("int f(uint8_t n) { return -n; }"),
+            int(Sign::Signed, Rank::Int)
+        );
+        assert_eq!(iso("long f(wchar_t c) { return c; }"), None);
+        // Still an integer, for a caller that asks only that.
+        assert!(iso("long f(size_t n) { return n; }").unwrap().is_integer());
+        // A declared model names the rank.
+        assert_eq!(
+            returned_on(DataModel::Llp64, "long f(size_t n) { return n; }", &[]),
+            int(Sign::Unsigned, Rank::LongLong)
+        );
+        assert_eq!(
+            returned_on(DataModel::Llp64, "long f(uint64_t n) { return n; }", &[]),
+            int(Sign::Unsigned, Rank::LongLong)
+        );
+    }
+
+    #[test]
+    fn iso_types_a_promotion_only_where_every_width_agrees() {
+        let iso = |code: &str| returned_on(DataModel::Iso, code, &[]);
+        // A signed narrow type always fits int.
+        assert_eq!(
+            iso("int f(short a) { return -a; }"),
+            int(Sign::Signed, Rank::Int)
+        );
+        // unsigned short is as wide as int on a 16-bit target.
+        assert_eq!(iso("int f(unsigned short a) { return -a; }"), None);
+        assert_eq!(
+            returned("int f(unsigned short a) { return -a; }", &[]),
+            int(Sign::Signed, Rank::Int)
+        );
+        // long wins over unsigned int only if it is wider.
+        assert_eq!(iso("long f(long a, unsigned b) { return a + b; }"), None);
+        assert_eq!(
+            returned("long f(long a, unsigned b) { return a + b; }", &[]),
+            int(Sign::Signed, Rank::Long)
+        );
+        assert_eq!(
+            returned_on(
+                DataModel::Llp64,
+                "long f(long a, unsigned b) { return a + b; }",
+                &[]
+            ),
+            int(Sign::Unsigned, Rank::Long)
+        );
+    }
+
+    #[test]
+    fn iso_types_a_literal_only_inside_the_guaranteed_range() {
+        let signed = |rank| int(Sign::Signed, rank);
+        assert_eq!(
+            number_literal_type("32767", DataModel::Iso),
+            signed(Rank::Int)
+        );
+        // int or long, depending on the target.
+        assert_eq!(number_literal_type("40000", DataModel::Iso), None);
+        assert_eq!(
+            number_literal_type("40000L", DataModel::Iso),
+            signed(Rank::Long)
+        );
+        assert_eq!(
+            number_literal_type("40000u", DataModel::Iso),
+            int(Sign::Unsigned, Rank::Int)
+        );
+        // int or unsigned int.
+        assert_eq!(number_literal_type("0xffff", DataModel::Iso), None);
+        assert_eq!(
+            number_literal_type("40000", DataModel::Lp64),
+            signed(Rank::Int)
+        );
     }
 }
