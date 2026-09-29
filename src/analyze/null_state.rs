@@ -747,13 +747,17 @@ fn apply_cross_file_output_params_null(
             if !var_name.is_empty() && state.contains_key(&var_name) {
                 // The write says the callee stored something, not what: a
                 // callee whose own body leaves NULL there on some path
-                // (`*ppStmt = 0; ... return rc;`) leaves the caller's
-                // pointer possibly NULL.
-                let after = if summary.may_leave_null_through_params.contains(&arg_idx) {
-                    NullState::PossiblyNull
-                } else {
-                    NullState::NotNull
-                };
+                // (`*ppStmt = 0; ... return rc;`, or `*pp = malloc(n);`)
+                // leaves the caller's pointer possibly NULL. Only for `&p`:
+                // a store through a plain pointer argument lands in its
+                // pointee and says nothing about the pointer itself.
+                let takes_address = arg.kind() == "pointer_expression";
+                let after =
+                    if takes_address && summary.may_leave_null_through_params.contains(&arg_idx) {
+                        NullState::PossiblyNull
+                    } else {
+                        NullState::NotNull
+                    };
                 state.insert(var_name, after);
             }
         }

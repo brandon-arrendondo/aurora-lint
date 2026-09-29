@@ -2936,6 +2936,33 @@ pub fn macro_writes_through_param_indices(
     })
 }
 
+/// Whether some live definition of the function-like macro `name` can leave
+/// the statement it is invoked in: its expansion holds a `return`, `goto`,
+/// `break` or `continue` (`RET_OK_IF(c)` over `if (c) return OK`). A
+/// reading of the invocation as a plain call misses that path. A `break`
+/// or `continue` the macro's own loop consumes (`do { ... } while (0)`)
+/// also counts, which only ever withholds a proof.
+pub fn macro_may_jump(table: &HashMap<String, FunctionMacro>, name: &str) -> bool {
+    !over_live_definitions(table, name, Merge::Union, |table, name| {
+        let Some(m) = table.lookup(name) else {
+            return Vec::new();
+        };
+        let Some(expanded) = expand_in(table, name, &m.params) else {
+            return Vec::new();
+        };
+        let chars: Vec<char> = expanded.chars().collect();
+        let jumps = ["return", "goto", "break", "continue"]
+            .iter()
+            .any(|kw| keyword_position(&chars, kw).is_some());
+        if jumps {
+            vec![0]
+        } else {
+            Vec::new()
+        }
+    })
+    .is_empty()
+}
+
 /// True if `ident` is written through a pointer/array access in `text`:
 /// `ident->field = …`, `ident[i] = …`, or a dereference write `*ident = …` /
 /// `*(ident) = …`. Mirrors `function_summary.rs::line_has_arrow_or_subscript_write`

@@ -31,7 +31,17 @@
 //!   or compound literal, or a local that an earlier test on the same path
 //!   proved non-null (`if (!p) return NOMEM;`);
 //! - a call that is handed the parameter, or a write through it with a
-//!   value not proven non-null, leaves the stored value unproven.
+//!   value not proven non-null, leaves the stored value unproven;
+//! - a store that only may run (an arm of `?:`, the right operand of `&&`
+//!   or `||`) joins with what was stored before it rather than replacing it;
+//! - a statement that is a bare identifier (an object-like macro, which may
+//!   hide a `return`) abandons the proof. A function-like macro's hidden
+//!   jump is judged where the proof is used, with the project's macro
+//!   table: see [`OutParamFacts::proof_calls`].
+//!
+//! What a path may leave behind is read only for a parameter whose pointee
+//! is itself a pointer (`T **pp`): `*pn = 0` through a `size_t *pn` stores
+//! an integer, not a null pointer.
 //!
 //! Constants are compared by their written form: `0` and `SQLITE_OK` are
 //! different keys even where the macro expands to `0`, so a caller testing
@@ -40,7 +50,7 @@
 
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use tree_sitter::Node;
 
 /// Cap on live paths through one body; past it the proof is abandoned.
@@ -95,6 +105,21 @@ pub struct OutParamFacts {
     /// completes; where it abandons, any store of a null constant through
     /// `param` counts, since that is still positive evidence of one.
     pub may_leave_null: bool,
+    /// The callees whose result some path may store through `param` without
+    /// testing it first (`*pp = malloc(n);`, or through a local assigned
+    /// from the call). Whether each can return NULL is the callee's own
+    /// fact, which is not known while this body alone is read.
+    pub may_store_result_of: Vec<String>,
+    /// The body stores a null constant through `param` somewhere, though no
+    /// path it read leaves it there. A function-like macro that jumps may
+    /// still leave it (see [`Self::proof_calls`]).
+    pub stores_null_elsewhere: bool,
+    /// Every name the body calls. [`Self::nonnull_on_return`] holds, and
+    /// [`Self::stores_null_elsewhere`] stays short of a NULL left behind,
+    /// only if none of them is a function-like macro that can jump out of
+    /// the statement it is invoked in, which the project's macro table
+    /// decides.
+    pub proof_calls: Vec<String>,
 }
 
 /// [`OutParamFacts`] for `func`'s parameter `param`.
@@ -102,6 +127,13 @@ pub fn out_param_facts(func: &Node, param: &str, source: &str) -> OutParamFacts 
     let Some(body) = func.child_by_field_name("body") else {
         return OutParamFacts::default();
     };
+    let holds_pointer = pointee_is_pointer(func, param, source);
+    let proof_calls: Vec<String> = query::find_descendants_of_kind(body, "call_expression")
+        .iter()
+        .filter_map(|call| callee_name(call, source))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let mut walk = Walk {
         source,
         param,
@@ -110,21 +142,48 @@ pub fn out_param_facts(func: &Node, param: &str, source: &str) -> OutParamFacts 
     let Some(fall_through) = walk.block(&body, vec![Path::default()]) else {
         return OutParamFacts {
             nonnull_on_return: Vec::new(),
-            may_leave_null: stores_null_through(&body, param, source),
+            may_leave_null: holds_pointer && stores_null_through(&body, param, source),
+            may_store_result_of: if holds_pointer {
+                results_stored_through(&body, param, source)
+            } else {
+                Vec::new()
+            },
+            stores_null_elsewhere: false,
+            proof_calls,
         };
     };
-    let may_leave_null = walk
+    let stored: Vec<&Stored> = walk
         .leaves
         .iter()
         .map(|(stored, _)| stored)
         .chain(fall_through.iter().map(|path| &path.stored))
-        .any(|stored| *stored == Stored::Null);
+        .collect();
+    let may_leave_null = holds_pointer && stored.iter().any(|s| **s == Stored::Null);
+    let stores_null_elsewhere =
+        holds_pointer && !may_leave_null && stores_null_through(&body, param, source);
+    let may_store_result_of: Vec<String> = if holds_pointer {
+        stored
+            .iter()
+            .filter_map(|s| match s {
+                Stored::FromCall(names) => Some(names.iter().cloned()),
+                _ => None,
+            })
+            .flatten()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    } else {
+        Vec::new()
+    };
     // Falling off the end returns nothing a caller can test, and a returned
     // value that is not a constant could be any value.
     if !fall_through.is_empty() || walk.leaves.iter().any(|(_, key)| key.is_none()) {
         return OutParamFacts {
             nonnull_on_return: Vec::new(),
             may_leave_null,
+            may_store_result_of,
+            stores_null_elsewhere,
+            proof_calls,
         };
     }
     let mut keys: Vec<String> = walk
@@ -144,22 +203,46 @@ pub fn out_param_facts(func: &Node, param: &str, source: &str) -> OutParamFacts 
     OutParamFacts {
         nonnull_on_return: keys,
         may_leave_null,
+        may_store_result_of,
+        stores_null_elsewhere,
+        proof_calls,
     }
 }
 
 /// What `*param` holds on one path, as far as this body shows.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 enum Stored {
     /// Nothing this body stored: whatever the caller's `p` held.
     #[default]
     Unset,
     /// A pointer the path proves non-null.
     NonNull,
-    /// A null constant.
+    /// A null constant, or, after a join, possibly one.
     Null,
+    /// The untested result of a call to one of these, or, after a join,
+    /// possibly one.
+    FromCall(BTreeSet<String>),
     /// Some other value, or one a callee handed the parameter may have
     /// changed.
     Unknown,
+}
+
+impl Stored {
+    /// What `*param` holds where two possibilities meet (a store that may
+    /// or may not run, or the arms of `?:`). A possible NULL, then a
+    /// possible call result, is kept; a proof holds only if both hold it.
+    fn join(self, other: Stored) -> Stored {
+        match (self, other) {
+            (a, b) if a == b => a,
+            (Stored::Null, _) | (_, Stored::Null) => Stored::Null,
+            (Stored::FromCall(mut a), Stored::FromCall(b)) => {
+                a.extend(b);
+                Stored::FromCall(a)
+            }
+            (Stored::FromCall(a), _) | (_, Stored::FromCall(a)) => Stored::FromCall(a),
+            _ => Stored::Unknown,
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -167,6 +250,8 @@ struct Path {
     stored: Stored,
     /// Locals this path has proven non-null.
     nonnull: HashSet<String>,
+    /// Locals holding the untested result of a call, by callee.
+    results: HashMap<String, String>,
 }
 
 struct Walk<'s> {
@@ -209,12 +294,30 @@ impl Walk<'_> {
                     if let Some(value) = stmt.named_child(0) {
                         self.effects(&value, &mut path)?;
                     }
-                    self.leaves.push((path.stored, key.clone()));
+                    self.leaves.push((path.stored.clone(), key.clone()));
                 }
                 Some(Vec::new())
             }
             "if_statement" => self.if_statement(stmt, paths),
             "goto_statement" | "break_statement" | "continue_statement" => None,
+            // `CHECK_OK;` does nothing unless it is a macro, which may
+            // return.
+            "expression_statement"
+                if stmt
+                    .named_child(0)
+                    .is_some_and(|e| strip_parens_and_casts(e).kind() == "identifier") =>
+            {
+                None
+            }
+            // `exit(1);` ends the path: nothing is returned or left behind.
+            "expression_statement"
+                if crate::analyze::noreturn::is_stdlib_noreturn_call_statement(
+                    stmt,
+                    self.source,
+                ) =>
+            {
+                Some(Vec::new())
+            }
             "expression_statement" | "declaration" => {
                 let mut out = Vec::with_capacity(paths.len());
                 for mut path in paths {
@@ -238,6 +341,11 @@ impl Walk<'_> {
                         .into_iter()
                         .map(|mut path| {
                             path.nonnull.retain(|name| !assigned.contains(name));
+                            // Nor is a result it so much as mentions still
+                            // known to be untested.
+                            path.results.retain(|name, _| {
+                                !assigned.contains(name) && !mentions(stmt, name, self.source)
+                            });
                             path
                         })
                         .collect(),
@@ -256,6 +364,13 @@ impl Walk<'_> {
         let mut out = Vec::new();
         for mut path in paths {
             self.effects(&cond, &mut path)?;
+            // A result the code tests is handled, whichever way the branch
+            // goes: `if (!s) fatal(); *pp = s;` must not read as storing it
+            // untested because `fatal` is not known to end the path. Only
+            // the proof of non-null needs the branch.
+            for name in when_true.iter().chain(&when_false) {
+                path.results.remove(name);
+            }
             let mut then_path = path.clone();
             then_path.nonnull.extend(when_true.iter().cloned());
             out.extend(self.statement(&consequence, vec![then_path])?);
@@ -271,9 +386,11 @@ impl Walk<'_> {
 
     /// Apply what `node` does to `path`, in source order: stores through
     /// the parameter, assignments to locals, and calls that could change
-    /// either. `None` when the parameter itself is reassigned.
+    /// either. A store that only may run joins with the value before it.
+    /// `None` when the parameter itself is reassigned.
     fn effects(&self, node: &Node, path: &mut Path) -> Option<()> {
         for n in query::find_descendants(*node, |_| true) {
+            let may_not_run = runs_conditionally(&n, node);
             match n.kind() {
                 "assignment_expression" => {
                     let left = n.child_by_field_name("left")?;
@@ -283,25 +400,19 @@ impl Walk<'_> {
                         .map(|o| ast_utils::get_node_text(&o, self.source))
                         .unwrap_or("=");
                     if self.is_store_through_param(&left) {
-                        path.stored = if op != "=" {
+                        let value = if op != "=" {
                             Stored::Unknown
-                        } else if self.value_nonnull(&right, path) {
-                            Stored::NonNull
-                        } else if is_null_constant(&right, self.source) {
-                            Stored::Null
                         } else {
-                            Stored::Unknown
+                            self.classify(&right, path)
                         };
+                        self.store(path, value, may_not_run);
                     } else if left.kind() == "identifier" {
                         let name = ast_utils::get_node_text(&left, self.source);
                         if name == self.param {
                             return None;
                         }
-                        if op == "=" && self.value_nonnull(&right, path) {
-                            path.nonnull.insert(name.to_string());
-                        } else {
-                            path.nonnull.remove(name);
-                        }
+                        let assigned = (op == "=").then_some(right);
+                        self.assign_local(path, name, assigned.as_ref(), may_not_run);
                     }
                 }
                 "init_declarator" => {
@@ -309,19 +420,14 @@ impl Walk<'_> {
                         continue;
                     };
                     let name = ast_utils::get_identifier_from_declarator(&declarator, self.source);
-                    let proven = n
-                        .child_by_field_name("value")
-                        .is_some_and(|v| self.value_nonnull(&v, path));
-                    if proven {
-                        path.nonnull.insert(name);
-                    } else {
-                        path.nonnull.remove(&name);
-                    }
+                    let value = n.child_by_field_name("value");
+                    self.assign_local(path, &name, value.as_ref(), may_not_run);
                 }
                 "update_expression" => {
                     if let Some(arg) = n.child_by_field_name("argument") {
-                        path.nonnull
-                            .remove(ast_utils::get_node_text(&arg, self.source));
+                        let name = ast_utils::get_node_text(&arg, self.source);
+                        path.nonnull.remove(name);
+                        path.results.remove(name);
                     }
                 }
                 "call_expression" => {
@@ -331,13 +437,19 @@ impl Walk<'_> {
                     let mut cursor = args.walk();
                     for arg in args.named_children(&mut cursor) {
                         if self.mentions_param(&arg) {
-                            path.stored = Stored::Unknown;
+                            self.store(path, Stored::Unknown, may_not_run);
+                        }
+                        // `assert(s)`, `CHECK(s != NULL)`: tested.
+                        let (t, f) = null_test_facts(&arg, self.source);
+                        for name in t.iter().chain(&f) {
+                            path.results.remove(name);
                         }
                         let arg = strip_parens_and_casts(arg);
                         if ast_utils::is_address_of_expression(&arg, self.source) {
                             if let Some(target) = arg.child_by_field_name("argument") {
-                                path.nonnull
-                                    .remove(ast_utils::get_node_text(&target, self.source));
+                                let name = ast_utils::get_node_text(&target, self.source);
+                                path.nonnull.remove(name);
+                                path.results.remove(name);
                             }
                         }
                     }
@@ -346,6 +458,69 @@ impl Walk<'_> {
             }
         }
         Some(())
+    }
+
+    /// Record a store of `value` through the parameter; one that may not
+    /// run joins with what was there.
+    fn store(&self, path: &mut Path, value: Stored, may_not_run: bool) {
+        path.stored = if may_not_run {
+            std::mem::take(&mut path.stored).join(value)
+        } else {
+            value
+        };
+    }
+
+    /// Record `name = value` (`None`: a compound assignment, or a
+    /// declaration without an initializer). A proof that the local is
+    /// non-null needs the assignment to run; that it may hold a call's
+    /// untested result holds either way.
+    fn assign_local(&self, path: &mut Path, name: &str, value: Option<&Node>, may_not_run: bool) {
+        let proven = !may_not_run && value.is_some_and(|v| self.value_nonnull(v, path));
+        if proven {
+            path.nonnull.insert(name.to_string());
+        } else {
+            path.nonnull.remove(name);
+        }
+        match value.and_then(|v| call_result(v, self.source)) {
+            Some(callee) => {
+                path.results.insert(name.to_string(), callee);
+            }
+            None if !may_not_run => {
+                path.results.remove(name);
+            }
+            None => {}
+        }
+    }
+
+    /// What storing `value` through the parameter leaves there.
+    fn classify(&self, value: &Node, path: &Path) -> Stored {
+        if self.value_nonnull(value, path) {
+            return Stored::NonNull;
+        }
+        if is_null_constant(value, self.source) {
+            return Stored::Null;
+        }
+        if let Some(callee) = call_result(value, self.source) {
+            return Stored::FromCall(BTreeSet::from([callee]));
+        }
+        let value = strip_parens_and_casts(*value);
+        match value.kind() {
+            "conditional_expression" => {
+                let arm = |field| {
+                    value
+                        .child_by_field_name(field)
+                        .map_or(Stored::Unknown, |v| self.classify(&v, path))
+                };
+                arm("consequence").join(arm("alternative"))
+            }
+            "identifier" => path
+                .results
+                .get(ast_utils::get_node_text(&value, self.source))
+                .map_or(Stored::Unknown, |callee| {
+                    Stored::FromCall(BTreeSet::from([callee.clone()]))
+                }),
+            _ => Stored::Unknown,
+        }
     }
 
     /// `*param`, `*(param)` or `param[0]`: the object the caller's `&p`
@@ -385,9 +560,7 @@ impl Walk<'_> {
     }
 
     fn mentions_param(&self, node: &Node) -> bool {
-        query::find_descendants(*node, |_| true).iter().any(|n| {
-            n.kind() == "identifier" && ast_utils::get_node_text(n, self.source) == self.param
-        })
+        mentions(node, self.param, self.source)
     }
 }
 
@@ -468,6 +641,107 @@ fn null_test_facts(cond: &Node, source: &str) -> (Vec<String>, Vec<String>) {
 fn is_null_constant(value: &Node, source: &str) -> bool {
     let value = strip_parens_and_casts(*value);
     crate::analyze::null_state::is_null_value(ast_utils::get_node_text(&value, source))
+}
+
+/// Whether `node`, read as part of `root`, runs only on some evaluations of
+/// `root`: under an arm of `?:`, or in the right operand of `&&` / `||`.
+fn runs_conditionally(node: &Node, root: &Node) -> bool {
+    let mut child = *node;
+    while child.id() != root.id() {
+        let Some(parent) = child.parent() else {
+            return false;
+        };
+        let is_field = |field| {
+            parent
+                .child_by_field_name(field)
+                .is_some_and(|c| c.id() == child.id())
+        };
+        match parent.kind() {
+            "conditional_expression" if !is_field("condition") => return true,
+            "binary_expression" if is_field("right") => {
+                let op = parent.child_by_field_name("operator").map(|o| o.kind());
+                if matches!(op, Some("&&" | "||")) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        child = parent;
+    }
+    false
+}
+
+/// Whether the identifier `name` occurs anywhere in `node`.
+fn mentions(node: &Node, name: &str, source: &str) -> bool {
+    query::find_descendants(*node, |_| true)
+        .iter()
+        .any(|n| n.kind() == "identifier" && ast_utils::get_node_text(n, source) == name)
+}
+
+/// The callee `value` is a direct call to (through casts and parentheses).
+fn call_result(value: &Node, source: &str) -> Option<String> {
+    let value = strip_parens_and_casts(*value);
+    if value.kind() != "call_expression" {
+        return None;
+    }
+    callee_name(&value, source)
+}
+
+/// The name a call spells its callee with, when it is a plain identifier.
+fn callee_name(call: &Node, source: &str) -> Option<String> {
+    let function = call.child_by_field_name("function")?;
+    (function.kind() == "identifier").then(|| ast_utils::get_node_text_owned(&function, source))
+}
+
+/// Whether `func`'s parameter `param` points to a pointer: declared with two
+/// pointer or array layers (`T **pp`, `T *pp[]`).
+fn pointee_is_pointer(func: &Node, param: &str, source: &str) -> bool {
+    fn layers(declarator: &Node) -> usize {
+        match declarator.kind() {
+            "pointer_declarator" | "array_declarator" => {
+                1 + declarator
+                    .child_by_field_name("declarator")
+                    .map_or(0, |d| layers(&d))
+            }
+            "parenthesized_declarator" => declarator.named_child(0).map_or(0, |d| layers(&d)),
+            _ => 0,
+        }
+    }
+    let Some(list) = func.child_by_field_name("declarator").and_then(|d| {
+        query::find_descendants_of_kind(d, "parameter_list")
+            .into_iter()
+            .next()
+    }) else {
+        return false;
+    };
+    let mut cursor = list.walk();
+    let found = list
+        .named_children(&mut cursor)
+        .filter(|p| p.kind() == "parameter_declaration")
+        .filter_map(|p| p.child_by_field_name("declarator"))
+        .find(|d| ast_utils::get_identifier_from_declarator(d, source) == param);
+    found.is_some_and(|d| layers(&d) >= 2)
+}
+
+/// The callees whose result `body` stores directly through `param`
+/// anywhere (`*pp = malloc(n)`): positive evidence of such a store where the
+/// path walk abandons.
+fn results_stored_through(body: &Node, param: &str, source: &str) -> Vec<String> {
+    let walk = Walk {
+        source,
+        param,
+        leaves: Vec::new(),
+    };
+    query::find_descendants_of_kind(*body, "assignment_expression")
+        .iter()
+        .filter(|a| {
+            a.child_by_field_name("left")
+                .is_some_and(|l| walk.is_store_through_param(&l))
+        })
+        .filter_map(|a| call_result(&a.child_by_field_name("right")?, source))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 /// Whether `body` anywhere stores a null constant through `param`
@@ -621,6 +895,78 @@ mod tests {
     fn a_goto_abandons_the_walk_but_a_null_store_still_counts() {
         let f = facts(
             "int f(int **pp) { *pp = 0; goto out; out: return 1; }",
+            "f",
+            "pp",
+        );
+        assert!(f.nonnull_on_return.is_empty());
+        assert!(f.may_leave_null);
+    }
+
+    #[test]
+    fn a_zero_stored_through_an_integer_pointer_is_no_null() {
+        let f = facts(
+            "int f(unsigned long *pn) { *pn = 0; *pn = 4; return 0; }",
+            "f",
+            "pn",
+        );
+        assert!(!f.may_leave_null);
+        let f = facts("int f(unsigned long *pn) { *pn = 0; return 0; }", "f", "pn");
+        assert!(!f.may_leave_null);
+        assert!(!f.stores_null_elsewhere);
+    }
+
+    #[test]
+    fn a_conditional_store_joins_with_the_one_before() {
+        let f = facts(
+            "int f(int c, int **pp) { c ? (*pp = 0) : (*pp = &g); return 0; }",
+            "f",
+            "pp",
+        );
+        assert!(f.nonnull_on_return.is_empty());
+        assert!(f.may_leave_null);
+        let f = facts(
+            "int f(int c, int **pp) { *pp = &g; c && (*pp = 0); return 0; }",
+            "f",
+            "pp",
+        );
+        assert!(f.nonnull_on_return.is_empty());
+        assert!(f.may_leave_null);
+        let f = facts(
+            "int f(int c, int **pp) { *pp = c ? &g : &h; return 0; }",
+            "f",
+            "pp",
+        );
+        assert_eq!(f.nonnull_on_return, vec!["0".to_string()]);
+    }
+
+    #[test]
+    fn an_untested_call_result_is_named_and_a_tested_one_is_not() {
+        let f = facts("void f(char **pp) { *pp = malloc(4); }", "f", "pp");
+        assert_eq!(f.may_store_result_of, vec!["malloc".to_string()]);
+        let f = facts(
+            "void f(char **pp) { char *s = malloc(4); *pp = s; }",
+            "f",
+            "pp",
+        );
+        assert_eq!(f.may_store_result_of, vec!["malloc".to_string()]);
+        let f = facts(
+            "void f(char **pp) { char *s = malloc(4); if (!s) die(); *pp = s; }",
+            "f",
+            "pp",
+        );
+        assert!(f.may_store_result_of.is_empty());
+        let f = facts(
+            "void f(char **pp) { char *s = malloc(4); assert(s); *pp = s; }",
+            "f",
+            "pp",
+        );
+        assert!(f.may_store_result_of.is_empty());
+    }
+
+    #[test]
+    fn a_bare_name_statement_abandons_the_proof() {
+        let f = facts(
+            "int f(int **pp) { *pp = 0; BAIL; *pp = &g; return 0; }",
             "f",
             "pp",
         );

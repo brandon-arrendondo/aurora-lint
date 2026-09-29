@@ -281,6 +281,27 @@ pub struct FunctionSummary {
     /// body (`out_param_nonnull::out_param_facts`), never a name.
     #[serde(default)]
     pub may_leave_null_through_params: HashSet<usize>,
+    /// MAY: for a `T **` parameter, the callees whose result some path
+    /// stores through it untested (`*pp = malloc(n);`). Whether each can
+    /// return NULL is that callee's own fact, so `propagate_may_leave_null`
+    /// resolves it into `may_leave_null_through_params` once every summary
+    /// exists: the stored value's null state is what the caller's `p` holds.
+    #[serde(default)]
+    pub may_store_results_through_params: HashMap<usize, Vec<String>>,
+    /// Parameters through which the body stores a null constant that no
+    /// path the out-parameter walk read leaves behind. A function-like macro
+    /// that jumps (see `out_param_proof_calls`) may leave it, so
+    /// `apply_macro_jumps_to_out_param_facts` moves each into
+    /// `may_leave_null_through_params` when one is called.
+    #[serde(default)]
+    pub null_stored_through_params: HashSet<usize>,
+    /// Every name this function's body calls, kept only while one of the
+    /// out-parameter facts above depends on no call being a jump. A
+    /// function-like macro among them may hide a `return` the walk never
+    /// saw, which only the project's macro table can tell
+    /// (`apply_macro_jumps_to_out_param_facts`).
+    #[serde(default)]
+    pub out_param_proof_calls: HashSet<String>,
     /// Parameter indices whose **pointee** this function frees — `free(*param)`,
     /// the `void **` "safe free" wrapper idiom:
     ///
@@ -4346,6 +4367,23 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, mut summary: Functi
     existing
         .may_leave_null_through_params
         .extend(summary.may_leave_null_through_params.iter().copied());
+    for (idx, callees) in &summary.may_store_results_through_params {
+        let entry = existing
+            .may_store_results_through_params
+            .entry(*idx)
+            .or_default();
+        for callee in callees {
+            if !entry.contains(callee) {
+                entry.push(callee.clone());
+            }
+        }
+    }
+    existing
+        .null_stored_through_params
+        .extend(summary.null_stored_through_params.iter().copied());
+    existing
+        .out_param_proof_calls
+        .extend(summary.out_param_proof_calls.iter().cloned());
     // A status value proves the out-parameter only if every definition
     // linked under this name proves it: keep the intersection.
     existing.out_param_nonnull_on_return.retain(|idx, keys| {
@@ -4842,9 +4880,21 @@ fn credit_out_param_facts(
             summary
                 .out_param_nonnull_on_return
                 .insert(idx, facts.nonnull_on_return);
+            summary
+                .out_param_proof_calls
+                .extend(facts.proof_calls.iter().cloned());
+        }
+        if facts.stores_null_elsewhere {
+            summary.null_stored_through_params.insert(idx);
+            summary.out_param_proof_calls.extend(facts.proof_calls);
         }
         if facts.may_leave_null {
             summary.may_leave_null_through_params.insert(idx);
+        }
+        if !facts.may_store_result_of.is_empty() {
+            summary
+                .may_store_results_through_params
+                .insert(idx, facts.may_store_result_of);
         }
     }
 }
@@ -6787,7 +6837,30 @@ pub fn propagate_transitive_frees(
 /// it may leave NULL in it too (`sqlite3_prepare_v2` forwards `ppStmt` to
 /// `sqlite3LockAndPrepare`, which stores `*ppStmt = 0` first). A MAY fact,
 /// so any forwarding counts, conditional or not.
+///
+/// A parameter through which the function stores a callee's untested result
+/// (`may_store_results_through_params`) may be left NULL when that callee
+/// may return NULL (`null_state::is_nullable_function`): `*pp = malloc(n)`.
 pub fn propagate_may_leave_null(summaries: &mut HashMap<String, FunctionSummary>) {
+    let nullable_stores: Vec<(String, usize)> = summaries
+        .iter()
+        .flat_map(|(name, s)| {
+            s.may_store_results_through_params
+                .iter()
+                .filter(|(idx, callees)| {
+                    !s.may_leave_null_through_params.contains(idx)
+                        && callees
+                            .iter()
+                            .any(|c| crate::analyze::null_state::is_nullable_function(c, summaries))
+                })
+                .map(move |(idx, _)| (name.clone(), *idx))
+        })
+        .collect();
+    for (name, idx) in nullable_stores {
+        if let Some(s) = summaries.get_mut(&name) {
+            s.may_leave_null_through_params.insert(idx);
+        }
+    }
     for _pass in 0..10 {
         let snapshot: HashMap<String, HashSet<usize>> = summaries
             .iter()
@@ -6816,6 +6889,37 @@ pub fn propagate_may_leave_null(summaries: &mut HashMap<String, FunctionSummary>
         }
         if !changed {
             break;
+        }
+    }
+}
+
+/// Correct the out-parameter facts of every function whose body calls a
+/// function-like macro that may jump out of its statement
+/// (`macro_expand::macro_may_jump`). The path walk read the invocation as a
+/// plain call, so a `return` inside it is a path the walk never saw:
+/// `*pp = 0; RET_OK_IF(c); *pp = &g; return OK;` returns `OK` with NULL.
+/// So `out_param_nonnull_on_return` is withdrawn, and a NULL the body
+/// stores (`null_stored_through_params`) may be left behind.
+///
+/// Runs where the project's macro table exists, since a file's own
+/// summaries are computed before its headers' macros are known, and before
+/// `propagate_may_leave_null` carries the result to wrappers.
+pub fn apply_macro_jumps_to_out_param_facts(
+    summaries: &mut HashMap<String, FunctionSummary>,
+    macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+) {
+    if macros.is_empty() {
+        return;
+    }
+    for summary in summaries.values_mut() {
+        if summary
+            .out_param_proof_calls
+            .iter()
+            .any(|c| crate::analyze::macro_expand::macro_may_jump(macros, c))
+        {
+            summary.out_param_nonnull_on_return.clear();
+            let stored = std::mem::take(&mut summary.null_stored_through_params);
+            summary.may_leave_null_through_params.extend(stored);
         }
     }
 }

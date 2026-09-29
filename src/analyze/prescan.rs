@@ -1225,6 +1225,10 @@ fn prescan_file_list(
     );
     // Before the call-site null states, whose caller dataflow reads what an
     // out-parameter holds after the call.
+    function_summary::apply_macro_jumps_to_out_param_facts(
+        &mut function_summaries,
+        &function_macros,
+    );
     function_summary::propagate_may_leave_null(&mut function_summaries);
     let mut parser = CParser::new()?;
     propagate_param_null_states(
@@ -7277,6 +7281,11 @@ pub fn resolve_includes(
     );
     // A header can define the callee a wrapper forwards its out-parameter
     // to; monotone, like the reruns around it.
+    // A header's macro can hide the `return` a proof must not step over.
+    function_summary::apply_macro_jumps_to_out_param_facts(
+        context.function_summaries.make_mut(),
+        &context.function_macros,
+    );
     function_summary::propagate_may_leave_null(context.function_summaries.make_mut());
     // A pointer-returning wrapper's allocating callee may only resolve once a
     // header defines that callee's own constructor (e.g. a static inline
