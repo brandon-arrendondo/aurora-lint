@@ -54,13 +54,15 @@ class TestSettingsRunId(unittest.TestCase):
 
 
 class TestJulietSettings(unittest.TestCase):
-    def test_every_juliet_scan_declares_a_closed_program_and_is_labeled(self):
+    def test_every_juliet_scan_declares_a_closed_lp64_program_and_is_labeled(self):
         from unittest import mock
         from bench import config
         resolved = {"preset": None, "hash": "c" * 64}
         with mock.patch.object(config, "resolve_settings", return_value=resolved) as r:
             s = config.juliet_settings("strict")
-        r.assert_called_once_with("strict", ("closed_program=true",), compile_db=None)
+        r.assert_called_once_with(
+            "strict", ("closed_program=true", "data_model=lp64"), compile_db=None
+        )
         self.assertEqual(s["run_label"], "strict+closed")
         self.assertEqual(settings_run_suffix(s), "-strict+closed-cccccccccccc")
 

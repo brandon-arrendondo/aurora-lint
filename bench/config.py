@@ -157,8 +157,11 @@ PROFILES = ("default", "strict")
 
 # What a Juliet testcase set is, declared on every Juliet scan: a closed
 # program, which nothing outside links against or loads (the binary's
-# `closed_program` option; ADR-0011). Real-world scans declare nothing.
-JULIET_SETTING_OVERRIDES = ("closed_program=true",)
+# `closed_program` option; ADR-0011), built for Linux x86_64 with GCC, whose
+# data model is LP64 (`data_model`; ADR-0011 credits integer widths only
+# where they are declared). Real-world scans declare their data model in
+# their own manifests (conf/realworld/*-rules.toml).
+JULIET_SETTING_OVERRIDES = ("closed_program=true", "data_model=lp64")
 # How a run_id names that declaration after its preset (ADR-0015 Decision 8).
 JULIET_RUN_LABEL_SUFFIX = "+closed"
 
@@ -166,7 +169,7 @@ JULIET_RUN_LABEL_SUFFIX = "+closed"
 # value. `resolve_settings` forwards these from a scan's extra arguments so
 # the settings it records are the ones the scan ran under.
 SETTINGS_FLAGS = ("--compile-commands", "--include-names", "--policy",
-                  "--environment", "--libc", "--set")
+                  "--environment", "--libc", "--data-model", "--set")
 
 
 def settings_args(extra_args: list[str]) -> list[str]:

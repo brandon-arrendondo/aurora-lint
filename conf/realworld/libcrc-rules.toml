@@ -5,6 +5,11 @@ version = "1.0.0"
 description = "Project rules manifest for libcrc (CRC computation library + demo CLI + tests), pinned to commit 7719e21. Derived from the d_lib_common embedded-C policy, whose inherited disables were re-checked against this tree: libcrc builds on Windows and does file I/O in precalc/ and examples/, so WIN* and FIO* run here. The remaining disables are category 1 (no socket call, no heap allocation, no privileged process) or category 2 (dead config); see each line. Per-finding false positives among ENABLED rules are not suppressed here; they are recorded in the ground_truth oracle (data/benchmarks.db) so precision is measured, not hidden. See data/precision_audit/libcrc/README.md."
 cert_version = "2016"
 
+[environment]
+# The configuration of record is a Linux x86_64 build, LP64: int 32 bits, long
+# and pointers 64. See docs/design/realworld-corpus-scope.md.
+data_model = "lp64"
+
 [rules.cert_c.API00-C]
 enabled = true
 
