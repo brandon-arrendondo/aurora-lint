@@ -40,8 +40,8 @@ Full Command Reference
           --diff                       Only analyze modified/new C files (requires git repo)
           --suppress-file <FILE>       Path to suppress.toml file
                                        (auto-detected in project root if not specified;
-                                       supports [[suppression]] hash entries and
-                                       [[wildcard]] glob/prefix entries)
+                                       [[suppress]] entries, matched by hash or by
+                                       glob/prefix)
       -I, --include-path <DIR>         Include search paths for resolving #include directives
                                        (repeatable; like compiler -I flag)
           --compile-commands <FILE>    Read include search paths and -D macros from a

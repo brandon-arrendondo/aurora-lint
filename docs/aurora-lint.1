@@ -85,10 +85,15 @@ for the full list of \fBkind\fR values.
 .TP
 \fB\-\-suppress\-file\fR \fIFILE\fR
 Path to a
+.I suppress.toml
+suppression file. If not specified, aurora-lint looks in the project root for
+.IR suppress.toml ,
+then
 .I .aurora-lint\-suppress.toml
-suppression file. If not specified, aurora-lint auto-detects a suppression file in
-the project root. The file supports \fB[[suppression]]\fR entries (by hash) and
-\fB[[wildcard]]\fR entries (by glob or prefix pattern).
+and
+.IR .sqc\-suppress.toml .
+Each entry is a \fB[[suppress]]\fR table, matched by hash (one line) or by
+glob or prefix pattern (see \fBSuppression File\fR below).
 .SS "Output & Reporting"
 .TP
 \fB\-e\fR, \fB\-\-export\fR \fIFILE\fR
@@ -276,23 +281,38 @@ A default manifest enabling all rules is provided at
 .IR rules_templates/rules\-all.toml .
 .SS "Suppression File"
 The suppression file
-.RI ( .aurora-lint\-suppress.toml )
-allows silencing specific violations:
+.RI ( suppress.toml )
+suppresses findings the project has reviewed. Each entry is a
+\fB[[suppress]]\fR table with a \fBname\fR and a \fBtool\fR
+(\fB"aurora-lint"\fR, or \fB"*"\fR for every tool). An entry with a
+\fBhash\fR suppresses one line and lapses when the line changes; an entry
+without one matches by \fBfile_glob\fR, \fBrule\fR, \fBrule_glob\fR and
+\fBfunction_prefix\fR, all of which must match:
 .PP
 .RS
 .nf
-# Suppress by hash (from --generate-suppression)
-[[suppression]]
-hash = "a1b2c3d4e5f6"
-reason = "Intentional cast"
+# Suppress one line (from --generate-suppression)
+[[suppress]]
+name = "cast-int31"
+tool = "aurora-lint"
+file = "src/codec.c"
+rule = "INT31-C"
+hash = "a1b2c3d4e5f67890"
+justification = "Intentional cast"
 
-# Suppress by pattern
-[[wildcard]]
-rule = "DCL06-C"
+# Suppress a rule for a directory
+[[suppress]]
+name = "third-party-dcl"
+tool = "aurora-lint"
 file_glob = "third_party/**"
-reason = "External code"
+rule_glob = "DCL*"
+justification = "External code"
 .fi
 .RE
+.PP
+Tables under any other name, such as \fB[[suppression]]\fR or
+\fB[[wildcard]]\fR, are not read. The count on the \fBLoaded N suppressions\fR
+line on standard error shows how many entries were read.
 .SH EXAMPLES
 Analyze a project directory:
 .PP
