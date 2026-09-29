@@ -352,9 +352,11 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
             &mut result.unused_attribute_macros,
         );
 
+        let dead = crate::analyze::init_state::file_proven_dead_lines(&source);
         collect_global_constants(
             &root,
             &source,
+            &dead,
             &mut result.global_constants,
             &mut result.closure_dependent_constants,
             &mut result.constant_disqualified,
@@ -365,6 +367,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         collect_constant_return_functions(
             &root,
             &source,
+            &dead,
             &mut returning,
             &mut result.constant_disqualified,
         );
@@ -5833,6 +5836,7 @@ fn has_pointer_in_declarator(node: &Node) -> bool {
 fn collect_global_constants(
     root: &Node,
     source: &str,
+    dead: &[(usize, usize)],
     constants: &mut Vec<(String, i64)>,
     closure_dependent: &mut HashSet<String>,
     disqualified: &mut HashSet<String>,
@@ -5840,6 +5844,9 @@ fn collect_global_constants(
     for i in 0..root.child_count() {
         if let Some(child) = root.child(i) {
             match child.kind() {
+                // An arm the file proves dead is no configuration (ADR-0010 D2).
+                "declaration" if crate::analyze::init_state::starts_in_dead_lines(&child, dead) => {
+                }
                 "declaration" => {
                     let type_text = {
                         let mut text = String::new();
@@ -5904,7 +5911,10 @@ fn collect_global_constants(
                             } else if decl.kind() == "identifier" && !type_text.contains("extern") {
                                 // A tentative definition, `int g;`: in the
                                 // configuration that compiles it, g is not the
-                                // value another arm initializes it to.
+                                // value another arm initializes it to. This
+                                // also withholds `int g;` followed by
+                                // `int g = 1;` in one configuration, which only
+                                // loses pruning.
                                 if let Ok(name) = decl.utf8_text(source.as_bytes()) {
                                     disqualified.insert(name.to_string());
                                 }
@@ -5917,6 +5927,7 @@ fn collect_global_constants(
                     collect_global_constants(
                         &child,
                         source,
+                        dead,
                         constants,
                         closure_dependent,
                         disqualified,
@@ -5934,12 +5945,15 @@ fn collect_global_constants(
 fn collect_constant_return_functions(
     root: &Node,
     source: &str,
+    dead: &[(usize, usize)],
     constants: &mut Vec<(String, i64)>,
     disqualified: &mut HashSet<String>,
 ) {
     for i in 0..root.child_count() {
         if let Some(child) = root.child(i) {
             match child.kind() {
+                "function_definition"
+                    if crate::analyze::init_state::starts_in_dead_lines(&child, dead) => {}
                 "function_definition" => {
                     let before = constants.len();
                     collect_one_constant_function(&child, source, constants);
@@ -5958,7 +5972,13 @@ fn collect_constant_return_functions(
                 }
                 "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
                 | "preproc_elifdef" => {
-                    collect_constant_return_functions(&child, source, constants, disqualified);
+                    collect_constant_return_functions(
+                        &child,
+                        source,
+                        dead,
+                        constants,
+                        disqualified,
+                    );
                 }
                 _ => {}
             }

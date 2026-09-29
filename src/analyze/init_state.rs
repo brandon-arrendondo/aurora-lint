@@ -2563,16 +2563,17 @@ fn collect_file_scope_statics_recursive(node: &Node, source: &str, state: &mut I
 /// A mutable object is not a constant because it happens to be `static`,
 /// and a non-`static` one can be written from another file.
 ///
-/// Every preprocessor arm is read, and a name whose definitions disagree
-/// across arms, or one of which is not a compile-time value, is left out:
-/// it has no single value in every configuration (ADR-0010 D4).
+/// Every preprocessor arm is read (`#elifdef` included) except one the file
+/// proves dead, and a name whose definitions disagree across arms, or one of
+/// which is not a compile-time value or is a tentative `static int g;`, is
+/// left out: it has no single value in every configuration (ADR-0010 D4).
 ///
 /// Keyed by name, so a use must first be checked to bind to the file-scope
 /// object rather than a local of the same name: [`constants_visible_at`].
 pub fn collect_file_scope_constants(root: &Node, source: &str) -> HashMap<String, i64> {
     // name -> Some((value, needs the never-written check)), None = no one value
     let mut seen: HashMap<String, Option<(i64, bool)>> = HashMap::new();
-    collect_constants_recursive(root, source, &mut seen);
+    collect_constants_recursive(root, source, &file_proven_dead_lines(source), &mut seen);
     let function_macros = const_eval::function_macro_names(source);
     seen.into_iter()
         .filter_map(|(name, entry)| {
@@ -2622,9 +2623,28 @@ pub fn constants_visible_at<'c>(
     std::borrow::Cow::Owned(visible)
 }
 
+/// Line ranges (1-based, inclusive) of the arms the file itself proves are
+/// never compiled, such as `#if 0`. A definition there is no configuration
+/// (ADR-0010 D2), so it can neither supply a folded value nor veto one. The
+/// unseeded scanner, not the platform-seeded `DeadRegions`: a platform guess
+/// is not proof for a fact that suppresses (ADR-0010 D3).
+pub(crate) fn file_proven_dead_lines(source: &str) -> Vec<(usize, usize)> {
+    lang_parsing_substrate::dead_code_ranges(source)
+        .into_iter()
+        .map(|r| (r.start_line, r.end_line))
+        .collect()
+}
+
+/// Whether `node` starts inside one of `dead` ([`file_proven_dead_lines`]).
+pub(crate) fn starts_in_dead_lines(node: &Node, dead: &[(usize, usize)]) -> bool {
+    let line = node.start_position().row + 1;
+    dead.iter().any(|&(s, e)| line >= s && line <= e)
+}
+
 fn collect_constants_recursive(
     node: &Node,
     source: &str,
+    dead: &[(usize, usize)],
     seen: &mut HashMap<String, Option<(i64, bool)>>,
 ) {
     for i in 0..node.child_count() {
@@ -2632,10 +2652,12 @@ fn collect_constants_recursive(
             continue;
         };
         match child.kind() {
+            "declaration" if starts_in_dead_lines(&child, dead) => {}
             "declaration" => {
                 let text_of = |n: Node| n.utf8_text(source.as_bytes()).unwrap_or("");
                 let mut is_const = false;
                 let mut is_static = false;
+                let mut is_extern = false;
                 let mut is_volatile = false;
                 for k in 0..child.child_count() {
                     if let Some(c) = child.child(k) {
@@ -2643,6 +2665,7 @@ fn collect_constants_recursive(
                             "type_qualifier" if text_of(c) == "const" => is_const = true,
                             "type_qualifier" if text_of(c) == "volatile" => is_volatile = true,
                             "storage_class_specifier" if text_of(c) == "static" => is_static = true,
+                            "storage_class_specifier" if text_of(c) == "extern" => is_extern = true,
                             _ => {}
                         }
                     }
@@ -2656,6 +2679,17 @@ fn collect_constants_recursive(
                     let Some(decl) = child.child(j) else {
                         continue;
                     };
+                    if decl.kind() == "identifier" && !is_extern {
+                        // A tentative definition, `static int flag;`: in the
+                        // configuration that compiles it, flag is 0, not the
+                        // value another arm initializes it to. This also
+                        // withholds the rare tentative-then-initialized pair
+                        // in one configuration, which only loses pruning.
+                        if let Ok(name) = decl.utf8_text(source.as_bytes()) {
+                            seen.insert(name.to_string(), None);
+                        }
+                        continue;
+                    }
                     if decl.kind() != "init_declarator" {
                         continue;
                     }
@@ -2691,8 +2725,9 @@ fn collect_constants_recursive(
                     }
                 }
             }
-            "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif" => {
-                collect_constants_recursive(&child, source, seen);
+            "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
+            | "preproc_elifdef" => {
+                collect_constants_recursive(&child, source, dead, seen);
             }
             _ => {}
         }
@@ -2703,7 +2738,8 @@ fn collect_constants_recursive(
 /// These are constant-valued functions that can be used in dead-branch elimination
 /// (e.g., `staticReturnsTrue()`, `globalReturnsFalse()`).
 ///
-/// Every preprocessor arm is read (`#elifdef` included), and a folding fact
+/// Every preprocessor arm is read (`#elifdef` included) except one the file
+/// proves dead ([`file_proven_dead_lines`]), and a folding fact
 /// suppresses, so it must hold in every configuration (ADR-0010): a name
 /// folds only if every definition of it returns the same literal. A
 /// definition in one arm that computes its value, or does anything else,
@@ -2711,7 +2747,7 @@ fn collect_constants_recursive(
 pub fn collect_constant_functions(root: &Node, source: &str) -> HashMap<String, i64> {
     // name -> Some(value) while every definition so far agrees; None once not.
     let mut seen: HashMap<String, Option<i64>> = HashMap::new();
-    collect_constant_functions_in(root, source, &mut seen);
+    collect_constant_functions_in(root, source, &file_proven_dead_lines(source), &mut seen);
     seen.into_iter()
         .filter_map(|(name, value)| Some((name, value?)))
         .collect()
@@ -2720,11 +2756,13 @@ pub fn collect_constant_functions(root: &Node, source: &str) -> HashMap<String, 
 fn collect_constant_functions_in(
     node: &Node,
     source: &str,
+    dead: &[(usize, usize)],
     seen: &mut HashMap<String, Option<i64>>,
 ) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             match child.kind() {
+                "function_definition" if starts_in_dead_lines(&child, dead) => {}
                 "function_definition" => {
                     let Some(name) = crate::analyze::cfg::get_function_name(&child, source) else {
                         continue;
@@ -2737,7 +2775,7 @@ fn collect_constant_functions_in(
                 }
                 "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
                 | "preproc_elifdef" => {
-                    collect_constant_functions_in(&child, source, seen);
+                    collect_constant_functions_in(&child, source, dead, seen);
                 }
                 _ => {}
             }
