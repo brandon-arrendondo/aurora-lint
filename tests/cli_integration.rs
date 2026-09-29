@@ -4005,3 +4005,31 @@ fn each_allocation_into_one_variable_has_its_own_first_site() {
     let lines: Vec<&str> = found.iter().filter_map(|l| l.split(':').nth(1)).collect();
     assert_eq!(lines, ["4", "8"], "{found:?}");
 }
+
+#[test]
+fn a_later_null_test_reports_only_the_first_dereference_by_default() {
+    // Each function dereferences `sta`, tests it, and dereferences it again.
+    // The default policy reports the first dereference and folds the later
+    // one into it; strict reports both.
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/rules/cert_c/EXP/EXP34-C/tests/fail/testcases_dereference_before_later_null_test.c"
+    );
+    let lines = |profile: &str| -> Vec<String> {
+        let (_, stdout, _) =
+            run_aurora_lint(&[fixture, "--rules", "EXP34-C", "--profile", profile]);
+        stdout
+            .lines()
+            .filter(|l| l.contains("EXP34-C: "))
+            .filter_map(|l| {
+                l.rsplit(".c:")
+                    .next()?
+                    .split(':')
+                    .next()
+                    .map(str::to_string)
+            })
+            .collect()
+    };
+    assert_eq!(lines("default"), ["20", "32", "46"]);
+    assert_eq!(lines("strict"), ["20", "26", "32", "39", "46", "50"]);
+}

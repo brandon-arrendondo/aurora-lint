@@ -310,6 +310,22 @@ impl CertRule for Exp34C {
                         &mut violations,
                         &mut reported_vars,
                     );
+
+                    // A dereference the dataflow credits only because nothing
+                    // said the value could be NULL, followed by a NULL test of
+                    // that same value.
+                    check_dereferences_before_null_tests(
+                        node,
+                        &body,
+                        source,
+                        cfg,
+                        &effective_summaries,
+                        &global_states,
+                        func_name.as_deref(),
+                        null_state::NullPolicy::from_settings(&settings),
+                        &mut violations,
+                        &mut reported_vars,
+                    );
                 }
             }
         }
@@ -364,55 +380,66 @@ impl<'s> ReportedSites<'s> {
 }
 
 /// The start byte of the last write to `name` that ends before `site` in
-/// the enclosing function -- an assignment whose left side is spelled
-/// `name`, or the declaration that initializes it. `None` when there is
+/// the enclosing function (see [`last_write_before`]). `None` when there is
 /// none, as for a parameter's incoming value.
 ///
 /// This tells one value of a variable from another for de-duplication
 /// only, so byte order is enough: it never decides whether anything is
 /// reported, only which of several reports of one value is kept.
 fn value_origin(name: &str, site: &Node, source: &str) -> Option<usize> {
+    last_write_before(name, site, source).map(|w| w.start_byte())
+}
+
+/// The last write to `name` that ends before `site` in the enclosing
+/// function, in byte order: an assignment whose left side is spelled
+/// `name`, or the declaration that initializes it.
+fn last_write_before<'t>(name: &str, site: &Node<'t>, source: &str) -> Option<Node<'t>> {
     let mut current = site.parent();
     while let Some(parent) = current {
         if parent.kind() == "function_definition" {
             let body = parent.child_by_field_name("body")?;
-            let mut origin = None;
-            last_write_before(&body, name, site.start_byte(), source, &mut origin);
-            return origin;
+            let mut last = None;
+            collect_last_write(&body, name, site.start_byte(), source, &mut last);
+            return last;
         }
         current = parent.parent();
     }
     None
 }
 
-fn last_write_before(
-    node: &Node,
+fn collect_last_write<'t>(
+    node: &Node<'t>,
     name: &str,
     before: usize,
     source: &str,
-    origin: &mut Option<usize>,
+    last: &mut Option<Node<'t>>,
 ) {
     if node.start_byte() >= before {
         return;
     }
-    if node.end_byte() <= before {
-        let written = match node.kind() {
-            "assignment_expression" => node
-                .child_by_field_name("left")
-                .is_some_and(|left| ast_utils::get_node_text(&left, source) == name),
-            "init_declarator" => node
-                .child_by_field_name("declarator")
-                .is_some_and(|d| ast_utils::get_identifier_from_declarator(&d, source) == name),
-            _ => false,
-        };
-        if written {
-            *origin = Some(origin.map_or(node.start_byte(), |o| o.max(node.start_byte())));
+    if node.end_byte() <= before && write_target_is(node, name, source) {
+        if last.is_none_or(|l| l.start_byte() < node.start_byte()) {
+            *last = Some(*node);
         }
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            last_write_before(&child, name, before, source, origin);
+            collect_last_write(&child, name, before, source, last);
         }
+    }
+}
+
+/// True when `node` is an assignment to, or the initializing declarator of,
+/// the lvalue spelled `name`.
+fn write_target_is(node: &Node, name: &str, source: &str) -> bool {
+    match node.kind() {
+        "assignment_expression" => node
+            .child_by_field_name("left")
+            .is_some_and(|left| ast_utils::get_node_text(&left, source) == name),
+        "init_declarator" => node
+            .child_by_field_name("declarator")
+            .is_some_and(|d| ast_utils::get_identifier_from_declarator(&d, source) == name),
+        _ => false,
     }
 }
 
@@ -1430,6 +1457,367 @@ fn is_inside_ast_null_guard(var_name: &str, node: &Node, source: &str) -> bool {
         current = parent.parent();
     }
     false
+}
+
+// ---------------------------------------------------------------------------
+// Dereference before a later NULL test
+// ---------------------------------------------------------------------------
+
+/// Report the first dereference of a pointer that the function tests for
+/// NULL afterwards, with no write to it in between.
+///
+/// The dataflow starts a parameter with no caller evidence, and the result
+/// of a callee with no body, as non-null: nothing says otherwise. In
+/// `v = q->x; if (q == NULL) return -1;` that start is all that clears
+/// `q->x`. The later test is the code's own statement that `q` can be NULL
+/// there, and nothing in the source proves that it isn't, so the first
+/// dereference is the site (CERT's third noncompliant example has this
+/// shape). The later sites depend on the same missing check and stay folded
+/// into it.
+///
+/// "Nothing proves it" is decided by the dataflow itself, re-run with the
+/// value's start taken as possibly NULL: a parameter's incoming value, or
+/// the result of the call that produced it. Every guard, exiting test,
+/// abort macro and closed caller set that would clear the dereference is
+/// still credited. Two starts are left alone because the source proves
+/// them: a parameter every call site proves non-null, and a callee whose
+/// own body never returns NULL. So is any other start (a copy of another
+/// pointer, a field read), where there is no single value to re-seed.
+#[allow(clippy::too_many_arguments)]
+fn check_dereferences_before_null_tests(
+    func: &Node,
+    body: &Node,
+    source: &str,
+    cfg: &FunctionCfg,
+    summaries: &(impl SummaryLookup + ?Sized),
+    global_states: &StateMap,
+    func_name: Option<&str>,
+    policy: null_state::NullPolicy,
+    violations: &mut Vec<RuleViolation>,
+    reported_vars: &mut ReportedSites<'_>,
+) {
+    for (var, test) in null_tests(body, source) {
+        let Some(site) = first_dereference_before(&var, &test, source) else {
+            continue;
+        };
+        if reported_vars.contains(&var, &site) {
+            continue;
+        }
+        let mut overlay: HashMap<String, FunctionSummary> = HashMap::new();
+        match last_write_before(&var, &site, source) {
+            None => {
+                // Only a parameter has a value with no write before it.
+                let (Some(name), Some(idx)) = (func_name, parameter_index(func, &var, source))
+                else {
+                    continue;
+                };
+                let mut own = summaries.get(name).cloned().unwrap_or_default();
+                if own.callsite_param_proven_nonnull.contains(&idx) {
+                    continue;
+                }
+                own.callsite_param_null_states
+                    .insert(idx, NullState::PossiblyNull);
+                overlay.insert(name.to_string(), own);
+            }
+            Some(write) => {
+                let Some(callee) = written_call_callee(&write, source) else {
+                    continue;
+                };
+                if summaries.get(&callee).is_some() {
+                    // A body was read. It either can return NULL, which the
+                    // dataflow already knows, or it cannot.
+                    continue;
+                }
+                overlay.insert(
+                    callee,
+                    FunctionSummary {
+                        can_return_null: true,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+        let reseeded = crate::analyze::context::SummaryOverlay {
+            first: &overlay,
+            then: summaries,
+        };
+        let analysis = null_state::analyze_null_states_with_globals(
+            cfg,
+            func,
+            source,
+            &reseeded,
+            global_states,
+            func_name,
+            policy,
+        );
+        if !is_unsafe_at(&var, &site, source, &analysis, cfg, body, &reseeded) {
+            continue;
+        }
+        reported_vars.insert(&var, &site);
+        let start_point = site.start_position();
+        violations.push(RuleViolation {
+            rule_id: "EXP34-C".to_string(),
+            severity: Severity::High,
+            message: format!(
+                "Dereference of '{}' before it is tested for NULL on line {}",
+                var,
+                test.start_position().row + 1
+            ),
+            file_path: String::new(),
+            line: start_point.row + 1,
+            column: start_point.column + 1,
+            suggestion: Some(format!(
+                "Check if '{}' is not NULL before dereferencing, or remove the later test if it cannot be NULL",
+                var
+            )),
+            ..Default::default()
+        });
+    }
+}
+
+/// Every NULL test of a declared pointer in `body`, as `(name, tested
+/// operand)`: `p == NULL`, `NULL != p`, `!p` and a bare `p` used as a
+/// condition, including as an operand of `&&`/`||` inside one.
+fn null_tests<'t>(body: &Node<'t>, source: &str) -> Vec<(String, Node<'t>)> {
+    let mut tests = Vec::new();
+    for owner in query::find_descendants_of_kinds(
+        *body,
+        &[
+            "if_statement",
+            "while_statement",
+            "do_statement",
+            "for_statement",
+            "conditional_expression",
+        ],
+    ) {
+        if let Some(cond) = owner.child_by_field_name("condition") {
+            collect_null_tests(&cond, source, &mut tests);
+        }
+    }
+    tests.retain(|(name, operand)| {
+        identifier_is_declared_pointer(operand, name, source) == Some(true)
+    });
+    tests
+}
+
+fn collect_null_tests<'t>(cond: &Node<'t>, source: &str, out: &mut Vec<(String, Node<'t>)>) {
+    match cond.kind() {
+        "identifier" => out.push((ast_utils::get_node_text_owned(cond, source), *cond)),
+        "parenthesized_expression" => {
+            if let Some(inner) = cond.named_child(0) {
+                collect_null_tests(&inner, source, out);
+            }
+        }
+        "unary_expression" => {
+            let is_not = cond
+                .child_by_field_name("operator")
+                .is_some_and(|o| ast_utils::get_node_text(&o, source) == "!");
+            if let (true, Some(arg)) = (is_not, cond.child_by_field_name("argument")) {
+                collect_null_tests(&arg, source, out);
+            }
+        }
+        "binary_expression" => {
+            let op = cond
+                .child_by_field_name("operator")
+                .map(|o| ast_utils::get_node_text(&o, source))
+                .unwrap_or("");
+            let (Some(left), Some(right)) = (
+                cond.child_by_field_name("left"),
+                cond.child_by_field_name("right"),
+            ) else {
+                return;
+            };
+            match op {
+                "&&" | "||" => {
+                    collect_null_tests(&left, source, out);
+                    collect_null_tests(&right, source, out);
+                }
+                "==" | "!=" => {
+                    let null_side = |n: &Node| is_null_value(ast_utils::get_node_text(n, source));
+                    if left.kind() == "identifier" && null_side(&right) {
+                        out.push((ast_utils::get_node_text_owned(&left, source), left));
+                    } else if right.kind() == "identifier" && null_side(&left) {
+                        out.push((ast_utils::get_node_text_owned(&right, source), right));
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The earliest dereference of `var` that every path to `test` executes
+/// first, with no write to `var` between the two: one in a condition that
+/// encloses the test (the left operand of an enclosing `&&`/`||` included),
+/// or in a straight-line statement, or an `if` chain's conditions, that
+/// precedes the test in one of its enclosing blocks. A preceding label
+/// ends the search, since a `goto` can enter below the dereference.
+fn first_dereference_before<'t>(var: &str, test: &Node<'t>, source: &str) -> Option<Node<'t>> {
+    let mut candidates: Vec<Node<'t>> = Vec::new();
+    let mut current = *test;
+    while let Some(parent) = current.parent() {
+        match parent.kind() {
+            "function_definition" => break,
+            "if_statement"
+            | "while_statement"
+            | "for_statement"
+            | "switch_statement"
+            | "conditional_expression" => {
+                if let Some(cond) = parent.child_by_field_name("condition") {
+                    if !node_is_within(&cond, &current) {
+                        collect_dereference_sites(&cond, var, source, &mut candidates);
+                    }
+                }
+            }
+            "binary_expression" => {
+                let logical = parent
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| matches!(ast_utils::get_node_text(&o, source), "&&" | "||"));
+                if let (true, Some(left)) = (logical, parent.child_by_field_name("left")) {
+                    if left.end_byte() <= current.start_byte() {
+                        collect_dereference_sites(&left, var, source, &mut candidates);
+                    }
+                }
+            }
+            "compound_statement" | "preproc_if" | "preproc_ifdef" | "preproc_else"
+            | "preproc_elif" => {
+                let mut cursor = parent.walk();
+                for stmt in parent.named_children(&mut cursor) {
+                    if stmt.start_byte() >= current.start_byte() {
+                        break;
+                    }
+                    match stmt.kind() {
+                        "labeled_statement" | "case_statement" => return None,
+                        "declaration" | "expression_statement" => {
+                            collect_dereference_sites(&stmt, var, source, &mut candidates)
+                        }
+                        "if_statement" => {
+                            let mut branch = Some(stmt);
+                            while let Some(ifs) = branch {
+                                if let Some(cond) = ifs.child_by_field_name("condition") {
+                                    collect_dereference_sites(&cond, var, source, &mut candidates);
+                                }
+                                branch = ifs
+                                    .child_by_field_name("alternative")
+                                    .and_then(|alt| alt.named_child(0))
+                                    .filter(|n| n.kind() == "if_statement");
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+        current = parent;
+    }
+    let first = candidates.into_iter().min_by_key(|n| n.start_byte())?;
+    (!written_between(&current, var, first.end_byte(), test.start_byte(), source)).then_some(first)
+}
+
+/// The dereferences of `var` in `node` that are EXP34-C sites: `var->f`,
+/// `*var` and `var[i]`, except as the operand of a unary `&` or of an
+/// operand C never evaluates.
+fn collect_dereference_sites<'t>(
+    node: &Node<'t>,
+    var: &str,
+    source: &str,
+    out: &mut Vec<Node<'t>>,
+) {
+    for n in query::find_descendants_of_kinds(
+        *node,
+        &[
+            "field_expression",
+            "pointer_expression",
+            "subscript_expression",
+        ],
+    ) {
+        let base = match n.kind() {
+            "field_expression" => n
+                .child_by_field_name("operator")
+                .filter(|op| ast_utils::get_node_text(op, source) == "->")
+                .and(n.child_by_field_name("argument")),
+            "pointer_expression" => ast_utils::is_dereference_expression(&n, source)
+                .then(|| n.child_by_field_name("argument"))
+                .flatten(),
+            _ => n.child(0),
+        };
+        if base.is_some_and(|b| {
+            b.kind() == "identifier" && ast_utils::get_node_text(&b, source) == var
+        }) && !is_address_of_operand(&n, source)
+            && !ast_utils::is_in_unevaluated_operand(&n, source)
+        {
+            out.push(n);
+        }
+    }
+}
+
+/// True when `var` may be written between bytes `after` and `before`: an
+/// assignment to it, an increment or decrement, a declaration of the same
+/// name, or its address handed out (`&var`).
+fn written_between(node: &Node, var: &str, after: usize, before: usize, source: &str) -> bool {
+    if node.end_byte() <= after || node.start_byte() >= before {
+        return false;
+    }
+    if node.start_byte() >= after {
+        let names_var =
+            |n: Option<Node>| n.is_some_and(|n| ast_utils::get_node_text(&n, source) == var);
+        let written = match node.kind() {
+            "assignment_expression" | "init_declarator" => write_target_is(node, var, source),
+            "update_expression" => names_var(node.child_by_field_name("argument")),
+            "pointer_expression" => {
+                ast_utils::is_address_of_expression(node, source)
+                    && names_var(node.child_by_field_name("argument"))
+            }
+            _ => false,
+        };
+        if written {
+            return true;
+        }
+    }
+    (0..node.child_count())
+        .filter_map(|i| node.child(i))
+        .any(|c| written_between(&c, var, after, before, source))
+}
+
+/// The index of the parameter named `var` in `func`'s declarator.
+fn parameter_index(func: &Node, var: &str, source: &str) -> Option<usize> {
+    let mut declarator = func.child_by_field_name("declarator")?;
+    while declarator.kind() != "function_declarator" {
+        declarator = declarator.child_by_field_name("declarator")?;
+    }
+    let params = declarator.child_by_field_name("parameters")?;
+    let mut cursor = params.walk();
+    let index = params
+        .named_children(&mut cursor)
+        .filter(|p| p.kind() == "parameter_declaration")
+        .position(|p| {
+            p.child_by_field_name("declarator")
+                .is_some_and(|d| ast_utils::get_identifier_from_declarator(&d, source) == var)
+        });
+    index
+}
+
+/// The callee named by the value a write stores, when that value is a
+/// direct call (through casts and parentheses): `p = f(x)`, `T *p = (T *)f(x)`.
+fn written_call_callee(write: &Node, source: &str) -> Option<String> {
+    let mut value = match write.kind() {
+        "assignment_expression" => write.child_by_field_name("right")?,
+        _ => write.child_by_field_name("value")?,
+    };
+    loop {
+        value = match value.kind() {
+            "parenthesized_expression" => value.named_child(0)?,
+            "cast_expression" => value.child_by_field_name("value")?,
+            _ => break,
+        };
+    }
+    let function = value
+        .kind()
+        .eq("call_expression")
+        .then(|| value.child_by_field_name("function"))??;
+    (function.kind() == "identifier").then(|| ast_utils::get_node_text_owned(&function, source))
 }
 
 // ---------------------------------------------------------------------------

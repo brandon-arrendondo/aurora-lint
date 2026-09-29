@@ -1,20 +1,13 @@
 /**
  * Rule: EXP34-C
  * Source: testcases
- * Status: PASS - Should NOT trigger EXP34-C violation. A null test on a
- * pointer the code has ALREADY dereferenced is dead-defensive: had it been
- * null, the program faulted at the earlier dereference, so the branch where
- * the test says it is null is unreachable. Refining that edge to
- * DefinitelyNull anyway downgraded the pointer at the join and reported a null
- * dereference much further down -- hostap's ieee802_1x_encapsulate_radius
- * dereferences `sta` in its first statement, tests `if (sta && ...)` 36 lines
- * later, and was reported at a `sta->` 65 lines after that.
- *
- * Expect: default=clean strict=violation
- * That is the default policy's first_site_only relaxation: the later
- * dereference depends on the same missing check as the first. The strict
- * policy reports every violating line, so the dereferences after the test
- * are reported there.
+ * Status: FAIL - Should trigger EXP34-C violation. Each function dereferences
+ * `sta` and then tests it for NULL, with nothing in between that proves it
+ * non-null. The later test is the code's own statement that `sta` can be
+ * NULL, so the first dereference is the site (CERT's third noncompliant
+ * example has this shape). The later dereferences depend on the same missing
+ * check: the default policy folds them into the first site, and the strict
+ * policy reports every line.
  */
 struct sm { int id; };
 struct sta { struct sm *eapol_sm; void *hs20_ie; };
