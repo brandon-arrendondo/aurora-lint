@@ -656,32 +656,77 @@ impl<'t> Collector<'_, 't> {
             }
             // A local declared under a preprocessor arm the use is not in
             // binds it in that configuration only; in the others the same
-            // spelling names the object outside (`int g; ... #ifdef LOCAL
-            // int g; #endif g = 1;`), so the write counts.
+            // spelling names whatever declaration lies past the arm (`int g;
+            // ... #ifdef LOCAL int g; #endif g = 1;`), so the write is that
+            // object's. With nothing past the arm, a configuration without
+            // it would not compile: the arm is active and its local is the
+            // object (`#ifdef _WIN32 long n; #else int n; #endif n = 0;`).
             Some(IdentifierBinding::Local(decl)) if in_other_arm(&decl, ident) => {
-                Some(Loc::Global(name.to_string()))
+                match self.binding_past_other_arms(ident) {
+                    Some(IdentifierBinding::Local(outer)) => {
+                        self.local_location(&outer, ident, name, element)
+                    }
+                    Some(IdentifierBinding::Parameter(_)) => {
+                        element.then(|| self.param_pointee(name))
+                    }
+                    Some(IdentifierBinding::Global(outer)) => {
+                        Some(global_location(&outer, name, self.source))
+                    }
+                    None => self.local_location(&decl, ident, name, element),
+                }
             }
             Some(IdentifierBinding::Local(decl)) => {
-                if ast_utils::declaration_has_storage_class(&decl, "static", self.source) {
-                    Some(Loc::Static(name.to_string()))
-                } else if ast_utils::declaration_has_storage_class(&decl, "extern", self.source) {
-                    // `extern int hits;` in a block names the file-scope object.
-                    Some(Loc::Global(name.to_string()))
-                } else if element && !is_automatic_local_array(&decl, ident, self.source) {
-                    Some(Loc::Unknown)
-                } else {
-                    None
-                }
+                self.local_location(&decl, ident, name, element)
             }
             Some(IdentifierBinding::Global(decl)) => {
-                if ast_utils::declaration_has_storage_class(&decl, "static", self.source) {
-                    Some(Loc::Static(name.to_string()))
-                } else {
-                    Some(Loc::Global(name.to_string()))
-                }
+                Some(global_location(&decl, name, self.source))
             }
             None => Some(Loc::Global(name.to_string())),
         }
+    }
+
+    /// What a write to `ident`, bound by the local declaration `decl`,
+    /// writes.
+    fn local_location(
+        &self,
+        decl: &Node<'t>,
+        ident: &Node<'t>,
+        name: &str,
+        element: bool,
+    ) -> Option<Loc> {
+        if ast_utils::declaration_has_storage_class(decl, "static", self.source) {
+            Some(Loc::Static(name.to_string()))
+        } else if ast_utils::declaration_has_storage_class(decl, "extern", self.source) {
+            // `extern int hits;` in a block names the file-scope object.
+            Some(Loc::Global(name.to_string()))
+        } else if element && !is_automatic_local_array(decl, ident, self.source) {
+            Some(Loc::Unknown)
+        } else {
+            None
+        }
+    }
+
+    /// Where `ident` is bound once every local declaration in a
+    /// preprocessor arm the use is not in is set aside: the enclosing
+    /// blocks, then the parameters, then the file scope.
+    fn binding_past_other_arms(&self, ident: &Node<'t>) -> Option<IdentifierBinding<'t>> {
+        let name = get_node_text(ident, self.source);
+        if let Some(decl) =
+            ast_utils::find_enclosing_declaration_where(ident, name, self.source, &|d| {
+                !in_other_arm(d, ident)
+            })
+        {
+            return Some(IdentifierBinding::Local(decl));
+        }
+        if self.params.iter().any(|p| p == name)
+            || ast_utils::find_parameter_declaration(&self.func, name, self.source).is_some()
+        {
+            return Some(IdentifierBinding::Parameter(String::new()));
+        }
+        self.scope
+            .globals
+            .get(name)
+            .map(|d| IdentifierBinding::Global(*d))
     }
 
     /// What `*base` designates: parameter `k`'s pointee when `base` is that
@@ -872,6 +917,16 @@ impl<'t> Collector<'_, 't> {
             }
             _ => (ArgRoot::Other, None),
         }
+    }
+}
+
+/// What a write to the file-scope object `name`, declared by `decl`,
+/// writes.
+fn global_location(decl: &Node, name: &str, source: &str) -> Loc {
+    if ast_utils::declaration_has_storage_class(decl, "static", source) {
+        Loc::Static(name.to_string())
+    } else {
+        Loc::Global(name.to_string())
     }
 }
 

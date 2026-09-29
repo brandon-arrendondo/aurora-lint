@@ -219,6 +219,38 @@ pub fn find_enclosing_declaration_for_identifier<'a>(
     find_declaration_in_scope_chain(&scopes, ident_node.start_byte(), name, source)
 }
 
+/// [`find_enclosing_declaration_for_identifier`], considering only the
+/// declarations `keep` accepts: the nearest one that does, in the innermost
+/// scope holding one. A caller that has ruled a nearer declaration out (one
+/// in a preprocessor arm the use is not in, say) finds what binds the name
+/// past it.
+pub fn find_enclosing_declaration_where<'a>(
+    ident_node: &Node<'a>,
+    name: &str,
+    source: &str,
+    keep: &dyn Fn(&Node<'a>) -> bool,
+) -> Option<Node<'a>> {
+    let ident_start = ident_node.start_byte();
+    let mut search_from = *ident_node;
+    while let Some(scope) = query::find_ancestor(search_from, |n| is_declaration_scope(&n)) {
+        let mut declarations = Vec::new();
+        collect_declarations_transparent_to_preproc(&scope, &mut declarations);
+        let best = declarations
+            .into_iter()
+            .filter(|child| {
+                child.start_byte() < ident_start
+                    && declaration_binds_name(child, name, source)
+                    && keep(child)
+            })
+            .max_by_key(|child| child.start_byte());
+        if best.is_some() {
+            return best;
+        }
+        search_from = scope;
+    }
+    None
+}
+
 /// True if `node` opens one of the scopes
 /// [`find_enclosing_declaration_for_identifier`] searches.
 pub fn is_declaration_scope(node: &Node) -> bool {
