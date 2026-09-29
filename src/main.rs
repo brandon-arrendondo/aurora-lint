@@ -102,7 +102,9 @@ fn settings_from_cli(matches: &clap::ArgMatches) -> Result<SettingsConfig> {
 ///
 /// A `--profile` on the command line restarts from that preset: the
 /// manifest's own axis settings and overrides would otherwise silently
-/// survive a request for the strict preset.
+/// survive a request for the strict preset. The manifest's declared
+/// allocators and deallocators are facts about the project, not a policy
+/// choice, and survive it (`SettingsConfig::project_facts`).
 ///
 /// A compile database written for cl (`msvc_db`) declares a toolchain that
 /// matches `#include` names case-insensitively; an explicit `include_names`
@@ -113,7 +115,7 @@ fn resolve_settings(
     msvc_db: bool,
 ) -> Result<AnalysisSettings> {
     let mut config = if cli.profile.is_some() {
-        SettingsConfig::default()
+        manifest.settings_config().project_facts()
     } else {
         manifest.settings_config()
     };

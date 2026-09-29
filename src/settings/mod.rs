@@ -393,6 +393,28 @@ pub struct EnvironmentConfig {
 }
 
 impl SettingsConfig {
+    /// Only what these settings say about the project itself rather than
+    /// which preset or options it wants: its declared allocators and
+    /// deallocators. A `--profile` restarts from its preset and keeps these,
+    /// since a preset chooses policy and never erases what a project's own
+    /// functions do.
+    pub fn project_facts(&self) -> SettingsConfig {
+        let Some(env) = &self.environment else {
+            return SettingsConfig::default();
+        };
+        if env.allocators.is_empty() && env.deallocators.is_empty() {
+            return SettingsConfig::default();
+        }
+        SettingsConfig {
+            environment: Some(EnvironmentConfig {
+                allocators: env.allocators.clone(),
+                deallocators: env.deallocators.clone(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
     /// Use `names` for `#include` matching unless a value is already set:
     /// what a compile database's compiler implies, which an explicit
     /// setting overrides.
@@ -962,6 +984,25 @@ mod tests {
         let s = AnalysisSettings::resolve(&base).unwrap();
         assert_eq!(s.memory.deallocators["a_put"], 1);
         assert_eq!(s.memory.deallocators["b_put"], 2);
+    }
+
+    #[test]
+    fn a_profile_keeps_the_projects_declarations_and_nothing_else() {
+        let manifest: SettingsConfig = toml::from_str(
+            "[policy]\nlevel = \"strict\"\n\
+             [environment]\nlibc = \"musl\"\n\
+             [environment.deallocators]\nhook_put = 2\n\
+             [environment.allocators]\nhook_take = \"calloc\"\n",
+        )
+        .unwrap();
+        let facts = manifest.project_facts();
+        assert!(facts.profile.is_none() && facts.policy.is_none());
+        let env = facts.environment.unwrap();
+        assert_eq!(env.libc, None);
+        assert_eq!(env.deallocators["hook_put"], 2);
+        assert_eq!(env.allocators["hook_take"], AllocatorContract::Calloc);
+        let bare: SettingsConfig = toml::from_str("[environment]\nlibc = \"musl\"\n").unwrap();
+        assert_eq!(bare.project_facts(), SettingsConfig::default());
     }
 
     #[test]

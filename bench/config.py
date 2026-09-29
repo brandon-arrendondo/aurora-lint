@@ -187,7 +187,8 @@ def settings_args(extra_args: list[str]) -> list[str]:
 
 def resolve_settings(profile: str, overrides: tuple[str, ...] = (), *,
                      compile_db: str | None = None,
-                     extra_args: list[str] = ()) -> dict:
+                     extra_args: list[str] = (),
+                     manifest: Path | None = None) -> dict:
     """The settings `profile` (plus each `--set NAME=VALUE` in `overrides`)
     resolves to, exactly as the binary reports them (`aurora-lint
     --list-options json`): the resolved values, the preset they equal (None
@@ -198,10 +199,18 @@ def resolve_settings(profile: str, overrides: tuple[str, ...] = (), *,
     database can change the settings (one written for cl matches `#include`
     names ignoring case), and so can a settings option among the extra
     arguments, so without them the recorded settings could differ from the
-    scan's. The options go in the order the scan command gives them."""
+    scan's. The options go in the order the scan command gives them.
+
+    `manifest` is the rules manifest the scan itself is given. `--profile`
+    discards its settings except the project's declared allocators and
+    deallocators, which a scan under that manifest uses, so they must be in
+    the settings a run records and in its hash. A scan with a manifest
+    resolves its settings with the same one."""
     if profile not in PROFILES:
         raise ValueError(f"unknown profile '{profile}'; one of: {', '.join(PROFILES)}")
     cmd = [str(SQC_BIN), "--list-options", "json", "--profile", profile]
+    if manifest is not None:
+        cmd += ["--manifest", str(manifest)]
     if compile_db:
         cmd += ["--compile-commands", compile_db]
     for o in overrides:

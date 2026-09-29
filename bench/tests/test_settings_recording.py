@@ -65,6 +65,66 @@ class TestJulietSettings(unittest.TestCase):
         self.assertEqual(settings_run_suffix(s), "-strict+closed-cccccccccccc")
 
 
+class TestManifestDeclarations(unittest.TestCase):
+    """A corpus manifest's declared allocators and deallocators outlive
+    `--profile` in the scan, so the settings a run records and hashes are
+    resolved with that manifest."""
+
+    def test_settings_are_resolved_with_the_scans_manifest(self):
+        from unittest import mock
+        from bench import config
+        out = mock.Mock(stdout='{"current": {"hash": "' + "d" * 64 + '"}}')
+        with mock.patch.object(config.subprocess, "run", return_value=out) as run:
+            config.resolve_settings("default", manifest=Path("conf/x-rules.toml"))
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--manifest") + 1], "conf/x-rules.toml")
+        self.assertEqual(cmd[cmd.index("--profile") + 1], "default")
+
+    def test_a_realworld_run_is_named_by_its_codebases_manifest(self):
+        from unittest import mock
+        from bench import realworld_runner as rr
+        self.assertEqual(rr._sqc_manifest(rr.CODEBASES["mbedtls"]),
+                         rr.PROJECT_DIR / "conf/realworld/mbedtls-rules.toml")
+        seen = []
+
+        def resolve(profile, overrides=(), **kw):
+            seen.append(kw.get("manifest"))
+            raise RuntimeError("stop after naming the run")
+
+        with mock.patch.object(rr, "resolve_settings", side_effect=resolve), \
+                mock.patch.object(rr, "_check_tool_available", return_value=True), \
+                mock.patch.dict(rr.CODEBASES["mbedtls"],
+                                {"path": Path(self._tmp())}):
+            with self.assertRaises(RuntimeError):
+                rr.run_one("sqc", "mbedtls")
+        self.assertEqual(seen, [rr.PROJECT_DIR / "conf/realworld/mbedtls-rules.toml"])
+
+    def _tmp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        return d.name
+
+    @unittest.skipUnless(
+        __import__("bench.config", fromlist=["SQC_BIN"]).SQC_BIN.is_file(),
+        "no release binary to resolve settings with")
+    def test_a_manifest_declaration_is_recorded_and_moves_the_hash(self):
+        from bench import config
+        root = config.PROJECT_DIR
+        declared = config.resolve_settings(
+            "default", manifest=root / "tests/fixtures/cli/manifest_declared_memory.toml")
+        plain = config.resolve_settings(
+            "default", manifest=root / "tests/fixtures/cli/manifest_mem30_mem31.toml")
+        self.assertEqual(declared["deallocators"],
+                         {"platform_give_back": 1, "pool_put": 2})
+        self.assertEqual(declared["allocators"],
+                         {"pool_grow": "realloc", "pool_take": "malloc"})
+        self.assertNotIn("deallocators", plain)
+        self.assertNotEqual(declared["hash"], plain["hash"])
+        # Sorted-key JSON, as the settings column stores it.
+        self.assertIn('"deallocators": {"platform_give_back": 1, "pool_put": 2}',
+                      config.settings_column(declared))
+
+
 class TestResolvePrefersDefaultSettings(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()

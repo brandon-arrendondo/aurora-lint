@@ -3322,3 +3322,34 @@ fn one_arm_that_is_a_declared_hook_accuses_a_double_free() {
     assert!(!double(&[]), "no arm is a known free");
     assert!(double(&["--deallocator", "HOOK_FREE"]));
 }
+
+#[test]
+fn a_profile_keeps_the_manifests_declared_memory_functions() {
+    // A preset chooses policy; what the project's own functions do survives
+    // it, in the scan and in the settings it reports and hashes.
+    let with_profile = declared_memory_findings(
+        "hook_releases.c",
+        "manifest_declared_memory.toml",
+        &["--profile", "default"],
+    );
+    assert!(with_profile.is_empty(), "{with_profile:?}");
+    let manifest = fixtures().join("manifest_declared_memory.toml");
+    let options = |m: &str| {
+        let (code, stdout, stderr) =
+            run_aurora_lint(&["--list-options", "json", "--profile", "strict", "-m", m]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        json["current"].clone()
+    };
+    let declared = options(manifest.to_str().unwrap());
+    assert_eq!(declared["deallocators"]["platform_give_back"], 1);
+    assert_eq!(declared["allocators"]["pool_grow"], "realloc");
+    let plain = options(
+        fixtures()
+            .join("manifest_mem30_mem31.toml")
+            .to_str()
+            .unwrap(),
+    );
+    assert!(plain["deallocators"].is_null(), "{plain}");
+    assert_ne!(declared["hash"], plain["hash"]);
+}

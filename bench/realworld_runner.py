@@ -682,16 +682,10 @@ def _expand(template_list: list[str], path: str) -> list[str]:
     return [s.replace("{path}", path) for s in template_list]
 
 
-def _build_sqc_cmd(cfg: dict, results_dir: Path, run_id: str,
-                   compile_db: str | None = None,
-                   profile: str = DEFAULT_PROFILE) -> list[str]:
-    path = str(cfg["path"])
-    scan_path = cfg["sqc"].get("scan_path")
-    scan_path = _expand([scan_path], path)[0] if scan_path else path
-    output_file = results_dir / f"{run_id}.json"
-    extra = _expand(cfg["sqc"].get("extra_args", []), path)
-    includes = _expand(cfg["sqc"].get("includes", []), path)
-
+def _sqc_manifest(cfg: dict) -> Path:
+    """The rules manifest an sqc scan of the codebase `cfg` runs under.
+    Its declared allocators and deallocators outlive `--profile`, so the
+    settings a run records are resolved with it too (`resolve_settings`)."""
     # No shared fallback base, on purpose. Every codebase names its own
     # conf/realworld/<cb>-rules.toml, and a missing one is an error rather than
     # a silent default: a manifest replaces the base outright (there is no
@@ -709,6 +703,20 @@ def _build_sqc_cmd(cfg: dict, results_dir: Path, run_id: str,
     manifest = PROJECT_DIR / rel_manifest
     if not manifest.is_file():
         raise FileNotFoundError(f"rules manifest not found: {manifest}")
+    return manifest
+
+
+def _build_sqc_cmd(cfg: dict, results_dir: Path, run_id: str,
+                   compile_db: str | None = None,
+                   profile: str = DEFAULT_PROFILE) -> list[str]:
+    path = str(cfg["path"])
+    scan_path = cfg["sqc"].get("scan_path")
+    scan_path = _expand([scan_path], path)[0] if scan_path else path
+    output_file = results_dir / f"{run_id}.json"
+    extra = _expand(cfg["sqc"].get("extra_args", []), path)
+    includes = _expand(cfg["sqc"].get("includes", []), path)
+
+    manifest = _sqc_manifest(cfg)
 
     cmd = [
         str(SQC_BIN), scan_path,
@@ -1505,7 +1513,7 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
     settings = None
     if tool == "sqc":
         settings = resolve_settings(
-            profile, compile_db=compile_db,
+            profile, compile_db=compile_db, manifest=_sqc_manifest(cfg),
             extra_args=_expand(cfg["sqc"].get("extra_args", []), str(cfg["path"])))
         suffix = settings_run_suffix(settings).lstrip("-")
         variant = f"{variant}-{suffix}" if variant else suffix
