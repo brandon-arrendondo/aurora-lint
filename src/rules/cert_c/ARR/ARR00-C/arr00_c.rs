@@ -19,6 +19,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::array_size::resolve_declared_array_size;
 use crate::analyze::const_eval::{collect_macro_constants, MacroConstantMap};
 use crate::manifest::Severity;
+use crate::settings::DataModel;
 use crate::utility::cert_c::ast_utils::{
     find_containing_function, get_function_parameters, get_sanitized_node_text,
     is_array_parameter_type, is_function_parameter, is_inside_loop, is_pointer_type,
@@ -33,11 +34,21 @@ use crate::utility::cert_c::variable_analysis::{
     is_user_input_variable,
 };
 use lang_parsing_substrate::query;
+use std::cell::Cell;
 use tree_sitter::Node;
 
-pub struct Arr00C;
+#[derive(Default)]
+pub struct Arr00C {
+    /// The integer data model the settings credit: which limit macros and
+    /// `sizeof` values are constants.
+    data_model: Cell<DataModel>,
+}
 
 impl CertRule for Arr00C {
+    fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
+        self.data_model.set(settings.data_model);
+    }
+
     fn rule_id(&self) -> &'static str {
         "ARR00-C"
     }
@@ -59,7 +70,7 @@ impl CertRule for Arr00C {
 
         // Macro/const-expr table for resolving array dimension expressions
         // (e.g. `arr[2*SPLINE_SEGMENT_DIVISIONS + 2]`). Built once per file.
-        let macros = collect_macro_constants(node, source);
+        let macros = collect_macro_constants(node, source, self.data_model.get());
 
         // Iterative pre-order traversal (via substrate::query): deeply nested
         // ASTs (e.g. files with thousands of chained `else if` branches)

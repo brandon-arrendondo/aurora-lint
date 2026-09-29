@@ -2,6 +2,10 @@
  * Rule: INT32-C
  * Source: testcases
  * Status: DETECTED. Was expected_fail until the value-based channels gained
+ * Settings: data_model=lp64
+ *
+ * The overflow is proven from INT_MAX's value, which a declared model fixes;
+ * the Juliet builds these shapes come from are LP64.
  * interval division/remainder, a compound-assignment arm, a
  * definitely-negative left shift, and -- for INT31-C -- a definite-truncation
  * channel of its own. The operands here are compile-time known and the

@@ -229,8 +229,12 @@ impl CertRule for Mem30C {
             &settings,
         );
 
-        let macro_constants =
-            const_eval::merged_macro_constants(&self.project_macros.borrow(), node, source);
+        let macro_constants = const_eval::merged_macro_constants(
+            &self.project_macros.borrow(),
+            node,
+            source,
+            self.settings.borrow().data_model,
+        );
 
         // Second pass: per-function analysis
         let mut analyzer = MemoryAnalyzer::new(

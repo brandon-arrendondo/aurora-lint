@@ -302,6 +302,7 @@ impl Flp03C {
                             var_name,
                             source,
                             &self.project_macros.borrow(),
+                            self.data_model.get(),
                         ) {
                             return;
                         }
@@ -310,6 +311,7 @@ impl Flp03C {
                             var_name,
                             source,
                             &self.project_macros.borrow(),
+                            self.data_model.get(),
                         ) {
                             provably_zero = true;
                         }
@@ -450,6 +452,7 @@ impl Flp03C {
         var_name: &str,
         source: &str,
         project_macros: &MacroConstantMap,
+        model: DataModel,
     ) -> bool {
         // Find containing function and translation unit root
         let mut current = Some(*div_node);
@@ -482,7 +485,7 @@ impl Flp03C {
             }
             n
         };
-        let constants = const_eval::merged_macro_constants(project_macros, &root, source);
+        let constants = const_eval::merged_macro_constants(project_macros, &root, source, model);
         let div_line = div_node.start_position().row;
         let last_val =
             Self::walk_scope_for_last_assignment(&body, var_name, source, div_line, &constants);
@@ -504,6 +507,7 @@ impl Flp03C {
         var_name: &str,
         source: &str,
         project_macros: &MacroConstantMap,
+        model: DataModel,
     ) -> bool {
         let mut current = Some(*div_node);
         let func = loop {
@@ -524,7 +528,7 @@ impl Flp03C {
             }
             n
         };
-        let constants = const_eval::merged_macro_constants(project_macros, &root, source);
+        let constants = const_eval::merged_macro_constants(project_macros, &root, source, model);
         let div_line = div_node.start_position().row;
         let last_val = Self::walk_scope_for_last_zero_assignment(
             &body, var_name, source, div_line, &constants,

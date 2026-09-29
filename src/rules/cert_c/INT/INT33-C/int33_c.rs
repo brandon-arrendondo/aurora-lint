@@ -119,8 +119,12 @@ impl CertRule for Int33C {
 
         // Cache per-file macro constants once (avoid re-collecting per division node).
         // Merge project-level macros with per-file macros (per-file wins).
-        *self.file_macros.borrow_mut() =
-            const_eval::merged_macro_constants(&self.project_macros.borrow(), node, source);
+        *self.file_macros.borrow_mut() = const_eval::merged_macro_constants(
+            &self.project_macros.borrow(),
+            node,
+            source,
+            self.settings.borrow().data_model,
+        );
 
         // Register simple typedef aliases (e.g. `typedef Vector4 Quaternion;`)
         // so field-expression operands of aliased struct types resolve to the

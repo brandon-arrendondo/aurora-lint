@@ -43,8 +43,10 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg;
 use crate::analyze::const_eval::{self, MacroConstantMap};
 use crate::manifest::Severity;
+use crate::settings::DataModel;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
+use std::cell::Cell;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -83,13 +85,17 @@ const OVERLONG_CHECK_WORDS: [&str; 6] = [
     "canonical",
 ];
 
-#[derive(Debug)]
-pub struct Msc10C;
+#[derive(Debug, Default)]
+pub struct Msc10C {
+    /// The integer data model the settings credit: which limit macros and
+    /// `sizeof` values are constants.
+    data_model: Cell<DataModel>,
+}
 
 impl Msc10C {
     #[allow(dead_code)]
     pub fn new() -> Self {
-        Msc10C
+        Self::default()
     }
 
     /// Collect every integer constant appearing anywhere in `body`, plus the
@@ -183,6 +189,10 @@ impl Msc10C {
 }
 
 impl CertRule for Msc10C {
+    fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
+        self.data_model.set(settings.data_model);
+    }
+
     fn rule_id(&self) -> &'static str {
         "MSC10-C"
     }
@@ -200,7 +210,7 @@ impl CertRule for Msc10C {
     }
 
     fn scan(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        let macros = const_eval::collect_macro_constants(root, source);
+        let macros = const_eval::collect_macro_constants(root, source, self.data_model.get());
 
         for func in query::find_descendants_of_kind(*root, "function_definition") {
             let Some(body) = func.child_by_field_name("body") else {

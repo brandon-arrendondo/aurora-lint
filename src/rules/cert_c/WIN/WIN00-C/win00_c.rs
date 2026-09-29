@@ -5,7 +5,8 @@
 //!
 //! Using LoadLibrary() without specifying search paths can allow DLL hijacking attacks.
 
-use std::cell::RefCell;
+use crate::settings::DataModel;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -53,6 +54,9 @@ pub struct Win00C {
     /// is usually defined in a header.
     project_aliases: RefCell<Arc<HashMap<String, String>>>,
     project_constants: RefCell<Arc<MacroConstantMap>>,
+    /// The integer data model the settings credit: which limit macros and
+    /// `sizeof` values are constants.
+    data_model: Cell<DataModel>,
 }
 
 impl Win00C {
@@ -60,6 +64,7 @@ impl Win00C {
         Self {
             project_aliases: RefCell::new(Arc::new(HashMap::new())),
             project_constants: RefCell::new(Arc::new(HashMap::new())),
+            data_model: Cell::new(DataModel::default()),
         }
     }
 }
@@ -186,6 +191,10 @@ struct FlagMacros {
 }
 
 impl CertRule for Win00C {
+    fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
+        self.data_model.set(settings.data_model);
+    }
+
     fn rule_id(&self) -> &'static str {
         "WIN00-C"
     }
@@ -208,7 +217,12 @@ impl CertRule for Win00C {
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        let mut constants = merged_macro_constants(&self.project_constants.borrow(), node, source);
+        let mut constants = merged_macro_constants(
+            &self.project_constants.borrow(),
+            node,
+            source,
+            self.data_model.get(),
+        );
         constants.extend(file_flag_macros(source));
         let macros = FlagMacros {
             aliases: merged_macro_aliases(&self.project_aliases.borrow(), node, source),
