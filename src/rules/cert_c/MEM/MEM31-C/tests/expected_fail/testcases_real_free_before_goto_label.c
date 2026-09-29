@@ -1,12 +1,16 @@
 /*
  * Rule: MEM31-C
  * Source: testcases
- * Status: FAIL - Should trigger MEM31-C violation
+ * Status: EXPECTED FAIL - Known limitation: the double free is real, and
+ * MEM31-C does not report it.
  *
- * Counterpart to testcases_name_guess_survives_goto_label.c: when the free
- * before the jump is real -- a callee whose body releases the parameter
- * itself -- the label's release is a possible double free on that path
- * and must still be reported.
+ * Counterpart to testcases_name_guess_survives_goto_label.c. `handle_set`
+ * releases `h` on one path only, the one where it returns 1, and the caller
+ * reaches the label's free() only through that result. Proving the double
+ * free needs that correlation between the callee's result and its release.
+ * The summary records only that the release MAY happen, and a MAY release
+ * cannot back an accusation: the same fact, read as a free, reported every
+ * later reply to a client that valkey's addReply* closes only on error.
  */
 #include <stdlib.h>
 

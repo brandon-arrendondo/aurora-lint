@@ -330,11 +330,12 @@ struct MemoryLeakAnalyzer<'a> {
     allocated_memory: HashMap<String, AllocInfo>,
     // Track freed memory: var_name -> (line, column) of free call
     freed_memory: HashMap<String, (usize, usize)>,
-    // Names whose entry in `freed_memory` was credited from an ALIAS rather
-    // than written at that spelling. Enough to suppress a leak, not enough to
-    // call a later free of that name a double free -- see
-    // `mark_freed_with_aliases`.
-    freed_via_alias: HashSet<String>,
+    // Names whose entry in `freed_memory` suppresses a leak but cannot
+    // support calling a later free of that name a double free: the mark was
+    // credited from an ALIAS rather than written at that spelling (see
+    // `mark_freed_with_aliases`), or it rests on a callee that frees the
+    // argument on SOME path only (see `process_freeing_callee`).
+    unaccusable_frees: HashSet<String>,
     // Track variables that are returned or stored globally
     escaped_memory: HashSet<String>,
     // Track variables known to be NULL in current scope (from NULL checks)
@@ -504,7 +505,7 @@ struct AllocInfo {
 #[derive(Clone, Default)]
 struct LeakBranchState {
     freed_memory: HashMap<String, (usize, usize)>,
-    freed_via_alias: HashSet<String>,
+    unaccusable_frees: HashSet<String>,
     maybe_freed: HashMap<String, (usize, usize)>,
     null_variables: HashSet<String>,
 }
@@ -513,7 +514,7 @@ impl LeakBranchState {
     fn fork(analyzer: &MemoryLeakAnalyzer) -> Self {
         Self {
             freed_memory: analyzer.freed_memory.clone(),
-            freed_via_alias: analyzer.freed_via_alias.clone(),
+            unaccusable_frees: analyzer.unaccusable_frees.clone(),
             maybe_freed: analyzer.maybe_freed.clone(),
             null_variables: analyzer.null_variables.clone(),
         }
@@ -521,7 +522,7 @@ impl LeakBranchState {
 
     fn restore(&self, analyzer: &mut MemoryLeakAnalyzer) {
         analyzer.freed_memory = self.freed_memory.clone();
-        analyzer.freed_via_alias = self.freed_via_alias.clone();
+        analyzer.unaccusable_frees = self.unaccusable_frees.clone();
         analyzer.maybe_freed = self.maybe_freed.clone();
         analyzer.null_variables = self.null_variables.clone();
     }
@@ -801,7 +802,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         Self {
             allocated_memory: HashMap::new(),
             freed_memory: HashMap::new(),
-            freed_via_alias: HashSet::new(),
+            unaccusable_frees: HashSet::new(),
             escaped_memory: HashSet::new(),
             null_variables: HashSet::new(),
             double_free_violations: Vec::new(),
@@ -2153,6 +2154,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         free_pos: tree_sitter::Point,
         call_name: &str,
     ) {
+        if self.unaccusable_frees.contains(var_name) {
+            self.maybe_freed.remove(var_name);
+            return;
+        }
         if let Some(&(freed_line, freed_column)) = self.maybe_freed.get(var_name) {
             let at = Some(&(freed_line, freed_column));
             let how = if self.released_in_one_build.get(var_name) == at {
@@ -2349,7 +2354,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             return;
         };
         self.freed_memory.remove(&old_ptr);
-        self.freed_via_alias.remove(&old_ptr);
+        self.unaccusable_frees.remove(&old_ptr);
         self.maybe_freed.remove(&old_ptr);
         self.released_by_some_definition.remove(&old_ptr);
     }
@@ -2675,8 +2680,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             for (k, v) in &other.state.freed_memory {
                 self.freed_memory.entry(k.clone()).or_insert(*v);
             }
-            self.freed_via_alias
-                .extend(other.state.freed_via_alias.iter().cloned());
+            self.unaccusable_frees
+                .extend(other.state.unaccusable_frees.iter().cloned());
             for (k, v) in &other.state.maybe_freed {
                 self.maybe_freed.entry(k.clone()).or_insert(*v);
             }
@@ -2813,9 +2818,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 merged.entry(k).or_insert(v);
             }
             analyzer.freed_memory = merged;
-            analyzer.freed_via_alias = true_state
-                .freed_via_alias
-                .union(&else_state.freed_via_alias)
+            analyzer.unaccusable_frees = true_state
+                .unaccusable_frees
+                .union(&else_state.unaccusable_frees)
                 .cloned()
                 .collect();
             let mut maybe = true_state.maybe_freed.clone();
@@ -2881,7 +2886,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             {
                 self.freed_memory.remove(&var_name);
                 self.maybe_freed.remove(&var_name);
-                self.freed_via_alias.remove(&var_name);
+                self.unaccusable_frees.remove(&var_name);
                 self.allocated_memory.remove(&var_name);
             }
 
@@ -3596,7 +3601,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
             self.freed_memory.remove(&var_name);
             self.maybe_freed.remove(&var_name);
-            self.freed_via_alias.remove(&var_name);
+            self.unaccusable_frees.remove(&var_name);
             self.allocated_memory.remove(&var_name);
         }
     }
@@ -3756,7 +3761,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             let nulled = nulls.contains(&idx);
             if nulled {
                 self.maybe_freed.remove(&var_name);
-            } else if self.freed_memory.contains_key(&var_name) {
+            } else if self.freed_memory.contains_key(&var_name)
+                && !self.unaccusable_frees.contains(&var_name)
+            {
                 self.double_free_violations.push(RuleViolation {
                     rule_id: "MEM31-C".to_string(),
                     severity: Severity::High,
@@ -3888,7 +3895,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             } else if !must_free {
                 // Not an accusation either way; see above.
             } else if self.freed_memory.contains_key(&var_name)
-                && !self.freed_via_alias.contains(&var_name)
+                && !self.unaccusable_frees.contains(&var_name)
             {
                 self.double_free_violations.push(RuleViolation {
                     rule_id: "MEM31-C".to_string(),
@@ -3909,6 +3916,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
             self.freed_memory
                 .insert(var_name.clone(), (free_pos.row + 1, free_pos.column + 1));
+            if must_free && !nulls_pointee {
+                self.unaccusable_frees.remove(&var_name);
+            } else {
+                self.unaccusable_frees.insert(var_name.clone());
+            }
 
             self.credit_callee_freed_fields(func_name, this_param_idx, &var_name, free_pos, site);
         }
@@ -3967,7 +3979,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // A mark this name only inherited from an alias is not enough --
             // see `mark_freed_with_aliases`.
             if self.freed_memory.contains_key(&var_name)
-                && !self.freed_via_alias.contains(&var_name)
+                && !self.unaccusable_frees.contains(&var_name)
             {
                 self.double_free_violations.push(RuleViolation {
                     rule_id: "MEM31-C".to_string(),
@@ -4013,7 +4025,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
     /// Mark `var_name` freed, and with it every other name holding the block.
     ///
-    /// An alias-derived mark is remembered in `freed_via_alias`, because the
+    /// An alias-derived mark is remembered in `unaccusable_frees`, because the
     /// two directions are not equally safe. Suppressing a leak needs only
     /// that the block died, which the alias record establishes. Accusing a
     /// later `free(other_name)` of being a double free needs the two names to
@@ -4022,11 +4034,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// `if (context != tls_global)`, a guard this walk does not read.
     fn mark_freed_with_aliases(&mut self, var_name: &str, free_pos: (usize, usize)) {
         self.freed_memory.insert(var_name.to_string(), free_pos);
-        self.freed_via_alias.remove(var_name);
+        self.unaccusable_frees.remove(var_name);
 
         for alias in self.block_aliases_of(var_name) {
             self.freed_memory.insert(alias.clone(), free_pos);
-            self.freed_via_alias.insert(alias);
+            self.unaccusable_frees.insert(alias);
         }
     }
 
@@ -4156,6 +4168,22 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             &var_name,
                             (free_pos.row + 1, free_pos.column + 1),
                         );
+                        // `frees_params` is a MAY fact: sqlite's
+                        // `sqlite3_result_error(ctx, zMsg, -1)` releases
+                        // `zMsg` only when handed SQLITE_DYNAMIC, so the
+                        // caller's own `sqlite3_free(zMsg)` that follows is
+                        // no double free. Only an unconditional release may
+                        // back that accusation.
+                        let must_free = if through_address_of {
+                            summary
+                                .unconditional_frees_param_pointees
+                                .contains(&param_idx)
+                        } else {
+                            summary.unconditional_frees_params.contains(&param_idx)
+                        };
+                        if !must_free {
+                            self.unaccusable_frees.insert(var_name.clone());
+                        }
                         // A callee that frees a pointer argument AND hands
                         // back a fresh block is realloc-shaped, and it can
                         // only have taken the old block if it succeeded.
