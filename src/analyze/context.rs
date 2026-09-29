@@ -9,15 +9,21 @@ use std::sync::Arc;
 /// no file, rather than a file's real path.
 pub const UNRESOLVED_INCLUDE: &str = "?";
 
+/// An `include_edges` entry for a computed `#include` (`#include DEFS_H`):
+/// the file may include any header.
+pub const ANY_INCLUDE: &str = "?*";
+
 /// What one translation unit may include: [`IncludeClosure::of`].
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct IncludeClosure {
     /// Real paths of the file and every header it transitively includes.
     pub files: HashSet<String>,
     /// Spellings of the includes along the way that resolved to no file
-    /// (`/`-separated), each of which may name a header the prescan read
-    /// under some other search path.
+    /// (`/`-separated, `.` and `..` segments dropped), each of which may name
+    /// a header the prescan read under some other search path.
     pub unresolved: HashSet<String>,
+    /// Whether a computed `#include` along the way may name any header.
+    pub any: bool,
 }
 
 impl IncludeClosure {
@@ -33,8 +39,20 @@ impl IncludeClosure {
         let mut stack = vec![file, String::new()];
         while let Some(f) = stack.pop() {
             for next in edges.get(&f).into_iter().flatten() {
-                if let Some(spelling) = next.strip_prefix(UNRESOLVED_INCLUDE) {
-                    closure.unresolved.insert(spelling.replace('\\', "/"));
+                if next == ANY_INCLUDE {
+                    closure.any = true;
+                } else if let Some(spelling) = next.strip_prefix(UNRESOLVED_INCLUDE) {
+                    // `../common/defs.h` names some `common/defs.h`: the
+                    // directory it climbs to is the includer's, not a part
+                    // of the header's own path.
+                    let spelling = spelling
+                        .split(['/', '\\'])
+                        .filter(|segment| !matches!(*segment, "" | "." | ".."))
+                        .collect::<Vec<_>>()
+                        .join("/");
+                    if !spelling.is_empty() {
+                        closure.unresolved.insert(spelling);
+                    }
                 } else if closure.files.insert(next.clone()) {
                     stack.push(next.clone());
                 }
@@ -47,7 +65,8 @@ impl IncludeClosure {
     /// `file`: it is in the closure, or an unresolved include spells a path
     /// the file ends with.
     pub fn may_include(&self, file: &str) -> bool {
-        self.files.contains(file)
+        self.any
+            || self.files.contains(file)
             || self.unresolved.iter().any(|spelling| {
                 file.strip_suffix(spelling.as_str())
                     .is_some_and(|dir| dir.ends_with('/'))

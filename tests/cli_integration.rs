@@ -3864,3 +3864,24 @@ fn an_include_that_did_not_resolve_keeps_the_definitions_it_may_name() {
     let unsearched = pre31_findings_searching(fixture, "main.c", &[]);
     assert_eq!(pre31_lines(&unsearched), vec![6], "{unsearched:?}");
 }
+
+#[test]
+fn an_unresolved_relative_include_keeps_the_header_it_climbs_to() {
+    // "../common/twice.h" does not resolve from sub/ with only system/
+    // searched, but it names inc/common/twice.h, whose CUBE reads its
+    // argument three times; with -I inc/any it resolves outright.
+    let fixture = "pre31_partial_include";
+    let found = pre31_findings(fixture, "sub/relative.c", &[]);
+    assert_eq!(pre31_lines(&found), vec![6], "{found:?}");
+    let any = fixtures().join(fixture).join("project/inc/any");
+    let resolved = pre31_findings(fixture, "sub/relative.c", &["-I", any.to_str().unwrap()]);
+    assert_eq!(pre31_lines(&resolved), vec![6], "{resolved:?}");
+}
+
+#[test]
+fn a_computed_include_may_bring_any_definition() {
+    // `#include WHICH_DEFS` names a header the scan cannot know, so inc/
+    // defs.h's definition of SQ may be the one compiled.
+    let found = pre31_findings("pre31_partial_include", "computed.c", &[]);
+    assert_eq!(pre31_lines(&found), vec![7], "{found:?}");
+}

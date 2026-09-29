@@ -3496,6 +3496,7 @@ mod tests {
         let closure = |files: &[&str], unresolved: &[&str]| IncludeClosure {
             files: files.iter().map(|f| f.to_string()).collect(),
             unresolved: unresolved.iter().map(|f| f.to_string()).collect(),
+            any: false,
         };
         let shapes = closure(&["/p/main.c", "/p/shapes.h"], &[]);
         assert_eq!(bodies(Some(&shapes)), ["square(x)"]);
@@ -3506,6 +3507,12 @@ mod tests {
         assert_eq!(bodies(Some(&partial)).len(), 2);
         let elsewhere = closure(&["/p/main.c", "/p/shapes.h"], &["util.h"]);
         assert_eq!(bodies(Some(&elsewhere)), ["square(x)"]);
+        // A computed include may be any header.
+        let computed = IncludeClosure {
+            any: true,
+            ..closure(&["/p/main.c", "/p/shapes.h"], &[])
+        };
+        assert_eq!(bodies(Some(&computed)).len(), 2);
         // A closure with no definition of the name, or none at all: every arm.
         let neither = closure(&["/p/main.c"], &[]);
         assert_eq!(bodies(Some(&neither)).len(), 2);

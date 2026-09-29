@@ -6990,12 +6990,21 @@ pub fn resolve_includes(
     // `None` for a forced include, which no file names.
     let mut queue: Vec<(String, Option<PathBuf>, Option<Arc<str>>)> = Vec::new();
 
+    let mut includer_real_paths: HashMap<Arc<str>, String> = HashMap::new();
     // Seed the queue with #include directives from source files
     for file_path in source_files {
         if let Ok((tree, source)) = parser.parse_file(file_path) {
             let directives = extract_include_directives(&tree.root_node(), &source);
             let source_dir = Path::new(file_path).parent().map(|p| p.to_path_buf());
             let includer: Arc<str> = Arc::from(file_path.as_str());
+            if has_computed_include(&tree.root_node()) {
+                add_include_edge(
+                    context,
+                    &mut includer_real_paths,
+                    Some(&includer),
+                    super::context::ANY_INCLUDE.to_string(),
+                );
+            }
             for inc in directives {
                 queue.push((inc, source_dir.clone(), Some(Arc::clone(&includer))));
             }
@@ -7021,7 +7030,6 @@ pub fn resolve_includes(
     let mut unresolved_seen: HashSet<(String, Option<PathBuf>)> = HashSet::new();
     // (spelling, includer) pairs already recorded as matched only by case.
     let mut case_seen: HashSet<(String, Option<Arc<str>>)> = HashSet::new();
-    let mut includer_real_paths: HashMap<Arc<str>, String> = HashMap::new();
 
     // Process queue: resolve each header, parse it, and enqueue its transitive includes
     while let Some((include_path, source_dir, includer)) = queue.pop() {
@@ -7124,6 +7132,14 @@ pub fn resolve_includes(
                 // Enqueue transitive includes from this header
                 let header_dir = resolved.parent().map(|p| p.to_path_buf());
                 let includer: Arc<str> = Arc::from(header_path.as_str());
+                if has_computed_include(&root) {
+                    add_include_edge(
+                        context,
+                        &mut includer_real_paths,
+                        Some(&includer),
+                        super::context::ANY_INCLUDE.to_string(),
+                    );
+                }
                 for inc in extract_include_directives(&root, &hsource) {
                     queue.push((inc, header_dir.clone(), Some(Arc::clone(&includer))));
                 }
@@ -7242,6 +7258,17 @@ fn add_include_edge(
     if !edges.contains(&to) {
         edges.push(to);
     }
+}
+
+/// Whether the file holds a computed `#include` (`#include DEFS_H`), whose
+/// header the scan cannot know without expanding the macro: it may be any.
+fn has_computed_include(root: &Node) -> bool {
+    lang_parsing_substrate::query::find_descendants_of_kind(*root, "preproc_include")
+        .iter()
+        .any(|inc| {
+            inc.child_by_field_name("path")
+                .is_some_and(|p| !matches!(p.kind(), "string_literal" | "system_lib_string"))
+        })
 }
 
 /// Extract `#include` directive paths from an AST.
