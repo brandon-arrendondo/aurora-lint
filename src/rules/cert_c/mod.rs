@@ -920,7 +920,7 @@ impl RuleRegistry {
         registry.register(Box::new(api07_c::Api07C));
         registry.register(Box::new(api09_c::Api09C));
         registry.register(Box::new(api10_c::Api10C));
-        registry.register(Box::new(arr00_c::Arr00C));
+        registry.register(Box::new(arr00_c::Arr00C::default()));
         registry.register(Box::new(arr01_c::Arr01C));
         registry.register(Box::new(arr02_c::Arr02C));
         registry.register(Box::new(arr30_c::Arr30C::new()));
@@ -1092,7 +1092,7 @@ impl RuleRegistry {
         registry.register(Box::new(int05_c::Int05C));
         registry.register(Box::new(int07_c::Int07C));
         registry.register(Box::new(int08_c::Int08C::default()));
-        registry.register(Box::new(int09_c::Int09C));
+        registry.register(Box::new(int09_c::Int09C::default()));
         registry.register(Box::new(int10_c::Int10C::new()));
         registry.register(Box::new(int12_c::Int12C));
         registry.register(Box::new(int13_c::Int13C));
@@ -1143,7 +1143,7 @@ impl RuleRegistry {
         registry.register(Box::new(msc05_c::Msc05C));
         registry.register(Box::new(msc06_c::Msc06C));
         registry.register(Box::new(msc09_c::Msc09C));
-        registry.register(Box::new(msc10_c::Msc10C));
+        registry.register(Box::new(msc10_c::Msc10C::default()));
         registry.register(Box::new(msc11_c::Msc11C));
         registry.register(Box::new(msc14_c::Msc14C));
         registry.register(Box::new(msc15_c::Msc15C));

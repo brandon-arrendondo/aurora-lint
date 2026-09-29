@@ -11,6 +11,7 @@ use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
 use crate::rules::cert_c::int_provenance;
+use crate::settings::DataModel;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
 use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::guard_dominance;
@@ -18,7 +19,7 @@ use crate::utility::cert_c::overflow_helpers;
 use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
 use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
@@ -70,6 +71,9 @@ pub struct Int30C {
     project_macro_names: RefCell<Arc<HashSet<String>>>,
     project_function_macro_names: RefCell<HashSet<String>>,
     constant_returning_functions: RefCell<HashSet<String>>,
+    /// The integer data model the settings credit: which limit macros and
+    /// `sizeof` values are constants.
+    data_model: Cell<DataModel>,
 }
 
 impl Int30C {
@@ -91,6 +95,7 @@ impl Int30C {
             project_macro_names: RefCell::new(Arc::new(HashSet::new())),
             project_function_macro_names: RefCell::new(HashSet::new()),
             constant_returning_functions: RefCell::new(HashSet::new()),
+            data_model: Cell::new(DataModel::default()),
         }
     }
 
@@ -217,6 +222,10 @@ impl Int30C {
 }
 
 impl CertRule for Int30C {
+    fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
+        self.data_model.set(settings.data_model);
+    }
+
     fn rule_id(&self) -> &'static str {
         "INT30-C"
     }
@@ -274,8 +283,12 @@ impl CertRule for Int30C {
         let type_map = overflow_helpers::collect_variable_types(node, source);
 
         // Merge project-level macros with per-file macros (per-file wins)
-        *self.current_macros.borrow_mut() =
-            const_eval::merged_macro_constants(&self.project_macros.borrow(), node, source);
+        *self.current_macros.borrow_mut() = const_eval::merged_macro_constants(
+            &self.project_macros.borrow(),
+            node,
+            source,
+            self.data_model.get(),
+        );
 
         // Risky-var memo is keyed on tree-sitter node ids, unique only within
         // one parse tree — reset per file.
