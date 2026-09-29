@@ -441,7 +441,7 @@ fn check_pointer_deref_cfg(
         .child_by_field_name("operator")
         .map(|op| ast_utils::get_node_text_owned(&op, source) == "*")
         .unwrap_or(false);
-    if !is_deref {
+    if !is_deref || is_address_of_operand(node, source) {
         return;
     }
     let Some(argument) = node.child_by_field_name("argument") else {
@@ -487,6 +487,23 @@ fn check_pointer_deref_cfg(
     });
 }
 
+/// True when `node` is the operand of a unary `&`, parentheses aside.
+///
+/// C11 6.5.3.2p3: in `&*E` neither the `*` nor the `&` is evaluated, and
+/// `&E[i]` is `E + i` with no `*` evaluated, so neither names a dereference.
+/// CERT EXP34-C lists this as its exception EX1. `&p->x` is not covered: it
+/// evaluates the member access `(*p).x`.
+fn is_address_of_operand(node: &Node, source: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() != "parenthesized_expression" {
+            return ast_utils::is_address_of_expression(&parent, source);
+        }
+        current = parent.parent();
+    }
+    false
+}
+
 /// `subscript_expression` case: `arr[i]` where `arr` is a bare identifier.
 fn check_subscript_deref_cfg(
     node: &Node,
@@ -499,7 +516,7 @@ fn check_subscript_deref_cfg(
     reported_vars: &mut ReportedSites,
 ) {
     let Some(array) = node.child(0) else { return };
-    if array.kind() != "identifier" {
+    if array.kind() != "identifier" || is_address_of_operand(node, source) {
         return;
     }
     let var_name = ast_utils::get_node_text_owned(&array, source);
@@ -636,6 +653,7 @@ fn check_call_expression_cfg(
     if is_deref_function(&func_name) && !is_null_safe_callee(&func_name, macros, settings) {
         if let Some(args) = node.child_by_field_name("arguments") {
             check_function_arguments_cfg(
+                &func_name,
                 &args,
                 source,
                 analysis,
@@ -671,6 +689,7 @@ fn check_call_expression_cfg(
 }
 
 fn check_function_arguments_cfg(
+    func_name: &str,
     args: &Node,
     source: &str,
     analysis: &NullAnalysisResult,
@@ -680,35 +699,72 @@ fn check_function_arguments_cfg(
     violations: &mut Vec<RuleViolation>,
     reported_vars: &mut ReportedSites,
 ) {
-    for i in 0..args.child_count() {
-        if let Some(arg) = args.child(i) {
-            if arg.kind() == "identifier" {
-                let var_name = ast_utils::get_node_text_owned(&arg, source);
-                if !reported_vars.contains(&var_name, &arg)
-                    && !is_provably_not_a_pointer(&arg, &var_name, source)
-                    && is_unsafe_at(&var_name, &arg, source, analysis, cfg, body, summaries)
-                {
-                    reported_vars.insert(&var_name, &arg);
-                    let start_point = arg.start_position();
-                    violations.push(RuleViolation {
-                        rule_id: "EXP34-C".to_string(),
-                        severity: Severity::High,
-                        message: format!(
-                            "Passing potentially null pointer '{}' to function",
-                            var_name
-                        ),
-                        file_path: String::new(),
-                        line: start_point.row + 1,
-                        column: start_point.column + 1,
-                        suggestion: Some(format!(
-                            "Check if '{}' is not NULL before passing to function",
-                            var_name
-                        )),
-                        ..Default::default()
-                    });
-                }
+    let arg_nodes: Vec<Node> = (0..args.child_count())
+        .filter_map(|i| args.child(i))
+        .filter(|n| !matches!(n.kind(), "," | "(" | ")"))
+        .collect();
+    // For a formatted I/O function, a vararg-tail argument is dereferenced
+    // only when the conversion consuming it says so: `%s` reads the string,
+    // a scanf conversion writes through its pointer, and `%p` prints the
+    // pointer's value without touching what it points at. A format that is
+    // not a literal resolves nothing, so the tail is checked as before.
+    let format = formatted_io_shape(func_name).and_then(|(fixed, reading)| {
+        let fmt = arg_nodes
+            .get(fixed - 1)
+            .and_then(|n| format_slots::string_literal_text(n, source))
+            .filter(|fmt| format_slots::format_consumes_arguments(fmt))?;
+        Some((fixed, reading(&fmt)))
+    });
+    for (idx, arg) in arg_nodes.iter().enumerate() {
+        if let Some((fixed, reading)) = &format {
+            if idx >= *fixed
+                && reading.slot_use(idx - fixed) != format_slots::SlotUse::DereferencesPointer
+            {
+                continue;
             }
         }
+        if arg.kind() == "identifier" {
+            let var_name = ast_utils::get_node_text_owned(arg, source);
+            if !reported_vars.contains(&var_name, arg)
+                && !is_provably_not_a_pointer(arg, &var_name, source)
+                && is_unsafe_at(&var_name, arg, source, analysis, cfg, body, summaries)
+            {
+                reported_vars.insert(&var_name, arg);
+                let start_point = arg.start_position();
+                violations.push(RuleViolation {
+                    rule_id: "EXP34-C".to_string(),
+                    severity: Severity::High,
+                    message: format!(
+                        "Passing potentially null pointer '{}' to function",
+                        var_name
+                    ),
+                    file_path: String::new(),
+                    line: start_point.row + 1,
+                    column: start_point.column + 1,
+                    suggestion: Some(format!(
+                        "Check if '{}' is not NULL before passing to function",
+                        var_name
+                    )),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+}
+
+/// Reads a format string as one family's conversions.
+type FormatReader = fn(&str) -> format_slots::Reading;
+
+/// For the formatted I/O functions in [`is_deref_function`]: how many fixed
+/// arguments precede the `...` tail (the last of them is the format), and
+/// which family's conversions read that format.
+fn formatted_io_shape(func_name: &str) -> Option<(usize, FormatReader)> {
+    match func_name {
+        "printf" => Some((1, format_slots::printf_reading)),
+        "fprintf" | "sprintf" => Some((2, format_slots::printf_reading)),
+        "scanf" => Some((1, format_slots::scanf_reading)),
+        "fscanf" => Some((2, format_slots::scanf_reading)),
+        _ => None,
     }
 }
 
