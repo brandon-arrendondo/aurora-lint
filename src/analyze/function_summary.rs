@@ -2622,6 +2622,9 @@ fn is_unconditionally_reached_modulo_null_guard(
     source: &str,
     guarded: &str,
 ) -> bool {
+    if returns_before(node, body, source, guarded, false) {
+        return false;
+    }
     let mut current = *node;
     loop {
         let Some(parent) = current.parent() else {
@@ -2715,6 +2718,91 @@ fn pointee_non_null_guard(condition: &Node, source: &str, name: &str) -> bool {
     }
 }
 
+/// Whether `condition` tests `*name` against null and nothing else,
+/// reporting which branch is the one on which `*name` is non-null, as
+/// `null_guard_on` does for `name` itself.
+fn pointee_null_guard_on(condition: &Node, source: &str, name: &str) -> Option<bool> {
+    let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").trim();
+    let is_deref = |n: &Node| {
+        n.kind() == "pointer_expression"
+            && n.child_by_field_name("operator")
+                .is_some_and(|o| o.kind() == "*")
+            && n.child_by_field_name("argument")
+                .is_some_and(|a| a.kind() == "identifier" && text(&a) == name)
+    };
+    let is_null_literal = |n: &Node| matches!(text(n), "NULL" | "0" | "nullptr");
+    match condition.kind() {
+        "parenthesized_expression" => pointee_null_guard_on(&condition.child(1)?, source, name),
+        "pointer_expression" => is_deref(condition).then_some(true),
+        "unary_expression" => {
+            let operator = condition.child(0)?;
+            let argument = condition.child_by_field_name("argument")?;
+            (text(&operator) == "!" && is_deref(&argument)).then_some(false)
+        }
+        "binary_expression" => {
+            let left = condition.child_by_field_name("left")?;
+            let right = condition.child_by_field_name("right")?;
+            let operator = condition.child_by_field_name("operator")?;
+            let compares = (is_deref(&left) && is_null_literal(&right))
+                || (is_null_literal(&left) && is_deref(&right));
+            if !compares {
+                return None;
+            }
+            match text(&operator) {
+                "!=" => Some(true),
+                "==" => Some(false),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Whether a `return` can leave `body` before `node` runs, other than one
+/// taken only while the released pointer is null.
+///
+/// The structural walks above look at `node`'s own ancestors only, so an
+/// early exit beside them went unseen: hostap's traced `os_realloc` returns
+/// NULL when its fresh block cannot be had, and only after that hands the
+/// old one to `os_free`. That release is not made on every path, and a
+/// caller that frees the old block on failure frees it once. A `return`
+/// under a test that `name` (or, with `pointee`, `*name`) is null leaves
+/// nothing behind to free, so it does not count.
+fn returns_before(node: &Node, body: &Node, source: &str, name: &str, pointee: bool) -> bool {
+    let on_null_branch = |ret: &Node| {
+        let mut current = *ret;
+        while let Some(parent) = current.parent() {
+            if parent.id() == body.id() {
+                break;
+            }
+            if parent.kind() == "if_statement" {
+                let non_null_on_true = parent.child_by_field_name("condition").and_then(|c| {
+                    null_guard_on(&c, source, name).or_else(|| {
+                        pointee
+                            .then(|| pointee_null_guard_on(&c, source, name))
+                            .flatten()
+                    })
+                });
+                let arm_is = |field: &str| {
+                    parent
+                        .child_by_field_name(field)
+                        .is_some_and(|arm| arm.id() == current.id())
+                };
+                match non_null_on_true {
+                    Some(true) if arm_is("alternative") => return true,
+                    Some(false) if arm_is("consequence") => return true,
+                    _ => {}
+                }
+            }
+            current = parent;
+        }
+        false
+    };
+    lang_parsing_substrate::query::find_descendants_of_kind(*body, "return_statement")
+        .into_iter()
+        .any(|ret| ret.end_byte() <= node.start_byte() && !on_null_branch(&ret))
+}
+
 /// `is_unconditionally_reached`, except that the consequence of an `if`
 /// guarding only on `name` or `*name` being non-null is transparent: a
 /// `free(*name)` skipped there has nothing to free.
@@ -2724,6 +2812,9 @@ fn is_unconditionally_reached_modulo_pointee_guard(
     source: &str,
     name: &str,
 ) -> bool {
+    if returns_before(node, body, source, name, true) {
+        return false;
+    }
     let mut current = *node;
     loop {
         let Some(parent) = current.parent() else {
@@ -6359,7 +6450,7 @@ fn collect_param_passthroughs(
             // Skip free/realloc — already handled by frees_params
             if !callee_name.is_empty() && callee_name != "free" && callee_name != "realloc" {
                 if let Some(arguments) = node.child_by_field_name("arguments") {
-                    let unconditional = is_unconditionally_reached(node, body);
+                    let reached = is_unconditionally_reached(node, body);
                     let mut callee_idx = 0usize;
                     for i in 0..arguments.child_count() {
                         if let Some(arg) = arguments.child(i) {
@@ -6393,7 +6484,11 @@ fn collect_param_passthroughs(
                                             .entry(param_idx)
                                             .or_default()
                                             .push((callee_name.clone(), callee_idx));
-                                        if unconditional {
+                                        if reached
+                                            && !returns_before(
+                                                node, body, source, param_name, false,
+                                            )
+                                        {
                                             summary
                                                 .unconditional_param_passthroughs
                                                 .entry(param_idx)
