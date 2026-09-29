@@ -1970,6 +1970,11 @@ impl MemoryAnalyzer {
     ) {
         enum Frame<'a> {
             Visit(Node<'a>),
+            /// A call with realloc's contract, once its arguments have been
+            /// walked: C evaluates them before the call, so a use of the old
+            /// pointer inside them (`pvInsertAt(pv, elem, pvLen(pv))`) comes
+            /// before the release, not after it.
+            AfterReallocArgs(Node<'a>),
             AfterCondition {
                 if_node: Node<'a>,
                 consequence: Option<Node<'a>>,
@@ -2223,6 +2228,10 @@ impl MemoryAnalyzer {
                             stack.push(Frame::Visit(condition));
                         }
                     }
+                    "call_expression" if self.call_reallocates(&n, source) => {
+                        stack.push(Frame::AfterReallocArgs(n));
+                        push_children(&mut stack, &n, source, &no_skip);
+                    }
                     "call_expression" => {
                         let freed_arg_ids = self.process_call_expression(&n, source, violations);
                         self.clear_freed_args_overwritten_by_result(&n, source, &freed_arg_ids);
@@ -2395,6 +2404,9 @@ impl MemoryAnalyzer {
                     condition,
                     pre_state,
                 } => self.finish_loop(body, condition, &pre_state, source),
+                Frame::AfterReallocArgs(call) => {
+                    self.process_call_expression(&call, source, violations);
+                }
             }
         }
     }
@@ -3952,6 +3964,16 @@ impl MemoryAnalyzer {
             // chain distinguishes may supply it.
             |_| true,
         )
+    }
+
+    /// Whether `call` is a call with realloc's contract (see
+    /// `releases_like_realloc`), classified as `process_call_expression`
+    /// classifies it.
+    fn call_reallocates(&self, call: &Node, source: &str) -> bool {
+        call.child_by_field_name("function").is_some_and(|f| {
+            let name = self.callee(get_node_text(&f, source));
+            self.releases_like_realloc(name)
+        })
     }
 
     /// Whether a call to `name` follows realloc's contract on its first
