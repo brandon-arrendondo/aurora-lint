@@ -682,12 +682,22 @@ impl Pre31C {
         // permits (the libc header the prescan read is one implementation);
         // a project macro defined elsewhere by every definition the project
         // has; a macro whose body nobody can read at every position.
-        let unsafe_at: Box<dyn Fn(usize) -> bool> = if let Some(arms) = arms {
+        // An argument the body hands to another function-like macro is
+        // evaluated as that macro evaluates it.
+        let forward = |name: &str| {
+            let name = ctx.resolve(name);
+            if ctx.names.contains(name) {
+                ctx.definitions(name)
+            } else {
+                Vec::new()
+            }
+        };
+        let evaluates_once = move |a: &MacroArm, i| {
+            macro_expand::argument_evaluation_through(a, i, &forward) == ArgEvaluation::Once
+        };
+        let unsafe_at: Box<dyn Fn(usize) -> bool + '_> = if let Some(arms) = arms {
             let arms = arms.clone();
-            Box::new(move |i| {
-                arms.iter()
-                    .any(|a| macro_expand::argument_evaluation(a, i) != ArgEvaluation::Once)
-            })
+            Box::new(move |i| arms.iter().any(|a| !evaluates_once(a, i)))
         } else if let Some(k) = library_unsafe_argument(macro_name) {
             Box::new(move |i| i == k)
         } else if ctx.names.contains(macro_name) {
@@ -695,10 +705,7 @@ impl Pre31C {
             if defs.is_empty() {
                 Box::new(|_| true)
             } else {
-                Box::new(move |i| {
-                    defs.iter()
-                        .any(|a| macro_expand::argument_evaluation(a, i) != ArgEvaluation::Once)
-                })
+                Box::new(move |i| defs.iter().any(|a| !evaluates_once(a, i)))
             }
         } else {
             return;
