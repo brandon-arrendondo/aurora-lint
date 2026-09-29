@@ -1,9 +1,3 @@
-/*
- * Rule: MEM30-C
- * Source: wiki
- * Status: FAIL - Should trigger MEM30-C violation
- */
-
 void gdClipSetAdd(gdImagePtr im, gdClipRectanglePtr rect) {
   gdClipRectanglePtr more;
   if (im->clip == 0) {

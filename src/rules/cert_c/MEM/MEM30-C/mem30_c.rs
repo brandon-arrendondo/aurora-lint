@@ -328,36 +328,6 @@ fn is_fresh_allocation_name(name: &str) -> bool {
     u.contains("ALLOC") || u.contains("STRDUP") || u.contains("STRNDUP") || u.contains("MEMDUP")
 }
 
-/// True if `call_node`'s result is captured by an assignment or
-/// initializer — `x = call(...)` or `T *x = call(...)`, unwrapping any
-/// enclosing parenthesization/cast (`x = (T *)call(...)`). This is the shape
-/// every real `ptr = realloc(ptr, n)` idiom takes; a realloc-*named* call
-/// used as a bare, discarded-result statement (e.g. a wrapper like lua's
-/// `luaD_reallocstack(L, newsize, raiseerror);`, which mutates state via its
-/// first argument rather than returning a new pointer to assign back) is
-/// not that idiom, and must not be treated as invalidating its first
-/// argument.
-fn call_result_is_assigned(call_node: &Node) -> bool {
-    let mut current = *call_node;
-    loop {
-        let Some(parent) = current.parent() else {
-            return false;
-        };
-        match parent.kind() {
-            "parenthesized_expression" | "cast_expression" => {
-                current = parent;
-            }
-            "assignment_expression" => {
-                return parent.child_by_field_name("right").map(|r| r.id()) == Some(current.id());
-            }
-            "init_declarator" => {
-                return parent.child_by_field_name("value").map(|v| v.id()) == Some(current.id());
-            }
-            _ => return false,
-        }
-    }
-}
-
 /// `expr` with any enclosing parentheses removed.
 fn unwrap_parens<'a>(expr: &Node<'a>) -> Node<'a> {
     let mut current = *expr;
@@ -3523,34 +3493,6 @@ impl MemoryAnalyzer {
                     return HashSet::new();
                 }
                 _ => {
-                    let upper_name = function_name.to_uppercase();
-                    // A realloc-*named* wrapper (hostap's `os_realloc`: malloc
-                    // new, copy, free old) is used at call sites via the
-                    // standard `x = os_realloc(x, n)` / `nbuf = os_realloc(old,
-                    // n); if (!nbuf) ...; else old = nbuf;` idiom, which always
-                    // captures the call's result in an assignment — exactly what
-                    // `track_realloc_old_pointer`'s
-                    // pending-invalidation-then-clear-on-reassign tracking exists
-                    // for. Gated on the call's result actually being assigned
-                    // (`call_result_is_assigned`), NOT on a cross-file
-                    // FunctionSummary crediting an unconditional free: the
-                    // summary can't be computed at all when the wrapper's own
-                    // free call goes through another project wrapper that's
-                    // only extern-declared in scope (hostap's real `os_free`),
-                    // and even when a summary *is* available, requiring it
-                    // reintroduces the exact bug this gate fixes — a
-                    // realloc-named function whose result is discarded (lua's
-                    // `luaD_reallocstack(L, newsize, raiseerror);`, a bare
-                    // statement whose first argument is a stable `lua_State*`
-                    // handle, not the pointer being reallocated) must NOT be
-                    // pushed through `track_realloc_old_pointer`, which would
-                    // wrongly invalidate that handle with no reassignment to
-                    // ever clear it.
-                    if upper_name.contains("REALLOC") && call_result_is_assigned(node) {
-                        self.track_realloc_old_pointer(node, source);
-                        return HashSet::new();
-                    }
-
                     // A cross-file FunctionSummary (real analysis of the callee's
                     // body) says which arguments the call releases: a pure
                     // counter whose name happens to contain "free" (hostap's
@@ -4204,9 +4146,11 @@ impl MemoryAnalyzer {
             };
             if alloc_rhs.kind() == "call_expression" {
                 if let Some(func) = alloc_rhs.child_by_field_name("function") {
-                    let func_name = get_node_text(&func, source);
-                    let upper_func_name = func_name.to_uppercase();
-                    if upper_func_name.contains("REALLOC") {
+                    let func_name = const_eval::resolve_macro_alias(
+                        &self.macro_aliases,
+                        get_node_text(&func, source),
+                    );
+                    if call_roles::is_realloc_like(func_name) {
                         // Track the old pointer passed to realloc as invalidated
                         let old_ptrs = self.track_realloc_old_pointer(&alloc_rhs, source);
                         // For realloc, track that the result location holds the
@@ -4545,10 +4489,11 @@ impl MemoryAnalyzer {
             // Check if this is a realloc initialization
             if value.kind() == "call_expression" {
                 if let Some(func) = value.child_by_field_name("function") {
-                    let func_name = get_node_text(&func, source);
-                    let upper_func_name = func_name.to_uppercase();
-                    if call_roles::is_realloc_like(func_name) || upper_func_name.contains("REALLOC")
-                    {
+                    let func_name = const_eval::resolve_macro_alias(
+                        &self.macro_aliases,
+                        get_node_text(&func, source),
+                    );
+                    if call_roles::is_realloc_like(func_name) {
                         // Track that left_var is the result of realloc
                         self.realloc_updated.insert(left_var.clone());
                         // Also track what pointer was passed to realloc (it's now invalidated)
@@ -4569,11 +4514,11 @@ impl MemoryAnalyzer {
                 if let Some(inner_value) = value.child_by_field_name("value") {
                     if inner_value.kind() == "call_expression" {
                         if let Some(func) = inner_value.child_by_field_name("function") {
-                            let func_name = get_node_text(&func, source);
-                            let upper_func_name = func_name.to_uppercase();
-                            if call_roles::is_realloc_like(func_name)
-                                || upper_func_name.contains("REALLOC")
-                            {
+                            let func_name = const_eval::resolve_macro_alias(
+                                &self.macro_aliases,
+                                get_node_text(&func, source),
+                            );
+                            if call_roles::is_realloc_like(func_name) {
                                 self.realloc_updated.insert(left_var.clone());
                                 let old_ptrs = self.track_realloc_old_pointer(&inner_value, source);
                                 if !old_ptrs.is_empty() {
@@ -4925,12 +4870,13 @@ impl MemoryAnalyzer {
                 if let Some(grandparent) = parent.parent() {
                     if grandparent.kind() == "call_expression" {
                         if let Some(func) = grandparent.child_by_field_name("function") {
-                            let func_name = get_node_text(&func, source);
-                            let upper_func_name = func_name.to_uppercase();
+                            let func_name = const_eval::resolve_macro_alias(
+                                &self.macro_aliases,
+                                get_node_text(&func, source),
+                            );
                             // Skip for free, realloc, and their declared variants
                             if call_roles::is_deallocator(func_name)
                                 || call_roles::is_realloc_like(func_name)
-                                || upper_func_name.contains("REALLOC")
                             {
                                 return;
                             }

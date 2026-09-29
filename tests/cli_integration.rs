@@ -3934,3 +3934,23 @@ fn the_deallocator_candidate_report_names_a_bodiless_free_and_changes_no_finding
     assert_eq!(rows[0]["count"], 1);
     assert_eq!(rows[0]["sample_line"], 35);
 }
+
+#[test]
+fn a_realloc_wrapper_releases_its_argument_only_once_declared() {
+    // CERT's MEM30-C noncompliant example: `gdRealloc` has no body in the
+    // scan, and "realloc" in its name is not evidence.
+    let uaf = |args: &[&str]| {
+        has(
+            &declared_memory_findings(
+                "undeclared_realloc_wrapper.c",
+                "manifest_mem30_mem31.toml",
+                args,
+            ),
+            "MEM30-C",
+            16,
+            "Use-after-free",
+        )
+    };
+    assert!(!uaf(&[]));
+    assert!(uaf(&["--allocator", "gdRealloc=realloc"]));
+}
