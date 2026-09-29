@@ -55,10 +55,11 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::VisibleTypes;
 use crate::manifest::Severity;
+use crate::settings::{AnalysisSettings, DataModel};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::expr_type::{self, TypeEnv};
 use lang_parsing_substrate::query;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use tree_sitter::Node;
 
 #[derive(Debug, Default)]
@@ -66,6 +67,8 @@ pub struct Flp02C {
     /// The typedefs and struct fields this file sees, so an operand declared
     /// `real` (a typedef of double) or `p->ratio` is typed by its declaration.
     visible: RefCell<VisibleTypes>,
+    /// The integer data model the settings credit, for typing.
+    data_model: Cell<DataModel>,
 }
 
 impl Flp02C {
@@ -181,9 +184,13 @@ impl CertRule for Flp02C {
         *self.visible.borrow_mut() = types.clone();
     }
 
+    fn set_analysis_settings(&self, settings: &std::sync::Arc<AnalysisSettings>) {
+        self.data_model.set(settings.data_model);
+    }
+
     fn check(&self, root: &Node, source: &str) -> Vec<RuleViolation> {
         let visible = self.visible.borrow();
-        let env = TypeEnv::visible(&visible);
+        let env = TypeEnv::visible(&visible, self.data_model.get());
         let mut violations = Vec::new();
         for n in query::find_descendants_of_kind(*root, "binary_expression") {
             self.check_float_equality(&n, source, &env, &mut violations);
