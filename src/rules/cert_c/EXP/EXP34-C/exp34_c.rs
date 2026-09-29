@@ -297,7 +297,7 @@ impl CertRule for Exp34C {
                     );
 
                     // Walk AST for dereferences and check each against the dataflow result
-                    let mut reported_vars = ReportedSites::new(first_site_only);
+                    let mut reported_vars = ReportedSites::new(first_site_only, source);
                     check_dereferences_cfg(
                         &body,
                         source,
@@ -323,25 +323,34 @@ impl CertRule for Exp34C {
 // ---------------------------------------------------------------------------
 
 /// What has already been reported in one function. Under `first_site_only`
-/// (the default policy) a variable is reported once, at the first failing
-/// site of the chain: every later site depends on the same missing check.
-/// Otherwise (strict) every violating line is reported.
-struct ReportedSites {
+/// (the default policy) each value is reported once, at the first failing
+/// site of its chain: every later site of the same value depends on the
+/// same missing check. A value is told apart by the write that produced it,
+/// so a second, independent allocation into the same variable is its own
+/// chain and gets its own first site. Otherwise (strict) every violating
+/// line is reported.
+struct ReportedSites<'s> {
     first_site_only: bool,
+    source: &'s str,
     keys: HashSet<(String, Option<usize>)>,
 }
 
-impl ReportedSites {
-    fn new(first_site_only: bool) -> Self {
+impl<'s> ReportedSites<'s> {
+    fn new(first_site_only: bool, source: &'s str) -> Self {
         Self {
             first_site_only,
+            source,
             keys: HashSet::new(),
         }
     }
 
     fn key(&self, name: &str, site: &Node) -> (String, Option<usize>) {
-        let line = (!self.first_site_only).then(|| site.start_position().row);
-        (name.to_string(), line)
+        let discriminant = if self.first_site_only {
+            value_origin(name, site, self.source)
+        } else {
+            Some(site.start_position().row)
+        };
+        (name.to_string(), discriminant)
     }
 
     fn contains(&self, name: &str, site: &Node) -> bool {
@@ -351,6 +360,59 @@ impl ReportedSites {
     fn insert(&mut self, name: &str, site: &Node) {
         let key = self.key(name, site);
         self.keys.insert(key);
+    }
+}
+
+/// The start byte of the last write to `name` that ends before `site` in
+/// the enclosing function -- an assignment whose left side is spelled
+/// `name`, or the declaration that initializes it. `None` when there is
+/// none, as for a parameter's incoming value.
+///
+/// This tells one value of a variable from another for de-duplication
+/// only, so byte order is enough: it never decides whether anything is
+/// reported, only which of several reports of one value is kept.
+fn value_origin(name: &str, site: &Node, source: &str) -> Option<usize> {
+    let mut current = site.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "function_definition" {
+            let body = parent.child_by_field_name("body")?;
+            let mut origin = None;
+            last_write_before(&body, name, site.start_byte(), source, &mut origin);
+            return origin;
+        }
+        current = parent.parent();
+    }
+    None
+}
+
+fn last_write_before(
+    node: &Node,
+    name: &str,
+    before: usize,
+    source: &str,
+    origin: &mut Option<usize>,
+) {
+    if node.start_byte() >= before {
+        return;
+    }
+    if node.end_byte() <= before {
+        let written = match node.kind() {
+            "assignment_expression" => node
+                .child_by_field_name("left")
+                .is_some_and(|left| ast_utils::get_node_text(&left, source) == name),
+            "init_declarator" => node
+                .child_by_field_name("declarator")
+                .is_some_and(|d| ast_utils::get_identifier_from_declarator(&d, source) == name),
+            _ => false,
+        };
+        if written {
+            *origin = Some(origin.map_or(node.start_byte(), |o| o.max(node.start_byte())));
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            last_write_before(&child, name, before, source, origin);
+        }
     }
 }
 
@@ -364,7 +426,7 @@ fn check_dereferences_cfg(
     macros: &HashMap<String, FunctionMacro>,
     settings: &AnalysisSettings,
     violations: &mut Vec<RuleViolation>,
-    reported_vars: &mut ReportedSites,
+    reported_vars: &mut ReportedSites<'_>,
 ) {
     for n in query::find_descendants_of_kinds(
         *node,
@@ -435,7 +497,7 @@ fn check_pointer_deref_cfg(
     body: &Node,
     summaries: &(impl SummaryLookup + ?Sized),
     violations: &mut Vec<RuleViolation>,
-    reported_vars: &mut ReportedSites,
+    reported_vars: &mut ReportedSites<'_>,
 ) {
     let is_deref = node
         .child_by_field_name("operator")
@@ -513,7 +575,7 @@ fn check_subscript_deref_cfg(
     body: &Node,
     summaries: &(impl SummaryLookup + ?Sized),
     violations: &mut Vec<RuleViolation>,
-    reported_vars: &mut ReportedSites,
+    reported_vars: &mut ReportedSites<'_>,
 ) {
     let Some(array) = node.child(0) else { return };
     if array.kind() != "identifier" || is_address_of_operand(node, source) {
@@ -554,7 +616,7 @@ fn check_field_deref_cfg(
     body: &Node,
     summaries: &(impl SummaryLookup + ?Sized),
     violations: &mut Vec<RuleViolation>,
-    reported_vars: &mut ReportedSites,
+    reported_vars: &mut ReportedSites<'_>,
 ) {
     let Some(argument) = node.child_by_field_name("argument") else {
         return;
@@ -607,7 +669,7 @@ fn check_call_expression_cfg(
     macros: &HashMap<String, FunctionMacro>,
     settings: &AnalysisSettings,
     violations: &mut Vec<RuleViolation>,
-    reported_vars: &mut ReportedSites,
+    reported_vars: &mut ReportedSites<'_>,
 ) {
     let Some(function) = node.child_by_field_name("function") else {
         return;
@@ -697,7 +759,7 @@ fn check_function_arguments_cfg(
     body: &Node,
     summaries: &(impl SummaryLookup + ?Sized),
     violations: &mut Vec<RuleViolation>,
-    reported_vars: &mut ReportedSites,
+    reported_vars: &mut ReportedSites<'_>,
 ) {
     let arg_nodes: Vec<Node> = (0..args.child_count())
         .filter_map(|i| args.child(i))

@@ -3980,3 +3980,28 @@ fn every_definition_of_a_wrapper_over_an_alias_every_arm_frees_releases_its_argu
     assert!(leaks(&[]), "an undeclared arm proves nothing");
     assert!(!leaks(&["--deallocator", "HOOK_FREE"]));
 }
+
+#[test]
+fn each_allocation_into_one_variable_has_its_own_first_site() {
+    // Two unchecked malloc() results reach `p` one after the other. Each is
+    // its own value, so each is reported at its own first dereference; only
+    // later sites of the same value are folded into its first.
+    let found = scan_project(
+        &[(
+            "a.c",
+            "#include <stdlib.h>\n\
+             void f(void) {\n\
+             \x20   char *p = malloc(10);\n\
+             \x20   p[0] = 'x';\n\
+             \x20   p[1] = 'y';\n\
+             \x20   free(p);\n\
+             \x20   p = malloc(20);\n\
+             \x20   p[2] = 'a';\n\
+             \x20   free(p);\n\
+             }\n",
+        )],
+        "EXP34-C",
+    );
+    let lines: Vec<&str> = found.iter().filter_map(|l| l.split(':').nth(1)).collect();
+    assert_eq!(lines, ["4", "8"], "{found:?}");
+}
