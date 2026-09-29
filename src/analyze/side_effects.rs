@@ -224,18 +224,26 @@ fn file_scope_declarators<'t>(root: &Node<'t>, source: &str) -> Vec<(String, Nod
     out
 }
 
-/// The file-scope objects and enumeration constants `root` declares, and the
-/// objects among them declared `volatile`, `#if` blocks included. Functions
-/// are not objects.
-pub fn file_scope_objects(
-    root: &Node,
-    source: &str,
-) -> (
-    std::collections::HashSet<String>,
-    std::collections::HashSet<String>,
-) {
-    let mut objects = std::collections::HashSet::new();
-    let mut volatile = std::collections::HashSet::new();
+/// What one file declares at file scope, `#if` blocks included, as
+/// [`file_scope_objects`] reports it.
+#[derive(Debug, Default)]
+pub struct FileScopeObjects {
+    /// Every object and enumeration constant. Functions are not objects.
+    pub names: std::collections::HashSet<String>,
+    /// The objects another file can read that are declared `volatile`.
+    pub volatile: std::collections::HashSet<String>,
+    /// The objects another file can read that some declaration here gives
+    /// without `volatile`.
+    pub non_volatile: std::collections::HashSet<String>,
+}
+
+/// The file-scope objects and enumeration constants `root` declares, and
+/// which of the objects another file can read are `volatile`. A `static`
+/// object has internal linkage, so another translation unit reading the
+/// spelling reads a different object; it counts only when `shared` (a
+/// header, whose statics every includer declares).
+pub fn file_scope_objects(root: &Node, source: &str, shared: bool) -> FileScopeObjects {
+    let mut out = FileScopeObjects::default();
     for (name, decl) in file_scope_declarators(root, source) {
         let Some(declarator) = ast_utils::declaration_declarator_for(&decl, &name, source) else {
             continue;
@@ -243,19 +251,23 @@ pub fn file_scope_objects(
         if declares_function(&declarator) {
             continue;
         }
-        if ast_utils::declaration_has_qualifier(&decl, "volatile", source) {
-            volatile.insert(name.clone());
+        if shared || !ast_utils::declaration_has_storage_class(&decl, "static", source) {
+            if ast_utils::declaration_has_qualifier(&decl, "volatile", source) {
+                out.volatile.insert(name.clone());
+            } else {
+                out.non_volatile.insert(name.clone());
+            }
         }
-        objects.insert(name);
+        out.names.insert(name);
     }
     // Enumeration constants are declared names too, whatever block their
     // `enum` is in, and whether or not a value is written.
     for e in lang_parsing_substrate::query::find_descendants_of_kind(*root, "enumerator") {
         if let Some(n) = e.child_by_field_name("name") {
-            objects.insert(get_node_text(&n, source).to_string());
+            out.names.insert(get_node_text(&n, source).to_string());
         }
     }
-    (objects, volatile)
+    out
 }
 
 /// Collect `func`'s [`DirectEffects`]. `arms` is every function-like macro
@@ -1274,6 +1286,8 @@ pub struct ProjectNames {
         std::sync::Arc<HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>>>,
     /// File-scope objects some file or header declares `volatile`.
     pub volatile_globals: std::sync::Arc<std::collections::HashSet<String>>,
+    /// File-scope objects some file or header declares without `volatile`.
+    pub non_volatile_globals: std::sync::Arc<std::collections::HashSet<String>>,
     /// Every file-scope object name declared anywhere in the scan.
     pub global_objects: std::sync::Arc<std::collections::HashSet<String>>,
     /// Every function name defined or declared in the scan.
@@ -1580,7 +1594,14 @@ impl Resolver<'_, '_> {
     fn free_name(&mut self, name: &str, depth: usize) {
         let names = self.inputs.names;
         if names.volatile_globals.contains(name) {
-            self.own.volatile_read = true;
+            // Matched by spelling across the scan (ADR-0006): when another
+            // declaration gives the name without `volatile`, which object
+            // this read reaches is not known.
+            if names.non_volatile_globals.contains(name) {
+                self.unreadable();
+            } else {
+                self.own.volatile_read = true;
+            }
             return;
         }
         if let Some(defs) = names.macro_definitions.get(name) {
@@ -2176,6 +2197,36 @@ mod tests {
             Proof::Impure
         );
         assert_eq!(pre31(&ctx, "use.c", use_c, "default"), 2);
+    }
+
+    #[test]
+    fn a_static_volatile_in_another_file_is_not_the_global_read() {
+        // a.c's `static volatile int ready` is a different object from the
+        // `ready` b.c defines, which is what c.c reads.
+        let a = "static volatile int ready;\nvoid isr(void) { ready = 1; }\n";
+        let b_h = "extern int ready;\n";
+        let b = "#include \"b.h\"\nint ready;\n";
+        let c = "#include \"b.h\"\n#define TWICE(x) ((x) + (x))\n\
+            int get(void) { return ready; }\n\
+            int u(void) { return TWICE(get()); }\n\
+            int w(void) { return TWICE(ready); }\n";
+        let ctx = scanned(
+            &[("a.c", a), ("b.h", b_h), ("b.c", b), ("c.c", c)],
+            "static-volatile",
+        );
+        assert_eq!(ctx.effects().get("get").unwrap().proof(true), Proof::Pure);
+        assert_eq!(pre31(&ctx, "c.c", c, "default"), 0);
+
+        // A name one file declares volatile and another without is not
+        // known to be volatile: unproven, not a volatile read.
+        let v_h = "extern volatile int flag;\n";
+        let n = "int flag;\n";
+        let g = "int get(void) { return flag; }\n";
+        let ctx = scanned(&[("v.h", v_h), ("n.c", n), ("g.c", g)], "mixed-volatile");
+        assert_eq!(
+            ctx.effects().get("get").unwrap().proof(true),
+            Proof::Unproven
+        );
     }
 
     #[test]

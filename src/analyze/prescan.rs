@@ -134,6 +134,8 @@ struct FilePrescanResult {
     file_scope_names: HashSet<String>,
     /// File-scope objects declared `volatile` (`#if` arms included).
     volatile_globals: HashSet<String>,
+    /// File-scope objects declared without `volatile`.
+    non_volatile_globals: HashSet<String>,
     /// Typedef names defined with `volatile`.
     volatile_typedefs: HashSet<String>,
 }
@@ -201,6 +203,7 @@ impl FilePrescanResult {
             pointer_named_globals: HashSet::new(),
             file_scope_names: HashSet::new(),
             volatile_globals: HashSet::new(),
+            non_volatile_globals: HashSet::new(),
             volatile_typedefs: HashSet::new(),
         }
     }
@@ -396,10 +399,10 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
             &mut result.value_only_global_candidates,
             &mut result.pointer_named_globals,
         );
-        let (file_scope_names, file_volatile) =
-            crate::analyze::side_effects::file_scope_objects(&root, &source);
-        result.file_scope_names = file_scope_names;
-        result.volatile_globals = file_volatile;
+        let objects = crate::analyze::side_effects::file_scope_objects(&root, &source, is_header);
+        result.file_scope_names = objects.names;
+        result.volatile_globals = objects.volatile;
+        result.non_volatile_globals = objects.non_volatile;
         result.volatile_typedefs = crate::analyze::side_effects::volatile_typedefs(&root, &source);
 
         if !is_header {
@@ -697,6 +700,7 @@ fn prescan_file_list(
     let mut pointer_named_globals: HashSet<String> = HashSet::new();
     let mut file_scope_names: HashSet<String> = HashSet::new();
     let mut volatile_globals: HashSet<String> = HashSet::new();
+    let mut non_volatile_globals: HashSet<String> = HashSet::new();
     let mut volatile_typedefs: HashSet<String> = HashSet::new();
 
     for r in file_results {
@@ -1098,6 +1102,7 @@ fn prescan_file_list(
         pointer_named_globals.extend(r.pointer_named_globals);
         file_scope_names.extend(r.file_scope_names);
         volatile_globals.extend(r.volatile_globals);
+        non_volatile_globals.extend(r.non_volatile_globals);
         volatile_typedefs.extend(r.volatile_typedefs);
     }
 
@@ -1399,6 +1404,7 @@ fn prescan_file_list(
         side_effects: Default::default(),
         global_object_names: Arc::new(file_scope_names),
         volatile_globals: Arc::new(volatile_globals),
+        non_volatile_globals: Arc::new(non_volatile_globals),
         volatile_typedefs: Arc::new(volatile_typedefs),
         known_functions: Arc::new(known_functions),
         header_declared_functions: Arc::new(header_declared_functions),
@@ -7004,9 +7010,10 @@ fn fold_header_summaries(
         }
         summaries.insert(name, summary);
     }
-    let (objects, volatile) = crate::analyze::side_effects::file_scope_objects(root, source);
-    Arc::make_mut(&mut context.global_object_names).extend(objects);
-    Arc::make_mut(&mut context.volatile_globals).extend(volatile);
+    let objects = crate::analyze::side_effects::file_scope_objects(root, source, true);
+    Arc::make_mut(&mut context.global_object_names).extend(objects.names);
+    Arc::make_mut(&mut context.volatile_globals).extend(objects.volatile);
+    Arc::make_mut(&mut context.non_volatile_globals).extend(objects.non_volatile);
     Arc::make_mut(&mut context.volatile_typedefs).extend(
         crate::analyze::side_effects::volatile_typedefs(root, source),
     );

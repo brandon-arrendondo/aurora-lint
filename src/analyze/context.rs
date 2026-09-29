@@ -514,6 +514,11 @@ pub struct ProjectContext {
     /// file reading one reads a volatile object.
     #[serde(default)]
     pub volatile_globals: Arc<HashSet<String>>,
+    /// The file-scope objects some scanned file or header declares without
+    /// `volatile`: a name in both sets is not known to be volatile. Neither
+    /// set holds a source file's `static` objects, which no other file reads.
+    #[serde(default)]
+    pub non_volatile_globals: Arc<HashSet<String>>,
     /// Typedef names some scanned file or header defines with `volatile`
     /// (`typedef volatile uint32_t reg_t;`).
     #[serde(default)]
@@ -537,6 +542,7 @@ impl ProjectContext {
             names: crate::analyze::side_effects::ProjectNames {
                 macro_definitions: Arc::clone(&self.macro_definitions),
                 volatile_globals: Arc::clone(&self.volatile_globals),
+                non_volatile_globals: Arc::clone(&self.non_volatile_globals),
                 global_objects: Arc::clone(&self.global_object_names),
                 functions: Arc::clone(&self.known_functions),
                 constants: Arc::clone(&self.macro_constants),
