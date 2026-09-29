@@ -4947,11 +4947,16 @@ impl MemoryAnalyzer {
             // `&o->h` names the slot holding the pointer without reading the
             // pointer: handing it to a callee that frees `*hp` is the release
             // itself, not a use of what it released. `&o->h->fd` still reads
-            // `o->h`, through its own field access.
+            // `o->h`, through its own field access, and `&p->base` after
+            // `p` itself was freed computes from the freed `p`.
             if parent.kind() == "pointer_expression"
                 && parent
                     .child_by_field_name("operator")
                     .is_some_and(|op| op.kind() == "&")
+                && !node
+                    .child_by_field_name("argument")
+                    .and_then(|base| lvalue_of(&base, source))
+                    .is_some_and(|base| self.is_freed(&base))
             {
                 return;
             }
