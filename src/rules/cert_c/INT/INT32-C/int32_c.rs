@@ -14,6 +14,7 @@ use crate::manifest::Severity;
 use crate::rules::cert_c::int_provenance;
 use crate::settings::DataModel;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
+use crate::utility::cert_c::data_model::Rank;
 use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
@@ -24,12 +25,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
-
-/// Width, in bits, at which C actually performs integer arithmetic on
-/// anything `int`-wide or narrower. The usual arithmetic conversions promote
-/// every narrower type to `int` first, so there is no such thing as 8- or
-/// 16-bit arithmetic to check against.
-const PROMOTED_ARITH_BITS: u32 = 32;
 
 /// Width, in bits, of arithmetic performed on a 64-bit signed operand. The
 /// usual arithmetic conversions carry the whole operation up to the wider
@@ -1056,7 +1051,7 @@ impl Int32C {
     /// operation unsigned, so it belongs to INT30-C rather than here.
     ///
     /// `+=`, `-=` and `*=` apply the usual arithmetic conversions, and this
-    /// rule models arithmetic at [`PROMOTED_ARITH_BITS`], where an unsigned
+    /// rule models arithmetic at [`Self::promoted_bits`], where an unsigned
     /// operand converts the operation. These checks typed their LEFT operand
     /// only, so sqlite's `i64 iRowid += u64 iDelta` -- a varint delta read
     /// off an index page, which wraps as unsigned -- was reported as signed
@@ -1112,7 +1107,7 @@ impl Int32C {
                 // Skip if constant evaluation proves the result fits back in the
                 // assignment target, which is where the promoted result lands
                 let vra_bits = self.check_width_bits(
-                    Self::stored_type_bits(&left_type),
+                    self.stored_type_bits(&left_type),
                     node,
                     source,
                     type_map,
@@ -1181,7 +1176,7 @@ impl Int32C {
                 // Skip if constant evaluation proves the result fits back in the
                 // assignment target, which is where the promoted result lands
                 let vra_bits = self.check_width_bits(
-                    Self::stored_type_bits(&left_type),
+                    self.stored_type_bits(&left_type),
                     node,
                     source,
                     type_map,
@@ -1248,7 +1243,7 @@ impl Int32C {
                 // Skip if constant evaluation proves the result fits back in the
                 // assignment target, which is where the promoted result lands
                 let vra_bits = self.check_width_bits(
-                    Self::stored_type_bits(&left_type),
+                    self.stored_type_bits(&left_type),
                     node,
                     source,
                     type_map,
@@ -1377,7 +1372,7 @@ impl Int32C {
                 // Skip if constant evaluation proves the result fits back in the
                 // assignment target, which is where the promoted result lands
                 let vra_bits = self.check_width_bits(
-                    Self::stored_type_bits(&left_type),
+                    self.stored_type_bits(&left_type),
                     node,
                     source,
                     type_map,
@@ -1452,12 +1447,7 @@ impl Int32C {
                     node,
                     source,
                     type_map,
-                    self.check_width_bits(
-                        Self::stored_type_bits(&arg_type),
-                        node,
-                        source,
-                        type_map,
-                    ),
+                    self.check_width_bits(self.stored_type_bits(&arg_type), node, source, type_map),
                 ) {
                     return;
                 }
@@ -1832,7 +1822,7 @@ impl Int32C {
             signed,
             source,
             &macros,
-            PROMOTED_ARITH_BITS,
+            self.promoted_bits(),
             vra_ranges.as_ref(),
         ) {
             return;
@@ -2328,7 +2318,7 @@ impl Int32C {
         // char is a signed integer type (on most platforms); tracked
         // distinctly so `stored_type_bits` can tell how wide a *destination*
         // it makes -- never how wide the arithmetic is (that is always
-        // `PROMOTED_ARITH_BITS`; see `result_width_bits`).
+        // `promoted_bits`; see `result_width_bits`).
         if type_str == "char" || type_str == "signed char" {
             return Some("char".to_string());
         }
@@ -2544,9 +2534,9 @@ impl Int32C {
 
     /// The width the arithmetic at `node` is actually performed at: 64 when
     /// an operand is a portably-64-bit signed type, else
-    /// [`PROMOTED_ARITH_BITS`].
+    /// [`Self::promoted_bits`].
     ///
-    /// [`PROMOTED_ARITH_BITS`]'s own doc scopes it to "anything `int`-wide or
+    /// [`Self::promoted_bits`]'s own doc scopes it to "anything `int`-wide or
     /// NARROWER", and the rule applied it to every signed operand anyway, so
     /// a `long long` addition was checked -- and its suggestion written --
     /// against `INT_MAX`. The signed counterpart of INT30-C's
@@ -2581,7 +2571,7 @@ impl Int32C {
         if operand_wide {
             WIDE_ARITH_BITS
         } else {
-            PROMOTED_ARITH_BITS
+            self.promoted_bits()
         }
     }
 
@@ -2604,7 +2594,8 @@ impl Int32C {
             return false;
         }
         let typedefs = self.typedef_types.borrow();
-        let is_wide = |t: &str| overflow_helpers::is_portable_64bit_signed(t, &typedefs);
+        let model = self.data_model.get();
+        let is_wide = |t: &str| overflow_helpers::is_64bit_signed(t, &typedefs, model);
         let recurse = |n: Option<Node>| {
             n.is_some_and(|n| self.operand_is_wide_signed(&n, source, type_map, depth + 1))
         };
@@ -2650,12 +2641,22 @@ impl Int32C {
     ///
     /// This is the width a *value* is kept at, never the width arithmetic is
     /// performed at -- see [`Self::result_width_bits`].
-    fn stored_type_bits(classified_type: &str) -> u32 {
+    fn stored_type_bits(&self, classified_type: &str) -> u32 {
         match classified_type {
             "char" => 8,
             "short" => 16,
-            _ => PROMOTED_ARITH_BITS,
+            _ => self.promoted_bits(),
         }
+    }
+
+    /// Width, in bits, at which C performs integer arithmetic on anything
+    /// `int`-wide or narrower: the width `int` is guaranteed under the data
+    /// model (32 on a declared model, 16 under ISO C's). The usual arithmetic
+    /// conversions promote every narrower type to `int` first, so there is no
+    /// such thing as 8-bit arithmetic to check against, and a fit proven at
+    /// this width holds wherever the code is built.
+    fn promoted_bits(&self) -> u32 {
+        self.data_model.get().min_width(Rank::Int)
     }
 
     /// True when interval arithmetic proves the result of `node` fits its
@@ -2691,7 +2692,7 @@ impl Int32C {
         source: &str,
         type_map: &HashMap<String, String>,
     ) -> u32 {
-        if destination_bits < PROMOTED_ARITH_BITS {
+        if destination_bits < self.promoted_bits() {
             return destination_bits;
         }
         self.signed_arith_width_bits(node, source, type_map)
@@ -2738,7 +2739,7 @@ impl Int32C {
     ///
     /// A destination that does not resolve to a narrow integer -- a pointer,
     /// a float, an `int`-or-wider, a name absent from the type map -- gets
-    /// [`PROMOTED_ARITH_BITS`], as does every consumer that stores nowhere at
+    /// [`Self::promoted_bits`], as does every consumer that stores nowhere at
     /// all: a call argument, a comparison, an enclosing expression. Widening
     /// the narrow-destination cases past simple variables and struct fields
     /// (to `buf[i] = a + b`, `*p = a + b`) is deliberately left alone: those
@@ -2758,24 +2759,24 @@ impl Int32C {
                 "cast_expression" => {
                     return match parent.child_by_field_name("type") {
                         Some(t) => self.declared_destination_bits(get_node_text(&t, source)),
-                        None => PROMOTED_ARITH_BITS,
+                        None => self.promoted_bits(),
                     };
                 }
                 "init_declarator" => {
                     if parent.child_by_field_name("value").map(|v| v.id()) != Some(child.id()) {
-                        return PROMOTED_ARITH_BITS;
+                        return self.promoted_bits();
                     }
                     return self.declarator_destination_bits(&parent, source);
                 }
                 "assignment_expression" => {
                     if parent.child_by_field_name("right").map(|v| v.id()) != Some(child.id()) {
-                        return PROMOTED_ARITH_BITS;
+                        return self.promoted_bits();
                     }
                     return match parent.child_by_field_name("left") {
                         Some(lhs) => {
-                            Self::stored_type_bits(&self.infer_type(&lhs, source, type_map))
+                            self.stored_type_bits(&self.infer_type(&lhs, source, type_map))
                         }
-                        None => PROMOTED_ARITH_BITS,
+                        None => self.promoted_bits(),
                     };
                 }
                 // `return a + b` from a narrow-returning function truncates
@@ -2783,14 +2784,14 @@ impl Int32C {
                 "return_statement" => {
                     return match ast_utils::find_containing_function(&parent) {
                         Some(func) => self.declarator_destination_bits(&func, source),
-                        None => PROMOTED_ARITH_BITS,
+                        None => self.promoted_bits(),
                     };
                 }
-                _ => return PROMOTED_ARITH_BITS,
+                _ => return self.promoted_bits(),
             }
             child = parent;
         }
-        PROMOTED_ARITH_BITS
+        self.promoted_bits()
     }
 
     /// Destination width for a node carrying a `type` field alongside a
@@ -2804,19 +2805,19 @@ impl Int32C {
             .map(|d| d.kind().to_string())
             .unwrap_or_default();
         if declarator_kind == "pointer_declarator" || declarator_kind == "array_declarator" {
-            return PROMOTED_ARITH_BITS;
+            return self.promoted_bits();
         }
         let owner = if node.kind() == "init_declarator" {
             match node.parent() {
                 Some(decl) => decl,
-                None => return PROMOTED_ARITH_BITS,
+                None => return self.promoted_bits(),
             }
         } else {
             *node
         };
         match owner.child_by_field_name("type") {
             Some(t) => self.declared_destination_bits(get_node_text(&t, source)),
-            None => PROMOTED_ARITH_BITS,
+            None => self.promoted_bits(),
         }
     }
 
@@ -2825,9 +2826,9 @@ impl Int32C {
     fn declared_destination_bits(&self, declared_type: &str) -> u32 {
         let declared_type = declared_type.trim();
         if declared_type.contains('*') {
-            return PROMOTED_ARITH_BITS;
+            return self.promoted_bits();
         }
-        Self::stored_type_bits(&self.classify_declared_type(declared_type))
+        self.stored_type_bits(&self.classify_declared_type(declared_type))
     }
 
     fn is_unsigned_type(&self, type_str: &str) -> bool {
@@ -2899,12 +2900,15 @@ impl Int32C {
             // where that value is stored, not how wide its operands were
             // declared.
             "binary_expression" => self.result_width_bits(node, source, type_map),
-            // A compound assignment or an update/unary operation writes back
-            // into its own target, so the target *is* the destination.
+            // `-x` writes nothing back: its value has the operand's promoted
+            // type, a cast to `long long` included.
+            "unary_expression" => self.signed_arith_width_bits(node, source, type_map),
+            // A compound assignment or an update operation writes back into
+            // its own target, so the target *is* the destination.
             _ => match (ty("left"), ty("argument")) {
-                (Some(l), _) => Self::stored_type_bits(&l),
-                (None, Some(a)) => Self::stored_type_bits(&a),
-                (None, None) => PROMOTED_ARITH_BITS,
+                (Some(l), _) => self.stored_type_bits(&l),
+                (None, Some(a)) => self.stored_type_bits(&a),
+                (None, None) => self.promoted_bits(),
             },
         }
     }
