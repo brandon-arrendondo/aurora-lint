@@ -45,18 +45,49 @@
 //! inside an `ERROR` node, so no rule was reading a `preproc_ifdef` ancestor
 //! off it in the first place.
 //!
-//! Deliberately conservative, and all three conditions matter because the
+//! Deliberately conservative, and both conditions matter because the
 //! "inside an unclosed paren" test is textual:
 //!
-//! * The block must have no `#else`/`#elif` at its own depth -- keeping one
-//!   branch's text would silently pick a side of a two-sided expression
-//!   (the same call the passes above make).
 //! * The guarded lines must contain no `;`, `{` or `}`. An expression
 //!   fragment has none; a statement does. This is what keeps a
 //!   *statement*-level guard from being blanked if the paren scan ever
 //!   misjudges.
 //! * The guarded lines' own parentheses must balance, so blanking the
 //!   directives cannot leave the expression unbalanced.
+//!
+//! # A conditional with `#else`/`#elif` arms
+//!
+//! Real shape (pure-ftpd `ftpd.c`, `dopass`; the same file's `main` picks
+//! `getopt_long` or `getopt` inside a `while` condition the same way):
+//! ```c
+//! if (
+//! #if defined(WITH_LDAP) || defined(WITH_MYSQL) || ...
+//!     doinitsupgroups(NULL, authresult.uid, authresult.gid) != 0
+//! #else
+//!     doinitsupgroups(account, (uid_t) -1, authresult.gid) != 0
+//! #endif
+//!     ) {
+//! ```
+//! Blanking only the directives would splice both arms into one expression,
+//! `a != 0 b != 0`, which parses no better. So, as `preproc_split_chain`
+//! does for a header split across a chain, the LAST arm is kept and every
+//! other arm's lines are blanked with the directives. Each arm must meet
+//! both conditions above on its own, so what is kept is a whole operand and
+//! what is dropped is an expression fragment: never a declaration or a
+//! statement. An arm holding a directive of its own is left alone.
+//!
+//! Not inside a call's argument list, though: there the arms are what
+//! PRE32-C reports (a directive in a function-like macro invocation is
+//! undefined, and one in a real call reads the same), and blanking them
+//! would leave it nothing to see. Only a parenthesis that is a controlling
+//! expression or a grouping, as both of `ftpd.c`'s are, is repaired this
+//! way.
+//!
+//! What that costs: the dropped arms' code leaves analysis, calls included
+//! (`doinitsupgroups(NULL, ...)` above). What it buys: on `ftpd.c` the
+//! unrepaired conditional turned the file into one `ERROR` node with
+//! `dopass` and every function after it outside any `function_definition`,
+//! so a rule that reads a function body saw none of them.
 
 /// How far back the paren scan will look for the start of the statement
 /// containing a directive. Bounded so a pathological file cannot make this
@@ -230,6 +261,55 @@ fn inside_unclosed_paren(lines: &CodeLines, i: usize) -> bool {
     balance > 0
 }
 
+/// Whether the innermost parenthesis still open before line `i` opens a
+/// call's argument list: a name or a closing bracket stands before it, and
+/// the name is not a keyword that takes a parenthesized expression.
+///
+/// Only asked once [`inside_unclosed_paren`] said some parenthesis is open,
+/// over the same lines.
+fn opens_call_arguments(lines: &CodeLines, i: usize) -> bool {
+    let mut depth = 0i32;
+    for k in (0..i).rev().take(MAX_STATEMENT_LOOKBACK) {
+        let code = lines.code[k].as_bytes();
+        for at in (0..code.len()).rev() {
+            match code[at] {
+                b')' => depth += 1,
+                b'(' if depth > 0 => depth -= 1,
+                b'(' => return precedes_call_arguments(&lines.code[..=k], k, at),
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+/// Whether the `(` at `code[k][at]` follows something it would call.
+fn precedes_call_arguments(code: &[String], k: usize, at: usize) -> bool {
+    let before = code[..k]
+        .iter()
+        .map(String::as_str)
+        .chain(std::iter::once(&code[k][..at]))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let before = before.trim_end();
+    if before.ends_with([')', ']']) {
+        return true;
+    }
+    let word_start = before
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .map_or(0, |p| p + 1);
+    let word = &before[word_start..];
+    let is_name = word
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphabetic() || c == '_');
+    is_name
+        && !matches!(
+            word,
+            "if" | "while" | "for" | "switch" | "return" | "sizeof" | "_Alignof" | "_Generic"
+        )
+}
+
 /// Blank the `#if`/`#ifdef`/`#ifndef` + matching `#endif` directive lines of
 /// every conditional that opens inside an unclosed parenthesized
 /// expression, per the module docs above. Length-preserving.
@@ -251,7 +331,7 @@ pub fn blank_paren_guarded_preproc(source: &str) -> String {
 
         let mut depth = 1i32;
         let mut end_idx = None;
-        let mut has_branch = false;
+        let mut branches = Vec::new();
         for (j, raw) in lines.raw.iter().enumerate().skip(i + 1) {
             if is_directive_start(raw) {
                 depth += 1;
@@ -262,28 +342,49 @@ pub fn blank_paren_guarded_preproc(source: &str) -> String {
                     break;
                 }
             } else if depth == 1 && is_branch_directive(raw) {
-                has_branch = true;
+                branches.push(j);
             }
         }
 
         let Some(end_idx) = end_idx else {
             continue; // No matching #endif -- move on rather than halt.
         };
-        if has_branch {
+
+        let mut edges = vec![i];
+        edges.extend(branches.iter().copied());
+        edges.push(end_idx);
+        let arms: Vec<_> = edges.windows(2).map(|e| e[0] + 1..e[1]).collect();
+        let is_expression_fragment = |arm: &std::ops::Range<usize>| {
+            arm.clone()
+                .all(|k| !lines.code[k].contains([';', '{', '}']))
+        };
+        let balanced = |arm: &std::ops::Range<usize>| {
+            arm.clone().map(|k| lines.paren_balance(k)).sum::<i32>() == 0
+        };
+        let has_code =
+            |arm: &std::ops::Range<usize>| arm.clone().any(|k| !lines.code[k].trim().is_empty());
+        let own_directive =
+            |arm: &std::ops::Range<usize>| arm.clone().any(|k| is_directive(lines.raw[k]));
+        if !arms
+            .iter()
+            .all(|a| is_expression_fragment(a) && balanced(a))
+        {
+            continue;
+        }
+        let dropped = &arms[..arms.len() - 1];
+        if !branches.is_empty()
+            && (opens_call_arguments(&lines, i)
+                || !arms.iter().all(|a| has_code(a) && !own_directive(a)))
+        {
             continue;
         }
 
-        let body = i + 1..end_idx;
-        let is_expression_fragment = body
-            .clone()
-            .all(|k| !lines.code[k].contains([';', '{', '}']));
-        let balanced = body.clone().map(|k| lines.paren_balance(k)).sum::<i32>() == 0;
-        if !is_expression_fragment || !balanced {
-            continue;
+        let directives = std::iter::once(i)
+            .chain(branches.iter().copied())
+            .chain(std::iter::once(end_idx));
+        for k in directives.chain(dropped.iter().flat_map(|a| a.clone())) {
+            blank_line(&mut out, line_starts[k], lines.raw[k].len());
         }
-
-        blank_line(&mut out, line_starts[i], lines.raw[i].len());
-        blank_line(&mut out, line_starts[end_idx], lines.raw[end_idx].len());
     }
 
     String::from_utf8(out).unwrap_or_else(|_| source.to_string())
@@ -406,7 +507,8 @@ void f(void) {
     /// Keeping one branch of a two-sided expression would silently pick a
     /// side; leave it for the parser to fail on as before.
     #[test]
-    fn leaves_a_two_branch_block_alone() {
+    fn leaves_a_two_branch_block_in_call_arguments_alone() {
+        // PRE32-C reports exactly this; the directives must survive.
         let src = "\
 void f(void) {
     foo(a &&
@@ -414,6 +516,97 @@ void f(void) {
         getenv(\"X\")
 #else
         0
+#endif
+        );
+}
+";
+        assert_eq!(blank_paren_guarded_preproc(src), src);
+    }
+
+    #[test]
+    fn keeps_the_last_arm_of_a_two_branch_grouping() {
+        // pure-ftpd ftpd.c, main's option loop.
+        let src = "\
+int getopt_long(int c, char **v);
+int getopt(int c, char **v);
+void f(int argc, char **argv) {
+    int o;
+    while ((o =
+#ifndef NO_GETOPT_LONG
+            getopt_long(argc, argv)
+#else
+            getopt(argc, argv)
+#endif
+            ) != -1) {
+        argc--;
+    }
+}
+";
+        let out = blank_paren_guarded_preproc(src);
+        assert!(!out.contains("getopt_long(argc"));
+        assert!(out.contains("getopt(argc, argv)"));
+        assert!(parses_clean(src));
+        assert_eq!(out.len(), src.len());
+    }
+
+    #[test]
+    fn fixes_a_two_branch_if_condition() {
+        // pure-ftpd ftpd.c, dopass.
+        let src = "\
+int g(int a, int b);
+void f(int u) {
+    if (
+#if defined(WITH_LDAP) || defined(WITH_MYSQL)
+        g(u, 0) != 0
+#elif defined(WITH_PGSQL)
+        g(u, 2) != 0
+#else
+        g(u, 1) != 0
+#endif
+        ) {
+        u = 0;
+    }
+}
+";
+        let out = blank_paren_guarded_preproc(src);
+        assert!(out.contains("g(u, 1) != 0"));
+        assert!(!out.contains("g(u, 0)") && !out.contains("g(u, 2)"));
+        assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn leaves_a_branch_holding_its_own_directive_alone() {
+        let src = "\
+void f(void) {
+    foo(a &&
+#ifdef A
+# ifdef B
+        b
+# endif
+        c
+#else
+        0
+#endif
+        );
+}
+";
+        // The inner single-arm guard is repaired on its own; the outer
+        // block, whose first arm held it, keeps both arms and directives.
+        let out = blank_paren_guarded_preproc(src);
+        assert!(out.contains("#ifdef A\n") && out.contains("#else\n"));
+        assert!(out.contains("        b\n") && out.contains("        0\n"));
+    }
+
+    #[test]
+    fn leaves_a_branch_holding_a_statement_alone() {
+        let src = "\
+void f(void) {
+    foo(a,
+#ifdef A
+        b);
+    bar(
+#else
+        c
 #endif
         );
 }

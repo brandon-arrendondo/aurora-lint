@@ -1265,13 +1265,22 @@ an unclosed parenthesized expression) and
 `control_header_preproc_guard.rs` (a guard closing between an
 `if`/`while`/`for` header and the body it governs, which leaves the header
 with a synthesized `(expression_statement (MISSING ";"))` consequence that
-reads as an unbraced body). All four are restricted to a conditional with NO
-`#else`/`#elif`: blanking a wrapper that has alternative arms would splice
-mutually exclusive text into one statement stream.
+reads as an unbraced body). The first, second and fourth are restricted to a
+conditional with NO `#else`/`#elif`: blanking a wrapper that has alternative
+arms would splice mutually exclusive text into one statement stream.
+`paren_preproc_guard.rs` also takes a multi-arm conditional inside a
+controlling expression or grouping parenthesis, as `preproc_split_chain.rs`
+does below: when every arm is a balanced expression fragment with no
+directive of its own, it keeps the last arm and blanks the others (pure-ftpd's
+`if (` + `#if`/`#else` picking one of two calls, which otherwise left the
+whole file one `ERROR` node). Never inside a call's argument list, where the
+directives are what PRE32-C reports.
 
-`preproc_split_chain.rs` takes the multi-arm case those four
+`preproc_split_chain.rs` takes the multi-arm case the others
 refuse, for the chain shape where every arm ends in an incomplete fragment
-and they share one brace block after the `#endif`. It reads BOTH arm-ending
+and they share one brace block after the `#endif` -- or where every arm is a
+header that opens that block itself, `if (...) {`, and the lone `}` after the
+`#endif` closes it (mosquitto's `conf.c`). It reads BOTH arm-ending
 shapes -- curl's `hostip4.c` mixes a bare `else` tail and an `if` header in
 one `#elif` chain, so a control-header-only repair would leave half of that
 one chain broken -- importing the predicates from the two passes that own
