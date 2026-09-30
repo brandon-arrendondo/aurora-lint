@@ -8058,12 +8058,12 @@ mod tests {
         assert!(!summaries.get("fill").unwrap().returns_allocation);
     }
 
-    /// A free that reaches one definition through a wrapper is that
-    /// definition's alone: the all-definitions view drops it for a call
+    /// A free that reaches one definition through a callee one hop away is
+    /// that definition's alone: the all-definitions view drops it for a call
     /// both definitions can link with, and keeps it where only the
-    /// forwarding one compiles.
+    /// forwarding one compiles. A deeper chain is not settled per definition.
     #[test]
-    fn test_at_all_needs_every_definition_including_through_a_wrapper() {
+    fn test_at_all_needs_every_definition_through_a_one_hop_forward() {
         let code = r#"
 void rel(void *p) { free(p); }
 #ifdef POOLED
