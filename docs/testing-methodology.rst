@@ -512,8 +512,8 @@ Recommended Comparison Workflow
 Published CERT-C Results
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-No published CERT-C violation rates per KLOC on production open-source code
-exist (Goseva2015). Valid comparison strategies:
+We did not find any published CERT-C violation rates per KLOC on production
+open-source code. Valid comparison strategies:
 
 1. aurora-lint vs. cppcheck vs. clang-tidy on same codebase (done for 5 projects)
 2. aurora-lint on JasPer with reference to SEI SCALe 2015 report (only named CERT-C audit)
