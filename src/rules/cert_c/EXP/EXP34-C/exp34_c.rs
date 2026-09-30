@@ -1043,10 +1043,12 @@ fn formatted_io_shape(func_name: &str) -> Option<(usize, FormatReader)> {
 ///
 /// The slot map is used only when the call itself spells its format string:
 /// the last fixed argument is where C's variadic convention puts it, since
-/// `va_start(ap, fmt)` needs it named. Anything else -- a format held in a
-/// variable, a macro-spliced `PRIu64`, or a variadic that is not a format
-/// function at all (`execl`, `mp_clear_multi`) -- leaves the behaviour
-/// exactly as it was, because nothing was resolved to reason from.
+/// `va_start(ap, fmt)` needs it named. A format held in a variable or a
+/// macro-spliced `PRIu64` resolves no slot, so every tail pointer is checked
+/// -- but only when the callee's body shows that parameter reaching an ISO C
+/// `v*printf` as its format (`iso_format_param`). A variadic that is no such
+/// formatter (`mp_clear_multi`, or one with its own engine) is not reported
+/// here at all: nothing shows it dereferences its tail.
 fn check_callsite_null_args(
     callee_name: &str,
     args: &Node,
@@ -1084,8 +1086,11 @@ fn check_callsite_null_args(
     // A conversion dereferences by the ISO C contract, which binds a project
     // formatter only once its body shows the format reaching an ISO C
     // `v*printf`. One with its own engine may substitute for NULL (sqlite's
-    // `%s` prints ""), so its slots name no dereference to report.
-    if format.is_some() && callee_summary.iso_format_param != variadic_from.checked_sub(1) {
+    // `%s` prints ""), so its slots name no dereference to report. The same
+    // holds when the format is not a literal: the tail is a formatter's to
+    // dereference only if the callee is one that forwards to ISO C, and a
+    // variadic that is no formatter at all never showed it dereferences.
+    if callee_summary.iso_format_param != variadic_from.checked_sub(1) {
         return;
     }
 
