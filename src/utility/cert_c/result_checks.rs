@@ -994,9 +994,18 @@ fn comparison_counts(
         }
         ErrorSignal::MinusOne => is_negative_one(&o) || (!equality && (o == "0" || o == "-1")),
         // Every failing value sits at the top of `size_t`, above every count:
-        // any ordering at a negative constant separates `-1` from them.
+        // any ordering at a negative constant separates `-1` from them. Only
+        // in an unsigned comparison, though: stored signed, the failures are
+        // -1, -2 and -3, and `n < -2` or `n <= -1000` sees none of -1. The
+        // comparison is unsigned when the result was stored unsigned, or when
+        // the constant is cast to an unsigned type, `n >= (size_t)-2`, which
+        // converts a signed `n` too.
         ErrorSignal::Restartable => {
-            is_negative_one(&o) || (!equality && (o == "0" || is_negative_constant(&o)))
+            is_negative_one(&o)
+                || (!equality
+                    && (o == "0"
+                        || (is_negative_constant(&o)
+                            && (unsigned || cast_to_unsigned(other, source)))))
         }
         ErrorSignal::SigErr => equality && o == "SIG_ERR",
         ErrorSignal::ErrnoOrEnd => false,
@@ -1042,6 +1051,30 @@ fn constant_text(other: &Node, source: &str) -> String {
         }
     }
     squeeze(&n, source)
+}
+
+/// Whether `other`, outer parentheses aside, is cast to an unsigned type:
+/// `(size_t)-2`, including the `(T)(x)` and `(T) -x` spellings
+/// [`constant_text`] reads as casts.
+fn cast_to_unsigned(other: &Node, source: &str) -> bool {
+    let n = strip_parens(*other);
+    let type_node = match n.kind() {
+        "cast_expression" => n.child_by_field_name("type"),
+        "call_expression" if typedef_cast_operand(&n, source).is_some() => n
+            .child_by_field_name("function")
+            .and_then(|callee| callee.named_child(0)),
+        "binary_expression"
+            if n.child_by_field_name("operator")
+                .is_some_and(|o| o.kind() == "-") =>
+        {
+            n.child_by_field_name("left")
+                .filter(|l| l.kind() == "parenthesized_expression")
+                .and_then(|l| l.named_child(0))
+                .filter(|i| names_no_object(i, source))
+        }
+        _ => None,
+    };
+    type_node.is_some_and(|t| is_unsigned_type_text(get_node_text(&t, source)))
 }
 
 /// The operand of `(T)(x)` misparsed as a call: a parenthesized lone
