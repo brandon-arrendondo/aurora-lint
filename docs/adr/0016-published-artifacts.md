@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-09-30). Brandon to approve the wording; then Accepted.
+Accepted (2026-09-30).
 
 ## Context
 
@@ -30,8 +30,7 @@ anything internal rides along with it. Two things showed that gap on
   copied from a secondary source or written from memory.
 - **The data.** The measurement snapshots the papers published carried the
   names of internal build machines and task-tracker references. The tool
-  that emits them now produces a public-safe document by default, and the
-  papers are re-pinned from it.
+  that emits them now produces a public-safe document by default.
 
 ## Decision
 
@@ -41,9 +40,10 @@ public tree and its Pages site, a release archive, a dataset, a paper, or the
 book.
 
 1. **It cites its sources correctly and is free of plagiarism.**
-   - Verify each citation against the primary source: the work itself
-     first, then its DOI registry record. Never write one from memory or
-     from a model's output.
+   - The project follows a strict bibliography process. Verify each
+     citation against the primary source: the work itself first, then its
+     DOI registry record. Never write one from memory or from a model's
+     output.
    - Learn from sources; do not copy from them. Reproduce no text, figure or
      code from a source whose licence does not allow it. Quote anything
      quoted, and cite it.
@@ -92,11 +92,9 @@ AI attribution.
 
 ## Consequences
 
-- **Where the procedure lives.** This ADR is the policy. The step-by-step
-  checklist lives with the book, in the book repository's
-  `docs/publication-review.md`. That repository is private; the checklist
-  links back here. When the procedure changes, change the checklist, not
-  this ADR.
+- **Policy, not procedure.** This ADR is the policy. The maintainers keep a
+  pre-publication checklist and a sanitized-export procedure that carry it
+  out. When the procedure changes, the policy here does not.
 - **Nothing is relaxed.** ADR-0007 still governs defect detail, ADR-0004
   which numbers may be published, and ADR-0009 the changelog. This ADR only
   adds conditions.
@@ -104,12 +102,13 @@ AI attribution.
   apply to every commit that reaches `origin`, not just to a release. The
   rule against task ids in anything public (`CLAUDE.md`) is one case of
   condition 2.
-- **Sanitizing happens at export.** Nothing here justifies stripping working
-  material out of the private repositories in advance. Verification notes,
-  source comments and working records stay where they are, and the export
-  leaves them out. The one exception is working material that prints into
-  the artifact itself, such as a verification note in a bibliography field
-  the style prints. That is a defect in the artifact, and it is fixed.
+- **Where an artifact's sources are not themselves published, sanitizing
+  happens at export.** Nothing here justifies stripping working material out
+  of those sources in advance. Verification notes, source comments and
+  working records stay where they are, and the export leaves them out. The
+  one exception is working material that prints into the artifact itself,
+  such as a verification note in a bibliography field the style prints.
+  That is a defect in the artifact, and it is fixed.
 - **Re-verification is not per release.** A citation is verified when it is
   added, and again when the artifact that carries it is submitted or
   published.
