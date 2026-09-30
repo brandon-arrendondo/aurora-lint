@@ -23,12 +23,14 @@
 //! - Variables assigned from user input sources
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::argument_objects::argument_nodes;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::{const_eval, init_state};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::guard_dominance::strip_arg_wrappers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -381,11 +383,7 @@ impl FormatStringAnalyzer {
                 return;
             }
             if let Some(arguments) = node.child_by_field_name("arguments") {
-                let args: Vec<_> = (0..arguments.child_count())
-                    .filter_map(|i| arguments.child(i))
-                    .filter(|n| !matches!(n.kind(), "," | "(" | ")"))
-                    .collect();
-                for (idx, arg) in args.iter().enumerate() {
+                for (idx, arg) in argument_nodes(&arguments).iter().enumerate() {
                     if self.is_tainted_argument(arg, source) {
                         self.tainted_params
                             .insert(format!("{}:param{}", func_name, idx));
@@ -860,15 +858,7 @@ impl FormatStringAnalyzer {
 
     /// Extract arguments from an argument list
     fn extract_arguments<'a>(&self, arguments: &'a Node, _source: &str) -> Vec<Node<'a>> {
-        let mut args = Vec::new();
-        for i in 0..arguments.child_count() {
-            if let Some(arg) = arguments.child(i) {
-                if !matches!(arg.kind(), "," | "(" | ")") {
-                    args.push(arg);
-                }
-            }
-        }
-        args
+        argument_nodes(arguments)
     }
 
     /// Check if a call expression returns tainted data
@@ -976,23 +966,8 @@ impl FormatStringAnalyzer {
                 if let Some(arguments) = node.child_by_field_name("arguments") {
                     // Get the format string argument (usually first argument)
                     let format_arg_index = self.get_format_arg_index(&func_name);
-                    let mut current_arg = 0;
-                    let mut format_string_node = None;
-
-                    for i in 0..arguments.child_count() {
-                        if let Some(arg) = arguments.child(i) {
-                            // Skip punctuation and whitespace
-                            if matches!(arg.kind(), "," | "(" | ")") {
-                                continue;
-                            }
-
-                            if current_arg == format_arg_index {
-                                format_string_node = Some(arg);
-                                break;
-                            }
-                            current_arg += 1;
-                        }
-                    }
+                    let format_string_node =
+                        argument_nodes(&arguments).into_iter().nth(format_arg_index);
 
                     if let Some(format_arg) = format_string_node {
                         // Special handling for sizeof expressions which are safe
@@ -1017,8 +992,11 @@ impl FormatStringAnalyzer {
                                 | "vswprintf"
                                 | "_vsnwprintf"
                         );
-                        if is_vprintf_family && format_arg.kind() == "identifier" {
-                            let arg_name = ast_utils::get_node_text_owned(&format_arg, source);
+                        // Parentheses and a cast leave the value as it was:
+                        // `vprintf((format), ap)` forwards the parameter too.
+                        let forwarded = strip_arg_wrappers(&format_arg);
+                        if is_vprintf_family && forwarded.kind() == "identifier" {
+                            let arg_name = ast_utils::get_node_text_owned(&forwarded, source);
                             // Only skip if parameter AND NOT tainted locally or inter-procedurally
                             if self.function_parameters.contains(&arg_name)
                                 && !self.user_input_vars.contains(&arg_name)
@@ -1295,7 +1273,13 @@ impl FormatStringAnalyzer {
             }
             "parenthesized_expression" => self.parenthesized_format_is_unsafe(node, source),
             "conditional_expression" => self.conditional_format_is_unsafe(node, source),
-            "binary_expression" | "cast_expression" => {
+            // A cast converts the value it is given, so judge that value: its
+            // `(` token would fall to "unknown node is unsafe" and report
+            // every cast, `(const char *)"lit"` included.
+            "cast_expression" => node
+                .child_by_field_name("value")
+                .is_none_or(|value| self.is_potentially_unsafe_format_string(&value, source)),
+            "binary_expression" => {
                 // These could involve string operations, need deeper inspection
                 // For now, check if any child is potentially unsafe
                 for i in 0..node.child_count() {
