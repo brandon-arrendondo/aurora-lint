@@ -992,7 +992,8 @@ Status of the 16 proposals at the end of this doc, against `72b8f734`:
     [G-P&P].
   - Lipp et al. (ISSTA 2022): tools that do well on synthetic bugs "miss
     in-between 47% and 80% of the vulnerabilities" in real programs [Lipp22,
-    abstract].
+    abstract]. The range is the best single analyzer's miss rate across the
+    paper's four evaluation scenarios [Lipp22, §5.1].
   - NIST notes that "many issues remain" in Juliet 1.3's own cases [Juliet-1.3].
 - **Verdict: aligned.**
 - **Clarify:**
@@ -1145,7 +1146,7 @@ Literature and practice
 - [Juliet-1.3] NIST TN 1995, https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=925632
 - [OWASP-BM] https://raw.githubusercontent.com/OWASP-Benchmark/BenchmarkJava/master/expectedresults-1.2.csv
 - [H&P] Habib & Pradel, ASE 2018. https://software-lab.org/publications/ase2018_static_bug_detectors_study.pdf (checked)
-- [Lipp22] Lipp et al., ISSTA 2022, abstract: https://portal.fis.tum.de/en/publications/an-empirical-study-on-the-effectiveness-of-static-c-code-analyzer/ (full text unverified)
+- [Lipp22] Lipp et al., ISSTA 2022, abstract: https://portal.fis.tum.de/en/publications/an-empirical-study-on-the-effectiveness-of-static-c-code-analyzer/; preprint: https://mediatum.ub.tum.de/doc/1659728/1659728.pdf (abstract and §5.1 checked)
 - [G-P&P] Goseva-Popstojanova & Perhinschi, IST 2015. https://community.wvu.edu/~kagoseva/Papers/IST-2015.pdf
 - [Lenarduzzi] https://arxiv.org/pdf/2101.08832 (checked)
 - [scan-build] https://clang.llvm.org/docs/analyzer/user-docs/CommandLineUsage.html
@@ -1170,7 +1171,7 @@ Literature and practice
 - Frama-C WP `ensures`.
 - Whether Clang SA or UBSan `null` reports `&p->f` without a load.
 - WG14's acceptance of N3322.
-- Lipp et al.'s full text: only the abstract was read, so its matching
-  granularity is not established.
+- Lipp et al.'s matching granularity: only the abstract and §5.1 were
+  read, so it is not established.
 - LLM4SA's figures.
 - Coverity `cov-build` documentation.
