@@ -91,15 +91,21 @@
 //! Each arm opens one `{` and the single `}` after the `#endif` closes
 //! whichever was compiled. Read with both arms, the tree has one brace too
 //! many, and in a long function GLR recovery can give up on the function as
-//! a whole, leaving its statements outside any `function_definition`. The
-//! repair is the one above: keep the last arm, blank the other arms' header
-//! lines. It applies only when EVERY arm ends this way, since that is what
-//! makes the brace count come out even; no lone `{` follows such a chain.
+//! a whole, leaving its statements outside any `function_definition` --
+//! measured on the shipped pipeline with the project prescan, mosquitto's
+//! whole `conf.c` parsed as one root `ERROR` node. The repair is the one
+//! above, blanking the dropped arms' header lines, except for WHICH arm is
+//! kept: no brace follows to favour the last one, so the kept arm is the one
+//! the scan's profile compiles (`preproc_arm_choice::compiled_arm`), and a
+//! chain whose arm that cannot decide is left alone. It applies only when
+//! EVERY arm ends this way, since that is what makes the brace count come out
+//! even; no lone `{` follows such a chain.
 
 use crate::analyze::control_header_preproc_guard::{
     blank_line, ends_with_control_header, is_branch_directive, is_directive, is_directive_start,
     is_endif, strip_comments,
 };
+use crate::analyze::preproc_arm_choice::{compiled_arm, directive_extent, locally_defined_names};
 use crate::analyze::preproc_dangling_else::is_bare_else_line;
 
 /// How an arm's last real content line leaves the arm.
@@ -206,6 +212,7 @@ pub fn blank_split_chain_preproc(source: &str) -> String {
     }
 
     let mut out = source.as_bytes().to_vec();
+    let local = locally_defined_names(&lines);
 
     let mut i = 0usize;
     while i < lines.len() {
@@ -252,26 +259,30 @@ pub fn blank_split_chain_preproc(source: &str) -> String {
         edges.extend(branches.iter().copied());
         edges.push(end_idx);
 
+        // An arm starts after its directive's `\`-continuation lines.
         let bodies: Vec<Vec<usize>> = edges
             .windows(2)
-            .map(|e| arm_body(&lines, e[0] + 1, e[1]))
+            .map(|e| arm_body(&lines, directive_extent(&lines, e[0]).end, e[1]))
             .collect();
         let mut ends: Vec<ArmEnd> = bodies.iter().map(|b| classify(&lines, b)).collect();
 
         // Either the arms leave a header or `else` for a shared brace block
         // after the `#endif`, or every arm opens that block itself.
-        if shared_brace_follows(&lines, end_idx + 1) {
+        let keep = if shared_brace_follows(&lines, end_idx + 1) {
             // An arm that opens a body of its own is not one waiting for the
             // shared block.
             for e in ends.iter_mut().filter(|e| **e == ArmEnd::OpenedHeader) {
                 *e = ArmEnd::Complete;
             }
-        } else if !ends.iter().all(|&e| e == ArmEnd::OpenedHeader) {
-            i += 1;
-            continue;
-        }
-
-        let keep = ends.iter().rposition(|&e| e != ArmEnd::Complete);
+            ends.iter().rposition(|&e| e != ArmEnd::Complete)
+        } else if ends.iter().all(|&e| e == ArmEnd::OpenedHeader) {
+            // No brace follows to favour the last arm: keep the one the
+            // scan's profile compiles, or none if that cannot be decided.
+            let openers: Vec<usize> = std::iter::once(i).chain(branches.iter().copied()).collect();
+            compiled_arm(&lines, &openers, &local)
+        } else {
+            None
+        };
         let Some(keep) = keep else {
             i += 1;
             continue;
@@ -288,12 +299,11 @@ pub fn blank_split_chain_preproc(source: &str) -> String {
             }
         }
 
-        for k in victims
-            .into_iter()
-            .chain(std::iter::once(i))
+        let directives = std::iter::once(i)
             .chain(branches.iter().copied())
             .chain(std::iter::once(end_idx))
-        {
+            .flat_map(|d| directive_extent(&lines, d));
+        for k in victims.into_iter().chain(directives) {
             blank_line(&mut out, line_starts[k], lines[k].len());
         }
 
@@ -499,6 +509,70 @@ int g(int n, int m)
 ";
         let fixed = blank_split_chain_preproc(src);
         assert!(!fixed.contains("m > 1) {"));
+        assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn keeps_the_opened_header_the_profile_compiles() {
+        // `NO_RANGE` undefined: the first arm is the one built.
+        let src = "\
+int g(int n)
+{
+#ifndef NO_RANGE
+    if (n < 0 || n > 9) {
+#else
+    if (n < 0) {
+#endif
+        return 1;
+    }
+    return 0;
+}
+";
+        let fixed = blank_split_chain_preproc(src);
+        assert!(fixed.contains("if (n < 0 || n > 9) {"));
+        assert!(!fixed.contains("if (n < 0) {"));
+        assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn leaves_an_opened_header_chain_it_cannot_decide_alone() {
+        let src = "\
+#define RANGE_MAX 9
+int g(int n)
+{
+#if RANGE_MAX > 5
+    if (n < 0 || n > 9) {
+#else
+    if (n < 0) {
+#endif
+        return 1;
+    }
+    return 0;
+}
+";
+        assert!(unchanged(src));
+    }
+
+    #[test]
+    fn a_continued_directive_is_not_read_as_arm_code() {
+        let src = "\
+int f(int x);
+int g(int monitor, int count)
+{
+#if defined(USING_VERSION_SDL3) && \\
+    defined(HAVE_DISPLAYS)
+    if (f(monitor) != 0)
+#else
+    if ((monitor >= 0) && (monitor < count))
+#endif
+    {
+        return 1;
+    }
+    return 0;
+}
+";
+        let fixed = blank_split_chain_preproc(src);
+        assert!(!fixed.contains("defined(HAVE_DISPLAYS)"));
         assert!(parses_clean(src));
     }
 

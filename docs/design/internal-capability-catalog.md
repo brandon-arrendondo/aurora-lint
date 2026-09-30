@@ -1271,16 +1271,27 @@ arms would splice mutually exclusive text into one statement stream.
 `paren_preproc_guard.rs` also takes a multi-arm conditional inside a
 controlling expression or grouping parenthesis, as `preproc_split_chain.rs`
 does below: when every arm is a balanced expression fragment with no
-directive of its own, it keeps the last arm and blanks the others (pure-ftpd's
-`if (` + `#if`/`#else` picking one of two calls, which otherwise left the
-whole file one `ERROR` node). Never inside a call's argument list, where the
-directives are what PRE32-C reports.
+directive of its own, it keeps ONE arm and blanks the others (pure-ftpd's
+`if (` + `#if`/`#else` picking one of two calls: unrepaired, with the
+project prescan, the file's root was an `ERROR` node spanning all of it and
+`dopass` no `function_definition` at all). Never inside a call's argument
+list, where the directives are what PRE32-C reports. Which arm:
+`preproc_arm_choice::compiled_arm` evaluates each arm's condition in order
+(`defined`, `!`, `&&`, `||`, parentheses, integer literals, comparisons),
+names resolved through `dead_regions::platform_assumptions()` and otherwise
+undefined; a name the file `#define`s or `#undef`s, a macro call, arithmetic,
+or no arm compiling leaves the conditional unrepaired. Keeping an arm decides
+which code the rules see there -- accepted as a parse-repair cost, not a
+profile deciding emission (ADR-0010 D3). `directive_extent` gives a directive
+with its `\`-continuation lines, which both passes blank with it.
 
 `preproc_split_chain.rs` takes the multi-arm case the others
 refuse, for the chain shape where every arm ends in an incomplete fragment
 and they share one brace block after the `#endif` -- or where every arm is a
 header that opens that block itself, `if (...) {`, and the lone `}` after the
-`#endif` closes it (mosquitto's `conf.c`). It reads BOTH arm-ending
+`#endif` closes it (mosquitto's `conf.c`, which unrepaired parsed as one root
+`ERROR`); that shape keeps the arm `compiled_arm` picks, since no brace
+follows to favour the last. It reads BOTH arm-ending
 shapes -- curl's `hostip4.c` mixes a bare `else` tail and an `if` header in
 one `#elif` chain, so a control-header-only repair would leave half of that
 one chain broken -- importing the predicates from the two passes that own

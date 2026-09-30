@@ -45,6 +45,7 @@ pub mod paren_preproc_guard;
 /// Points-to/alias analysis: resolving an lvalue expression to the set of
 /// storage locations it may refer to.
 pub mod points_to;
+pub mod preproc_arm_choice;
 /// Which byte offsets a preprocessor conditional puts in mutually exclusive
 /// arms, so a positional lookup does not answer with a record from a branch
 /// this position cannot coexist with.

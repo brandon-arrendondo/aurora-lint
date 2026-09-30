@@ -71,10 +71,10 @@
 //! Blanking only the directives would splice both arms into one expression,
 //! `a != 0 b != 0`, which parses no better. So, as `preproc_split_chain`
 //! does for a header split across a chain, one arm is kept and every other
-//! arm's lines are blanked with the directives. The kept arm is the one a
-//! build compiles with the tested macro undefined: the first arm of
-//! `#ifndef X` or `#if !defined(X)`, the last arm otherwise (see
-//! `kept_arm`). Each arm must meet
+//! arm's lines are blanked with the directives, each directive together with
+//! its `\`-continuation lines. The kept arm is the one the scan's profile
+//! compiles, conditions read in order (`preproc_arm_choice::compiled_arm`);
+//! a conditional whose arm that cannot decide is left alone. Each arm must meet
 //! both conditions above on its own, so what is kept is a whole operand and
 //! what is dropped is an expression fragment: never a declaration or a
 //! statement. An arm holding a directive of its own is left alone.
@@ -87,10 +87,16 @@
 //! way.
 //!
 //! What that costs: the dropped arms' code leaves analysis, calls included
-//! (`doinitsupgroups(NULL, ...)` above). What it buys: on `ftpd.c` the
-//! unrepaired conditional turned the file into one `ERROR` node with
-//! `dopass` and every function after it outside any `function_definition`,
-//! so a rule that reads a function body saw none of them.
+//! (`doinitsupgroups(NULL, ...)` above), where before it sat under an
+//! `ERROR` node that rules still walked. What it buys, measured on the
+//! shipped pipeline with the project prescan: unrepaired, this conditional
+//! and the one in `main` left `ftpd.c`'s ROOT an `ERROR` node spanning the
+//! whole file, with `dopass`'s header, braces and statements loose under it
+//! and no `function_definition` around them, so a rule that reads a function
+//! body did not see `dopass` at all. (A probe counting definitions under the
+//! root's `ERROR` children misses this shape: the root is the `ERROR`.)
+
+use crate::analyze::preproc_arm_choice::{compiled_arm, directive_extent, locally_defined_names};
 
 /// How far back the paren scan will look for the start of the statement
 /// containing a directive. Bounded so a pathological file cannot make this
@@ -273,6 +279,12 @@ fn inside_unclosed_paren(lines: &CodeLines, i: usize) -> bool {
 fn opens_call_arguments(lines: &CodeLines, i: usize) -> bool {
     let mut depth = 0i32;
     for k in (0..i).rev().take(MAX_STATEMENT_LOOKBACK) {
+        // The same statement bounds as `inside_unclosed_paren`, so an
+        // earlier statement's parentheses (or an earlier conditional's arms)
+        // are never counted.
+        if lines.raw[k].trim().is_empty() || lines.ends_statement(k) {
+            return false;
+        }
         let code = lines.code[k].as_bytes();
         for at in (0..code.len()).rev() {
             match code[at] {
@@ -326,6 +338,7 @@ pub fn blank_paren_guarded_preproc(source: &str) -> String {
     }
 
     let mut out = source.as_bytes().to_vec();
+    let local = locally_defined_names(&lines.raw);
 
     for i in 0..lines.len() {
         if !is_directive_start(lines.raw[i]) || !inside_unclosed_paren(&lines, i) {
@@ -356,7 +369,12 @@ pub fn blank_paren_guarded_preproc(source: &str) -> String {
         let mut edges = vec![i];
         edges.extend(branches.iter().copied());
         edges.push(end_idx);
-        let arms: Vec<_> = edges.windows(2).map(|e| e[0] + 1..e[1]).collect();
+        // An arm starts after its directive's `\`-continuation lines, which
+        // are the directive's text, not the arm's.
+        let arms: Vec<_> = edges
+            .windows(2)
+            .map(|e| directive_extent(&lines.raw, e[0]).end..e[1])
+            .collect();
         let is_expression_fragment = |arm: &std::ops::Range<usize>| {
             arm.clone()
                 .all(|k| !lines.code[k].contains([';', '{', '}']))
@@ -374,58 +392,35 @@ pub fn blank_paren_guarded_preproc(source: &str) -> String {
         {
             continue;
         }
-        let kept = kept_arm(lines.raw[i], arms.len());
+        let kept = if branches.is_empty() {
+            0
+        } else {
+            if opens_call_arguments(&lines, i)
+                || !arms.iter().all(|a| has_code(a) && !own_directive(a))
+            {
+                continue;
+            }
+            let openers: Vec<usize> = std::iter::once(i).chain(branches.iter().copied()).collect();
+            match compiled_arm(&lines.raw, &openers, &local) {
+                Some(kept) => kept,
+                None => continue,
+            }
+        };
         let dropped = arms
             .iter()
             .enumerate()
             .filter(|&(a, _)| a != kept)
-            .map(|(_, arm)| arm);
-        if !branches.is_empty()
-            && (opens_call_arguments(&lines, i)
-                || !arms.iter().all(|a| has_code(a) && !own_directive(a)))
-        {
-            continue;
-        }
-
+            .flat_map(|(_, arm)| arm.clone());
         let directives = std::iter::once(i)
             .chain(branches.iter().copied())
-            .chain(std::iter::once(end_idx));
-        for k in directives.chain(dropped.flat_map(|a| a.clone())) {
+            .chain(std::iter::once(end_idx))
+            .flat_map(|d| directive_extent(&lines.raw, d));
+        for k in directives.chain(dropped) {
             blank_line(&mut out, line_starts[k], lines.raw[k].len());
         }
     }
 
     String::from_utf8(out).unwrap_or_else(|_| source.to_string())
-}
-
-/// Which of a conditional's `arms` is kept: the one a build compiles when the
-/// macro the opening directive tests is not defined. That is the first arm
-/// of `#ifndef X` or `#if !defined(X)` and the last otherwise. Such a macro is
-/// usually a build option (`NO_GETOPT_LONG`, `WITH_LDAP`), and the code
-/// around the conditional is read unguarded -- pure-ftpd declares
-/// `option_index` under the same `#ifndef NO_GETOPT_LONG` whose first arm is
-/// its only use, so keeping the `#else` arm would leave it never read.
-fn kept_arm(opening: &str, arms: usize) -> usize {
-    let rest = opening.trim_start().trim_start_matches('#').trim_start();
-    let condition = rest.strip_prefix("if").map(str::trim_start);
-    let negated_defined = condition
-        .and_then(|c| c.strip_prefix('!'))
-        .map(str::trim_start)
-        .and_then(|c| c.strip_prefix("defined"))
-        .is_some_and(|c| {
-            let c = c.trim();
-            let name = c
-                .strip_prefix('(')
-                .and_then(|c| c.strip_suffix(')'))
-                .unwrap_or(c)
-                .trim();
-            !name.is_empty() && name.chars().all(|ch| ch.is_alphanumeric() || ch == '_')
-        });
-    if directive_keyword(opening) == Some("ifndef") || negated_defined {
-        0
-    } else {
-        arms - 1
-    }
 }
 
 /// Replace every non-newline byte of the line at `line_start` with a space.
@@ -635,8 +630,52 @@ void f(int u) {
         let out = blank_paren_guarded_preproc(src);
         assert!(out.contains("g(u) != 0"));
         assert!(parses_clean(src));
-        assert_eq!(kept_arm("#if !defined(A) || defined(B)", 2), 1);
-        assert_eq!(kept_arm("# ifndef A", 2), 0);
+    }
+
+    #[test]
+    fn leaves_a_conditional_whose_arm_cannot_be_decided_alone() {
+        let src = "\
+int g(int a);
+void f(int u) {
+    if (
+#if LIB_VERSION(2, 1)
+        g(u) != 0
+#else
+        0
+#endif
+        ) {
+        u = 0;
+    }
+}
+";
+        assert_eq!(blank_paren_guarded_preproc(src), src);
+    }
+
+    #[test]
+    fn blanks_a_directive_with_its_continuation_lines() {
+        let src = "\
+int g(int a);
+void f(int u) {
+    if (
+#if defined(A) || \\
+    defined(B)
+        g(u) != 0
+#elif defined(C) && \\
+    defined(D)
+        g(u) != 1
+#else
+        g(u) != 2
+#endif
+        ) {
+        u = 0;
+    }
+}
+";
+        let out = blank_paren_guarded_preproc(src);
+        assert!(!out.contains("defined"));
+        assert!(out.contains("g(u) != 2"));
+        assert!(!out.contains("g(u) != 0") && !out.contains("g(u) != 1"));
+        assert!(parses_clean(src));
     }
 
     #[test]
