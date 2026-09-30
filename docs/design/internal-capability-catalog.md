@@ -1278,12 +1278,18 @@ project prescan, the file's root was an `ERROR` node spanning all of it and
 list, where the directives are what PRE32-C reports. Which arm:
 `preproc_arm_choice::compiled_arm` evaluates each arm's condition in order
 (`defined`, `!`, `&&`, `||`, parentheses, integer literals, comparisons),
-names resolved through `dead_regions::platform_assumptions()` and otherwise
-undefined; a name the file `#define`s or `#undef`s, a macro call, arithmetic,
-or no arm compiling leaves the conditional unrepaired. Keeping an arm decides
+names resolved through `dead_regions::platform_assumptions()`. An undeclared
+project name tested for definedness reads as undefined -- the configuration
+with those macros off, which is not always the project's default build
+(mosquitto turns `WITH_TLS`/`WITH_BRIDGE`/`WITH_UNIX_SOCKETS` on). A name the
+file `#define`s or `#undef`s, an undeclared compiler-reserved name
+(`__GNUC__`, `__STDC_VERSION__`), an undeclared name compared with a value
+(`#if FOO_VERSION >= 3`), a macro call, arithmetic, or no arm compiling
+leaves the conditional unrepaired. Keeping an arm decides
 which code the rules see there -- accepted as a parse-repair cost, not a
 profile deciding emission (ADR-0010 D3). `directive_extent` gives a directive
-with its `\`-continuation lines, which both passes blank with it.
+with its `\`-continuation lines and any block comment it leaves open, which
+both passes blank with it.
 
 `preproc_split_chain.rs` takes the multi-arm case the others
 refuse, for the chain shape where every arm ends in an incomplete fragment

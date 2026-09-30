@@ -13,14 +13,22 @@
 //! * each arm's condition is evaluated in order and the first true one is
 //!   kept (`#else` is true);
 //! * a name is resolved through [`dead_regions::platform_assumptions`] (the
-//!   POSIX default, or the `--compile-commands` `-D`/`-U` state), and
-//!   otherwise read as undefined, `0` -- the value C gives a name no
-//!   configuration defines, and the build the project's opt-in (`WITH_*`)
-//!   and opt-out (`NO_*`) options default to;
-//! * a name the file itself `#define`s or `#undef`s, a function-like macro,
-//!   arithmetic, or anything else the evaluator does not read makes the
-//!   condition undecidable, and an undecidable conditional is not repaired
-//!   at all: guessing would invent a configuration.
+//!   POSIX default, or the `--compile-commands` `-D`/`-U` state);
+//! * a project name the profile does not declare, tested for definedness
+//!   (`#ifdef WITH_X`, `defined(NO_Y)`, a bare `#if WITH_X`), is read as
+//!   undefined, `0`. That is the configuration with those macros undefined
+//!   -- the no-build-system convention -- NOT necessarily the project's
+//!   default build: mosquitto's build turns `WITH_TLS`, `WITH_BRIDGE`,
+//!   `WITH_UNIX_SOCKETS` and `WITH_BROKER` on, so with no profile declared
+//!   its repaired sites keep the arm those options switch off;
+//! * everything else makes the condition undecidable, and an undecidable
+//!   conditional is not repaired at all, because guessing would invent a
+//!   configuration: a name the file itself `#define`s or `#undef`s; a
+//!   compiler-reserved name (`__GNUC__`, `__STDC_VERSION__`, `_MSC_VER` when
+//!   the profile does not declare it), which the implementation defines; an
+//!   undeclared name compared with a value (`#if FOO_VERSION >= 3`), which
+//!   is a value macro some header almost certainly defines; a function-like
+//!   macro; arithmetic; anything else the evaluator does not read.
 //!
 //! [`dead_regions::platform_assumptions`]: crate::analyze::dead_regions::platform_assumptions
 
@@ -29,12 +37,56 @@ use std::collections::HashSet;
 
 /// The lines `line` and every `\`-continuation after it: one directive's
 /// extent, as indices into `lines`.
+///
+/// A block comment the directive opens and does not close is part of it too
+/// (`#if !defined(A) /* ...` on one line, `... */` on the next): left out,
+/// the comment's closing text would land in the arm after it as code.
 pub(crate) fn directive_extent(lines: &[&str], line: usize) -> std::ops::Range<usize> {
     let mut last = line;
-    while last + 1 < lines.len() && lines[last].trim_end().ends_with('\\') {
+    let mut in_comment = false;
+    loop {
+        in_comment = ends_in_block_comment(lines[last], in_comment);
+        let continued = lines[last].trim_end().ends_with('\\');
+        if (!continued && !in_comment) || last + 1 >= lines.len() {
+            break;
+        }
         last += 1;
     }
     line..last + 1
+}
+
+/// Whether a `/*` comment is still open at the end of `line`, given whether
+/// one was open at its start. String and character literals are skipped.
+fn ends_in_block_comment(line: &str, mut in_comment: bool) -> bool {
+    let b = line.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if in_comment {
+            if b[i] == b'*' && b.get(i + 1) == Some(&b'/') {
+                in_comment = false;
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        match b[i] {
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                in_comment = true;
+                i += 2;
+            }
+            b'/' if b.get(i + 1) == Some(&b'/') => return false,
+            q @ (b'"' | b'\'') => {
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    in_comment
 }
 
 /// The text of the directive starting at `line`, continuations joined.
@@ -82,7 +134,11 @@ pub(crate) fn compiled_arm(
         if local.contains(name) {
             return None;
         }
-        Some(profile.get(name).copied().unwrap_or(false))
+        match profile.get(name) {
+            Some(&declared) => Some(declared),
+            None if is_reserved(name) => None,
+            None => Some(false),
+        }
     };
     for (arm, &line) in openers.iter().enumerate() {
         let text = strip_comments(&directive_text(lines, line));
@@ -104,6 +160,17 @@ pub(crate) fn compiled_arm(
         }
     }
     None
+}
+
+/// An identifier reserved to the implementation (C11 7.1.3): `__x`, or `_`
+/// and an uppercase letter. The compiler defines these, so an undeclared one
+/// is unknown, never "undefined".
+fn is_reserved(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next() == Some('_')
+        && chars
+            .next()
+            .is_some_and(|c| c == '_' || c.is_ascii_uppercase())
 }
 
 fn first_word(s: &str) -> Option<&str> {
@@ -192,6 +259,7 @@ fn evaluate(condition: &str, defined: &dyn Fn(&str) -> Option<bool>) -> Option<i
         toks: &toks,
         at: 0,
         defined,
+        guessed: false,
     };
     let v = p.or()?;
     (p.at == toks.len()).then_some(v)
@@ -201,6 +269,9 @@ struct Parser<'a> {
     toks: &'a [Tok],
     at: usize,
     defined: &'a dyn Fn(&str) -> Option<bool>,
+    /// Set when an operand's value came from reading an undeclared name as
+    /// undefined, `0` -- a guess a comparison must not decide on.
+    guessed: bool,
 }
 
 impl Parser<'_> {
@@ -232,10 +303,18 @@ impl Parser<'_> {
     }
 
     fn cmp(&mut self) -> Option<i64> {
+        self.guessed = false;
         let l = self.unary()?;
+        let l_guessed = self.guessed;
         for op in ["==", "!=", "<=", ">=", "<", ">"] {
             if self.eat(op) {
+                self.guessed = false;
                 let r = self.unary()?;
+                // `FOO >= 3` compares a value macro, which some header
+                // defines: its value is not the `0` of an undefined name.
+                if l_guessed || self.guessed {
+                    return None;
+                }
                 return Some(i64::from(match op {
                     "==" => l == r,
                     "!=" => l != r,
@@ -283,7 +362,10 @@ impl Parser<'_> {
                 // Defined with a value nothing here knows, or undefined: 0.
                 match (self.defined)(&name)? {
                     true => None,
-                    false => Some(0),
+                    false => {
+                        self.guessed = true;
+                        Some(0)
+                    }
                 }
             }
             Tok::Op(_) => None,
@@ -340,9 +422,12 @@ mod tests {
     fn literal_conditions_are_read() {
         assert_eq!(arm("#if 1\na\n#else\nb\n#endif"), Some(0));
         assert_eq!(arm("#if 0\na\n#else\nb\n#endif"), Some(1));
+        // An undeclared name compared with a value is a value macro some
+        // header defines, not an undefined one.
+        assert_eq!(arm("#if UNDEFINED_VERSION >= 3\na\n#else\nb\n#endif"), None);
         assert_eq!(
-            arm("#if UNDEFINED_VERSION >= 3\na\n#else\nb\n#endif"),
-            Some(1)
+            arm("#if FOO > 2 || defined(BAR)\na\n#else\nb\n#endif"),
+            None
         );
     }
 
@@ -351,6 +436,33 @@ mod tests {
         // POSIX default: `_WIN32` undefined, `__linux__` defined.
         assert_eq!(arm("#ifdef _WIN32\na\n#else\nb\n#endif"), Some(1));
         assert_eq!(arm("#if defined(__linux__)\na\n#else\nb\n#endif"), Some(0));
+    }
+
+    #[test]
+    fn compiler_reserved_names_are_unknown_unless_declared() {
+        assert_eq!(arm("#if __GNUC__ >= 4\na\n#else\nb\n#endif"), None);
+        assert_eq!(arm("#ifdef __GNUC__\na\n#else\nb\n#endif"), None);
+        assert_eq!(
+            arm("#if __STDC_VERSION__ >= 199901L\na\n#else\nb\n#endif"),
+            None
+        );
+        assert_eq!(
+            arm("#if defined(_FORTIFY_SOURCE)\na\n#else\nb\n#endif"),
+            None
+        );
+        // The profile declares these.
+        assert_eq!(arm("#ifdef _MSC_VER\na\n#else\nb\n#endif"), Some(1));
+        assert_eq!(arm("#if defined(__linux__)\na\n#else\nb\n#endif"), Some(0));
+    }
+
+    #[test]
+    fn a_block_comment_the_directive_leaves_open_is_part_of_it() {
+        let src = "#if !defined(A) /* start\n   end */\n    a\n#else\n    b\n#endif";
+        let lines: Vec<&str> = src.lines().collect();
+        assert_eq!(directive_extent(&lines, 0), 0..2);
+        assert_eq!(compiled_arm(&lines, &[0, 3], &HashSet::new()), Some(0));
+        let closed = ["#if A /* c */", "x"];
+        assert_eq!(directive_extent(&closed, 0), 0..1);
     }
 
     #[test]

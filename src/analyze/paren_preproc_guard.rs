@@ -652,6 +652,29 @@ void f(int u) {
     }
 
     #[test]
+    fn blanks_a_comment_the_directive_leaves_open() {
+        let src = "\
+int g(int a);
+void f(int u) {
+    if (
+#if !defined(A) /* start
+   end */
+        g(u) != 0
+#else
+        0
+#endif
+        ) {
+        u = 0;
+    }
+}
+";
+        let out = blank_paren_guarded_preproc(src);
+        assert!(!out.contains("end */"));
+        assert!(out.contains("g(u) != 0"));
+        assert!(parses_clean(src));
+    }
+
+    #[test]
     fn blanks_a_directive_with_its_continuation_lines() {
         let src = "\
 int g(int a);
