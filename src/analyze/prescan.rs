@@ -1274,7 +1274,9 @@ fn prescan_file_list(
         &macro_aliases,
     );
     function_summary::propagate_return_taint(&mut function_summaries);
-    function_summary::settle_definition_facts(&mut function_summaries, &macro_aliases);
+    // Through the free passes' aliases: a definition forwarding to an alias
+    // whose every configuration frees must be credited as the union was.
+    function_summary::settle_definition_facts(&mut function_summaries, &free_aliases);
 
     // CON03-C/CON07-C reachability gate: needs the fully merged,
     // cross-file `function_macros` table to resolve macro-forwarded
@@ -1664,7 +1666,8 @@ fn aliases_for_frees(
 /// Key the callees a summary names the way the fold keys their definitions,
 /// so the phase 4 passes that follow a summary's own edges to another
 /// summary -- the passthrough chains, each definition's own forwards, the
-/// returned-callee and name-shaped free resolutions -- reach this file's scoped static rather than a bare
+/// returned-callee and field-free edge resolutions -- reach this file's
+/// scoped static rather than a bare
 /// entry the fold never made. Without it, a static wrapper forwarding to a
 /// static sink that another file also defines (Juliet's `badSink` ->
 /// `badVaSink`, in every file of a CWE directory) has an edge to nothing,
@@ -7339,10 +7342,7 @@ pub fn resolve_includes(
         context.function_summaries.make_mut(),
         &context.macro_aliases,
     );
-    function_summary::settle_definition_facts(
-        context.function_summaries.make_mut(),
-        &context.macro_aliases,
-    );
+    function_summary::settle_definition_facts(context.function_summaries.make_mut(), &free_aliases);
     // Headers resolved here may add a definition of a name, including the
     // `NDEBUG` arm that disqualifies it, so the check table is rebuilt.
     context.abort_check_macros = context.abort_check_noreturn_functions.map(|names| {

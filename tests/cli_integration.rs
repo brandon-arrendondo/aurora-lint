@@ -3965,3 +3965,18 @@ fn a_wrapper_over_an_alias_every_arm_frees_releases_its_argument() {
     assert!(leaks(&[]), "an undeclared arm proves nothing");
     assert!(!leaks(&["--deallocator", "HOOK_FREE"]));
 }
+
+#[test]
+fn every_definition_of_a_wrapper_over_an_alias_every_arm_frees_releases_its_argument() {
+    let leaks = |args: &[&str]| {
+        declared_memory_findings(
+            "two_definition_alias_wrapper.c",
+            "manifest_mem30_mem31.toml",
+            args,
+        )
+        .into_iter()
+        .any(|(r, _, m)| r == "MEM31-C" && m.contains("'p'"))
+    };
+    assert!(leaks(&[]), "an undeclared arm proves nothing");
+    assert!(!leaks(&["--deallocator", "HOOK_FREE"]));
+}
