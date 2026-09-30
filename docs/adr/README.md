@@ -63,3 +63,6 @@ outlive any one task.
   pairing it with a run](0014-the-oracle-is-independent-of-the-tool.md)
 - [0015 — Policy and environment are separate settings; `default` and `strict`
   are presets over them](0015-default-and-strict-profiles.md)
+- [0016 — A published artifact cites its sources, ships as a sanitized
+  export, names its accountable reviewer, and discloses AI
+  use](0016-published-artifacts.md)
