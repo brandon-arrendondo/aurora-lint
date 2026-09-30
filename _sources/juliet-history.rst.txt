@@ -1333,16 +1333,22 @@ CWEs only.
 
 Key context from literature:
 
-- Tools on average find ~20% of weaknesses in basic Juliet test cases
+- On real-world vulnerabilities, even the best single C analyzer studied
+  misses between 47% and 80%, depending on the evaluation scenario; the best
+  combination of analyzers still misses 30–69%, while flagging more functions
   (`ISSTA 2022 <https://dl.acm.org/doi/10.1145/3533767.3534380>`_).
-- Even commercial tools miss 27% of C/C++ vulnerabilities (Goseva 2015).
-- FP rates range from 6.5% to 76%+ depending on rule set.
-- Industry target for developer adoption is 10–20% FP rate.
-- No single tool is comprehensive; academic consensus recommends tool
-  combination.
+- 27% of C/C++ vulnerabilities were missed by all three commercial tools
+  tested (Goseva 2015).
+- From a developer survey, Christakis and Bird recommend that analysis
+  designers aim for a false-positive rate no higher than 15–20%; only 24% of
+  respondents accepted 20% (`ASE 2016
+  <https://doi.org/10.1145/2970276.2970347>`_).
+
+See :doc:`bibliography` for full references.
 
 Sources: `ISSTA 2022 <https://dl.acm.org/doi/10.1145/3533767.3534380>`_ |
 `Goseva 2015 <https://community.wvu.edu/~kagoseva/Papers/IST-2015.pdf>`_ |
+`ASE 2016 <https://doi.org/10.1145/2970276.2970347>`_ |
 `JKU 2014 <https://www.se.jku.at/wp-content/uploads/2014/08/2014.Using-the-Juliet-Test-Suite.pdf>`_ |
 `Semgrep Blog 2025 <https://semgrep.dev/blog/2025/security-research-comparing-semgrep-community-edition-and-semgrep-code-for-static-analysis/>`_
 

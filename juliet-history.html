@@ -1951,16 +1951,20 @@ fast-mode/CWE-matched.</p>
 CWEs only.</p>
 <p>Key context from literature:</p>
 <ul class="simple">
-<li><p>Tools on average find ~20% of weaknesses in basic Juliet test cases
+<li><p>On real-world vulnerabilities, even the best single C analyzer studied
+misses between 47% and 80%, depending on the evaluation scenario; the best
+combination of analyzers still misses 30–69%, while flagging more functions
 (<a class="reference external" href="https://dl.acm.org/doi/10.1145/3533767.3534380">ISSTA 2022</a>).</p></li>
-<li><p>Even commercial tools miss 27% of C/C++ vulnerabilities (Goseva 2015).</p></li>
-<li><p>FP rates range from 6.5% to 76%+ depending on rule set.</p></li>
-<li><p>Industry target for developer adoption is 10–20% FP rate.</p></li>
-<li><p>No single tool is comprehensive; academic consensus recommends tool
-combination.</p></li>
+<li><p>27% of C/C++ vulnerabilities were missed by all three commercial tools
+tested (Goseva 2015).</p></li>
+<li><p>From a developer survey, Christakis and Bird recommend that analysis
+designers aim for a false-positive rate no higher than 15–20%; only 24% of
+respondents accepted 20% (<a class="reference external" href="https://doi.org/10.1145/2970276.2970347">ASE 2016</a>).</p></li>
 </ul>
+<p>See <a class="reference internal" href="bibliography.html"><span class="doc">Bibliography</span></a> for full references.</p>
 <p>Sources: <a class="reference external" href="https://dl.acm.org/doi/10.1145/3533767.3534380">ISSTA 2022</a> |
 <a class="reference external" href="https://community.wvu.edu/~kagoseva/Papers/IST-2015.pdf">Goseva 2015</a> |
+<a class="reference external" href="https://doi.org/10.1145/2970276.2970347">ASE 2016</a> |
 <a class="reference external" href="https://www.se.jku.at/wp-content/uploads/2014/08/2014.Using-the-Juliet-Test-Suite.pdf">JKU 2014</a> |
 <a class="reference external" href="https://semgrep.dev/blog/2025/security-research-comparing-semgrep-community-edition-and-semgrep-code-for-static-analysis/">Semgrep Blog 2025</a></p>
 </section>

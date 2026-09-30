@@ -7,38 +7,42 @@ contextualize its results against the static analysis landscape.
 Juliet & Vulnerability Detection Studies
 -----------------------------------------
 
-**[ISSTA2022]** Steinhöfel, D. et al.
+**[Lipp2022]** Lipp, S., Banescu, S., and Pretschner, A.
 "An Empirical Study on the Effectiveness of Static C Code Analyzers for
 Vulnerability Detection."
-*ISSTA 2022*, ACM SIGSOFT International Symposium on Software Testing and
-Analysis.
+*Proc. 31st ACM SIGSOFT International Symposium on Software Testing and
+Analysis (ISSTA 2022)*, pp. 544--555.
 
-| ACM: https://dl.acm.org/doi/10.1145/3533767.3534380
+| DOI: https://doi.org/10.1145/3533767.3534380
 | Preprint: https://mediatum.ub.tum.de/doc/1659728/1659728.pdf
 
-Key finding: state-of-the-art tools miss 47--80% of vulnerabilities; on
-average ~20% detection. Combining tools increases effectiveness by 26%.
+Key finding (Section 5.1 of the preprint): even the best-performing single
+analyzer misses between 47% and 80% of the benchmark's 192 real-world
+vulnerabilities, depending on which of the four evaluation scenarios is
+used. The best combination of analyzers still misses 30--69%, while flagging
+15 percentage points more functions (Section 5.2).
 
 ----
 
 **[Goseva2015]** Goseva-Popstojanova, K. and Perhinschi, A.
 "On the capability of static code analysis to detect security
 vulnerabilities."
-*Information and Software Technology*, 2015.
+*Information and Software Technology* 68:18--33, 2015.
 
+| DOI: https://doi.org/10.1016/j.infsof.2015.08.002
 | PDF: https://community.wvu.edu/~kagoseva/Papers/IST-2015.pdf
-| ACM: https://dl.acm.org/doi/10.1016/j.infsof.2015.08.002
 
-Key finding: 27% of C/C++ vulnerabilities missed by all three commercial
-tools tested; 41% detected by all three. Even commercial tools miss
-significant portions.
+Key finding (abstract): 27% of C/C++ vulnerabilities were missed by all
+three commercial tools tested, and 41% were detected by all three.
 
 ----
 
-**[JKU2014]** Neumayer, P. et al.
+**[Wagner2014]** Wagner, A. and Sametinger, J.
 "Using the Juliet Test Suite to Compare Static Security Scanners."
-Johannes Kepler University Linz, 2014.
+*Proc. 11th International Conference on Security and Cryptography
+(SECRYPT 2014)*, pp. 244--252.
 
+| DOI: https://doi.org/10.5220/0005032902440252
 | PDF: https://www.se.jku.at/wp-content/uploads/2014/08/2014.Using-the-Juliet-Test-Suite.pdf
 
 Directly compares scanner performance using the Juliet Test Suite as ground
@@ -46,25 +50,34 @@ truth.
 
 ----
 
-**[Li2024]** Li, K. et al.
+**[Charoenwet2024]** Charoenwet, W., Thongtanunam, P., Pham, V.-T., and
+Treude, C.
 "An Empirical Study of Static Analysis Tools for Secure Code Review."
-*ISSTA 2024*, ACM.
+*Proc. 33rd ACM SIGSOFT International Symposium on Software Testing and
+Analysis (ISSTA 2024)*, pp. 691--703.
 
-| ACM: https://dl.acm.org/doi/10.1145/3650212.3680313
+| DOI: https://doi.org/10.1145/3650212.3680313
 | Preprint: https://arxiv.org/abs/2407.12241
 
-Key finding: 52% of vulnerable code changes warned by a single tool; 76%+
-of warnings in vulnerable functions are irrelevant to the actual
-vulnerability; 22% of VCCs undetected by any tool.
+Key finding (abstract): a single SAST tool warns in the vulnerable functions
+of 52% of vulnerability-contributing commits; at least 76% of warnings in
+vulnerable functions are irrelevant to the vulnerability; 22% of VCCs remain
+undetected because of limitations of the tools' rules.
 
 ----
 
-**[Chen2023]** Chen, Y. et al.
-"A Comparison of Static Analysis Tools for Vulnerability Detection in
-C/C++ Code."
+**[Arusoaie2017]** Arusoaie, A., Ciobaca, S., Craciun, V., Gavrilut, D.,
+and Lucanu, D.
+"A Comparison of Open-Source Static Analysis Tools for Vulnerability
+Detection in C/C++ Code."
+*Proc. 19th International Symposium on Symbolic and Numeric Algorithms for
+Scientific Computing (SYNASC 2017)*, IEEE, pp. 161--168.
 
-Compares multiple tools on C/C++ vulnerability detection with quantitative
-precision/recall metrics.
+| DOI: https://doi.org/10.1109/SYNASC.2017.00035
+
+From the abstract: benchmarks several open-source C/C++ static analyzers
+against the Toyota ITC test suite, a synthetic benchmark, by detection rate
+and false-positive rate, and introduces a "robust detection" metric.
 
 NIST SATE Reports
 -----------------
@@ -73,31 +86,36 @@ NIST SATE Reports
 "Static Analysis Tool Exposition (SATE) VI."
 NIST, 2018--2023.
 
-| Overview: https://www.nist.gov/itl/ssd/software-quality-group/static-analysis-tool-exposition-sate-vi
-| Bug Injection Report: https://www.nist.gov/publications/sate-vi-report-bug-injection-and-collection
-| Ockham Criteria: https://www.nist.gov/publications/sate-vi-ockham-sound-analysis-criteria-0
-| Workshop: https://samate.nist.gov/SATE6Workshop.html
+| Overview: https://www.nist.gov/itl/csd/secure-systems-and-applications/static-analysis-tool-exposition-sate-vi
+| Bug Injection Report: Delaitre, A. et al., "SATE VI Report: Bug Injection
+  and Collection," NIST SP 500-341, 2023. https://doi.org/10.6028/NIST.SP.500-341
+| Ockham Criteria: Black, P. E. and Walia, K. S., "SATE VI Ockham Sound
+  Analysis Criteria," NISTIR 8304, 2020. https://doi.org/10.6028/NIST.IR.8304
+| Workshop: https://www.nist.gov/itl/csd/secure-systems-and-applications/static-analysis-tool-exposition-sate-vi-workshop
 
-Security-focused bug-finding evaluation exercise. Showed significant
-variability across tool effectiveness depending on test cases, bug classes,
-and complexity.
+Security-focused bug-finding evaluation exercise. Its report finds
+significant variability in tool effectiveness depending on the test cases,
+bug classes, and bug complexity.
 
 ----
 
-**[NIST-SP500-297]** Okun, V. et al.
+**[NIST-SP500-297]** Okun, V., Delaitre, A., and Black, P. E.
 "Report on the Static Analysis Tool Exposition (SATE) IV."
-NIST SP 500-297.
+NIST SP 500-297, January 2013.
 
+| DOI: https://doi.org/10.6028/NIST.SP.500-297
 | PDF: https://www.govinfo.gov/content/pkg/GOVPUB-C13-85ce8522f8e17f9964cecdf57250a8c6/pdf/GOVPUB-C13-85ce8522f8e17f9964cecdf57250a8c6.pdf
 
 ----
 
-**[Juliet-v1.3]** NIST SAMATE.
-"Juliet Test Suite v1.3 for C/C++."
+**[Juliet-v1.3]** NSA Center for Assured Software.
+"Juliet C/C++ 1.3." NIST SARD test suite 112, 2017.
 
 | Download: https://samate.nist.gov/SARD/test-suites/112
 
-54,484 C/C++ files covering 118 CWEs with ground truth (OMITBAD/OMITGOOD).
+SARD's page for the suite lists 64,099 test cases organized under 118 CWEs.
+That count is of test cases, not files; the file counts in
+:doc:`juliet-history` are of the files aurora-lint scans, a different unit.
 
 Tool Comparison & Industry Studies
 ----------------------------------
@@ -106,38 +124,51 @@ Tool Comparison & Industry Studies
 and Palomba, F.
 "A critical comparison on six static analysis tools: Detection, agreement,
 and precision."
-*Journal of Systems and Software*, 2022.
+*Journal of Systems and Software* 198:111575, 2023.
 
+| DOI: https://doi.org/10.1016/j.jss.2022.111575
 | arXiv: https://arxiv.org/abs/2101.08832
-| ScienceDirect: https://www.sciencedirect.com/science/article/pii/S0164121222002515
 
-Compared six tools (Java); FindBugs 57% precision. Low inter-tool agreement
-across all pairs.
+Compared six tools on Java projects; the abstract reports little to no
+agreement among the tools and a low degree of precision (FindBugs' 57% is
+the paper's own figure for that tool).
 
 ----
 
-**[Chou2005]** Chou, A. et al.
-"False Positives Over Time (Coverity)."
+**[Chou2005]** Chou, A.
+"False Positives Over Time: A Problem in Deploying Static Analysis Tools."
 Bug Workshop 2005.
 
 | PDF: https://www.cs.umd.edu/~pugh/BugWorkshop05/papers/34-chou.pdf
 
-Early industry data on FP rates and how they evolve as tools mature.
+A one-page workshop abstract on mitigating false positives: they
+accumulate over time because developers fix the real defects and leave the
+false positives in the code. It tabulates mitigation techniques and adds
+observations from Coverity customers. It gives no FP rates.
 
 ----
 
-**[Machiry2022]** Machiry, A. et al.
-"An Empirical Study on the Use of Static Analysis Tools."
+**[Shen2025]** Shen, M., Pillai, A. A., Yuan, B. A., Davis, J. C., and
+Machiry, A.
+"Finding 709 Defects in 258 Projects: An Experience Report on Applying
+CodeQL to Open-Source Embedded Software (Experience Paper)."
+*Proc. ACM on Software Engineering* 2(ISSTA):1077--1100, 2025.
 
-| PDF: https://machiry.github.io/files/emsast.pdf
+| DOI: https://doi.org/10.1145/3728923
+| Preprint (2023, as "An Empirical Study on the Use of Static Analysis Tools
+  in Open Source Embedded Software"): https://machiry.github.io/files/emsast.pdf
 
-How developers use static analysis in practice; adoption barriers
-including FP rates.
+How embedded open-source projects use static analysis; developers cite
+perceived ineffectiveness and false positives as reasons for limited
+adoption.
 
 ----
 
-**[NCC-Group]** NCC Group.
-"Best Practices for Static Analysis."
+**[NCC-Group]** Boone, J.
+"Best Practices for the use of Static Code Analysis within a Real-World
+Secure Development Lifecycle." NCC Group, 2015.
+
+| PDF: https://www.nccgroup.com/media/vegkqamt/_ncc-group-best-practices-for-static-code-aanalysis.pdf
 
 Industry guidance on deploying static analysis effectively, managing
 FP rates, and integrating into development workflows.
@@ -145,32 +176,40 @@ FP rates, and integrating into development workflows.
 False Positive Rate Benchmarks
 ------------------------------
 
-**[CASTLE2025]** CASTLE Benchmarking Dataset. 2025.
+**[CASTLE2025]** Dubniczky, R. A., Horvát, K. Z., Bisztray, T., Ferrag,
+M. A., Cordeiro, L. C., and Tihanyi, N.
+"CASTLE: Benchmarking Dataset for Static Code Analyzers and LLMs towards CWE
+Detection." *TASE 2025*, LNCS, pp. 253--272.
 
+| DOI: https://doi.org/10.1007/978-3-031-98208-8_15
 | arXiv: https://arxiv.org/abs/2503.09433
 
-New benchmark for static code analyzers and LLMs; considers both TP/FP +
-severity weighting.
+A hand-crafted micro-benchmark for static analyzers and LLMs; its scoring
+considers true and false positives and vulnerability severity.
 
 ----
 
-**[AICodeSec2025]** "2025 AI Code Security Benchmark: Snyk vs Semgrep vs
-CodeQL."
+**[Christakis2016]** Christakis, M. and Bird, C.
+"What Developers Want and Need from Program Analysis: An Empirical Study."
+*Proc. 31st IEEE/ACM International Conference on Automated Software
+Engineering (ASE 2016)*, pp. 332--343.
 
-| Blog: https://sanj.dev/post/ai-code-security-tools-comparison
+| DOI: https://doi.org/10.1145/2970276.2970347
 
-CodeQL 5% FP, Snyk 8% FP, Semgrep 12% FP (AI-augmented SAST).
+A survey of Microsoft developers. 90% of respondents accept a
+false-positive rate of up to 5%, 47% accept up to 15%, and only 24% accept
+20%; from this the authors recommend that program-analysis designers aim for
+a false-positive rate no higher than 15--20%.
 
 Industry FP Rate Context
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- **10--20% FP rate**: optimally acceptable for SAST adoption in development
-  (industry consensus)
-- **5% FP rate**: stringent target (DeepSource, validated by major tech
-  companies)
-- **3--48%**: observed range across 10 SAST tools (2018 study)
-- **>95% FP rate**: open-source SAST on Linux kernel null-pointer deref
-  (worst case)
+- **At most 15--20% FP rate**: the target [Christakis2016] recommends to
+  analysis designers, drawn from its survey. It is not a rate most
+  respondents accepted: only 24% accepted 20%, and 47% accepted 15%.
+- **5% FP rate**: a vendor's stated target for its own analyzer, not an
+  independent measurement (DeepSource,
+  https://deepsource.com/blog/how-deepsource-ensures-less-false-positives).
 
 Standards & Specifications
 --------------------------
@@ -190,12 +229,3 @@ Standards & Specifications
 | https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
 
 The output format used by aurora-lint for CI/CD integration.
-
-NASA & Aerospace
------------------
-
-**[NASA-SA]** NASA.
-"Static Code Analysis for Security."
-
-Static analysis practices in safety-critical aerospace software
-development.
