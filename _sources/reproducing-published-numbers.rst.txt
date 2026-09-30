@@ -210,6 +210,13 @@ per-project and overall figures exactly. ``python3 -m unittest discover -s
 tests`` in that repo runs it; it is the demonstration that the published
 figure *is* a function of the three SHAs and nothing else.
 
+The intervals published beside a precision figure come from the same inputs.
+``scripts/precision_ci.py`` in that repo
+(`source <https://github.com/brandon-arrendondo/benchmark_adjudication/blob/main/scripts/precision_ci.py>`_)
+recomputes them, and :doc:`measurement-notes` describes the method, the
+cluster order that makes an interval regenerate exactly, and how to read a
+figure across the v0.5.0 trend break.
+
 Input 3: the corpus -- pinned checkouts and Juliet
 --------------------------------------------------
 

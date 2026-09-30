@@ -1,0 +1,392 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Measurement Notes &mdash; aurora-lint  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Project Structure" href="project-structure.html" />
+    <link rel="prev" title="Reproducing the Published Numbers" href="reproducing-published-numbers.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            aurora-lint
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="options.html">Policy and Environment Options</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tool-comparison.html">Comparison To Other Tools</a></li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Measurement Notes</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#a-precision-figure-is-a-property-of-a-triple">A precision figure is a property of a triple</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#the-v0-5-0-trend-break">The v0.5.0 trend break</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#what-changed">What changed</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#the-like-for-like-view">The like-for-like view</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#reading-a-figure-across-the-break">Reading a figure across the break</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#err33-c-relabeled-to-the-rule-as-written">ERR33-C relabeled to the rule as written</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#reading-an-err33-c-figure">Reading an ERR33-C figure</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#precision-intervals">Precision intervals</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#the-views">The views</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#regenerating-an-interval-exactly">Regenerating an interval exactly</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="licensing.html">Licensing and content provenance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">aurora-lint</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Measurement Notes</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/measurement-notes.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="measurement-notes">
+<h1>Measurement Notes<a class="headerlink" href="#measurement-notes" title="Link to this heading"></a></h1>
+<p>Three things a reader needs to compare real-world figures across
+releases: why the v0.5.0 baseline is a trend break rather than a gain, how the
+ERR33-C labels moved between oracle snapshots, and how the precision intervals
+are computed. The paper states the finding and cites this page at a pinned
+version for the detail.</p>
+<nav class="contents local" id="contents">
+<ul class="simple">
+<li><p><a class="reference internal" href="#a-precision-figure-is-a-property-of-a-triple" id="id1">A precision figure is a property of a triple</a></p></li>
+<li><p><a class="reference internal" href="#the-v0-5-0-trend-break" id="id2">The v0.5.0 trend break</a></p>
+<ul>
+<li><p><a class="reference internal" href="#what-changed" id="id3">What changed</a></p></li>
+<li><p><a class="reference internal" href="#the-like-for-like-view" id="id4">The like-for-like view</a></p></li>
+<li><p><a class="reference internal" href="#reading-a-figure-across-the-break" id="id5">Reading a figure across the break</a></p></li>
+</ul>
+</li>
+<li><p><a class="reference internal" href="#err33-c-relabeled-to-the-rule-as-written" id="id6">ERR33-C relabeled to the rule as written</a></p>
+<ul>
+<li><p><a class="reference internal" href="#reading-an-err33-c-figure" id="id7">Reading an ERR33-C figure</a></p></li>
+</ul>
+</li>
+<li><p><a class="reference internal" href="#precision-intervals" id="id8">Precision intervals</a></p>
+<ul>
+<li><p><a class="reference internal" href="#the-views" id="id9">The views</a></p></li>
+<li><p><a class="reference internal" href="#regenerating-an-interval-exactly" id="id10">Regenerating an interval exactly</a></p></li>
+</ul>
+</li>
+</ul>
+</nav>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>No figure on this page is typed.</strong> Every number sits between a pair of
+<code class="docutils literal notranslate"><span class="pre">..</span> <span class="pre">BENCH:NAME:START</span></code> / <code class="docutils literal notranslate"><span class="pre">..</span> <span class="pre">BENCH:NAME:END</span></code> comments. The host-side
+refresh fills those blocks from Postgres, through <code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code>’s
+<code class="docutils literal notranslate"><span class="pre">bin/refresh_tools_sqc_docs.py</span></code> calling <code class="docutils literal notranslate"><span class="pre">bench/render_docs.py</span></code>, just as
+it fills README’s highlights table. The ERR33-C composition blocks are the
+exception: they come from the public label repository, not Postgres. A
+block that still reads <em>pending</em> has not been rendered yet. The prose
+outside the blocks is hand-written and does not state a figure.</p>
+</div>
+<section id="a-precision-figure-is-a-property-of-a-triple">
+<h2><a class="toc-backref" href="#id1" role="doc-backlink">A precision figure is a property of a triple</a><a class="headerlink" href="#a-precision-figure-is-a-property-of-a-triple" title="Link to this heading"></a></h2>
+<p>A real-world precision or recall figure depends on three things: the detector
+(an aurora-lint build), the rule set (the per-project manifests under
+<code class="docutils literal notranslate"><span class="pre">conf/realworld/</span></code>) and the oracle (the <code class="docutils literal notranslate"><span class="pre">benchmark_adjudication</span></code> label set at
+a commit). If any one of them changes, the figure changes, even when the other
+two are unchanged. These are the same inputs
+<a class="reference internal" href="reproducing-published-numbers.html"><span class="doc">Reproducing the Published Numbers</span></a> pins as analyzer, labels and corpus: the
+rule set comes with the analyzer commit, whose tree holds the manifests, and
+the corpus is held fixed by the pinned project commits. So a published figure
+states all three, and a comparison between figures
+is valid only when the difference is explained by the component that was meant
+to change.</p>
+</section>
+<section id="the-v0-5-0-trend-break">
+<h2><a class="toc-backref" href="#id2" role="doc-backlink">The v0.5.0 trend break</a><a class="headerlink" href="#the-v0-5-0-trend-break" title="Link to this heading"></a></h2>
+<section id="what-changed">
+<h3><a class="toc-backref" href="#id3" role="doc-backlink">What changed</a><a class="headerlink" href="#what-changed" title="Link to this heading"></a></h3>
+<p>The published real-world precision rose sharply between the last v0.4
+baseline and v0.5.0 (the trend-break table gives the figures). The rise is a
+result of the measurement changing, not of detection improving. Between the two
+baselines two of the three components moved.</p>
+<p><strong>The rule set.</strong> Commit <code class="docutils literal notranslate"><span class="pre">10745a46</span></code> (“config(realworld): stop hiding rules
+from the oracle in nine manifests”) re-enabled a block of rules on every
+real-world manifest: DCL04-C, DCL06-C, DCL08-C, EXP02-C, EXP10-C, EXP12-C,
+EXP14-C, EXP19-C, INT01-C, INT02-C, INT16-C, INT17-C and PRE31-C. A build-time
+constant had disabled them as “too noisy on real codebases” in the generated
+base manifest, and most per-project manifests copied that as explicit
+disables. The premise had been tested only on the projects where the block
+remained enabled, and there it did not hold for much of the block. On the other
+corpora the rules could not fire where the oracle could grade them. Once
+enabled, the block contributed a large share of the next run’s findings at high
+precision, most of it from EXP19-C, a brace-style rule.</p>
+<p><strong>The oracle.</strong> The known-true-positive set grew. Most of the new labels are at
+<code class="docutils literal notranslate"><span class="pre">(file,</span> <span class="pre">line,</span> <span class="pre">rule)</span></code> keys the earlier run never emitted, because the block was
+off when it ran. Re-scoring the earlier run against the newer oracle lowers its
+recall without any change to the run itself. A recall figure measured against
+a tool-derived oracle describes the oracle’s history as much as the tool.</p>
+<p><strong>The corpus.</strong> Projects were added in the same interval. Next to the other two
+changes, their effect on the aggregate is second-order.</p>
+<p><em>Pending: the trend-break table (run, rule set and oracle date, precision,
+recall, coverage, findings) for the published baseline, that baseline
+re-scored on the newer oracle, the v0.5.0 run, and the like-for-like rows
+below. Filled by the host-side refresh.</em></p>
+</section>
+<section id="the-like-for-like-view">
+<h3><a class="toc-backref" href="#id4" role="doc-backlink">The like-for-like view</a><a class="headerlink" href="#the-like-for-like-view" title="Link to this heading"></a></h3>
+<p>Fixing two components isolates the third. The like-for-like rows score
+both runs against <strong>one oracle date</strong>, with <strong>the changed rules removed from
+both sides</strong>:</p>
+<ul class="simple">
+<li><p><strong>Across the break</strong>, the fixed oracle is the one the v0.5.0 pin was taken
+on, and the excluded rules are the re-enabled block. Both runs are then
+scored on the rule set the earlier baseline actually measured. On that view,
+detector work over the interval barely moved precision, while the finding
+count rose with the added projects.</p></li>
+<li><p><strong>Across the v0.5.0 to v0.5.2 step</strong>, which kept the corpus and the rule set
+fixed, the excluded rules are the ones whose source changed between the two
+commits, and the oracle is the v0.5.2 baseline’s. Here the labeled false-positive count fell mostly because the
+labeled set and the in-scope finding count both shrank, not because verdicts
+changed. Precision is unchanged within the v0.5.2 run’s
+file-clustered interval.</p></li>
+</ul>
+<p>The like-for-like view does not have an interval yet. Its interval has to be
+computed over the same subset as its point estimate, the findings left after
+the changed rules are excluded, and the published figures do not yet include
+that computation. Until they do, the like-for-like rows are point estimates
+without an interval.</p>
+</section>
+<section id="reading-a-figure-across-the-break">
+<h3><a class="toc-backref" href="#id5" role="doc-backlink">Reading a figure across the break</a><a class="headerlink" href="#reading-a-figure-across-the-break" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Do not claim an improvement across the break from the headline series. Its
+rows are not comparable with one another.</p></li>
+<li><p>Compare only on like-for-like rows, and quote a real-world precision figure
+with its rule set and oracle snapshot attached.</p></li>
+<li><p>The paper’s output-volume series (total findings per release), which
+predates the oracle, cannot be extended past <code class="docutils literal notranslate"><span class="pre">10745a46</span></code> on the same axis.
+The rule set that produced it no longer exists.</p></li>
+</ul>
+</section>
+</section>
+<section id="err33-c-relabeled-to-the-rule-as-written">
+<h2><a class="toc-backref" href="#id6" role="doc-backlink">ERR33-C relabeled to the rule as written</a><a class="headerlink" href="#err33-c-relabeled-to-the-rule-as-written" title="Link to this heading"></a></h2>
+<p>The denominator can also move without any change to the rule set. Between
+states of the public label repository, the ERR33-C label set shifted toward
+true positives. The composition table is of the <strong>labels</strong> at each
+ref, not a run’s precision. A run’s figure also depends on which labeled keys
+it reports. But the labels are the denominator of every real-world figure, so an
+ERR33-C number pinned before the shift cannot be compared with one pinned after
+it unless the reader knows the shift happened.</p>
+<p><em>Pending: ERR33-C label composition (TP, FP, FN, TP share) at each
+``benchmark_adjudication`` ref, regenerable with that repository’s
+label-churn script between any two refs.</em></p>
+<p>There were two mechanisms, and they happened in this order.</p>
+<p><strong>A. New labels written to the rule as written.</strong> The bulk is the valkey
+ERR33-C oracle build. It was labeled from the start to this reading: a call
+ERR33-C covers whose result is ignored outright, or assigned and never tested,
+is a violation as written. ERR33-C-EX1 lists the functions whose results a caller
+may ignore, and it does not exempt any others. A whole-daemon pass on pure-ftpd
+and the <code class="docutils literal notranslate"><span class="pre">fclose</span></code> delta with its review added more labels on the same reading,
+and that review flipped some existing FP labels to TP. This mechanism added
+labels and removed none.</p>
+<p><strong>B. The retroactive relabel.</strong> Once valkey had been labeled to that bar, the
+older projects were the odd ones out. Their ERR33-C rows had been written to a
+looser reading, which tolerated a bare unchecked <code class="docutils literal notranslate"><span class="pre">fflush</span></code> or <code class="docutils literal notranslate"><span class="pre">time</span></code>. Rather
+than carry two bars, the older labels were brought to the rule as written in a
+single batch. The batch only flipped rows from FP to TP; it changed nothing
+else.</p>
+<p><em>Pending: the relabel’s FP-to-TP flips per callee family, beside the valkey
+build’s TP, FP and TP share for the same families, and the number of projects
+the relabel left unchanged.</em></p>
+<p>The per-family view is the consistency check. The relabel moved only some
+families of callees, the ones where an unchecked result is itself the
+violation: formatted output, stream I/O and <code class="docutils literal notranslate"><span class="pre">time</span></code>. Those are the families
+the independently built valkey oracle labels mostly TP. The <strong>memory and
+environment families barely moved</strong>, because their ERR33-C false positives are
+results that are tested, in the same condition that assigns them. The strict
+bar calls those false positives too. The projects whose ERR33-C false positives
+are all of that kind did not move at all.</p>
+<p>That is the labeling principle the oracle follows throughout (see the
+<a class="reference external" href="https://github.com/brandon-arrendondo/aurora-lint/blob/main/docs/adjudication-rules.md">adjudication rules</a>). A label records whether the construct violates the
+rule <em>as written</em>. Whether a project acts on every such violation is a
+question for suppression and configuration (<a class="reference internal" href="suppression.html"><span class="doc">Suppression System</span></a>,
+<a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a>). It is not settled by softening what counts as a true
+positive.</p>
+<section id="reading-an-err33-c-figure">
+<h3><a class="toc-backref" href="#id7" role="doc-backlink">Reading an ERR33-C figure</a><a class="headerlink" href="#reading-an-err33-c-figure" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>ERR33-C’s share of true positives rises between an oracle pinned before the
+relabel and one pinned after it, with no change to what the rule detects. The
+pooled real-world precision rises with it. This is the same denominator
+effect as the trend break, coming from the label side instead of the manifest
+side. It is why a published figure states its <code class="docutils literal notranslate"><span class="pre">benchmark_adjudication</span></code> SHA beside
+its aurora-lint one.</p></li>
+<li><p>The detector moved as well. Since commit <code class="docutils literal notranslate"><span class="pre">09336c31</span></code>, ERR33-C treats a result
+tested in the same condition it is assigned in as checked. That
+withdraws the findings at those keys; it does not relabel them.</p></li>
+<li><p>A v0.5.2 ERR33-C figure therefore carries three movements at once: new
+labels, relabeled labels and withdrawn findings. Read it through the
+like-for-like view that excludes the rule, or through a per-rule delta that
+separates the three, not as a single number.</p></li>
+</ul>
+</section>
+</section>
+<section id="precision-intervals">
+<h2><a class="toc-backref" href="#id8" role="doc-backlink">Precision intervals</a><a class="headerlink" href="#precision-intervals" title="Link to this heading"></a></h2>
+<p>A pooled precision figure is one number over projects whose labeled
+populations differ by orders of magnitude. It mostly describes the largest
+project and a few high-volume rules. So the same run is reported several ways,
+each with an interval.</p>
+<p><em>Pending: the pooled precision with its Wilson interval and file- and
+project-clustered bootstrap intervals; the macro-average with file- and
+project-clustered bootstrap intervals; the precision without the top one and
+top three rules, each with its Wilson interval, macro-average and
+file-clustered bootstrap interval; the coverage bounds; and the resample
+count, seed, cluster order and CI definition version.</em></p>
+<section id="the-views">
+<h3><a class="toc-backref" href="#id9" role="doc-backlink">The views</a><a class="headerlink" href="#the-views" title="Link to this heading"></a></h3>
+<p><strong>Pooled Wilson.</strong> The pooled figure is labeled TP over labeled TP plus FP,
+with a Wilson score interval. Wilson assumes findings are independent, so it
+runs too narrow. Findings cluster: one defect pattern in one function yields a
+run of same-verdict findings in one file.</p>
+<p><strong>Clustered bootstrap.</strong> A percentile bootstrap resamples whole clusters, not
+single findings. The <strong>file</strong> bootstrap resamples <code class="docutils literal notranslate"><span class="pre">(project,</span> <span class="pre">file)</span></code> clusters.
+The <strong>project</strong> bootstrap resamples whole projects. Its width is the one that
+applies to a claim about C codebases in general rather than about this corpus,
+and it is wide and lumpy by nature.</p>
+<p><strong>Macro-average.</strong> Each project’s precision carries equal weight, so the
+figure stops tracking corpus size. It is reported beside the pooled figure,
+not in place of it. The gap between the two is itself a finding.</p>
+<p><strong>Rule-stratified.</strong> The same run is scored with the top one rule, and then the
+top three rules, by labeled volume removed. These rows say what the rest of the
+rule set does.</p>
+<p><strong>The coverage bracket.</strong> The views above are computed over the <em>labeled</em>
+findings. That silently assumes the unlabeled remainder resembles the labeled
+part, and nothing has shown it does. The only bounds that do not rest on that assumption
+are the bracket. One end is the precision if every unlabeled in-scope finding
+were a true positive; the other is the precision if every one were a false
+positive. The pooled figure is one point inside the bracket, and it is
+quoted with the bracket beside it.</p>
+<p><em>Pending: for each project the render lists, its TP, FP and uncertain
+counts, precision and Wilson interval.</em></p>
+</section>
+<section id="regenerating-an-interval-exactly">
+<h3><a class="toc-backref" href="#id10" role="doc-backlink">Regenerating an interval exactly</a><a class="headerlink" href="#regenerating-an-interval-exactly" title="Link to this heading"></a></h3>
+<p>A seeded bootstrap draws the <em>indices</em> of clusters. Its interval is therefore a
+function of the seed, the replicate count, <strong>and the order in which the
+clusters are listed</strong>. The same clusters in another order give different
+replicates. The current definition (CI definition version 2) lists them in
+code-point order of their key: <code class="docutils literal notranslate"><span class="pre">(project,</span> <span class="pre">file_path)</span></code> for the file bootstrap,
+<code class="docutils literal notranslate"><span class="pre">(project,)</span></code> for the project bootstrap. Under that order an interval depends
+on the labeled findings alone and is the same on every machine.</p>
+<p>The earlier definition (version 1) drew clusters in the order the database
+returned its labels. That order was sorted under the database’s en_US.UTF-8
+collation, and glibc has changed that collation between releases. It is kept only to
+reproduce intervals printed under it. Where the two orders disagree, they
+disagree only at the last decimal. That decimal is the Monte Carlo noise floor
+at the default replicate count, so no endpoint is given, or should be read, to
+more than one decimal.</p>
+<p>The public reimplementation is <code class="docutils literal notranslate"><span class="pre">benchmark_adjudication</span></code>’s
+<code class="docutils literal notranslate"><span class="pre">scripts/precision_ci.py</span></code>. It takes the same three inputs as that repository’s
+<code class="docutils literal notranslate"><span class="pre">scripts/score.py</span></code> (findings, labels at a commit, and aurora-lint’s scope
+declaration), and it records the seed, replicate count, order and definition
+version in every result. So anyone can recompute an interval from public inputs
+and check that they used the same definition.</p>
+</section>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="reproducing-published-numbers.html" class="btn btn-neutral float-left" title="Reproducing the Published Numbers" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="project-structure.html" class="btn btn-neutral float-right" title="Project Structure" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025-2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
