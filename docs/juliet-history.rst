@@ -1511,8 +1511,8 @@ Version History (v0.3.20 – present, fast mode)
 Fast mode (per-CWE manifests) is the default from v0.3.20, when the
 ``bench/`` runner replaced the shell script; it was introduced as an opt-in
 ``--fast`` flag at v0.3.19 (see "v0.3.19 — Fast Benchmark Mode" above).
-Migrated here 2026-09-03 from ``JULIET_RESULTS.md``'s "Recent Progress" table when that file was
-retired (it duplicated ``README.md``'s Benchmark Highlights and
+Migrated here 2026-09-03 from ``JULIET_RESULTS.md``'s "Recent Progress"
+table when that file was retired (it duplicated ``README.md``'s Benchmark Highlights and
 ``data/benchmarks.db``/``sqc_bench`` Postgres, same reason
 ``REALWORLD_RESULTS.md`` went first) -- this table was the one thing in it
 this file didn't already have a place for; the pre-fast-mode table above
