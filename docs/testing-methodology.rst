@@ -401,8 +401,9 @@ v0.4.116  VRA, macro expansion, field-sensitive        4,220       83.8%      -7
           alias tracking, per-rule tuning
 ========  ==========================================  ==========  =========  =========
 
-*Note: v0.3.37 and later use fast mode (CWE-matched rules only); earlier rounds
-used full-suite scoring, so absolute FP counts are not directly comparable across
+*Note: fast mode (CWE-matched rules only) became the benchmark default at
+v0.3.20, after being introduced as an opt-in flag at v0.3.19; v0.3.37 is simply
+the first fast-mode row in this table. Earlier rounds used full-suite scoring, so absolute FP counts are not directly comparable across
 the two methodologies. TP rate is the consistent metric. The FP increase from
 v0.3.37 to v0.3.119 reflects expanded CWE scope (68 → 74 CWEs) and more test files,
 not regression — TP rate improved 19.1 percentage points over the same span. The
