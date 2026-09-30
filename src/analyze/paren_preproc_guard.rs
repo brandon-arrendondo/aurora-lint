@@ -70,8 +70,11 @@
 //! ```
 //! Blanking only the directives would splice both arms into one expression,
 //! `a != 0 b != 0`, which parses no better. So, as `preproc_split_chain`
-//! does for a header split across a chain, the LAST arm is kept and every
-//! other arm's lines are blanked with the directives. Each arm must meet
+//! does for a header split across a chain, one arm is kept and every other
+//! arm's lines are blanked with the directives. The kept arm is the one a
+//! build compiles with the tested macro undefined: the first arm of
+//! `#ifndef X` or `#if !defined(X)`, the last arm otherwise (see
+//! `kept_arm`). Each arm must meet
 //! both conditions above on its own, so what is kept is a whole operand and
 //! what is dropped is an expression fragment: never a declaration or a
 //! statement. An arm holding a directive of its own is left alone.
@@ -371,7 +374,12 @@ pub fn blank_paren_guarded_preproc(source: &str) -> String {
         {
             continue;
         }
-        let dropped = &arms[..arms.len() - 1];
+        let kept = kept_arm(lines.raw[i], arms.len());
+        let dropped = arms
+            .iter()
+            .enumerate()
+            .filter(|&(a, _)| a != kept)
+            .map(|(_, arm)| arm);
         if !branches.is_empty()
             && (opens_call_arguments(&lines, i)
                 || !arms.iter().all(|a| has_code(a) && !own_directive(a)))
@@ -382,12 +390,42 @@ pub fn blank_paren_guarded_preproc(source: &str) -> String {
         let directives = std::iter::once(i)
             .chain(branches.iter().copied())
             .chain(std::iter::once(end_idx));
-        for k in directives.chain(dropped.iter().flat_map(|a| a.clone())) {
+        for k in directives.chain(dropped.flat_map(|a| a.clone())) {
             blank_line(&mut out, line_starts[k], lines.raw[k].len());
         }
     }
 
     String::from_utf8(out).unwrap_or_else(|_| source.to_string())
+}
+
+/// Which of a conditional's `arms` is kept: the one a build compiles when the
+/// macro the opening directive tests is not defined. That is the first arm
+/// of `#ifndef X` or `#if !defined(X)` and the last otherwise. Such a macro is
+/// usually a build option (`NO_GETOPT_LONG`, `WITH_LDAP`), and the code
+/// around the conditional is read unguarded -- pure-ftpd declares
+/// `option_index` under the same `#ifndef NO_GETOPT_LONG` whose first arm is
+/// its only use, so keeping the `#else` arm would leave it never read.
+fn kept_arm(opening: &str, arms: usize) -> usize {
+    let rest = opening.trim_start().trim_start_matches('#').trim_start();
+    let condition = rest.strip_prefix("if").map(str::trim_start);
+    let negated_defined = condition
+        .and_then(|c| c.strip_prefix('!'))
+        .map(str::trim_start)
+        .and_then(|c| c.strip_prefix("defined"))
+        .is_some_and(|c| {
+            let c = c.trim();
+            let name = c
+                .strip_prefix('(')
+                .and_then(|c| c.strip_suffix(')'))
+                .unwrap_or(c)
+                .trim();
+            !name.is_empty() && name.chars().all(|ch| ch.is_alphanumeric() || ch == '_')
+        });
+    if directive_keyword(opening) == Some("ifndef") || negated_defined {
+        0
+    } else {
+        arms - 1
+    }
 }
 
 /// Replace every non-newline byte of the line at `line_start` with a space.
@@ -524,16 +562,20 @@ void f(void) {
     }
 
     #[test]
-    fn keeps_the_last_arm_of_a_two_branch_grouping() {
-        // pure-ftpd ftpd.c, main's option loop.
+    fn keeps_the_first_arm_of_an_ifndef_grouping() {
+        // pure-ftpd ftpd.c, main's option loop: `option_index` is declared
+        // under the same `#ifndef` and used only by the first arm.
         let src = "\
-int getopt_long(int c, char **v);
+int getopt_long(int c, char **v, int *i);
 int getopt(int c, char **v);
 void f(int argc, char **argv) {
     int o;
+#ifndef NO_GETOPT_LONG
+    int option_index = 0;
+#endif
     while ((o =
 #ifndef NO_GETOPT_LONG
-            getopt_long(argc, argv)
+            getopt_long(argc, argv, &option_index)
 #else
             getopt(argc, argv)
 #endif
@@ -543,8 +585,8 @@ void f(int argc, char **argv) {
 }
 ";
         let out = blank_paren_guarded_preproc(src);
-        assert!(!out.contains("getopt_long(argc"));
-        assert!(out.contains("getopt(argc, argv)"));
+        assert!(out.contains("getopt_long(argc, argv, &option_index)"));
+        assert!(!out.contains("getopt(argc, argv)"));
         assert!(parses_clean(src));
         assert_eq!(out.len(), src.len());
     }
@@ -572,6 +614,29 @@ void f(int u) {
         assert!(out.contains("g(u, 1) != 0"));
         assert!(!out.contains("g(u, 0)") && !out.contains("g(u, 2)"));
         assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn keeps_the_first_arm_of_a_negated_defined_condition() {
+        let src = "\
+int g(int a);
+void f(int u) {
+    if (
+#if !defined(NO_CHECK)
+        g(u) != 0
+#else
+        0
+#endif
+        ) {
+        u = 0;
+    }
+}
+";
+        let out = blank_paren_guarded_preproc(src);
+        assert!(out.contains("g(u) != 0"));
+        assert!(parses_clean(src));
+        assert_eq!(kept_arm("#if !defined(A) || defined(B)", 2), 1);
+        assert_eq!(kept_arm("# ifndef A", 2), 0);
     }
 
     #[test]
