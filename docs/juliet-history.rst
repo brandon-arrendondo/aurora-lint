@@ -315,7 +315,10 @@ v0.3.19 — Fast Benchmark Mode + CWE-78 Taint Tracking
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 First benchmark using **fast mode** (``--fast``): per-CWE manifests that
-include only CWE-matched rules, eliminating noise from unrelated rules. 68
+include only CWE-matched rules, eliminating noise from unrelated rules. At
+v0.3.19 fast mode is an opt-in flag on ``run_juliet_parallel.sh``; it became
+the default at v0.3.20, when the ``bench/`` runner replaced the shell script
+and ``--full`` became the opt-in. 68
 CWEs scanned (29 skipped — no CWE-mapped rules), 12 parallel jobs.
 
 Fast benchmark mode: ``generate_rule_cwe_map.py`` generates 147 per-CWE TOML
@@ -1505,8 +1508,10 @@ query ``data/benchmarks.db``/``sqc_bench`` Postgres directly for every run.
 Version History (v0.3.20 – present, fast mode)
 -------------------------------------------------
 
-Fast mode (per-CWE manifests) begins at v0.3.20. Migrated here 2026-09-03
-from ``JULIET_RESULTS.md``'s "Recent Progress" table when that file was
+Fast mode (per-CWE manifests) is the default from v0.3.20, when the
+``bench/`` runner replaced the shell script; it was introduced as an opt-in
+``--fast`` flag at v0.3.19 (see "v0.3.19 — Fast Benchmark Mode" above).
+Migrated here 2026-09-03 from ``JULIET_RESULTS.md``'s "Recent Progress" table when that file was
 retired (it duplicated ``README.md``'s Benchmark Highlights and
 ``data/benchmarks.db``/``sqc_bench`` Postgres, same reason
 ``REALWORLD_RESULTS.md`` went first) -- this table was the one thing in it
