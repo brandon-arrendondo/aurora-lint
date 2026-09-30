@@ -16,9 +16,11 @@ Analysis (ISSTA 2022)*, pp. 544--555.
 | DOI: https://doi.org/10.1145/3533767.3534380
 | Preprint: https://mediatum.ub.tum.de/doc/1659728/1659728.pdf
 
-Key finding (abstract): state-of-the-art tools miss between 47% and 80% of
-the real-world vulnerabilities in the benchmark; combining analyzers lowers
-that to 30--69%, at the cost of 15 percentage points more functions flagged.
+Key finding (Section 5.1 of the preprint): even the best-performing single
+analyzer misses between 47% and 80% of the benchmark's 192 real-world
+vulnerabilities, depending on which of the four evaluation scenarios is
+used. The best combination of analyzers still misses 30--69%, while flagging
+15 percentage points more functions (Section 5.2).
 
 ----
 
@@ -62,6 +64,21 @@ of 52% of vulnerability-contributing commits; at least 76% of warnings in
 vulnerable functions are irrelevant to the vulnerability; 22% of VCCs remain
 undetected because of limitations of the tools' rules.
 
+----
+
+**[Arusoaie2017]** Arusoaie, A., Ciobaca, S., Craciun, V., Gavrilut, D.,
+and Lucanu, D.
+"A Comparison of Open-Source Static Analysis Tools for Vulnerability
+Detection in C/C++ Code."
+*Proc. 19th International Symposium on Symbolic and Numeric Algorithms for
+Scientific Computing (SYNASC 2017)*, IEEE, pp. 161--168.
+
+| DOI: https://doi.org/10.1109/SYNASC.2017.00035
+
+From the abstract: benchmarks several open-source C/C++ static analyzers
+against the Toyota ITC test suite, a synthetic benchmark, by detection rate
+and false-positive rate, and introduces a "robust detection" metric.
+
 NIST SATE Reports
 -----------------
 
@@ -96,9 +113,9 @@ NIST SP 500-297, January 2013.
 
 | Download: https://samate.nist.gov/SARD/test-suites/112
 
-64,099 test cases organized under 118 CWEs, with ground truth
-(OMITBAD/OMITGOOD), as the SARD page lists them. The file and CWE counts
-aurora-lint scans are a subset; :doc:`juliet-history` gives them.
+SARD's page for the suite lists 64,099 test cases organized under 118 CWEs.
+That count is of test cases, not files; the file counts in
+:doc:`juliet-history` are of the files aurora-lint scans, a different unit.
 
 Tool Comparison & Industry Studies
 ----------------------------------
@@ -124,10 +141,10 @@ Bug Workshop 2005.
 
 | PDF: https://www.cs.umd.edu/~pugh/BugWorkshop05/papers/34-chou.pdf
 
-A qualitative account from Coverity's deployments: false positives
-accumulate because developers fix the real defects and leave the false
-positives, with a comparison of suppression techniques. It gives no FP
-rates.
+A one-page workshop abstract on mitigating false positives: they
+accumulate over time because developers fix the real defects and leave the
+false positives in the code. It tabulates mitigation techniques and adds
+observations from Coverity customers. It gives no FP rates.
 
 ----
 
@@ -179,14 +196,17 @@ Engineering (ASE 2016)*, pp. 332--343.
 
 | DOI: https://doi.org/10.1145/2970276.2970347
 
-A survey of Microsoft developers; the paper recommends that program-analysis
-designers aim for a false-positive rate no higher than 15--20%.
+A survey of Microsoft developers. 90% of respondents accept a
+false-positive rate of up to 5%, 47% accept up to 15%, and only 24% accept
+20%; from this the authors recommend that program-analysis designers aim for
+a false-positive rate no higher than 15--20%.
 
 Industry FP Rate Context
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- **At most 15--20% FP rate**: the ceiling developers accept, per the survey
-  in [Christakis2016].
+- **At most 15--20% FP rate**: the target [Christakis2016] recommends to
+  analysis designers, drawn from its survey. It is not a rate most
+  respondents accepted: only 24% accepted 20%, and 47% accepted 15%.
 - **5% FP rate**: a vendor's stated target for its own analyzer, not an
   independent measurement (DeepSource,
   https://deepsource.com/blog/how-deepsource-ensures-less-false-positives).

@@ -275,8 +275,10 @@ including CWE-690, CWE-761, CWE-78, and CWE-190. Broadest CWE coverage
 (74+ CWEs benchmarked vs clang-tidy's 15
 in the frozen study above).
 
-**Key context**: on real-world vulnerabilities, the C analyzers studied
-miss between 47% and 80% (Lipp2022); in another study, 27% of C/C++
-vulnerabilities were missed by all three commercial tools tested
-(Goseva2015). Developers surveyed accept a false-positive rate of at most
-15--20% (Christakis2016). See :doc:`bibliography` for full references.
+**Key context**: on real-world vulnerabilities, even the best single C
+analyzer studied misses between 47% and 80%, depending on the evaluation
+scenario (Lipp2022); in another study, 27% of C/C++ vulnerabilities were
+missed by all three commercial tools tested (Goseva2015). From a developer
+survey, Christakis and Bird recommend that analysis designers aim for a
+false-positive rate no higher than 15--20%; only 24% of respondents accepted
+20% (Christakis2016). See :doc:`bibliography` for full references.
