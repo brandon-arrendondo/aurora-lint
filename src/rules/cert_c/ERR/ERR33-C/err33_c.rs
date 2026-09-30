@@ -54,11 +54,13 @@ use crate::analyze::check_macros::{self, MacroDefinition};
 use crate::analyze::const_eval;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::context::ScopedTable;
+use crate::analyze::context::VisibleTypes;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
     get_identifier_from_declarator, get_node_text, resolve_identifier_declarator,
 };
+use crate::utility::cert_c::expr_type::TypeEnv;
 use crate::utility::cert_c::result_checks;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -95,6 +97,9 @@ pub struct Err33C {
     project_macros: RefCell<(Arc<Definitions>, Arc<HashSet<String>>)>,
     file_macros: RefCell<(Definitions, HashSet<String>)>,
     macro_test_cache: RefCell<result_checks::MacroTestCache>,
+    /// The typedefs and struct fields this file sees, for typing the object a
+    /// result is stored in.
+    visible: RefCell<VisibleTypes>,
 }
 
 type Definitions = HashMap<String, Vec<MacroDefinition>>;
@@ -109,6 +114,7 @@ impl Err33C {
             project_macros: RefCell::default(),
             file_macros: RefCell::default(),
             macro_test_cache: RefCell::default(),
+            visible: RefCell::default(),
         }
     }
 }
@@ -138,6 +144,10 @@ impl CertRule for Err33C {
             context.conditional_macro_names.clone(),
         );
         *self.project_alias_alternatives.borrow_mut() = context.macro_alias_alternatives.clone();
+    }
+
+    fn set_visible_types(&self, types: &VisibleTypes) {
+        *self.visible.borrow_mut() = types.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -894,7 +904,9 @@ impl Err33C {
             conditional: [&project.1, &file.1],
             cache: &self.macro_test_cache,
         };
-        result_checks::stored_result_is_tested(store, target, call, signal, source, &macros)
+        let visible = self.visible.borrow();
+        let types = TypeEnv::visible(&visible);
+        result_checks::stored_result_is_tested(store, target, call, signal, source, &macros, &types)
     }
 
     /// The identifier a declarator declares (`*p`, `p[4]`, `(*p)` -> `p`).

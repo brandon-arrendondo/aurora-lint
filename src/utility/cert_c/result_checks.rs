@@ -37,9 +37,10 @@
 use crate::analyze::check_macros::MacroDefinition;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::utility::cert_c::ast_utils::{
-    declaration_declarator_for, declaration_type_text, find_containing_function, get_node_text,
+    declaration_declarator_for, find_containing_function, get_node_text,
     resolve_identifier_declarator,
 };
+use crate::utility::cert_c::expr_type::{self, CType, Rank, Sign, TypeEnv};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -169,7 +170,9 @@ pub fn error_signal_for(function_name: &str) -> Option<ErrorSignal> {
 ///
 /// `macros` is every macro definition in view: a result passed whole to a
 /// function-like macro (`REQUIRE(p)`) is tested when the expansion of every
-/// definition of that macro tests it.
+/// definition of that macro tests it. `types` types the object the result is
+/// stored in, which decides whether an ordering test is a signed or an
+/// unsigned comparison.
 pub fn stored_result_is_tested(
     store: &Node,
     target: &Node,
@@ -177,11 +180,13 @@ pub fn stored_result_is_tested(
     signal: ErrorSignal,
     source: &str,
     macros: &MacroView,
+    types: &TypeEnv,
 ) -> bool {
     let cx = Cx {
         signal,
         source,
         macros,
+        types,
     };
     tested_from(store, target, call, &cx, MAX_COPY_HOPS)
 }
@@ -191,6 +196,7 @@ struct Cx<'s> {
     signal: ErrorSignal,
     source: &'s str,
     macros: &'s MacroView<'s>,
+    types: &'s TypeEnv<'s>,
 }
 
 /// Every definition of every macro name in view, and the names some
@@ -225,7 +231,7 @@ const MAX_COPY_HOPS: usize = 2;
 /// times: the copy's own test is a test of the result.
 fn tested_from(store: &Node, target: &Node, call: &Node, cx: &Cx, hops: usize) -> bool {
     let (signal, source) = (cx.signal, cx.source);
-    let unsigned = stored_as_unsigned(store, target, source);
+    let unsigned = stored_as_unsigned(store, target, source, cx.types);
     let requested = requested_count(call, source);
     let judge = |occ: &Node| {
         occurrence_tests(occ, signal, unsigned, requested.as_deref(), source)
@@ -871,39 +877,57 @@ fn truthiness_counts(signal: ErrorSignal) -> bool {
     )
 }
 
-/// Whether the stored result lands in an unsigned object: the store casts
-/// the call to an unsigned type, or `target` is declared with one. Unsigned
-/// by ISO C's own names only -- `unsigned ...`, `size_t`, `uintN_t` and the
-/// like -- not by a project typedef, whose signedness is not in view.
-fn stored_as_unsigned(store: &Node, target: &Node, source: &str) -> bool {
-    let value = match store.kind() {
-        "assignment_expression" => store.child_by_field_name("right"),
-        _ => store.child_by_field_name("value"),
-    };
-    if let Some(v) = value.map(strip_parens) {
-        if v.kind() == "cast_expression"
-            && v.child_by_field_name("type")
-                .is_some_and(|t| is_unsigned_type_text(get_node_text(&t, source)))
-        {
-            return true;
+/// Whether the result is stored as an unsigned value an ordering test then
+/// compares unsigned: the stored object's type is an unsigned integer of at
+/// least `int`'s rank. A narrower one (`unsigned short n`) promotes to `int`,
+/// so `n > -3` is a signed comparison, and always true.
+///
+/// The object is typed from its declaration, typedefs followed
+/// (`typedef size_t mysz;`), or as the expression it is: a member
+/// `p->n`, a dereference `*out`. Only an object that cannot be typed falls
+/// back on a cast at the store, `(size_t)f(...)`; a typed signed object holds
+/// the converted value whatever it was cast to. Anything else reads as signed,
+/// the stricter answer.
+fn stored_as_unsigned(store: &Node, target: &Node, source: &str, types: &TypeEnv) -> bool {
+    match stored_type(store, target, source, types) {
+        Some(ty) => is_unsigned_at_least_int(&ty),
+        None => {
+            let value = match store.kind() {
+                "assignment_expression" => store.child_by_field_name("right"),
+                _ => store.child_by_field_name("value"),
+            };
+            value.map(strip_parens).is_some_and(|v| {
+                v.kind() == "cast_expression"
+                    && v.child_by_field_name("type").is_some_and(|t| {
+                        expr_type::classify_spelling(get_node_text(&t, source), types)
+                            .is_some_and(|ty| is_unsigned_at_least_int(&ty))
+                    })
+            })
         }
     }
+}
+
+/// The type of the object `store` writes: the declared type for an
+/// `init_declarator`, the expression's type for an assignment's left side.
+fn stored_type(store: &Node, target: &Node, source: &str, types: &TypeEnv) -> Option<CType> {
     let target = strip_parens(*target);
+    if store.kind() == "assignment_expression" {
+        return expr_type::expr_type(&target, source, types);
+    }
     if target.kind() != "identifier" {
-        return false;
+        return None;
     }
     let name = get_node_text(&target, source);
-    let Some(declarator) = binding_of(&target, name, source) else {
-        return false;
-    };
+    let declarator = binding_of(&target, name, source)?;
     let mut decl = declarator;
     while !matches!(decl.kind(), "declaration" | "parameter_declaration") {
-        match decl.parent() {
-            Some(p) => decl = p,
-            None => return false,
-        }
+        decl = decl.parent()?;
     }
-    is_unsigned_type_text(&declaration_type_text(&decl, source))
+    expr_type::declarator_type(&decl, &declarator, source, types)
+}
+
+fn is_unsigned_at_least_int(ty: &CType) -> bool {
+    matches!(ty, CType::Int { sign: Sign::Unsigned, rank } if *rank >= Rank::Int)
 }
 
 fn is_unsigned_type_text(text: &str) -> bool {
@@ -1000,8 +1024,11 @@ fn comparison_counts(
         // comparison is unsigned when the result was stored unsigned, or when
         // the constant is cast to an unsigned type, `n >= (size_t)-2`, which
         // converts a signed `n` too.
+        // A test at -1 sees it by equality, or by the orderings that put -1
+        // on the failing side, `n <= -1` and `n > -1`; `n < -1` and
+        // `n >= -1` lump it in with the counts when `n` is signed.
         ErrorSignal::Restartable => {
-            is_negative_one(&o)
+            (is_negative_one(&o) && (equality || matches!(op, "<=" | ">")))
                 || (!equality
                     && (o == "0"
                         || (is_negative_constant(&o)
@@ -1074,7 +1101,23 @@ fn cast_to_unsigned(other: &Node, source: &str) -> bool {
         }
         _ => None,
     };
-    type_node.is_some_and(|t| is_unsigned_type_text(get_node_text(&t, source)))
+    type_node.is_some_and(|t| {
+        let spelling = get_node_text(&t, source);
+        is_unsigned_type_text(spelling) && !is_narrower_than_int(spelling)
+    })
+}
+
+/// An unsigned spelling narrower than `int`, which promotes to `int`:
+/// `(unsigned char)-2` is 254, and comparing with it is a signed comparison.
+fn is_narrower_than_int(spelling: &str) -> bool {
+    spelling
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|tok| {
+            matches!(
+                tok,
+                "char" | "short" | "uint8_t" | "uint16_t" | "u8" | "u16"
+            )
+        })
 }
 
 /// The operand of `(T)(x)` misparsed as a call: a parenthesized lone
@@ -1308,7 +1351,14 @@ mod tests {
             conditional: [&empty_names, &conditional],
             cache: &cache,
         };
-        stored_result_is_tested(&store, &target, &call, signal, code, &macros)
+        let (t, f, sh, al) = (
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+        );
+        let types = TypeEnv::new(&t, &f, &sh, &al);
+        stored_result_is_tested(&store, &target, &call, signal, code, &macros, &types)
     }
 
     #[test]
