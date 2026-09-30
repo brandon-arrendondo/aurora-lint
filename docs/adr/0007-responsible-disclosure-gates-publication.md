@@ -79,6 +79,10 @@ something to undersell out of excess caution.
 - Doesn't relitigate whether aurora-lint should do upstream disclosure at
   all — it should, and continuing to do so is expected. This governs only
   when the record of it becomes public.
+- For everything else a published artifact must meet (citations, a
+  sanitized export, the accountable reviewer, AI disclosure), see
+  [ADR-0016](0016-published-artifacts.md), which extends this ADR to every
+  artifact and leaves its defect-detail rule unchanged.
 
 ## Clarification (2026-09-20): what a label is, and what it is not
 
