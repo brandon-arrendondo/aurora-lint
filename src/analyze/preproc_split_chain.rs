@@ -74,6 +74,27 @@
 //!
 //! **A chain whose arms all end complete.** Nothing is split, so there is
 //! nothing to repair.
+//!
+//! # Arms that open the shared body themselves
+//!
+//! The same split with the brace written on the header line (mosquitto
+//! `src/conf.c`, a port range whose lower bound depends on the build):
+//! ```c
+//! #ifdef WITH_UNIX_SOCKETS
+//!     if(tmp_int < 0 || tmp_int > UINT16_MAX){
+//! #else
+//!     if(tmp_int < 1 || tmp_int > UINT16_MAX){
+//! #endif
+//!         ...
+//!     }
+//! ```
+//! Each arm opens one `{` and the single `}` after the `#endif` closes
+//! whichever was compiled. Read with both arms, the tree has one brace too
+//! many, and in a long function GLR recovery can give up on the function as
+//! a whole, leaving its statements outside any `function_definition`. The
+//! repair is the one above: keep the last arm, blank the other arms' header
+//! lines. It applies only when EVERY arm ends this way, since that is what
+//! makes the brace count come out even; no lone `{` follows such a chain.
 
 use crate::analyze::control_header_preproc_guard::{
     blank_line, ends_with_control_header, is_branch_directive, is_directive, is_directive_start,
@@ -89,6 +110,9 @@ enum ArmEnd {
     ControlHeader,
     /// A bare `else` -- likewise.
     BareElse,
+    /// A control header with its body's opening brace, `if (...) {` -- the
+    /// body and its `}` follow the `#endif`.
+    OpenedHeader,
     /// Self-contained, or empty.
     Complete,
 }
@@ -112,8 +136,12 @@ fn classify(lines: &[&str], body: &[usize]) -> ArmEnd {
     let Some(&last) = body.last() else {
         return ArmEnd::Complete;
     };
-    if ends_with_control_header(&joined(lines, body)) {
+    let text = joined(lines, body);
+    if ends_with_control_header(&text) {
         return ArmEnd::ControlHeader;
+    }
+    if opened_header(&text) {
+        return ArmEnd::OpenedHeader;
     }
     if is_bare_else_line(lines[last]) {
         return ArmEnd::BareElse;
@@ -131,9 +159,13 @@ fn fragment_lines(lines: &[&str], body: &[usize], end: ArmEnd) -> Vec<usize> {
     match end {
         ArmEnd::Complete => Vec::new(),
         ArmEnd::BareElse => body.last().copied().into_iter().collect(),
-        ArmEnd::ControlHeader => {
+        ArmEnd::ControlHeader | ArmEnd::OpenedHeader => {
+            let reads_as = |text: &str| match end {
+                ArmEnd::OpenedHeader => opened_header(text),
+                _ => ends_with_control_header(text),
+            };
             for start in (0..body.len()).rev() {
-                if ends_with_control_header(&joined(lines, &body[start..])) {
+                if reads_as(&joined(lines, &body[start..])) {
                     return body[start..].to_vec();
                 }
             }
@@ -142,6 +174,15 @@ fn fragment_lines(lines: &[&str], body: &[usize], end: ArmEnd) -> Vec<usize> {
             body.to_vec()
         }
     }
+}
+
+/// Whether `text` ends with a control header followed by its body's opening
+/// brace: `if (...) {`.
+fn opened_header(text: &str) -> bool {
+    strip_comments(text)
+        .trim_end()
+        .strip_suffix('{')
+        .is_some_and(ends_with_control_header)
 }
 
 /// Whether the first non-blank line at or after `from` is a lone `{`.
@@ -201,7 +242,7 @@ pub fn blank_split_chain_preproc(source: &str) -> String {
 
         // Single-arm chains belong to `control_header_preproc_guard` and
         // `preproc_dangling_else`; this pass exists for the case they refuse.
-        if branches.is_empty() || !shared_brace_follows(&lines, end_idx + 1) {
+        if branches.is_empty() {
             i += 1;
             continue;
         }
@@ -215,7 +256,20 @@ pub fn blank_split_chain_preproc(source: &str) -> String {
             .windows(2)
             .map(|e| arm_body(&lines, e[0] + 1, e[1]))
             .collect();
-        let ends: Vec<ArmEnd> = bodies.iter().map(|b| classify(&lines, b)).collect();
+        let mut ends: Vec<ArmEnd> = bodies.iter().map(|b| classify(&lines, b)).collect();
+
+        // Either the arms leave a header or `else` for a shared brace block
+        // after the `#endif`, or every arm opens that block itself.
+        if shared_brace_follows(&lines, end_idx + 1) {
+            // An arm that opens a body of its own is not one waiting for the
+            // shared block.
+            for e in ends.iter_mut().filter(|e| **e == ArmEnd::OpenedHeader) {
+                *e = ArmEnd::Complete;
+            }
+        } else if !ends.iter().all(|&e| e == ArmEnd::OpenedHeader) {
+            i += 1;
+            continue;
+        }
 
         let keep = ends.iter().rposition(|&e| e != ArmEnd::Complete);
         let Some(keep) = keep else {
@@ -402,6 +456,70 @@ int g(int a)
         // Both lines of the wrapped condition go, not just the last.
         assert!(!fixed.contains("&& f(a + 1)"));
         assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn fixes_arms_that_each_open_the_shared_body() {
+        // mosquitto src/conf.c, the listener port range.
+        let src = "\
+int g(int n)
+{
+    int r = 0;
+#ifdef WITH_UNIX_SOCKETS
+    if(n < 0 || n > 65535){
+#else
+    if(n < 1 || n > 65535){
+#endif
+        r = 1;
+    }
+    return r;
+}
+";
+        let fixed = blank_split_chain_preproc(src);
+        assert!(!fixed.contains("if(n < 0 || n > 65535){"));
+        assert!(fixed.contains("if(n < 1 || n > 65535){"));
+        assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn fixes_an_opened_header_wrapped_across_lines() {
+        let src = "\
+int g(int n, int m)
+{
+#if defined(A)
+    if (n < 0 &&
+        m > 1) {
+#else
+    if (n < 1) {
+#endif
+        return 1;
+    }
+    return 0;
+}
+";
+        let fixed = blank_split_chain_preproc(src);
+        assert!(!fixed.contains("m > 1) {"));
+        assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn leaves_a_chain_where_only_some_arms_open_a_body_alone() {
+        // One arm opens a brace the other does not: the `}` after the
+        // `#endif` is no longer shared, so nothing here is safe to keep.
+        let src = "\
+int g(int n)
+{
+#ifdef A
+    if (n < 0) {
+#else
+    n = 1;
+#endif
+        n = 2;
+    }
+    return n;
+}
+";
+        assert!(unchanged(src));
     }
 
     #[test]
