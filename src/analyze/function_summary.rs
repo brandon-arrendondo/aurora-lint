@@ -103,6 +103,19 @@ impl DefinitionFacts {
     }
 }
 
+/// What a pointer-returning function's non-null return still depends on
+/// ([`FunctionSummary::nonnull_return_unless`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NonNullReturnDeps {
+    /// Callees whose result may be returned; each must be a function whose
+    /// own summary cannot return NULL.
+    pub callees: BTreeSet<String>,
+    /// `(call name, argument index)` for each call a returned local is passed
+    /// to by value; each must not be a function-like macro assigning that
+    /// argument.
+    pub macro_args: BTreeSet<(String, usize)>,
+}
+
 /// Summary of a function's behavior relevant to CERT C rules.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct FunctionSummary {
@@ -417,6 +430,15 @@ pub struct FunctionSummary {
     pub stores_params: HashSet<usize>,
     /// Whether this function can return NULL.
     pub can_return_null: bool,
+    /// Set when the body proves every return non-null except through what
+    /// this names: a callee whose result is returned, directly or through a
+    /// local, and a call the returned local is handed to by value, which only
+    /// a function-like macro could reassign. `propagate_nonnull_returns`
+    /// clears `can_return_null` once no callee named can return NULL and no
+    /// call named is a macro assigning that argument. `None` is no such
+    /// proof: `can_return_null` stands as the body left it.
+    #[serde(default)]
+    pub nonnull_return_unless: Option<NonNullReturnDeps>,
     /// Whether this function returns dynamically allocated memory.
     pub returns_allocation: bool,
     /// Whether the declared return type is a pointer. Gates
@@ -1491,6 +1513,15 @@ fn analyze_function(
         if is_pointer_return && summary.can_return_null {
             if check_all_returns_nonnull(&body, source) {
                 summary.can_return_null = false;
+            } else if let Some(deps) = nonnull_return_deps(&body, source, text_end) {
+                // Every return is non-null by construction, or through a
+                // local every write of which is; what is left is settled
+                // against the other summaries.
+                if deps.callees.is_empty() && deps.macro_args.is_empty() {
+                    summary.can_return_null = false;
+                } else {
+                    summary.nonnull_return_unless = Some(deps);
+                }
             }
         }
 
@@ -2109,6 +2140,232 @@ fn check_all_returns_nonnull(body: &Node, source: &str) -> bool {
     let mut found_any = false;
     let result = check_returns_all_nonnull_recursive(body, source, &mut found_any);
     found_any && result
+}
+
+/// What every `return` in `body` needs for the function never to return NULL,
+/// or `None` when some return has no such proof. A returned value is
+/// non-null by construction (`&x`, a string literal, a `?:` whose arms both
+/// are), a callee's result (settled later against that callee's summary), or
+/// a local every write of which in the body is one of those. The local is
+/// found by resolving each occurrence to its declarator (ADR-0006), never by
+/// spelling; taking its address, a compound assignment or `++`/`--` on it
+/// defeats the proof, and so does a `static` local with no initializer,
+/// which is NULL until written. A call it is passed to is recorded, since
+/// only a macro can reassign an argument and the macro table is not
+/// complete here. A returned parameter or global stays unproven: what it
+/// holds is its caller's business.
+fn nonnull_return_deps(body: &Node, source: &str, text_end: usize) -> Option<NonNullReturnDeps> {
+    use crate::utility::cert_c::ast_utils;
+
+    fn collect_returns<'a>(node: Node<'a>, source: &str, text_end: usize, out: &mut Vec<Node<'a>>) {
+        if node.start_byte() >= text_end || is_real_nested_function_definition(&node, source) {
+            return;
+        }
+        if node.kind() == "return_statement" {
+            out.push(node);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            collect_returns(child, source, text_end, out);
+        }
+    }
+
+    // A value the local may be given, or a returned expression other than a
+    // local: `Err` when it may be NULL.
+    fn value_deps(expr: &Node, source: &str, deps: &mut NonNullReturnDeps) -> Result<(), ()> {
+        let e = init_state::strip_arg_casts(expr);
+        match e.kind() {
+            "string_literal" | "concatenated_string" => Ok(()),
+            "pointer_expression"
+                if e.child_by_field_name("operator").map(|o| o.kind()) == Some("&") =>
+            {
+                Ok(())
+            }
+            "call_expression" => {
+                let f = e.child_by_field_name("function").ok_or(())?;
+                if f.kind() != "identifier" {
+                    return Err(());
+                }
+                deps.callees
+                    .insert(f.utf8_text(source.as_bytes()).map_err(|_| ())?.to_string());
+                Ok(())
+            }
+            "conditional_expression" => {
+                for arm in ["consequence", "alternative"] {
+                    value_deps(&e.child_by_field_name(arm).ok_or(())?, source, deps)?;
+                }
+                Ok(())
+            }
+            _ => Err(()),
+        }
+    }
+
+    fn identifiers<'a>(node: Node<'a>, name: &str, source: &str, out: &mut Vec<Node<'a>>) {
+        if node.kind() == "identifier" && node.utf8_text(source.as_bytes()).ok() == Some(name) {
+            out.push(node);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            identifiers(child, name, source, out);
+        }
+    }
+
+    // The returned local's every write, checked; `Err` when one may be NULL
+    // or cannot be seen.
+    fn local_deps(
+        ident: &Node,
+        body: &Node,
+        source: &str,
+        deps: &mut NonNullReturnDeps,
+    ) -> Result<(), ()> {
+        let name = ident.utf8_text(source.as_bytes()).map_err(|_| ())?;
+        let (decl, declarator) =
+            ast_utils::resolve_identifier_declarator(ident, name, source).ok_or(())?;
+        if decl.kind() != "declaration"
+            || decl.start_byte() < body.start_byte()
+            || decl.end_byte() > body.end_byte()
+        {
+            return Err(());
+        }
+        let is_static = (0..decl.child_count())
+            .filter_map(|i| decl.child(i))
+            .any(|c| {
+                c.kind() == "storage_class_specifier"
+                    && c.utf8_text(source.as_bytes()).ok() == Some("static")
+            });
+        match declarator.parent() {
+            Some(init) if init.kind() == "init_declarator" => {
+                value_deps(&init.child_by_field_name("value").ok_or(())?, source, deps)?;
+            }
+            _ if is_static => return Err(()),
+            _ => {}
+        }
+        let mut uses = Vec::new();
+        identifiers(*body, name, source, &mut uses);
+        for use_ in uses {
+            match ast_utils::resolve_identifier_declarator(&use_, name, source) {
+                Some((_, d)) if d.id() == declarator.id() => {}
+                _ => continue,
+            }
+            // The declaring occurrence itself; its initializer is read above.
+            if use_.start_byte() >= declarator.start_byte()
+                && use_.end_byte() <= declarator.end_byte()
+            {
+                continue;
+            }
+            // Climb the parentheses to the expression the name is an operand of.
+            let mut operand = use_;
+            let mut parent = use_.parent().ok_or(())?;
+            while parent.kind() == "parenthesized_expression" {
+                operand = parent;
+                parent = parent.parent().ok_or(())?;
+            }
+            match parent.kind() {
+                "assignment_expression"
+                    if parent.child_by_field_name("left").map(|l| l.id()) == Some(operand.id()) =>
+                {
+                    if parent.child_by_field_name("operator").map(|o| o.kind()) != Some("=") {
+                        return Err(());
+                    }
+                    value_deps(
+                        &parent.child_by_field_name("right").ok_or(())?,
+                        source,
+                        deps,
+                    )?;
+                }
+                "update_expression" => return Err(()),
+                "pointer_expression"
+                    if parent.child_by_field_name("operator").map(|o| o.kind()) == Some("&") =>
+                {
+                    return Err(());
+                }
+                "argument_list" => {
+                    let call = parent.parent().ok_or(())?;
+                    let f = call.child_by_field_name("function").ok_or(())?;
+                    if f.kind() != "identifier" {
+                        continue;
+                    }
+                    let idx = (0..parent.named_child_count())
+                        .position(|i| parent.named_child(i).map(|c| c.id()) == Some(operand.id()))
+                        .ok_or(())?;
+                    deps.macro_args.insert((
+                        f.utf8_text(source.as_bytes()).map_err(|_| ())?.to_string(),
+                        idx,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    let mut returns = Vec::new();
+    collect_returns(*body, source, text_end, &mut returns);
+    if returns.is_empty() {
+        return None;
+    }
+    let mut deps = NonNullReturnDeps::default();
+    for ret in returns {
+        let value = ret.named_child(0)?;
+        let stripped = init_state::strip_arg_casts(&value);
+        let proved = if stripped.kind() == "identifier" {
+            local_deps(&stripped, body, source, &mut deps)
+        } else {
+            value_deps(&value, source, &mut deps)
+        };
+        proved.ok()?;
+    }
+    Some(deps)
+}
+
+/// Settle each [`FunctionSummary::nonnull_return_unless`] against the other
+/// summaries and the macro table: the function cannot return NULL once every
+/// callee it may return the result of is a function (not a macro) whose own
+/// summary cannot, and no call its returned local is passed to is a macro
+/// assigning that argument. Recomputed from the recorded dependencies on
+/// every call, so the rerun after `resolve_includes`, with header macros and
+/// definitions now known, may withdraw what an earlier pass concluded. A
+/// cycle stays null-capable.
+pub fn propagate_nonnull_returns(
+    summaries: &mut HashMap<String, FunctionSummary>,
+    macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+) {
+    use crate::analyze::macro_expand::{macro_output_param_indices, Live};
+    for summary in summaries.values_mut() {
+        if summary.nonnull_return_unless.is_some() {
+            summary.can_return_null = true;
+        }
+    }
+    for _pass in 0..10 {
+        let snapshot: HashMap<String, bool> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.can_return_null))
+            .collect();
+        let mut changed = false;
+        for summary in summaries.values_mut() {
+            let Some(deps) = &summary.nonnull_return_unless else {
+                continue;
+            };
+            if !summary.can_return_null {
+                continue;
+            }
+            let callees_proven = deps
+                .callees
+                .iter()
+                .all(|c| !macros.contains_key(c) && snapshot.get(c) == Some(&false));
+            let not_reassigned = deps
+                .macro_args
+                .iter()
+                .all(|(m, idx)| !macro_output_param_indices(macros, m, Live::Any).contains(idx));
+            if callees_proven && not_reassigned {
+                summary.can_return_null = false;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
 }
 
 /// Recursive helper: returns (all_nonnull) and populates found_any.
@@ -4424,6 +4681,26 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, mut summary: Functi
     // stub's non-null return and callers dereferenced its
     // result without a check (hostap eap_teap.c:1387 recall
     // regression, an earlier fix #2).
+    // A non-null return proven only through other summaries holds for the
+    // name when every definition is proven, outright or through them: the
+    // dependencies are unioned, and one definition with no proof (NULL
+    // possible, no dependencies) leaves none.
+    let unproven = |s: &FunctionSummary| s.can_return_null && s.nonnull_return_unless.is_none();
+    existing.nonnull_return_unless = if unproven(existing) || unproven(&summary) {
+        None
+    } else {
+        match (
+            existing.nonnull_return_unless.take(),
+            summary.nonnull_return_unless.take(),
+        ) {
+            (Some(mut ours), Some(theirs)) => {
+                ours.callees.extend(theirs.callees);
+                ours.macro_args.extend(theirs.macro_args);
+                Some(ours)
+            }
+            (ours, theirs) => ours.or(theirs),
+        }
+    };
     existing.can_return_null |= summary.can_return_null;
     // Same direction, same reason: if ANY definition linked under this name
     // hands back a fresh block, a caller that drops the result may be
@@ -8409,6 +8686,128 @@ mod tests {
         let summaries = parse_and_summarize(code);
         let summary = summaries.get("cleanup").unwrap();
         assert!(summary.frees_params.contains(&0));
+    }
+
+    /// `can_return_null` after the non-null-return fixpoint, with the file's
+    /// own function-like macros.
+    fn returns_null_after_fixpoint(code: &str, name: &str) -> bool {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+        let macros = crate::analyze::macro_expand::collect_function_macros(&tree.root_node(), code);
+        let mut summaries = parse_and_summarize(code);
+        propagate_nonnull_returns(&mut summaries, &macros);
+        summaries.get(name).unwrap().can_return_null
+    }
+
+    #[test]
+    fn returned_local_with_only_nonnull_writes_cannot_return_null() {
+        let code = r#"
+        struct s { int a; };
+        static struct s pool[4];
+        static struct s *pick(int i) {
+            struct s *p = &pool[0];
+            if (i > 0)
+                p = &pool[i];
+            return p;
+        }
+        static const char *name(int i) { return i ? "on" : "off"; }
+        static struct s *pick_first(void) { return pick(0); }
+        "#;
+        assert!(!returns_null_after_fixpoint(code, "pick"));
+        assert!(!returns_null_after_fixpoint(code, "name"));
+        assert!(!returns_null_after_fixpoint(code, "pick_first"));
+    }
+
+    #[test]
+    fn returned_local_proof_fails_on_any_unproven_write() {
+        let code = r#"
+        #include <stdlib.h>
+        struct s { int a; };
+        static struct s pool[4];
+        #define RESET(q) ((q) = 0)
+        static void reseat(struct s **pp) { *pp = 0; }
+        static struct s *from_malloc(void) {
+            struct s *p = &pool[0];
+            p = malloc(sizeof *p);
+            return p;
+        }
+        static struct s *address_taken(void) {
+            struct s *p = &pool[0];
+            reseat(&p);
+            return p;
+        }
+        static struct s *macro_reassigns(void) {
+            struct s *p = &pool[0];
+            RESET(p);
+            return p;
+        }
+        static struct s *static_uninitialized(int i) {
+            static struct s *p;
+            if (i)
+                p = &pool[i];
+            return p;
+        }
+        static struct s *stepped(void) {
+            struct s *p = &pool[0];
+            p++;
+            return p;
+        }
+        static struct s *through_param(struct s *q) {
+            struct s *p = q;
+            return p;
+        }
+        static struct s *cycle_b(int);
+        static struct s *cycle_a(int i) { return cycle_b(i); }
+        static struct s *cycle_b(int i) { return cycle_a(i); }
+        "#;
+        for name in [
+            "from_malloc",
+            "address_taken",
+            "macro_reassigns",
+            "static_uninitialized",
+            "stepped",
+            "through_param",
+            "cycle_a",
+        ] {
+            assert!(
+                returns_null_after_fixpoint(code, name),
+                "{name} must stay null-capable"
+            );
+        }
+    }
+
+    #[test]
+    fn returned_local_shadowed_by_an_inner_declaration_is_resolved_by_scope() {
+        // The inner `p` is a different object; its NULL write does not reach
+        // the returned outer `p` (ADR-0006: resolved, not matched by name).
+        let code = r#"
+        struct s { int a; };
+        static struct s pool[4];
+        static struct s *outer(int i) {
+            struct s *p = &pool[0];
+            if (i) {
+                struct s *p = 0;
+                (void)p;
+            }
+            return p;
+        }
+        "#;
+        assert!(!returns_null_after_fixpoint(code, "outer"));
+    }
+
+    #[test]
+    fn nonnull_return_proof_is_unioned_across_variants() {
+        let code = r#"
+        struct s { int a; };
+        static struct s pool[4];
+        #ifdef FAST
+        struct s *get(void) { return &pool[0]; }
+        #else
+        struct s *get(void) { return 0; }
+        #endif
+        "#;
+        assert!(returns_null_after_fixpoint(code, "get"));
     }
 
     #[test]
