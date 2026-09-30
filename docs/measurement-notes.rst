@@ -29,8 +29,11 @@ A real-world precision or recall figure depends on three things: the detector
 (an aurora-lint build), the rule set (the per-project manifests under
 ``conf/realworld/``) and the oracle (the ``benchmark_adjudication`` label set at
 a commit). If any one of them changes, the figure changes, even when the other
-two are unchanged. So a published figure states all three, as
-:doc:`reproducing-published-numbers` sets out, and a comparison between figures
+two are unchanged. These are the same inputs
+:doc:`reproducing-published-numbers` pins as analyzer, labels and corpus: the
+rule set comes with the analyzer commit, whose tree holds the manifests, and
+the corpus is held fixed by the pinned project commits. So a published figure
+states all three, and a comparison between figures
 is valid only when the difference is explained by the component that was meant
 to change.
 
@@ -94,11 +97,11 @@ both sides**:
   changed. Precision is unchanged within the v0.5.2 run's
   file-clustered interval.
 
-A like-for-like row needs an interval computed over the same subset as its
-point estimate, the findings left after the changed rules are excluded. The
-baseline-numbers tool does not yet apply ``--exclude-rules`` to
-``--intervals``. Until it does, the like-for-like rows are published as point
-estimates, without an interval.
+The like-for-like view does not have an interval yet. Its interval has to be
+computed over the same subset as its point estimate, the findings left after
+the changed rules are excluded, and the published figures do not yet include
+that computation. Until they do, the like-for-like rows are point estimates
+without an interval.
 
 Reading a figure across the break
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -107,9 +110,9 @@ Reading a figure across the break
   rows are not comparable with one another.
 - Compare only on like-for-like rows, and quote a real-world precision figure
   with its rule set and oracle snapshot attached.
-- The output-volume series that predates the oracle cannot be extended past
-  ``10745a46`` on the same axis. The rule set that produced it no longer
-  exists.
+- The paper's output-volume series (total findings per release), which
+  predates the oracle, cannot be extended past ``10745a46`` on the same axis.
+  The rule set that produced it no longer exists.
 
 ERR33-C relabeled to the rule as written
 ----------------------------------------
@@ -151,8 +154,8 @@ else.
 .. BENCH:ERR33C_FAMILIES:START
 
 *Pending: the relabel's FP-to-TP flips per callee family, beside the valkey
-build's TP, FP and TP share for the same families, and the projects the
-relabel left unchanged.*
+build's TP, FP and TP share for the same families, and the number of projects
+the relabel left unchanged.*
 
 .. BENCH:ERR33C_FAMILIES:END
 
@@ -165,8 +168,9 @@ results that are tested, in the same condition that assigns them. The strict
 bar calls those false positives too. The projects whose ERR33-C false positives
 are all of that kind did not move at all.
 
-That is the labeling principle the oracle follows throughout (see
-``adjudication-rules.md``). A label records whether the construct violates the
+That is the labeling principle the oracle follows throughout (see the
+`adjudication rules
+<https://github.com/brandon-arrendondo/aurora-lint/blob/main/docs/adjudication-rules.md>`_). A label records whether the construct violates the
 rule *as written*. Whether a project acts on every such violation is a
 question for suppression and configuration (:doc:`suppression`,
 :doc:`configuration`). It is not settled by softening what counts as a true
@@ -184,7 +188,7 @@ Reading an ERR33-C figure
 - The detector moved as well. Since commit ``09336c31``, ERR33-C treats a result
   tested in the same condition it is assigned in as checked. That
   withdraws the findings at those keys; it does not relabel them.
-- A v0.5.x ERR33-C figure therefore carries three movements at once: new
+- A v0.5.2 ERR33-C figure therefore carries three movements at once: new
   labels, relabeled labels and withdrawn findings. Read it through the
   like-for-like view that excludes the rule, or through a per-rule delta that
   separates the three, not as a single number.
@@ -199,10 +203,12 @@ each with an interval.
 
 .. BENCH:PRECISION_INTERVALS:START
 
-*Pending: pooled, macro-average and rule-stratified precision with Wilson and
-file- and project-clustered bootstrap intervals, the coverage bracket, and the
-resample count, seed, confidence and CI definition version they were computed
-with.*
+*Pending: the pooled precision with its Wilson interval and file- and
+project-clustered bootstrap intervals; the macro-average with file- and
+project-clustered bootstrap intervals; the precision without the top one and
+top three rules, each with its Wilson interval, macro-average and
+file-clustered bootstrap interval; the coverage bounds; and the resample
+count, seed, cluster order and CI definition version.*
 
 .. BENCH:PRECISION_INTERVALS:END
 
@@ -238,9 +244,8 @@ quoted with the bracket beside it.
 
 .. BENCH:PROJECT_INTERVALS:START
 
-*Pending: per-project labeled count, precision, Wilson interval and label
-coverage, with projects below half coverage marked as bracketed rather than
-measured.*
+*Pending: for each project the render lists, its TP, FP and uncertain
+counts, precision and Wilson interval.*
 
 .. BENCH:PROJECT_INTERVALS:END
 
@@ -256,8 +261,8 @@ code-point order of their key: ``(project, file_path)`` for the file bootstrap,
 on the labeled findings alone and is the same on every machine.
 
 The earlier definition (version 1) drew clusters in the order the database
-returned its labels. That order was sorted under the host's locale collation,
-and glibc has changed that collation between releases. It is kept only to
+returned its labels. That order was sorted under the database's en_US.UTF-8
+collation, and glibc has changed that collation between releases. It is kept only to
 reproduce intervals printed under it. Where the two orders disagree, they
 disagree only at the last decimal. That decimal is the Monte Carlo noise floor
 at the default replicate count, so no endpoint is given, or should be read, to
