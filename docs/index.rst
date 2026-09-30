@@ -37,6 +37,7 @@ for example ``.../aurora-lint/v0.6.0/configuration.html``.
    benchmark-setup
    benchmark-running
    reproducing-published-numbers
+   measurement-notes
    project-structure
    future-rulesets
    contributing
