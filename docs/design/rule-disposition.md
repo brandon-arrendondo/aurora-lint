@@ -47,7 +47,7 @@ the tool prints is the authority.
 |---|---|---|---|
 | covered by another rule | 24 | 0 | 0 |
 | deprecated by CERT | 4 | 0 | 0 |
-| deterministic | 3 | 180 | 0 |
+| deterministic | 4 | 179 | 0 |
 | deterministic with review | 19 | 51 | 0 |
 | environment-gated | 3 | 2 | 0 |
 | fails the criterion | 12 | 0 | 0 |
@@ -55,7 +55,7 @@ the tool prints is the authority.
 | not a CERT C guideline (C++ id) | 3 | 0 | 0 |
 | not implemented | 1 | 0 | 0 |
 | unenforceable | 6 | 0 | 0 |
-| **total** | 78 | 233 | 0 |
+| **total** | 79 | 232 | 0 |
 
 ## PRE: Preprocessor (16)
 
@@ -95,7 +95,7 @@ the tool prints is the authority.
 | DCL10-C | rec | covered by FIO47-C | ruled | FIO47-C reports a format string whose conversion specifiers don't match the argument count or types. | verified: CWE-685 (moves to FIO47-C) | Every format finding DCL10-C makes is also a FIO47-C finding. Honoring an arbitrary writer's variadic contract is unenforceable. The sentinel check fired only for a callee named `average`. Dropped form: the POSIX `execl`-family `(char *)0` terminator. No rule checks it today (not shipped). |
 | DCL11-C | rec | covered by FIO47-C, EXP34-C | ruled | FIO47-C reports an argument whose type doesn't match its conversion specifier. EXP34-C reports a null pointer passed where the library requires a string. | none | Removal waits on FIO47-C reporting width mismatches (`%d` with `long long`) and `%p` with a non-void pointer. Until then DCL11-C holds findings FIO47-C misses. Argument types are guessed by name and by a text search for the declaration. Misfire: an `int` variable initialized to 0 is reported as a NULL argument. |
 | DCL12-C | rec | deterministic with review | proposed | A complete struct/union type visible in a translation unit that never accesses its members. (Parasoft CERT_C-DCL12-a, Polyspace; agrees with CERT's NCE/CS.) | none | This form needs include-aware translation-unit analysis. Today's detector keys on the spelling `extern` and never looks at member access, so it reports a TU that dereferences the type. Open: environment-gated until include analysis exists? |
-| DCL13-C | rec | deterministic | proposed | A pointer parameter of a function definition through which the body never writes (directly, via an alias, or by passing it to a callee whose parameter isn't pointer-to-const), declared pointer-to-non-const. An unknown callee counts as a write. (CERT NCEs/CSs; MISRA 8.13; Astrée, PC-lint 111/818, Polyspace.) | none | A read-only callee list includes `stat`/`lstat`, which write their argument (misfire). Body-less prototypes are judged by parameter name (right for the wrong reason). Open: whether a function stored in a function-pointer slot whose parameter isn't const is a written exception. |
+| DCL13-C | rec | deterministic | ruled | A pointer parameter of a function definition, declared pointer-to-non-const, through which the body never writes: directly, via an alias, or by passing it to a callee whose parameter isn't pointer-to-const. An unknown callee counts as a write. `const` is shallow, as in C: a write through a pointer member of the pointee isn't a write through the parameter, while a write to an array or nested-struct member is. Storing the parameter into a struct member of non-const pointer type counts as a write. (CERT NCEs/CSs; MISRA 8.13; Astrée, PC-lint 111/818, Polyspace.) | none | Ruled: a signature fixed by a function-pointer slot the function is visibly assigned to is a finding, tagged `interface-fixed signature`; the default preset doesn't report it (a rule-specific relaxation, ADR-0015 Decision 7), the strict preset does. Every other signature, public API included, is a finding under both presets. A read-only callee list includes `stat`/`lstat`, which write their argument (misfire). Body-less prototypes are judged by parameter name (right for the wrong reason). |
 | DCL15-C | rec | deterministic with review | proposed | A function or object with external linkage whose name no other translation unit in the scanned source references, and that isn't publicly exported. (MISRA C:2012 8.7; Astrée/RuleChecker, Polyspace, PC-lint Plus 765.) | none | Review, because the build's export set can only be approximated. Headers are matched by a project-wide name set (matches by spelling). Objects never consult other TUs or headers. Static-like prefix macros are recognized from a name list. |
 | DCL16-C | rec | deterministic | proposed | An integer or floating literal with a lowercase `l`/`ll` suffix. (CERT text; MISRA C:2012 7.3.) | none | Literals in `#define` bodies aren't reported. The message calls a floating literal an "integer literal". |
 | DCL17-C | rec | unenforceable | ruled | Not shipped. A miscompiled volatile access is a property of one compiler's object code. (CERT: "inspect at the object code level"; Detectable No.) | none | No source-level detector can decide it. The only source-level proxy makes every volatile access a candidate. Dropped form: the empty-parameter-list/K&R pass, which is DCL20-C's and DCL07-C's construct. |
