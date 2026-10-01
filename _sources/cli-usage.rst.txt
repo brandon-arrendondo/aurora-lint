@@ -58,6 +58,12 @@ Full Command Reference
                                        it could not resolve, calls it could not attribute.
                                        Summary on stdout; =FILE also writes every row as
                                        JSON. Never changes a finding
+          --report-deallocator-candidates[=FILE]
+                                       After the scan, list callees shaped like
+                                       deallocators by name that nothing shows freeing,
+                                       where an allocation handed to one was reported
+                                       leaked. Summary on stdout; =FILE also writes every
+                                       row as JSON. Never changes a finding
       -v, --verbose                    Increase output verbosity (repeat for more detail;
                                        -v shows per-rule scanning progress)
           --save-prescan <FILE>        Save prescan context to a binary cache file
@@ -350,6 +356,31 @@ habit is to keep the JSON as a build artifact and watch the per-kind totals:
 a jump in ``unknown-callee`` after a dependency bump means a header stopped
 resolving, and ``conflicting-definition`` rows are worth reading once, since
 each one is a name whose meaning depends on scan order.
+
+Deallocators the Scan Cannot See
+--------------------------------
+
+A call frees its argument only where the scan can show it: ``free``, a function
+whose body frees the argument (through any chain of wrappers the scan also
+reads), a macro that expands to such a call, or a deallocator declared with
+``--deallocator`` or ``[environment.deallocators]`` (see :doc:`configuration`).
+A callee's name is never evidence: a library's ``SSL_free`` or
+``curl_easy_cleanup`` has no body in the scan, so an allocation handed to it is
+reported leaked by MEM31-C, and a use of it afterwards is not a use-after-free.
+``--report-deallocator-candidates`` lists the callees worth declaring::
+
+    aurora-lint src/ -d src/ --report-deallocator-candidates
+    aurora-lint src/ -d src/ --report-deallocator-candidates=candidates.json
+
+A callee is listed when it is shaped like a deallocator by name (``*_free``,
+``destroy_*``, ``*_cleanup``, ``*_release``, ...), nothing in the scan shows it
+freeing anything, and an allocation handed to it was reported leaked, so that
+declaring it would change that finding. Each row gives the name and the
+1-based argument to declare it with, how many such calls there were, and the
+first one's file and line. Declare only the ones that really are deallocators:
+the name is why a callee is listed, not proof of what it does. The report never
+changes a finding, and it is not part of the settings, so it does not change
+the settings hash either.
 
 
 File Exclusion

@@ -210,6 +210,13 @@ for, such as a platform hook the build supplies: a deallocator frees the
 argument its position names, and an allocator follows the contract of the
 standard allocator it names. <a class="reference internal" href="options.html"><span class="doc">Policy and Environment Options</span></a> has the details. They enter the
 settings hash only when something is declared.</p>
+<p>A function counts as freeing its argument only where the scan can show it: its
+body frees it, directly or through wrappers the scan also reads, a macro it
+expands to does, or it is declared here. A name such as <code class="docutils literal notranslate"><span class="pre">*_free</span></code>,
+<code class="docutils literal notranslate"><span class="pre">destroy_*</span></code> or <code class="docutils literal notranslate"><span class="pre">*_cleanup</span></code> proves nothing on its own, so an allocation
+handed to a library’s deallocator with no body in the scan is reported leaked
+until that deallocator is declared. <code class="docutils literal notranslate"><span class="pre">--report-deallocator-candidates</span></code> (see
+<a class="reference internal" href="cli-usage.html"><span class="doc">Advanced CLI Usage</span></a>) lists the callees worth declaring.</p>
 </section>
 <section id="scope">
 <h2>Scope<a class="headerlink" href="#scope" title="Link to this heading"></a></h2>

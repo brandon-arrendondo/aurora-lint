@@ -50,6 +50,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#using-a-compile-database">Using a Compile Database</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#reaching-the-compiler-s-own-headers">Reaching the Compiler’s Own Headers</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#seeing-where-the-engine-is-blind">Seeing Where the Engine Is Blind</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#deallocators-the-scan-cannot-see">Deallocators the Scan Cannot See</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#file-exclusion">File Exclusion</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#export-formats">Export Formats</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#severity-filtering">Severity Filtering</a></li>
@@ -159,6 +160,12 @@ Options:
                                    it could not resolve, calls it could not attribute.
                                    Summary on stdout; =FILE also writes every row as
                                    JSON. Never changes a finding
+      --report-deallocator-candidates[=FILE]
+                                   After the scan, list callees shaped like
+                                   deallocators by name that nothing shows freeing,
+                                   where an allocation handed to one was reported
+                                   leaked. Summary on stdout; =FILE also writes every
+                                   row as JSON. Never changes a finding
   -v, --verbose                    Increase output verbosity (repeat for more detail;
                                    -v shows per-rule scanning progress)
       --save-prescan &lt;FILE&gt;        Save prescan context to a binary cache file
@@ -447,6 +454,30 @@ habit is to keep the JSON as a build artifact and watch the per-kind totals:
 a jump in <code class="docutils literal notranslate"><span class="pre">unknown-callee</span></code> after a dependency bump means a header stopped
 resolving, and <code class="docutils literal notranslate"><span class="pre">conflicting-definition</span></code> rows are worth reading once, since
 each one is a name whose meaning depends on scan order.</p>
+</section>
+<section id="deallocators-the-scan-cannot-see">
+<h2>Deallocators the Scan Cannot See<a class="headerlink" href="#deallocators-the-scan-cannot-see" title="Link to this heading"></a></h2>
+<p>A call frees its argument only where the scan can show it: <code class="docutils literal notranslate"><span class="pre">free</span></code>, a function
+whose body frees the argument (through any chain of wrappers the scan also
+reads), a macro that expands to such a call, or a deallocator declared with
+<code class="docutils literal notranslate"><span class="pre">--deallocator</span></code> or <code class="docutils literal notranslate"><span class="pre">[environment.deallocators]</span></code> (see <a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a>).
+A callee’s name is never evidence: a library’s <code class="docutils literal notranslate"><span class="pre">SSL_free</span></code> or
+<code class="docutils literal notranslate"><span class="pre">curl_easy_cleanup</span></code> has no body in the scan, so an allocation handed to it is
+reported leaked by MEM31-C, and a use of it afterwards is not a use-after-free.
+<code class="docutils literal notranslate"><span class="pre">--report-deallocator-candidates</span></code> lists the callees worth declaring:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">--</span><span class="n">report</span><span class="o">-</span><span class="n">deallocator</span><span class="o">-</span><span class="n">candidates</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">--</span><span class="n">report</span><span class="o">-</span><span class="n">deallocator</span><span class="o">-</span><span class="n">candidates</span><span class="o">=</span><span class="n">candidates</span><span class="o">.</span><span class="n">json</span>
+</pre></div>
+</div>
+<p>A callee is listed when it is shaped like a deallocator by name (<code class="docutils literal notranslate"><span class="pre">*_free</span></code>,
+<code class="docutils literal notranslate"><span class="pre">destroy_*</span></code>, <code class="docutils literal notranslate"><span class="pre">*_cleanup</span></code>, <code class="docutils literal notranslate"><span class="pre">*_release</span></code>, …), nothing in the scan shows it
+freeing anything, and an allocation handed to it was reported leaked, so that
+declaring it would change that finding. Each row gives the name and the
+1-based argument to declare it with, how many such calls there were, and the
+first one’s file and line. Declare only the ones that really are deallocators:
+the name is why a callee is listed, not proof of what it does. The report never
+changes a finding, and it is not part of the settings, so it does not change
+the settings hash either.</p>
 </section>
 <section id="file-exclusion">
 <h2>File Exclusion<a class="headerlink" href="#file-exclusion" title="Link to this heading"></a></h2>

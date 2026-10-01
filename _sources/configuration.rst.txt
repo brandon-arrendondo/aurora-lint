@@ -120,6 +120,14 @@ argument its position names, and an allocator follows the contract of the
 standard allocator it names. :doc:`options` has the details. They enter the
 settings hash only when something is declared.
 
+A function counts as freeing its argument only where the scan can show it: its
+body frees it, directly or through wrappers the scan also reads, a macro it
+expands to does, or it is declared here. A name such as ``*_free``,
+``destroy_*`` or ``*_cleanup`` proves nothing on its own, so an allocation
+handed to a library's deallocator with no body in the scan is reported leaked
+until that deallocator is declared. ``--report-deallocator-candidates`` (see
+:doc:`cli-usage`) lists the callees worth declaring.
+
 Scope
 -----
 
