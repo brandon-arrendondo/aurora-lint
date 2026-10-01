@@ -7185,13 +7185,15 @@ pub fn propagate_may_leave_null(summaries: &mut HashMap<String, FunctionSummary>
 }
 
 /// The index of the format argument of an ISO C function that formats from
-/// a `va_list` (C11 7.21.6.8-14, 7.29.2.7-10 for the wide forms left out
-/// here), whose conversions consume the arguments by the standard's rules.
+/// a `va_list` (C11 7.21.6.8-14, and the wide forms of 7.29.2.5-10), whose
+/// conversions consume the arguments by the standard's rules. A wide `%s`
+/// reads a multibyte string and `%ls` a wide one; both read the pointee.
 fn iso_vformat_index(name: &str) -> Option<usize> {
     match name {
-        "vprintf" | "vscanf" => Some(0),
-        "vfprintf" | "vsprintf" | "vfscanf" | "vsscanf" | "vasprintf" | "vdprintf" => Some(1),
-        "vsnprintf" => Some(2),
+        "vprintf" | "vscanf" | "vwprintf" | "vwscanf" => Some(0),
+        "vfprintf" | "vsprintf" | "vfscanf" | "vsscanf" | "vasprintf" | "vdprintf"
+        | "vfwprintf" | "vfwscanf" | "vswscanf" => Some(1),
+        "vsnprintf" | "vswprintf" => Some(2),
         _ => None,
     }
 }
