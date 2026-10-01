@@ -362,6 +362,14 @@ spelling), ADR-0010 (every compilable configuration counts) or ADR-0011
 <code class="docutils literal notranslate"><span class="pre">docs/design/adr-conformance.md</span></code>: the code, the shortcut, and whether a
 fix adds or removes findings. A published per-rule figure for a rule with
 an open row there carries that caveat.</p>
+<p><strong>No build input is required.</strong> The gaps above are what analyzing source
+alone costs, and the tool accepts that cost rather than depending on a
+build. A compile database, <code class="docutils literal notranslate"><span class="pre">-I</span></code>/<code class="docutils literal notranslate"><span class="pre">-D</span></code> flags and declared environment
+facts only refine results. With none of them, each rule takes its strict
+reading of the source as found, and gives no credit the source alone can’t
+prove. ADR-0015 Decision 3
+(<code class="docutils literal notranslate"><span class="pre">docs/adr/0015-default-and-strict-profiles.md</span></code>) states the principle and
+the tests that keep it true.</p>
 </section>
 <section id="architectural-ceiling">
 <h2>Architectural Ceiling<a class="headerlink" href="#architectural-ceiling" title="Link to this heading"></a></h2>
