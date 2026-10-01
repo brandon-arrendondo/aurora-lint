@@ -22,7 +22,8 @@ for what that field does and does not claim.
 ## Scan exclusion: what the prescan reads
 
 The runner drops each out-of-scope tree from the scan with one of two flags,
-and which one decides what the files that remain are analysed against:
+and keeps an in-scope file of another configuration out of the prescan with a
+third. Which one decides what the files that remain are analysed against:
 
 - **`--exclude-all`** for test, demo and tooling trees that link into nothing
   in scope. Nothing is reported in them, and the cross-file prescan does not
@@ -34,9 +35,22 @@ and which one decides what the files that remain are analysed against:
   oracle's scored tree AND not built in the configuration of record (the
   project's primary build configuration, below). Such code cannot link into
   the build being evaluated. Platform files inside the scored tree (curl's
-  `lib/vtls/schannel.c`, hostap's `src/utils/os_win32.c`) stay read: they are
-  in-tree variants of the product, scored under their own configuration
-  boundary.
+  `lib/vtls/schannel.c`, hostap's `src/utils/os_win32.c`) stay in the scan:
+  they are in-tree variants of the product, scored under their own
+  configuration boundary.
+- **`--prescan-exclude`** for those in-tree variants when they lie outside
+  the configuration of record (`out_of_config`, below), declared per corpus.
+  They are still scanned and reported, and their findings are adjudicated as
+  written: an FP there can expose a misconfigured tool setup, and a real
+  defect found in one is not suppressed. Only the prescan stops reading them,
+  and that includes their own definitions: each such file loses its own
+  cross-file context, so what is reported in it can change. The oracle rows
+  on those files stay, and their findings are adjudicated as written.
+  A one-of-N alternate is another configuration's definition of the same
+  function (hostap's empty `os_free` in `os_none.c` beside `os_unix.c`'s
+  real one), and a fact that must hold for every definition the call can
+  link with would otherwise be decided by a build this oracle does not
+  measure (ADR-0010 Decisions 6-7). The oracle rows on those files stay.
 - **`--report-exclude`** for code the product compiles in: vendored
   libraries and shared helpers. Nothing is reported in them, but the prescan
   still reads them, because their definitions ARE the ones the product's
@@ -96,7 +110,11 @@ its rationale.
 **It is a declaration, not a filter.** Nothing reads it to drop a finding.
 Files listed in `out_of_config` are still scanned, still labeled as written
 (ADR-0010 Decision 1), and still counted in the denominator. Adding the field
-changed no score. What it buys is that "this only compiles under X" now has
+changed no score. Where a corpus also keeps those files out of the prescan
+(`--prescan-exclude`, see [Scan exclusion](#scan-exclusion-what-the-prescan-reads)),
+that changes what the in-configuration code is judged against, and what is
+reported in the excluded files themselves (they lose their own cross-file
+context), but never which files are reported. What it buys is that "this only compiles under X" now has
 somewhere to be recorded and counted instead of being re-argued per batch.
 
 **The boundary is platform and architecture only.** A feature or debug flag
@@ -479,6 +497,18 @@ always returns a static object stood in for the daemon's own function.
 
 `src/ap/hs20.c` and `wpa_supplicant/hs20_supplicant.c` are the daemons' own
 Hotspot 2.0 code and are in scope; only the top-level `hs20/` tree is not.
+
+The ten files outside the primary build configuration (next subsection) are
+`--prescan-exclude`: scanned, reported and adjudicated as written, but not
+read for cross-file facts, their own included, so findings reported in them
+can differ from a scan that reads them. They are the `os_*.c`, `l2_packet_*.c` and driver
+alternates that `defconfig` selects one of, so each defines functions the
+Linux build takes from its own selection. `os_none.c`'s `os_free` is empty;
+read by the prescan, it makes `os_free` a release in only some definitions,
+so once a free has to be proven rather than guessed from the name, every
+allocation the Linux daemons hand to `os_free` reads as leaked. The
+runner's list is checked against `out_of_config` by
+`bench/tests/test_out_of_config_prescan.py`.
 
 ### Primary build configuration
 

@@ -268,6 +268,14 @@ CODEBASES = {
             # these ship as part of either daemon, so their stubs and call sites
             # must not stand in for the daemons' own. Link evidence:
             # docs/design/realworld-corpus-scope.md.
+            #
+            # --prescan-exclude: the in-scope files outside the primary build
+            # configuration (benchmark_repos.json's
+            # primary_build_config.out_of_config; ADR-0010 Decisions 6-7) are
+            # other configurations' one-of-N alternates -- os_none.c's empty
+            # os_free beside os_unix.c's real one. Their definitions must not
+            # feed the cross-file facts the Linux build is judged by, but they
+            # are still scanned, reported and adjudicated as written.
             "extra_args": [
                 "--exclude-all", "tests/**",
                 "--exclude-all", "wlantest/**",
@@ -275,6 +283,16 @@ CODEBASES = {
                 "--exclude-all", "hs20/**",
                 "--exclude-all", "radius_example/**",
                 "--exclude-all", "wpaspy/**",
+                "--prescan-exclude", "src/utils/os_win32.c",
+                "--prescan-exclude", "src/utils/os_none.c",
+                "--prescan-exclude", "src/l2_packet/l2_packet_winpcap.c",
+                "--prescan-exclude", "src/l2_packet/l2_packet_ndis.c",
+                "--prescan-exclude", "src/l2_packet/l2_packet_freebsd.c",
+                "--prescan-exclude", "src/l2_packet/l2_packet_none.c",
+                "--prescan-exclude", "src/drivers/driver_ndis.c",
+                "--prescan-exclude", "src/drivers/driver_ndis_.c",
+                "--prescan-exclude", "src/drivers/driver_bsd.c",
+                "--prescan-exclude", "src/drivers/driver_openbsd.c",
             ],
         },
         "cppcheck": {
