@@ -24,11 +24,13 @@
 //! * everything else makes the condition undecidable, and an undecidable
 //!   conditional is not repaired at all, because guessing would invent a
 //!   configuration: a name the file itself `#define`s or `#undef`s; a
-//!   compiler-reserved name (`__GNUC__`, `__STDC_VERSION__`, `_MSC_VER` when
-//!   the profile does not declare it), which the implementation defines; an
-//!   undeclared name compared with a value (`#if FOO_VERSION >= 3`), which
-//!   is a value macro some header almost certainly defines; a function-like
-//!   macro; arithmetic; anything else the evaluator does not read.
+//!   compiler-reserved name the profile does not declare (`__GNUC__`,
+//!   `__STDC_VERSION__`, `__APPLE__`), which only the implementation knows;
+//!   a comparison any operand of which reads an undeclared name
+//!   (`#if FOO_VERSION >= 3`, `#if (1 && FOO) > 0`), since a name compared
+//!   with a value is a value macro some header almost certainly defines; a
+//!   function-like macro; arithmetic; anything else the evaluator does not
+//!   read.
 //!
 //! [`dead_regions::platform_assumptions`]: crate::analyze::dead_regions::platform_assumptions
 
@@ -40,7 +42,11 @@ use std::collections::HashSet;
 ///
 /// A block comment the directive opens and does not close is part of it too
 /// (`#if !defined(A) /* ...` on one line, `... */` on the next): left out,
-/// the comment's closing text would land in the arm after it as code.
+/// the comment's closing text would land in the arm after it as code. So is
+/// anything after that `*/` on its line: comments become a space before
+/// directives are read (C11 5.1.1.2, phases 3-4), so that text is the
+/// directive's -- read into an `#if`'s condition, and dropped as extra
+/// tokens after `#else` or `#endif`, as a compiler drops it.
 pub(crate) fn directive_extent(lines: &[&str], line: usize) -> std::ops::Range<usize> {
     let mut last = line;
     let mut in_comment = false;
@@ -302,19 +308,22 @@ impl Parser<'_> {
         Some(v)
     }
 
+    /// A comparison, or the operand alone. `guessed` is left set if it was
+    /// on entry or any operand set it, so a guess inside a parenthesised
+    /// operand (`(1 && FOO) > 0`) reaches every comparison enclosing it.
     fn cmp(&mut self) -> Option<i64> {
-        self.guessed = false;
+        let outer = std::mem::take(&mut self.guessed);
         let l = self.unary()?;
-        let l_guessed = self.guessed;
+        let l_guessed = std::mem::take(&mut self.guessed);
         for op in ["==", "!=", "<=", ">=", "<", ">"] {
             if self.eat(op) {
-                self.guessed = false;
                 let r = self.unary()?;
                 // `FOO >= 3` compares a value macro, which some header
                 // defines: its value is not the `0` of an undefined name.
                 if l_guessed || self.guessed {
                     return None;
                 }
+                self.guessed = outer;
                 return Some(i64::from(match op {
                     "==" => l == r,
                     "!=" => l != r,
@@ -325,6 +334,7 @@ impl Parser<'_> {
                 }));
             }
         }
+        self.guessed = outer || l_guessed;
         Some(l)
     }
 
@@ -463,6 +473,36 @@ mod tests {
         assert_eq!(compiled_arm(&lines, &[0, 3], &HashSet::new()), Some(0));
         let closed = ["#if A /* c */", "x"];
         assert_eq!(directive_extent(&closed, 0), 0..1);
+    }
+
+    #[test]
+    fn text_after_the_comment_a_directive_left_open_is_the_directive_s() {
+        // The comment is one space, so `&& 0` is part of the condition.
+        let src = "#if 1 /* c\n */ && 0\n    a\n#else\n    b\n#endif";
+        let lines: Vec<&str> = src.lines().collect();
+        assert_eq!(directive_extent(&lines, 0), 0..2);
+        assert_eq!(compiled_arm(&lines, &[0, 3], &HashSet::new()), Some(1));
+        // After `#else` it is extra tokens a compiler ignores: still the
+        // directive's, not the arm's.
+        let lines = ["#ifdef A", "    0", "#else /* c", "   */ g(u)", "#endif"];
+        assert_eq!(directive_extent(&lines, 2), 2..4);
+        assert_eq!(compiled_arm(&lines, &[0, 2], &HashSet::new()), Some(1));
+    }
+
+    #[test]
+    fn a_guess_anywhere_in_a_comparison_leaves_it_undecided() {
+        assert_eq!(arm("#if (1 && FOO) > 0\na\n#else\nb\n#endif"), None);
+        assert_eq!(arm("#if (FOO && 1) > 0\na\n#else\nb\n#endif"), None);
+        assert_eq!(arm("#if 0 < (1 && !FOO)\na\n#else\nb\n#endif"), None);
+        assert_eq!(arm("#if ((FOO)) == 0\na\n#else\nb\n#endif"), None);
+        // A guess outside the comparison does not reach it, and a bare
+        // definedness test still reads the name as undefined.
+        assert_eq!(arm("#if FOO || 1 > 0\na\n#else\nb\n#endif"), Some(0));
+        assert_eq!(
+            arm("#if (FOO && 1) || defined(B)\na\n#else\nb\n#endif"),
+            Some(1)
+        );
+        assert_eq!(arm("#if defined(A) == 0\na\n#else\nb\n#endif"), Some(0));
     }
 
     #[test]

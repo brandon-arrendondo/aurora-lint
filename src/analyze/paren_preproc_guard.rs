@@ -675,6 +675,32 @@ void f(int u) {
     }
 
     #[test]
+    fn keeps_what_the_preprocessor_keeps_after_a_directive_s_comment() {
+        // `g(u)` follows the `*/` of a comment `#else` opened, so it is
+        // extra tokens on the `#else` line, which `gcc -E` drops too.
+        let src = "\
+int g(int a);
+void f(int u) {
+    if (
+#ifdef A
+        0
+#else /* c
+   */ g(u)
+        u
+#endif
+        != 0) {
+        u = 0;
+    }
+}
+";
+        let out = blank_paren_guarded_preproc(src);
+        assert!(!out.contains("g(u)"));
+        assert!(!out.contains("        0\n"));
+        assert!(out.contains("        u\n"));
+        assert!(parses_clean(src));
+    }
+
+    #[test]
     fn blanks_a_directive_with_its_continuation_lines() {
         let src = "\
 int g(int a);
