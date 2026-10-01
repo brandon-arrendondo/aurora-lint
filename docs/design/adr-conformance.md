@@ -1,7 +1,8 @@
 # ADR conformance: known departures (v0.6.0)
 
 **Status:** swept 2026-09-25 against `ca377036`, before the v0.6.0 freeze;
-rows marked against main at `e7764d02` (2026-09-29). A struck row is fixed,
+rows marked against main at `e7764d02` (2026-09-29) and again at `0297353e`
+(2026-10-01). A struck row is fixed,
 with what landed beside it; a partly fixed row says what remains. This doc
 goes stale as fixes land; the rows are the checklist.
 
@@ -158,13 +159,13 @@ These are mostly misfire generators (ADR-0005 via 0006) or single-rule suppressi
 ### MEM
 | where | ADR | shortcut | dir | conf |
 |---|---|---|---|---|
-| MEM31 `process_custom_deallocator` (3634, 3708) | 0011 name list | `contains("safe")`, `destroy_*` or `*_destroy` suppresses a double free even when the summary proves the parameter is freed. | + | C |
+| ~~MEM31 `process_custom_deallocator` (3634, 3708)~~ | 0011 name list | `contains("safe")`, `destroy_*` or `*_destroy` suppresses a double free even when the summary proves the parameter is freed. **Fixed since the sweep:** The function and the `destroy_`/"safe" exemption are gone. A callee frees an argument only where its body, a macro's expansion or a project declaration proves it. A double free through a callee is reported when its body always frees the argument, and as possible when only some of its definitions do. | + | C |
 | MEM31 `is_allocation_call` (4497) | 0005 | The name-prefix allocator heuristic (create_/new_/_dup/build_) runs before `summary.returns_allocation`. | - | C |
 | MEM31 `check_for_return_macro` (1063) | 0005 | Any callee whose name contains RETURN, EXIT or ABORT reports every live allocation. Reproduced on `atexit(0)`. | - | C |
 | MEM31 `is_this_function_owned_field_target` (2995); `track_allocation_guarded` (1412) | 0006 | Globals count as owned locals. A project-wide `value_only_globals.contains(name)` silences a shadowing local. | both | C |
 | MEM30 `LValue::Var` freed state (4613), `union_typed_vars` (1962); `arg_can_be_freed` (3824); GlobalTracker `scan_call_expression` (898) / `scan_identifier_access` (957) | 0006 | Scope-flat freed state, the summaries lookup before identifier resolution, and bare `global_vars.contains(name)`. | both | C |
 | MEM30 `is_all_caps_or_literal_constant` (1672) | 0006 / 0011 b4 | ALL_CAPS names are taken as distinct constants, so EAGAIN and EWOULDBLOCK count as disjoint and frees are dropped. | + | C |
-| MEM30 `process_call_expression` (3563) etc.; `check_field_access` (5054) | 0005 | `upper_name.contains("REALLOC"/"FREE")` is checked before the summary. | both | C |
+| ~~MEM30 `process_call_expression` (3563) etc.; `check_field_access` (5054)~~ | 0005 | `upper_name.contains("REALLOC"/"FREE")` is checked before the summary. **Fixed since the sweep:** Neither name test decides a release. A callee frees only by proof (its body, every live definition of a macro, or a declaration). It invalidates its argument as realloc does only when it is realloc, is declared with realloc's contract, or its body is proven to reallocate its first parameter. | both | C |
 | MEM33 flexible-array detection (1388-1568, 967, 173), `trace_variable_definition` (2457) | 0006 | `var_name.contains("flex")`, file-wide name sets, and `_ptr`/`alloc`/`data`/`buffer` suppressions. | both | C (medium) |
 | MEM04 `has_preceding_zero_check` (261) | 0006 / 0011 b3 | A 50-line text window with a substring name. | + | C |
 | MEM03 `scan_sensitive_vars_and_clears` (463) | 0006 | `decl_text.contains('*')` includes the initializer, so `size_t password_len = n * 2;` becomes a "sensitive buffer". | - | C |
@@ -250,7 +251,7 @@ These are mostly misfire generators (ADR-0005 via 0006) or single-rule suppressi
 - **ADR-0001:** ERR33 hard-suppresses ignored printf/puts results and `signal(..., SIG_IGN)`. Partly fixed since the sweep: a discarded output result is exempt only as ERR33-C-EX1 says (fprintf and fputs only to stdout or stderr; sprintf not at all). `signal(..., SIG_IGN/SIG_DFL)` is still suppressed.
 - **MEM31:** once any `signal()` has been seen, every later allocation gets "may leak if handler terminates", with no path scoping.
 - ~~**Determinism:** STR38's HashMap iteration makes its output nondeterministic.~~ Fixed since the sweep: it reports in source order.
-- **Not audited in depth** (DCL16/18 have since moved to the preprocessing-token lexer): DCL02/03/04/09/10/11/12/16/18/20/21/23/37/38/41/42; float_typing, format_slots, fn_ptr_bindings, loop_consumption, clearing_extent, declarator_utils, points_to; the preprocessor-repair passes.
+- **Not audited in depth** (DCL16/18 have since moved to the preprocessing-token lexer): DCL02/03/04/09/10/11/12/16/18/20/21/23/37/38/41/42; float_typing, format_slots, fn_ptr_bindings, loop_consumption, clearing_extent, declarator_utils, points_to; the preprocessor-repair passes (which arm a keep-one-arm repair keeps was reviewed since; see G).
 
 ## E. Checked and conforming (coverage evidence, abbreviated)
 
@@ -300,7 +301,41 @@ since.
   `#if` arm.
 - **Function summaries (ADR-0010).** A free, store or escaping result from a
   definition under `#if` carries that definition's arms, and a call pairs
-  only with the definitions it can compile with.
+  only with the definitions it can compile with. Each definition keeps its
+  own facts. A release (a free, a pointee or field free, a store, a clear or
+  a close) forgives a finding in MEM31-C, MEM30-C, MEM03-C and FIO42-C only
+  when every definition the call can link with makes it, settled through
+  wrappers to any depth. A free that only some definitions make is a
+  possible double free, and still a leak.
+- **Frees by name (ADR-0011).** A callee's name (`*_free`, `destroy_*`,
+  `*_release`, `*_close` and the like) is no longer evidence of a free
+  anywhere in the analysis. A call frees an argument only through `free`, a
+  body that frees it (through any chain of wrappers), a macro whose every
+  live definition expands to a free, or a project-declared deallocator.
+  Realloc's contract is likewise by proof or declaration. `#define` alias
+  chains are read per configuration. A deallocator-shaped callee that
+  nothing proves is listed by `--report-deallocator-candidates` and changes
+  no finding.
+- **Side effects (ADR-0006, ADR-0010).** PRE31-C judges a callee by
+  mod/ref facts closed over the scanned call graph, whichever file defines
+  it, not by a file-local walk. A callee name that binds to a parameter,
+  local or function pointer is a call through a pointer, not the function
+  of that spelling. A volatile read is decided by the declaration the name
+  resolves to. A local declared only in `#if` arms is the function's own
+  storage, and a header macro is judged by every definition the headers
+  give.
+- **ERR33-C restartable conversions (ADR-0006).** Whether a test of
+  `mbrtowc`'s result can see `(size_t)-1` depends on the signedness and
+  rank of the stored object and of a cast constant. Both are typed by
+  resolution, typedefs and members followed, not by spelling.
+- **Parse repairs (ADR-0010).** A pre-parse repair that keeps one arm of a
+  conditional tree-sitter cannot parse whole keeps the arm the scan's
+  profile compiles. Each condition is read in order, and a project name the
+  profile does not declare reads as undefined. Anything else leaves the
+  conditional unrepaired: a reserved or locally defined name, a comparison
+  that reads an undeclared name, a macro call. Keeping an arm decides which
+  code the rules see there. That is accepted only as a parse repair's cost,
+  not as a profile deciding emission (ADR-0010 Decision 3).
 - **MEM06-C (ADR-0006, ADR-0010).** A lock and an allocation are matched by
   object, not spelling; a lock in one `#ifdef` arm must be matched in every
   arm; lock facts must hold across every definition.
@@ -310,8 +345,10 @@ since.
   `sa_handler` assignment, and SIG30 judges every arm of a handler's macro.
 - **Misfires (ADR-0005).** EXP47-C reports each `va_arg` once and types it
   by its specifiers, ignoring comments; FIO30-C judges a conditional or
-  parenthesized format by what it selects; DCL31-C never takes a keyword for
-  a callee.
+  parenthesized format by what it selects, never counts a comment between
+  arguments as one, judges a cast by its operand, and recognizes a
+  vprintf-family format parameter through parentheses and casts; DCL31-C
+  never takes a keyword for a callee.
 - **Macro bodies as tokens.** PRE00/01/02/05/12/32 and DCL16/18 read a
   replacement list as preprocessing tokens, not text.
 - **Conditional check macros (ADR-0010).** A name every arm of an
