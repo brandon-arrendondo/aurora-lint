@@ -223,6 +223,15 @@ spelling), ADR-0010 (every compilable configuration counts) or ADR-0011
 fix adds or removes findings. A published per-rule figure for a rule with
 an open row there carries that caveat.
 
+**No build input is required.** The gaps above are what analyzing source
+alone costs, and the tool accepts that cost rather than depending on a
+build. A compile database, ``-I``/``-D`` flags and declared environment
+facts only refine results. With none of them, each rule takes its strict
+reading of the source as found, and gives no credit the source alone can't
+prove. ADR-0015 Decision 3
+(``docs/adr/0015-default-and-strict-profiles.md``) states the principle and
+the tests that keep it true.
+
 Architectural Ceiling
 ---------------------
 

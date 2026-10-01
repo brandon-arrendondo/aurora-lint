@@ -75,6 +75,31 @@ safety-critical user unprotected.
    A declared environment is the user's own configuration (ADR-0001). The
    analyzer never guesses it from the host that runs the scan (ADR-0011
    basis 4).
+
+   **Build facts improve results and are never required** (amended
+   2026-09-30, Brandon). A build fact is anything a build knows that the
+   source files alone don't say: a compile database's include paths and
+   `-D` macros, declared allocators and deallocators, a declared closed
+   program, which files make up the scan, and any later input of the same
+   kind.
+   - **Improve, never depend.** Every build fact is optional. With none
+     declared, each rule takes its strict reading: no credit the source
+     alone can't prove. A declaration may add or remove findings; its
+     absence costs precision, and never gives credit the source doesn't
+     support.
+   - **Declared, never inferred.** A build fact comes from the project's
+     own statement: a setting, a flag, or a build file the user passes. The
+     tool never infers one from the host, from build output it finds in
+     the tree, or from a guess. It doesn't go looking for a
+     `compile_commands.json` it wasn't given.
+   - **Derive from source structure where possible.** A fact the source
+     establishes needs no declaration: each `.c` file is a translation
+     unit, and a quoted `#include` of a header beside the including file
+     resolves without `-I`. A build file may refine such a fact, but is
+     never the only way to get it.
+   - **Kept honest by tests with no build inputs.** Every rule fixture runs
+     with no compile database and no declarations, under both presets.
+     Each build fact must be tested both declared and absent.
 4. **`default` and `strict` are named presets over both axes**, not the axes
    themselves:
    - the **default** preset is `policy = default`, `environment = hosted`;
@@ -126,6 +151,9 @@ safety-critical user unprotected.
 - ADR-0001's "report as written" describes the strict policy. The default
   policy is a deliberate, documented subset of it, and never a hidden one.
 - ADR-0010 Decision 5 describes both policies (amended with this ADR).
+- The README's "no build system required" claim rests on Decision 3's
+  build-fact clause. A change that would make any build fact required, or
+  infer one, needs an amendment to this ADR first.
 - Oracle rows affected by a relaxation need their tags before default figures
   can be computed from the oracle.
 - A team can start with the default preset and tighten either axis without

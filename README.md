@@ -72,7 +72,10 @@ headers, your defines, nor a working build — which means it runs on code you
 *cannot* build: a partial checkout, a vendored tree, a CI job with no
 cross-compiler installed, or a file an AI just generated. It will happily use
 `compile_commands.json` and `-I`/`-D` flags when given them, for better
-cross-file context; it just does not depend on them.
+cross-file context; it just does not depend on them. That is policy, not
+accident: [ADR-0015](docs/adr/0015-default-and-strict-profiles.md) Decision 3
+makes every build input optional, declared rather than inferred, and tested
+with none present.
 
 That is the trade it makes. Without a preprocessor, aurora-lint reasons about source
 as written, which is why it has its own macro-expansion engine and why the
