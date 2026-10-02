@@ -26,7 +26,7 @@
 //!   configuration: a name the file itself `#define`s or `#undef`s; a
 //!   compiler-reserved name the profile does not declare (`__GNUC__`,
 //!   `__STDC_VERSION__`, `__APPLE__`), which only the implementation knows;
-//!   a comparison any operand of which reads an undeclared name
+//!   a comparison any operand of which reads a name as undefined
 //!   (`#if FOO_VERSION >= 3`, `#if (1 && FOO) > 0`), since a name compared
 //!   with a value is a value macro some header almost certainly defines; a
 //!   function-like macro; arithmetic; anything else the evaluator does not
