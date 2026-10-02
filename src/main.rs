@@ -396,7 +396,7 @@ fn run() -> Result<i32> {
         .arg(
             Arg::new("data_model")
                 .long("data-model")
-                .help("The integer data model the code is built for: iso (default: only the widths ISO C guarantees, so INT_MAX and sizeof(long) are unknown), ilp32, lp64 or llp64")
+                .help("The integer data model the code is built for: iso (default: only the widths ISO C guarantees, so limit macros such as INT_MAX are unknown), ilp32, lp64 or llp64")
                 .value_name("MODEL")
                 .value_parser(["iso", "ilp32", "lp64", "llp64"]),
         )
