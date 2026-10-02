@@ -119,10 +119,13 @@ settings that never mention it keep the hash they always had.
 are implementation-defined, so by default (``iso``) only what ISO C guarantees
 is credited: ``CHAR_BIT`` at least 8, ``short`` and ``int`` at least 16 bits,
 ``long`` at least 32, ``long long`` at least 64, and the exact width of
-``int32_t`` and its kind. ``INT_MAX``, ``LONG_MAX`` and ``sizeof(long)`` are then
-unknown: a value is proven to fit a type only inside its guaranteed range, and
-a defect that occurs at some conforming width (``unsigned char * unsigned
-char`` overflowing a 16-bit ``int``) is reported. Declaring ``ilp32``, ``lp64``
+``int32_t`` and its kind. ``INT_MAX`` and ``LONG_MAX`` are then unknown, and
+so is ``sizeof(long)`` to the integer rules and the range analysis: a value is
+proven to fit a type only inside its guaranteed range, and a defect that occurs
+at some conforming width (``unsigned char * unsigned char`` overflowing a
+16-bit ``int``) is reported. The buffer-size checks of ARR30-C, ARR38-C and
+STR31-C do not follow the model yet: they still size an ``int`` as 4 bytes, a
+``long`` and a pointer as 8, whatever is declared. Declaring ``ilp32``, ``lp64``
 or ``llp64`` gives every width its value on that target. It enters the
 settings hash only when declared. ``--set data_model=MODEL`` is the same as
 ``--data-model MODEL``, and a ``--profile`` keeps a manifest's ``data_model``.
@@ -139,7 +142,9 @@ implementation. ``x = INT_MAX; x + 1`` overflows everywhere, and a branch
 guarded by ``d < SHRT_MAX`` after ``d = SHRT_MAX`` never runs, but with
 ``INT_MAX`` and ``SHRT_MAX`` unknown neither is proven: an undeclared project
 loses such an overflow finding and can be reported inside such a dead branch.
-Declaring the data model avoids both.
+Declaring the data model avoids both. The same goes for ``sizeof`` of a type
+whose width the model leaves open: a product that includes one is not
+evaluated, so a wrap that needs the exact size to show is not reported.
 
 ``allocators`` and ``deallocators`` declare functions the scan has no body
 for, such as a platform hook the build supplies: a deallocator frees the

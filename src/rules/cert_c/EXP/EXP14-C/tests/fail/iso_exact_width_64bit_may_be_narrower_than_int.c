@@ -7,8 +7,8 @@
  * implementation may give int 64 bits or more (or fewer: the guarantee is
  * only that int is at least 16 bits wide). Without a declared data model
  * even a 64-bit exact-width type is not known to be at least as wide as int,
- * so its complement may be promoted and is reported. Declaring lp64 or llp64
- * fixes int at 32 bits and clears it.
+ * so its complement may be promoted and is reported. Declaring a data model
+ * (ilp32, lp64 or llp64) fixes int at 32 bits and clears it.
  */
 
 #include <stdint.h>

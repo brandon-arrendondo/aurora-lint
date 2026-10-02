@@ -83,6 +83,14 @@ Full Command Reference
           --libc <MODEL>               C library model whose documented contracts are
                                        trusted [iso-posix, glibc, musl, newlib,
                                        picolibc, custom]
+          --data-model <MODEL>         Integer data model the code is built for [iso,
+                                       ilp32, lp64, llp64]. The default, iso, credits
+                                       only the widths ISO C guarantees, so limit macros
+                                       such as INT_MAX are unknown; a declared model
+                                       gives every width its value on that target. Same
+                                       as ``[environment] data_model`` in the manifest,
+                                       which a ``--profile`` keeps. See
+                                       :doc:`configuration`
           --allocator <NAME[=CONTRACT]>
                                        Declare a function the scan cannot see into as an
                                        allocator following the named standard allocator's
