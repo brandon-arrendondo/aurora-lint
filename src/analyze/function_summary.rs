@@ -1501,29 +1501,7 @@ fn analyze_function(
             collect_realloc_candidates(&body, source, first, &mut summary.realloc_candidates);
         }
 
-        // Check for NULL return
-        if !summary.can_return_null {
-            // Even non-pointer return types: check if the function returns NULL
-            summary.can_return_null = check_returns_null(&body, source);
-        }
-
-        // For pointer-returning functions: if every return statement provably
-        // returns a non-null value (e.g. `return &s_switches`), clear the
-        // pessimistic can_return_null flag set above.
-        if is_pointer_return && summary.can_return_null {
-            if check_all_returns_nonnull(&body, source) {
-                summary.can_return_null = false;
-            } else if let Some(deps) = nonnull_return_deps(&body, source, text_end) {
-                // Every return is non-null by construction, or through a
-                // local every write of which is; what is left is settled
-                // against the other summaries.
-                if deps.callees.is_empty() && deps.macro_args.is_empty() {
-                    summary.can_return_null = false;
-                } else {
-                    summary.nonnull_return_unless = Some(deps);
-                }
-            }
-        }
+        settle_return_nullness(&mut summary, &body, source, text_end, is_pointer_return);
 
         // Analyze parameter usage
         let sweep = BodySweep::of(&body);
@@ -2142,6 +2120,41 @@ fn check_all_returns_nonnull(body: &Node, source: &str) -> bool {
     found_any && result
 }
 
+/// Set `can_return_null` from the body: any NULL return makes it so, and a
+/// pointer-returning function every return of which is provably non-null
+/// clears it. What the proof still rests on (callees, macro arguments) is
+/// left in `nonnull_return_unless` for `propagate_nonnull_returns`.
+fn settle_return_nullness(
+    summary: &mut FunctionSummary,
+    body: &Node,
+    source: &str,
+    text_end: usize,
+    is_pointer_return: bool,
+) {
+    if !summary.can_return_null {
+        // Even non-pointer return types: check if the function returns NULL
+        summary.can_return_null = check_returns_null(body, source);
+    }
+    // For pointer-returning functions: if every return statement provably
+    // returns a non-null value (e.g. `return &s_switches`), clear the
+    // pessimistic can_return_null flag set above.
+    if !(is_pointer_return && summary.can_return_null) {
+        return;
+    }
+    if check_all_returns_nonnull(body, source) {
+        summary.can_return_null = false;
+    } else if let Some(deps) = nonnull_return_deps(body, source, text_end) {
+        // Every return is non-null by construction, or through a local
+        // every write of which is; what is left is settled against the
+        // other summaries.
+        if deps.callees.is_empty() && deps.macro_args.is_empty() {
+            summary.can_return_null = false;
+        } else {
+            summary.nonnull_return_unless = Some(deps);
+        }
+    }
+}
+
 /// What every `return` in `body` needs for the function never to return NULL,
 /// or `None` when some return has no such proof. A returned value is
 /// non-null by construction (`&x`, a string literal, a `?:` whose arms both
@@ -2179,6 +2192,18 @@ fn nonnull_return_deps(body: &Node, source: &str, text_end: usize) -> Option<Non
             "pointer_expression"
                 if e.child_by_field_name("operator").map(|o| o.kind()) == Some("&") =>
             {
+                // `&*q` is `q` itself (C11 6.5.3.2p3), so it is as null as `q`.
+                let operand =
+                    init_state::strip_arg_casts(&e.child_by_field_name("argument").ok_or(())?);
+                if operand.kind() == "pointer_expression"
+                    && operand.child_by_field_name("operator").map(|o| o.kind()) == Some("*")
+                {
+                    return value_deps(
+                        &operand.child_by_field_name("argument").ok_or(())?,
+                        source,
+                        deps,
+                    );
+                }
                 Ok(())
             }
             "call_expression" => {
@@ -2337,9 +2362,12 @@ pub fn propagate_nonnull_returns(
         }
     }
     for _pass in 0..10 {
+        // A callee settles only as a pointer-returning function that cannot
+        // return NULL: an integer-returning one is never null-capable, yet a
+        // pointer cast from its result may well be NULL.
         let snapshot: HashMap<String, bool> = summaries
             .iter()
-            .map(|(n, s)| (n.clone(), s.can_return_null))
+            .map(|(n, s)| (n.clone(), s.returns_pointer && !s.can_return_null))
             .collect();
         let mut changed = false;
         for summary in summaries.values_mut() {
@@ -2352,7 +2380,7 @@ pub fn propagate_nonnull_returns(
             let callees_proven = deps
                 .callees
                 .iter()
-                .all(|c| !macros.contains_key(c) && snapshot.get(c) == Some(&false));
+                .all(|c| !macros.contains_key(c) && snapshot.get(c) == Some(&true));
             let not_reassigned = deps
                 .macro_args
                 .iter()
@@ -2378,18 +2406,26 @@ fn check_returns_all_nonnull_recursive(node: &Node, source: &str, found_any: &mu
                 if child.kind() == "return" || child.kind() == ";" {
                     continue;
                 }
-                // `return &expr` — address-of is always non-null
-                if child.kind() == "pointer_expression" {
-                    if let Some(op) = child.child_by_field_name("operator") {
-                        if op.utf8_text(source.as_bytes()).unwrap_or("") == "&" {
-                            return true;
-                        }
-                    }
+                // `return &expr` — the address of an object is non-null, but
+                // `&*q` is `q` itself (C11 6.5.3.2p3), as null as `q` is.
+                let e = init_state::strip_arg_casts(&child);
+                if e.kind() == "pointer_expression"
+                    && e.child_by_field_name("operator").map(|o| o.kind()) == Some("&")
+                {
+                    return !e
+                        .child_by_field_name("argument")
+                        .map(|a| init_state::strip_arg_casts(&a))
+                        .is_some_and(|a| {
+                            a.kind() == "pointer_expression"
+                                && a.child_by_field_name("operator").map(|o| o.kind()) == Some("*")
+                        });
                 }
                 // Text-level: `return &identifier`
                 let text = child.utf8_text(source.as_bytes()).unwrap_or("").trim();
-                if text.starts_with('&') {
-                    return true;
+                if let Some(rest) = text.strip_prefix('&') {
+                    return !rest
+                        .trim_start_matches(|c: char| c == '(' || c.is_whitespace())
+                        .starts_with('*');
                 }
                 return false;
             }
@@ -7184,9 +7220,10 @@ pub fn propagate_may_leave_null(summaries: &mut HashMap<String, FunctionSummary>
     }
 }
 
-/// The index of the format argument of an ISO C function that formats from
-/// a `va_list` (C11 7.21.6.8-14, and the wide forms of 7.29.2.5-10), whose
-/// conversions consume the arguments by the standard's rules. A wide `%s`
+/// The index of the format argument of an ISO C or POSIX function that
+/// formats from a `va_list` (C11 7.21.6.8-14, the wide forms of 7.29.2.5-10,
+/// and POSIX `vasprintf`/`vdprintf`), whose conversions consume the arguments
+/// by the standard's rules. A wide `%s`
 /// reads a multibyte string and `%ls` a wide one; both read the pointee.
 fn iso_vformat_index(name: &str) -> Option<usize> {
     match name {
@@ -8762,6 +8799,20 @@ mod tests {
         static struct s *cycle_b(int);
         static struct s *cycle_a(int i) { return cycle_b(i); }
         static struct s *cycle_b(int i) { return cycle_a(i); }
+        static long handle(void) { return 4096; }
+        static struct s *from_integer(void) { return (struct s *)(intptr_t)handle(); }
+        static struct s *local_from_integer(void) {
+            struct s *p = &pool[0];
+            p = (struct s *)(intptr_t)handle();
+            return p;
+        }
+        static struct s *deref_arm(struct s *q, int i) { return i ? &*q : &pool[0]; }
+        static struct s *local_from_deref(struct s *q) {
+            struct s *p = &pool[0];
+            p = &(*q);
+            return p;
+        }
+        static struct s *deref_direct(struct s *q) { return &*q; }
         "#;
         for name in [
             "from_malloc",
@@ -8771,6 +8822,11 @@ mod tests {
             "stepped",
             "through_param",
             "cycle_a",
+            "from_integer",
+            "local_from_integer",
+            "deref_arm",
+            "local_from_deref",
+            "deref_direct",
         ] {
             assert!(
                 returns_null_after_fixpoint(code, name),
