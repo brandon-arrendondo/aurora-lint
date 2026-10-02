@@ -39,6 +39,13 @@ Against the rule ids in ``rules_templates/rules-all.toml``:
    which; a bare ``false`` is the same "decision or oversight?" ambiguity one
    step along.
 
+4. **No data model** -- a manifest with no ``[environment] data_model``. The
+   tool's default is ``iso`` (only what ISO C guarantees), so a corpus whose
+   manifest says nothing is scanned under it and its integer findings stop
+   being comparable with every other corpus's. Each corpus declares the
+   architecture it is built for, with the reason in
+   ``docs/design/realworld-corpus-scope.md``; a new one must too.
+
 Deliberately NOT a check on which rules are enabled. Every codebase is entitled
 to its own categorical policy -- this asserts only that the policy was *written
 down*, per rule, per codebase.
@@ -60,6 +67,17 @@ DISABLED_RE = re.compile(r"^\s*enabled\s*=\s*false")
 def rule_ids(path: Path) -> set[str]:
     with path.open("rb") as fh:
         return set(tomllib.load(fh).get("rules", {}).get("cert_c", {}))
+
+
+DATA_MODELS = {"iso", "ilp32", "lp64", "llp64"}
+
+
+def declared_data_model(path: Path) -> str | None:
+    """The manifest's ``[environment] data_model``, or None when it has none
+    (or a value the tool does not accept)."""
+    with path.open("rb") as fh:
+        value = tomllib.load(fh).get("environment", {}).get("data_model")
+    return value if value in DATA_MODELS else None
 
 
 def undocumented_disables(path: Path) -> list[str]:
@@ -115,6 +133,7 @@ def main() -> int:
         missing = sorted(base_ids - ids)
         stale = sorted(ids - base_ids)
         bare = undocumented_disables(path)
+        no_model = declared_data_model(path) is None
 
         if missing:
             failures += 1
@@ -132,6 +151,14 @@ def main() -> int:
                   f"reason (see conf/realworld/README.md):\n  "
                   f"{', '.join(bare)}", file=sys.stderr)
 
+        if no_model:
+            failures += 1
+            print(f"\n{rel}: no `[environment] data_model` (one of "
+                  f"{', '.join(sorted(DATA_MODELS))}) -- the scan would run "
+                  f"under the default, iso, unlike every other corpus; "
+                  f"declare the architecture it is built for and say why in "
+                  f"docs/design/realworld-corpus-scope.md", file=sys.stderr)
+
     if failures:
         print(
             "\nEvery real-world manifest is standalone: a rule with no entry "
@@ -141,7 +168,8 @@ def main() -> int:
             file=sys.stderr)
         return 1
 
-    print(f"all {len(manifests)} manifest(s) carry a decision for every rule")
+    print(f"all {len(manifests)} manifest(s) carry a decision for every rule "
+          f"and declare a data model")
     return 0
 
 

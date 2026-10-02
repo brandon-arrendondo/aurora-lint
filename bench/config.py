@@ -205,9 +205,9 @@ def resolve_settings(profile: str, overrides: tuple[str, ...] = (), *,
     scan's. The options go in the order the scan command gives them.
 
     `manifest` is the rules manifest the scan itself is given. `--profile`
-    discards its settings except the project's declared allocators and
-    deallocators, which a scan under that manifest uses, so they must be in
-    the settings a run records and in its hash. A scan with a manifest
+    discards its settings except the project's declared facts: its allocators
+    and deallocators and its `data_model`, which a scan under that manifest
+    uses, so they must be in the settings a run records and in its hash. A scan with a manifest
     resolves its settings with the same one."""
     if profile not in PROFILES:
         raise ValueError(f"unknown profile '{profile}'; one of: {', '.join(PROFILES)}")
