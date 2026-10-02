@@ -127,6 +127,12 @@ or ``llp64`` gives every width its value on that target. It enters the
 settings hash only when declared. ``--set data_model=MODEL`` is the same as
 ``--data-model MODEL``, and a ``--profile`` keeps a manifest's ``data_model``.
 
+Under ``iso`` even a 64-bit exact-width type such as ``uint64_t`` is not known
+to be at least as wide as ``int`` (ISO C gives ``int`` no upper bound), so a
+bitwise operation on one is still reported by EXP14-C as acting on a type ISO C
+does not guarantee is at least as wide as ``int``; declaring a data model
+clears it.
+
 A known limitation of ``iso``: a limit macro is not a number there, so a proof
 that goes through its value is lost even when it holds on every
 implementation. ``x = INT_MAX; x + 1`` overflows everywhere, and a branch
