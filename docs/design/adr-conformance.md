@@ -165,11 +165,12 @@ These are mostly misfire generators (ADR-0005 via 0006) or single-rule suppressi
 | MEM31 `is_this_function_owned_field_target` (2995); `track_allocation_guarded` (1412) | 0006 | Globals count as owned locals. A project-wide `value_only_globals.contains(name)` silences a shadowing local. | both | C |
 | MEM30 `LValue::Var` freed state (4613), `union_typed_vars` (1962); `arg_can_be_freed` (3824); GlobalTracker `scan_call_expression` (898) / `scan_identifier_access` (957) | 0006 | Scope-flat freed state, the summaries lookup before identifier resolution, and bare `global_vars.contains(name)`. | both | C |
 | MEM30 `is_all_caps_or_literal_constant` (1672) | 0006 / 0011 b4 | ALL_CAPS names are taken as distinct constants, so EAGAIN and EWOULDBLOCK count as disjoint and frees are dropped. | + | C |
-| ~~MEM30 `process_call_expression` (3563) etc.; `check_field_access` (5054)~~ | 0005 | `upper_name.contains("REALLOC"/"FREE")` is checked before the summary. **Fixed since the sweep:** Neither name test decides a release. A callee frees only by proof (its body, every live definition of a macro, or a declaration). It invalidates its argument as realloc does only when it is realloc, is declared with realloc's contract, or its body is proven to reallocate its first parameter. | both | C |
+| ~~MEM30 `process_call_expression` (3563) etc.; `check_field_access` (5054)~~ | 0005 | `upper_name.contains("REALLOC"/"FREE")` is checked before the summary. **Fixed since the sweep:** Neither name test decides a release. A callee frees only by proof (its body, a macro, or a declaration). A macro proves a free per side: MEM30, which accuses, starts a finding when any live definition frees (ADR-0010 Decision 1), and a direct callee needs only one freeing definition; MEM31, which forgives, needs every live definition to free. It invalidates its argument as realloc does only when it is realloc, is declared with realloc's contract, or its body is proven to reallocate its first parameter. | both | C |
 | MEM33 flexible-array detection (1388-1568, 967, 173), `trace_variable_definition` (2457) | 0006 | `var_name.contains("flex")`, file-wide name sets, and `_ptr`/`alloc`/`data`/`buffer` suppressions. | both | C (medium) |
 | MEM04 `has_preceding_zero_check` (261) | 0006 / 0011 b3 | A 50-line text window with a substring name. | + | C |
 | MEM03 `scan_sensitive_vars_and_clears` (463) | 0006 | `decl_text.contains('*')` includes the initializer, so `size_t password_len = n * 2;` becomes a "sensitive buffer". | - | C |
 | MEM02 `collect_var_types` (104) | 0006 | Function-wide name→type map. | - | C (low) |
+| MEM00-C `name_has_destructor_token` (198) | 0005 | A name-list exemption: a function whose name has a free/destroy/close-like token (`free`, `destroy`, `delete`, `cleanup`, `release`, `close`, `deinit` and the like) is exempt from MEM00, with no proof it frees anything. | + | C |
 
 ### INT / FLP
 | where | ADR | shortcut | dir | conf |
@@ -310,18 +311,24 @@ since.
 - **Frees by name (ADR-0011).** A callee's name (`*_free`, `destroy_*`,
   `*_release`, `*_close` and the like) is no longer evidence of a free
   anywhere in the analysis. A call frees an argument only through `free`, a
-  body that frees it (through any chain of wrappers), a macro whose every
-  live definition expands to a free, or a project-declared deallocator.
+  body that frees it (through any chain of wrappers), a macro that expands
+  to a free (per side: MEM30, which accuses, takes a free in any live
+  definition; MEM31, which forgives, needs every live definition to free), or
+  a project-declared deallocator. MEM00-C keeps one name exemption, listed in
+  its row in section B.
   Realloc's contract is likewise by proof or declaration. `#define` alias
   chains are read per configuration. A deallocator-shaped callee that
   nothing proves is listed by `--report-deallocator-candidates` and changes
-  no finding.
+  no finding. The list holds only callees whose handed-in allocation MEM31
+  reported as leaked.
 - **Side effects (ADR-0006, ADR-0010).** PRE31-C judges a callee by
   mod/ref facts closed over the scanned call graph, whichever file defines
   it, not by a file-local walk. A callee name that binds to a parameter,
   local or function pointer is a call through a pointer, not the function
   of that spelling. A volatile read is decided by the declaration the name
-  resolves to. A local declared only in `#if` arms is the function's own
+  resolves to within a file. Across files it is a project-wide name set that
+  leaves out a `.c` file's statics, and a name declared both ways is
+  unproven. A local declared only in `#if` arms is the function's own
   storage, and a header macro is judged by every definition the headers
   give.
 - **ERR33-C restartable conversions (ADR-0006).** Whether a test of
@@ -330,7 +337,9 @@ since.
   resolution, typedefs and members followed, not by spelling.
 - **Parse repairs (ADR-0010).** A pre-parse repair that keeps one arm of a
   conditional tree-sitter cannot parse whole keeps the arm the scan's
-  profile compiles. Each condition is read in order, and a project name the
+  profile compiles, but only in `paren_preproc_guard`'s multi-arm path and
+  for an opened header. A chain followed by a lone `{` still keeps the last
+  incomplete arm, the one the brace follows, by position. Each condition is read in order, and a project name the
   profile does not declare reads as undefined. Anything else leaves the
   conditional unrepaired: a reserved or locally defined name, a comparison
   that reads an undeclared name, a macro call. Keeping an arm decides which
