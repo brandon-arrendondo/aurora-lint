@@ -1377,7 +1377,7 @@ mod tests {
             HashMap::new(),
             HashMap::new(),
         );
-        let types = TypeEnv::new(&t, &f, &sh, &al);
+        let types = TypeEnv::new(&t, &f, &sh, &al, Default::default());
         stored_result_is_tested(&store, &target, &call, signal, code, &macros, &types)
     }
 

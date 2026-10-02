@@ -57,13 +57,14 @@ use crate::analyze::context::ScopedTable;
 use crate::analyze::context::VisibleTypes;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::Severity;
+use crate::settings::{AnalysisSettings, DataModel};
 use crate::utility::cert_c::ast_utils::{
     get_identifier_from_declarator, get_node_text, resolve_identifier_declarator,
 };
 use crate::utility::cert_c::expr_type::TypeEnv;
 use crate::utility::cert_c::result_checks;
 use lang_parsing_substrate::query;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
@@ -100,6 +101,9 @@ pub struct Err33C {
     /// The typedefs and struct fields this file sees, for typing the object a
     /// result is stored in.
     visible: RefCell<VisibleTypes>,
+    /// The integer data model the settings credit, for typing the object a
+    /// result is stored in.
+    data_model: Cell<DataModel>,
 }
 
 type Definitions = HashMap<String, Vec<MacroDefinition>>;
@@ -115,11 +119,16 @@ impl Err33C {
             file_macros: RefCell::default(),
             macro_test_cache: RefCell::default(),
             visible: RefCell::default(),
+            data_model: Cell::default(),
         }
     }
 }
 
 impl CertRule for Err33C {
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        self.data_model.set(settings.data_model);
+    }
+
     fn rule_id(&self) -> &'static str {
         "ERR33-C"
     }
@@ -905,7 +914,7 @@ impl Err33C {
             cache: &self.macro_test_cache,
         };
         let visible = self.visible.borrow();
-        let types = TypeEnv::visible(&visible);
+        let types = TypeEnv::visible(&visible, self.data_model.get());
         result_checks::stored_result_is_tested(store, target, call, signal, source, &macros, &types)
     }
 
