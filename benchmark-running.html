@@ -266,12 +266,17 @@ under – the resolved values from <code class="docutils literal notranslate"><s
 the <code class="docutils literal notranslate"><span class="pre">settings</span></code> column of <code class="docutils literal notranslate"><span class="pre">runs</span></code> and <code class="docutils literal notranslate"><span class="pre">realworld_runs</span></code>, so a figure can
 always name its setting (<a class="reference internal" href="options.html"><span class="doc">Policy and Environment Options</span></a>). Runs recorded before settings
 existed have <code class="docutils literal notranslate"><span class="pre">settings</span></code> NULL: they ran under neither preset exactly.</p>
-<p>Every new run_id names its settings:
+<p>Every new run_id names its preset and settings hash:
 <code class="docutils literal notranslate"><span class="pre">sqc-{version}-{sha}[-full][-cdb]-{preset}-{hash12}[-cwe...]</span></code>, where
 <code class="docutils literal notranslate"><span class="pre">{preset}</span></code> is <code class="docutils literal notranslate"><span class="pre">default</span></code> or <code class="docutils literal notranslate"><span class="pre">strict</span></code> when the settings are exactly that
 preset and <code class="docutils literal notranslate"><span class="pre">preset</span></code> otherwise, and <code class="docutils literal notranslate"><span class="pre">{hash12}</span></code> is the first 12 characters
 of the settings hash (the binary computes it; the full hash is in the
-<code class="docutils literal notranslate"><span class="pre">settings</span></code> column and the SARIF report). Real-world runs carry the same
+<code class="docutils literal notranslate"><span class="pre">settings</span></code> column and the SARIF report). The label names the preset, not
+each declared fact: the hash identifies every fact and the <code class="docutils literal notranslate"><span class="pre">settings</span></code> column
+records them all, so a figure names its settings from there, not from the
+run_id. (Juliet runs keep their <code class="docutils literal notranslate"><span class="pre">+closed</span></code> token, e.g. <code class="docutils literal notranslate"><span class="pre">default+closed</span></code>,
+so existing run ids stay valid; no further facts are added to labels.)
+Real-world runs carry the same
 suffix in their <code class="docutils literal notranslate"><span class="pre">variant</span></code> (<code class="docutils literal notranslate"><span class="pre">default-{hash12}</span></code>, <code class="docutils literal notranslate"><span class="pre">cdb-strict-{hash12}</span></code>).
 Runs recorded before settings existed keep their bare ids (“pre-settings”);
 nothing is renamed. A bare SHA resolves to the default-preset run of that

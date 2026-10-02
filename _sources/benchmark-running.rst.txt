@@ -128,12 +128,17 @@ the ``settings`` column of ``runs`` and ``realworld_runs``, so a figure can
 always name its setting (:doc:`options`). Runs recorded before settings
 existed have ``settings`` NULL: they ran under neither preset exactly.
 
-Every new run_id names its settings:
+Every new run_id names its preset and settings hash:
 ``sqc-{version}-{sha}[-full][-cdb]-{preset}-{hash12}[-cwe...]``, where
 ``{preset}`` is ``default`` or ``strict`` when the settings are exactly that
 preset and ``preset`` otherwise, and ``{hash12}`` is the first 12 characters
 of the settings hash (the binary computes it; the full hash is in the
-``settings`` column and the SARIF report). Real-world runs carry the same
+``settings`` column and the SARIF report). The label names the preset, not
+each declared fact: the hash identifies every fact and the ``settings`` column
+records them all, so a figure names its settings from there, not from the
+run_id. (Juliet runs keep their ``+closed`` token, e.g. ``default+closed``,
+so existing run ids stay valid; no further facts are added to labels.)
+Real-world runs carry the same
 suffix in their ``variant`` (``default-{hash12}``, ``cdb-strict-{hash12}``).
 Runs recorded before settings existed keep their bare ids ("pre-settings");
 nothing is renamed. A bare SHA resolves to the default-preset run of that
