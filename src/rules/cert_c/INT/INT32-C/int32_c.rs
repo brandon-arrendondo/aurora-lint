@@ -2708,13 +2708,51 @@ impl Int32C {
         type_map: &HashMap<String, String>,
         bits: u32,
     ) -> bool {
+        let ranges = self.value_ranges_at(node, source, type_map);
+        // Under ISO C's widths an `int` has no width to bound its range by, so
+        // its range is the whole of `i64` and a sum of two of them leaves
+        // `i64` too: the range arithmetic gives up. The syntactic fallback
+        // then reads the operands from their declarations, which knows
+        // nothing of a value an `sscanf` or a callee wrote through a
+        // pointer, and proves a fit nothing supports. An operand no width
+        // bounds is not proven to fit any width.
+        if self.data_model.get() == DataModel::Iso {
+            if let Some(ranges) = ranges.as_ref() {
+                if const_eval::try_evaluate_range(
+                    node,
+                    source,
+                    &self.current_macros.borrow(),
+                    ranges,
+                )
+                .is_none()
+                    && Self::names_an_unbounded_operand(node, source, ranges)
+                {
+                    return false;
+                }
+            }
+        }
         const_eval::expression_fits_in_signed_vra(
             node,
             source,
             &self.current_macros.borrow(),
             bits,
-            self.value_ranges_at(node, source, type_map).as_ref(),
+            ranges.as_ref(),
         )
+    }
+
+    /// Whether `node` reads a variable whose range is as wide as `i64` allows
+    /// on either side: a type whose width the data model leaves open.
+    fn names_an_unbounded_operand(node: &Node, source: &str, ranges: &VarRangeMap) -> bool {
+        if node.kind() == "identifier" {
+            return ranges
+                .get(get_node_text(node, source))
+                .is_some_and(|r| r.min == i64::MIN || r.max == i64::MAX);
+        }
+        let mut cursor = node.walk();
+        let found = node
+            .children(&mut cursor)
+            .any(|child| Self::names_an_unbounded_operand(&child, source, ranges));
+        found
     }
 
     /// The width the result of `node` must be representable in.

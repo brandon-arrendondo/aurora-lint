@@ -2076,6 +2076,62 @@ pub fn try_evaluate_range(
     try_evaluate_range_inner(node, source, macros, var_ranges, None)
 }
 
+/// A lower bound on the value of `node`, for the questions that need no upper
+/// bound.
+///
+/// [`try_evaluate_range`] gives up when either end of the range leaves `i64`,
+/// which is where a variable of a type whose width the data model leaves open
+/// (its range runs to `i64::MAX`) multiplied by a large constant lands. The
+/// lower end of such a product is still known: it is the product of the
+/// operands' lower ends. Handles the shapes that keep a lower bound
+/// non-negative -- a constant, a variable with a known minimum, parentheses,
+/// `+` and `*` over operands whose bounds are all non-negative -- and
+/// saturates at `i64::MAX`, which is still a lower bound. Anything else is
+/// `None`.
+pub fn try_evaluate_lower_bound(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    var_ranges: &VarRangeMap,
+) -> Option<i64> {
+    if let Some(val) = try_evaluate_expr(node, source, macros) {
+        return Some(val);
+    }
+    match node.kind() {
+        "identifier" => var_ranges
+            .get(node.utf8_text(source.as_bytes()).ok()?)
+            .map(|range| range.min),
+        "parenthesized_expression" => {
+            try_evaluate_lower_bound(&node.child(1)?, source, macros, var_ranges)
+        }
+        "binary_expression" => {
+            let op = node.child_by_field_name("operator")?;
+            let op = op.utf8_text(source.as_bytes()).ok()?;
+            let left = try_evaluate_lower_bound(
+                &node.child_by_field_name("left")?,
+                source,
+                macros,
+                var_ranges,
+            )?;
+            let right = try_evaluate_lower_bound(
+                &node.child_by_field_name("right")?,
+                source,
+                macros,
+                var_ranges,
+            )?;
+            if left < 0 || right < 0 {
+                return None;
+            }
+            match op {
+                "+" => Some(left.saturating_add(right)),
+                "*" => Some(left.saturating_mul(right)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// [`try_evaluate_range`], additionally expanding invocations of the
 /// function-like macros in `function_macros` before giving up on them.
 ///
@@ -3251,6 +3307,14 @@ pub fn expression_overflows_unsigned_vra(
             }
             let unsigned_max = (1i64 << bits) - 1;
             return range.min > unsigned_max;
+        }
+        // The range itself left `i64` (an operand no width bounds, times a
+        // large constant), but the question is only whether the LOWER end is
+        // already above the maximum.
+        if bits < 63 {
+            if let Some(low) = try_evaluate_lower_bound(node, source, macros, var_ranges) {
+                return low > (1i64 << bits) - 1;
+            }
         }
     }
     false

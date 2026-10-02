@@ -727,6 +727,31 @@ fn process_simple_assignment_range(
         state.insert(var_name.to_string(), TypedRange { range, var_type });
         return;
     }
+    // An unsigned variable whose width the data model leaves open has no type
+    // range to fall back on that says anything: its range is `[0, i64::MAX]`.
+    // Its right-hand side may still have a known lower end (`seed * 1103515245
+    // + 12345` is at least 12345) that the range arithmetic lost by leaving
+    // `i64` at the upper end; keep it, so a later operation on the variable
+    // can still be seen to exceed a narrower width.
+    let open_unsigned = state
+        .get(var_name)
+        .and_then(|t| t.var_type.clone())
+        .or_else(|| local_types.get(var_name).cloned())
+        .filter(|vt| !vt.is_signed && vt.bit_width == 0);
+    if let Some(vt) = open_unsigned {
+        if let Some(low) = const_eval::try_evaluate_lower_bound(right, source, macros, var_ranges)
+            .filter(|low| *low >= 0)
+        {
+            state.insert(
+                var_name.to_string(),
+                TypedRange {
+                    range: ValueRange::new(low, i64::MAX),
+                    var_type: Some(vt),
+                },
+            );
+            return;
+        }
+    }
     if let Some(range) = resolve_call_return_range(right, source, summaries) {
         let var_type = state.get(var_name).and_then(|t| t.var_type.clone());
         state.insert(var_name.to_string(), TypedRange { range, var_type });
