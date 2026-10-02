@@ -115,6 +115,17 @@ safety-critical user unprotected.
    **Published benchmark figures use the ISO C and POSIX contract
    model**, never one libc's extensions, so they don't depend on the host
    (ADR-0011).
+
+   **Tags follow the tool; they never lead it** (amended 2026-10-02,
+   Brandon). A tag marks a row that an option already in the tool's list
+   (Decision 7) relaxes, and only within that option's stated scope. A case
+   that merely resembles a relaxed one keeps its strict verdict, untagged —
+   for example, a project function shaped like a library function that a
+   contract covers. A new relaxation is added in this order: first the named
+   option in the tool, then its tag, then the affected rows relabeled. The
+   oracle is never reinterpreted so that a default figure reads as a
+   relaxation would make it read. The oracle is the oracle, independent of
+   the tool (ADR-0014): relaxation happens in the tool, never in the oracle.
 6. **Everything else is the same in every setting.** ADR-0011's rejected
    bases stay rejected: compiler and platform behavior the user hasn't
    declared, inference, and in-tree caller sets of anything publicly

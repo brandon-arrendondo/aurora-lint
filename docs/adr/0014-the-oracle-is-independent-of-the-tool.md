@@ -77,3 +77,5 @@ once produced. It has caused confusion as the tool improves:
 - ADR-0007's clarification of what a label is follows this definition.
 - A second tool's run can be scored against the same oracle, which is what
   makes cross-tool comparison on our corpora meaningful.
+- Relaxations live in the tool, never in the oracle: a tag only follows an
+  option the tool already has (ADR-0015 Decision 5, amended 2026-10-02).
