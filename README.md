@@ -35,7 +35,7 @@ are used here as rule fixtures and each is read as a literal specification. That
 reading showed that the POSIX compliant solution of recommendation SIG02-C did
 not compile. Our fix was merged into CERT's secure-coding-standards repository
 on 2 October 2026 ([PR #131](https://github.com/cmu-sei/secure-coding-standards/pull/131)).
-This came from reviewing CERT's examples, not from aurora-lint's output.
+This came from reviewing CERT's examples while building the rule fixtures.
 
 ## Why CERT C
 
