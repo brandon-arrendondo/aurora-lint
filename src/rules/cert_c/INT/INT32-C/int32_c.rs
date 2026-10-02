@@ -2713,13 +2713,51 @@ impl Int32C {
         type_map: &HashMap<String, String>,
         bits: u32,
     ) -> bool {
+        let ranges = self.value_ranges_at(node, source, type_map);
+        let ranges = match ranges {
+            Some(ranges) if self.data_model.get() == DataModel::Iso => {
+                Some(Self::bound_open_ranges(ranges, bits))
+            }
+            other => other,
+        };
         const_eval::expression_fits_in_signed_vra(
             node,
             source,
             &self.current_macros.borrow(),
             bits,
-            self.value_ranges_at(node, source, type_map).as_ref(),
+            ranges.as_ref(),
         )
+    }
+
+    /// Under ISO C's widths an `int` has no width, so a side of its range no
+    /// guard bounds runs to the end of `i64`, and the arithmetic over two such
+    /// ranges leaves `i64` and gives up (the syntactic fallback that follows
+    /// then proves a fit nothing supports). That side is the type's own limit,
+    /// whatever width the type has, so it is read as the limit of the
+    /// `bits`-wide type the fit is asked of: `x + 1` with `x <= 1000` then
+    /// fits (the lower side stays at the type's minimum plus one), where `x +
+    /// y` of two unguarded operands, or `x * 2`, still does not on any width.
+    fn bound_open_ranges(ranges: VarRangeMap, bits: u32) -> VarRangeMap {
+        if bits == 0 || bits >= 64 {
+            return ranges;
+        }
+        let (low, high) = (-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1);
+        ranges
+            .into_iter()
+            .map(|(name, range)| {
+                let min = if range.min == i64::MIN {
+                    low
+                } else {
+                    range.min
+                };
+                let max = if range.max == i64::MAX {
+                    high
+                } else {
+                    range.max
+                };
+                (name, const_eval::ValueRange::new(min, max))
+            })
+            .collect()
     }
 
     /// The width the result of `node` must be representable in.
