@@ -142,6 +142,16 @@ contract model. (ADR-0015)
 - **C13. A correlation inside one function** (a flag set only when a pointer
   was tested) is proof when the function's own code establishes it on every
   path, with no reassignment in between.
+- **C14. PRE31-C: a function-like macro is unsafe if any scenario expands it
+  without evaluating an argument exactly once.** A compile-time arm that drops
+  the argument counts, such as a debug-only macro that expands to nothing
+  without its build flag. So does a runtime path that skips it, such as a log
+  macro that returns early below a verbosity level. With a side-effecting
+  argument, that is a violation. This reads the rule as written, as CERT's own
+  `NDEBUG` and `assert` example does. (ADR-0001, ADR-0010)
+- **C15. An initialized object declared only inside such a macro's argument**
+  (a test-only wrapper, say) counts the same way. The initialization is a store
+  that exists only where the macro expands. (ADR-0001, ADR-0010)
 
 ## D. Where a finding lives (ADR-0012)
 
