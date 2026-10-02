@@ -173,6 +173,11 @@ impl Int02C {
         ) else {
             return;
         };
+        // The defect is an UNSIGNED product computed in a signed int. A signed
+        // operand's overflow is INT32-C's, reported on the same line already.
+        if left.signed || right.signed {
+            return;
+        }
         if !(left.may_promote_to_int(model) && right.may_promote_to_int(model)) {
             return;
         }
