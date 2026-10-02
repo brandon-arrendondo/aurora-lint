@@ -5,12 +5,13 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::check_macros;
 use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
-use crate::analyze::context::ProjectContext;
+use crate::analyze::context::{ProjectContext, VisibleTypes};
 use crate::analyze::noreturn::ByNoreturnTrust;
 use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::expr_type::TypeEnv;
 use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::guard_dominance;
 use lang_parsing_substrate::query;
@@ -27,9 +28,9 @@ pub struct Int33C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     /// Per-function VRA results (set by set_vra_results)
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
-    /// Struct name -> field name -> field type (from project context), used to
-    /// resolve the type of `obj.field` / `ptr->field` divisor operands.
-    struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
+    /// The typedefs and struct fields this file sees, for typing a
+    /// division's operands by declaration.
+    visible: RefCell<VisibleTypes>,
     /// Assert-style macros no configuration compiles out, with the index of
     /// the parameter each checks (`ProjectContext::abort_check_macros`),
     /// under each noreturn setting (`ByNoreturnTrust`).
@@ -46,7 +47,7 @@ impl Int33C {
             file_macros: RefCell::new(MacroConstantMap::new()),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
-            struct_field_types: RefCell::new(Arc::new(HashMap::new())),
+            visible: RefCell::default(),
             abort_check_macros: RefCell::default(),
             settings: RefCell::default(),
         }
@@ -90,7 +91,6 @@ impl CertRule for Int33C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_macros.borrow_mut() = context.macro_constants.clone();
-        *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
         *self.abort_check_macros.borrow_mut() = context.abort_check_macros.clone();
     }
 
@@ -98,8 +98,8 @@ impl CertRule for Int33C {
         *self.settings.borrow_mut() = Arc::clone(settings);
     }
 
-    fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
-        *self.struct_field_types.borrow_mut() = types.struct_field_types.clone();
+    fn set_visible_types(&self, types: &VisibleTypes) {
+        *self.visible.borrow_mut() = types.clone();
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -122,26 +122,22 @@ impl CertRule for Int33C {
         *self.file_macros.borrow_mut() =
             const_eval::merged_macro_constants(&self.project_macros.borrow(), node, source);
 
-        // Register simple typedef aliases (e.g. `typedef Vector4 Quaternion;`)
-        // so field-expression operands of aliased struct types resolve to the
-        // underlying struct's field types (Quaternion.w -> Vector4.w -> float).
-        self.register_typedef_aliases(source);
-
         // First pass: find division macros and zero-initialized variables
         let division_macros = self.find_division_macros(source);
         let zero_vars = self.find_zero_initialized_vars(node, source);
 
-        // Check for division or modulo operations. The type_map is scoped per
-        // function inside check_node (built at function_definition boundaries) so
-        // float-typed operands can suppress integer div-by-zero false positives.
-        let type_map = HashMap::new();
+        // Check for division or modulo operations. Operands are typed by
+        // declaration, so a floating operand suppresses the integer
+        // divide-by-zero check.
+        let visible = self.visible.borrow();
+        let env = TypeEnv::visible(&visible);
         self.check_node(
             node,
             source,
             &mut violations,
             &division_macros,
             &zero_vars,
-            &type_map,
+            &env,
         );
 
         violations
@@ -241,13 +237,13 @@ impl Int33C {
         violations: &mut Vec<RuleViolation>,
         division_macros: &HashMap<String, DivisionMacro>,
         zero_vars: &HashSet<String>,
-        type_map: &HashMap<String, String>,
+        env: &TypeEnv,
     ) {
         // Check for division or modulo operations
         if node.kind() == "binary_expression" {
             if let Some(operator) = ast_utils::get_binary_operator(node, source) {
                 if operator == "/" || operator == "%" {
-                    self.check_division_safety(node, source, violations, type_map);
+                    self.check_division_safety(node, source, violations, env);
                 }
             }
         }
@@ -263,14 +259,14 @@ impl Int33C {
                         if let Some(child) = node.child(i) {
                             if child.kind() == "/=" || child.kind() == "%=" {
                                 self.check_compound_assignment_safety(
-                                    node, source, violations, type_map,
+                                    node, source, violations, env,
                                 );
                                 break;
                             }
                             let text = ast_utils::get_node_text(&child, source);
                             if text == "/=" || text == "%=" {
                                 self.check_compound_assignment_safety(
-                                    node, source, violations, type_map,
+                                    node, source, violations, env,
                                 );
                                 break;
                             }
@@ -288,28 +284,7 @@ impl Int33C {
         // Recursively check child nodes
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
-                // Scope the type_map per function so operand-type lookups use the
-                // correct declarations and don't collide across functions.
-                if child.kind() == "function_definition" {
-                    let fn_type_map = float_typing::collect_variable_types(&child, source);
-                    self.check_node(
-                        &child,
-                        source,
-                        violations,
-                        division_macros,
-                        zero_vars,
-                        &fn_type_map,
-                    );
-                } else {
-                    self.check_node(
-                        &child,
-                        source,
-                        violations,
-                        division_macros,
-                        zero_vars,
-                        type_map,
-                    );
-                }
+                self.check_node(&child, source, violations, division_macros, zero_vars, env);
             }
         }
     }
@@ -377,7 +352,7 @@ impl Int33C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        env: &TypeEnv,
     ) {
         // A `/` inside a preprocessor directive tree-sitter could not place is
         // not a division: `#if __has_include(<sys/socket.h>)` reparses with the
@@ -399,7 +374,7 @@ impl Int33C {
         // INT33-C concerns INTEGER divide-by-zero (UB). Floating-point division
         // by zero is well-defined (yields inf/nan), so skip when either operand
         // is float-typed — matching C's usual-arithmetic-conversion rules.
-        if self.division_is_floating(node, source, type_map) {
+        if self.division_is_floating(node, source, env) {
             return;
         }
 
@@ -461,11 +436,11 @@ impl Int33C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        env: &TypeEnv,
     ) {
         // Floating-point `/=`/`%=` is not integer divide-by-zero UB; skip when
         // either operand is float-typed.
-        if self.division_is_floating(node, source, type_map) {
+        if self.division_is_floating(node, source, env) {
             return;
         }
 
@@ -1743,65 +1718,10 @@ impl Int33C {
     /// True if the division/remainder operation `node` has at least one
     /// float-typed operand, making it a floating-point operation (well-defined
     /// for a zero divisor) rather than the integer divide-by-zero INT33-C covers.
-    fn division_is_floating(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &HashMap<String, String>,
-    ) -> bool {
-        let left = node.child_by_field_name("left");
-        let right = node.child_by_field_name("right");
-        if let Some(l) = left {
-            if self.expr_is_float(&l, source, type_map) {
-                return true;
-            }
-        }
-        if let Some(r) = right {
-            if self.expr_is_float(&r, source, type_map) {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Best-effort: does this expression have floating-point type? Delegates to
-    /// the shared [`float_typing`] engine, supplying INT33-C's struct field map.
-    fn expr_is_float(&self, node: &Node, source: &str, type_map: &HashMap<String, String>) -> bool {
-        let sft = self.struct_field_types.borrow();
-        float_typing::expr_is_float(node, source, type_map, &sft)
-    }
-
-    /// Register simple typedef aliases of the form `typedef ExistingType Alias;`
-    /// into `struct_field_types`, copying the canonical struct's field map so
-    /// `Alias.field` resolves the same as `ExistingType.field`. Multi-token /
-    /// struct-body typedefs are ignored (only plain 1:1 aliases are handled).
-    fn register_typedef_aliases(&self, source: &str) {
-        let mut sft = self.struct_field_types.borrow_mut();
-        if sft.is_empty() {
-            return; // no struct field info available (e.g. no project context)
-        }
-        // The table is the prescan's, shared by every rule instance; copy it
-        // (`Arc::make_mut`) only once this file actually has an alias to add.
-        for line in source.lines() {
-            let t = line.trim();
-            let rest = match t.strip_prefix("typedef ").and_then(|r| r.strip_suffix(';')) {
-                Some(r) => r,
-                None => continue,
-            };
-            let toks: Vec<&str> = rest.split_whitespace().collect();
-            if toks.len() != 2 {
-                continue;
-            }
-            let (base, alias) = (toks[0], toks[1]);
-            if !alias.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                continue;
-            }
-            if sft.contains_key(alias) {
-                continue;
-            }
-            if let Some(fields) = sft.get(base).cloned() {
-                Arc::make_mut(&mut *sft).insert(alias.to_string(), fields);
-            }
-        }
+    fn division_is_floating(&self, node: &Node, source: &str, env: &TypeEnv) -> bool {
+        ["left", "right"].iter().any(|f| {
+            node.child_by_field_name(f)
+                .is_some_and(|n| float_typing::expr_is_float(&n, source, env))
+        })
     }
 }

@@ -5,13 +5,14 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self, FunctionCfg};
 use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
 use crate::analyze::context::SummaryLookup;
-use crate::analyze::context::{ProjectContext, ScopedTable};
+use crate::analyze::context::{ProjectContext, ScopedTable, VisibleTypes};
 use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
 use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
+use crate::utility::cert_c::expr_type::TypeEnv;
 use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
@@ -35,6 +36,9 @@ pub struct Int30C {
     project_macros: RefCell<Arc<MacroConstantMap>>,
     current_macros: RefCell<MacroConstantMap>,
     struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
+    /// The typedefs and struct fields this file sees, for typing operands by
+    /// declaration.
+    visible: RefCell<VisibleTypes>,
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
@@ -78,6 +82,7 @@ impl Int30C {
             project_macros: RefCell::new(Arc::new(MacroConstantMap::new())),
             current_macros: RefCell::new(MacroConstantMap::new()),
             struct_field_types: RefCell::new(Arc::new(HashMap::new())),
+            visible: RefCell::default(),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
             function_summaries: RefCell::default(),
@@ -255,6 +260,7 @@ impl CertRule for Int30C {
     fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
         *self.typedef_types.borrow_mut() = types.typedef_types.clone();
         *self.struct_field_types.borrow_mut() = types.struct_field_types.clone();
+        *self.visible.borrow_mut() = types.clone();
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -286,7 +292,9 @@ impl CertRule for Int30C {
         *self.function_return_types.borrow_mut() =
             overflow_helpers::collect_function_return_types(node, source);
 
-        self.check_node(node, source, &mut violations, &type_map);
+        let visible = self.visible.borrow();
+        let env = TypeEnv::visible(&visible);
+        self.check_node(node, source, &mut violations, &type_map, &env);
 
         // `check_allocation_size_wrap` reports the size ARGUMENT of a call;
         // the operator walkers may independently report the arithmetic
@@ -354,6 +362,7 @@ impl Int30C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        env: &TypeEnv,
     ) {
         let matches = query::find_descendants_of_kinds(
             *node,
@@ -384,10 +393,16 @@ impl Int30C {
 
             match matched.kind() {
                 "binary_expression" => {
-                    self.check_binary_operation(&matched, source, violations, scoped_type_map);
+                    self.check_binary_operation(&matched, source, violations, scoped_type_map, env);
                 }
                 "assignment_expression" => {
-                    self.check_assignment_operation(&matched, source, violations, scoped_type_map);
+                    self.check_assignment_operation(
+                        &matched,
+                        source,
+                        violations,
+                        scoped_type_map,
+                        env,
+                    );
                 }
                 "call_expression" => {
                     self.check_function_call(&matched, source, violations, scoped_type_map);
@@ -406,6 +421,7 @@ impl Int30C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        env: &TypeEnv,
     ) {
         // INT30-C concerns unsigned integer WRAP (well-defined, but usually
         // unintended). C's usual arithmetic conversions promote the whole
@@ -413,7 +429,7 @@ impl Int30C {
         // float-typed, at which point there is no unsigned wrap at all — so
         // skip float-typed operations entirely. Mirrors INT32-C's
         // operands_are_floating gate.
-        if self.operands_are_floating(node, source, type_map) {
+        if self.operands_are_floating(node, source, env) {
             return;
         }
 
@@ -442,11 +458,12 @@ impl Int30C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        env: &TypeEnv,
     ) {
         // See check_binary_operation: skip compound assignments whose
         // operand types make this floating-point arithmetic, not unsigned
         // wrap.
-        if self.operands_are_floating(node, source, type_map) {
+        if self.operands_are_floating(node, source, env) {
             return;
         }
 
@@ -464,14 +481,6 @@ impl Int30C {
                 _ => {}
             }
         }
-    }
-
-    /// Best-effort: does this expression have floating-point type? Delegates
-    /// to the shared [`float_typing`] engine, supplying INT30-C's struct
-    /// field map.
-    fn expr_is_float(&self, node: &Node, source: &str, type_map: &HashMap<String, String>) -> bool {
-        let sft = self.struct_field_types.borrow();
-        float_typing::expr_is_float(node, source, type_map, &sft)
     }
 
     /// Best-effort: is this expression pointer arithmetic rather than integer
@@ -493,23 +502,11 @@ impl Int30C {
     /// INT30-C covers. Shared by [`check_binary_operation`] and
     /// [`check_assignment_operation`], both of which have `left`/`right`
     /// fields.
-    fn operands_are_floating(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &HashMap<String, String>,
-    ) -> bool {
-        if let Some(l) = node.child_by_field_name("left") {
-            if self.expr_is_float(&l, source, type_map) {
-                return true;
-            }
-        }
-        if let Some(r) = node.child_by_field_name("right") {
-            if self.expr_is_float(&r, source, type_map) {
-                return true;
-            }
-        }
-        false
+    fn operands_are_floating(&self, node: &Node, source: &str, env: &TypeEnv) -> bool {
+        ["left", "right"].iter().any(|f| {
+            node.child_by_field_name(f)
+                .is_some_and(|n| float_typing::expr_is_float(&n, source, env))
+        })
     }
 
     fn check_addition(

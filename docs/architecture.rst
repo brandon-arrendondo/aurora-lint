@@ -133,7 +133,7 @@ Analysis Modules
 
 **Floating-point type inference** (``src/utility/cert_c/float_typing.rs``).
   Word-boundary-aware float/integer classification (``is_float_type``,
-  ``expr_is_float``, ``expr_is_definitely_integer``,
+  ``expr_is_float``, by declaration through ``expr_type``,
   ``collect_variable_types``) shared by the FLP rule family. A follow-up
   migrated 3 of the 9 flagged rules (FLP02-C, FLP34-C, FLP37-C); the other
   6 turned out to check genuinely different concepts (format specifiers,

@@ -486,7 +486,7 @@ impl Int08C {
         // (1.0f/31)` reaches this check only because a narrow variable
         // appears somewhere in it; without the guard its fate would rest on
         // however `try_evaluate_range` happens to treat a float literal.
-        if float_typing::expr_is_float(expr, source, types, &StructFieldTypes::new()) {
+        if float_typing::expr_is_float_by_name_map(expr, source, types, &StructFieldTypes::new()) {
             return false;
         }
 

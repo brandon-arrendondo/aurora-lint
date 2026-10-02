@@ -9,6 +9,7 @@
 //! expressions stay non-float and integer-focused detection keeps its recall.
 
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::expr_type::{self, TypeEnv};
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -71,6 +72,61 @@ pub fn is_float_literal(text: &str) -> bool {
     t.contains('.') || t.contains('e') || t.contains('E') || t.ends_with('f') || t.ends_with('F')
 }
 
+/// Does this expression have a floating type? True only when that is
+/// determined; an expression whose type is unknown is not floating, so a
+/// caller that skips floating arithmetic never skips on a guess.
+///
+/// The type comes from [`expr_type`](crate::utility::cert_c::expr_type), by
+/// each operand's resolved declaration and typedef chain. One rule is added
+/// on top: under the usual arithmetic conversions (C11 6.3.1.8), an operand
+/// of floating type makes the result of `+ - * /` floating, so `d * f()` is
+/// floating even when `f`'s return type is unknown (an operand that is not
+/// arithmetic would make the expression ill-formed). The same holds for the
+/// arms of `?:` (6.5.15p5) and for unary `+`/`-`. `%` and the shifts take
+/// integer operands only, so the rule does not apply to them.
+pub fn expr_is_float(node: &Node, source: &str, env: &TypeEnv) -> bool {
+    if expr_type::expr_type(node, source, env).is_some_and(|t| t.is_float()) {
+        return true;
+    }
+    let either = |a: Option<Node>, b: Option<Node>| {
+        a.is_some_and(|n| expr_is_float(&n, source, env))
+            || b.is_some_and(|n| expr_is_float(&n, source, env))
+    };
+    match node.kind() {
+        "parenthesized_expression" => node
+            .named_child(0)
+            .is_some_and(|c| expr_is_float(&c, source, env)),
+        "binary_expression" => {
+            let op = node
+                .child_by_field_name("operator")
+                .map(|o| ast_utils::get_node_text(&o, source));
+            matches!(op, Some("+" | "-" | "*" | "/"))
+                && either(
+                    node.child_by_field_name("left"),
+                    node.child_by_field_name("right"),
+                )
+        }
+        "conditional_expression" => either(
+            node.child_by_field_name("consequence"),
+            node.child_by_field_name("alternative"),
+        ),
+        "unary_expression" => {
+            let op = node
+                .child_by_field_name("operator")
+                .map(|o| ast_utils::get_node_text(&o, source));
+            matches!(op, Some("+" | "-"))
+                && node
+                    .child_by_field_name("argument")
+                    .is_some_and(|a| expr_is_float(&a, source, env))
+        }
+        _ => false,
+    }
+}
+
+/// INT08-C's float test, by a function-wide `name -> type` map rather than by
+/// declaration. Kept only until INT08-C moves to [`expr_is_float`]; every
+/// other caller has.
+///
 /// Best-effort: does this expression have floating-point type? Returns true only
 /// when positively determined to be float/double; unknown expressions return
 /// false so integer-focused detection (and recall) is preserved.
@@ -78,7 +134,7 @@ pub fn is_float_literal(text: &str) -> bool {
 /// `type_map` is a `name -> type` map for the enclosing function (see
 /// [`collect_variable_types`]); `struct_field_types` resolves field accesses
 /// (`v.x`) and may be empty when no project context is available.
-pub fn expr_is_float(
+pub fn expr_is_float_by_name_map(
     node: &Node,
     source: &str,
     type_map: &HashMap<String, String>,
@@ -99,70 +155,30 @@ pub fn expr_is_float(
             if let Some(t) = node.child_by_field_name("type") {
                 is_float_type(ast_utils::get_node_text(&t, source))
             } else if let Some(v) = node.child_by_field_name("value") {
-                expr_is_float(&v, source, type_map, struct_field_types)
+                expr_is_float_by_name_map(&v, source, type_map, struct_field_types)
             } else {
                 false
             }
         }
         "parenthesized_expression" => node
             .named_child(0)
-            .map(|c| expr_is_float(&c, source, type_map, struct_field_types))
+            .map(|c| expr_is_float_by_name_map(&c, source, type_map, struct_field_types))
             .unwrap_or(false),
         "unary_expression" | "pointer_expression" => node
             .child_by_field_name("argument")
-            .map(|a| expr_is_float(&a, source, type_map, struct_field_types))
+            .map(|a| expr_is_float_by_name_map(&a, source, type_map, struct_field_types))
             .unwrap_or(false),
         "binary_expression" => {
             // Usual arithmetic conversions: float if either operand is float.
             let l = node
                 .child_by_field_name("left")
-                .map(|n| expr_is_float(&n, source, type_map, struct_field_types))
+                .map(|n| expr_is_float_by_name_map(&n, source, type_map, struct_field_types))
                 .unwrap_or(false);
             let r = node
                 .child_by_field_name("right")
-                .map(|n| expr_is_float(&n, source, type_map, struct_field_types))
+                .map(|n| expr_is_float_by_name_map(&n, source, type_map, struct_field_types))
                 .unwrap_or(false);
             l || r
-        }
-        _ => false,
-    }
-}
-
-/// Best-effort dual of [`expr_is_float`]: true only when the expression is
-/// *provably* integer-typed — every leaf is an integer literal or a known
-/// non-float, non-pointer typed identifier. Unknown operands (function calls,
-/// unresolved identifiers, struct fields, casts, subscripts) yield false, so a
-/// caller that fires on "integer arithmetic" stays conservative and does not
-/// misfire on float-returning calls (`sinf`/`cosf`) or unresolved types.
-pub fn expr_is_definitely_integer(
-    node: &Node,
-    source: &str,
-    type_map: &HashMap<String, String>,
-) -> bool {
-    match node.kind() {
-        "number_literal" => !is_float_literal(ast_utils::get_node_text(node, source)),
-        "identifier" => match ast_utils::identifier_type(node, source, type_map) {
-            Some(t) => !is_float_type(&t) && !t.contains('*'),
-            None => false,
-        },
-        "parenthesized_expression" => node
-            .named_child(0)
-            .map(|c| expr_is_definitely_integer(&c, source, type_map))
-            .unwrap_or(false),
-        "unary_expression" => node
-            .child_by_field_name("argument")
-            .map(|a| expr_is_definitely_integer(&a, source, type_map))
-            .unwrap_or(false),
-        "binary_expression" => {
-            let l = node
-                .child_by_field_name("left")
-                .map(|n| expr_is_definitely_integer(&n, source, type_map))
-                .unwrap_or(false);
-            let r = node
-                .child_by_field_name("right")
-                .map(|n| expr_is_definitely_integer(&n, source, type_map))
-                .unwrap_or(false);
-            l && r
         }
         _ => false,
     }
@@ -314,6 +330,38 @@ mod tests {
         let language = crate::parser::c_language();
         parser.set_language(&language).unwrap();
         parser.parse(code, None).unwrap()
+    }
+
+    /// `expr_is_float` on the initializer of `r`, in a function whose
+    /// parameters are `double d, int n` and which calls an undeclared `f`.
+    fn initializer_is_float(init: &str) -> bool {
+        let code = format!("void g(double d, int n) {{ int r = {init}; }}");
+        let tree = parse_c_code(&code);
+        let empty = HashMap::new();
+        let (fields, shapes, aliases) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let env = TypeEnv::new(&empty, &fields, &shapes, &aliases);
+        let decl = lang_parsing_substrate::query::find_descendants_of_kinds(
+            tree.root_node(),
+            &["init_declarator"],
+        );
+        let value = decl[0].child_by_field_name("value").unwrap();
+        expr_is_float(&value, &code, &env)
+    }
+
+    #[test]
+    fn one_floating_operand_makes_arithmetic_floating() {
+        // C11 6.3.1.8: the unknown operand cannot make the result integer.
+        assert!(initializer_is_float("d * f()"));
+        assert!(initializer_is_float("(f() + d) / 2"));
+        assert!(initializer_is_float("n ? f() : d"));
+        assert!(initializer_is_float("-(d * f())"));
+        // Integer results whatever the operands: comparison, `!`, `%`, shift.
+        assert!(!initializer_is_float("d > f()"));
+        assert!(!initializer_is_float("!d"));
+        assert!(!initializer_is_float("n % f()"));
+        assert!(!initializer_is_float("n << f()"));
+        // Unknown is not floating.
+        assert!(!initializer_is_float("n * f()"));
     }
 
     #[test]

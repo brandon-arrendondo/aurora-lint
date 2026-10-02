@@ -5,7 +5,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self, FunctionCfg};
 use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
 use crate::analyze::context::SummaryLookup;
-use crate::analyze::context::{ProjectContext, ScopedTable};
+use crate::analyze::context::{ProjectContext, ScopedTable, VisibleTypes};
 use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::macro_expand::FunctionMacro;
 use crate::analyze::value_range::RangeAnalysisResult;
@@ -13,6 +13,7 @@ use crate::analyze::vra_access;
 use crate::manifest::Severity;
 use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
+use crate::utility::cert_c::expr_type::TypeEnv;
 use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
@@ -57,6 +58,9 @@ pub struct Int32C {
     project_macros: RefCell<Arc<MacroConstantMap>>,
     current_macros: RefCell<MacroConstantMap>,
     struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
+    /// The typedefs and struct fields this file sees, for typing operands by
+    /// declaration.
+    visible: RefCell<VisibleTypes>,
     /// One-level typedef alias map (`word_t` -> `unsigned long`, `paddr_t` ->
     /// `word_t`, ...), populated project-wide by `set_project_context`.
     /// Resolved recursively by `overflow_helpers::typedef_chain_is_unsigned`
@@ -111,6 +115,7 @@ impl Int32C {
             project_macros: RefCell::new(Arc::new(MacroConstantMap::new())),
             current_macros: RefCell::new(MacroConstantMap::new()),
             struct_field_types: RefCell::new(Arc::new(HashMap::new())),
+            visible: RefCell::default(),
             typedef_types: RefCell::new(Arc::new(HashMap::new())),
             function_macros: RefCell::new(Arc::new(HashMap::new())),
             function_cfgs: RefCell::new(HashMap::new()),
@@ -206,6 +211,7 @@ impl CertRule for Int32C {
 
     fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
         *self.struct_field_types.borrow_mut() = types.struct_field_types.clone();
+        *self.visible.borrow_mut() = types.clone();
         *self.typedef_types.borrow_mut() = types.typedef_types.clone();
     }
 
@@ -239,7 +245,9 @@ impl CertRule for Int32C {
         *self.function_return_types.borrow_mut() =
             overflow_helpers::collect_function_return_types(node, source);
 
-        self.check_node(node, source, &mut violations, &type_map);
+        let visible = self.visible.borrow();
+        let env = TypeEnv::visible(&visible);
+        self.check_node(node, source, &mut violations, &type_map, &env);
 
         // `report_inner_signed_size_arithmetic` names an operation nested in
         // a size argument; the operator walker may have reported that same
@@ -274,6 +282,7 @@ impl Int32C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        env: &TypeEnv,
     ) {
         let candidates = query::find_descendants_of_kinds(
             *node,
@@ -308,7 +317,13 @@ impl Int32C {
 
             match candidate.kind() {
                 "binary_expression" => {
-                    self.check_binary_operation(&candidate, source, violations, scoped_type_map);
+                    self.check_binary_operation(
+                        &candidate,
+                        source,
+                        violations,
+                        scoped_type_map,
+                        env,
+                    );
                 }
                 "assignment_expression" => {
                     self.check_assignment_operation(
@@ -316,10 +331,17 @@ impl Int32C {
                         source,
                         violations,
                         scoped_type_map,
+                        env,
                     );
                 }
                 "unary_expression" => {
-                    self.check_unary_operation(&candidate, source, violations, scoped_type_map);
+                    self.check_unary_operation(
+                        &candidate,
+                        source,
+                        violations,
+                        scoped_type_map,
+                        env,
+                    );
                 }
                 "update_expression" => {
                     self.check_increment_decrement(&candidate, source, violations, scoped_type_map);
@@ -398,13 +420,14 @@ impl Int32C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        env: &TypeEnv,
     ) {
         // INT32-C concerns signed INTEGER overflow (UB). C's usual arithmetic
         // conversions promote the whole expression to float/double the moment
         // either operand is float-typed, at which point overflow saturates to
         // inf rather than wrapping/UB — so skip float-typed operations
         // entirely, matching INT33-C's division_is_floating gate.
-        if self.operands_are_floating(node, source, type_map) {
+        if self.operands_are_floating(node, source, env) {
             return;
         }
 
@@ -435,10 +458,11 @@ impl Int32C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        env: &TypeEnv,
     ) {
         // See check_binary_operation: skip compound assignments whose operand
         // types make this floating-point arithmetic, not integer overflow.
-        if self.operands_are_floating(node, source, type_map) {
+        if self.operands_are_floating(node, source, env) {
             return;
         }
 
@@ -466,27 +490,20 @@ impl Int32C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        env: &TypeEnv,
     ) {
         if let Some(operator) = self.get_unary_operator(node, source) {
             if operator == "-" {
                 // See check_binary_operation: `-x` on a float-typed operand
                 // isn't the -INT_MIN overflow INT32-C covers.
                 if let Some(argument) = node.child_by_field_name("argument") {
-                    if self.expr_is_float(&argument, source, type_map) {
+                    if float_typing::expr_is_float(&argument, source, env) {
                         return;
                     }
                 }
                 self.check_negation(node, source, violations, type_map);
             }
         }
-    }
-
-    /// Best-effort: does this expression have floating-point type? Delegates
-    /// to the shared [`float_typing`] engine, supplying INT32-C's struct
-    /// field map.
-    fn expr_is_float(&self, node: &Node, source: &str, type_map: &HashMap<String, String>) -> bool {
-        let sft = self.struct_field_types.borrow();
-        float_typing::expr_is_float(node, source, type_map, &sft)
     }
 
     /// Best-effort: is this expression pointer arithmetic rather than integer
@@ -508,23 +525,11 @@ impl Int32C {
     /// covers. Shared by [`check_binary_operation`] and
     /// [`check_assignment_operation`], both of which have `left`/`right`
     /// fields.
-    fn operands_are_floating(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &HashMap<String, String>,
-    ) -> bool {
-        if let Some(l) = node.child_by_field_name("left") {
-            if self.expr_is_float(&l, source, type_map) {
-                return true;
-            }
-        }
-        if let Some(r) = node.child_by_field_name("right") {
-            if self.expr_is_float(&r, source, type_map) {
-                return true;
-            }
-        }
-        false
+    fn operands_are_floating(&self, node: &Node, source: &str, env: &TypeEnv) -> bool {
+        ["left", "right"].iter().any(|f| {
+            node.child_by_field_name(f)
+                .is_some_and(|n| float_typing::expr_is_float(&n, source, env))
+        })
     }
 
     fn check_addition(
