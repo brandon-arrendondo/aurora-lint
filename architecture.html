@@ -213,9 +213,11 @@ sweep. The overflow-<em>guard-detection</em> logic itself
 <code class="docutils literal notranslate"><span class="pre">INT30-C</span></code>’s is unsigned-wraparound-focused and <code class="docutils literal notranslate"><span class="pre">INT32-C</span></code>’s is
 signed-overflow-focused.</p>
 </dd>
-<dt><strong>Floating-point type inference</strong> (<code class="docutils literal notranslate"><span class="pre">src/utility/cert_c/float_typing.rs</span></code>).</dt><dd><p>Word-boundary-aware float/integer classification (<code class="docutils literal notranslate"><span class="pre">is_float_type</span></code>,
-<code class="docutils literal notranslate"><span class="pre">expr_is_float</span></code>, <code class="docutils literal notranslate"><span class="pre">expr_is_definitely_integer</span></code>,
-<code class="docutils literal notranslate"><span class="pre">collect_variable_types</span></code>) shared by the FLP rule family. A follow-up
+<dt><strong>Floating-point type inference</strong> (<code class="docutils literal notranslate"><span class="pre">src/utility/cert_c/float_typing.rs</span></code>).</dt><dd><p>Word-boundary-aware float classification of type spellings and literals
+(<code class="docutils literal notranslate"><span class="pre">is_float_type</span></code>, <code class="docutils literal notranslate"><span class="pre">is_float_literal</span></code>) and the <code class="docutils literal notranslate"><span class="pre">collect_variable_types</span></code>
+name map, shared by the FLP rule family; and <code class="docutils literal notranslate"><span class="pre">expr_is_float</span></code>, which types
+an expression by declaration through <code class="docutils literal notranslate"><span class="pre">expr_type</span></code> and is the floating
+test of <code class="docutils literal notranslate"><span class="pre">INT30-C</span></code>, <code class="docutils literal notranslate"><span class="pre">INT32-C</span></code> and <code class="docutils literal notranslate"><span class="pre">INT33-C</span></code>. A follow-up
 migrated 3 of the 9 flagged rules (FLP02-C, FLP34-C, FLP37-C); the other
 6 turned out to check genuinely different concepts (format specifiers,
 <code class="docutils literal notranslate"><span class="pre">long</span> <span class="pre">double</span></code> specifically, a more comprehensive extended-float set)

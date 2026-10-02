@@ -132,9 +132,11 @@ Analysis Modules
   signed-overflow-focused.
 
 **Floating-point type inference** (``src/utility/cert_c/float_typing.rs``).
-  Word-boundary-aware float/integer classification (``is_float_type``,
-  ``expr_is_float``, ``expr_is_definitely_integer``,
-  ``collect_variable_types``) shared by the FLP rule family. A follow-up
+  Word-boundary-aware float classification of type spellings and literals
+  (``is_float_type``, ``is_float_literal``) and the ``collect_variable_types``
+  name map, shared by the FLP rule family; and ``expr_is_float``, which types
+  an expression by declaration through ``expr_type`` and is the floating
+  test of ``INT30-C``, ``INT32-C`` and ``INT33-C``. A follow-up
   migrated 3 of the 9 flagged rules (FLP02-C, FLP34-C, FLP37-C); the other
   6 turned out to check genuinely different concepts (format specifiers,
   ``long double`` specifically, a more comprehensive extended-float set)
