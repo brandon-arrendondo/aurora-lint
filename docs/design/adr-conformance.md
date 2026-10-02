@@ -339,10 +339,11 @@ since.
   conditional tree-sitter cannot parse whole keeps the arm the scan's
   profile compiles, but only in `paren_preproc_guard`'s multi-arm path and
   for an opened header. A chain followed by a lone `{` still keeps the last
-  incomplete arm, the one the brace follows, by position. Each condition is read in order, and a project name the
-  profile does not declare reads as undefined. Anything else leaves the
-  conditional unrepaired: a reserved or locally defined name, a comparison
-  that reads an undeclared name, a macro call. Keeping an arm decides which
+  incomplete arm, the one the brace follows, by position. Each condition is
+  read in order, and a project name the profile does not declare reads as
+  undefined. Anything else leaves the conditional unrepaired: a reserved or
+  locally defined name, a comparison that reads a name as undefined, a macro
+  call. Keeping an arm decides which
   code the rules see there. That is accepted only as a parse repair's cost,
   not as a profile deciding emission (ADR-0010 Decision 3).
 - **MEM06-C (ADR-0006, ADR-0010).** A lock and an allocation are matched by
