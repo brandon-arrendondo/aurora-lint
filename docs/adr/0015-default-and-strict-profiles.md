@@ -157,6 +157,15 @@ safety-critical user unprotected.
    `-strict+closed-{hash12}` for a scan declared a closed program, never a
    bare `-preset-`, so the default and strict runs of one build stay distinct.
 
+   **Labels name the preset, not the facts** (amended 2026-10-02, Brandon).
+   A run id names the preset, as `-default-{hash12}` or `-strict-{hash12}`.
+   The settings hash identifies every declared fact, and the full resolved
+   settings are recorded with the run, so labels do not enumerate facts: they
+   would grow with every new setting. The existing `+closed` token stays,
+   because removing it would rename existing runs, but no further facts are
+   added to labels. A published figure names its settings in its text or
+   caption, from the recorded settings, not from the run id.
+
 ## Consequences
 
 - ADR-0001's "report as written" describes the strict policy. The default
