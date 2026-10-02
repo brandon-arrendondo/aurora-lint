@@ -7,7 +7,7 @@ cert_version = "2016"
 [environment]
 # The configuration of record is a Linux x86_64 build, LP64: int 32 bits, long
 # and pointers 64. See docs/design/realworld-corpus-scope.md.
-data_model = "lp64"
+data_model = "iso"
 
 # mosquitto_free is libmosquitto_common's documented free
 # (include/mosquitto/libcommon_memory.h); its definition is in libcommon/,

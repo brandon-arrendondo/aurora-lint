@@ -7,7 +7,7 @@ cert_version = "2016"
 [environment]
 # The configuration of record is windows-x86 with MSVC (primary_build_config),
 # ILP32: int, long and pointers 32 bits. See docs/design/realworld-corpus-scope.md.
-data_model = "ilp32"
+data_model = "iso"
 
 [rules.cert_c.API00-C]
 enabled = true
