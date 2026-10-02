@@ -173,6 +173,23 @@ impl Int02C {
         ) else {
             return;
         };
+        // The defect is an UNSIGNED product computed in a signed int. A signed
+        // operand's overflow is INT32-C's, reported on the same line already.
+        if left.signed || right.signed {
+            return;
+        }
+        // A product of sizeofs is a constant: each factor is at most the width
+        // of a type divided by CHAR_BIT, so it cannot overflow on any
+        // implementation, whatever width int has.
+        if [
+            expr.child_by_field_name("left"),
+            expr.child_by_field_name("right"),
+        ]
+        .iter()
+        .all(|operand| operand.as_ref().is_some_and(Self::is_sizeof_operand))
+        {
+            return;
+        }
         if !(left.may_promote_to_int(model) && right.may_promote_to_int(model)) {
             return;
         }
@@ -196,14 +213,25 @@ impl Int02C {
              after promotion, where the product can exceed INT_MAX and overflow"
         } else {
             "Multiplication of two operands that promote to int wherever int is \
-             wider than they are: ISO C guarantees int only 16 bits, so the \
-             product can exceed INT_MAX and overflow"
+             wider than they are (a size_t may rank below int where int is wider \
+             than it); the product can then exceed INT_MAX and overflow"
         };
         violations.push(self.violation(
             expr,
             message.to_string(),
             "Cast one operand to unsigned int before multiplying",
         ));
+    }
+
+    /// `sizeof x` or `sizeof(T)`, in parentheses or not.
+    fn is_sizeof_operand(node: &Node) -> bool {
+        match node.kind() {
+            "sizeof_expression" => true,
+            "parenthesized_expression" => node
+                .named_child(0)
+                .is_some_and(|n| Self::is_sizeof_operand(&n)),
+            _ => false,
+        }
     }
 
     /// `int si; unsigned int ui; si < ui`

@@ -2520,7 +2520,7 @@ impl Arr30C {
             BufferSize::Static(s) => format!("size {}", s),
             BufferSize::DynamicCalculated(s) => format!("allocated size {}", s),
             BufferSize::Dynamic(expr) => format!("dynamic size ({})", expr),
-            BufferSize::Symbolic(var) => format!("VLA size ({})", var),
+            BufferSize::Symbolic(var) => format!("symbolic size ({})", var),
             BufferSize::Unknown => "unknown size".to_string(),
         };
 
@@ -7711,7 +7711,7 @@ impl Arr30C {
             BufferSize::Static(s) => format!("size {}", s),
             BufferSize::DynamicCalculated(s) => format!("allocated size {}", s),
             BufferSize::Dynamic(expr) => format!("dynamic size ({})", expr),
-            BufferSize::Symbolic(var) => format!("VLA size ({})", var),
+            BufferSize::Symbolic(var) => format!("symbolic size ({})", var),
             BufferSize::Unknown => "unknown size".to_string(),
         };
 
