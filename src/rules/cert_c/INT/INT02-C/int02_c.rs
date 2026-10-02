@@ -39,6 +39,13 @@ struct IntType {
 }
 
 impl IntType {
+    /// Whether the type has no rank and no upper width the data model gives
+    /// it: `size_t` and its kin under ISO C's widths, which may rank below
+    /// `int` wherever `int` is wider than they are.
+    fn has_open_rank(&self) -> bool {
+        self.rank.is_none() && self.max_bits.is_none()
+    }
+
     /// Whether the integer promotions may make this a signed `int`: it is
     /// below `int` and `int` holds its values on some implementation the
     /// model allows. A signed type below `int` always promotes to it.
@@ -212,9 +219,14 @@ impl Int02C {
             "Multiplication of two 16-bit unsigned operands is performed in int \
              after promotion, where the product can exceed INT_MAX and overflow"
         } else {
-            "Multiplication of two operands that promote to int wherever int is \
-             wider than they are (a size_t may rank below int where int is wider \
-             than it); the product can then exceed INT_MAX and overflow"
+            if left.has_open_rank() || right.has_open_rank() {
+                "Multiplication of two operands that promote to int wherever int is \
+                 wider than they are (a size_t may rank below int where int is wider \
+                 than it); the product can then exceed INT_MAX and overflow"
+            } else {
+                "Multiplication of two operands that promote to int wherever int is \
+                 wider than they are; the product can then exceed INT_MAX and overflow"
+            }
         };
         violations.push(self.violation(
             expr,

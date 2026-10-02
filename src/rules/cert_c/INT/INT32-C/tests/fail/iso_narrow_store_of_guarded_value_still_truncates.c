@@ -7,9 +7,11 @@
  * int-wide the open side is the type's own limit, so the guarded sum cannot
  * overflow. A result stored into a narrower type is the truncating-store
  * channel: the open end of an int or long operand is not the limit of the
- * short or signed char it is stored into, and the value can be out of range
- * there on every implementation (int is at least as wide as short, so values
- * above SHRT_MAX or SCHAR_MAX exist wherever int holds them).
+ * short or signed char it is stored into, so the value can be out of range
+ * there. For a signed char that holds on every implementation with 8-bit
+ * chars; for a short it holds wherever int is wider than short, which every
+ * declared model has and ISO C allows without guaranteeing, so a store into
+ * a short is reported with and without a declared model.
  */
 
 short to_short(int value) {
