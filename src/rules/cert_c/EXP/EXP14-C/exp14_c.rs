@@ -162,7 +162,10 @@ impl Exp14C {
                             violations.push(RuleViolation {
                                 rule_id: "EXP14-C".to_string(),
                                 severity: Severity::Medium,
-                                message: "Bitwise operation on type smaller than int may cause unexpected integer promotion. Use explicit cast to control promotion behavior.".to_string(),
+                                message: format!(
+                                    "Bitwise operation on {} may cause unexpected integer promotion. Use explicit cast to control promotion behavior.",
+                                    self.narrow_type_phrase()
+                                ),
                                 file_path: String::new(),
                                 line: node.start_position().row + 1,
                                 column: node.start_position().column + 1,
@@ -202,8 +205,9 @@ impl Exp14C {
                                 rule_id: "EXP14-C".to_string(),
                                 severity: Severity::Medium,
                                 message: format!(
-                                    "Bitwise operation '{}' on type smaller than int may cause unexpected integer promotion. Use explicit cast to control promotion behavior.",
-                                    op_text
+                                    "Bitwise operation '{}' on {} may cause unexpected integer promotion. Use explicit cast to control promotion behavior.",
+                                    op_text,
+                                    self.narrow_type_phrase()
                                 ),
                                 file_path: String::new(),
                                 line: node.start_position().row + 1,
@@ -224,6 +228,17 @@ impl Exp14C {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             self.check_bitwise_expression(&child, source, violations);
+        }
+    }
+
+    /// How the message describes the operand's type. Under a declared data
+    /// model `int`'s width is known, so the type really is smaller; under ISO
+    /// C's widths the operand only lacks a guarantee of being as wide as
+    /// `int`, whatever its own width (even `uint64_t`).
+    fn narrow_type_phrase(&self) -> &'static str {
+        match self.data_model.get() {
+            DataModel::Iso => "a type ISO C does not guarantee is at least as wide as int",
+            _ => "type smaller than int",
         }
     }
 
