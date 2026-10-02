@@ -207,6 +207,34 @@ impl Int30C {
         })
     }
 
+    /// [`const_eval::expression_fits_in_unsigned_vra`] over this rule's macro
+    /// set and the VRA ranges at `node`.
+    ///
+    /// Under ISO C's widths an unsigned type has no width, so the top of its
+    /// range runs to the end of `i64`, and arithmetic over it leaves `i64`
+    /// and gives up. That side is the type's own limit, whatever width the
+    /// type has, so it is read as the limit of the `bits`-wide type the fit
+    /// is asked of: `x - 1` after `x < 1` returns then fits, where an
+    /// unguarded `x + 1` still does not on any width.
+    fn expression_fits_in_unsigned(&self, node: &Node, source: &str, bits: u32) -> bool {
+        let mut ranges = self.vra_var_ranges_at(node, source);
+        if self.data_model.get() == DataModel::Iso && (1..63).contains(&bits) {
+            let high = (1i64 << bits) - 1;
+            for range in ranges.iter_mut().flat_map(|ranges| ranges.values_mut()) {
+                if range.max == i64::MAX {
+                    range.max = high;
+                }
+            }
+        }
+        const_eval::expression_fits_in_unsigned_vra(
+            node,
+            source,
+            &self.current_macros.borrow(),
+            bits,
+            ranges.as_ref(),
+        )
+    }
+
     /// Get VRA-derived variable ranges at a specific expression node.
     ///
     /// Uses intra-block forward simulation so that assignments within the same
@@ -595,12 +623,10 @@ impl Int30C {
                 }
 
                 // Skip if constant evaluation proves the result fits in 32-bit unsigned
-                if const_eval::expression_fits_in_unsigned_vra(
+                if self.expression_fits_in_unsigned(
                     node,
                     source,
-                    &self.current_macros.borrow(),
                     self.arith_width_bits(node, source, type_map),
-                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -721,12 +747,10 @@ impl Int30C {
                 }
 
                 // Skip if constant evaluation proves the result fits in 32-bit unsigned
-                if const_eval::expression_fits_in_unsigned_vra(
+                if self.expression_fits_in_unsigned(
                     node,
                     source,
-                    &self.current_macros.borrow(),
                     self.arith_width_bits(node, source, type_map),
-                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -820,12 +844,10 @@ impl Int30C {
                 }
 
                 // Skip if constant evaluation proves the result fits in 32-bit unsigned
-                if const_eval::expression_fits_in_unsigned_vra(
+                if self.expression_fits_in_unsigned(
                     node,
                     source,
-                    &self.current_macros.borrow(),
                     self.arith_width_bits(node, source, type_map),
-                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -883,12 +905,10 @@ impl Int30C {
                 }
 
                 // Skip if constant evaluation proves the result fits in 32-bit unsigned
-                if const_eval::expression_fits_in_unsigned_vra(
+                if self.expression_fits_in_unsigned(
                     node,
                     source,
-                    &self.current_macros.borrow(),
                     self.arith_width_bits(node, source, type_map),
-                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -1254,12 +1274,10 @@ impl Int30C {
                         }
                     }
                     // Skip if VRA proves the result fits in 32-bit unsigned
-                    if const_eval::expression_fits_in_unsigned_vra(
+                    if self.expression_fits_in_unsigned(
                         node,
                         source,
-                        &self.current_macros.borrow(),
                         self.arith_width_bits(node, source, type_map),
-                        self.vra_var_ranges_at(node, source).as_ref(),
                     ) {
                         return;
                     }
@@ -1426,8 +1444,40 @@ impl Int30C {
                 32,
                 vra_ranges.as_ref(),
             );
+            // Under ISO C's widths `sizeof(int)` has no value, so `2 *
+            // sizeof(int)` never evaluates and its fit goes unproven. It is a
+            // constant the compiler folds, with no runtime input to wrap it:
+            // the same call `calloc_product_cannot_wrap` makes for a count and
+            // an element size that are both constants. A constant that WAS
+            // computed and does not fit is still reported.
+            let low_exceeds_size_t = const_eval::try_evaluate_lower_bound(
+                check_node,
+                source,
+                &macros,
+                vra_ranges.as_ref().unwrap_or(&VarRangeMap::new()),
+            )
+            .is_some_and(|low| low > self.size_t_max());
+            let constant_not_evaluated = self.data_model.get() == DataModel::Iso
+                && !low_exceeds_size_t
+                && const_eval::try_evaluate_range(
+                    check_node,
+                    source,
+                    &macros,
+                    vra_ranges.as_ref().unwrap_or(&VarRangeMap::new()),
+                )
+                .is_none()
+                && const_eval::is_compile_time_constant_expr(
+                    check_node,
+                    source,
+                    &macros,
+                    const_eval::ConstantNameSets {
+                        object_macros: &self.project_macro_names.borrow(),
+                        function_macros: &self.project_function_macro_names.borrow(),
+                        constant_returning_functions: &self.constant_returning_functions.borrow(),
+                    },
+                );
             drop(macros);
-            if fits_size_t && !wraps_32_size_t {
+            if (fits_size_t && !wraps_32_size_t) || constant_not_evaluated {
                 continue;
             }
             if self.has_allocation_size_guard(node, check_node, source) {
@@ -1653,6 +1703,27 @@ impl Int30C {
             && const_eval::is_compile_time_constant_expr(&size, source, &macros, names)
     }
 
+    /// The largest value the narrowest `size_t` the data model allows holds.
+    fn size_t_max(&self) -> i64 {
+        let bits = self.size_t_bits();
+        if bits >= 63 {
+            i64::MAX
+        } else {
+            (1i64 << bits) - 1
+        }
+    }
+
+    /// The product of the two allocation arguments' lower ends, when both are
+    /// known.
+    fn allocation_lower_bound(&self, nmemb: &Node, size: &Node, source: &str) -> Option<i64> {
+        let macros = self.current_macros.borrow();
+        let ranges = |node: &Node| self.vra_var_ranges_at(node, source).unwrap_or_default();
+        let low = |node: &Node| {
+            const_eval::try_evaluate_lower_bound(node, source, &macros, &ranges(node))
+        };
+        Some(low(nmemb)?.saturating_mul(low(size)?))
+    }
+
     /// The range half of `calloc_product_cannot_wrap`, over VRA ranges when
     /// `use_vra` is set and the syntactic ones otherwise: `Some(true)` when
     /// the product provably fits, `Some(false)` when it was computed and
@@ -1671,7 +1742,20 @@ impl Int30C {
         if is_zero_or_one(&count) || is_zero_or_one(&elem) {
             return Some(true);
         }
-        let product = count?.mul(&elem?)?;
+        let Some(product) = count.zip(elem).and_then(|(count, elem)| count.mul(&elem)) else {
+            // No product to form (an element size no data model gives, a count
+            // times it leaving `i64`): under ISO C's widths the question that
+            // is still answerable is whether the LOWER ends already exceed
+            // what the narrowest `size_t` holds. A `sizeof` is at least 1, so
+            // `calloc(1073741825, sizeof(int))` wraps wherever `size_t` is 16
+            // bits, and that is a computed wrap the constant clause must not
+            // talk the rule out of.
+            return (self.data_model.get() == DataModel::Iso
+                && self
+                    .allocation_lower_bound(nmemb, size, source)
+                    .is_some_and(|low| low > self.size_t_max()))
+            .then_some(false);
+        };
         // Mirrors `check_allocation_size_wrap`: fits the width `size_t` is
         // guaranteed, and does not *definitely* exceed a 32-bit `size_t`. A
         // product that merely straddles the 32-bit bound is a possible wrap,

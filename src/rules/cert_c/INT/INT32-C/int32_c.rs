@@ -1452,7 +1452,8 @@ impl Int32C {
                     node,
                     source,
                     type_map,
-                    self.check_width_bits(self.stored_type_bits(&arg_type), node, source, type_map),
+                    self.stored_type_bits(&arg_type),
+                    matches!(arg_type.as_str(), "char" | "short"),
                 ) {
                     return;
                 }
@@ -2672,13 +2673,13 @@ impl Int32C {
         source: &str,
         type_map: &HashMap<String, String>,
     ) -> bool {
-        let bits = self.check_width_bits(
-            self.result_width_bits(node, source, type_map),
+        self.expression_fits_in(
             node,
             source,
             type_map,
-        );
-        self.expression_fits_in(node, source, type_map, bits)
+            self.result_width_bits(node, source, type_map),
+            self.result_is_narrow_store(node, source, type_map),
+        )
     }
 
     /// The width a fit check should be made against, given the destination
@@ -2706,20 +2707,70 @@ impl Int32C {
     /// [`const_eval::expression_fits_in_signed_vra`] over this rule's macro
     /// set and [`Self::value_ranges_at`]'s promoted-range-backed variable
     /// ranges.
+    ///
+    /// `destination_bits` is where the result lands. A NARROW destination
+    /// (`short`, `char`) is the truncating-store channel, checked at its own
+    /// width; anything else is the overflow channel, checked at the width of
+    /// the arithmetic itself (see [`Self::check_width_bits`]).
     fn expression_fits_in(
         &self,
         node: &Node,
         source: &str,
         type_map: &HashMap<String, String>,
-        bits: u32,
+        destination_bits: u32,
+        narrow_store: bool,
     ) -> bool {
+        let bits = self.check_width_bits(destination_bits, node, source, type_map);
+        let ranges = self.value_ranges_at(node, source, type_map);
+        // Only the overflow channel reads an open side as the limit of the
+        // width being checked. For a narrow store that width is the
+        // destination's, not the operand's: an `int` operand's open end is
+        // not `SCHAR_MAX` just because the result is stored in a `signed
+        // char`, and clamping it there would let the store prove itself.
+        let ranges = match ranges {
+            Some(ranges) if self.data_model.get() == DataModel::Iso && !narrow_store => {
+                Some(Self::bound_open_ranges(ranges, bits))
+            }
+            other => other,
+        };
         const_eval::expression_fits_in_signed_vra(
             node,
             source,
             &self.current_macros.borrow(),
             bits,
-            self.value_ranges_at(node, source, type_map).as_ref(),
+            ranges.as_ref(),
         )
+    }
+
+    /// Under ISO C's widths an `int` has no width, so a side of its range no
+    /// guard bounds runs to the end of `i64`, and the arithmetic over two such
+    /// ranges leaves `i64` and gives up (the syntactic fallback that follows
+    /// then proves a fit nothing supports). That side is the type's own limit,
+    /// whatever width the type has, so it is read as the limit of the
+    /// `bits`-wide type the fit is asked of: `x + 1` with `x <= 1000` then
+    /// fits (the lower side stays at the type's minimum plus one), where `x +
+    /// y` of two unguarded operands, or `x * 2`, still does not on any width.
+    fn bound_open_ranges(ranges: VarRangeMap, bits: u32) -> VarRangeMap {
+        if bits == 0 || bits >= 64 {
+            return ranges;
+        }
+        let (low, high) = (-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1);
+        ranges
+            .into_iter()
+            .map(|(name, range)| {
+                let min = if range.min == i64::MIN {
+                    low
+                } else {
+                    range.min
+                };
+                let max = if range.max == i64::MAX {
+                    high
+                } else {
+                    range.max
+                };
+                (name, const_eval::ValueRange::new(min, max))
+            })
+            .collect()
     }
 
     /// The width the result of `node` must be representable in.
@@ -2756,84 +2807,108 @@ impl Int32C {
         source: &str,
         type_map: &HashMap<String, String>,
     ) -> u32 {
+        self.result_destination_class(node, source, type_map)
+            .map_or_else(
+                || self.promoted_bits(),
+                |class| self.stored_type_bits(&class),
+            )
+    }
+
+    /// Whether the result is stored into a `char` or `short`: the
+    /// truncating-store channel. Decided by the destination's type, not its
+    /// width -- under ISO C's widths a `short` is as wide as `int`'s guaranteed
+    /// minimum, and is still a store that can lose data wherever `int` is
+    /// wider.
+    fn result_is_narrow_store(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> bool {
+        matches!(
+            self.result_destination_class(node, source, type_map)
+                .as_deref(),
+            Some("char" | "short")
+        )
+    }
+
+    /// The type class (`classify_declared_type`'s spelling) of what the
+    /// result of `node` is stored into, or `None` when it is stored nowhere
+    /// narrow (see [`Self::result_width_bits`]).
+    fn result_destination_class(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> Option<String> {
         let mut child = *node;
         while let Some(parent) = child.parent() {
             match parent.kind() {
                 // Transparent: the value flows straight through.
                 "parenthesized_expression" | "comma_expression" => {}
                 "cast_expression" => {
-                    return match parent.child_by_field_name("type") {
-                        Some(t) => self.declared_destination_bits(get_node_text(&t, source)),
-                        None => self.promoted_bits(),
-                    };
+                    return parent
+                        .child_by_field_name("type")
+                        .and_then(|t| self.declared_destination_class(get_node_text(&t, source)));
                 }
                 "init_declarator" => {
                     if parent.child_by_field_name("value").map(|v| v.id()) != Some(child.id()) {
-                        return self.promoted_bits();
+                        return None;
                     }
-                    return self.declarator_destination_bits(&parent, source);
+                    return self.declarator_destination_class(&parent, source);
                 }
                 "assignment_expression" => {
                     if parent.child_by_field_name("right").map(|v| v.id()) != Some(child.id()) {
-                        return self.promoted_bits();
+                        return None;
                     }
-                    return match parent.child_by_field_name("left") {
-                        Some(lhs) => {
-                            self.stored_type_bits(&self.infer_type(&lhs, source, type_map))
-                        }
-                        None => self.promoted_bits(),
-                    };
+                    return parent
+                        .child_by_field_name("left")
+                        .map(|lhs| self.infer_type(&lhs, source, type_map));
                 }
                 // `return a + b` from a narrow-returning function truncates
                 // exactly like a narrow assignment does.
                 "return_statement" => {
-                    return match ast_utils::find_containing_function(&parent) {
-                        Some(func) => self.declarator_destination_bits(&func, source),
-                        None => self.promoted_bits(),
-                    };
+                    return ast_utils::find_containing_function(&parent)
+                        .and_then(|func| self.declarator_destination_class(&func, source));
                 }
-                _ => return self.promoted_bits(),
+                _ => return None,
             }
             child = parent;
         }
-        self.promoted_bits()
+        None
     }
 
-    /// Destination width for a node carrying a `type` field alongside a
+    /// Destination class for a node carrying a `type` field alongside a
     /// `declarator` -- a `declaration`'s `init_declarator` (via its parent) or
     /// a `function_definition`. A pointer or array declarator makes the
     /// destination a pointer regardless of the base type, so `char *p = q - 8`
     /// stores into a pointer, not into a `char`.
-    fn declarator_destination_bits(&self, node: &Node, source: &str) -> u32 {
+    fn declarator_destination_class(&self, node: &Node, source: &str) -> Option<String> {
         let declarator_kind = node
             .child_by_field_name("declarator")
             .map(|d| d.kind().to_string())
             .unwrap_or_default();
         if declarator_kind == "pointer_declarator" || declarator_kind == "array_declarator" {
-            return self.promoted_bits();
+            return None;
         }
         let owner = if node.kind() == "init_declarator" {
-            match node.parent() {
-                Some(decl) => decl,
-                None => return self.promoted_bits(),
-            }
+            node.parent()?
         } else {
             *node
         };
-        match owner.child_by_field_name("type") {
-            Some(t) => self.declared_destination_bits(get_node_text(&t, source)),
-            None => self.promoted_bits(),
-        }
+        owner
+            .child_by_field_name("type")
+            .and_then(|t| self.declared_destination_class(get_node_text(&t, source)))
     }
 
-    /// Storage width of a destination spelled as declared type text. A `*`
-    /// anywhere in it makes it a pointer, whose width is not the base type's.
-    fn declared_destination_bits(&self, declared_type: &str) -> u32 {
+    /// Class of a destination spelled as declared type text. A `*` anywhere
+    /// in it makes it a pointer, which is no narrow integer.
+    fn declared_destination_class(&self, declared_type: &str) -> Option<String> {
         let declared_type = declared_type.trim();
         if declared_type.contains('*') {
-            return self.promoted_bits();
+            return None;
         }
-        self.stored_type_bits(&self.classify_declared_type(declared_type))
+        Some(self.classify_declared_type(declared_type))
     }
 
     fn is_unsigned_type(&self, type_str: &str) -> bool {
