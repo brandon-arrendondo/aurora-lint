@@ -2322,13 +2322,31 @@ fn parse_param_list(chars: &[char], open: usize) -> Result<(Vec<String>, usize),
 }
 
 /// Remove `/* … */` and `// …` comments from a macro replacement list, so the
-/// textual body matches what the AST pass's `preproc_arg` yields.
+/// textual body matches what the AST pass's `preproc_arg` yields. A string or
+/// character literal is copied whole: the `//` in `"http://example.org"`
+/// starts no comment.
 fn strip_comments(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+        if chars[i] == '"' || chars[i] == '\'' {
+            let quote = chars[i];
+            out.push(quote);
+            i += 1;
+            while i < chars.len() && chars[i] != quote {
+                if chars[i] == '\\' && i + 1 < chars.len() {
+                    out.push(chars[i]);
+                    i += 1;
+                }
+                out.push(chars[i]);
+                i += 1;
+            }
+            if i < chars.len() {
+                out.push(quote);
+                i += 1;
+            }
+        } else if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
             i += 2;
             while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
                 i += 1;
@@ -3813,6 +3831,17 @@ mod tests {
             project["LOG"][0].arm.variadic,
             Some((1, "__VA_ARGS__".to_string()))
         );
+    }
+
+    #[test]
+    fn a_comment_opener_inside_a_literal_does_not_cut_the_body() {
+        let src = "#define SHOW(p) show(\"http://example.org\", #p) // note\n\
+                   #define SEP(x) f('/', x) /* a */ + 1\n\
+                   #define ESC(x) g(\"\\\"//\", x)\n";
+        let arms = collect_function_macro_arms(src);
+        assert_eq!(arms["SHOW"][0].body, "show(\"http://example.org\", #p)");
+        assert_eq!(arms["SEP"][0].body, "f('/', x)   + 1");
+        assert_eq!(arms["ESC"][0].body, "g(\"\\\"//\", x)");
     }
 
     #[test]
