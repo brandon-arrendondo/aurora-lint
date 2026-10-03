@@ -7,8 +7,8 @@ use super::include_names::{HeaderLookup, HeaderMatch};
 use crate::analyze::null_state::NullState;
 use crate::parser::CParser;
 use crate::progress::ProgressReporter;
-use crate::settings::DataModel;
 use crate::settings::IncludeNames;
+use crate::settings::IntFacts;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::declarator_utils;
@@ -210,7 +210,7 @@ fn process_file(
     file_path: &Path,
     is_header: bool,
     needs_vra: bool,
-    model: DataModel,
+    model: IntFacts,
 ) -> FilePrescanResult {
     let mut result = FilePrescanResult::empty();
     result.display_path = file_path.to_string_lossy().to_string();
@@ -462,7 +462,7 @@ pub fn prescan_directories(
     progress: Option<&dyn ProgressReporter>,
     needs_vra: bool,
     scoped_out: &dyn Fn(&Path, &str) -> bool,
-    model: DataModel,
+    model: IntFacts,
 ) -> Result<ProjectContext> {
     // Phase 1: collect all file paths (sequential — WalkDir is not parallel-safe).
     //
@@ -539,7 +539,7 @@ pub fn is_scoped_out(
 pub fn prescan_single_file(
     path: &Path,
     needs_vra: bool,
-    model: DataModel,
+    model: IntFacts,
 ) -> Result<ProjectContext> {
     prescan_files(vec![path.to_path_buf()], None, needs_vra, model)
 }
@@ -558,7 +558,7 @@ pub fn prescan_files(
     files: Vec<PathBuf>,
     progress: Option<&dyn ProgressReporter>,
     needs_vra: bool,
-    model: DataModel,
+    model: IntFacts,
 ) -> Result<ProjectContext> {
     // A `.h` target names itself twice (once as the scan set, once among its
     // own sibling headers, spelled `foo.h` vs `./foo.h`); prescanning it twice
@@ -585,7 +585,7 @@ struct Collect {
     /// The data model the macro constants are resolved under, so a project
     /// `#define` written in terms of `INT_MAX` or `sizeof(long)` has the
     /// value the scan's settings give it.
-    model: DataModel,
+    model: IntFacts,
 }
 
 /// Shared by [`prescan_directories`] and [`prescan_single_file`] so that a
@@ -6882,7 +6882,7 @@ fn harvest_header_macros(
     hsource: &str,
     header_path: &str,
     needs_vra: bool,
-    model: DataModel,
+    model: IntFacts,
     origins: &mut MacroOrigins,
     outside_project: bool,
 ) {
@@ -7070,7 +7070,7 @@ pub fn resolve_includes(
     context: &mut super::context::ProjectContext,
     progress: Option<&dyn ProgressReporter>,
     needs_vra: bool,
-    model: DataModel,
+    model: IntFacts,
     lookup: &HeaderLookup,
 ) -> Result<()> {
     if let Some(reporter) = progress {

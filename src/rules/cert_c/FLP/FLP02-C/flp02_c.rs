@@ -55,7 +55,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::VisibleTypes;
 use crate::manifest::Severity;
-use crate::settings::{AnalysisSettings, DataModel};
+use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::expr_type::{self, TypeEnv};
 use lang_parsing_substrate::query;
@@ -68,7 +68,7 @@ pub struct Flp02C {
     /// `real` (a typedef of double) or `p->ratio` is typed by its declaration.
     visible: RefCell<VisibleTypes>,
     /// The integer data model the settings credit, for typing.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 impl Flp02C {
@@ -185,7 +185,7 @@ impl CertRule for Flp02C {
     }
 
     fn set_analysis_settings(&self, settings: &std::sync::Arc<AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     fn check(&self, root: &Node, source: &str) -> Vec<RuleViolation> {

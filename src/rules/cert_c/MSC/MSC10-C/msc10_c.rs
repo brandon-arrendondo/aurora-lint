@@ -43,7 +43,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg;
 use crate::analyze::const_eval::{self, MacroConstantMap};
 use crate::manifest::Severity;
-use crate::settings::DataModel;
+use crate::settings::IntFacts;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::cell::Cell;
@@ -89,7 +89,7 @@ const OVERLONG_CHECK_WORDS: [&str; 6] = [
 pub struct Msc10C {
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 impl Msc10C {
@@ -190,7 +190,7 @@ impl Msc10C {
 
 impl CertRule for Msc10C {
     fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     fn rule_id(&self) -> &'static str {

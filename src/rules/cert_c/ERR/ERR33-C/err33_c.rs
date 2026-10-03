@@ -57,7 +57,7 @@ use crate::analyze::context::ScopedTable;
 use crate::analyze::context::VisibleTypes;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::Severity;
-use crate::settings::{AnalysisSettings, DataModel};
+use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::ast_utils::{
     get_identifier_from_declarator, get_node_text, resolve_identifier_declarator,
 };
@@ -103,7 +103,7 @@ pub struct Err33C {
     visible: RefCell<VisibleTypes>,
     /// The integer data model the settings credit, for typing the object a
     /// result is stored in.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 type Definitions = HashMap<String, Vec<MacroDefinition>>;
@@ -126,7 +126,7 @@ impl Err33C {
 
 impl CertRule for Err33C {
     fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     fn rule_id(&self) -> &'static str {

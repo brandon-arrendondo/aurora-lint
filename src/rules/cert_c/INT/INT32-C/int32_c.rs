@@ -12,7 +12,7 @@ use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
 use crate::rules::cert_c::int_provenance;
-use crate::settings::DataModel;
+use crate::settings::IntFacts;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
 use crate::utility::cert_c::data_model::Rank;
 use crate::utility::cert_c::expr_type::TypeEnv;
@@ -105,7 +105,7 @@ pub struct Int32C {
     function_return_types: RefCell<HashMap<String, String>>,
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 impl Int32C {
@@ -127,7 +127,7 @@ impl Int32C {
             function_text_cache: RefCell::new(HashMap::new()),
             pointer_facts: RefCell::new(PointerFacts::default()),
             function_return_types: RefCell::new(HashMap::new()),
-            data_model: Cell::new(DataModel::default()),
+            data_model: Cell::new(IntFacts::default()),
         }
     }
 
@@ -184,7 +184,7 @@ impl Int32C {
 
 impl CertRule for Int32C {
     fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     fn rule_id(&self) -> &'static str {
@@ -2728,7 +2728,7 @@ impl Int32C {
         // not `SCHAR_MAX` just because the result is stored in a `signed
         // char`, and clamping it there would let the store prove itself.
         let ranges = match ranges {
-            Some(ranges) if self.data_model.get() == DataModel::Iso && !narrow_store => {
+            Some(ranges) if !self.data_model.get().int_width_is_fixed() && !narrow_store => {
                 Some(Self::bound_open_ranges(ranges, bits))
             }
             other => other,

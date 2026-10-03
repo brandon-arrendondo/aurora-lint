@@ -4087,6 +4087,108 @@ fn multi_file_scan_of_deep_nesting_completes() {
     );
 }
 
+/// The resolved settings `--list-options json` prints for `args`, or the
+/// refusal text when they are invalid.
+fn resolved_settings(args: &[&str]) -> Result<serde_json::Value, String> {
+    let mut full = vec!["--list-options", "json"];
+    full.extend_from_slice(args);
+    let (code, stdout, stderr) = run_aurora_lint(&full);
+    if code != 0 {
+        return Err(stderr);
+    }
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    Ok(json["current"].clone())
+}
+
+#[test]
+fn an_integer_fact_overrides_the_preset_and_enters_the_settings_hash() {
+    let plain = resolved_settings(&["--data-model", "lp64"]).unwrap();
+    let wide = resolved_settings(&["--data-model", "lp64", "--set", "int_bits=64"]).unwrap();
+    let narrow = resolved_settings(&["--data-model", "lp64", "--set", "int_bits=16"]).unwrap();
+    // A preset's own widths are named by the preset; only a declared override
+    // is a key of its own.
+    assert!(plain["int_bits"].is_null(), "{plain}");
+    assert_eq!(narrow["int_bits"], 16, "{narrow}");
+    assert_eq!(wide["int_bits"], 64, "{wide}");
+    assert_eq!(narrow["data_model"], "lp64");
+    // Every declared override changes the hash, and the same one does not.
+    assert_ne!(plain["hash"], narrow["hash"]);
+    assert_ne!(narrow["hash"], wide["hash"]);
+    let again = resolved_settings(&["--data-model", "lp64", "--set", "int_bits=16"]).unwrap();
+    assert_eq!(narrow["hash"], again["hash"]);
+    // A yes/no fact is a boolean.
+    let signed = resolved_settings(&["--set", "char_signed=true"]).unwrap();
+    assert_eq!(signed["char_signed"], true, "{signed}");
+}
+
+#[test]
+fn an_explicit_key_beats_the_preset_whatever_the_order_and_the_command_line_beats_both() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("rules.toml");
+    // The preset is named AFTER the override: the order of the lines is no part
+    // of the precedence.
+    std::fs::write(
+        &manifest,
+        "[metadata]\nname = \"t\"\nversion = \"1\"\ncert_version = \"2016\"\n\n\
+         [environment]\nint_bits = 16\ndata_model = \"lp64\"\n\n[rules.cert_c]\n",
+    )
+    .unwrap();
+    let m = manifest.to_str().unwrap();
+    let from_manifest = resolved_settings(&["-m", m]).unwrap();
+    assert_eq!(from_manifest["int_bits"], 16, "{from_manifest}");
+    assert_eq!(from_manifest["data_model"], "lp64");
+    let from_cli = resolved_settings(&["-m", m, "--set", "int_bits=32"]).unwrap();
+    assert_eq!(from_cli["int_bits"], 32, "{from_cli}");
+}
+
+#[test]
+fn a_width_below_the_iso_minimum_is_refused_naming_the_minimum() {
+    for (fact, bits, minimum) in [
+        ("short_bits", "8", "16"),
+        ("int_bits", "8", "16"),
+        ("long_bits", "16", "32"),
+        ("long_long_bits", "32", "64"),
+    ] {
+        let err = resolved_settings(&["--set", &format!("{fact}={bits}")]).unwrap_err();
+        assert!(
+            err.contains(fact) && err.contains(&format!("below the {minimum} bits")),
+            "{fact}: {err}"
+        );
+    }
+}
+
+#[test]
+fn a_width_that_breaks_the_rank_order_is_refused() {
+    let err = resolved_settings(&[
+        "--data-model",
+        "lp64",
+        "--set",
+        "int_bits=64",
+        "--set",
+        "long_bits=32",
+    ])
+    .unwrap_err();
+    assert!(
+        err.contains("int_bits = 64") && err.contains("ranks must not shrink"),
+        "{err}"
+    );
+    // Only the widths that are known are ordered: int 64 over an unset long is
+    // a configuration a project may mean.
+    assert!(resolved_settings(&["--set", "int_bits=64"]).is_ok());
+}
+
+#[test]
+fn an_unknown_fact_a_bad_value_and_an_unknown_preset_are_each_refused() {
+    let err = resolved_settings(&["--set", "int_bitz=16"]).unwrap_err();
+    assert!(err.contains("unknown option 'int_bitz'"), "{err}");
+    let err = resolved_settings(&["--set", "int_bits=wide"]).unwrap_err();
+    assert!(err.contains("int_bits takes a number of bits"), "{err}");
+    let err = resolved_settings(&["--set", "char_signed=maybe"]).unwrap_err();
+    assert!(err.contains("char_signed takes true or false"), "{err}");
+    let err = resolved_settings(&["--data-model", "ilp64"]).unwrap_err();
+    assert!(err.contains("ilp64"), "{err}");
+}
+
 #[test]
 fn a_profile_keeps_the_manifests_data_model() {
     // A preset chooses policy, not what the project is built for.

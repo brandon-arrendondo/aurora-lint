@@ -19,7 +19,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::array_size::resolve_declared_array_size;
 use crate::analyze::const_eval::{collect_macro_constants, MacroConstantMap};
 use crate::manifest::Severity;
-use crate::settings::DataModel;
+use crate::settings::IntFacts;
 use crate::utility::cert_c::ast_utils::{
     find_containing_function, get_function_parameters, get_sanitized_node_text,
     is_array_parameter_type, is_function_parameter, is_inside_loop, is_pointer_type,
@@ -41,12 +41,12 @@ use tree_sitter::Node;
 pub struct Arr00C {
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 impl CertRule for Arr00C {
     fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     fn rule_id(&self) -> &'static str {

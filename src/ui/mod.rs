@@ -2151,7 +2151,7 @@ impl TerminalUI {
                 None,
                 true,
                 &|_, _| false,
-                self.settings.data_model,
+                self.settings.facts,
             )?
         } else {
             crate::analyze::context::ProjectContext::new()
@@ -2172,7 +2172,7 @@ impl TerminalUI {
                 &mut context,
                 None,
                 true,
-                self.settings.data_model,
+                self.settings.facts,
                 &crate::analyze::include_names::HeaderLookup::new(self.settings.include_names),
             );
         }

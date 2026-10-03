@@ -10,7 +10,7 @@ use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::manifest::Severity;
-use crate::settings::{AnalysisSettings, DataModel};
+use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::data_model::{IntWidth, Rank};
 use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
@@ -61,7 +61,7 @@ pub struct Int34C {
     typedef_types: RefCell<Arc<HashMap<String, String>>>,
     /// The integer data model the settings credit: how wide a shifted
     /// operand is guaranteed to be.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 impl Int34C {
@@ -78,7 +78,7 @@ impl Int34C {
             function_summaries: RefCell::default(),
             constant_returning_functions: RefCell::new(HashSet::new()),
             typedef_types: RefCell::new(Arc::new(HashMap::new())),
-            data_model: Cell::new(DataModel::default()),
+            data_model: Cell::new(IntFacts::default()),
         }
     }
 }
@@ -121,7 +121,7 @@ impl CertRule for Int34C {
     }
 
     fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {

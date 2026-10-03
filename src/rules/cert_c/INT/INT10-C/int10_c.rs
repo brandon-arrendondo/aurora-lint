@@ -47,7 +47,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
-use crate::settings::DataModel;
+use crate::settings::IntFacts;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, misparsed_cast_type_name};
 use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
@@ -82,7 +82,7 @@ pub struct Int10C {
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 impl Int10C {
@@ -93,14 +93,14 @@ impl Int10C {
             current_macros: RefCell::new(MacroConstantMap::new()),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
-            data_model: Cell::new(DataModel::default()),
+            data_model: Cell::new(IntFacts::default()),
         }
     }
 }
 
 impl CertRule for Int10C {
     fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     fn rule_id(&self) -> &'static str {

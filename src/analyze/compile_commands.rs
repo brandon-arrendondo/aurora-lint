@@ -396,7 +396,7 @@ impl CompileDb {
     pub fn merge_defines_into(
         &self,
         context: &mut ProjectContext,
-        model: crate::settings::DataModel,
+        model: crate::settings::IntFacts,
     ) -> Result<usize> {
         if self.defines.is_empty() {
             return Ok(0);

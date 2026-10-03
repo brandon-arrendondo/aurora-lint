@@ -123,7 +123,7 @@ impl CertRule for Int33C {
             &self.project_macros.borrow(),
             node,
             source,
-            self.settings.borrow().data_model,
+            self.settings.borrow().facts,
         );
 
         // First pass: find division macros and zero-initialized variables
@@ -134,7 +134,7 @@ impl CertRule for Int33C {
         // declaration, so a floating operand suppresses the integer
         // divide-by-zero check.
         let visible = self.visible.borrow();
-        let env = TypeEnv::visible(&visible, self.settings.borrow().data_model);
+        let env = TypeEnv::visible(&visible, self.settings.borrow().facts);
         self.check_node(
             node,
             source,

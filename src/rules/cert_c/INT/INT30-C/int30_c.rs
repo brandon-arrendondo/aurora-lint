@@ -11,7 +11,7 @@ use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
 use crate::rules::cert_c::int_provenance;
-use crate::settings::DataModel;
+use crate::settings::IntFacts;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
 use crate::utility::cert_c::data_model::Rank;
 use crate::utility::cert_c::expr_type::TypeEnv;
@@ -73,7 +73,7 @@ pub struct Int30C {
     constant_returning_functions: RefCell<HashSet<String>>,
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 impl Int30C {
@@ -96,7 +96,7 @@ impl Int30C {
             project_macro_names: RefCell::new(Arc::new(HashSet::new())),
             project_function_macro_names: RefCell::new(HashSet::new()),
             constant_returning_functions: RefCell::new(HashSet::new()),
-            data_model: Cell::new(DataModel::default()),
+            data_model: Cell::new(IntFacts::default()),
         }
     }
 
@@ -218,7 +218,7 @@ impl Int30C {
     /// unguarded `x + 1` still does not on any width.
     fn expression_fits_in_unsigned(&self, node: &Node, source: &str, bits: u32) -> bool {
         let mut ranges = self.vra_var_ranges_at(node, source);
-        if self.data_model.get() == DataModel::Iso && (1..63).contains(&bits) {
+        if !self.data_model.get().int_width_is_fixed() && (1..63).contains(&bits) {
             let high = (1i64 << bits) - 1;
             for range in ranges.iter_mut().flat_map(|ranges| ranges.values_mut()) {
                 if range.max == i64::MAX {
@@ -252,7 +252,7 @@ impl Int30C {
 
 impl CertRule for Int30C {
     fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     fn rule_id(&self) -> &'static str {
@@ -1457,7 +1457,7 @@ impl Int30C {
                 vra_ranges.as_ref().unwrap_or(&VarRangeMap::new()),
             )
             .is_some_and(|low| low > self.size_t_max());
-            let constant_not_evaluated = self.data_model.get() == DataModel::Iso
+            let constant_not_evaluated = self.data_model.get().sizeof_bytes(Rank::Int).is_none()
                 && !low_exceeds_size_t
                 && const_eval::try_evaluate_range(
                     check_node,
@@ -1750,7 +1750,7 @@ impl Int30C {
             // `calloc(1073741825, sizeof(int))` wraps wherever `size_t` is 16
             // bits, and that is a computed wrap the constant clause must not
             // talk the rule out of.
-            return (self.data_model.get() == DataModel::Iso
+            return (self.data_model.get().sizeof_bytes(Rank::Int).is_none()
                 && self
                     .allocation_lower_bound(nmemb, size, source)
                     .is_some_and(|low| low > self.size_t_max()))
