@@ -14,8 +14,8 @@ use crate::manifest::Severity;
 use crate::rules::cert_c::int_provenance;
 use crate::settings::IntFacts;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
-use crate::utility::cert_c::data_model::Rank;
-use crate::utility::cert_c::expr_type::TypeEnv;
+use crate::utility::cert_c::data_model::{self, Rank};
+use crate::utility::cert_c::expr_type::{integer_literal_width, TypeEnv};
 use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
@@ -2577,7 +2577,56 @@ impl Int32C {
         if operand_wide {
             WIDE_ARITH_BITS
         } else {
-            self.promoted_bits()
+            let literal =
+                |n: Option<Node>| n.map_or(0, |n| self.operand_literal_bits(&n, source, 0));
+            let literal_bits = match node.kind() {
+                "binary_expression"
+                    if node
+                        .child_by_field_name("operator")
+                        .is_some_and(|op| matches!(get_node_text(&op, source), "<<" | ">>")) =>
+                {
+                    literal(node.child_by_field_name("left"))
+                }
+                "binary_expression" => literal(node.child_by_field_name("left"))
+                    .max(literal(node.child_by_field_name("right"))),
+                _ => 0,
+            };
+            self.promoted_bits().max(literal_bits)
+        }
+    }
+
+    /// The width the constants among this operand's own operands give the
+    /// arithmetic (C11 6.4.4.1p5: a constant is the first of `int`, `long`,
+    /// `long long` that holds it), 0 when there is none. Recurses through the
+    /// shapes that carry a type without changing it, as
+    /// [`Self::operand_is_wide_signed`] does.
+    fn operand_literal_bits(&self, node: &Node, source: &str, depth: u32) -> u32 {
+        if depth > OPERAND_TYPE_MAX_DEPTH {
+            return 0;
+        }
+        match node.kind() {
+            "number_literal" => {
+                integer_literal_width(get_node_text(node, source), self.data_model.get())
+                    .unwrap_or(0)
+            }
+            "parenthesized_expression" => node
+                .named_child(0)
+                .map_or(0, |n| self.operand_literal_bits(&n, source, depth + 1)),
+            "binary_expression" => {
+                let side = |name: &str| {
+                    node.child_by_field_name(name)
+                        .map_or(0, |n| self.operand_literal_bits(&n, source, depth + 1))
+                };
+                if node
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| matches!(get_node_text(&op, source), "<<" | ">>"))
+                {
+                    side("left")
+                } else {
+                    side("left").max(side("right"))
+                }
+            }
+            _ => 0,
         }
     }
 
@@ -2758,12 +2807,12 @@ impl Int32C {
         ranges
             .into_iter()
             .map(|(name, range)| {
-                let min = if range.min == i64::MIN {
+                let min = if data_model::is_open_bottom(range.min) && range.max >= low {
                     low
                 } else {
                     range.min
                 };
-                let max = if range.max == i64::MAX {
+                let max = if data_model::is_open_top(range.max) && range.min <= high {
                     high
                 } else {
                     range.max

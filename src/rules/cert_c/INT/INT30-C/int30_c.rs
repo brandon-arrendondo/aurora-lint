@@ -13,8 +13,8 @@ use crate::manifest::Severity;
 use crate::rules::cert_c::int_provenance;
 use crate::settings::IntFacts;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
-use crate::utility::cert_c::data_model::Rank;
-use crate::utility::cert_c::expr_type::TypeEnv;
+use crate::utility::cert_c::data_model::{self, Rank};
+use crate::utility::cert_c::expr_type::{integer_literal_width, TypeEnv};
 use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
@@ -221,7 +221,7 @@ impl Int30C {
         if !self.data_model.get().int_width_is_fixed() && (1..63).contains(&bits) {
             let high = (1i64 << bits) - 1;
             for range in ranges.iter_mut().flat_map(|ranges| ranges.values_mut()) {
-                if range.max == i64::MAX {
+                if data_model::is_open_top(range.max) && range.min <= high {
                     range.max = high;
                 }
             }
@@ -2508,6 +2508,15 @@ impl Int30C {
         };
         match node.kind() {
             "parenthesized_expression" => recurse(node.named_child(0)),
+            // A constant has the type C11 6.4.4.1p5 gives it: the first of
+            // `int`, `long`, `long long` that holds it, from the rank its
+            // suffix names. `86400 * 7` is `long` arithmetic wherever `int`
+            // is 16 bits, not 16-bit arithmetic.
+            "number_literal" => Some(
+                integer_literal_width(get_node_text(node, source), self.data_model.get())
+                    .unwrap_or(0)
+                    .max(self.promoted_bits()),
+            ),
             // `sizeof` yields `size_t` by definition -- the operand that makes
             // an allocation size computation 64-bit in the first place, on a
             // declared 64-bit model.

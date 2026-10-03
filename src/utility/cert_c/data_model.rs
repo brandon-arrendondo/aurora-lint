@@ -57,6 +57,24 @@ pub struct IntWidth {
     pub max: Option<u32>,
 }
 
+/// Whether the top of a value range is the open end of an integer type
+/// rather than a value the code established.
+///
+/// Under ISO C's widths a side of a type's range that no guard bounds runs to
+/// the end of `i64`, and arithmetic on it moves it by the constant involved:
+/// `len -= 4` leaves `i64::MAX - 4`. Testing for `i64::MAX` exactly missed
+/// every such range, so a guard written after any arithmetic on the variable
+/// stopped counting. No value a program establishes sits in the top half of
+/// `i64`, so that half is the open end.
+pub fn is_open_top(max: i64) -> bool {
+    max >= i64::MAX / 2
+}
+
+/// [`is_open_top`] for the bottom of a range.
+pub fn is_open_bottom(min: i64) -> bool {
+    min <= i64::MIN / 2
+}
+
 impl IntWidth {
     /// Whether this type may be narrower than `other` on some target the
     /// model allows. Never when it has the same or a higher rank (a higher
