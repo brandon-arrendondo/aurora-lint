@@ -422,6 +422,11 @@ pub fn builtin_constants(facts: IntFacts) -> &'static MacroConstantMap {
     for name in LIMIT_MACROS {
         if let Some(v) = facts.limit_macro(name) {
             m.insert((*name).into(), v);
+        } else if let Some((min, max)) = facts.limit_macro_bounds(name) {
+            // Not fixed, but no less than the guaranteed limit: `UINT_MAX - 1`
+            // cannot wrap on any width.
+            m.insert(format!("{name}{MACRO_RANGE_MIN}"), min);
+            m.insert(format!("{name}{MACRO_RANGE_MAX}"), max);
         }
     }
     for (spelling, size) in SIZEOF_SPELLINGS {
@@ -864,6 +869,24 @@ pub fn merged_macro_aliases(
     aliases
 }
 
+/// The suffixes under which [`MacroConstantMap`] records a macro whose value
+/// is a range rather than one number: `NAME[min]` and `NAME[max]`. No C
+/// identifier contains `[`, so these cannot collide with a name, the same
+/// device the `sizeof(T)` keys use.
+const MACRO_RANGE_MIN: &str = "[min]";
+const MACRO_RANGE_MAX: &str = "[max]";
+
+/// The range of an object-like macro whose body is not one number but is
+/// bounded: `#define HEADER (sizeof(uint32_t) * 2 + sizeof(uint16_t))` under
+/// ISO C's widths, where an exact-width type's size is only known to lie
+/// between 1 and its width over 8. `None` when `macros` records no range for
+/// `name`; an exactly-valued macro is read from `macros` itself.
+pub fn macro_range(macros: &MacroConstantMap, name: &str) -> Option<ValueRange> {
+    let min = *macros.get(&format!("{name}{MACRO_RANGE_MIN}"))?;
+    let max = *macros.get(&format!("{name}{MACRO_RANGE_MAX}"))?;
+    Some(ValueRange::new(min, max))
+}
+
 /// Walk `preproc_def` nodes in the AST to collect `#define NAME value` constants.
 /// Handles decimal, hex, octal literals, expressions, and references to other macros.
 /// Recurses into `preproc_ifdef/if/ifndef` blocks.
@@ -883,6 +906,8 @@ pub fn collect_macro_constants(root: &Node, source: &str, model: IntFacts) -> Ma
     collect_enum_constants(root, source, &mut raw_defs);
     for (name, _) in &raw_defs {
         macros.remove(name);
+        macros.remove(&format!("{name}{MACRO_RANGE_MIN}"));
+        macros.remove(&format!("{name}{MACRO_RANGE_MAX}"));
     }
 
     // Iteratively resolve — handles forward references and chains
@@ -901,7 +926,44 @@ pub fn collect_macro_constants(root: &Node, source: &str, model: IntFacts) -> Ma
             }
         }
     }
+    record_macro_ranges(&raw_defs, &mut macros);
     macros
+}
+
+/// Record, under [`macro_range`]'s keys, every definition in `raw_defs` that
+/// has no exact value but whose body evaluates to a range: the body is
+/// parsed as an expression and evaluated by [`try_evaluate_range`]'s rules,
+/// so a macro written over other range macros and over `sizeof` of an
+/// exact-width type (bounded by [`sizeof_type_bounds`]) is bounded like the
+/// expression it stands for.
+///
+/// Without this a guard written through such a macro narrows nothing, while
+/// the same guard written inline does: `if (size < HEADER + END)` over
+/// `HEADER` = `sizeof(uint32_t) * 2 + sizeof(uint16_t)` left `size - END`
+/// unbounded under ISO C's widths.
+fn record_macro_ranges(raw_defs: &[(String, String)], macros: &mut MacroConstantMap) {
+    let empty = VarRangeMap::new();
+    let mut changed = true;
+    let mut iterations = 0;
+    while changed && iterations < 5 {
+        changed = false;
+        iterations += 1;
+        for (name, value_text) in raw_defs {
+            if macros.contains_key(name) || macros.contains_key(&format!("{name}{MACRO_RANGE_MIN}"))
+            {
+                continue;
+            }
+            let Some(range) = evaluate_snippet_range(value_text.trim(), macros, &empty) else {
+                continue;
+            };
+            if range.min == range.max {
+                continue;
+            }
+            macros.insert(format!("{name}{MACRO_RANGE_MIN}"), range.min);
+            macros.insert(format!("{name}{MACRO_RANGE_MAX}"), range.max);
+            changed = true;
+        }
+    }
 }
 
 /// Merge cross-file macro constants (`project`, from
@@ -2190,7 +2252,10 @@ fn try_evaluate_range_inner(
             if let Some(&val) = macros.get(name) {
                 return Some(ValueRange::exact(val));
             }
-            var_ranges.get(name).copied()
+            var_ranges
+                .get(name)
+                .copied()
+                .or_else(|| macro_range(macros, name))
         }
         "parenthesized_expression" => {
             let inner = node.child(1)?;
@@ -4266,6 +4331,28 @@ int f(unsigned long s) { return LINEBITS(s); }
         assert_eq!(macros.get("HALF"), Some(&16383));
         let iso = collect_macro_constants(&tree.root_node(), &source, IntFacts::ISO);
         assert_eq!(iso.get("HALF"), Some(&16383));
+    }
+
+    #[test]
+    fn a_macro_over_an_open_width_sizeof_is_a_range_not_a_number() {
+        let code = "#define HDR (sizeof(uint32_t) * 2 + sizeof(uint16_t))\n\
+                    #define END (sizeof(uint8_t))\n\
+                    #define BOTH (HDR + END)\n";
+        let (tree, source) = crate::parser::CParser::new()
+            .unwrap()
+            .parse_source(code)
+            .unwrap();
+        let iso = collect_macro_constants(&tree.root_node(), &source, IntFacts::ISO);
+        // An exact-width type's size is between one byte and its width over
+        // eight, so the header is 2 * 1 + 1 to 2 * 4 + 2.
+        assert_eq!(iso.get("HDR"), None);
+        assert_eq!(macro_range(&iso, "HDR"), Some(ValueRange::new(3, 10)));
+        assert_eq!(macro_range(&iso, "BOTH"), Some(ValueRange::new(4, 11)));
+        // A name with an exact value has no range entry to disagree with it.
+        assert_eq!(macro_range(&iso, "END"), None);
+        let lp64 = collect_macro_constants(&tree.root_node(), &source, IntFacts::LP64);
+        assert_eq!(lp64.get("HDR"), Some(&10));
+        assert_eq!(macro_range(&lp64, "HDR"), None);
     }
 
     #[test]
