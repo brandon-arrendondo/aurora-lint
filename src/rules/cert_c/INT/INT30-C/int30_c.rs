@@ -221,9 +221,7 @@ impl Int30C {
         if !self.data_model.get().int_width_is_fixed() && (1..63).contains(&bits) {
             let high = (1i64 << bits) - 1;
             for range in ranges.iter_mut().flat_map(|ranges| ranges.values_mut()) {
-                if data_model::is_open_top(range.max) && range.min <= high {
-                    range.max = high;
-                }
+                range.max = data_model::bound_open_top(range.min, range.max, high);
             }
         }
         const_eval::expression_fits_in_unsigned_vra(

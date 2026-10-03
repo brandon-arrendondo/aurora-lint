@@ -75,6 +75,34 @@ pub fn is_open_bottom(min: i64) -> bool {
     min <= i64::MIN / 2
 }
 
+/// The top of the range `[min, max]` as a type of the checked width sees it,
+/// `high` being that width's largest value.
+///
+/// An open top is the type's own limit, whatever width the type has, so it
+/// is read as `high`. An open top moved by arithmetic or a guard stays the
+/// same distance from the limit: `i < count` leaves `i` one below it, so
+/// `i + 1` reaches the limit and no further, where reading every open end as
+/// `high` itself made it one past. Never below the range's own bottom, and
+/// left alone when the bottom is already past `high` (the range sits wholly
+/// above the width and reports as definite).
+pub fn bound_open_top(min: i64, max: i64, high: i64) -> i64 {
+    if is_open_top(max) && min <= high {
+        (high - (i64::MAX - max)).max(min)
+    } else {
+        max
+    }
+}
+
+/// [`bound_open_top`] for the bottom of a range, `low` being the checked
+/// width's smallest value.
+pub fn bound_open_bottom(min: i64, max: i64, low: i64) -> i64 {
+    if is_open_bottom(min) && max >= low {
+        (low + (min - i64::MIN)).min(max)
+    } else {
+        min
+    }
+}
+
 impl IntWidth {
     /// Whether this type may be narrower than `other` on some target the
     /// model allows. Never when it has the same or a higher rank (a higher
