@@ -4054,3 +4054,35 @@ fn a_compound_assignment_does_not_start_a_new_value() {
     let lines: Vec<&str> = found.iter().filter_map(|l| l.split(':').nth(1)).collect();
     assert_eq!(lines, ["4"], "{found:?}");
 }
+
+/// A directory scan of a deeply nested file plus any other file goes through
+/// the parallel cross-file prescan on rayon's global pool, whose walks recurse
+/// once per AST nesting level. A single-file scan, which every rule fixture
+/// test is, never reaches that pool, so only a multi-file run can show the
+/// pool's stack is big enough. The rule is immaterial: the prescan runs for
+/// all of them. `RUST_MIN_STACK` is removed because `.cargo/config.toml` sets
+/// it for everything cargo runs, which would hide the default a user's run
+/// gets.
+#[test]
+fn multi_file_scan_of_deep_nesting_completes() {
+    let dir = tempfile::tempdir().unwrap();
+    let deep = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src/rules/cert_c/MEM/MEM30-C/tests/pass/testcases_deep_if_nesting_stack_safety.c");
+    std::fs::copy(&deep, dir.path().join("deep.c")).unwrap();
+    std::fs::write(
+        dir.path().join("other.c"),
+        "int other(void) { return 0; }\n",
+    )
+    .unwrap();
+    let output = Command::new(aurora_lint_bin())
+        .args(["--rules", "ERR33-C", dir.path().to_str().unwrap()])
+        .env_remove("RUST_MIN_STACK")
+        .output()
+        .expect("failed to execute aurora-lint");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "scan did not complete: {stderr}"
+    );
+}

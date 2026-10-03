@@ -162,6 +162,19 @@ fn resolve_settings(
 }
 
 fn main() {
+    // rayon's global pool runs the cross-file prescan and the macro-gap
+    // audit, whose walks recurse once per AST nesting level; with the 2 MiB
+    // default stack a deeply nested file aborted any multi-file scan. Give it
+    // the scan pool's stack, before anything can start the pool.
+    if let Err(e) = rayon::ThreadPoolBuilder::new()
+        .stack_size(analyze::WORKER_STACK_BYTES)
+        .build_global()
+    {
+        eprintln!(
+            "Warning: rayon's global thread pool was already started ({e}); \
+             deeply nested sources may overflow its default stack"
+        );
+    }
     let result = run();
     match result {
         Ok(exit_code) => std::process::exit(exit_code),

@@ -145,6 +145,15 @@ impl ScanScope {
     }
 }
 
+/// Stack for every rayon worker thread: the scan pool built here and, set
+/// once at startup by the binary, rayon's global pool. Several analyses
+/// recurse once per AST nesting level -- the scan's rules, and on the global
+/// pool the cross-file prescan (`function_summary`'s walks) and the macro-gap
+/// audit -- and real C reaches thousands of levels, which overflows the
+/// 2 MiB a spawned thread gets on Linux and aborts the whole process on input
+/// a single-file run, on the 8 MiB main thread, completes.
+pub const WORKER_STACK_BYTES: usize = 16 * 1024 * 1024;
+
 /// Run every enabled rule over `project_source`, returning active and
 /// suppressed violations. `directories`/`include_paths`/`scope` decide
 /// which files are analyzed and which feed the cross-file context; `diff_only` limits analysis to changed files;
@@ -265,14 +274,8 @@ pub fn analyze_project(
     };
 
     if effective_jobs > 1 && total_files > 1 {
-        // Parallel analysis with rayon — per-file parser and rule registry
-        // Worker threads get an explicit stack, not the 2 MiB a spawned
-        // thread defaults to on Linux. Several analyses recurse with AST
-        // nesting depth, and real C reaches thousands of levels, so a
-        // parallel scan aborted the whole process on input a `-j 1` run --
-        // which does this work on the 8 MiB main thread -- completed
-        // (this repo).
-        const WORKER_STACK_BYTES: usize = 16 * 1024 * 1024;
+        // Parallel analysis with rayon — per-file parser and rule registry.
+        // Worker threads get WORKER_STACK_BYTES, not the 2 MiB default.
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(effective_jobs)
             .stack_size(WORKER_STACK_BYTES)
