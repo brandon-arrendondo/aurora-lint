@@ -209,9 +209,9 @@ impl DataModel {
     }
 }
 
-/// One integer fact of the target. [`Fact::overridable`] ones are the
-/// `[environment]` keys a project writes; the others are loaded by a preset
-/// alone (what the preset's platform fixes besides the widths).
+/// One integer fact of the target. Each is an `[environment]` key a project
+/// can write, and every fact a data model's bundle loads is one of them: a
+/// preset is nothing but a list of these keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Fact {
     /// `CHAR_BIT`.
@@ -284,18 +284,16 @@ impl Fact {
         Fact::ALL.into_iter().find(|f| f.key() == key)
     }
 
-    /// Whether a project may write this fact. The rest are loaded by a preset
-    /// alone.
-    pub const fn overridable(self) -> bool {
+    /// Whether the fact is a `sizeof` in bytes rather than a width in bits
+    /// or a yes/no answer.
+    pub const fn is_size_in_bytes(self) -> bool {
         matches!(
             self,
-            Fact::ShortBits
-                | Fact::IntBits
-                | Fact::LongBits
-                | Fact::LongLongBits
-                | Fact::PointerBits
-                | Fact::WcharBits
-                | Fact::CharSigned
+            Fact::FloatBytes
+                | Fact::DoubleBytes
+                | Fact::LongDoubleBytes
+                | Fact::TimeTBytes
+                | Fact::OffTBytes
         )
     }
 
@@ -389,6 +387,9 @@ impl FactSource {
 pub struct IntFacts {
     values: [Option<u32>; 13],
     sources: [FactSource; 13],
+    /// The preset whose bundle is the baseline: what a key must differ from
+    /// to count as declared.
+    model: DataModel,
 }
 
 impl Default for IntFacts {
@@ -418,6 +419,7 @@ impl IntFacts {
         let mut facts = IntFacts {
             values: [None; 13],
             sources: [FactSource::Unknown; 13],
+            model,
         };
         let bundle = model.bundle();
         let mut i = 0;
@@ -453,11 +455,30 @@ impl IntFacts {
         self.sources[fact.index()]
     }
 
-    /// The facts a project or the command line declared (not a preset's),
-    /// for the settings hash and the resolved-settings JSON.
+    /// The value the selected preset's bundle gives `fact`, if it loads it.
+    pub fn preset_value(&self, fact: Fact) -> Option<u32> {
+        self.model
+            .bundle()
+            .iter()
+            .find(|(f, _)| *f == fact)
+            .map(|(_, v)| *v)
+    }
+
+    /// Whether a project or the command line wrote `fact` with a value the
+    /// selected preset's bundle does not already give it. A line that only
+    /// repeats the bundle declares nothing, whichever layer wrote it, so a
+    /// redundant `--set` and a redundant config line are the same settings.
+    pub fn is_declared(&self, fact: Fact) -> bool {
+        matches!(self.source(fact), FactSource::Cli | FactSource::Config)
+            && self.get(fact) != self.preset_value(fact)
+    }
+
+    /// The facts that depart from the preset's bundle, for the settings hash
+    /// and the resolved-settings JSON: the hash identifies the resolved
+    /// facts, whatever layer wrote them.
     pub fn declared(&self) -> impl Iterator<Item = (Fact, u32)> + '_ {
         Fact::ALL.into_iter().filter_map(|f| {
-            matches!(self.source(f), FactSource::Cli | FactSource::Config)
+            self.is_declared(f)
                 .then(|| self.get(f).map(|v| (f, v)))
                 .flatten()
         })
@@ -487,10 +508,17 @@ impl IntFacts {
         self.get(Fact::WcharBits)
     }
 
-    /// Whether the widths of `short`, `int` and `long` are all fixed: a
-    /// target the scan can answer "does this fit" about without guessing.
-    pub fn int_width_is_fixed(&self) -> bool {
-        self.get(Fact::IntBits).is_some()
+    /// Whether the facts fix the width in bits of an integer of `rank`. The
+    /// one answer to "is this width known" every gate shares: a rule never
+    /// stands in another fact (`CHAR_BIT`, a `sizeof`) for it.
+    pub fn width_known(&self, rank: Rank) -> bool {
+        self.exact_width(rank).is_some()
+    }
+
+    /// Whether the facts fix `sizeof` an integer of `rank`: its width and
+    /// `CHAR_BIT` both. The one answer to "is this `sizeof` a constant".
+    pub fn sizeof_known(&self, rank: Rank) -> bool {
+        self.sizeof_bytes(rank).is_some()
     }
 
     /// The problems a set of facts has, one per line: a width below the ISO
@@ -522,11 +550,35 @@ impl IntFacts {
                     ));
                 }
             }
+            if fact.is_size_in_bytes() && !(1..=64).contains(&value) {
+                out.push(format!(
+                    "{} = {value}: a size is from 1 to 64 bytes",
+                    fact.key()
+                ));
+            }
             if fact.minimum_bits().is_some() && (value % 8 != 0 || value > 64) {
                 out.push(format!(
                     "{} = {value}: a width is a whole number of 8-bit bytes, up to 64 bits",
                     fact.key()
                 ));
+            }
+        }
+        // A width is a whole number of `char`s (`sizeof` is an integer).
+        if let Some(char_bits) = self.get(Fact::CharBits).filter(|c| *c > 0) {
+            for fact in [
+                Fact::ShortBits,
+                Fact::IntBits,
+                Fact::LongBits,
+                Fact::LongLongBits,
+                Fact::PointerBits,
+                Fact::WcharBits,
+            ] {
+                if let Some(value) = self.get(fact).filter(|v| v % char_bits != 0) {
+                    out.push(format!(
+                        "{} = {value} is not a whole number of char_bits = {char_bits} chars",
+                        fact.key()
+                    ));
+                }
             }
         }
         let ranked = [
@@ -872,7 +924,7 @@ mod tests {
         facts.set(Fact::IntBits, 16, FactSource::Config);
         assert_eq!(facts.exact_width(Rank::Int), Some(16));
         assert_eq!(facts.source(Fact::IntBits), FactSource::Config);
-        facts.set(Fact::IntBits, 32, FactSource::Cli);
+        facts.set(Fact::IntBits, 64, FactSource::Cli);
         assert_eq!(facts.source(Fact::IntBits), FactSource::Cli);
         assert_eq!(
             facts.source(Fact::LongBits),
@@ -881,8 +933,12 @@ mod tests {
         assert_eq!(facts.source(Fact::WcharBits), FactSource::Unknown);
         assert_eq!(
             facts.declared().collect::<Vec<_>>(),
-            vec![(Fact::IntBits, 32)]
+            vec![(Fact::IntBits, 64)]
         );
+        // A line that repeats the bundle declares nothing, whoever wrote it.
+        facts.set(Fact::IntBits, 32, FactSource::Cli);
+        assert_eq!(facts.source(Fact::IntBits), FactSource::Cli);
+        assert!(facts.declared().next().is_none());
     }
 
     #[test]

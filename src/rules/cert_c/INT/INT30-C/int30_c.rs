@@ -218,7 +218,7 @@ impl Int30C {
     /// unguarded `x + 1` still does not on any width.
     fn expression_fits_in_unsigned(&self, node: &Node, source: &str, bits: u32) -> bool {
         let mut ranges = self.vra_var_ranges_at(node, source);
-        if !self.data_model.get().int_width_is_fixed() && (1..63).contains(&bits) {
+        if !self.data_model.get().width_known(Rank::Int) && (1..63).contains(&bits) {
             let high = (1i64 << bits) - 1;
             for range in ranges.iter_mut().flat_map(|ranges| ranges.values_mut()) {
                 range.max = data_model::bound_open_top(range.min, range.max, high);
@@ -1455,7 +1455,7 @@ impl Int30C {
                 vra_ranges.as_ref().unwrap_or(&VarRangeMap::new()),
             )
             .is_some_and(|low| low > self.size_t_max());
-            let constant_not_evaluated = self.data_model.get().sizeof_bytes(Rank::Int).is_none()
+            let constant_not_evaluated = !self.data_model.get().sizeof_known(Rank::Int)
                 && !low_exceeds_size_t
                 && const_eval::try_evaluate_range(
                     check_node,
@@ -1624,12 +1624,26 @@ impl Int30C {
             && !self.has_calloc_overflow_check(node, source)
         {
             let start_point = node.start_position();
+            // `wchar_t` is unknown unless declared, and the wrap may rest on
+            // the widest it could be: say so, so the way out is named.
+            let wchar_undeclared = self.data_model.get().wchar_bytes().is_none()
+                && args[..2].iter().any(|a| {
+                    a.split_whitespace()
+                        .collect::<String>()
+                        .contains("sizeof(wchar_t)")
+                });
             violations.push(RuleViolation {
                 rule_id: self.rule_id().to_string(),
                 severity: Severity::High,
                 message: format!(
-                    "calloc({}, {}) may cause integer overflow in size calculation",
-                    args[0], args[1]
+                    "calloc({}, {}) may cause integer overflow in size calculation{}",
+                    args[0],
+                    args[1],
+                    if wchar_undeclared {
+                        " (the width of wchar_t is not declared; wchar_t_bits settles it)"
+                    } else {
+                        ""
+                    }
                 ),
                 file_path: String::new(),
                 line: start_point.row + 1,
@@ -1748,7 +1762,7 @@ impl Int30C {
             // `calloc(1073741825, sizeof(int))` wraps wherever `size_t` is 16
             // bits, and that is a computed wrap the constant clause must not
             // talk the rule out of.
-            return (self.data_model.get().sizeof_bytes(Rank::Int).is_none()
+            return (!self.data_model.get().sizeof_known(Rank::Int)
                 && self
                     .allocation_lower_bound(nmemb, size, source)
                     .is_some_and(|low| low > self.size_t_max()))
@@ -2361,7 +2375,7 @@ impl Int30C {
     ) -> bool {
         // The bound is a 32-bit int's; a model that does not fix int's width
         // proves nothing here.
-        if self.data_model.get().exact_width(Rank::Int).is_none() {
+        if !self.data_model.get().width_known(Rank::Int) {
             return false;
         }
         let macros = self.current_macros.borrow();

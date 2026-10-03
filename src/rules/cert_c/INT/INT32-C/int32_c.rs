@@ -2777,7 +2777,7 @@ impl Int32C {
         // not `SCHAR_MAX` just because the result is stored in a `signed
         // char`, and clamping it there would let the store prove itself.
         let ranges = match ranges {
-            Some(ranges) if !self.data_model.get().int_width_is_fixed() && !narrow_store => {
+            Some(ranges) if !self.data_model.get().width_known(Rank::Int) && !narrow_store => {
                 Some(Self::bound_open_ranges(ranges, bits))
             }
             other => other,

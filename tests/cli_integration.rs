@@ -4137,8 +4137,15 @@ fn an_explicit_key_beats_the_preset_whatever_the_order_and_the_command_line_beat
     let from_manifest = resolved_settings(&["-m", m]).unwrap();
     assert_eq!(from_manifest["int_bits"], 16, "{from_manifest}");
     assert_eq!(from_manifest["data_model"], "lp64");
-    let from_cli = resolved_settings(&["-m", m, "--set", "int_bits=32"]).unwrap();
-    assert_eq!(from_cli["int_bits"], 32, "{from_cli}");
+    let from_cli = resolved_settings(&["-m", m, "--set", "int_bits=64"]).unwrap();
+    assert_eq!(from_cli["int_bits"], 64, "{from_cli}");
+    // Repeating the preset's own value is the command line's to say, and still
+    // beats the file's 16: the facts are the preset's, and so is the hash.
+    let repeated = fact_values(&["-m", m, "--set", "int_bits=32"]);
+    assert!(
+        repeated.contains(&("int_bits".to_string(), "32".to_string())),
+        "{repeated:?}"
+    );
 }
 
 #[test]
@@ -4419,8 +4426,14 @@ fn a_written_config_resolves_to_the_facts_and_hash_of_running_without_it() {
         let mut direct = vec!["--list-options", "json"];
         direct.extend_from_slice(&args);
         let from_flags = run_aurora_lint(&direct).1;
-        // Facts, their sources, and the settings hash all agree.
-        assert_eq!(from_file, from_flags, "{model:?}");
+        // The resolved settings, hash included, and every fact's value agree;
+        // a repeated line keeps its true source (config), which is not part
+        // of what was resolved.
+        let current = |text: &str| {
+            serde_json::from_str::<serde_json::Value>(text).unwrap()["current"].clone()
+        };
+        assert_eq!(current(&from_file), current(&from_flags), "{model:?}");
+        assert_eq!(fact_values(&["-m", &path]), fact_values(&args), "{model:?}");
     }
 }
 
@@ -4545,6 +4558,214 @@ fn an_edited_written_config_is_checked_like_any_other() {
     assert_ne!(code, 0);
     assert!(
         stderr.contains("int_bits = 8 is below the 16 bits"),
+        "{stderr}"
+    );
+}
+
+/// The keys a preset loads, as `--list-options` reports them.
+fn preset_keys(model: &str) -> Vec<(String, String)> {
+    let (code, stdout, stderr) =
+        run_aurora_lint(&["--list-options", "json", "--data-model", model]);
+    assert_eq!(code, 0, "{stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    json["facts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["source"].as_str().unwrap().starts_with("preset:"))
+        .map(|f| {
+            (
+                f["key"].as_str().unwrap().to_string(),
+                f["value"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// The resolved facts of a run, key and value only, whatever their source.
+fn fact_values(args: &[&str]) -> Vec<(String, String)> {
+    let mut full = vec!["--list-options", "json"];
+    full.extend_from_slice(args);
+    let (code, stdout, stderr) = run_aurora_lint(&full);
+    assert_eq!(code, 0, "{stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    json["facts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                f["key"].as_str().unwrap().to_string(),
+                f["value"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// Every finding of a scan of the integer rules' fixtures, one per line.
+fn fixture_findings(extra: &[&str]) -> Vec<String> {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let mut findings = Vec::new();
+    for rule in ["INT/INT30-C", "INT/INT32-C", "EXP/EXP14-C"] {
+        let dir = format!("{root}/src/rules/cert_c/{rule}/tests");
+        let mut args = vec![dir.as_str(), "--rules", "INT30-C,INT32-C,EXP14-C"];
+        args.extend_from_slice(extra);
+        let (_code, stdout, _stderr) = run_aurora_lint(&args);
+        findings.extend(
+            stdout
+                .lines()
+                .filter(|l| l.contains("-C: "))
+                .map(|l| l.replace(root, "")),
+        );
+    }
+    findings.sort();
+    findings
+}
+
+#[test]
+fn a_preset_is_exactly_the_keys_a_user_can_write() {
+    for model in ["ilp32", "lp64", "llp64"] {
+        let keys = preset_keys(model);
+        assert!(keys.len() >= 9, "{model}: {keys:?}");
+        let sets: Vec<String> = keys.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        let mut by_hand: Vec<&str> = Vec::new();
+        for s in &sets {
+            by_hand.extend(["--set", s.as_str()]);
+        }
+        // The same resolved facts as selecting the preset...
+        assert_eq!(
+            fact_values(&by_hand),
+            fact_values(&["--data-model", model]),
+            "{model}"
+        );
+        // ... and so the same findings.
+        let hand_written = fixture_findings(&by_hand);
+        let selected = fixture_findings(&["--data-model", model]);
+        assert!(!selected.is_empty());
+        assert_eq!(hand_written, selected, "{model}");
+    }
+}
+
+#[test]
+fn every_fact_is_a_key_a_project_can_write() {
+    for key in [
+        "char_bits",
+        "short_bits",
+        "int_bits",
+        "long_bits",
+        "long_long_bits",
+        "pointer_bits",
+        "wchar_t_bits",
+        "float_bytes",
+        "double_bytes",
+        "long_double_bytes",
+        "time_t_bytes",
+        "off_t_bytes",
+    ] {
+        let value = if key.ends_with("_bytes") { "8" } else { "64" };
+        let assignment = format!("{key}={value}");
+        let (code, _out, stderr) = run_aurora_lint(&["--check-config", "--set", &assignment]);
+        assert_eq!(code, 0, "{key}: {stderr}");
+    }
+    let (code, _out, stderr) = run_aurora_lint(&["--check-config", "--set", "float_bytes=0"]);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("a size is from 1 to 64 bytes"), "{stderr}");
+}
+
+#[test]
+fn a_generated_config_yields_to_a_later_data_model_whole() {
+    let (_dir, path, _text) = written_config(&["--data-model", "lp64"]);
+    // The command line's model replaces the whole bundle, including the lines
+    // the file only repeated from its own model.
+    assert_eq!(
+        fact_values(&["-m", &path, "--data-model", "ilp32"]),
+        fact_values(&["--data-model", "ilp32"])
+    );
+    let facts = resolved_settings(&["-m", &path, "--data-model", "ilp32"]).unwrap();
+    assert_eq!(facts["data_model"], "ilp32");
+    assert!(facts["long_bits"].is_null(), "{facts}");
+    assert!(facts["pointer_bits"].is_null(), "{facts}");
+    // The hash is the model's own, as if the file had not been there.
+    assert_eq!(
+        facts["hash"],
+        resolved_settings(&["--data-model", "ilp32"]).unwrap()["hash"]
+    );
+}
+
+#[test]
+fn a_genuine_override_in_a_file_survives_a_later_data_model() {
+    let (_dir, path, text) = written_config(&["--data-model", "lp64"]);
+    let edited = text.replace("short_bits = 16  # from preset: lp64", "short_bits = 32");
+    assert_ne!(edited, text);
+    std::fs::write(&path, edited).unwrap();
+    for model in ["ilp32", "lp64"] {
+        let facts = fact_values(&["-m", &path, "--data-model", model]);
+        assert!(
+            facts.contains(&("short_bits".to_string(), "32".to_string())),
+            "{model}: {facts:?}"
+        );
+    }
+}
+
+#[test]
+fn a_key_repeating_the_preset_hashes_alike_from_the_command_line_and_a_file() {
+    let bare = resolved_settings(&["--data-model", "lp64"]).unwrap();
+    let by_flag = resolved_settings(&["--data-model", "lp64", "--set", "int_bits=32"]).unwrap();
+    let (_dir, m) = manifest_with_environment("data_model = \"lp64\"\nint_bits = 32\n");
+    let by_file = resolved_settings(&["-m", &m]).unwrap();
+    assert_eq!(bare["hash"], by_flag["hash"]);
+    assert_eq!(bare["hash"], by_file["hash"]);
+    assert!(by_flag["int_bits"].is_null(), "{by_flag}");
+    // ... while the listing still says who wrote the line.
+    let source_of = |args: &[&str]| {
+        let mut full = vec!["--list-options", "json"];
+        full.extend_from_slice(args);
+        let json: serde_json::Value = serde_json::from_str(&run_aurora_lint(&full).1).unwrap();
+        json["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["key"] == "int_bits")
+            .unwrap()["source"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(
+        source_of(&["--data-model", "lp64", "--set", "int_bits=32"]),
+        "cli"
+    );
+    assert_eq!(source_of(&["-m", &m]), "config");
+}
+
+#[test]
+fn check_config_names_a_bad_set_and_a_bad_manifest_each_once_and_exits_one() {
+    let (_dir, m) = manifest_with_environment("int_bits = 8\n");
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        "--check-config",
+        "-m",
+        &m,
+        "--set",
+        "no_such_option=true",
+        "--set",
+        "long_bits=wide",
+    ]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    let errors: Vec<&str> = stderr.lines().filter(|l| l.starts_with("error:")).collect();
+    assert_eq!(errors.len(), 3, "{stderr}");
+    assert!(
+        errors.iter().any(|l| l.contains("no_such_option")),
+        "{stderr}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|l| l.contains("long_bits takes a number")),
+        "{stderr}"
+    );
+    assert!(
+        errors.iter().any(|l| l.contains("int_bits = 8 is below")),
         "{stderr}"
     );
 }

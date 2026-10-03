@@ -236,7 +236,7 @@ impl Exp14C {
     /// C's widths the operand only lacks a guarantee of being as wide as
     /// `int`, whatever its own width (even `uint64_t`).
     fn narrow_type_phrase(&self) -> &'static str {
-        if self.data_model.get().int_width_is_fixed() {
+        if self.data_model.get().width_known(Rank::Int) {
             "type smaller than int"
         } else {
             "a type ISO C does not guarantee is at least as wide as int"

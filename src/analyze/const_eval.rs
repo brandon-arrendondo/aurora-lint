@@ -357,6 +357,21 @@ enum SizeOf {
     Bytes(Fact),
 }
 
+/// `size`'s width in bits under `facts`, or `None` when they leave it open.
+/// Read from the width facts themselves: it does not wait on `CHAR_BIT`, which
+/// only a `sizeof` needs.
+fn width_under(facts: &IntFacts, size: SizeOf) -> Option<i64> {
+    let bits = match size {
+        SizeOf::Char | SizeOf::Rank(Rank::Bool) => facts.get(Fact::CharBits)?,
+        SizeOf::Rank(rank) => facts.exact_width(rank)?,
+        SizeOf::Exact(bits) => bits,
+        SizeOf::Pointer => facts.pointer_width()?,
+        SizeOf::WideChar => facts.wchar_bits()?,
+        SizeOf::Bytes(_) => return None,
+    };
+    Some(i64::from(bits))
+}
+
 /// `size`'s bytes under `facts`, or `None` when they leave it open.
 fn sizeof_under(facts: &IntFacts, size: SizeOf) -> Option<i64> {
     let char_bits = facts.get(Fact::CharBits);
@@ -432,6 +447,9 @@ pub fn builtin_constants(facts: IntFacts) -> &'static MacroConstantMap {
     for (spelling, size) in SIZEOF_SPELLINGS {
         if let Some(v) = sizeof_under(&facts, *size) {
             m.insert(format!("sizeof({spelling})"), v);
+        }
+        if let Some(v) = width_under(&facts, *size) {
+            m.insert(format!("bits({spelling})"), v);
         }
     }
     // Not known, but bounded: wchar_t is an integer type, so it is no wider
