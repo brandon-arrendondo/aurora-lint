@@ -107,6 +107,32 @@ safety-critical user unprotected.
      for teams that trust nothing;
    - any combination can be set explicitly, for example strict policy on a
      hosted newlib target.
+
+   **Presets enforce; facts describe the target** (amended 2026-10-03,
+   Brandon). Two different things configure a scan.
+   - A **preset** (`default`, `strict`) is a decision about rule
+     enforcement. `strict` applies the rules as written (ADR-0001) with full
+     pedantry; `default` applies a reasonable relaxation grounded in how C is
+     typically built and used. Presets are values of the policy and
+     environment axes.
+   - **Facts** describe the target the code is built for: the integer data
+     model and type sizes, the width of `wchar_t`, whether plain `char` is
+     signed, and in future the language edition, library groupings such as
+     POSIX, and alignment. Facts are optional context, like a compilation
+     database. None is required, and each has a stated default: the ISO C
+     guarantee, or unknown. A project that knows its target declares them, so
+     that findings that would otherwise be noisy or wrong become precise.
+     aurora-lint does not compile the code, but knowing what a compiler would
+     know about the target improves its rule decisions.
+   - A **data model** (`iso`, `ilp32`, `lp64`, `llp64`) is a named bundle of
+     facts, not an enforcement preset. A project may override any fact key by
+     key. Precedence is the command line, then the project's keys, then the
+     bundle of the data model named in the same configuration, then the ISO
+     minimum. A key that only repeats the value of the bundle its own
+     configuration names declares nothing. A fact no bundle or key sets is
+     unknown and receives only the ISO C guarantee.
+   - Every declared fact is part of the settings hash. The run label names
+     only the enforcement preset (Decision 7, labels).
 5. **The oracle is independent of both axes.** It records the strict,
    freestanding truth for each line (ADR-0014), plus a tag on every row a
    relaxation affects: assert-dominated, dependent site, or library-contract

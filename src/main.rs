@@ -75,68 +75,108 @@ fn scan_scope(matches: &clap::ArgMatches, manifest: &RuleManifest) -> analyze::S
     }
 }
 
-/// The settings the command line states, to layer over the manifest's.
-fn settings_from_cli(matches: &clap::ArgMatches) -> Result<SettingsConfig> {
+/// The settings the command line states, to layer over the manifest's, and
+/// one message per flag that does not parse. Every flag is read even after a
+/// bad one, so `--check-config` can name each problem.
+fn parse_settings_from_cli(matches: &clap::ArgMatches) -> (SettingsConfig, Vec<String>) {
     let parse = |id: &str| matches.get_one::<String>(id).map(String::as_str);
-    let mut config = SettingsConfig {
-        profile: parse("profile")
-            .map(|s| s.parse())
-            .transpose()
-            .map_err(anyhow::Error::msg)?,
-        ..Default::default()
-    };
-    if let Some(level) = parse("policy") {
-        config.policy.get_or_insert_with(Default::default).level =
-            Some(level.parse().map_err(anyhow::Error::msg)?);
+    let mut problems: Vec<String> = Vec::new();
+    let mut config = SettingsConfig::default();
+    let mut note = |what: &str, e: String| problems.push(format!("{what}: {e}"));
+    if let Some(value) = parse("profile") {
+        match value.parse() {
+            Ok(p) => config.profile = Some(p),
+            Err(e) => note("--profile", e),
+        }
     }
-    if let Some(kind) = parse("environment") {
-        config.environment.get_or_insert_with(Default::default).kind =
-            Some(kind.parse().map_err(anyhow::Error::msg)?);
+    if let Some(value) = parse("policy") {
+        match value.parse() {
+            Ok(level) => config.policy.get_or_insert_with(Default::default).level = Some(level),
+            Err(e) => note("--policy", e),
+        }
     }
-    if let Some(libc) = parse("libc") {
-        config.environment.get_or_insert_with(Default::default).libc =
-            Some(libc.parse().map_err(anyhow::Error::msg)?);
+    if let Some(value) = parse("environment") {
+        match value.parse() {
+            Ok(kind) => config.environment.get_or_insert_with(Default::default).kind = Some(kind),
+            Err(e) => note("--environment", e),
+        }
     }
-    if let Some(names) = parse("include_names") {
-        config
-            .environment
-            .get_or_insert_with(Default::default)
-            .include_names = Some(names.parse().map_err(anyhow::Error::msg)?);
+    if let Some(value) = parse("libc") {
+        match value.parse() {
+            Ok(libc) => config.environment.get_or_insert_with(Default::default).libc = Some(libc),
+            Err(e) => note("--libc", e),
+        }
     }
-    if let Some(model) = parse("data_model") {
-        config
-            .environment
-            .get_or_insert_with(Default::default)
-            .data_model = Some(model.parse().map_err(anyhow::Error::msg)?);
+    if let Some(value) = parse("include_names") {
+        match value.parse() {
+            Ok(names) => {
+                config
+                    .environment
+                    .get_or_insert_with(Default::default)
+                    .include_names = Some(names)
+            }
+            Err(e) => note("--include-names", e),
+        }
+    }
+    if let Some(value) = parse("data_model") {
+        match value.parse() {
+            Ok(model) => {
+                config
+                    .environment
+                    .get_or_insert_with(Default::default)
+                    .data_model = Some(model)
+            }
+            Err(e) => note("--data-model", e),
+        }
     }
     for assignment in matches.get_many::<String>("set").into_iter().flatten() {
-        config.set(assignment).context("--set")?;
+        if let Err(e) = config.set(assignment) {
+            note("--set", format!("{e:#}"));
+        }
     }
     for value in matches
         .get_many::<String>("allocator")
         .into_iter()
         .flatten()
     {
-        let (name, contract) = settings::memory::parse_allocator_flag(value)?;
-        config
-            .environment
-            .get_or_insert_with(Default::default)
-            .allocators
-            .insert(name, contract);
+        match settings::memory::parse_allocator_flag(value) {
+            Ok((name, contract)) => {
+                config
+                    .environment
+                    .get_or_insert_with(Default::default)
+                    .allocators
+                    .insert(name, contract);
+            }
+            Err(e) => note("--allocator", format!("{e:#}")),
+        }
     }
     for value in matches
         .get_many::<String>("deallocator")
         .into_iter()
         .flatten()
     {
-        let (name, arg) = settings::memory::parse_deallocator_flag(value)?;
-        config
-            .environment
-            .get_or_insert_with(Default::default)
-            .deallocators
-            .insert(name, arg);
+        match settings::memory::parse_deallocator_flag(value) {
+            Ok((name, arg)) => {
+                config
+                    .environment
+                    .get_or_insert_with(Default::default)
+                    .deallocators
+                    .insert(name, arg);
+            }
+            Err(e) => note("--deallocator", format!("{e:#}")),
+        }
     }
-    Ok(config)
+    (config, problems)
+}
+
+/// The settings the command line states, refused when any flag does not parse.
+fn settings_from_cli(matches: &clap::ArgMatches) -> Result<SettingsConfig> {
+    let (config, problems) = parse_settings_from_cli(matches);
+    if problems.is_empty() {
+        Ok(config)
+    } else {
+        anyhow::bail!("{}", problems.join("\n"))
+    }
 }
 
 /// The manifest's settings with the command line's layered over them.
@@ -603,11 +643,12 @@ fn run() -> Result<i32> {
     let detect_relevance = matches.get_flag("detect_relevance");
     let write_manifest = matches.get_one::<String>("write_manifest");
 
-    let settings_cli = settings_from_cli(&matches)?;
-
     if matches.get_flag("check_config") {
-        // The same loading and the same resolution a scan runs, so the two
-        // cannot disagree about what is valid. Nothing is scanned.
+        // The same parsing, loading and resolution a scan runs, so the two
+        // cannot disagree about what is valid. Nothing is scanned. Every
+        // command-line flag is read, and the manifest checked against the
+        // ones that parsed, so each problem is named once.
+        let (settings_cli, mut problems) = parse_settings_from_cli(&matches);
         let checked = load_manifest(manifest_path).and_then(|manifest| {
             resolve_settings(
                 &manifest,
@@ -615,27 +656,32 @@ fn run() -> Result<i32> {
                 compile_db.as_ref().is_some_and(|db| db.msvc),
             )
         });
-        return match checked {
-            Ok(_) => {
-                println!("configuration ok");
-                Ok(0)
+        if let Err(e) = checked {
+            let text = format!("{e:#}");
+            if text.contains("TOML parse error") {
+                // A parse error is one problem, however many lines the
+                // diagnostic spans.
+                problems.push(text.trim().replace('\n', "\n       "));
+            } else {
+                // The resolver names each problem on a line of its own.
+                problems.extend(
+                    text.lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .map(|l| l.trim().to_string()),
+                );
             }
-            Err(e) => {
-                let text = format!("{e:#}");
-                if text.contains("TOML parse error") {
-                    // A parse error is one problem, however many lines the
-                    // diagnostic spans.
-                    eprintln!("error: {}", text.trim().replace('\n', "\n       "));
-                } else {
-                    // The resolver names each problem on a line of its own.
-                    for line in text.lines().filter(|l| !l.trim().is_empty()) {
-                        eprintln!("error: {}", line.trim());
-                    }
-                }
-                Ok(1)
-            }
-        };
+        }
+        if problems.is_empty() {
+            println!("configuration ok");
+            return Ok(0);
+        }
+        for problem in problems {
+            eprintln!("error: {problem}");
+        }
+        return Ok(1);
     }
+
+    let settings_cli = settings_from_cli(&matches)?;
 
     if let Some(target) = matches.get_one::<String>("write_config") {
         let manifest = load_manifest(manifest_path)?;

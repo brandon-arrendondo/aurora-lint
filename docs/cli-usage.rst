@@ -90,9 +90,11 @@ Full Command Reference
                                        INT_MAX are unknown. Same as
                                        ``[environment] data_model``, which a
                                        ``--profile`` keeps. Override one fact with
-                                       ``--set int_bits=16`` (also short_bits,
-                                       long_bits, long_long_bits, pointer_bits,
-                                       wchar_t_bits, char_signed). See
+                                       ``--set int_bits=16`` (also char_bits,
+                                       short_bits, long_bits, long_long_bits,
+                                       pointer_bits, wchar_t_bits, char_signed,
+                                       float_bytes, double_bytes, long_double_bytes,
+                                       time_t_bytes, off_t_bytes). See
                                        :doc:`configuration`
           --allocator <NAME[=CONTRACT]>
                                        Declare a function the scan cannot see into as an

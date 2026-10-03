@@ -428,6 +428,9 @@ pub struct EnvironmentConfig {
     /// C guarantees about integer widths is credited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_model: Option<DataModel>,
+    /// `CHAR_BIT`, the bits in a `char`: overrides the data model's value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub char_bits: Option<u32>,
     /// Bits in a `short`: overrides the data model's value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub short_bits: Option<u32>,
@@ -450,10 +453,30 @@ pub struct EnvironmentConfig {
     /// Whether plain `char` is signed. No data model sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub char_signed: Option<bool>,
+    /// `sizeof(float)`, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub float_bytes: Option<u32>,
+    /// `sizeof(double)`, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub double_bytes: Option<u32>,
+    /// `sizeof(long double)`, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_double_bytes: Option<u32>,
+    /// `sizeof(time_t)`, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_t_bytes: Option<u32>,
+    /// `sizeof(off_t)`, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub off_t_bytes: Option<u32>,
     /// The environment keys the command line set, for [`FactSource::Cli`]. Not
     /// part of a manifest.
     #[serde(skip)]
     pub cli: std::collections::BTreeSet<String>,
+    /// The data model the file itself named, when the command line named
+    /// another: the bundle a file's own repeated lines are judged against.
+    /// Not part of a manifest.
+    #[serde(skip)]
+    pub file_data_model: Option<DataModel>,
     /// Declared allocators: `name = "malloc"` (or another standard
     /// allocator whose contract the function follows). See [`memory`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -479,7 +502,12 @@ impl EnvironmentConfig {
             Fact::PointerBits => self.pointer_bits,
             Fact::WcharBits => self.wchar_t_bits,
             Fact::CharSigned => self.char_signed.map(u32::from),
-            _ => None,
+            Fact::CharBits => self.char_bits,
+            Fact::FloatBytes => self.float_bytes,
+            Fact::DoubleBytes => self.double_bytes,
+            Fact::LongDoubleBytes => self.long_double_bytes,
+            Fact::TimeTBytes => self.time_t_bytes,
+            Fact::OffTBytes => self.off_t_bytes,
         }
     }
 
@@ -493,7 +521,12 @@ impl EnvironmentConfig {
             Fact::PointerBits => self.pointer_bits = Some(value),
             Fact::WcharBits => self.wchar_t_bits = Some(value),
             Fact::CharSigned => self.char_signed = Some(value != 0),
-            _ => {}
+            Fact::CharBits => self.char_bits = Some(value),
+            Fact::FloatBytes => self.float_bytes = Some(value),
+            Fact::DoubleBytes => self.double_bytes = Some(value),
+            Fact::LongDoubleBytes => self.long_double_bytes = Some(value),
+            Fact::TimeTBytes => self.time_t_bytes = Some(value),
+            Fact::OffTBytes => self.off_t_bytes = Some(value),
         }
     }
 
@@ -573,6 +606,9 @@ impl SettingsConfig {
                 mine.include_names = e.include_names;
             }
             if e.data_model.is_some() {
+                if !mine.cli.contains("data_model") {
+                    mine.file_data_model = mine.data_model;
+                }
                 mine.data_model = e.data_model;
                 mine.cli.insert("data_model".to_string());
             }
@@ -613,7 +649,7 @@ impl SettingsConfig {
                 .data_model = Some(model);
             return Ok(());
         }
-        if let Some(fact) = Fact::from_key(name).filter(|f| f.overridable()) {
+        if let Some(fact) = Fact::from_key(name) {
             let number = if fact.is_flag() {
                 match value {
                     "true" => 1,
@@ -641,7 +677,6 @@ impl SettingsConfig {
                     .join(", "),
                 Fact::ALL
                     .into_iter()
-                    .filter(|f| f.overridable())
                     .map(|f| f.key())
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -782,18 +817,27 @@ impl AnalysisSettings {
 
         // The preset's bundle, then each fact the project wrote, then each
         // the command line wrote: a higher layer replaces a lower one
-        // whatever the order of the lines.
+        // whatever the order of the lines. A project line that only repeats
+        // the bundle of the data model its own file names says nothing the
+        // model does not: when the command line names another model, that
+        // model's bundle replaces the whole of it, the repeated lines too.
         let mut facts = IntFacts::preset(data_model);
         if let Some(e) = facts_config {
+            let file_model = if e.cli.contains("data_model") {
+                e.file_data_model.unwrap_or_default()
+            } else {
+                data_model
+            };
             for fact in Fact::ALL {
                 if let Some(value) = e.fact(fact) {
                     let source = if e.cli.contains(fact.key()) {
                         FactSource::Cli
-                    } else if facts.get(fact) == Some(value) {
-                        // A line that only repeats what the preset loads (as
-                        // a generated configuration writes them) declares
-                        // nothing: the fact stays the preset's, and the
-                        // settings hash stays the preset's too.
+                    } else if file_model != data_model
+                        && file_model
+                            .bundle()
+                            .iter()
+                            .any(|(f, v)| *f == fact && *v == value)
+                    {
                         continue;
                     } else {
                         FactSource::Config
@@ -1138,7 +1182,7 @@ pub fn render_config_settings(current: &AnalysisSettings) -> String {
         "# Integer facts: the preset loads some; a key here overrides it (and must stay at or\n\
          # above the ISO minimum and in rank order). Unset facts are unknown to the analysis.\n",
     );
-    for fact in Fact::ALL.into_iter().filter(|f| f.overridable()) {
+    for fact in Fact::ALL.into_iter() {
         out.push_str(&format!("# {}\n", fact.description()));
         let value = current.facts.get(fact);
         let text = value.map(|v| {
@@ -1148,20 +1192,20 @@ pub fn render_config_settings(current: &AnalysisSettings) -> String {
                 v.to_string()
             }
         });
-        match (text, current.facts.source(fact)) {
-            (Some(text), FactSource::Preset(m)) => {
+        match (text, current.facts.is_declared(fact)) {
+            (Some(text), false) => {
                 config_entry(
                     &mut out,
                     true,
                     fact.key(),
                     &text,
-                    &format!("from preset: {m}", m = m.name()),
+                    &format!("from preset: {}", current.data_model.name()),
                 );
             }
-            (Some(text), FactSource::Cli) => {
+            (Some(text), true) if current.facts.source(fact) == FactSource::Cli => {
                 config_entry(&mut out, true, fact.key(), &text, "set on the command line");
             }
-            (Some(text), _) => config_entry(&mut out, true, fact.key(), &text, "declared"),
+            (Some(text), true) => config_entry(&mut out, true, fact.key(), &text, "declared"),
             (None, _) => {
                 let note = match fact.minimum_bits().filter(|_| fact.has_floor()) {
                     Some(min) => {
@@ -1214,8 +1258,6 @@ pub struct FactRow {
     pub source: String,
     /// What the fact is.
     pub description: &'static str,
-    /// Whether a project may write it.
-    pub overridable: bool,
 }
 
 /// Every integer fact with its value and where it came from, in listing
@@ -1240,7 +1282,6 @@ pub fn fact_rows(current: &AnalysisSettings) -> Vec<FactRow> {
                 value,
                 source,
                 description: fact.description(),
-                overridable: fact.overridable(),
             }
         })
         .collect()
@@ -1317,16 +1358,8 @@ pub fn render_text(current: &AnalysisSettings) -> String {
     ));
     for row in fact_rows(current) {
         out.push_str(&format!(
-            "{:<20} {:<9} {:<14} {}{}\n",
-            row.key,
-            row.value,
-            row.source,
-            row.description,
-            if row.overridable {
-                ""
-            } else {
-                " (preset only)"
-            }
+            "{:<20} {:<9} {:<14} {}\n",
+            row.key, row.value, row.source, row.description,
         ));
     }
     out
@@ -1361,7 +1394,6 @@ pub fn render_json(current: &AnalysisSettings) -> serde_json::Value {
                 "value": r.value,
                 "source": r.source,
                 "description": r.description,
-                "overridable": r.overridable,
             })
         })
         .collect();

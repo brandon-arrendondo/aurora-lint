@@ -262,7 +262,8 @@ fn extract_var_type_from_declaration(
 /// The width in bits of the type `spelling` names, as this translation unit's
 /// constants fix it, or 0 when they do not: an exact-width `<stdint.h>` type
 /// is its width everywhere (C11 7.20.1.1), and any other type is
-/// `sizeof(T) * CHAR_BIT`, which only a declared data model supplies
+/// the width the facts fix for it, which only a declared data model or
+/// width keys supply
 /// ([`crate::analyze::const_eval::builtin_constants`]). Under ISO C's widths
 /// an `int` is at least 16 bits and possibly more, so its range here is
 /// unbounded rather than a guess. The `least`/`fast` types are never read off
@@ -278,13 +279,10 @@ fn declared_width(spelling: &str, macros: &MacroConstantMap) -> u32 {
     if let Some(bits) = exact {
         return bits;
     }
-    let (Some(bytes), Some(char_bit)) = (
-        macros.get(&format!("sizeof({spelling})")),
-        macros.get("CHAR_BIT"),
-    ) else {
-        return 0;
-    };
-    u32::try_from(bytes * char_bit).unwrap_or(0)
+    macros
+        .get(&format!("bits({spelling})"))
+        .and_then(|bits| u32::try_from(*bits).ok())
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------

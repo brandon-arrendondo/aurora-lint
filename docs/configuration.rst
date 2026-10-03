@@ -132,6 +132,12 @@ by hand are the same thing.
      - ``lp64``
      - ``llp64``
      - ISO minimum
+   * - ``char_bits``
+     - bits in a ``char`` (``CHAR_BIT``)
+     - 8
+     - 8
+     - 8
+     - 8
    * - ``short_bits``
      - bits in a ``short``
      - 16
@@ -174,11 +180,42 @@ by hand are the same thing.
      - unknown
      - unknown
      - none
+   * - ``float_bytes``
+     - ``sizeof(float)``
+     - 4
+     - 4
+     - 4
+     - none
+   * - ``double_bytes``
+     - ``sizeof(double)``
+     - 8
+     - 8
+     - 8
+     - none
+   * - ``long_double_bytes``
+     - ``sizeof(long double)``
+     - 12
+     - 16
+     - 8
+     - none
+   * - ``time_t_bytes``
+     - ``sizeof(time_t)``
+     - unknown
+     - 8
+     - unknown
+     - none
+   * - ``off_t_bytes``
+     - ``sizeof(off_t)``
+     - unknown
+     - 8
+     - unknown
+     - none
 
-``iso``, the default preset, loads nothing. A preset also loads what its
-platform fixes besides the widths (``CHAR_BIT`` 8, and the sizes of ``float``,
-``double``, ``long double``, ``time_t`` and ``off_t`` where the model fixes
-them); those are not keys a project writes.
+``iso``, the default preset, loads nothing. A preset is nothing but a list of
+these keys: selecting ``lp64`` is the same as writing its lines under
+``[environment]``, and a scan under either gives identical findings. Facts
+describe the target the code is built for, and none is required; each has a
+stated default, the ISO C guarantee or unknown.
 
 Where a fact comes from, highest precedence first:
 
@@ -190,7 +227,14 @@ Where a fact comes from, highest precedence first:
    at least 64, the rank order, and the exact width of ``int32_t`` and its
    kind.
 
-An explicit key beats the preset whatever order the lines are in. A fact
+An explicit key beats the preset whatever order the lines are in. A key that
+only repeats the value of the bundle its own configuration names declares
+nothing: it is not part of the settings hash, and a ``--set`` that repeats the
+preset hashes the same as one in a file. When the command line names another
+data model, that model's bundle replaces the file's whole bundle, the lines the
+file only repeated from its own model included, while a line that differs from
+the file's model still wins. ``--list-options`` shows who wrote a line
+(``cli`` or ``config``) even when its value equals the preset's. A fact
 nothing sets is **unknown**, and a scan then credits only the floor: a value is
 proven to fit a type only inside its guaranteed range, a defect that occurs at
 some conforming width (``unsigned char * unsigned char`` overflowing a 16-bit
@@ -205,7 +249,7 @@ one is lost.
 
     [environment]
     data_model = "ilp32"        # the preset: loads 32-bit int, long and pointers
-    wchar_t_bits = 16           # override: this build's wchar_t is MSVC's
+    wchar_t_bits = 16           # override: for a Windows build, whose wchar_t is 16 bits
     char_signed = true          # plain char is signed on this target
 
 ``aurora-lint --list-options`` prints every integer fact with its value and
@@ -249,6 +293,11 @@ refused with the offending key named: the configuration describes no
 conforming implementation. Every declared override is a key of the settings
 hash and is shown in ``--list-options`` and in a SARIF export, while the run
 label still names only the preset.
+
+Under ``iso``, an integer constant too wide for a 16-bit ``int`` is taken to be
+at least 32 bits wide (``int`` on most targets, ``long`` otherwise); an
+implementation with an ``int`` between 17 and 31 bits is not modelled. Declare
+``int_bits`` for such a target.
 
 Under ``iso`` ``INT_MAX`` and ``LONG_MAX`` are unknown, and so is
 ``sizeof(long)`` to the integer rules and the range analysis. The buffer-size
