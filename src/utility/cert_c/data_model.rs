@@ -721,8 +721,18 @@ impl IntFacts {
             let (lo, hi) = self.range(signed, Rank::Char)?;
             return i64::try_from(if name == "CHAR_MAX" { hi } else { lo }).ok();
         }
-        let (signed, rank, max) = match name {
-            "CHAR_BIT" => return self.exact_width(Rank::Char).map(i64::from),
+        if name == "CHAR_BIT" {
+            return self.exact_width(Rank::Char).map(i64::from);
+        }
+        let (signed, rank, max) = Self::limit_macro_type(name)?;
+        let (lo, hi) = self.range(signed, rank)?;
+        i64::try_from(if max { hi } else { lo }).ok()
+    }
+
+    /// The signedness, rank and direction (`true` for the maximum) of the
+    /// type a `<limits.h>` limit macro bounds.
+    fn limit_macro_type(name: &str) -> Option<(bool, Rank, bool)> {
+        Some(match name {
             "SCHAR_MAX" => (true, Rank::Char, true),
             "SCHAR_MIN" => (true, Rank::Char, false),
             "UCHAR_MAX" => (false, Rank::Char, true),
@@ -738,9 +748,26 @@ impl IntFacts {
             "LLONG_MAX" => (true, Rank::LongLong, true),
             "LLONG_MIN" => (true, Rank::LongLong, false),
             _ => return None,
-        };
-        let (lo, hi) = self.range(signed, rank)?;
-        i64::try_from(if max { hi } else { lo }).ok()
+        })
+    }
+
+    /// The bounds of a `<limits.h>` limit macro the facts leave open: a
+    /// maximum is at least the guaranteed maximum and a minimum at most the
+    /// guaranteed minimum (C11 5.2.4.2.1), with the far side as open as
+    /// `i64` lets it be. `None` for a macro the facts fix (see
+    /// [`Self::limit_macro`]) or that is not a limit macro, so a declared
+    /// model's answers are unchanged.
+    pub fn limit_macro_bounds(&self, name: &str) -> Option<(i64, i64)> {
+        let (signed, rank, max) = Self::limit_macro_type(name)?;
+        if self.range(signed, rank).is_some() {
+            return None;
+        }
+        let (lo, hi) = self.guaranteed_range(signed, rank);
+        Some(if max {
+            (i64::try_from(hi).ok()?, i64::MAX)
+        } else {
+            (i64::MIN, i64::try_from(lo).ok()?)
+        })
     }
 }
 
