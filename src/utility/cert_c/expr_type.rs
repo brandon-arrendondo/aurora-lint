@@ -954,28 +954,13 @@ fn bit_field_type(declared: CType, width: &str, model: IntFacts) -> Option<CType
     }
 }
 
-/// An integer or floating constant's type (C11 6.4.4.1, 6.4.4.2).
-pub fn number_literal_type(text: &str, model: IntFacts) -> Option<CType> {
-    let t = text.replace('\'', "");
-    let lower = t.to_ascii_lowercase();
+/// An integer constant's value, whether it is a decimal constant, whether it
+/// carries a `u` suffix, and the lowest rank its `l`/`ll` suffix allows
+/// (C11 6.4.4.1). `lower` is the constant lowercased with digit separators
+/// removed; `None` for anything that is not a well-formed integer constant.
+fn split_integer_literal(lower: &str) -> Option<(u128, bool, bool, Rank)> {
     let hex = lower.starts_with("0x");
     let binary = lower.starts_with("0b");
-    let is_float = if hex {
-        lower.contains('p')
-    } else {
-        !binary && (lower.contains('.') || lower.contains('e'))
-    };
-    if is_float {
-        let kind = if lower.ends_with('f') {
-            FloatKind::Float
-        } else if lower.ends_with('l') {
-            FloatKind::LongDouble
-        } else {
-            FloatKind::Double
-        };
-        return Some(CType::Float(kind));
-    }
-    // Integer: split the suffix off.
     let digits_end = lower
         .char_indices()
         .rev()
@@ -998,12 +983,70 @@ pub fn number_literal_type(text: &str, model: IntFacts) -> Option<CType> {
         (10, digits)
     };
     let value = u128::from_str_radix(body, radix).ok()?;
-    let decimal = radix == 10;
     let min_rank = match longs {
         0 => Rank::Int,
         1 => Rank::Long,
         _ => Rank::LongLong,
     };
+    Some((value, radix == 10, unsigned_suffix, min_rank))
+}
+
+/// The width an integer constant is guaranteed to have under `model`, in
+/// bits: the guaranteed width of the first of `int`, `long`, `long long` that
+/// can hold it (C11 6.4.4.1p5), starting from the rank its suffix names.
+///
+/// Where `model` leaves a width open this is the answer on the narrowest
+/// target the constant can have the type on, not [`number_literal_type`]'s
+/// `None`: `86400` is `int` or `long` under ISO C's widths, and an `int` that
+/// holds it is at least 17 bits, so the arithmetic is no narrower than the
+/// `long` it would otherwise be. The width taken is the first rank's
+/// guaranteed minimum that holds the value, so a constant above the 16-bit
+/// `int` is 32 bits (a conforming `int` of some width in between is not
+/// modelled). `None` for a float or a malformed constant.
+pub fn integer_literal_width(text: &str, model: IntFacts) -> Option<u32> {
+    let lower = text.replace('\'', "").to_ascii_lowercase();
+    let hex = lower.starts_with("0x");
+    let is_float = if hex {
+        lower.contains('p')
+    } else {
+        !lower.starts_with("0b") && (lower.contains('.') || lower.contains('e'))
+    };
+    if is_float {
+        return None;
+    }
+    let (value, decimal, unsigned_suffix, min_rank) = split_integer_literal(&lower)?;
+    [Rank::Int, Rank::Long, Rank::LongLong]
+        .into_iter()
+        .filter(|rank| *rank >= min_rank)
+        .map(|rank| model.min_width(rank))
+        .find(|w| {
+            (!unsigned_suffix && value < (1u128 << (w - 1)))
+                || ((unsigned_suffix || !decimal) && value < (1u128 << w))
+        })
+}
+
+/// An integer or floating constant's type (C11 6.4.4.1, 6.4.4.2).
+pub fn number_literal_type(text: &str, model: IntFacts) -> Option<CType> {
+    let t = text.replace('\'', "");
+    let lower = t.to_ascii_lowercase();
+    let hex = lower.starts_with("0x");
+    let binary = lower.starts_with("0b");
+    let is_float = if hex {
+        lower.contains('p')
+    } else {
+        !binary && (lower.contains('.') || lower.contains('e'))
+    };
+    if is_float {
+        let kind = if lower.ends_with('f') {
+            FloatKind::Float
+        } else if lower.ends_with('l') {
+            FloatKind::LongDouble
+        } else {
+            FloatKind::Double
+        };
+        return Some(CType::Float(kind));
+    }
+    let (value, decimal, unsigned_suffix, min_rank) = split_integer_literal(&lower)?;
     for rank in [Rank::Int, Rank::Long, Rank::LongLong] {
         if rank < min_rank {
             continue;
