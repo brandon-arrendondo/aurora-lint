@@ -2807,16 +2807,8 @@ impl Int32C {
         ranges
             .into_iter()
             .map(|(name, range)| {
-                let min = if data_model::is_open_bottom(range.min) && range.max >= low {
-                    low
-                } else {
-                    range.min
-                };
-                let max = if data_model::is_open_top(range.max) && range.min <= high {
-                    high
-                } else {
-                    range.max
-                };
+                let min = data_model::bound_open_bottom(range.min, range.max, low);
+                let max = data_model::bound_open_top(range.min, range.max, high);
                 (name, const_eval::ValueRange::new(min, max))
             })
             .collect()
