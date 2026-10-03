@@ -962,8 +962,14 @@ fn evaluation_at_depth(
             {
                 continue;
             }
+            // A call left unclosed (`show(` with nothing after it) has no
+            // argument tokens: `matching_close` then answers the last token,
+            // which is the `(` itself, and the range is empty or inverted.
             let close = matching_close(&tokens, j + 1);
-            if !tokens[j + 2..close].iter().any(|t| t.text == target) {
+            let Some(args) = tokens.get(j + 2..close) else {
+                continue;
+            };
+            if !args.iter().any(|t| t.text == target) {
                 continue;
             }
             let callee = definitions(&tokens[j].text);
