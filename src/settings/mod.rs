@@ -1014,6 +1014,48 @@ fn axis_label(axis: Axis) -> &'static str {
     }
 }
 
+/// One resolved integer fact as `--list-options` shows it.
+pub struct FactRow {
+    /// The `[environment]` key.
+    pub key: &'static str,
+    /// The value, `>= N` for a fact only the ISO floor bounds, or `unknown`.
+    pub value: String,
+    /// `cli`, `config`, `preset:NAME`, `iso-floor` or `unknown`.
+    pub source: String,
+    /// What the fact is.
+    pub description: &'static str,
+    /// Whether a project may write it.
+    pub overridable: bool,
+}
+
+/// Every integer fact with its value and where it came from, in listing
+/// order: what a scan under `current` will credit, line by line.
+pub fn fact_rows(current: &AnalysisSettings) -> Vec<FactRow> {
+    Fact::ALL
+        .into_iter()
+        .map(|fact| {
+            let (value, source) = match current.facts.get(fact) {
+                Some(v) if fact.is_flag() => {
+                    ((v != 0).to_string(), current.facts.source(fact).label())
+                }
+                Some(v) => (v.to_string(), current.facts.source(fact).label()),
+                None if fact.has_floor() => (
+                    format!(">= {}", fact.minimum_bits().unwrap_or(0)),
+                    "iso-floor".to_string(),
+                ),
+                None => ("unknown".to_string(), "unknown".to_string()),
+            };
+            FactRow {
+                key: fact.key(),
+                value,
+                source,
+                description: fact.description(),
+                overridable: fact.overridable(),
+            }
+        })
+        .collect()
+}
+
 /// The option listing as plain text, with each preset's value and the
 /// value `current` resolves to.
 pub fn render_text(current: &AnalysisSettings) -> String {
@@ -1075,6 +1117,28 @@ pub fn render_text(current: &AnalysisSettings) -> String {
             o.basis,
         ));
     }
+    out.push_str(&format!(
+        "\nINTEGER FACTS (preset {}; precedence: cli, config, preset, iso-floor)\n",
+        current.data_model
+    ));
+    out.push_str(&format!(
+        "{:<20} {:<9} {:<14} {}\n",
+        "FACT", "VALUE", "SOURCE", ""
+    ));
+    for row in fact_rows(current) {
+        out.push_str(&format!(
+            "{:<20} {:<9} {:<14} {}{}\n",
+            row.key,
+            row.value,
+            row.source,
+            row.description,
+            if row.overridable {
+                ""
+            } else {
+                " (preset only)"
+            }
+        ));
+    }
     out
 }
 
@@ -1099,7 +1163,19 @@ pub fn render_json(current: &AnalysisSettings) -> serde_json::Value {
             })
         })
         .collect();
-    serde_json::json!({ "current": current.to_json(), "options": options })
+    let facts: Vec<serde_json::Value> = fact_rows(current)
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "key": r.key,
+                "value": r.value,
+                "source": r.source,
+                "description": r.description,
+                "overridable": r.overridable,
+            })
+        })
+        .collect();
+    serde_json::json!({ "current": current.to_json(), "options": options, "facts": facts })
 }
 
 /// `docs/options.rst`, generated. A test fails when the committed file

@@ -272,6 +272,20 @@ impl Fact {
         }
     }
 
+    /// Whether ISO C guarantees a floor for this fact, so that an unset value
+    /// is "at least N bits" rather than unknown.
+    pub const fn has_floor(self) -> bool {
+        matches!(
+            self,
+            Fact::CharBits
+                | Fact::ShortBits
+                | Fact::IntBits
+                | Fact::LongBits
+                | Fact::LongLongBits
+                | Fact::PointerBits
+        )
+    }
+
     /// One line saying what the fact is.
     pub const fn description(self) -> &'static str {
         match self {

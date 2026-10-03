@@ -108,7 +108,14 @@ Full Command Reference
                                        --list-options
           --list-options [<FORMAT>]    List every policy and environment option with its
                                        value under each preset and the current settings,
-                                       then exit [text, json, rst]
+                                       and every integer fact with its source (cli,
+                                       config, preset:NAME, iso-floor, unknown), then
+                                       exit [text, json, rst]
+          --check-config               Resolve the settings from the manifest and the
+                                       command line exactly as a scan would, validate
+                                       them, and exit without scanning: "configuration
+                                       ok" and status 0, or status 1 and one error per
+                                       problem
           --detect-relevance           Detect categorically-inapplicable rule classes
                                        (CON*/WIN*) in PATH and -d directories, then write
                                        a relevance-gated manifest with --write-manifest.

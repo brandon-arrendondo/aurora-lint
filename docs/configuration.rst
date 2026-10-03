@@ -208,6 +208,16 @@ one is lost.
     wchar_t_bits = 16           # override: this build's wchar_t is MSVC's
     char_signed = true          # plain char is signed on this target
 
+``aurora-lint --list-options`` prints every integer fact with its value and
+where it came from (``cli``, ``config``, ``preset:NAME``, ``iso-floor`` or
+``unknown``), one line per fact, so you can see exactly what a scan will
+credit; ``--list-options json`` carries the same rows under ``facts``.
+``aurora-lint --check-config`` resolves the settings from the manifest and the
+command line exactly as a scan would, validates them, and exits without
+scanning: ``configuration ok`` and status 0 when valid, otherwise status 1 and
+one ``error:`` line per problem. Both use the code a scan runs, so they cannot
+disagree with it.
+
 A width below its ISO minimum, a width that is not a whole number of 8-bit
 bytes or exceeds 64 bits, and a rank order that shrinks
 (``short <= int <= long <= long long``, among the widths that are known) are

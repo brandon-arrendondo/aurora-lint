@@ -422,6 +422,16 @@ fn run() -> Result<i32> {
                 .action(clap::ArgAction::Append),
         )
         .arg(
+            Arg::new("check_config")
+                .long("check-config")
+                .action(clap::ArgAction::SetTrue)
+                .help(
+                    "Resolve the settings from the manifest and the command line exactly as a \
+                     scan would, validate them, and exit: 0 and one line when valid, nonzero \
+                     with one error per problem otherwise. Scans no files",
+                ),
+        )
+        .arg(
             Arg::new("list_options")
                 .long("list-options")
                 .help("List every policy and environment option with its value under each preset and the current settings, then exit")
@@ -576,6 +586,38 @@ fn run() -> Result<i32> {
     let write_manifest = matches.get_one::<String>("write_manifest");
 
     let settings_cli = settings_from_cli(&matches)?;
+
+    if matches.get_flag("check_config") {
+        // The same loading and the same resolution a scan runs, so the two
+        // cannot disagree about what is valid. Nothing is scanned.
+        let checked = load_manifest(manifest_path).and_then(|manifest| {
+            resolve_settings(
+                &manifest,
+                &settings_cli,
+                compile_db.as_ref().is_some_and(|db| db.msvc),
+            )
+        });
+        return match checked {
+            Ok(_) => {
+                println!("configuration ok");
+                Ok(0)
+            }
+            Err(e) => {
+                let text = format!("{e:#}");
+                if text.contains("TOML parse error") {
+                    // A parse error is one problem, however many lines the
+                    // diagnostic spans.
+                    eprintln!("error: {}", text.trim().replace('\n', "\n       "));
+                } else {
+                    // The resolver names each problem on a line of its own.
+                    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                        eprintln!("error: {}", line.trim());
+                    }
+                }
+                Ok(1)
+            }
+        };
+    }
 
     if let Some(format) = matches.get_one::<String>("list_options") {
         let settings = resolve_settings(
