@@ -9,7 +9,7 @@ use crate::analyze::vra_access;
 use crate::manifest::Severity;
 use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::ast_utils::{get_node_text, integer_type_width, is_unsigned_type};
-use crate::utility::cert_c::data_model::Rank;
+use crate::utility::cert_c::data_model::{self, Rank};
 use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
 use lang_parsing_substrate::query;
 use std::cell::{Cell, RefCell};
@@ -341,6 +341,14 @@ impl Int08C {
             let Some(range) = self.stored_value_range(&value, source, macros) else {
                 continue;
             };
+            // Definite only, and an open end is not a value the code
+            // established: it is the limit of some type, and a guard written
+            // against another limit (`d <= UCHAR_MAX` after `d = ULONG_MAX`)
+            // is not related to it by the ranges, so judging the store would
+            // call the guarded branch a truncation.
+            if data_model::is_open_top(range.max) || data_model::is_open_bottom(range.min) {
+                continue;
+            }
             // The width it is guaranteed: a value outside that range is
             // truncated on the narrowest target the data model allows.
             if !Self::range_is_entirely_outside(&range, width.min, is_unsigned_type(var_type)) {
