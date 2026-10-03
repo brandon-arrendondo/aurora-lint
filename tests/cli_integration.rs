@@ -4189,6 +4189,164 @@ fn an_unknown_fact_a_bad_value_and_an_unknown_preset_are_each_refused() {
     assert!(err.contains("ilp64"), "{err}");
 }
 
+/// A manifest whose `[environment]` table is `environment`, written to a
+/// fresh directory; returns the directory (kept alive) and the path.
+fn manifest_with_environment(environment: &str) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("rules.toml");
+    std::fs::write(
+        &manifest,
+        format!(
+            "[metadata]\nname = \"t\"\nversion = \"1\"\ncert_version = \"2016\"\n\n\
+             [environment]\n{environment}\n\n[rules.cert_c]\n"
+        ),
+    )
+    .unwrap();
+    let path = manifest.to_str().unwrap().to_string();
+    (dir, path)
+}
+
+#[test]
+fn check_config_accepts_a_valid_configuration_and_scans_nothing() {
+    let (_dir, m) = manifest_with_environment("data_model = \"ilp32\"\nwchar_t_bits = 16\n");
+    // The path does not exist: nothing is scanned.
+    let (code, stdout, stderr) = run_aurora_lint(&["--check-config", "-m", &m, "/no/such/path"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout.trim(), "configuration ok");
+    assert!(stderr.is_empty(), "{stderr}");
+}
+
+#[test]
+fn check_config_refuses_each_invalid_class_with_its_own_message() {
+    for (environment, expected) in [
+        ("int_bitz = 16\n", "unknown field `int_bitz`"),
+        ("int_bits = \"wide\"\n", "invalid type: string \"wide\""),
+        ("data_model = \"ilp64\"\n", "unknown variant `ilp64`"),
+        ("int_bits = 8\n", "int_bits = 8 is below the 16 bits"),
+        ("long_bits = 16\n", "long_bits = 16 is below the 32 bits"),
+        (
+            "int_bits = 64\nlong_bits = 32\n",
+            "int_bits = 64 is wider than long_bits = 32",
+        ),
+        ("pointer_bits = 128\n", "up to 64 bits"),
+    ] {
+        let (_dir, m) = manifest_with_environment(environment);
+        let (code, stdout, stderr) = run_aurora_lint(&["--check-config", "-m", &m]);
+        assert_ne!(code, 0, "{environment}: {stdout}");
+        assert!(stdout.is_empty(), "{environment}: {stdout}");
+        assert!(stderr.starts_with("error:"), "{environment}: {stderr}");
+        assert!(stderr.contains(expected), "{environment}: {stderr}");
+    }
+}
+
+#[test]
+fn check_config_reports_every_problem_on_a_line_of_its_own() {
+    let (_dir, m) = manifest_with_environment("int_bits = 8\nlong_long_bits = 32\n");
+    let (code, _stdout, stderr) = run_aurora_lint(&["--check-config", "-m", &m]);
+    assert_ne!(code, 0);
+    let errors: Vec<&str> = stderr.lines().filter(|l| l.starts_with("error:")).collect();
+    assert!(errors.len() >= 2, "{stderr}");
+    assert!(
+        errors.iter().any(|l| l.contains("int_bits = 8")),
+        "{stderr}"
+    );
+    assert!(
+        errors.iter().any(|l| l.contains("long_long_bits = 32")),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn check_config_and_a_scan_judge_a_configuration_by_the_same_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.c");
+    std::fs::write(&file, "int main(void) { return 0; }\n").unwrap();
+    let f = file.to_str().unwrap();
+    // What --check-config refuses, a scan refuses with the same problem and
+    // scans nothing; what it accepts, a scan runs.
+    let (check_code, _out, check_err) =
+        run_aurora_lint(&["--check-config", "--set", "int_bits=8", f]);
+    let (scan_code, _out, scan_err) = run_aurora_lint(&["--set", "int_bits=8", f]);
+    assert_ne!(check_code, 0);
+    assert_ne!(scan_code, 0);
+    assert!(
+        check_err.contains("int_bits = 8 is below the 16 bits"),
+        "{check_err}"
+    );
+    assert!(
+        scan_err.contains("int_bits = 8 is below the 16 bits"),
+        "{scan_err}"
+    );
+    let (ok_code, ok_out, _err) = run_aurora_lint(&["--check-config", "--set", "int_bits=16", f]);
+    assert_eq!(ok_code, 0);
+    assert_eq!(ok_out.trim(), "configuration ok");
+}
+
+#[test]
+fn list_options_names_the_source_of_every_integer_fact() {
+    // A preset, a project override, and a command-line override of a
+    // different fact: each fact carries the layer it came from.
+    let (_dir, m) = manifest_with_environment("data_model = \"lp64\"\nint_bits = 16\n");
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        "--list-options",
+        "json",
+        "-m",
+        &m,
+        "--set",
+        "long_bits=64",
+        "--set",
+        "char_signed=true",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let source = |key: &str| -> (String, String) {
+        let fact = json["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["key"] == key)
+            .unwrap_or_else(|| panic!("no fact {key}: {stdout}"));
+        (
+            fact["value"].as_str().unwrap().to_string(),
+            fact["source"].as_str().unwrap().to_string(),
+        )
+    };
+    assert_eq!(
+        source("short_bits"),
+        ("16".to_string(), "preset:lp64".to_string())
+    );
+    assert_eq!(source("int_bits"), ("16".to_string(), "config".to_string()));
+    assert_eq!(source("long_bits"), ("64".to_string(), "cli".to_string()));
+    assert_eq!(
+        source("char_signed"),
+        ("true".to_string(), "cli".to_string())
+    );
+    assert_eq!(
+        source("wchar_t_bits"),
+        ("unknown".to_string(), "unknown".to_string())
+    );
+    // Under no preset a width is only the ISO floor.
+    let (code, stdout, _err) = run_aurora_lint(&["--list-options", "json"]);
+    assert_eq!(code, 0);
+    let iso: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let int_bits = iso["facts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["key"] == "int_bits")
+        .unwrap();
+    assert_eq!(int_bits["value"], ">= 16");
+    assert_eq!(int_bits["source"], "iso-floor");
+    // The text listing shows the same lines.
+    let (_code, text, _err) = run_aurora_lint(&["--list-options", "--data-model", "llp64"]);
+    assert!(
+        text.lines().any(|l| l.starts_with("wchar_t_bits")
+            && l.contains("16")
+            && l.contains("preset:llp64")),
+        "{text}"
+    );
+}
+
 #[test]
 fn a_profile_keeps_the_manifests_data_model() {
     // A preset chooses policy, not what the project is built for.

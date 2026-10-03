@@ -46,12 +46,21 @@ Against the rule ids in ``rules_templates/rules-all.toml``:
    architecture it is built for, with the reason in
    ``docs/design/realworld-corpus-scope.md``; a new one must too.
 
+5. **Invalid configuration** -- a manifest ``aurora-lint --check-config``
+   refuses: an unknown key, a bad value, a width below its ISO minimum, a rank
+   order that shrinks. The check runs the tool's own validation, the code a
+   scan runs, so the manifest cannot be valid here and refused there. It needs
+   a built binary (``target/release`` or ``target/debug``, or
+   ``$AURORA_LINT``); without one it says so and skips only this check.
+
 Deliberately NOT a check on which rules are enabled. Every codebase is entitled
 to its own categorical policy -- this asserts only that the policy was *written
 down*, per rule, per codebase.
 """
 
+import os
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -107,6 +116,35 @@ def undocumented_disables(path: Path) -> list[str]:
     return bad
 
 
+def built_binary() -> Path | None:
+    """The aurora-lint binary to validate manifests with, if one is built."""
+    env = os.environ.get("AURORA_LINT")
+    candidates = [Path(env)] if env else []
+    candidates += [ROOT / "target" / "release" / "aurora-lint",
+                   ROOT / "target" / "debug" / "aurora-lint"]
+    # The newest build: an older one in the other profile may predate a flag.
+    built = [c for c in candidates if c.is_file()]
+    return max(built, key=lambda c: c.stat().st_mtime, default=None)
+
+
+def knows_check_config(binary: Path) -> bool:
+    """Whether `binary` has --check-config, so a stale build is skipped
+    instead of being read as every manifest being invalid."""
+    result = subprocess.run([str(binary), "--help"], capture_output=True, text=True)
+    return "--check-config" in result.stdout
+
+
+def check_config(binary: Path, path: Path) -> list[str]:
+    """The problems ``aurora-lint --check-config`` finds in `path`: its
+    stderr, one ``error:`` line per problem, empty when it is valid."""
+    result = subprocess.run([str(binary), "--check-config", "-m", str(path)],
+                            capture_output=True, text=True)
+    if result.returncode == 0:
+        return []
+    return [ln for ln in result.stderr.splitlines() if ln.strip()] or [
+        f"exit {result.returncode}"]
+
+
 def main() -> int:
     if not BASE.is_file():
         print(f"{BASE} not found -- run `cargo build` to generate it",
@@ -125,6 +163,15 @@ def main() -> int:
 
     print(f"{BASE.relative_to(ROOT)}: {len(base_ids)} rules; "
           f"checking {len(manifests)} real-world manifest(s)")
+
+    binary = built_binary()
+    if binary is None:
+        print("note: no built aurora-lint binary (target/release or target/debug): "
+              "manifests were not validated with --check-config")
+    elif not knows_check_config(binary):
+        print(f"note: {binary.relative_to(ROOT)} predates --check-config (rebuild it): "
+              "manifests were not validated with it")
+        binary = None
 
     failures = 0
     for path in manifests:
@@ -151,6 +198,11 @@ def main() -> int:
                   f"reason (see conf/realworld/README.md):\n  "
                   f"{', '.join(bare)}", file=sys.stderr)
 
+        invalid = check_config(binary, path) if binary else []
+        if invalid:
+            failures += 1
+            print(f"\n{rel}: refused by --check-config:\n  " + "\n  ".join(invalid),
+                  file=sys.stderr)
         if no_model:
             failures += 1
             print(f"\n{rel}: no `[environment] data_model` (one of "
@@ -168,8 +220,8 @@ def main() -> int:
             file=sys.stderr)
         return 1
 
-    print(f"all {len(manifests)} manifest(s) carry a decision for every rule "
-          f"and declare a data model")
+    print(f"all {len(manifests)} manifest(s) carry a decision for every rule, "
+          f"declare a data model" + (" and pass --check-config" if binary else ""))
     return 0
 
 
