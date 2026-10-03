@@ -11,6 +11,7 @@ use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::ast_utils::{get_node_text, integer_type_width, is_unsigned_type};
 use crate::utility::cert_c::data_model::{self, Rank};
 use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
+use crate::utility::cert_c::guard_dominance;
 use lang_parsing_substrate::query;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -341,12 +342,18 @@ impl Int08C {
             let Some(range) = self.stored_value_range(&value, source, macros) else {
                 continue;
             };
-            // Definite only, and an open end is not a value the code
-            // established: it is the limit of some type, and a guard written
-            // against another limit (`d <= UCHAR_MAX` after `d = ULONG_MAX`)
-            // is not related to it by the ranges, so judging the store would
-            // call the guarded branch a truncation.
-            if data_model::is_open_top(range.max) || data_model::is_open_bottom(range.min) {
+            // An open end is the limit of some type the data model leaves
+            // unfixed, and a guard written against another limit
+            // (`d <= UCHAR_MAX` after `d = ULONG_MAX`) is not related to it
+            // by the ranges, so judging the store would call the guarded
+            // branch a truncation. That is the only shape skipped: where
+            // the width is fixed the end is a real value, and a store no
+            // limit guard governs is a truncation on every implementation.
+            let open = data_model::is_open_top(range.max) || data_model::is_open_bottom(range.min);
+            if open
+                && !self.value_width_is_fixed(&value, source, variables)
+                && guard_dominance::has_dominating_limit_guard(&value, &value, source)
+            {
                 continue;
             }
             // The width it is guaranteed: a value outside that range is
@@ -369,6 +376,10 @@ impl Int08C {
                         .join(" "),
                     if range.min == range.max {
                         range.min.to_string()
+                    } else if data_model::is_open_top(range.max) {
+                        format!("at least {}", range.min)
+                    } else if data_model::is_open_bottom(range.min) {
+                        format!("at most {}", range.max)
                     } else {
                         format!("in [{}, {}]", range.min, range.max)
                     },
@@ -387,6 +398,22 @@ impl Int08C {
                 requires_manual_review: None,
             });
         }
+    }
+
+    /// Whether the data model fixes the width of a variable `value` reads,
+    /// so that a range end at that type's limit is a value and not an
+    /// unknown.
+    fn value_width_is_fixed(
+        &self,
+        value: &Node,
+        source: &str,
+        variables: &HashMap<String, (String, usize)>,
+    ) -> bool {
+        query::find_descendants_of_kind(*value, "identifier")
+            .iter()
+            .filter_map(|id| variables.get(get_node_text(id, source)))
+            .filter_map(|(ty, _)| integer_type_width(ty, self.data_model.get()))
+            .any(|width| width.max.is_some())
     }
 
     /// Every `(destination name, stored expression)` pair under `node`: both
