@@ -1207,11 +1207,15 @@ pub fn render_config_settings(current: &AnalysisSettings) -> String {
             }
             (Some(text), true) => config_entry(&mut out, true, fact.key(), &text, "declared"),
             (None, _) => {
-                let note = match fact.minimum_bits().filter(|_| fact.has_floor()) {
-                    Some(min) => {
+                let note = match (fact, fact.minimum_bits().filter(|_| fact.has_floor())) {
+                    // The width differs by platform, so no one value is an example.
+                    (Fact::WcharBits, _) => {
+                        "unknown unless declared (16 on Windows, 32 on Linux)".to_string()
+                    }
+                    (_, Some(min)) => {
                         format!("unknown unless declared (ISO guarantees at least {min} bits)")
                     }
-                    None => "unknown unless declared".to_string(),
+                    (_, None) => "unknown unless declared".to_string(),
                 };
                 config_entry(
                     &mut out,

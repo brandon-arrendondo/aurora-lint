@@ -212,8 +212,9 @@ by hand are the same thing.
      - none
 
 ``iso``, the default preset, loads nothing. A preset is nothing but a list of
-these keys: selecting ``lp64`` is the same as writing its lines under
-``[environment]``, and a scan under either gives identical findings. Facts
+these keys: writing ``lp64``'s lines under ``[environment]`` gives the same
+facts and findings as selecting it; the settings hash and the data model shown
+by ``--list-options`` differ. Facts
 describe the target the code is built for, and none is required; each has a
 stated default, the ISO C guarantee or unknown.
 
@@ -292,7 +293,13 @@ bytes or exceeds 64 bits, and a rank order that shrinks
 refused with the offending key named: the configuration describes no
 conforming implementation. Every declared override is a key of the settings
 hash and is shown in ``--list-options`` and in a SARIF export, while the run
-label still names only the preset.
+label still names only the preset. Each problem is reported once, however
+many rules it breaks. The size keys (``float_bytes``, ``double_bytes``,
+``long_double_bytes``, ``time_t_bytes``, ``off_t_bytes``) are checked to be
+1 to 64 bytes, with no ISO minimum enforced. A command-line argument the parser
+itself rejects, such as an unknown ``--data-model`` name, is an
+argument-syntax error and exits 2; every problem in a value that parses exits 1
+under ``--check-config``.
 
 Under ``iso``, an integer constant too wide for a 16-bit ``int`` is taken to be
 at least 32 bits wide (``int`` on most targets, ``long`` otherwise); an

@@ -538,6 +538,8 @@ impl IntFacts {
     /// widths that are known.
     pub fn problems(&self) -> Vec<String> {
         let mut out = Vec::new();
+        // The facts already named as wrong: what is derived from them says nothing more.
+        let mut invalid: Vec<Fact> = Vec::new();
         for fact in Fact::ALL {
             let Some(value) = self.get(fact) else {
                 continue;
@@ -553,29 +555,35 @@ impl IntFacts {
             if !matches!(self.source(fact), FactSource::Cli | FactSource::Config) {
                 continue;
             }
-            if let Some(min) = fact.minimum_bits() {
-                if value < min {
-                    out.push(format!(
-                        "{} = {value} is below the {min} bits ISO C guarantees (C11 5.2.4.2.1)",
-                        fact.key()
-                    ));
-                }
-            }
-            if fact.is_size_in_bytes() && !(1..=64).contains(&value) {
-                out.push(format!(
+            // One message per fact: the first thing wrong with it.
+            let problem = if fact.is_size_in_bytes() && !(1..=64).contains(&value) {
+                Some(format!(
                     "{} = {value}: a size is from 1 to 64 bytes",
                     fact.key()
-                ));
-            }
-            if fact.minimum_bits().is_some() && (value % 8 != 0 || value > 64) {
-                out.push(format!(
+                ))
+            } else if let Some(min) = fact.minimum_bits().filter(|min| value < *min) {
+                Some(format!(
+                    "{} = {value} is below the {min} bits ISO C guarantees (C11 5.2.4.2.1)",
+                    fact.key()
+                ))
+            } else if fact.minimum_bits().is_some() && (value % 8 != 0 || value > 64) {
+                Some(format!(
                     "{} = {value}: a width is a whole number of 8-bit bytes, up to 64 bits",
                     fact.key()
-                ));
+                ))
+            } else {
+                None
+            };
+            if let Some(problem) = problem {
+                out.push(problem);
+                invalid.push(fact);
             }
         }
         // A width is a whole number of `char`s (`sizeof` is an integer).
-        if let Some(char_bits) = self.get(Fact::CharBits).filter(|c| *c > 0) {
+        if let Some(char_bits) = self
+            .get(Fact::CharBits)
+            .filter(|c| *c > 0 && !invalid.contains(&Fact::CharBits))
+        {
             for fact in [
                 Fact::ShortBits,
                 Fact::IntBits,
@@ -584,7 +592,10 @@ impl IntFacts {
                 Fact::PointerBits,
                 Fact::WcharBits,
             ] {
-                if let Some(value) = self.get(fact).filter(|v| v % char_bits != 0) {
+                if let Some(value) = self
+                    .get(fact)
+                    .filter(|v| v % char_bits != 0 && !invalid.contains(&fact))
+                {
                     out.push(format!(
                         "{} = {value} is not a whole number of char_bits = {char_bits} chars",
                         fact.key()
@@ -600,6 +611,7 @@ impl IntFacts {
         ];
         let known: Vec<(Fact, u32)> = ranked
             .into_iter()
+            .filter(|f| !invalid.contains(f))
             .filter_map(|f| self.get(f).map(|v| (f, v)))
             .collect();
         for pair in known.windows(2) {
