@@ -2840,8 +2840,67 @@ impl Int32C {
             .iter()
             .all(|operand| {
                 self.operand_min_width(operand, source, type_map, 0)
-                    .is_some_and(|width| width <= bits)
+                    .is_some_and(|width| {
+                        // An unsigned operand as wide as the checked type
+                        // does not promote to it: the comparison converts
+                        // the checked variable to unsigned, so a guard
+                        // `i < u` leaves `i == INT_MAX` through.
+                        width <= bits
+                            && (width < bits
+                                || !self.operand_is_unsigned(operand, source, type_map, 0))
+                    })
             })
+    }
+
+    /// Whether `node`, by what it is made of, has an unsigned type: a name,
+    /// field or cast of one, a `u`-suffixed constant, or arithmetic with an
+    /// unsigned operand. `false` for anything it cannot place.
+    fn operand_is_unsigned(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+        depth: u32,
+    ) -> bool {
+        if depth > OPERAND_TYPE_MAX_DEPTH {
+            return false;
+        }
+        let unsigned_type = |t: &str| {
+            let typedefs = self.typedef_types.borrow();
+            ast_utils::is_unsigned_type(&overflow_helpers::resolve_typedef_chain(t, &typedefs))
+        };
+        let recurse = |n: Option<Node>| {
+            n.is_some_and(|n| self.operand_is_unsigned(&n, source, type_map, depth + 1))
+        };
+        match node.kind() {
+            "parenthesized_expression" => recurse(node.named_child(0)),
+            "unary_expression" => recurse(node.child_by_field_name("argument")),
+            "number_literal" => get_node_text(node, source)
+                .trim_start_matches(|c: char| c != 'u' && c != 'U' && !c.is_alphabetic())
+                .to_ascii_lowercase()
+                .contains('u'),
+            "sizeof_expression" => true,
+            "cast_expression" => node
+                .child_by_field_name("type")
+                .is_some_and(|t| unsigned_type(get_node_text(&t, source))),
+            "binary_expression" => {
+                recurse(node.child_by_field_name("left"))
+                    || recurse(node.child_by_field_name("right"))
+            }
+            "identifier" => {
+                let name = get_node_text(node, source);
+                match ast_utils::resolve_identifier_declared_type(node, name, source) {
+                    Some(declared) => unsigned_type(&declared),
+                    None => type_map.get(name).is_some_and(|t| unsigned_type(t)),
+                }
+            }
+            "field_expression" => {
+                let sft = self.struct_field_types.borrow();
+                ast_utils::resolve_field_expression_type(node, source, type_map, &sft)
+                    .is_some_and(|t| unsigned_type(&t))
+            }
+            _ => false,
+        }
     }
 
     /// The width the data model guarantees the type of `node`, for the
