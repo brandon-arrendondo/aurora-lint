@@ -7,7 +7,7 @@ cert_version = "2016"
 [environment]
 # The configuration of record is a Linux x86_64 build, LP64: int 32 bits, long
 # and pointers 64. See docs/design/realworld-corpus-scope.md.
-data_model = "lp64"
+data_model = "iso"
 
 [rules.cert_c.API00-C]
 enabled = true
