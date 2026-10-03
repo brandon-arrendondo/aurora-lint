@@ -116,6 +116,12 @@ Full Command Reference
                                        them, and exit without scanning: "configuration
                                        ok" and status 0, or status 1 and one error per
                                        problem
+          --write-config <FILE>        Write a complete, commented configuration for the
+                                       current settings (the manifest, --data-model and
+                                       --set applied) and exit; a key at its default is
+                                       commented out. Refuses to replace an existing FILE
+                                       unless --overwrite is given; "-" writes to stdout
+          --overwrite                  With --write-config: replace FILE if it exists
           --detect-relevance           Detect categorically-inapplicable rule classes
                                        (CON*/WIN*) in PATH and -d directories, then write
                                        a relevance-gated manifest with --write-manifest.

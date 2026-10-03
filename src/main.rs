@@ -432,6 +432,24 @@ fn run() -> Result<i32> {
                 ),
         )
         .arg(
+            Arg::new("write_config")
+                .long("write-config")
+                .help(
+                    "Write a complete, commented configuration file for the current settings \
+                     (the manifest, --data-model and --set applied) and exit: every key with a \
+                     one-line description, a key at its default commented out. Refuses to \
+                     overwrite FILE unless --overwrite is given; '-' writes to stdout",
+                )
+                .value_name("FILE"),
+        )
+        .arg(
+            Arg::new("overwrite")
+                .long("overwrite")
+                .help("With --write-config: replace FILE if it exists")
+                .action(clap::ArgAction::SetTrue)
+                .requires("write_config"),
+        )
+        .arg(
             Arg::new("list_options")
                 .long("list-options")
                 .help("List every policy and environment option with its value under each preset and the current settings, then exit")
@@ -617,6 +635,37 @@ fn run() -> Result<i32> {
                 Ok(1)
             }
         };
+    }
+
+    if let Some(target) = matches.get_one::<String>("write_config") {
+        let manifest = load_manifest(manifest_path)?;
+        let settings = resolve_settings(
+            &manifest,
+            &settings_cli,
+            compile_db.as_ref().is_some_and(|db| db.msvc),
+        )?;
+        let text = manifest.render_config(&settings);
+        if target == "-" {
+            print!("{text}");
+        } else {
+            let mut file = fs::OpenOptions::new();
+            file.write(true);
+            if matches.get_flag("overwrite") {
+                file.create(true).truncate(true);
+            } else {
+                file.create_new(true);
+            }
+            let mut file = file.open(target).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    anyhow::anyhow!("{target} exists; pass --overwrite to replace it")
+                } else {
+                    anyhow::anyhow!("cannot write {target}: {e}")
+                }
+            })?;
+            std::io::Write::write_all(&mut file, text.as_bytes())?;
+            println!("Wrote configuration to: {target}");
+        }
+        return Ok(0);
     }
 
     if let Some(format) = matches.get_one::<String>("list_options") {

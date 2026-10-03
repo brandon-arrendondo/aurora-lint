@@ -218,6 +218,30 @@ scanning: ``configuration ok`` and status 0 when valid, otherwise status 1 and
 one ``error:`` line per problem. Both use the code a scan runs, so they cannot
 disagree with it.
 
+Precedence, highest first: the command line (``--set``, ``--data-model``), the
+project's own keys, the data-model preset's bundle, the ISO minimum. An explicit
+key beats the preset whatever the order of the lines; a key that only repeats
+what the preset loads declares nothing.
+
+``aurora-lint --write-config FILE`` writes a complete configuration with every
+settings key and a one-line description of each. A key at its built-in default
+is commented out; with ``--data-model X`` or ``--set`` the preset's bundle
+values are active lines marked ``# from preset: X``, and a fact no preset sets
+is written commented out as ``# unknown unless declared``. It is generated from
+the same tables as ``--list-options`` and the validation, so it cannot drift
+from them, and the file it writes passes ``--check-config`` unchanged and
+resolves to exactly the facts of running without it (or with the same
+``--data-model``). It refuses to replace an existing ``FILE`` unless
+``--overwrite`` is given; ``--write-config -`` prints to stdout. The workflow:
+
+.. code-block:: console
+
+    $ aurora-lint --write-config aurora.toml --data-model lp64
+    $ $EDITOR aurora.toml                    # e.g. uncomment char_signed
+    $ aurora-lint --check-config -m aurora.toml
+    configuration ok
+    $ aurora-lint -m aurora.toml src/
+
 A width below its ISO minimum, a width that is not a whole number of 8-bit
 bytes or exceeds 64 bits, and a rank order that shrinks
 (``short <= int <= long <= long long``, among the widths that are known) are

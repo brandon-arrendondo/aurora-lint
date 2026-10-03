@@ -789,6 +789,12 @@ impl AnalysisSettings {
                 if let Some(value) = e.fact(fact) {
                     let source = if e.cli.contains(fact.key()) {
                         FactSource::Cli
+                    } else if facts.get(fact) == Some(value) {
+                        // A line that only repeats what the preset loads (as
+                        // a generated configuration writes them) declares
+                        // nothing: the fact stays the preset's, and the
+                        // settings hash stays the preset's too.
+                        continue;
                     } else {
                         FactSource::Config
                     };
@@ -1012,6 +1018,190 @@ fn axis_label(axis: Axis) -> &'static str {
         Axis::Policy => "policy",
         Axis::Environment => "environment",
     }
+}
+
+/// One line of a generated configuration: `key = value`, commented out when
+/// it is the built-in default, with `note` after it.
+fn config_entry(out: &mut String, active: bool, key: &str, value: &str, note: &str) {
+    if !active {
+        out.push_str("# ");
+    }
+    out.push_str(&format!("{key} = {value}"));
+    if !note.is_empty() {
+        out.push_str(&format!("  # {note}"));
+    }
+    out.push('\n');
+}
+
+/// The value a commented-out example for `fact` shows: the first preset that
+/// loads it, or the ISO minimum.
+fn example_fact_value(fact: Fact) -> String {
+    let loaded = DataModel::ALL
+        .into_iter()
+        .find_map(|m| m.bundle().iter().find(|(f, _)| *f == fact).map(|(_, v)| *v));
+    match (loaded, fact.is_flag()) {
+        (_, true) => "true".to_string(),
+        (Some(v), false) => v.to_string(),
+        (None, false) => fact.minimum_bits().unwrap_or(0).to_string(),
+    }
+}
+
+/// The settings half of a generated configuration (`--write-config`): the
+/// `profile` key and the `[policy]` and `[environment]` tables, every key
+/// with a one-line description. A key at its built-in default is commented
+/// out; one that departs from it is an active line, and a fact a data-model
+/// preset loads says which. Built from the same tables as `--list-options`
+/// and validation ([`OPTIONS`], [`Fact::ALL`], [`DataModel::bundle`]), so it
+/// cannot drift from them, and it resolves to exactly `current`.
+pub fn render_config_settings(current: &AnalysisSettings) -> String {
+    let profile = if current.policy == Policy::Strict {
+        Preset::Strict
+    } else {
+        Preset::Default
+    };
+    let (base_policy, base_environment) = match profile {
+        Preset::Default => (Policy::Default, EnvironmentKind::Hosted),
+        Preset::Strict => (Policy::Strict, EnvironmentKind::Freestanding),
+    };
+    let mut out = String::new();
+    out.push_str("# A preset that sets both axes: \"default\" or \"strict\".\n");
+    config_entry(
+        &mut out,
+        profile != Preset::Default,
+        "profile",
+        &format!("\"{profile}\""),
+        "",
+    );
+
+    out.push_str("\n[policy]\n# What the rules require of the code: \"default\" or \"strict\".\n");
+    config_entry(
+        &mut out,
+        current.policy != base_policy,
+        "level",
+        &format!("\"{}\"", current.policy),
+        "",
+    );
+    let option_table = |out: &mut String, axis: Axis| {
+        for o in OPTIONS.iter().filter(|o| o.axis == axis) {
+            let value = current.flag(o.name);
+            let departs =
+                value != derived_value(o, current.policy, current.environment, current.libc);
+            out.push_str(&format!("# {}\n", o.summary));
+            config_entry(out, departs, o.name, &value.to_string(), "");
+        }
+    };
+    out.push_str("\n[policy.overrides]\n");
+    option_table(&mut out, Axis::Policy);
+
+    out.push_str(
+        "\n[environment]\n# \"hosted\" (the full standard library) or \"freestanding\".\n",
+    );
+    config_entry(
+        &mut out,
+        current.environment != base_environment,
+        "kind",
+        &format!("\"{}\"", current.environment),
+        "",
+    );
+    let implied_libc = (current.environment == EnvironmentKind::Hosted).then_some(Libc::IsoPosix);
+    out.push_str(
+        "# The C library whose documented contracts are trusted: iso-posix, glibc, musl, newlib,\n\
+         # picolibc or custom. Unset: iso-posix when hosted, none when freestanding.\n",
+    );
+    config_entry(
+        &mut out,
+        current.libc != implied_libc,
+        "libc",
+        &format!("\"{}\"", current.libc.unwrap_or(Libc::IsoPosix)),
+        "",
+    );
+    out.push_str("# How #include names match files: \"exact\" or \"case-insensitive\".\n");
+    config_entry(
+        &mut out,
+        current.include_names != IncludeNames::Exact,
+        "include_names",
+        &format!("\"{}\"", current.include_names),
+        "",
+    );
+    out.push_str(&format!(
+        "# The integer data model preset: {}. Unset (iso), only what ISO C guarantees is credited.\n",
+        DataModel::ALL.map(|m| m.name()).join(", ")
+    ));
+    config_entry(
+        &mut out,
+        current.data_model != DataModel::Iso,
+        "data_model",
+        &format!("\"{}\"", current.data_model),
+        "",
+    );
+    out.push_str(
+        "# Integer facts: the preset loads some; a key here overrides it (and must stay at or\n\
+         # above the ISO minimum and in rank order). Unset facts are unknown to the analysis.\n",
+    );
+    for fact in Fact::ALL.into_iter().filter(|f| f.overridable()) {
+        out.push_str(&format!("# {}\n", fact.description()));
+        let value = current.facts.get(fact);
+        let text = value.map(|v| {
+            if fact.is_flag() {
+                (v != 0).to_string()
+            } else {
+                v.to_string()
+            }
+        });
+        match (text, current.facts.source(fact)) {
+            (Some(text), FactSource::Preset(m)) => {
+                config_entry(
+                    &mut out,
+                    true,
+                    fact.key(),
+                    &text,
+                    &format!("from preset: {m}", m = m.name()),
+                );
+            }
+            (Some(text), FactSource::Cli) => {
+                config_entry(&mut out, true, fact.key(), &text, "set on the command line");
+            }
+            (Some(text), _) => config_entry(&mut out, true, fact.key(), &text, "declared"),
+            (None, _) => {
+                let note = match fact.minimum_bits().filter(|_| fact.has_floor()) {
+                    Some(min) => {
+                        format!("unknown unless declared (ISO guarantees at least {min} bits)")
+                    }
+                    None => "unknown unless declared".to_string(),
+                };
+                config_entry(
+                    &mut out,
+                    false,
+                    fact.key(),
+                    &example_fact_value(fact),
+                    &note,
+                );
+            }
+        }
+    }
+
+    out.push_str("\n[environment.overrides]\n");
+    option_table(&mut out, Axis::Environment);
+
+    out.push_str(
+        "\n# Functions that allocate: NAME = \"malloc\" (or calloc, realloc, ...).\n[environment.allocators]\n",
+    );
+    if current.memory.allocators.is_empty() {
+        out.push_str("# my_alloc = \"malloc\"\n");
+    }
+    for (name, contract) in &current.memory.allocators {
+        out.push_str(&format!("{name:?} = \"{contract}\"\n"));
+    }
+    out.push_str(
+        "\n# Functions that free: NAME = ARG, the 1-based position of the freed argument.\n[environment.deallocators]\n",
+    );
+    if current.memory.deallocators.is_empty() {
+        out.push_str("# my_free = 1\n");
+    }
+    for (name, arg) in &current.memory.deallocators {
+        out.push_str(&format!("{name:?} = {arg}\n"));
+    }
+    out
 }
 
 /// One resolved integer fact as `--list-options` shows it.

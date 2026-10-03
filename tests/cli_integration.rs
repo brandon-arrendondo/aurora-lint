@@ -4334,3 +4334,185 @@ fn a_profile_keeps_the_manifests_data_model() {
         assert_eq!(json["current"]["data_model"], "lp64", "{profile}: {stdout}");
     }
 }
+
+/// What `--write-config` writes for `args`, in a fresh directory.
+fn written_config(args: &[&str]) -> (tempfile::TempDir, String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("aurora.toml");
+    let path = file.to_str().unwrap().to_string();
+    let mut full = vec!["--write-config", path.as_str()];
+    full.extend_from_slice(args);
+    let (code, _stdout, stderr) = run_aurora_lint(&full);
+    assert_eq!(code, 0, "{stderr}");
+    let text = std::fs::read_to_string(&file).unwrap();
+    (dir, path, text)
+}
+
+#[test]
+fn a_written_config_passes_check_config_unchanged() {
+    for args in [
+        vec![],
+        vec!["--data-model", "ilp32"],
+        vec![
+            "--data-model",
+            "lp64",
+            "--set",
+            "int_bits=32",
+            "--set",
+            "char_signed=true",
+        ],
+        vec!["--data-model", "llp64"],
+        vec!["--profile", "strict"],
+    ] {
+        let (_dir, path, _text) = written_config(&args);
+        let (code, stdout, stderr) = run_aurora_lint(&["--check-config", "-m", &path]);
+        assert_eq!(code, 0, "{args:?}: {stderr}");
+        assert_eq!(stdout.trim(), "configuration ok");
+    }
+}
+
+#[test]
+fn a_written_config_resolves_to_the_facts_and_hash_of_running_without_it() {
+    for model in [
+        None,
+        Some("iso"),
+        Some("ilp32"),
+        Some("lp64"),
+        Some("llp64"),
+    ] {
+        let args: Vec<&str> = model.iter().flat_map(|m| ["--data-model", *m]).collect();
+        let (_dir, path, _text) = written_config(&args);
+        let with_file = vec!["--list-options", "json", "-m", path.as_str()];
+        let from_file = run_aurora_lint(&with_file).1;
+        let mut direct = vec!["--list-options", "json"];
+        direct.extend_from_slice(&args);
+        let from_flags = run_aurora_lint(&direct).1;
+        // Facts, their sources, and the settings hash all agree.
+        assert_eq!(from_file, from_flags, "{model:?}");
+    }
+}
+
+#[test]
+fn a_written_config_keeps_what_the_command_line_set_as_a_declaration() {
+    let (_dir, path, text) = written_config(&["--data-model", "lp64", "--set", "int_bits=64"]);
+    assert!(
+        text.contains("\nint_bits = 64  # set on the command line\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("\nlong_bits = 64  # from preset: lp64\n"),
+        "{text}"
+    );
+    let from_file = resolved_settings(&["-m", &path]).unwrap();
+    let from_flags = resolved_settings(&["--data-model", "lp64", "--set", "int_bits=64"]).unwrap();
+    assert_eq!(from_file, from_flags);
+    assert_eq!(from_file["int_bits"], 64);
+}
+
+#[test]
+fn a_written_config_names_every_key_and_comments_out_the_defaults() {
+    let (_dir, _path, text) = written_config(&[]);
+    for key in [
+        "profile",
+        "level",
+        "kind",
+        "libc",
+        "include_names",
+        "data_model",
+        "short_bits",
+        "int_bits",
+        "long_bits",
+        "long_long_bits",
+        "pointer_bits",
+        "wchar_t_bits",
+        "char_signed",
+        "closed_program",
+        "assert_is_guard",
+    ] {
+        assert!(text.contains(&format!("# {key} = ")), "{key}: {text}");
+    }
+    // Facts no preset sets are marked, never given a value of their own.
+    assert!(
+        text.contains("# char_signed = true  # unknown unless declared"),
+        "{text}"
+    );
+    assert!(text.contains("# wchar_t_bits = "), "{text}");
+    // At the defaults nothing outside the metadata and the rules is active.
+    let settings = text.split("[metadata]").next().unwrap();
+    assert!(
+        settings
+            .lines()
+            .all(|l| l.is_empty() || l.starts_with('#') || l.starts_with('[')),
+        "{settings}"
+    );
+}
+
+#[test]
+fn a_preset_writes_its_bundle_as_active_lines_and_leaves_the_rest_unknown() {
+    let (_dir, _path, text) = written_config(&["--data-model", "ilp32"]);
+    assert!(text.contains("\ndata_model = \"ilp32\"\n"), "{text}");
+    assert!(
+        text.contains("\nint_bits = 32  # from preset: ilp32\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("# wchar_t_bits = 16  # unknown unless declared"),
+        "{text}"
+    );
+    assert!(
+        text.contains("# char_signed = true  # unknown unless declared"),
+        "{text}"
+    );
+}
+
+#[test]
+fn write_config_refuses_to_overwrite_unless_told_to() {
+    let (_dir, path, first) = written_config(&[]);
+    std::fs::write(&path, "# mine\n").unwrap();
+    let (code, _out, stderr) = run_aurora_lint(&["--write-config", &path]);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("exists; pass --overwrite"), "{stderr}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "# mine\n");
+    let (code, _out, stderr) = run_aurora_lint(&["--write-config", &path, "--overwrite"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), first);
+}
+
+#[test]
+fn write_config_to_a_dash_prints_the_file_and_nothing_else() {
+    let (_dir, _path, file) = written_config(&["--data-model", "lp64"]);
+    let (code, stdout, stderr) = run_aurora_lint(&["--write-config", "-", "--data-model", "lp64"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, file);
+}
+
+#[test]
+fn write_config_refuses_settings_a_scan_would_refuse() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("out.toml");
+    let (code, _out, stderr) = run_aurora_lint(&[
+        "--write-config",
+        path.to_str().unwrap(),
+        "--set",
+        "int_bits=8",
+    ]);
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("int_bits = 8 is below the 16 bits"),
+        "{stderr}"
+    );
+    assert!(!path.exists());
+}
+
+#[test]
+fn an_edited_written_config_is_checked_like_any_other() {
+    let (_dir, path, text) = written_config(&["--data-model", "lp64"]);
+    let edited = text.replace("int_bits = 32  # from preset: lp64", "int_bits = 8");
+    std::fs::write(&path, edited).unwrap();
+    let (code, _out, stderr) = run_aurora_lint(&["--check-config", "-m", &path]);
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("int_bits = 8 is below the 16 bits"),
+        "{stderr}"
+    );
+}
