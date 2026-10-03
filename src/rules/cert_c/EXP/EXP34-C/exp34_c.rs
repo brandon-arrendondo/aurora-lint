@@ -190,6 +190,7 @@ impl CertRule for Exp34C {
         let summaries = self.function_summaries.borrow();
         let cfgs = self.function_cfgs.borrow();
         let all_macros = self.function_macros.borrow();
+        let root = *node;
 
         for n in
             query::find_descendants_of_kinds(*node, &["translation_unit", "function_definition"])
@@ -315,6 +316,7 @@ impl CertRule for Exp34C {
                     // said the value could be NULL, followed by a NULL test of
                     // that same value.
                     check_dereferences_before_null_tests(
+                        &root,
                         node,
                         &body,
                         source,
@@ -1299,7 +1301,35 @@ fn is_null_safe_function(name: &str, settings: &AnalysisSettings) -> bool {
 /// `ast_utils::resolve_identifier_binding` primitive rather than
 /// hand-rolling a new declaration lookup.
 fn identifier_is_declared_pointer(ident_node: &Node, name: &str, source: &str) -> Option<bool> {
-    match ast_utils::resolve_identifier_binding(ident_node, name, source)? {
+    declared_pointer(
+        ast_utils::resolve_identifier_binding(ident_node, name, source)?,
+        name,
+        source,
+    )
+}
+
+/// [`identifier_is_declared_pointer`] for a caller holding the tree's root,
+/// which resolves without climbing `Node::parent()`: a per-condition null
+/// test on deeply nested code made the climbing version cubic in depth.
+fn identifier_is_declared_pointer_in(
+    root: &Node,
+    ident_node: &Node,
+    name: &str,
+    source: &str,
+) -> Option<bool> {
+    declared_pointer(
+        ast_utils::resolve_identifier_binding_in(root, ident_node, name, source)?,
+        name,
+        source,
+    )
+}
+
+fn declared_pointer(
+    binding: ast_utils::IdentifierBinding,
+    name: &str,
+    source: &str,
+) -> Option<bool> {
+    match binding {
         ast_utils::IdentifierBinding::Parameter(ptype) => classify_type_text(&ptype),
         ast_utils::IdentifierBinding::Local(decl) | ast_utils::IdentifierBinding::Global(decl) => {
             let declarator = ast_utils::declaration_declarator_for(&decl, name, source)?;
@@ -1645,6 +1675,7 @@ fn is_inside_ast_null_guard(var_name: &str, node: &Node, source: &str) -> bool {
 /// pointer, a field read), where there is no single value to re-seed.
 #[allow(clippy::too_many_arguments)]
 fn check_dereferences_before_null_tests(
+    root: &Node,
     func: &Node,
     body: &Node,
     source: &str,
@@ -1657,7 +1688,7 @@ fn check_dereferences_before_null_tests(
     violations: &mut Vec<RuleViolation>,
     reported_vars: &mut ReportedSites<'_>,
 ) {
-    for (var, test) in null_tests(body, source) {
+    for (var, test) in null_tests(root, body, source) {
         let Some(site) = first_dereference_before(&var, &test, source) else {
             continue;
         };
@@ -1742,7 +1773,7 @@ fn check_dereferences_before_null_tests(
 /// Every NULL test of a declared pointer in `body`, as `(name, tested
 /// operand)`: `p == NULL`, `NULL != p`, `!p` and a bare `p` used as a
 /// condition, including as an operand of `&&`/`||` inside one.
-fn null_tests<'t>(body: &Node<'t>, source: &str) -> Vec<(String, Node<'t>)> {
+fn null_tests<'t>(root: &Node<'t>, body: &Node<'t>, source: &str) -> Vec<(String, Node<'t>)> {
     let mut tests = Vec::new();
     for owner in query::find_descendants_of_kinds(
         *body,
@@ -1759,7 +1790,7 @@ fn null_tests<'t>(body: &Node<'t>, source: &str) -> Vec<(String, Node<'t>)> {
         }
     }
     tests.retain(|(name, operand)| {
-        identifier_is_declared_pointer(operand, name, source) == Some(true)
+        identifier_is_declared_pointer_in(root, operand, name, source) == Some(true)
     });
     tests
 }

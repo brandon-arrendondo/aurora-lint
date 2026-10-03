@@ -332,6 +332,7 @@ impl CertRule for Exp33C {
         let mut violations = Vec::new();
         let cfgs = self.function_cfgs.borrow();
 
+        let root = *node;
         for n in
             query::find_descendants_of_kinds(*node, &["translation_unit", "function_definition"])
         {
@@ -468,6 +469,7 @@ impl CertRule for Exp33C {
                     // Walk AST for read sites and check each against dataflow result
                     let mut reported: HashSet<String> = HashSet::new();
                     check_reads(
+                        &root,
                         &body,
                         source,
                         &analysis,
@@ -517,6 +519,7 @@ impl CertRule for Exp33C {
 
 /// Walk the AST looking for reads of tracked variables.
 fn check_reads(
+    root: &Node,
     node: &Node,
     source: &str,
     analysis: &InitAnalysisResult,
@@ -535,6 +538,7 @@ fn check_reads(
         match n.kind() {
             "identifier" => {
                 check_identifier_read(
+                    root,
                     &n,
                     source,
                     analysis,
@@ -974,6 +978,7 @@ fn extract_addr_of_var(node: &Node, source: &str) -> String {
 
 /// Check if an identifier read is of an uninitialized variable.
 fn check_identifier_read(
+    root: &Node,
     node: &Node,
     source: &str,
     analysis: &InitAnalysisResult,
@@ -1007,8 +1012,10 @@ fn check_identifier_read(
     // `serverDb *db` inside its eviction loop, and after the loop
     // `latencyTraceIfNeeded(db, ...)` passes `db` as a macro's type token,
     // which read as that variable "maybe uninitialized".
-    if crate::utility::cert_c::ast_utils::resolve_identifier_declarator(node, &var_name, source)
-        .is_none()
+    if crate::utility::cert_c::ast_utils::resolve_identifier_declarator_in(
+        root, node, &var_name, source,
+    )
+    .is_none()
     {
         return;
     }
