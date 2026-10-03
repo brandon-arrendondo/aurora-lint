@@ -220,6 +220,60 @@ pub fn find_enclosing_declaration_for_identifier<'a>(
     find_declaration_in_scope_chain(&scopes, ident_node.start_byte(), name, source)
 }
 
+/// The nodes strictly between `root` and `node` on the way down, outermost
+/// first, found by descending from `root` with `child_with_descendant`.
+/// `None` when `node` is not under `root`.
+///
+/// This is the ancestor chain `Node::parent()` would climb, at O(depth)
+/// total instead of O(depth) per step: tree-sitter recovers a parent by
+/// descending from the tree root, so a climb of `d` levels costs O(d²).
+pub fn ancestors_from_root<'a>(root: &Node<'a>, node: &Node<'a>) -> Option<Vec<Node<'a>>> {
+    let mut path = Vec::new();
+    let mut current = *root;
+    while current.id() != node.id() {
+        if current.id() != root.id() {
+            path.push(current);
+        }
+        current = current.child_with_descendant(*node)?;
+    }
+    Some(path)
+}
+
+/// [`find_enclosing_declaration_for_identifier`] for a caller that has the
+/// tree's root, at O(depth) per identifier rather than O(depth²): the scope
+/// chain comes from one descent ([`ancestors_from_root`]) instead of a
+/// `parent()` climb. Same answer; falls back to the climb if `ident_node`
+/// is not under `root`.
+pub fn find_enclosing_declaration_for_identifier_in<'a>(
+    root: &Node<'a>,
+    ident_node: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<Node<'a>> {
+    let Some(path) = ancestors_from_root(root, ident_node) else {
+        return find_enclosing_declaration_for_identifier(ident_node, name, source);
+    };
+    scope_chain_declaration(root, &path, ident_node, name, source)
+}
+
+/// The innermost-first scope chain of `path` (with `root` itself when it is
+/// a scope, as the climb would reach it), searched as
+/// [`find_declaration_in_scope_chain`] searches it.
+fn scope_chain_declaration<'a>(
+    root: &Node<'a>,
+    path: &[Node<'a>],
+    ident_node: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<Node<'a>> {
+    let scopes: Vec<Node<'a>> = std::iter::once(*root)
+        .chain(path.iter().copied())
+        .filter(is_declaration_scope)
+        .rev()
+        .collect();
+    find_declaration_in_scope_chain(&scopes, ident_node.start_byte(), name, source)
+}
+
 /// [`find_enclosing_declaration_for_identifier`], considering only the
 /// declarations `keep` accepts: the nearest one that does, in the innermost
 /// scope holding one. A caller that has ruled a nearer declaration out (one
@@ -396,6 +450,28 @@ pub fn resolve_identifier_declarator<'a>(
         IdentifierBinding::Local(decl) | IdentifierBinding::Global(decl) => decl,
         IdentifierBinding::Parameter(_) => {
             let func = find_containing_function(ident_node)?;
+            find_parameter_declaration(&func, name, source)?
+        }
+    };
+    let declarator = declaration_declarator_for(&decl, name, source)?;
+    Some((decl, declarator))
+}
+
+/// [`resolve_identifier_declarator`] for a caller that has the tree's root;
+/// see [`resolve_identifier_binding_in`].
+pub fn resolve_identifier_declarator_in<'a>(
+    root: &Node<'a>,
+    ident_node: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<(Node<'a>, Node<'a>)> {
+    let Some(path) = ancestors_from_root(root, ident_node) else {
+        return resolve_identifier_declarator(ident_node, name, source);
+    };
+    let decl = match binding_on_path(root, &path, ident_node, name, source)? {
+        IdentifierBinding::Local(decl) | IdentifierBinding::Global(decl) => decl,
+        IdentifierBinding::Parameter(_) => {
+            let func = containing_function_on_path(root, &path)?;
             find_parameter_declaration(&func, name, source)?
         }
     };
@@ -591,6 +667,57 @@ pub fn resolve_identifier_binding<'a>(
         }
     }
     find_global_declaration_for_identifier(ident_node, name, source).map(IdentifierBinding::Global)
+}
+
+/// [`resolve_identifier_binding`] for a caller that has the tree's root:
+/// the scope chain, the containing function and the translation unit all
+/// come from one descent ([`ancestors_from_root`]), so nothing climbs with
+/// `Node::parent()`. Same answer; falls back to the climbing version if
+/// `ident_node` is not under `root`.
+pub fn resolve_identifier_binding_in<'a>(
+    root: &Node<'a>,
+    ident_node: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<IdentifierBinding<'a>> {
+    let Some(path) = ancestors_from_root(root, ident_node) else {
+        return resolve_identifier_binding(ident_node, name, source);
+    };
+    binding_on_path(root, &path, ident_node, name, source)
+}
+
+fn binding_on_path<'a>(
+    root: &Node<'a>,
+    path: &[Node<'a>],
+    ident_node: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<IdentifierBinding<'a>> {
+    if let Some(decl) = scope_chain_declaration(root, path, ident_node, name, source) {
+        return Some(IdentifierBinding::Local(decl));
+    }
+    if let Some(func) = containing_function_on_path(root, path) {
+        if let Some(params) = get_function_parameters(&func, source) {
+            if let Some((_, ptype)) = params.iter().find(|(n, _)| n == name) {
+                return Some(IdentifierBinding::Parameter(ptype.clone()));
+            }
+        }
+    }
+    // The climbing version's translation unit is the topmost ancestor.
+    let top = std::iter::once(*root).chain(path.iter().copied()).next()?;
+    (0..top.child_count())
+        .filter_map(|i| top.child(i))
+        .find(|decl| decl.kind() == "declaration" && declaration_binds_name(decl, name, source))
+        .map(IdentifierBinding::Global)
+}
+
+/// The innermost `function_definition` on `root` + `path`, as
+/// [`find_containing_function`] finds it by climbing.
+fn containing_function_on_path<'a>(root: &Node<'a>, path: &[Node<'a>]) -> Option<Node<'a>> {
+    std::iter::once(*root)
+        .chain(path.iter().copied())
+        .rev()
+        .find(|n| n.kind() == "function_definition")
 }
 
 /// Extract the type text (tokens before the declarator) of a `declaration`
