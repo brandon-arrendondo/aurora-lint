@@ -259,7 +259,7 @@ fn process_file(
         result.macro_constants.extend(
             file_macros
                 .iter()
-                .filter(|(name, _)| !own_statics.contains(*name))
+                .filter(|(name, _)| !names_a_static(name, &own_statics))
                 .map(|(k, v)| (k.clone(), *v)),
         );
 
@@ -527,6 +527,24 @@ pub fn is_scoped_out(
         .or_else(|| relative(base))
         .unwrap_or_else(|| text.clone());
     ignore.is_ignored(Path::new(&rel))
+}
+
+/// Whether the macro-constants key `key` belongs to a name in `statics`. A
+/// constant recorded as a range is `NAME[min]` and `NAME[max]`, so the test is
+/// on the name, not the key.
+fn names_a_static(key: &str, statics: &HashSet<String>) -> bool {
+    statics.contains(const_eval::macro_key_name(key))
+}
+
+/// [`names_a_static`] for a header static some file also writes: no constant
+/// for any includer, whichever key carries it.
+fn names_a_written_static(
+    key: &str,
+    header_statics: &HashSet<String>,
+    written: &HashSet<String>,
+) -> bool {
+    let name = const_eval::macro_key_name(key);
+    header_statics.contains(name) && written.contains(name)
 }
 
 /// Build a [`ProjectContext`] for one file, exactly as a `-d` prescan of a
@@ -1426,7 +1444,7 @@ fn prescan_file_list(
     // A header's static is compiled into each includer, which may write
     // its copy: one written anywhere is no constant for any of them.
     macro_constants
-        .retain(|name, _| !(header_statics.contains(name) && file_scope_writes.contains(name)));
+        .retain(|key, _| !names_a_written_static(key, &header_statics, &file_scope_writes));
     global_constants.retain(|name, _| {
         !global_constant_conflicts.contains(name) && !file_scope_writes.contains(name)
     });
@@ -9516,6 +9534,30 @@ void caller(char *other) {
         let summary = ctx.function_summaries.get("os_write").unwrap();
         assert!(summary.checks_null_params.contains(&0));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A constant recorded as a range is two keys, `NAME[min]` and
+    /// `NAME[max]`; the filters that keep a static out of the project's
+    /// constants work by name, so each key has to answer for its name. (No
+    /// static is range-valued today, because only a literal initializer is
+    /// collected; the filters must be right before one is.)
+    #[test]
+    fn a_ranges_keys_follow_their_names_through_the_static_filters() {
+        let statics: HashSet<String> = ["hdr".to_string()].into();
+        for key in ["hdr", "hdr[min]", "hdr[max]"] {
+            assert!(names_a_static(key, &statics), "{key}");
+        }
+        for key in ["other", "other[min]", "hdr_size", "hdr_size[max]"] {
+            assert!(!names_a_static(key, &statics), "{key}");
+        }
+        let written: HashSet<String> = ["hdr".to_string()].into();
+        assert!(names_a_written_static("hdr[min]", &statics, &written));
+        assert!(!names_a_written_static(
+            "hdr[min]",
+            &statics,
+            &HashSet::new()
+        ));
+        assert!(!names_a_written_static("other[min]", &statics, &written));
     }
 
     /// mbedtls' two `psa_aead_setup`, reduced: one `static` definition per
