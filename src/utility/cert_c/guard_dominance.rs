@@ -1270,6 +1270,64 @@ fn condition_mentions_integer_limit(condition: &Node, source: &str) -> bool {
         .any(|text| is_integer_limit_name(text.trim()))
 }
 
+/// The expressions `var` is compared against in the conditions that govern
+/// `site` ([`dominating_conditions`]): for `i < count && ok` and `var` = `i`,
+/// `count`. A comparison whose either side mentions `var` contributes the
+/// other side; `&&`, `||`, `!` and parentheses are looked through; a
+/// condition that is not a comparison contributes nothing.
+///
+/// For a caller that asks what TYPE bounded a value: a bound from a wider
+/// type does not bound a narrower one.
+pub fn comparison_operands_of<'a>(var: &str, site: &Node<'a>, source: &str) -> Vec<Node<'a>> {
+    fn walk<'a>(cond: Node<'a>, var: &str, source: &str, out: &mut Vec<Node<'a>>) {
+        match cond.kind() {
+            "parenthesized_expression" => {
+                if let Some(inner) = cond.named_child(0) {
+                    walk(inner, var, source, out);
+                }
+            }
+            "unary_expression" => {
+                if let Some(arg) = cond.child_by_field_name("argument") {
+                    walk(arg, var, source, out);
+                }
+            }
+            "binary_expression" => {
+                let op = cond
+                    .child_by_field_name("operator")
+                    .map(|o| get_node_text(&o, source))
+                    .unwrap_or("");
+                let (Some(left), Some(right)) = (
+                    cond.child_by_field_name("left"),
+                    cond.child_by_field_name("right"),
+                ) else {
+                    return;
+                };
+                match op {
+                    "&&" | "||" => {
+                        walk(left, var, source, out);
+                        walk(right, var, source, out);
+                    }
+                    "<" | "<=" | ">" | ">=" | "==" | "!=" => {
+                        if mentions_var(&left, var, source) {
+                            out.push(right);
+                        }
+                        if mentions_var(&right, var, source) {
+                            out.push(left);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for cond in dominating_conditions(site) {
+        walk(cond, var, source, &mut out);
+    }
+    out
+}
+
 /// True when `var` appears as an identifier anywhere under `node`.
 ///
 /// Matched on the AST identifier node, so it is exact rather than a substring:

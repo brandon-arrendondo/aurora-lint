@@ -2778,7 +2778,7 @@ impl Int32C {
         // char`, and clamping it there would let the store prove itself.
         let ranges = match ranges {
             Some(ranges) if !self.data_model.get().width_known(Rank::Int) && !narrow_store => {
-                Some(Self::bound_open_ranges(ranges, bits))
+                Some(self.bound_open_ranges(ranges, node, source, type_map, bits))
             }
             other => other,
         };
@@ -2799,7 +2799,14 @@ impl Int32C {
     /// `bits`-wide type the fit is asked of: `x + 1` with `x <= 1000` then
     /// fits (the lower side stays at the type's minimum plus one), where `x +
     /// y` of two unguarded operands, or `x * 2`, still does not on any width.
-    fn bound_open_ranges(ranges: VarRangeMap, bits: u32) -> VarRangeMap {
+    fn bound_open_ranges(
+        &self,
+        ranges: VarRangeMap,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+        bits: u32,
+    ) -> VarRangeMap {
         if bits == 0 || bits >= 64 {
             return ranges;
         }
@@ -2807,11 +2814,93 @@ impl Int32C {
         ranges
             .into_iter()
             .map(|(name, range)| {
-                let min = data_model::bound_open_bottom(range.min, range.max, low);
-                let max = data_model::bound_open_top(range.min, range.max, high);
+                let keep = self.guards_bound_no_wider_than(node, source, type_map, &name, bits);
+                let min = data_model::bound_open_bottom(range.min, range.max, low, keep);
+                let max = data_model::bound_open_top(range.min, range.max, high, keep);
                 (name, const_eval::ValueRange::new(min, max))
             })
             .collect()
+    }
+
+    /// Whether every comparison that governs `node` and mentions `var` is
+    /// against an operand no wider than `bits`, the checked width, so that
+    /// the distance a guard leaves from a type's limit is the checked type's
+    /// own. `i < count` bounds `i` below the limit of `count`'s type, which
+    /// is `i`'s only if `count` is no wider; an operand this cannot place (a
+    /// call, a subscript) is taken as possibly wider.
+    fn guards_bound_no_wider_than(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+        var: &str,
+        bits: u32,
+    ) -> bool {
+        guard_dominance::comparison_operands_of(var, node, source)
+            .iter()
+            .all(|operand| {
+                self.operand_min_width(operand, source, type_map, 0)
+                    .is_some_and(|width| width <= bits)
+            })
+    }
+
+    /// The width the data model guarantees the type of `node`, for the
+    /// shapes whose type follows from what they are made of: a name, a
+    /// constant, a cast, `sizeof`, a field, and arithmetic over them. `None`
+    /// for anything else, which a caller must take as possibly wider.
+    fn operand_min_width(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+        depth: u32,
+    ) -> Option<u32> {
+        if depth > OPERAND_TYPE_MAX_DEPTH {
+            return None;
+        }
+        let model = self.data_model.get();
+        let of_type = |t: &str| -> Option<u32> {
+            let typedefs = self.typedef_types.borrow();
+            let resolved = overflow_helpers::resolve_typedef_chain(t, &typedefs);
+            let base = resolved
+                .replace("const", " ")
+                .replace("volatile", " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            model.spelled_width(&base).map(|(_, width)| width.min)
+        };
+        let recurse = |n: Option<Node>| self.operand_min_width(&n?, source, type_map, depth + 1);
+        match node.kind() {
+            "parenthesized_expression" => recurse(node.named_child(0)),
+            "number_literal" => integer_literal_width(get_node_text(node, source), model),
+            "char_literal" => Some(self.promoted_bits()),
+            "sizeof_expression" => model.spelled_width("size_t").map(|(_, w)| w.min),
+            "cast_expression" => node
+                .child_by_field_name("type")
+                .and_then(|t| of_type(get_node_text(&t, source))),
+            "unary_expression" => recurse(node.child_by_field_name("argument")),
+            "binary_expression" => {
+                let (l, r) = (
+                    recurse(node.child_by_field_name("left"))?,
+                    recurse(node.child_by_field_name("right"))?,
+                );
+                Some(l.max(r))
+            }
+            "identifier" => {
+                let name = get_node_text(node, source);
+                match ast_utils::resolve_identifier_declared_type(node, name, source) {
+                    Some(declared) => of_type(&declared),
+                    None => type_map.get(name).and_then(|t| of_type(t)),
+                }
+            }
+            "field_expression" => {
+                let sft = self.struct_field_types.borrow();
+                ast_utils::resolve_field_expression_type(node, source, type_map, &sft)
+                    .and_then(|t| of_type(&t))
+            }
+            _ => None,
+        }
     }
 
     /// The width the result of `node` must be representable in.

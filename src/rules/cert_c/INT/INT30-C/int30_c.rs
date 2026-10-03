@@ -216,12 +216,19 @@ impl Int30C {
     /// type has, so it is read as the limit of the `bits`-wide type the fit
     /// is asked of: `x - 1` after `x < 1` returns then fits, where an
     /// unguarded `x + 1` still does not on any width.
-    fn expression_fits_in_unsigned(&self, node: &Node, source: &str, bits: u32) -> bool {
+    fn expression_fits_in_unsigned(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+        bits: u32,
+    ) -> bool {
         let mut ranges = self.vra_var_ranges_at(node, source);
         if !self.data_model.get().width_known(Rank::Int) && (1..63).contains(&bits) {
             let high = (1i64 << bits) - 1;
-            for range in ranges.iter_mut().flat_map(|ranges| ranges.values_mut()) {
-                range.max = data_model::bound_open_top(range.min, range.max, high);
+            for (name, range) in ranges.iter_mut().flat_map(|ranges| ranges.iter_mut()) {
+                let keep = self.guards_bound_no_wider_than(node, source, type_map, name, bits);
+                range.max = data_model::bound_open_top(range.min, range.max, high, keep);
             }
         }
         const_eval::expression_fits_in_unsigned_vra(
@@ -231,6 +238,48 @@ impl Int30C {
             bits,
             ranges.as_ref(),
         )
+    }
+
+    /// Whether every comparison that governs `node` and mentions `var` is
+    /// against an operand no wider than `bits`, the checked width, so that
+    /// the distance a guard leaves from a type's limit is the checked type's
+    /// own. `i < count` bounds `i` below the limit of `count`'s type, which
+    /// is `i`'s only if `count` is no wider; an operand this cannot place (a
+    /// call, a subscript) is taken as possibly wider.
+    fn guards_bound_no_wider_than(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+        var: &str,
+        bits: u32,
+    ) -> bool {
+        guard_dominance::comparison_operands_of(var, node, source)
+            .iter()
+            .all(|operand| {
+                Self::is_plain_operand(operand)
+                    && self
+                        .operand_width(operand, source, type_map, 0)
+                        .is_some_and(|width| width <= bits)
+            })
+    }
+
+    /// An operand whose type [`Self::operand_width`] reads from what it is
+    /// made of: names, constants, casts, `sizeof` and arithmetic over them.
+    fn is_plain_operand(node: &Node) -> bool {
+        match node.kind() {
+            "identifier" | "number_literal" | "char_literal" | "sizeof_expression"
+            | "field_expression" | "true" | "false" => true,
+            "parenthesized_expression" | "binary_expression" | "unary_expression" => {
+                let mut cursor = node.walk();
+                let all_plain = node
+                    .named_children(&mut cursor)
+                    .all(|child| Self::is_plain_operand(&child));
+                all_plain
+            }
+            "cast_expression" => true,
+            _ => false,
+        }
     }
 
     /// Get VRA-derived variable ranges at a specific expression node.
@@ -624,6 +673,7 @@ impl Int30C {
                 if self.expression_fits_in_unsigned(
                     node,
                     source,
+                    type_map,
                     self.arith_width_bits(node, source, type_map),
                 ) {
                     return;
@@ -748,6 +798,7 @@ impl Int30C {
                 if self.expression_fits_in_unsigned(
                     node,
                     source,
+                    type_map,
                     self.arith_width_bits(node, source, type_map),
                 ) {
                     return;
@@ -845,6 +896,7 @@ impl Int30C {
                 if self.expression_fits_in_unsigned(
                     node,
                     source,
+                    type_map,
                     self.arith_width_bits(node, source, type_map),
                 ) {
                     return;
@@ -906,6 +958,7 @@ impl Int30C {
                 if self.expression_fits_in_unsigned(
                     node,
                     source,
+                    type_map,
                     self.arith_width_bits(node, source, type_map),
                 ) {
                     return;
@@ -1275,6 +1328,7 @@ impl Int30C {
                     if self.expression_fits_in_unsigned(
                         node,
                         source,
+                        type_map,
                         self.arith_width_bits(node, source, type_map),
                     ) {
                         return;
