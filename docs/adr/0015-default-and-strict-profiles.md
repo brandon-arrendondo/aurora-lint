@@ -114,7 +114,10 @@ safety-critical user unprotected.
      enforcement. `strict` applies the rules as written (ADR-0001) with full
      pedantry; `default` applies a reasonable relaxation grounded in how C is
      typically built and used. Presets are values of the policy and
-     environment axes.
+     environment axes. The hosted or freestanding value a preset picks for
+     the environment axis is a trust choice about the library, distinct from
+     the target facts written under `[environment]`: the two uses of the word
+     do not collide.
    - **Facts** describe the target the code is built for: the integer data
      model and type sizes, the width of `wchar_t`, whether plain `char` is
      signed, and in future the language edition, library groupings such as
@@ -132,7 +135,7 @@ safety-critical user unprotected.
      configuration names declares nothing. A fact no bundle or key sets is
      unknown and receives only the ISO C guarantee.
    - Every declared fact is part of the settings hash. The run label names
-     only the enforcement preset (Decision 7, labels).
+     only the enforcement preset (Decision 8).
 5. **The oracle is independent of both axes.** It records the strict,
    freestanding truth for each line (ADR-0014), plus a tag on every row a
    relaxation affects: assert-dominated, dependent site, or library-contract

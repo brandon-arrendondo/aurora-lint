@@ -4501,7 +4501,9 @@ fn a_preset_writes_its_bundle_as_active_lines_and_leaves_the_rest_unknown() {
         "{text}"
     );
     assert!(
-        text.contains("# wchar_t_bits = 16  # unknown unless declared"),
+        text.contains(
+            "# wchar_t_bits = 16  # unknown unless declared (16 on Windows, 32 on Linux)"
+        ),
         "{text}"
     );
     assert!(
@@ -4768,4 +4770,29 @@ fn check_config_names_a_bad_set_and_a_bad_manifest_each_once_and_exits_one() {
         errors.iter().any(|l| l.contains("int_bits = 8 is below")),
         "{stderr}"
     );
+}
+
+#[test]
+fn check_config_gives_one_message_per_problem() {
+    let (code, _out, stderr) = run_aurora_lint(&[
+        "--check-config",
+        "--set",
+        "int_bits=1",
+        "--set",
+        "char_bits=7",
+    ]);
+    assert_eq!(code, 1, "{stderr}");
+    let errors: Vec<&str> = stderr.lines().filter(|l| l.starts_with("error:")).collect();
+    assert_eq!(errors.len(), 2, "{stderr}");
+    assert!(
+        errors.iter().any(|l| l.contains("char_bits = 7")),
+        "{stderr}"
+    );
+    assert!(
+        errors.iter().any(|l| l.contains("int_bits = 1")),
+        "{stderr}"
+    );
+    // An argument the parser itself rejects is a syntax error: exit 2.
+    let (code, _out, _stderr) = run_aurora_lint(&["--check-config", "--data-model", "lp128"]);
+    assert_eq!(code, 2);
 }

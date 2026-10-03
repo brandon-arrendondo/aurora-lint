@@ -1680,7 +1680,7 @@ impl Int30C {
             let start_point = node.start_position();
             // `wchar_t` is unknown unless declared, and the wrap may rest on
             // the widest it could be: say so, so the way out is named.
-            let wchar_undeclared = self.data_model.get().wchar_bytes().is_none()
+            let wchar_undeclared = self.data_model.get().wchar_bits().is_none()
                 && args[..2].iter().any(|a| {
                     a.split_whitespace()
                         .collect::<String>()
@@ -1694,7 +1694,7 @@ impl Int30C {
                     args[0],
                     args[1],
                     if wchar_undeclared {
-                        " (the width of wchar_t is not declared; wchar_t_bits settles it)"
+                        " (the width of wchar_t is not declared; declare wchar_t_bits and a data model)"
                     } else {
                         ""
                     }
