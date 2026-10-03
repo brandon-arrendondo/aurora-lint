@@ -79,15 +79,22 @@ pub fn is_open_bottom(min: i64) -> bool {
 /// `high` being that width's largest value.
 ///
 /// An open top is the type's own limit, whatever width the type has, so it
-/// is read as `high`. An open top moved by arithmetic or a guard stays the
-/// same distance from the limit: `i < count` leaves `i` one below it, so
-/// `i + 1` reaches the limit and no further, where reading every open end as
-/// `high` itself made it one past. Never below the range's own bottom, and
-/// left alone when the bottom is already past `high` (the range sits wholly
-/// above the width and reports as definite).
-pub fn bound_open_top(min: i64, max: i64, high: i64) -> i64 {
+/// is read as `high`. An open top moved by arithmetic or by a guard against
+/// an operand of the checked type stays the same distance from the limit
+/// (`keep_distance`): `i < count` leaves `i` one below it, so `i + 1` reaches
+/// the limit and no further, where reading every open end as `high` itself
+/// made it one past. A guard against a WIDER type says nothing about the
+/// checked one (`int i < long n` leaves `i` anywhere in `int`), so there the
+/// end is `high` itself. Never below the range's own bottom, and left alone
+/// when the bottom is already past `high` (the range sits wholly above the
+/// width and reports as definite).
+pub fn bound_open_top(min: i64, max: i64, high: i64, keep_distance: bool) -> i64 {
     if is_open_top(max) && min <= high {
-        (high - (i64::MAX - max)).max(min)
+        if keep_distance {
+            (high - (i64::MAX - max)).max(min)
+        } else {
+            high
+        }
     } else {
         max
     }
@@ -95,9 +102,13 @@ pub fn bound_open_top(min: i64, max: i64, high: i64) -> i64 {
 
 /// [`bound_open_top`] for the bottom of a range, `low` being the checked
 /// width's smallest value.
-pub fn bound_open_bottom(min: i64, max: i64, low: i64) -> i64 {
+pub fn bound_open_bottom(min: i64, max: i64, low: i64, keep_distance: bool) -> i64 {
     if is_open_bottom(min) && max >= low {
-        (low + (min - i64::MIN)).min(max)
+        if keep_distance {
+            (low + (min - i64::MIN)).min(max)
+        } else {
+            low
+        }
     } else {
         min
     }
