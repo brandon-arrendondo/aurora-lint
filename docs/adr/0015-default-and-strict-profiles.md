@@ -114,10 +114,10 @@ safety-critical user unprotected.
      enforcement. `strict` applies the rules as written (ADR-0001) with full
      pedantry; `default` applies a reasonable relaxation grounded in how C is
      typically built and used. Presets are values of the policy and
-     environment axes. The hosted or freestanding value a preset picks for
-     the environment axis is a trust choice about the library, distinct from
-     the target facts written under `[environment]`: the two uses of the word
-     do not collide.
+     environment axes. The `[environment]` section holds two different
+     things that do not collide: the hosted or freestanding `kind`, which a
+     preset picks as a trust choice about the library, and the target facts
+     below, which a preset never sets.
    - **Facts** describe the target the code is built for: the integer data
      model and type sizes, the width of `wchar_t`, whether plain `char` is
      signed, and in future the language edition, library groupings such as

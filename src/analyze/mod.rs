@@ -460,7 +460,7 @@ fn load_project_context(
         ),
         ("prescan_scope".to_string(), prescan_scope_key),
         // The limit macros and sizeof the macro constants are resolved with:
-        // every integer fact, not a preset name, since a project may override
+        // every integer fact, not a data model's name, since a project may override
         // any of them. No implicit value is registered, so a cache built when
         // the data model alone decided them is refused rather than guessed.
         ("int_facts".to_string(), data_model.fingerprint()),

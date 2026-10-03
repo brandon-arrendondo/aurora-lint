@@ -713,9 +713,9 @@ pub struct AnalysisSettings {
     pub libc: Option<Libc>,
     /// How `#include` names match files.
     pub include_names: IncludeNames,
-    /// The data model preset selected (`DataModel::Iso` unless declared).
+    /// The data model selected (`DataModel::Iso` unless declared).
     pub data_model: DataModel,
-    /// The resolved integer facts: the preset's bundle under the project's
+    /// The resolved integer facts: the data model's bundle under the project's
     /// own keys under the command line. What the analyses query.
     pub facts: IntFacts,
     /// The project's declared allocators and deallocators.
@@ -815,13 +815,13 @@ impl AnalysisSettings {
             }
         }
 
-        // The preset's bundle, then each fact the project wrote, then each
+        // The data model's bundle, then each fact the project wrote, then each
         // the command line wrote: a higher layer replaces a lower one
         // whatever the order of the lines. A project line that only repeats
         // the bundle of the data model its own file names says nothing the
         // model does not: when the command line names another model, that
         // model's bundle replaces the whole of it, the repeated lines too.
-        let mut facts = IntFacts::preset(data_model);
+        let mut facts = IntFacts::from_model(data_model);
         if let Some(e) = facts_config {
             let file_model = if e.cli.contains("data_model") {
                 e.file_data_model.unwrap_or_default()
@@ -966,7 +966,7 @@ impl AnalysisSettings {
             identity["data_model"] = serde_json::json!(self.data_model);
         }
         // Every fact the project or the command line declared, under its own
-        // key; a preset's bundle is already named by `data_model`.
+        // key; a data model's bundle is already named by `data_model`.
         for (fact, value) in self.facts.declared() {
             identity[fact.key()] = if fact.is_flag() {
                 serde_json::json!(value != 0)
@@ -1077,7 +1077,7 @@ fn config_entry(out: &mut String, active: bool, key: &str, value: &str, note: &s
     out.push('\n');
 }
 
-/// The value a commented-out example for `fact` shows: the first preset that
+/// The value a commented-out example for `fact` shows: the first data model that
 /// loads it, or the ISO minimum.
 fn example_fact_value(fact: Fact) -> String {
     let loaded = DataModel::ALL
@@ -1094,7 +1094,7 @@ fn example_fact_value(fact: Fact) -> String {
 /// `profile` key and the `[policy]` and `[environment]` tables, every key
 /// with a one-line description. A key at its built-in default is commented
 /// out; one that departs from it is an active line, and a fact a data-model
-/// preset loads says which. Built from the same tables as `--list-options`
+/// data model loads says which. Built from the same tables as `--list-options`
 /// and validation ([`OPTIONS`], [`Fact::ALL`], [`DataModel::bundle`]), so it
 /// cannot drift from them, and it resolves to exactly `current`.
 pub fn render_config_settings(current: &AnalysisSettings) -> String {
@@ -1168,7 +1168,7 @@ pub fn render_config_settings(current: &AnalysisSettings) -> String {
         "",
     );
     out.push_str(&format!(
-        "# The integer data model preset: {}. Unset (iso), only what ISO C guarantees is credited.\n",
+        "# The integer data model: {}. Unset (iso), only what ISO C guarantees is credited.\n",
         DataModel::ALL.map(|m| m.name()).join(", ")
     ));
     config_entry(
@@ -1179,7 +1179,7 @@ pub fn render_config_settings(current: &AnalysisSettings) -> String {
         "",
     );
     out.push_str(
-        "# Integer facts: the preset loads some; a key here overrides it (and must stay at or\n\
+        "# Integer facts: the data model loads some; a key here overrides it (and must stay at or\n\
          # above the ISO minimum and in rank order). Unset facts are unknown to the analysis.\n",
     );
     for fact in Fact::ALL.into_iter() {
@@ -1199,7 +1199,7 @@ pub fn render_config_settings(current: &AnalysisSettings) -> String {
                     true,
                     fact.key(),
                     &text,
-                    &format!("from preset: {}", current.data_model.name()),
+                    &format!("from data model: {}", current.data_model.name()),
                 );
             }
             (Some(text), true) if current.facts.source(fact) == FactSource::Cli => {
@@ -1258,7 +1258,7 @@ pub struct FactRow {
     pub key: &'static str,
     /// The value, `>= N` for a fact only the ISO floor bounds, or `unknown`.
     pub value: String,
-    /// `cli`, `config`, `preset:NAME`, `iso-floor` or `unknown`.
+    /// `cli`, `config`, `data-model:NAME`, `iso-floor` or `unknown`.
     pub source: String,
     /// What the fact is.
     pub description: &'static str,
@@ -1353,7 +1353,7 @@ pub fn render_text(current: &AnalysisSettings) -> String {
         ));
     }
     out.push_str(&format!(
-        "\nINTEGER FACTS (preset {}; precedence: cli, config, preset, iso-floor)\n",
+        "\nINTEGER FACTS (data model {}; precedence: cli, config, data model, iso-floor)\n",
         current.data_model
     ));
     out.push_str(&format!(

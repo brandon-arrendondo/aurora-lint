@@ -76,8 +76,8 @@ be set explicitly, down to single options:
     kind = "freestanding"       # "hosted" | "freestanding"; overrides the preset
     libc = "newlib"             # iso-posix | glibc | musl | newlib | picolibc | custom
     include_names = "exact"     # "exact" | "case-insensitive" (as cl on Windows)
-    data_model = "lp64"         # preset: "iso" (the default) | "ilp32" | "lp64" | "llp64"
-    # int_bits = 32             # integer facts the preset loads; write one to
+    data_model = "lp64"         # "iso" (the default) | "ilp32" | "lp64" | "llp64"
+    # int_bits = 32             # integer facts the data model loads; write one to
     #                           # override it (see below)
 
     [environment.overrides]
@@ -119,7 +119,7 @@ settings that never mention it keep the hash they always had.
 
 Integer widths are implementation-defined, so the scan credits only what it is
 told. Each width is a plain key under ``[environment]``, and ``data_model`` is a
-named **preset**: a bundle of those keys, loaded as if its lines were in the
+named bundle of those keys, loaded as if its lines were in the
 configuration. Selecting ``data_model = "lp64"`` and writing the keys it loads
 by hand are the same thing.
 
@@ -211,7 +211,7 @@ by hand are the same thing.
      - unknown
      - none
 
-``iso``, the default preset, loads nothing. A preset is nothing but a list of
+``iso``, the default data model, loads nothing. A data model is nothing but a list of
 these keys: writing ``lp64``'s lines under ``[environment]`` gives the same
 facts and findings as selecting it; the settings hash and the data model shown
 by ``--list-options`` differ. Facts
@@ -222,39 +222,39 @@ Where a fact comes from, highest precedence first:
 
 1. the command line (``--set key=value``, ``--data-model``);
 2. the project's own ``[environment]`` keys;
-3. the selected preset's bundle;
+3. the selected data model's bundle;
 4. the floor, which is what ISO C guarantees: ``CHAR_BIT`` at least 8,
    ``short`` and ``int`` at least 16 bits, ``long`` at least 32, ``long long``
    at least 64, the rank order, and the exact width of ``int32_t`` and its
    kind.
 
-An explicit key beats the preset whatever order the lines are in. A key that
+An explicit key beats the data model whatever order the lines are in. A key that
 only repeats the value of the bundle its own configuration names declares
 nothing: it is not part of the settings hash, and a ``--set`` that repeats the
-preset hashes the same as one in a file. When the command line names another
+data model hashes the same as one in a file. When the command line names another
 data model, that model's bundle replaces the file's whole bundle, the lines the
 file only repeated from its own model included, while a line that differs from
 the file's model still wins. ``--list-options`` shows who wrote a line
-(``cli`` or ``config``) even when its value equals the preset's. A fact
+(``cli`` or ``config``) even when its value equals the data model's. A fact
 nothing sets is **unknown**, and a scan then credits only the floor: a value is
 proven to fit a type only inside its guaranteed range, a defect that occurs at
 some conforming width (``unsigned char * unsigned char`` overflowing a 16-bit
 ``int``) is reported, and nothing is proven or reported through a guessed
 value. No data model sets ``wchar_t_bits`` but ``llp64`` (a Windows-only
 model): ``ilp32`` and ``lp64`` are Linux and Windows targets alike, so a
-project declares its own. No preset sets ``char_signed``; until it is declared,
+project declares its own. No data model sets ``char_signed``; until it is declared,
 ``CHAR_MAX`` and ``CHAR_MIN`` are not numbers, and a proof that goes through
 one is lost.
 
 .. code-block:: toml
 
     [environment]
-    data_model = "ilp32"        # the preset: loads 32-bit int, long and pointers
+    data_model = "ilp32"        # the data model: loads 32-bit int, long and pointers
     wchar_t_bits = 16           # override: for a Windows build, whose wchar_t is 16 bits
     char_signed = true          # plain char is signed on this target
 
 ``aurora-lint --list-options`` prints every integer fact with its value and
-where it came from (``cli``, ``config``, ``preset:NAME``, ``iso-floor`` or
+where it came from (``cli``, ``config``, ``data-model:NAME``, ``iso-floor`` or
 ``unknown``), one line per fact, so you can see exactly what a scan will
 credit; ``--list-options json`` carries the same rows under ``facts``.
 ``aurora-lint --check-config`` resolves the settings from the manifest and the
@@ -264,14 +264,14 @@ one ``error:`` line per problem. Both use the code a scan runs, so they cannot
 disagree with it.
 
 Precedence, highest first: the command line (``--set``, ``--data-model``), the
-project's own keys, the data-model preset's bundle, the ISO minimum. An explicit
-key beats the preset whatever the order of the lines; a key that only repeats
-what the preset loads declares nothing.
+project's own keys, the data model's bundle, the ISO minimum. An explicit
+key beats the data model whatever the order of the lines; a key that only repeats
+what the data model loads declares nothing.
 
 ``aurora-lint --write-config FILE`` writes a complete configuration with every
 settings key and a one-line description of each. A key at its built-in default
-is commented out; with ``--data-model X`` or ``--set`` the preset's bundle
-values are active lines marked ``# from preset: X``, and a fact no preset sets
+is commented out; with ``--data-model X`` or ``--set`` the data model's bundle
+values are active lines marked ``# from data model: X``, and a fact no data model sets
 is written commented out as ``# unknown unless declared``. It is generated from
 the same tables as ``--list-options`` and the validation, so it cannot drift
 from them, and the file it writes passes ``--check-config`` unchanged and

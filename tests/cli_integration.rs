@@ -4101,11 +4101,11 @@ fn resolved_settings(args: &[&str]) -> Result<serde_json::Value, String> {
 }
 
 #[test]
-fn an_integer_fact_overrides_the_preset_and_enters_the_settings_hash() {
+fn an_integer_fact_overrides_the_data_model_and_enters_the_settings_hash() {
     let plain = resolved_settings(&["--data-model", "lp64"]).unwrap();
     let wide = resolved_settings(&["--data-model", "lp64", "--set", "int_bits=64"]).unwrap();
     let narrow = resolved_settings(&["--data-model", "lp64", "--set", "int_bits=16"]).unwrap();
-    // A preset's own widths are named by the preset; only a declared override
+    // A data model's own widths are named by the data model; only a declared override
     // is a key of its own.
     assert!(plain["int_bits"].is_null(), "{plain}");
     assert_eq!(narrow["int_bits"], 16, "{narrow}");
@@ -4122,10 +4122,10 @@ fn an_integer_fact_overrides_the_preset_and_enters_the_settings_hash() {
 }
 
 #[test]
-fn an_explicit_key_beats_the_preset_whatever_the_order_and_the_command_line_beats_both() {
+fn an_explicit_key_beats_the_data_model_whatever_the_order_and_the_command_line_beats_both() {
     let dir = tempfile::tempdir().unwrap();
     let manifest = dir.path().join("rules.toml");
-    // The preset is named AFTER the override: the order of the lines is no part
+    // The data model is named AFTER the override: the order of the lines is no part
     // of the precedence.
     std::fs::write(
         &manifest,
@@ -4139,8 +4139,8 @@ fn an_explicit_key_beats_the_preset_whatever_the_order_and_the_command_line_beat
     assert_eq!(from_manifest["data_model"], "lp64");
     let from_cli = resolved_settings(&["-m", m, "--set", "int_bits=64"]).unwrap();
     assert_eq!(from_cli["int_bits"], 64, "{from_cli}");
-    // Repeating the preset's own value is the command line's to say, and still
-    // beats the file's 16: the facts are the preset's, and so is the hash.
+    // Repeating the data model's own value is the command line's to say, and still
+    // beats the file's 16: the facts are the data model's, and so is the hash.
     let repeated = fact_values(&["-m", m, "--set", "int_bits=32"]);
     assert!(
         repeated.contains(&("int_bits".to_string(), "32".to_string())),
@@ -4185,7 +4185,7 @@ fn a_width_that_breaks_the_rank_order_is_refused() {
 }
 
 #[test]
-fn an_unknown_fact_a_bad_value_and_an_unknown_preset_are_each_refused() {
+fn an_unknown_fact_a_bad_value_and_an_unknown_data_model_are_each_refused() {
     let err = resolved_settings(&["--set", "int_bitz=16"]).unwrap_err();
     assert!(err.contains("unknown option 'int_bitz'"), "{err}");
     let err = resolved_settings(&["--set", "int_bits=wide"]).unwrap_err();
@@ -4291,7 +4291,7 @@ fn check_config_and_a_scan_judge_a_configuration_by_the_same_code() {
 
 #[test]
 fn list_options_names_the_source_of_every_integer_fact() {
-    // A preset, a project override, and a command-line override of a
+    // A data model, a project override, and a command-line override of a
     // different fact: each fact carries the layer it came from.
     let (_dir, m) = manifest_with_environment("data_model = \"lp64\"\nint_bits = 16\n");
     let (code, stdout, stderr) = run_aurora_lint(&[
@@ -4320,7 +4320,7 @@ fn list_options_names_the_source_of_every_integer_fact() {
     };
     assert_eq!(
         source("short_bits"),
-        ("16".to_string(), "preset:lp64".to_string())
+        ("16".to_string(), "data-model:lp64".to_string())
     );
     assert_eq!(source("int_bits"), ("16".to_string(), "config".to_string()));
     assert_eq!(source("long_bits"), ("64".to_string(), "cli".to_string()));
@@ -4332,7 +4332,7 @@ fn list_options_names_the_source_of_every_integer_fact() {
         source("wchar_t_bits"),
         ("unknown".to_string(), "unknown".to_string())
     );
-    // Under no preset a width is only the ISO floor.
+    // Under no data model a width is only the ISO floor.
     let (code, stdout, _err) = run_aurora_lint(&["--list-options", "json"]);
     assert_eq!(code, 0);
     let iso: serde_json::Value = serde_json::from_str(&stdout).unwrap();
@@ -4349,14 +4349,14 @@ fn list_options_names_the_source_of_every_integer_fact() {
     assert!(
         text.lines().any(|l| l.starts_with("wchar_t_bits")
             && l.contains("16")
-            && l.contains("preset:llp64")),
+            && l.contains("data-model:llp64")),
         "{text}"
     );
 }
 
 #[test]
 fn a_profile_keeps_the_manifests_data_model() {
-    // A preset chooses policy, not what the project is built for.
+    // A data model chooses policy, not what the project is built for.
     let dir = tempfile::tempdir().unwrap();
     let manifest = dir.path().join("rules.toml");
     std::fs::write(
@@ -4445,7 +4445,7 @@ fn a_written_config_keeps_what_the_command_line_set_as_a_declaration() {
         "{text}"
     );
     assert!(
-        text.contains("\nlong_bits = 64  # from preset: lp64\n"),
+        text.contains("\nlong_bits = 64  # from data model: lp64\n"),
         "{text}"
     );
     let from_file = resolved_settings(&["-m", &path]).unwrap();
@@ -4476,7 +4476,7 @@ fn a_written_config_names_every_key_and_comments_out_the_defaults() {
     ] {
         assert!(text.contains(&format!("# {key} = ")), "{key}: {text}");
     }
-    // Facts no preset sets are marked, never given a value of their own.
+    // Facts no data model sets are marked, never given a value of their own.
     assert!(
         text.contains("# char_signed = true  # unknown unless declared"),
         "{text}"
@@ -4493,11 +4493,11 @@ fn a_written_config_names_every_key_and_comments_out_the_defaults() {
 }
 
 #[test]
-fn a_preset_writes_its_bundle_as_active_lines_and_leaves_the_rest_unknown() {
+fn a_data_model_writes_its_bundle_as_active_lines_and_leaves_the_rest_unknown() {
     let (_dir, _path, text) = written_config(&["--data-model", "ilp32"]);
     assert!(text.contains("\ndata_model = \"ilp32\"\n"), "{text}");
     assert!(
-        text.contains("\nint_bits = 32  # from preset: ilp32\n"),
+        text.contains("\nint_bits = 32  # from data model: ilp32\n"),
         "{text}"
     );
     assert!(
@@ -4554,7 +4554,7 @@ fn write_config_refuses_settings_a_scan_would_refuse() {
 #[test]
 fn an_edited_written_config_is_checked_like_any_other() {
     let (_dir, path, text) = written_config(&["--data-model", "lp64"]);
-    let edited = text.replace("int_bits = 32  # from preset: lp64", "int_bits = 8");
+    let edited = text.replace("int_bits = 32  # from data model: lp64", "int_bits = 8");
     std::fs::write(&path, edited).unwrap();
     let (code, _out, stderr) = run_aurora_lint(&["--check-config", "-m", &path]);
     assert_ne!(code, 0);
@@ -4564,8 +4564,8 @@ fn an_edited_written_config_is_checked_like_any_other() {
     );
 }
 
-/// The keys a preset loads, as `--list-options` reports them.
-fn preset_keys(model: &str) -> Vec<(String, String)> {
+/// The keys a data model loads, as `--list-options` reports them.
+fn data_model_keys(model: &str) -> Vec<(String, String)> {
     let (code, stdout, stderr) =
         run_aurora_lint(&["--list-options", "json", "--data-model", model]);
     assert_eq!(code, 0, "{stderr}");
@@ -4574,7 +4574,7 @@ fn preset_keys(model: &str) -> Vec<(String, String)> {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|f| f["source"].as_str().unwrap().starts_with("preset:"))
+        .filter(|f| f["source"].as_str().unwrap().starts_with("data-model:"))
         .map(|f| {
             (
                 f["key"].as_str().unwrap().to_string(),
@@ -4625,16 +4625,16 @@ fn fixture_findings(extra: &[&str]) -> Vec<String> {
 }
 
 #[test]
-fn a_preset_is_exactly_the_keys_a_user_can_write() {
+fn a_data_model_is_exactly_the_keys_a_user_can_write() {
     for model in ["ilp32", "lp64", "llp64"] {
-        let keys = preset_keys(model);
+        let keys = data_model_keys(model);
         assert!(keys.len() >= 9, "{model}: {keys:?}");
         let sets: Vec<String> = keys.iter().map(|(k, v)| format!("{k}={v}")).collect();
         let mut by_hand: Vec<&str> = Vec::new();
         for s in &sets {
             by_hand.extend(["--set", s.as_str()]);
         }
-        // The same resolved facts as selecting the preset...
+        // The same resolved facts as selecting the data model...
         assert_eq!(
             fact_values(&by_hand),
             fact_values(&["--data-model", model]),
@@ -4697,7 +4697,10 @@ fn a_generated_config_yields_to_a_later_data_model_whole() {
 #[test]
 fn a_genuine_override_in_a_file_survives_a_later_data_model() {
     let (_dir, path, text) = written_config(&["--data-model", "lp64"]);
-    let edited = text.replace("short_bits = 16  # from preset: lp64", "short_bits = 32");
+    let edited = text.replace(
+        "short_bits = 16  # from data model: lp64",
+        "short_bits = 32",
+    );
     assert_ne!(edited, text);
     std::fs::write(&path, edited).unwrap();
     for model in ["ilp32", "lp64"] {
@@ -4710,7 +4713,7 @@ fn a_genuine_override_in_a_file_survives_a_later_data_model() {
 }
 
 #[test]
-fn a_key_repeating_the_preset_hashes_alike_from_the_command_line_and_a_file() {
+fn a_key_repeating_the_data_model_hashes_alike_from_the_command_line_and_a_file() {
     let bare = resolved_settings(&["--data-model", "lp64"]).unwrap();
     let by_flag = resolved_settings(&["--data-model", "lp64", "--set", "int_bits=32"]).unwrap();
     let (_dir, m) = manifest_with_environment("data_model = \"lp64\"\nint_bits = 32\n");

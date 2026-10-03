@@ -1,7 +1,7 @@
 /*
  * Rule: INT32-C
  * Source: regression
- * Status: PASS - a width declared on its own settles the same proof as a preset
+ * Status: PASS - a width declared on its own settles the same proof as a data model
  * Settings: int_bits=32
  *
  * A guard bounds the top of `depth`; its bottom is the type's own. Declaring

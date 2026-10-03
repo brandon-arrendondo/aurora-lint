@@ -4,8 +4,8 @@
  * Status: FAIL - the project declares a 16-bit int
  * Settings: data_model=lp64, int_bits=16
  *
- * The lp64 preset loads int_bits = 32, where 1 << 27 fits. A project that
- * writes int_bits = 16 under [environment] overrides the preset's value
+ * The lp64 data model loads int_bits = 32, where 1 << 27 fits. A project that
+ * writes int_bits = 16 under [environment] overrides the data model's value
  * whatever the order of the lines, and the shift no longer fits an int.
  */
 

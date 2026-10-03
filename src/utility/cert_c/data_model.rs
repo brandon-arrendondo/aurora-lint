@@ -7,15 +7,15 @@
 //! Integer widths are implementation-defined (ADR-0011), so the scan credits
 //! only what it is told. The facts are plain keys (`int_bits`, `long_bits`,
 //! `pointer_bits`, `wchar_t_bits`, `char_signed`, ...). A data model is a
-//! named **preset**: a bundle of those keys ([`DataModel::bundle`]), loaded as
+//! named bundle of those keys ([`DataModel::bundle`]), loaded as
 //! if its lines were in the project's configuration. Precedence, highest
 //! first: the command line, the project's own `[environment]` keys, the
-//! selected preset's bundle, and the floor, which is what ISO C guarantees
+//! selected data model's bundle, and the floor, which is what ISO C guarantees
 //! (C11 5.2.4.2.1: `CHAR_BIT` at least 8, `short` and `int` at least 16 bits,
 //! `long` at least 32, `long long` at least 64; the conversion-rank order of
 //! 6.3.1.1p1; the exact width of an exact-width type such as `int32_t`,
-//! 7.20.1.1). `iso`, the default preset, loads nothing. Anything neither the
-//! preset nor the project sets is **unknown**.
+//! 7.20.1.1). `iso`, the default data model, loads nothing. Anything neither the
+//! data model nor the project sets is **unknown**.
 //!
 //! So each question has two answers, queried on the resolved [`IntFacts`]. A
 //! guaranteed one (`min_width`, `guaranteed_range`) is what a proof that a
@@ -23,7 +23,7 @@
 //! one (`exact_width`, `range`, `limit_macro`, `sizeof_bytes`) is `None`
 //! unless a fact fixes it, and a caller must then treat the quantity as
 //! unknown in both directions. Nothing outside settings resolution branches
-//! on which preset was named.
+//! on which data model was named.
 
 use serde::{Deserialize, Serialize};
 
@@ -136,9 +136,9 @@ impl IntWidth {
 }
 
 /// A named bundle of the integer facts a project can also write one by one
-/// (`[environment]` keys). Selecting a preset loads its bundle as if its lines
+/// (`[environment]` keys). Selecting a data model loads its bundle as if its lines
 /// were in the configuration, under whatever the project declares itself; the
-/// scan never branches on which preset was named, only on the resolved
+/// scan never branches on which data model was named, only on the resolved
 /// [`IntFacts`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -155,7 +155,7 @@ pub enum DataModel {
 }
 
 impl DataModel {
-    /// Every preset, in the order `--list-options` shows them.
+    /// Every data model, in the order `--list-options` shows them.
     pub const ALL: [DataModel; 4] = [
         DataModel::Iso,
         DataModel::Ilp32,
@@ -163,7 +163,7 @@ impl DataModel {
         DataModel::Llp64,
     ];
 
-    /// The preset's name, as `data_model` spells it.
+    /// The data model's name, as `data_model` spells it.
     pub const fn name(self) -> &'static str {
         match self {
             DataModel::Iso => "iso",
@@ -173,8 +173,8 @@ impl DataModel {
         }
     }
 
-    /// The facts this preset loads: plain `fact = value` lines. This table is
-    /// the only place a preset's widths are written down.
+    /// The facts this data model loads: plain `fact = value` lines. This table is
+    /// the only place a data model's widths are written down.
     pub const fn bundle(self) -> &'static [(Fact, u32)] {
         use Fact::*;
         match self {
@@ -222,7 +222,7 @@ impl DataModel {
 
 /// One integer fact of the target. Each is an `[environment]` key a project
 /// can write, and every fact a data model's bundle loads is one of them: a
-/// preset is nothing but a list of these keys.
+/// data model is nothing but a list of these keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Fact {
     /// `CHAR_BIT`.
@@ -372,8 +372,8 @@ pub enum FactSource {
     Cli,
     /// The project's `[environment]`.
     Config,
-    /// The selected preset's bundle.
-    Preset(DataModel),
+    /// The selected data model's bundle.
+    Model(DataModel),
     /// Not set anywhere: only the ISO guarantee is known.
     Unknown,
 }
@@ -384,13 +384,13 @@ impl FactSource {
         match self {
             FactSource::Cli => "cli".to_string(),
             FactSource::Config => "config".to_string(),
-            FactSource::Preset(model) => format!("preset:{}", model.name()),
+            FactSource::Model(model) => format!("data-model:{}", model.name()),
             FactSource::Unknown => "unknown".to_string(),
         }
     }
 }
 
-/// The resolved integer facts a scan credits: the selected preset's bundle,
+/// The resolved integer facts a scan credits: the selected data model's bundle,
 /// then the project's own keys, then the command line. Rules and analyses
 /// query this one table; a fact nothing sets is unknown, and a proof that
 /// needs it may use only the ISO guarantee (`min_width`, `guaranteed_range`).
@@ -398,7 +398,7 @@ impl FactSource {
 pub struct IntFacts {
     values: [Option<u32>; 13],
     sources: [FactSource; 13],
-    /// The preset whose bundle is the baseline: what a key must differ from
+    /// The data model whose bundle is the baseline: what a key must differ from
     /// to count as declared.
     model: DataModel,
 }
@@ -411,22 +411,22 @@ impl Default for IntFacts {
 
 impl From<DataModel> for IntFacts {
     fn from(model: DataModel) -> Self {
-        IntFacts::preset(model)
+        IntFacts::from_model(model)
     }
 }
 
 impl IntFacts {
     /// Nothing declared: the ISO guarantees alone.
-    pub const ISO: IntFacts = IntFacts::preset(DataModel::Iso);
+    pub const ISO: IntFacts = IntFacts::from_model(DataModel::Iso);
     /// The `ilp32` bundle alone.
-    pub const ILP32: IntFacts = IntFacts::preset(DataModel::Ilp32);
+    pub const ILP32: IntFacts = IntFacts::from_model(DataModel::Ilp32);
     /// The `lp64` bundle alone.
-    pub const LP64: IntFacts = IntFacts::preset(DataModel::Lp64);
+    pub const LP64: IntFacts = IntFacts::from_model(DataModel::Lp64);
     /// The `llp64` bundle alone.
-    pub const LLP64: IntFacts = IntFacts::preset(DataModel::Llp64);
+    pub const LLP64: IntFacts = IntFacts::from_model(DataModel::Llp64);
 
     /// The facts `model`'s bundle loads, and nothing else.
-    pub const fn preset(model: DataModel) -> IntFacts {
+    pub const fn from_model(model: DataModel) -> IntFacts {
         let mut facts = IntFacts {
             values: [None; 13],
             sources: [FactSource::Unknown; 13],
@@ -437,7 +437,7 @@ impl IntFacts {
         while i < bundle.len() {
             let (fact, value) = bundle[i];
             facts.values[fact.index()] = Some(value);
-            facts.sources[fact.index()] = FactSource::Preset(model);
+            facts.sources[fact.index()] = FactSource::Model(model);
             i += 1;
         }
         facts
@@ -466,8 +466,8 @@ impl IntFacts {
         self.sources[fact.index()]
     }
 
-    /// The value the selected preset's bundle gives `fact`, if it loads it.
-    pub fn preset_value(&self, fact: Fact) -> Option<u32> {
+    /// The value the selected data model's bundle gives `fact`, if it loads it.
+    pub fn bundle_value(&self, fact: Fact) -> Option<u32> {
         self.model
             .bundle()
             .iter()
@@ -476,15 +476,15 @@ impl IntFacts {
     }
 
     /// Whether a project or the command line wrote `fact` with a value the
-    /// selected preset's bundle does not already give it. A line that only
+    /// selected data model's bundle does not already give it. A line that only
     /// repeats the bundle declares nothing, whichever layer wrote it, so a
     /// redundant `--set` and a redundant config line are the same settings.
     pub fn is_declared(&self, fact: Fact) -> bool {
         matches!(self.source(fact), FactSource::Cli | FactSource::Config)
-            && self.get(fact) != self.preset_value(fact)
+            && self.get(fact) != self.bundle_value(fact)
     }
 
-    /// The facts that depart from the preset's bundle, for the settings hash
+    /// The facts that depart from the data model's bundle, for the settings hash
     /// and the resolved-settings JSON: the hash identifies the resolved
     /// facts, whatever layer wrote them.
     pub fn declared(&self) -> impl Iterator<Item = (Fact, u32)> + '_ {
@@ -509,12 +509,12 @@ impl IntFacts {
             .join(",")
     }
 
-    /// Whether plain `char` is signed, when declared. No preset says.
+    /// Whether plain `char` is signed, when declared. No data model says.
     pub fn char_signed(&self) -> Option<bool> {
         self.get(Fact::CharSigned).map(|v| v != 0)
     }
 
-    /// Bits in a `wchar_t`, when declared or loaded by the preset.
+    /// Bits in a `wchar_t`, when declared or loaded by the data model.
     pub fn wchar_bits(&self) -> Option<u32> {
         self.get(Fact::WcharBits)
     }
@@ -550,7 +550,7 @@ impl IntFacts {
                 }
                 continue;
             }
-            // A preset's bundle is valid by construction; check what a project
+            // A data model's bundle is valid by construction; check what a project
             // or the command line wrote.
             if !matches!(self.source(fact), FactSource::Cli | FactSource::Config) {
                 continue;
@@ -791,7 +791,7 @@ impl IntFacts {
     /// The value of a `<limits.h>` or `<stdint.h>` limit macro when it is
     /// fixed. The exact-width macros (`INT32_MAX`, `UINT8_MAX`, ...) are
     /// fixed always (C11 7.20.2.1); the others when the facts fix the width.
-    /// `CHAR_MIN` and `CHAR_MAX` need `char_signed` as well: no preset says
+    /// `CHAR_MIN` and `CHAR_MAX` need `char_signed` as well: no data model says
     /// whether plain `char` is signed. A value outside `i64` is `None`.
     pub fn limit_macro(&self, name: &str) -> Option<i64> {
         let exact = |bits: u32, signed: bool, max: bool| -> Option<i64> {
@@ -897,17 +897,17 @@ mod tests {
     }
 
     #[test]
-    fn a_preset_loads_a_bundle_and_no_preset_names_wchar_or_char_signedness() {
+    fn a_data_model_loads_a_bundle_and_no_data_model_names_wchar_or_char_signedness() {
         assert_eq!(IntFacts::LP64.exact_width(Rank::Long), Some(64));
         assert_eq!(IntFacts::LLP64.exact_width(Rank::Long), Some(32));
         assert_eq!(IntFacts::ILP32.pointer_width(), Some(32));
-        // Only the Windows-only model loads wchar_t, and no preset loads
+        // Only the Windows-only model loads wchar_t, and no data model loads
         // whether plain char is signed.
         assert_eq!(IntFacts::LP64.wchar_bits(), None);
         assert_eq!(IntFacts::ILP32.wchar_bits(), None);
         assert_eq!(IntFacts::LLP64.wchar_bits(), Some(16));
         for model in DataModel::ALL {
-            assert_eq!(IntFacts::preset(model).char_signed(), None, "{model:?}");
+            assert_eq!(IntFacts::from_model(model).char_signed(), None, "{model:?}");
         }
         assert_eq!(IntFacts::LP64.limit_macro("INT_MAX"), Some(2147483647));
         assert_eq!(IntFacts::LP64.limit_macro("LONG_MAX"), Some(i64::MAX));
@@ -938,11 +938,11 @@ mod tests {
     }
 
     #[test]
-    fn an_override_beats_the_preset_and_the_command_line_beats_both() {
+    fn an_override_beats_the_data_model_and_the_command_line_beats_both() {
         let mut facts = IntFacts::LP64;
         assert_eq!(
             facts.source(Fact::IntBits),
-            FactSource::Preset(DataModel::Lp64)
+            FactSource::Model(DataModel::Lp64)
         );
         facts.set(Fact::IntBits, 16, FactSource::Config);
         assert_eq!(facts.exact_width(Rank::Int), Some(16));
@@ -951,7 +951,7 @@ mod tests {
         assert_eq!(facts.source(Fact::IntBits), FactSource::Cli);
         assert_eq!(
             facts.source(Fact::LongBits),
-            FactSource::Preset(DataModel::Lp64)
+            FactSource::Model(DataModel::Lp64)
         );
         assert_eq!(facts.source(Fact::WcharBits), FactSource::Unknown);
         assert_eq!(

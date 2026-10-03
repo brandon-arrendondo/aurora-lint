@@ -8,7 +8,7 @@ cert_version = "2016"
 # The configuration of record is windows-x86 with MSVC (primary_build_config),
 # ILP32: int, long and pointers 32 bits. See docs/design/realworld-corpus-scope.md.
 data_model = "ilp32"
-# MSVC's wchar_t is 16 bits. The ilp32 preset says nothing about wchar_t (it
+# MSVC's wchar_t is 16 bits. The ilp32 data model says nothing about wchar_t (it
 # is a Linux and a Windows model alike), so ventoy's own build declares it.
 wchar_t_bits = 16
 

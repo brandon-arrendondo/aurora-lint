@@ -4,7 +4,7 @@
  * Status: PASS - nothing says whether plain char is signed
  * Settings: data_model=lp64
  *
- * Whether plain char is signed is implementation-defined and no preset
+ * Whether plain char is signed is implementation-defined and no data model
  * loads it, so CHAR_MAX is unknown and nothing here is proven to overflow.
  * Declaring char_signed makes it a number (see the fail fixture of the same
  * shape).

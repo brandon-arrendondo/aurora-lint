@@ -83,7 +83,7 @@ Full Command Reference
           --libc <MODEL>               C library model whose documented contracts are
                                        trusted [iso-posix, glibc, musl, newlib,
                                        picolibc, custom]
-          --data-model <MODEL>         Preset of integer facts the code is built for
+          --data-model <MODEL>         Data model: the bundle of integer facts the code is built for
                                        [iso, ilp32, lp64, llp64]. The default, iso,
                                        loads nothing, so only the widths ISO C
                                        guarantees are credited and limit macros such as
@@ -111,7 +111,7 @@ Full Command Reference
           --list-options [<FORMAT>]    List every policy and environment option with its
                                        value under each preset and the current settings,
                                        and every integer fact with its source (cli,
-                                       config, preset:NAME, iso-floor, unknown), then
+                                       config, data-model:NAME, iso-floor, unknown), then
                                        exit [text, json, rst]
           --check-config               Resolve the settings from the manifest and the
                                        command line exactly as a scan would, validate
