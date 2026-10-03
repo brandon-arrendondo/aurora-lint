@@ -53,7 +53,7 @@ use crate::analyze::const_eval::{self, MacroConstantMap};
 use crate::analyze::context::{ProjectContext, VisibleTypes};
 use crate::manifest::Severity;
 use crate::rules::cert_c::int_provenance;
-use crate::settings::{AnalysisSettings, DataModel};
+use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::expr_type::{self, TypeEnv};
 use lang_parsing_substrate::query;
@@ -73,7 +73,7 @@ pub struct Flp03C {
     /// `real` (a typedef of double) or `p->ratio` is typed by its declaration.
     visible: RefCell<VisibleTypes>,
     /// The integer data model the settings credit, for typing.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 /// Whether the operand's value is of a floating type, by declaration
@@ -452,7 +452,7 @@ impl Flp03C {
         var_name: &str,
         source: &str,
         project_macros: &MacroConstantMap,
-        model: DataModel,
+        model: IntFacts,
     ) -> bool {
         // Find containing function and translation unit root
         let mut current = Some(*div_node);
@@ -507,7 +507,7 @@ impl Flp03C {
         var_name: &str,
         source: &str,
         project_macros: &MacroConstantMap,
-        model: DataModel,
+        model: IntFacts,
     ) -> bool {
         let mut current = Some(*div_node);
         let func = loop {
@@ -1050,7 +1050,7 @@ impl CertRule for Flp03C {
     }
 
     fn set_analysis_settings(&self, settings: &std::sync::Arc<AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {

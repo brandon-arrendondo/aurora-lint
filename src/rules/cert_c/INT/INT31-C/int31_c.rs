@@ -20,7 +20,7 @@ use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
 use crate::rules::cert_c::int_provenance;
-use crate::settings::{AnalysisSettings, DataModel};
+use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::ast_utils::{self, get_node_text, is_function_parameter};
 use crate::utility::cert_c::data_model::IntWidth;
 use crate::utility::cert_c::declarator_utils;
@@ -59,7 +59,7 @@ pub struct Int31C {
     typedef_types: RefCell<Arc<HashMap<String, String>>>,
     /// The integer data model the settings credit: how wide each side of a
     /// conversion is, or may be.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 impl Int31C {
@@ -75,7 +75,7 @@ impl Int31C {
             risky_vars_cache: RefCell::new(HashMap::new()),
             param_names_cache: RefCell::new(HashMap::new()),
             typedef_types: RefCell::new(Arc::new(HashMap::new())),
-            data_model: Cell::new(DataModel::default()),
+            data_model: Cell::new(IntFacts::default()),
         }
     }
 
@@ -593,7 +593,7 @@ fn trailing_integer(s: &str) -> Option<i64> {
 /// The integer table itself is [`ast_utils::integer_type_width`] (shared since
 /// an earlier fix, which needed the same widths in API00-C); what stays here is the
 /// floating-type branch, which is an INT31-C convention rather than a width.
-fn get_type_width(type_str: &str, model: DataModel) -> Option<IntWidth> {
+fn get_type_width(type_str: &str, model: IntFacts) -> Option<IntWidth> {
     if let Some(width) = ast_utils::integer_type_width(type_str, model) {
         return Some(width);
     }
@@ -759,7 +759,7 @@ impl CertRule for Int31C {
     }
 
     fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {

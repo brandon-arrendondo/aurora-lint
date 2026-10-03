@@ -10,9 +10,9 @@
 use crate::analyze::dead_regions::DeadRegions;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::utility::cert_c::ast_utils;
-use crate::utility::cert_c::data_model::{DataModel, Rank};
+use crate::utility::cert_c::data_model::{Fact, IntFacts, Rank};
 use std::collections::{HashMap, HashSet};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 use tree_sitter::Node;
 
 /// Map of macro name → constant integer value.
@@ -235,7 +235,7 @@ impl ValueRange {
 /// -32768`, is under `INT_MAX`). The range is exact, so it bounds every value
 /// the type holds: what a proof that something cannot overflow needs. A rule
 /// that wants a witness instead wants [`guaranteed_range_for_type`].
-pub fn promoted_range_for_type(type_name: &str, model: DataModel) -> Option<ValueRange> {
+pub fn promoted_range_for_type(type_name: &str, model: IntFacts) -> Option<ValueRange> {
     narrow_range(type_name, model, false)
 }
 
@@ -245,11 +245,11 @@ pub fn promoted_range_for_type(type_name: &str, model: DataModel) -> Option<Valu
 /// `char` at least the `[0, 127]` both signednesses share). Every value in it
 /// is one the type can hold wherever the code is built, so arithmetic over
 /// these ranges that leaves `int` is a witness of overflow on some target.
-pub fn guaranteed_range_for_type(type_name: &str, model: DataModel) -> Option<ValueRange> {
+pub fn guaranteed_range_for_type(type_name: &str, model: IntFacts) -> Option<ValueRange> {
     narrow_range(type_name, model, true)
 }
 
-fn narrow_range(type_name: &str, model: DataModel, guaranteed: bool) -> Option<ValueRange> {
+fn narrow_range(type_name: &str, model: IntFacts, guaranteed: bool) -> Option<ValueRange> {
     let t = type_name.trim();
     let range = |r: (i128, i128)| Some(ValueRange::new(r.0 as i64, r.1 as i64));
     let exact_width = |signed: bool, bits: u32| {
@@ -331,11 +331,11 @@ const SIZEOF_SPELLINGS: &[(&str, SizeOf)] = &[
     ("ptrdiff_t", SizeOf::Pointer),
     ("void *", SizeOf::Pointer),
     ("wchar_t", SizeOf::WideChar),
-    ("float", SizeOf::Float),
-    ("double", SizeOf::Double),
-    ("long double", SizeOf::LongDouble),
-    ("time_t", SizeOf::Lp64Only(8)),
-    ("off_t", SizeOf::Lp64Only(8)),
+    ("float", SizeOf::Bytes(Fact::FloatBytes)),
+    ("double", SizeOf::Bytes(Fact::DoubleBytes)),
+    ("long double", SizeOf::Bytes(Fact::LongDoubleBytes)),
+    ("time_t", SizeOf::Bytes(Fact::TimeTBytes)),
+    ("off_t", SizeOf::Bytes(Fact::OffTBytes)),
 ];
 
 /// What decides one builtin type's `sizeof`.
@@ -343,51 +343,30 @@ const SIZEOF_SPELLINGS: &[(&str, SizeOf)] = &[
 enum SizeOf {
     /// 1, by definition (C11 6.5.3.4p4).
     Char,
-    /// The data model's size for an integer of this rank.
+    /// The facts' size for an integer of this rank.
     Rank(Rank),
-    /// An exact-width type: its width over an 8-bit `char`, which only a
-    /// declared model states (ISO C guarantees `CHAR_BIT` at least 8).
+    /// An exact-width type: its width over `CHAR_BIT`.
     Exact(u32),
-    /// A pointer's size, which `size_t` and `ptrdiff_t` share on every
-    /// declared model.
+    /// A pointer's size, which `size_t` and `ptrdiff_t` share.
     Pointer,
-    /// `wchar_t`: 4 bytes on the Unix models, 2 on Windows.
+    /// `wchar_t`: `wchar_t_bits` over `CHAR_BIT`. No data model but the
+    /// Windows-only one sets it, so it is unknown unless declared.
     WideChar,
-    /// `float`: implementation-defined like the integers, 4 on every
-    /// declared model's ABI.
-    Float,
-    /// `double`: 8 on every declared model's ABI.
-    Double,
-    /// `long double`: 12 on i386, 16 on x86-64, 8 with MSVC.
-    LongDouble,
-    /// A POSIX type with this size on LP64 only (`time_t`, `off_t`, whose
-    /// 32-bit sizes depend on build flags).
-    Lp64Only(i64),
+    /// A size a fact states in bytes: `float`, `double`, `long double`,
+    /// `time_t` and `off_t`.
+    Bytes(Fact),
 }
 
-/// `size`'s bytes under `model`, or `None` when the model leaves it open.
-fn sizeof_under(model: DataModel, size: SizeOf) -> Option<i64> {
-    let declared = model != DataModel::Iso;
+/// `size`'s bytes under `facts`, or `None` when they leave it open.
+fn sizeof_under(facts: &IntFacts, size: SizeOf) -> Option<i64> {
+    let char_bits = facts.get(Fact::CharBits);
     let bytes = match size {
         SizeOf::Char => 1,
-        SizeOf::Rank(rank) => model.sizeof_bytes(rank)?.into(),
-        SizeOf::Exact(bits) if declared => i64::from(bits / 8),
-        SizeOf::Pointer => (model.pointer_width()? / 8).into(),
-        SizeOf::WideChar => match model {
-            DataModel::Iso => return None,
-            DataModel::Llp64 => 2,
-            DataModel::Ilp32 | DataModel::Lp64 => 4,
-        },
-        SizeOf::Float if declared => 4,
-        SizeOf::Double if declared => 8,
-        SizeOf::LongDouble => match model {
-            DataModel::Iso => return None,
-            DataModel::Ilp32 => 12,
-            DataModel::Lp64 => 16,
-            DataModel::Llp64 => 8,
-        },
-        SizeOf::Lp64Only(bytes) if model == DataModel::Lp64 => bytes,
-        _ => return None,
+        SizeOf::Rank(rank) => facts.sizeof_bytes(rank)?.into(),
+        SizeOf::Exact(bits) => i64::from(bits / char_bits?),
+        SizeOf::Pointer => i64::from(facts.pointer_width()? / char_bits?),
+        SizeOf::WideChar => i64::from(facts.wchar_bytes()?),
+        SizeOf::Bytes(fact) => i64::from(facts.get(fact)?),
     };
     Some(bytes)
 }
@@ -395,6 +374,8 @@ fn sizeof_under(model: DataModel, size: SizeOf) -> Option<i64> {
 /// The `<limits.h>` and `<stdint.h>` macros a data model may fix.
 const LIMIT_MACROS: &[&str] = &[
     "CHAR_BIT",
+    "CHAR_MAX",
+    "CHAR_MIN",
     "SCHAR_MAX",
     "SCHAR_MIN",
     "UCHAR_MAX",
@@ -423,40 +404,41 @@ const LIMIT_MACROS: &[&str] = &[
 ];
 
 /// The constants every translation unit has under `model`: the limit macros
-/// it fixes ([`DataModel::limit_macro`]) and, under `sizeof(T)` keys no C
+/// it fixes ([`IntFacts::limit_macro`]) and, under `sizeof(T)` keys no C
 /// identifier can collide with, the `sizeof` of each builtin type it fixes.
-/// Under [`DataModel::Iso`], the default, that is the exact-width limits
+/// Under [`IntFacts::ISO`], the default, that is the exact-width limits
 /// (`INT32_MAX`) and `sizeof` the `char` types: `INT_MAX` and `sizeof(long)`
 /// are not constants a scan may assume (ADR-0011). Built once per model.
-pub fn builtin_constants(model: DataModel) -> &'static MacroConstantMap {
-    static TABLES: LazyLock<[MacroConstantMap; 4]> = LazyLock::new(|| {
-        [
-            DataModel::Iso,
-            DataModel::Ilp32,
-            DataModel::Lp64,
-            DataModel::Llp64,
-        ]
-        .map(|model| {
-            let mut m = MacroConstantMap::new();
-            for name in LIMIT_MACROS {
-                if let Some(v) = model.limit_macro(name) {
-                    m.insert((*name).into(), v);
-                }
-            }
-            for (spelling, size) in SIZEOF_SPELLINGS {
-                if let Some(v) = sizeof_under(model, *size) {
-                    m.insert(format!("sizeof({spelling})"), v);
-                }
-            }
-            m
-        })
-    });
-    &TABLES[match model {
-        DataModel::Iso => 0,
-        DataModel::Ilp32 => 1,
-        DataModel::Lp64 => 2,
-        DataModel::Llp64 => 3,
-    }]
+pub fn builtin_constants(facts: IntFacts) -> &'static MacroConstantMap {
+    // One table per distinct set of widths, built on first use and kept: a
+    // scan resolves its facts once, so there are few of them.
+    type Tables = Mutex<HashMap<[Option<u32>; 13], &'static MacroConstantMap>>;
+    static TABLES: LazyLock<Tables> = LazyLock::new(|| Mutex::new(HashMap::new()));
+    let mut tables = TABLES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(table) = tables.get(&facts.values()) {
+        return table;
+    }
+    let mut m = MacroConstantMap::new();
+    for name in LIMIT_MACROS {
+        if let Some(v) = facts.limit_macro(name) {
+            m.insert((*name).into(), v);
+        }
+    }
+    for (spelling, size) in SIZEOF_SPELLINGS {
+        if let Some(v) = sizeof_under(&facts, *size) {
+            m.insert(format!("sizeof({spelling})"), v);
+        }
+    }
+    // Not known, but bounded: wchar_t is an integer type, so it is no wider
+    // than the widest integer type the facts declare.
+    if facts.wchar_bytes().is_none() {
+        if let Some(widest) = facts.sizeof_bytes(Rank::LongLong) {
+            m.insert("sizeof_max(wchar_t)".to_string(), i64::from(widest));
+        }
+    }
+    let table: &'static MacroConstantMap = Box::leak(Box::new(m));
+    tables.insert(facts.values(), table);
+    table
 }
 
 // ---------------------------------------------------------------------------
@@ -484,8 +466,17 @@ fn resolve_sizeof_type(type_text: &str, macros: &MacroConstantMap) -> Option<i64
 /// [`resolve_sizeof_type`] cannot fix it: an exact-width type has exactly N
 /// bits and no padding (C11 7.20.1.1) over a `char` of at least 8 bits
 /// (5.2.4.2.1), so its size is between 1 and N/8. `None` for any other type.
-fn sizeof_type_bounds(type_text: &str) -> Option<ValueRange> {
+///
+/// An unknown `wchar_t` is an integer type, so it is no wider than the widest
+/// integer type the facts declare: `builtin_constants` files that bound as
+/// `sizeof_max(wchar_t)`, and the size lies between 1 and it.
+fn sizeof_type_bounds(type_text: &str, macros: &MacroConstantMap) -> Option<ValueRange> {
     let t = type_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if t == "wchar_t" {
+        return macros
+            .get("sizeof_max(wchar_t)")
+            .map(|max| ValueRange::new(1, *max));
+    }
     SIZEOF_SPELLINGS.iter().find_map(|(s, size)| match size {
         SizeOf::Exact(bits) if *s == t => Some(ValueRange::new(1, i64::from(bits / 8))),
         _ => None,
@@ -879,7 +870,7 @@ pub fn merged_macro_aliases(
 /// Includes the [`builtin_constants`] `model` fixes (`INT_MAX` on a declared
 /// model, `sizeof(T)`); a file's own `#define` of such a name wins over the
 /// builtin, since that definition is what its code compiles with (ADR-0006).
-pub fn collect_macro_constants(root: &Node, source: &str, model: DataModel) -> MacroConstantMap {
+pub fn collect_macro_constants(root: &Node, source: &str, model: IntFacts) -> MacroConstantMap {
     let mut macros = builtin_constants(model).clone();
     // Two-pass: first collect all raw definitions, then resolve references
     let mut raw_defs: Vec<(String, String)> = Vec::new();
@@ -923,7 +914,7 @@ pub fn merged_macro_constants(
     project: &MacroConstantMap,
     root: &Node,
     source: &str,
-    model: DataModel,
+    model: IntFacts,
 ) -> MacroConstantMap {
     let mut macros = project.clone();
     macros.extend(collect_macro_constants(root, source, model));
@@ -948,7 +939,7 @@ pub fn merged_macro_constants(
 ///   (`#ifdef FAST #define MODE 1 #else #define MODE 0 #endif`);
 /// - an overridable default, defined only under `#ifndef NAME` /
 ///   `#if !defined(NAME)`: a build passing `-DNAME=1` gets another value.
-pub fn cfg_prunable_constants(root: &Node, source: &str, model: DataModel) -> MacroConstantMap {
+pub fn cfg_prunable_constants(root: &Node, source: &str, model: IntFacts) -> MacroConstantMap {
     let mut constants = collect_macro_constants(root, source, model);
     for name in config_dependent_constant_names(root, source) {
         constants.remove(&name);
@@ -2302,7 +2293,7 @@ fn try_evaluate_range_inner(
             let type_text = sizeof_node_type(node, source)?;
             resolve_sizeof_type(type_text, macros)
                 .map(ValueRange::exact)
-                .or_else(|| sizeof_type_bounds(type_text))
+                .or_else(|| sizeof_type_bounds(type_text, macros))
         }
         // A function-like macro invocation parses as a call. When the caller
         // supplied the macro table, expand it and bound the replacement list
@@ -3598,6 +3589,7 @@ fn parens_balanced(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utility::cert_c::data_model::FactSource;
 
     fn written_names(code: &str) -> std::collections::HashSet<String> {
         let mut parser = tree_sitter::Parser::new();
@@ -3696,7 +3688,7 @@ int f(unsigned long s) { return LINEBITS(s); }
         let tree = parser.parse(source, None).unwrap();
         let root = tree.root_node();
         let fmacros = macro_expand::collect_function_macros(&root, source);
-        let macros = collect_macro_constants(&root, source, crate::settings::DataModel::Lp64);
+        let macros = collect_macro_constants(&root, source, crate::settings::IntFacts::LP64);
         let var_ranges = VarRangeMap::new();
 
         let call = lang_parsing_substrate::query::find_descendants_of_kind(root, "call_expression")
@@ -3835,7 +3827,7 @@ int f(unsigned long s) { return LINEBITS(s); }
 
     #[test]
     fn test_try_evaluate_text_builtin_macros() {
-        let macros = builtin_constants(DataModel::Lp64).clone();
+        let macros = builtin_constants(IntFacts::LP64).clone();
         assert_eq!(try_evaluate_text("INT_MAX", &macros), Some(2147483647));
         assert_eq!(try_evaluate_text("CHAR_BIT", &macros), Some(8));
         assert_eq!(try_evaluate_text("INT_MAX + 1", &macros), Some(2147483648));
@@ -3930,7 +3922,7 @@ int f(unsigned long s) { return LINEBITS(s); }
         let code = "#define MY_CONST 42\n#define DOUBLE_CONST (MY_CONST * 2)\nint x;\n";
         let tree = parser.parse(code, None).unwrap();
         let macros =
-            collect_macro_constants(&tree.root_node(), code, crate::settings::DataModel::Lp64);
+            collect_macro_constants(&tree.root_node(), code, crate::settings::IntFacts::LP64);
         assert_eq!(macros.get("MY_CONST"), Some(&42));
         assert_eq!(macros.get("DOUBLE_CONST"), Some(&84));
     }
@@ -4094,7 +4086,7 @@ int f(unsigned long s) { return LINEBITS(s); }
         let aliases = collect_macro_aliases(&tree.root_node(), code);
         assert!(!aliases.contains_key("close"), "{:?}", aliases);
         let macros =
-            collect_macro_constants(&tree.root_node(), code, crate::settings::DataModel::Lp64);
+            collect_macro_constants(&tree.root_node(), code, crate::settings::IntFacts::LP64);
         assert_eq!(macros.get("PATH_MAX_LEN"), Some(&4096));
         // A build-config guard stays unsettled: the constant resolver's
         // first-wins tie-break applies exactly as before.
@@ -4126,7 +4118,7 @@ int f(unsigned long s) { return LINEBITS(s); }
             &project,
             &tree.root_node(),
             code,
-            crate::settings::DataModel::Lp64,
+            crate::settings::IntFacts::LP64,
         );
         assert_eq!(merged.get("MY_CONST"), Some(&42));
         assert_eq!(merged.get("FILE_ONLY"), Some(&7));
@@ -4187,7 +4179,7 @@ int f(unsigned long s) { return LINEBITS(s); }
 
     #[test]
     fn test_resolve_sizeof_type_basic() {
-        let lp64 = builtin_constants(DataModel::Lp64);
+        let lp64 = builtin_constants(IntFacts::LP64);
         let size = |t: &str| resolve_sizeof_type(t, lp64);
         assert_eq!(size("char"), Some(1));
         assert_eq!(size("unsigned char"), Some(1));
@@ -4199,29 +4191,59 @@ int f(unsigned long s) { return LINEBITS(s); }
         assert_eq!(size("int"), Some(4));
         assert_eq!(size("unsigned int"), Some(4));
         assert_eq!(size("float"), Some(4));
-        assert_eq!(size("wchar_t"), Some(4));
         assert_eq!(size("long"), Some(8));
         assert_eq!(size("double"), Some(8));
         assert_eq!(size("size_t"), Some(8));
         assert_eq!(size("long double"), Some(16));
-        let llp64 = builtin_constants(DataModel::Llp64);
+        let llp64 = builtin_constants(IntFacts::LLP64);
         assert_eq!(resolve_sizeof_type("long", llp64), Some(4));
-        assert_eq!(resolve_sizeof_type("wchar_t", llp64), Some(2));
+    }
+
+    #[test]
+    fn wchar_t_is_sized_by_its_own_fact_not_by_the_widths() {
+        let wchar = |facts: IntFacts| resolve_sizeof_type("wchar_t", builtin_constants(facts));
+        // ilp32 and lp64 are Linux and Windows targets alike: unknown.
+        assert_eq!(wchar(IntFacts::ISO), None);
+        assert_eq!(wchar(IntFacts::ILP32), None);
+        assert_eq!(wchar(IntFacts::LP64), None);
+        // The Windows-only model loads it.
+        assert_eq!(wchar(IntFacts::LLP64), Some(2));
+        // A declared width fixes it under any model, and beats the model's.
+        for base in [
+            IntFacts::ISO,
+            IntFacts::ILP32,
+            IntFacts::LP64,
+            IntFacts::LLP64,
+        ] {
+            let mut declared = base;
+            declared.set(Fact::WcharBits, 32, FactSource::Config);
+            assert_eq!(
+                wchar(declared),
+                if base == IntFacts::ISO { None } else { Some(4) }
+            );
+        }
+        // The rest of the table is the widths', whatever wchar_t is.
+        let mut lp64 = IntFacts::LP64;
+        lp64.set(Fact::WcharBits, 16, FactSource::Config);
+        assert_eq!(
+            resolve_sizeof_type("long", builtin_constants(lp64)),
+            Some(8)
+        );
     }
 
     #[test]
     fn test_resolve_sizeof_type_pointers() {
-        let lp64 = builtin_constants(DataModel::Lp64);
+        let lp64 = builtin_constants(IntFacts::LP64);
         assert_eq!(resolve_sizeof_type("int *", lp64), Some(8));
         assert_eq!(resolve_sizeof_type("char *", lp64), Some(8));
         assert_eq!(resolve_sizeof_type("void *", lp64), Some(8));
-        let ilp32 = builtin_constants(DataModel::Ilp32);
+        let ilp32 = builtin_constants(IntFacts::ILP32);
         assert_eq!(resolve_sizeof_type("void *", ilp32), Some(4));
     }
 
     #[test]
     fn iso_fixes_only_the_char_sizes_and_the_exact_width_limits() {
-        let iso = builtin_constants(DataModel::Iso);
+        let iso = builtin_constants(IntFacts::ISO);
         assert_eq!(resolve_sizeof_type("unsigned char", iso), Some(1));
         assert_eq!(resolve_sizeof_type("int", iso), None);
         assert_eq!(resolve_sizeof_type("void *", iso), None);
@@ -4239,24 +4261,42 @@ int f(unsigned long s) { return LINEBITS(s); }
             .unwrap()
             .parse_source(code)
             .unwrap();
-        let macros = collect_macro_constants(&tree.root_node(), &source, DataModel::Lp64);
+        let macros = collect_macro_constants(&tree.root_node(), &source, IntFacts::LP64);
         assert_eq!(macros.get("INT_MAX"), Some(&32767));
         assert_eq!(macros.get("HALF"), Some(&16383));
-        let iso = collect_macro_constants(&tree.root_node(), &source, DataModel::Iso);
+        let iso = collect_macro_constants(&tree.root_node(), &source, IntFacts::ISO);
         assert_eq!(iso.get("HALF"), Some(&16383));
     }
 
     #[test]
     fn test_sizeof_type_bounds_exact_width() {
-        assert_eq!(sizeof_type_bounds("uint64_t"), Some(ValueRange::new(1, 8)));
-        assert_eq!(sizeof_type_bounds("int16_t"), Some(ValueRange::new(1, 2)));
-        assert_eq!(sizeof_type_bounds("long"), None);
-        assert_eq!(sizeof_type_bounds("struct foo"), None);
+        let none = MacroConstantMap::new();
+        assert_eq!(
+            sizeof_type_bounds("uint64_t", &none),
+            Some(ValueRange::new(1, 8))
+        );
+        assert_eq!(
+            sizeof_type_bounds("int16_t", &none),
+            Some(ValueRange::new(1, 2))
+        );
+        assert_eq!(sizeof_type_bounds("long", &none), None);
+        assert_eq!(sizeof_type_bounds("struct foo", &none), None);
+        // An unknown wchar_t is bounded by the widest declared integer type.
+        assert_eq!(sizeof_type_bounds("wchar_t", &none), None);
+        let lp64 = builtin_constants(IntFacts::LP64);
+        assert_eq!(
+            sizeof_type_bounds("wchar_t", lp64),
+            Some(ValueRange::new(1, 8))
+        );
+        assert_eq!(
+            sizeof_type_bounds("wchar_t", builtin_constants(IntFacts::ISO)),
+            None
+        );
     }
 
     #[test]
     fn test_resolve_sizeof_type_unknown() {
-        let lp64 = builtin_constants(DataModel::Lp64);
+        let lp64 = builtin_constants(IntFacts::LP64);
         assert_eq!(resolve_sizeof_type("struct foo", lp64), None);
         assert_eq!(resolve_sizeof_type("my_custom_type", lp64), None);
     }
@@ -4274,10 +4314,10 @@ int f(unsigned long s) { return LINEBITS(s); }
             if let Some(child) = decl.child(i) {
                 if child.kind() == "init_declarator" {
                     if let Some(value) = child.child_by_field_name("value") {
-                        let macros = builtin_constants(DataModel::Lp64);
+                        let macros = builtin_constants(IntFacts::LP64);
                         let result = try_evaluate_expr(&value, code, macros);
                         assert_eq!(result, Some(4), "sizeof(int) should be 4 on LP64");
-                        let iso = builtin_constants(DataModel::Iso);
+                        let iso = builtin_constants(IntFacts::ISO);
                         assert_eq!(try_evaluate_expr(&value, code, iso), None);
                     }
                 }

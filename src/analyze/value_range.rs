@@ -2253,7 +2253,7 @@ mod tests {
         let source = code.to_string();
         let root = tree.root_node();
         let macros =
-            const_eval::collect_macro_constants(&root, &source, crate::settings::DataModel::Lp64);
+            const_eval::collect_macro_constants(&root, &source, crate::settings::IntFacts::LP64);
 
         // Find function_definition
         let func_node = find_first_function(&root);
@@ -2301,7 +2301,7 @@ mod tests {
         let source = code.to_string();
         let root = tree.root_node();
         let macros =
-            const_eval::collect_macro_constants(&root, &source, crate::settings::DataModel::Lp64);
+            const_eval::collect_macro_constants(&root, &source, crate::settings::IntFacts::LP64);
 
         let func_node = find_first_function(&root)?;
         let function_cfg = cfg::build_function_cfg(&func_node, &source)?;
@@ -2548,7 +2548,7 @@ int f(int x) {
         let source = code.to_string();
         let root = tree.root_node();
         let macros =
-            const_eval::collect_macro_constants(&root, &source, crate::settings::DataModel::Lp64);
+            const_eval::collect_macro_constants(&root, &source, crate::settings::IntFacts::LP64);
         let summaries = crate::analyze::function_summary::compute_summaries(
             &root,
             &source,
@@ -2713,7 +2713,7 @@ int r = 100 / i;
         let source = code.to_string();
         let root = tree.root_node();
         let macros =
-            const_eval::collect_macro_constants(&root, &source, crate::settings::DataModel::Lp64);
+            const_eval::collect_macro_constants(&root, &source, crate::settings::IntFacts::LP64);
         let func_node = find_first_function(&root)?;
         let function_cfg = cfg::build_function_cfg(&func_node, &source)?;
         let body = func_node.child_by_field_name("body")?;

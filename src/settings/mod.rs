@@ -16,7 +16,7 @@
 
 pub mod memory;
 
-pub use crate::utility::cert_c::data_model::DataModel;
+pub use crate::utility::cert_c::data_model::{DataModel, Fact, FactSource, IntFacts};
 use anyhow::{bail, Result};
 pub use memory::{AllocatorContract, MemoryDeclarations};
 use serde::{Deserialize, Serialize};
@@ -428,6 +428,32 @@ pub struct EnvironmentConfig {
     /// C guarantees about integer widths is credited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_model: Option<DataModel>,
+    /// Bits in a `short`: overrides the data model's value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_bits: Option<u32>,
+    /// Bits in an `int`: overrides the data model's value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub int_bits: Option<u32>,
+    /// Bits in a `long`: overrides the data model's value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_bits: Option<u32>,
+    /// Bits in a `long long`: overrides the data model's value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_long_bits: Option<u32>,
+    /// Bits in a pointer, `size_t`, `ptrdiff_t` and `intptr_t`: overrides the
+    /// data model's value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pointer_bits: Option<u32>,
+    /// Bits in a `wchar_t`. No data model but the Windows-only `llp64` sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wchar_t_bits: Option<u32>,
+    /// Whether plain `char` is signed. No data model sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub char_signed: Option<bool>,
+    /// The environment keys the command line set, for [`FactSource::Cli`]. Not
+    /// part of a manifest.
+    #[serde(skip)]
+    pub cli: std::collections::BTreeSet<String>,
     /// Declared allocators: `name = "malloc"` (or another standard
     /// allocator whose contract the function follows). See [`memory`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -441,6 +467,42 @@ pub struct EnvironmentConfig {
     pub overrides: BTreeMap<String, bool>,
 }
 
+impl EnvironmentConfig {
+    /// The value a project wrote for `fact`, if any. A yes/no fact reads as
+    /// 1 or 0.
+    pub fn fact(&self, fact: Fact) -> Option<u32> {
+        match fact {
+            Fact::ShortBits => self.short_bits,
+            Fact::IntBits => self.int_bits,
+            Fact::LongBits => self.long_bits,
+            Fact::LongLongBits => self.long_long_bits,
+            Fact::PointerBits => self.pointer_bits,
+            Fact::WcharBits => self.wchar_t_bits,
+            Fact::CharSigned => self.char_signed.map(u32::from),
+            _ => None,
+        }
+    }
+
+    /// Record a project-written `value` for `fact`.
+    pub fn set_fact(&mut self, fact: Fact, value: u32) {
+        match fact {
+            Fact::ShortBits => self.short_bits = Some(value),
+            Fact::IntBits => self.int_bits = Some(value),
+            Fact::LongBits => self.long_bits = Some(value),
+            Fact::LongLongBits => self.long_long_bits = Some(value),
+            Fact::PointerBits => self.pointer_bits = Some(value),
+            Fact::WcharBits => self.wchar_t_bits = Some(value),
+            Fact::CharSigned => self.char_signed = Some(value != 0),
+            _ => {}
+        }
+    }
+
+    /// Whether this table writes any integer fact.
+    pub fn writes_a_fact(&self) -> bool {
+        Fact::ALL.into_iter().any(|f| self.fact(f).is_some())
+    }
+}
+
 impl SettingsConfig {
     /// Only what these settings say about the project itself rather than
     /// which preset or options it wants: its declared allocators and
@@ -452,16 +514,26 @@ impl SettingsConfig {
         let Some(env) = &self.environment else {
             return SettingsConfig::default();
         };
-        if env.allocators.is_empty() && env.deallocators.is_empty() && env.data_model.is_none() {
+        if env.allocators.is_empty()
+            && env.deallocators.is_empty()
+            && env.data_model.is_none()
+            && !env.writes_a_fact()
+        {
             return SettingsConfig::default();
         }
+        let mut kept = EnvironmentConfig {
+            allocators: env.allocators.clone(),
+            deallocators: env.deallocators.clone(),
+            data_model: env.data_model,
+            ..Default::default()
+        };
+        for fact in Fact::ALL {
+            if let Some(value) = env.fact(fact) {
+                kept.set_fact(fact, value);
+            }
+        }
         SettingsConfig {
-            environment: Some(EnvironmentConfig {
-                allocators: env.allocators.clone(),
-                deallocators: env.deallocators.clone(),
-                data_model: env.data_model,
-                ..Default::default()
-            }),
+            environment: Some(kept),
             ..Default::default()
         }
     }
@@ -502,7 +574,18 @@ impl SettingsConfig {
             }
             if e.data_model.is_some() {
                 mine.data_model = e.data_model;
+                mine.cli.insert("data_model".to_string());
             }
+            // `other` is the layer above: whatever it writes is the command
+            // line's when it is the CLI's own settings, and `cli` remembers
+            // which keys those were.
+            for fact in Fact::ALL {
+                if let Some(value) = e.fact(fact) {
+                    mine.set_fact(fact, value);
+                    mine.cli.insert(fact.key().to_string());
+                }
+            }
+            mine.cli.extend(e.cli.iter().cloned());
             mine.allocators
                 .extend(e.allocators.iter().map(|(k, v)| (k.clone(), *v)));
             mine.deallocators
@@ -513,7 +596,9 @@ impl SettingsConfig {
     }
 
     /// Record a `NAME=VALUE` override, routed to the axis `NAME` belongs to.
-    /// `data_model=MODEL` declares the environment's data model.
+    /// `data_model=MODEL` declares the environment's data model, and
+    /// `int_bits=16`, `char_signed=true` and the other integer facts override
+    /// what it loads.
     pub fn set(&mut self, assignment: &str) -> Result<()> {
         let Some((name, value)) = assignment.split_once('=') else {
             bail!("expected NAME=VALUE, got '{assignment}'");
@@ -528,20 +613,44 @@ impl SettingsConfig {
                 .data_model = Some(model);
             return Ok(());
         }
-        let value: bool = match value {
-            "true" => true,
-            "false" => false,
-            _ => bail!("option '{name}' takes true or false, got '{value}'"),
-        };
+        if let Some(fact) = Fact::from_key(name).filter(|f| f.overridable()) {
+            let number = if fact.is_flag() {
+                match value {
+                    "true" => 1,
+                    "false" => 0,
+                    _ => bail!("{name} takes true or false, got '{value}'"),
+                }
+            } else {
+                value
+                    .parse::<u32>()
+                    .map_err(|_| anyhow::anyhow!("{name} takes a number of bits, got '{value}'"))?
+            };
+            self.environment
+                .get_or_insert_with(Default::default)
+                .set_fact(fact, number);
+            return Ok(());
+        }
         let Some(spec) = option(name) else {
             bail!(
-                "unknown option '{name}'; run --list-options for the supported set ({})",
+                "unknown option '{name}'; run --list-options for the supported set ({}, and \
+                 the integer facts {}, data_model)",
                 OPTIONS
                     .iter()
                     .map(|o| o.name)
                     .collect::<Vec<_>>()
+                    .join(", "),
+                Fact::ALL
+                    .into_iter()
+                    .filter(|f| f.overridable())
+                    .map(|f| f.key())
+                    .collect::<Vec<_>>()
                     .join(", ")
             );
+        };
+        let value: bool = match value {
+            "true" => true,
+            "false" => false,
+            _ => bail!("option '{name}' takes true or false, got '{value}'"),
         };
         let overrides = match spec.axis {
             Axis::Policy => &mut self.policy.get_or_insert_with(Default::default).overrides,
@@ -569,8 +678,11 @@ pub struct AnalysisSettings {
     pub libc: Option<Libc>,
     /// How `#include` names match files.
     pub include_names: IncludeNames,
-    /// The integer data model credited (`DataModel::Iso` unless declared).
+    /// The data model preset selected (`DataModel::Iso` unless declared).
     pub data_model: DataModel,
+    /// The resolved integer facts: the preset's bundle under the project's
+    /// own keys under the command line. What the analyses query.
+    pub facts: IntFacts,
     /// The project's declared allocators and deallocators.
     pub memory: MemoryDeclarations,
     /// The path globs whose files the cross-file prescan does not read
@@ -609,6 +721,7 @@ impl AnalysisSettings {
         let mut libc = None;
         let mut include_names = IncludeNames::default();
         let mut data_model = DataModel::default();
+        let mut facts_config: Option<&EnvironmentConfig> = None;
         let mut memory = MemoryDeclarations::default();
         if let Some(p) = &config.policy {
             policy = p.level.unwrap_or(policy);
@@ -618,6 +731,7 @@ impl AnalysisSettings {
             libc = e.libc;
             include_names = e.include_names.unwrap_or_default();
             data_model = e.data_model.unwrap_or_default();
+            facts_config = Some(e);
             memory = MemoryDeclarations {
                 allocators: e.allocators.clone(),
                 deallocators: e.deallocators.clone(),
@@ -666,12 +780,34 @@ impl AnalysisSettings {
             }
         }
 
+        // The preset's bundle, then each fact the project wrote, then each
+        // the command line wrote: a higher layer replaces a lower one
+        // whatever the order of the lines.
+        let mut facts = IntFacts::preset(data_model);
+        if let Some(e) = facts_config {
+            for fact in Fact::ALL {
+                if let Some(value) = e.fact(fact) {
+                    let source = if e.cli.contains(fact.key()) {
+                        FactSource::Cli
+                    } else {
+                        FactSource::Config
+                    };
+                    facts.set(fact, value, source);
+                }
+            }
+        }
+        let problems = facts.problems();
+        if !problems.is_empty() {
+            bail!("{}", problems.join("\n"));
+        }
+
         Ok(Self {
             policy,
             environment,
             libc,
             include_names,
             data_model,
+            facts,
             memory,
             prescan_scope: Vec::new(),
             values,
@@ -709,6 +845,7 @@ impl AnalysisSettings {
                 == Self {
                     include_names: self.include_names,
                     data_model: self.data_model,
+                    facts: self.facts,
                     memory: self.memory.clone(),
                     prescan_scope: self.prescan_scope.clone(),
                     ..Self::preset(*p)
@@ -777,6 +914,15 @@ impl AnalysisSettings {
         // Likewise only when a model is declared.
         if self.data_model != DataModel::Iso {
             identity["data_model"] = serde_json::json!(self.data_model);
+        }
+        // Every fact the project or the command line declared, under its own
+        // key; a preset's bundle is already named by `data_model`.
+        for (fact, value) in self.facts.declared() {
+            identity[fact.key()] = if fact.is_flag() {
+                serde_json::json!(value != 0)
+            } else {
+                serde_json::json!(value)
+            };
         }
         // Likewise present only when something is declared.
         if !self.memory.allocators.is_empty() {
@@ -883,6 +1029,24 @@ pub fn render_text(current: &AnalysisSettings) -> String {
         current.include_names,
         current.data_model,
     );
+    // Each integer fact the project or the command line declared on top of
+    // the preset, so the line names everything that is not a default.
+    let declared: Vec<String> = current
+        .facts
+        .declared()
+        .map(|(fact, value)| {
+            if fact.is_flag() {
+                format!("{}={}", fact.key(), value != 0)
+            } else {
+                format!("{}={value}", fact.key())
+            }
+        })
+        .collect();
+    if !declared.is_empty() {
+        out.pop();
+        out.pop();
+        out.push_str(&format!(", {}\n\n", declared.join(", ")));
+    }
     for (name, contract) in &current.memory.allocators {
         out.push_str(&format!("Declared allocator: {name} (as {contract})\n"));
     }

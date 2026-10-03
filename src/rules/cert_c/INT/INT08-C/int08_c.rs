@@ -7,7 +7,7 @@ use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
-use crate::settings::{AnalysisSettings, DataModel};
+use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::ast_utils::{get_node_text, integer_type_width, is_unsigned_type};
 use crate::utility::cert_c::data_model::Rank;
 use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
@@ -22,7 +22,7 @@ pub struct Int08C {
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
     /// The integer data model the settings credit: how wide `int` and the
     /// narrow types are guaranteed to be.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 impl CertRule for Int08C {
@@ -43,7 +43,7 @@ impl CertRule for Int08C {
     }
 
     fn set_analysis_settings(&self, settings: &std::sync::Arc<AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {

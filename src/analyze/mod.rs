@@ -204,7 +204,7 @@ pub fn analyze_project(
         needs_vra,
         &header_lookup,
         scope,
-        settings.data_model,
+        settings.facts,
     )?;
     context.settings = std::sync::Arc::new(settings.clone());
 
@@ -413,7 +413,7 @@ fn load_project_context(
     needs_vra: bool,
     header_lookup: &include_names::HeaderLookup,
     scope: &ScanScope,
-    data_model: crate::settings::DataModel,
+    data_model: crate::settings::IntFacts,
 ) -> Result<context::ProjectContext> {
     // The globs the prescan leaves out, as a cache records them, and the
     // ignore built from exactly those: a context built without them holds
@@ -456,8 +456,11 @@ fn load_project_context(
             header_lookup.mode().to_string(),
         ),
         ("prescan_scope".to_string(), prescan_scope_key),
-        // The limit macros and sizeof the macro constants are resolved with.
-        ("data_model".to_string(), data_model.to_string()),
+        // The limit macros and sizeof the macro constants are resolved with:
+        // every integer fact, not a preset name, since a project may override
+        // any of them. No implicit value is registered, so a cache built when
+        // the data model alone decided them is refused rather than guessed.
+        ("int_facts".to_string(), data_model.fingerprint()),
     ]);
 
     let mut context = if let Some(cache_path) = load_prescan {
@@ -1040,7 +1043,7 @@ pub(crate) fn build_file_analysis(
         source,
         &context.function_summaries,
         &context.macro_constants,
-        context.settings.data_model,
+        context.settings.facts,
     );
 
     FileAnalysis {
@@ -1064,7 +1067,7 @@ pub(crate) fn compute_vra_if_needed(
     source: &str,
     prescan_summaries: &(impl crate::analyze::context::SummaryLookup + ?Sized),
     project_macros: &const_eval::MacroConstantMap,
-    data_model: crate::settings::DataModel,
+    data_model: crate::settings::IntFacts,
 ) -> HashMap<usize, value_range::RangeAnalysisResult> {
     if !needs_vra || function_cfgs.is_empty() {
         return HashMap::new();
@@ -1169,7 +1172,7 @@ pub fn collect_function_cfgs(
     settings: &crate::settings::AnalysisSettings,
 ) {
     // Only values fixed in every configuration may prove a branch dead.
-    let constants = const_eval::cfg_prunable_constants(node, source, settings.data_model);
+    let constants = const_eval::cfg_prunable_constants(node, source, settings.facts);
     let noreturn_names = noreturn::collect_noreturn_function_names(node, source, settings);
     collect_function_cfgs_with_constants(node, source, cfgs, &constants, &noreturn_names);
 }

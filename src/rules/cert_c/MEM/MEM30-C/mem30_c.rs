@@ -233,7 +233,7 @@ impl CertRule for Mem30C {
             &self.project_macros.borrow(),
             node,
             source,
-            self.settings.borrow().data_model,
+            self.settings.borrow().facts,
         );
 
         // Second pass: per-function analysis

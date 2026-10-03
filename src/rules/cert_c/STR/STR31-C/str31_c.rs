@@ -7,7 +7,7 @@ use crate::analyze::buffer_size;
 use crate::analyze::const_eval::{collect_macro_constants, MacroConstantMap};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
-use crate::settings::DataModel;
+use crate::settings::IntFacts;
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
 use std::cell::{Cell, RefCell};
@@ -40,7 +40,7 @@ pub struct Str31C {
     macros: RefCell<MacroConstantMap>,
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 impl Str31C {
@@ -2263,7 +2263,7 @@ impl Str31C {
 
 impl CertRule for Str31C {
     fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     fn rule_id(&self) -> &'static str {

@@ -34,7 +34,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
-use crate::settings::{AnalysisSettings, DataModel};
+use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::ast_utils::resolve_field_expression_type;
 use crate::utility::cert_c::data_model::{IntWidth, Rank};
@@ -60,7 +60,7 @@ pub struct Exp14C {
     struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
     /// The integer data model the settings credit: whether an operand may be
     /// narrower than `int`.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 impl CertRule for Exp14C {
@@ -86,7 +86,7 @@ impl CertRule for Exp14C {
     }
 
     fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
@@ -236,9 +236,10 @@ impl Exp14C {
     /// C's widths the operand only lacks a guarantee of being as wide as
     /// `int`, whatever its own width (even `uint64_t`).
     fn narrow_type_phrase(&self) -> &'static str {
-        match self.data_model.get() {
-            DataModel::Iso => "a type ISO C does not guarantee is at least as wide as int",
-            _ => "type smaller than int",
+        if self.data_model.get().int_width_is_fixed() {
+            "type smaller than int"
+        } else {
+            "a type ISO C does not guarantee is at least as wide as int"
         }
     }
 

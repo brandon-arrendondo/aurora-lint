@@ -76,7 +76,9 @@ be set explicitly, down to single options:
     kind = "freestanding"       # "hosted" | "freestanding"; overrides the preset
     libc = "newlib"             # iso-posix | glibc | musl | newlib | picolibc | custom
     include_names = "exact"     # "exact" | "case-insensitive" (as cl on Windows)
-    data_model = "lp64"         # "iso" (the default) | "ilp32" | "lp64" | "llp64"
+    data_model = "lp64"         # preset: "iso" (the default) | "ilp32" | "lp64" | "llp64"
+    # int_bits = 32             # integer facts the preset loads; write one to
+    #                           # override it (see below)
 
     [environment.overrides]
     static_zero_init = false    # our startup code does not clear .bss
@@ -95,7 +97,7 @@ manifest: ``--profile``, ``--policy``, ``--environment``, ``--libc``,
 ``--deallocator NAME[=ARG]``, and a repeatable ``--set NAME=VALUE``. A
 ``--profile`` given on the command line starts again from that preset,
 discarding the manifest's settings except its declared allocators and
-deallocators and its ``data_model``: those say what the project's own
+deallocators, its ``data_model`` and its integer facts: those say what the project's own
 functions do and what it is built for, which a preset never changes.
 
 ``aurora-lint --list-options`` lists every option with its value under each
@@ -115,36 +117,131 @@ neither preset sets it. Left unset, it is ``case-insensitive`` when
 decides it. It enters the settings hash only when ``case-insensitive``, so
 settings that never mention it keep the hash they always had.
 
-``data_model`` says how wide the target's integer types are. Integer widths
-are implementation-defined, so by default (``iso``) only what ISO C guarantees
-is credited: ``CHAR_BIT`` at least 8, ``short`` and ``int`` at least 16 bits,
-``long`` at least 32, ``long long`` at least 64, and the exact width of
-``int32_t`` and its kind. ``INT_MAX`` and ``LONG_MAX`` are then unknown, and
-so is ``sizeof(long)`` to the integer rules and the range analysis: a value is
-proven to fit a type only inside its guaranteed range, and a defect that occurs
-at some conforming width (``unsigned char * unsigned char`` overflowing a
-16-bit ``int``) is reported. The buffer-size checks of ARR30-C, ARR38-C and
-STR31-C do not follow the model yet: they still size an ``int`` as 4 bytes, a
-``long`` and a pointer as 8, whatever is declared. Declaring ``ilp32``, ``lp64``
-or ``llp64`` gives every width its value on that target. It enters the
-settings hash only when declared. ``--set data_model=MODEL`` is the same as
-``--data-model MODEL``, and a ``--profile`` keeps a manifest's ``data_model``.
+Integer widths are implementation-defined, so the scan credits only what it is
+told. Each width is a plain key under ``[environment]``, and ``data_model`` is a
+named **preset**: a bundle of those keys, loaded as if its lines were in the
+configuration. Selecting ``data_model = "lp64"`` and writing the keys it loads
+by hand are the same thing.
+
+.. list-table::
+   :header-rows: 1
+
+   * - key
+     - what it is
+     - ``ilp32``
+     - ``lp64``
+     - ``llp64``
+     - ISO minimum
+   * - ``short_bits``
+     - bits in a ``short``
+     - 16
+     - 16
+     - 16
+     - 16
+   * - ``int_bits``
+     - bits in an ``int``
+     - 32
+     - 32
+     - 32
+     - 16
+   * - ``long_bits``
+     - bits in a ``long``
+     - 32
+     - 64
+     - 32
+     - 32
+   * - ``long_long_bits``
+     - bits in a ``long long``
+     - 64
+     - 64
+     - 64
+     - 64
+   * - ``pointer_bits``
+     - bits in a pointer, ``size_t``, ``ptrdiff_t``, ``intptr_t``
+     - 32
+     - 64
+     - 64
+     - 16
+   * - ``wchar_t_bits``
+     - bits in a ``wchar_t``
+     - unknown
+     - unknown
+     - 16
+     - 8
+   * - ``char_signed``
+     - whether plain ``char`` is signed
+     - unknown
+     - unknown
+     - unknown
+     - none
+
+``iso``, the default preset, loads nothing. A preset also loads what its
+platform fixes besides the widths (``CHAR_BIT`` 8, and the sizes of ``float``,
+``double``, ``long double``, ``time_t`` and ``off_t`` where the model fixes
+them); those are not keys a project writes.
+
+Where a fact comes from, highest precedence first:
+
+1. the command line (``--set key=value``, ``--data-model``);
+2. the project's own ``[environment]`` keys;
+3. the selected preset's bundle;
+4. the floor, which is what ISO C guarantees: ``CHAR_BIT`` at least 8,
+   ``short`` and ``int`` at least 16 bits, ``long`` at least 32, ``long long``
+   at least 64, the rank order, and the exact width of ``int32_t`` and its
+   kind.
+
+An explicit key beats the preset whatever order the lines are in. A fact
+nothing sets is **unknown**, and a scan then credits only the floor: a value is
+proven to fit a type only inside its guaranteed range, a defect that occurs at
+some conforming width (``unsigned char * unsigned char`` overflowing a 16-bit
+``int``) is reported, and nothing is proven or reported through a guessed
+value. No data model sets ``wchar_t_bits`` but ``llp64`` (a Windows-only
+model): ``ilp32`` and ``lp64`` are Linux and Windows targets alike, so a
+project declares its own. No preset sets ``char_signed``; until it is declared,
+``CHAR_MAX`` and ``CHAR_MIN`` are not numbers, and a proof that goes through
+one is lost.
+
+.. code-block:: toml
+
+    [environment]
+    data_model = "ilp32"        # the preset: loads 32-bit int, long and pointers
+    wchar_t_bits = 16           # override: this build's wchar_t is MSVC's
+    char_signed = true          # plain char is signed on this target
+
+A width below its ISO minimum, a width that is not a whole number of 8-bit
+bytes or exceeds 64 bits, and a rank order that shrinks
+(``short <= int <= long <= long long``, among the widths that are known) are
+refused with the offending key named: the configuration describes no
+conforming implementation. Every declared override is a key of the settings
+hash and is shown in ``--list-options`` and in a SARIF export, while the run
+label still names only the preset.
+
+Under ``iso`` ``INT_MAX`` and ``LONG_MAX`` are unknown, and so is
+``sizeof(long)`` to the integer rules and the range analysis. The buffer-size
+checks of ARR30-C, ARR38-C and STR31-C do not follow the facts yet: they still
+size an ``int`` as 4 bytes, a ``long`` and a pointer as 8, whatever is
+declared.
 
 Under ``iso`` even a 64-bit exact-width type such as ``uint64_t`` is not known
 to be at least as wide as ``int`` (ISO C gives ``int`` no upper bound), so a
 bitwise operation on one is still reported by EXP14-C as acting on a type ISO C
 does not guarantee is at least as wide as ``int``; declaring a data model
-clears it.
+clears it. Constant expressions such as ``24 * 3600`` or ``1 << 27`` overflow a
+16-bit ``int``, so an undeclared project is told about them too; declaring a
+model, or ``int_bits``, clears them.
 
-A known limitation of ``iso``: a limit macro is not a number there, so a proof
-that goes through its value is lost even when it holds on every
+A known limitation of an unknown width: a limit macro is not a number, so a
+proof that goes through its value is lost even when it holds on every
 implementation. ``x = INT_MAX; x + 1`` overflows everywhere, and a branch
 guarded by ``d < SHRT_MAX`` after ``d = SHRT_MAX`` never runs, but with
 ``INT_MAX`` and ``SHRT_MAX`` unknown neither is proven: an undeclared project
 loses such an overflow finding and can be reported inside such a dead branch.
 Declaring the data model avoids both. The same goes for ``sizeof`` of a type
-whose width the model leaves open: a product that includes one is not
-evaluated, so a wrap that needs the exact size to show is not reported.
+whose width is unknown: a product that includes one is not evaluated, so a wrap
+that needs the exact size to show is not reported. An unknown ``wchar_t`` is
+still an integer type, no wider than the widest integer the facts declare, and
+is bounded by it: ``calloc(n, sizeof(wchar_t))`` cannot wrap a 64-bit
+``size_t`` whatever ``wchar_t`` is, and can wrap a 32-bit one.
 
 ``allocators`` and ``deallocators`` declare functions the scan has no body
 for, such as a platform hook the build supplies: a deallocator frees the

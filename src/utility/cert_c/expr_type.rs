@@ -15,9 +15,9 @@
 //! when that answer would silence a finding, and never as "float" or
 //! "unsigned" when it would raise one.
 //!
-//! Widths and the standard aliases come from a [`DataModel`], so the integer
+//! Widths and the standard aliases come from a [`IntFacts`], so the integer
 //! model of the target is a parameter rather than a constant. Under the
-//! default, [`DataModel::Iso`], a type whose rank no model fixes (`uint32_t`,
+//! default, [`IntFacts::ISO`], a type whose rank no model fixes (`uint32_t`,
 //! `size_t`) is an [`CType::IntOfWidth`], and a promotion or conversion whose
 //! result depends on a width ISO C leaves open is unknown.
 //!
@@ -46,7 +46,7 @@ pub enum Sign {
     PlainChar,
 }
 
-pub use crate::utility::cert_c::data_model::{DataModel, Rank};
+pub use crate::utility::cert_c::data_model::{IntFacts, Rank};
 
 /// A real floating type, ordered by range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -73,7 +73,7 @@ pub enum CType {
         rank: Rank,
     },
     /// An integer type whose rank the data model does not fix: under
-    /// [`DataModel::Iso`], an exact-width type (`uint32_t`, which may be
+    /// [`IntFacts::ISO`], an exact-width type (`uint32_t`, which may be
     /// `unsigned int` or `unsigned long`) or a library type of unspecified
     /// width (`size_t`).
     IntOfWidth {
@@ -160,10 +160,10 @@ impl CType {
 
 /// The type a standard library alias names on `model`, or `None` for a name
 /// that is not one, or one whose type the model leaves open (`wchar_t`'s sign
-/// under [`DataModel::Iso`]). Only the aliases whose definition the data
+/// under [`IntFacts::ISO`]). Only the aliases whose definition the data
 /// model fixes are listed: `int_fastN_t` and `int_leastN_t` vary by C library
 /// and are left unknown.
-pub fn standard_alias(model: DataModel, name: &str) -> Option<CType> {
+pub fn standard_alias(model: IntFacts, name: &str) -> Option<CType> {
     use Rank::*;
     let ranked = |sign, rank| Some(CType::Int { sign, rank });
     let unranked = |sign, min_bits, max_bits| {
@@ -181,16 +181,24 @@ pub fn standard_alias(model: DataModel, name: &str) -> Option<CType> {
             .find(|r| model.exact_width(*r) == Some(bits))
             .map_or_else(|| unranked(sign, bits, Some(bits)), |r| ranked(sign, r))
     };
-    // size_t and its kin: as wide as a pointer on every declared model.
-    let word = |sign| match model {
-        DataModel::Iso => unranked(sign, 16, None),
-        DataModel::Ilp32 => ranked(sign, Int),
-        DataModel::Lp64 => ranked(sign, Long),
-        DataModel::Llp64 => ranked(sign, LongLong),
+    // size_t and its kin: as wide as a pointer. When the pointer's width is
+    // known it has the lowest rank that wide (`int` on ilp32, `long` on lp64,
+    // `long long` on llp64); when it is not, only the 16 bits ISO C guarantees.
+    let word = |sign| match model.pointer_width() {
+        Some(bits) => [Int, Long, LongLong]
+            .into_iter()
+            .find(|r| model.exact_width(*r) == Some(bits))
+            .map_or_else(|| unranked(sign, bits, Some(bits)), |r| ranked(sign, r)),
+        None => unranked(sign, 16, None),
     };
-    let at_least = |sign, bits: u32, declared: Rank| match model {
-        DataModel::Iso => unranked(sign, bits, None),
-        _ => ranked(sign, declared),
+    // A type "at least this wide", ranked as `declared` when the facts fix
+    // that rank's width.
+    let at_least = |sign, bits: u32, declared: Rank| {
+        if model.exact_width(declared).is_some() {
+            ranked(sign, declared)
+        } else {
+            unranked(sign, bits, None)
+        }
     };
     let signed = Sign::Signed;
     let unsigned = Sign::Unsigned;
@@ -204,17 +212,16 @@ pub fn standard_alias(model: DataModel, name: &str) -> Option<CType> {
         "int64_t" => exact(signed, 64),
         "uint64_t" => exact(unsigned, 64),
         // At least 64 bits, and 64 on every declared model.
-        "intmax_t" if model == DataModel::Iso => unranked(signed, 64, None),
-        "uintmax_t" if model == DataModel::Iso => unranked(unsigned, 64, None),
+        "intmax_t" if model.exact_width(LongLong).is_none() => unranked(signed, 64, None),
+        "uintmax_t" if model.exact_width(LongLong).is_none() => unranked(unsigned, 64, None),
         "intmax_t" => exact(signed, 64),
         "uintmax_t" => exact(unsigned, 64),
         "intptr_t" | "ptrdiff_t" | "ssize_t" => word(signed),
         "uintptr_t" | "size_t" | "rsize_t" => word(unsigned),
-        "wchar_t" => match model {
-            DataModel::Iso => None,
-            DataModel::Llp64 => ranked(unsigned, Short),
-            DataModel::Ilp32 | DataModel::Lp64 => ranked(signed, Int),
-        },
+        // Its width and sign are a platform fact (16 bits and unsigned on
+        // Windows, 32 and signed on Linux) that the integer widths do not
+        // carry, so it is not typed here; `wchar_t_bits` reaches `sizeof`.
+        "wchar_t" => None,
         "char16_t" => at_least(unsigned, 16, Short),
         "char32_t" => at_least(unsigned, 32, Int),
         "bool" => ranked(unsigned, Bool),
@@ -240,7 +247,7 @@ pub struct TypeEnv<'a> {
     /// `typedef name -> struct/union tag`, for `typedef struct Tag Alias;`.
     pub struct_aliases: &'a HashMap<String, String>,
     /// The target's integer data model.
-    pub model: DataModel,
+    pub model: IntFacts,
     /// `name -> return type` for the functions this file defines; see
     /// [`file_function_type`].
     file_functions: OnceCell<HashMap<String, Option<CType>>>,
@@ -253,7 +260,7 @@ impl<'a> TypeEnv<'a> {
         fields: &'a HashMap<String, HashMap<String, String>>,
         shapes: &'a HashMap<String, HashMap<String, String>>,
         struct_aliases: &'a HashMap<String, String>,
-        model: DataModel,
+        model: IntFacts,
     ) -> Self {
         Self {
             typedefs,
@@ -267,7 +274,7 @@ impl<'a> TypeEnv<'a> {
 
     /// An environment over what one file sees, under `model` (the settings'
     /// `data_model`).
-    pub fn visible(types: &'a VisibleTypes, model: DataModel) -> Self {
+    pub fn visible(types: &'a VisibleTypes, model: IntFacts) -> Self {
         Self::new(
             &types.typedef_types,
             &types.struct_field_types,
@@ -730,9 +737,9 @@ fn int_type() -> CType {
 /// The integer promotions (C11 6.3.1.1p2): a type below `int` becomes `int`
 /// when `int` holds all its values, else `unsigned int`; floats are
 /// unchanged. `None` when `model` leaves that open: under
-/// [`DataModel::Iso`] an `unsigned short` is as wide as `int` on a 16-bit
+/// [`IntFacts::ISO`] an `unsigned short` is as wide as `int` on a 16-bit
 /// target, so it may promote to either.
-fn promote(t: CType, model: DataModel) -> Option<CType> {
+fn promote(t: CType, model: IntFacts) -> Option<CType> {
     let unsigned_int = CType::Int {
         sign: Sign::Unsigned,
         rank: Rank::Int,
@@ -771,7 +778,7 @@ fn promote(t: CType, model: DataModel) -> Option<CType> {
 }
 
 /// The usual arithmetic conversions (C11 6.3.1.8) on two arithmetic types.
-fn usual_arithmetic_conversions(a: CType, b: CType, model: DataModel) -> Option<CType> {
+fn usual_arithmetic_conversions(a: CType, b: CType, model: IntFacts) -> Option<CType> {
     match (&a, &b) {
         (CType::Float(x), CType::Float(y)) => {
             if *x == FloatKind::Extended || *y == FloatKind::Extended {
@@ -921,10 +928,10 @@ fn field_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
 /// its declared type. A width that is not a decimal constant (a macro), or
 /// a bit-field of a type other than `int`, `unsigned int` or `_Bool`, whose
 /// promotion is implementation-defined, is unknown. One `model` leaves as
-/// possibly as wide as `int` (16 bits or more under [`DataModel::Iso`]) is
+/// possibly as wide as `int` (16 bits or more under [`IntFacts::ISO`]) is
 /// an [`CType::IntOfWidth`] of exactly its width: it promotes to `int`, or
 /// keeps its declared type, depending on the target.
-fn bit_field_type(declared: CType, width: &str, model: DataModel) -> Option<CType> {
+fn bit_field_type(declared: CType, width: &str, model: IntFacts) -> Option<CType> {
     let width: u32 = width.parse().ok()?;
     match declared {
         CType::Int { rank, .. }
@@ -948,7 +955,7 @@ fn bit_field_type(declared: CType, width: &str, model: DataModel) -> Option<CTyp
 }
 
 /// An integer or floating constant's type (C11 6.4.4.1, 6.4.4.2).
-pub fn number_literal_type(text: &str, model: DataModel) -> Option<CType> {
+pub fn number_literal_type(text: &str, model: IntFacts) -> Option<CType> {
     let t = text.replace('\'', "");
     let lower = t.to_ascii_lowercase();
     let hex = lower.starts_with("0x");
@@ -1028,7 +1035,7 @@ pub fn number_literal_type(text: &str, model: DataModel) -> Option<CType> {
     None
 }
 
-fn char_literal_type(text: &str, model: DataModel) -> Option<CType> {
+fn char_literal_type(text: &str, model: IntFacts) -> Option<CType> {
     let prefix = text.split('\'').next().unwrap_or("");
     match prefix {
         "L" => standard_alias(model, "wchar_t"),
@@ -1050,11 +1057,11 @@ mod tests {
 
     /// The type of the expression in the last `return` of `code`, on LP64.
     fn returned(code: &str, typedefs: &[(&str, &str)]) -> Option<CType> {
-        returned_on(DataModel::Lp64, code, typedefs)
+        returned_on(IntFacts::LP64, code, typedefs)
     }
 
     /// The type of the expression in the last `return` of `code`, on `model`.
-    fn returned_on(model: DataModel, code: &str, typedefs: &[(&str, &str)]) -> Option<CType> {
+    fn returned_on(model: IntFacts, code: &str, typedefs: &[(&str, &str)]) -> Option<CType> {
         let tree = parse(code);
         let typedefs: HashMap<String, String> = typedefs
             .iter()
@@ -1131,35 +1138,35 @@ mod tests {
     #[test]
     fn hex_literals_are_integers() {
         assert_eq!(
-            number_literal_type("0x1f", DataModel::Lp64),
+            number_literal_type("0x1f", IntFacts::LP64),
             int(Sign::Signed, Rank::Int)
         );
         assert_eq!(
-            number_literal_type("0x1e5", DataModel::Lp64),
+            number_literal_type("0x1e5", IntFacts::LP64),
             int(Sign::Signed, Rank::Int)
         );
         assert_eq!(
-            number_literal_type("0xffffffff", DataModel::Lp64),
+            number_literal_type("0xffffffff", IntFacts::LP64),
             int(Sign::Unsigned, Rank::Int)
         );
         assert_eq!(
-            number_literal_type("0x1p3", DataModel::Lp64),
+            number_literal_type("0x1p3", IntFacts::LP64),
             Some(CType::Float(FloatKind::Double))
         );
         assert_eq!(
-            number_literal_type("1.5f", DataModel::Lp64),
+            number_literal_type("1.5f", IntFacts::LP64),
             Some(CType::Float(FloatKind::Float))
         );
         assert_eq!(
-            number_literal_type("1e3", DataModel::Lp64),
+            number_literal_type("1e3", IntFacts::LP64),
             Some(CType::Float(FloatKind::Double))
         );
         assert_eq!(
-            number_literal_type("10ul", DataModel::Lp64),
+            number_literal_type("10ul", IntFacts::LP64),
             int(Sign::Unsigned, Rank::Long)
         );
         assert_eq!(
-            number_literal_type("3000000000", DataModel::Lp64),
+            number_literal_type("3000000000", IntFacts::LP64),
             int(Sign::Signed, Rank::Long)
         );
     }
@@ -1283,7 +1290,7 @@ mod tests {
         )]
         .into();
         let (typedefs, shapes, aliases) = (HashMap::new(), HashMap::new(), HashMap::new());
-        let env = TypeEnv::new(&typedefs, &fields, &shapes, &aliases, DataModel::Lp64);
+        let env = TypeEnv::new(&typedefs, &fields, &shapes, &aliases, IntFacts::LP64);
         let ret = lang_parsing_substrate::query::find_descendants_of_kind(
             tree.root_node(),
             "return_statement",
@@ -1377,7 +1384,7 @@ mod tests {
 
     #[test]
     fn iso_leaves_the_rank_of_a_width_alias_open() {
-        let iso = |code: &str| returned_on(DataModel::Iso, code, &[]);
+        let iso = |code: &str| returned_on(IntFacts::ISO, code, &[]);
         let width = |sign, min_bits, max_bits| {
             Some(CType::IntOfWidth {
                 sign,
@@ -1406,18 +1413,18 @@ mod tests {
         assert!(iso("long f(size_t n) { return n; }").unwrap().is_integer());
         // A declared model names the rank.
         assert_eq!(
-            returned_on(DataModel::Llp64, "long f(size_t n) { return n; }", &[]),
+            returned_on(IntFacts::LLP64, "long f(size_t n) { return n; }", &[]),
             int(Sign::Unsigned, Rank::LongLong)
         );
         assert_eq!(
-            returned_on(DataModel::Llp64, "long f(uint64_t n) { return n; }", &[]),
+            returned_on(IntFacts::LLP64, "long f(uint64_t n) { return n; }", &[]),
             int(Sign::Unsigned, Rank::LongLong)
         );
     }
 
     #[test]
     fn iso_types_a_promotion_only_where_every_width_agrees() {
-        let iso = |code: &str| returned_on(DataModel::Iso, code, &[]);
+        let iso = |code: &str| returned_on(IntFacts::ISO, code, &[]);
         // A signed narrow type always fits int.
         assert_eq!(
             iso("int f(short a) { return -a; }"),
@@ -1437,7 +1444,7 @@ mod tests {
         );
         assert_eq!(
             returned_on(
-                DataModel::Llp64,
+                IntFacts::LLP64,
                 "long f(long a, unsigned b) { return a + b; }",
                 &[]
             ),
@@ -1449,23 +1456,23 @@ mod tests {
     fn iso_types_a_literal_only_inside_the_guaranteed_range() {
         let signed = |rank| int(Sign::Signed, rank);
         assert_eq!(
-            number_literal_type("32767", DataModel::Iso),
+            number_literal_type("32767", IntFacts::ISO),
             signed(Rank::Int)
         );
         // int or long, depending on the target.
-        assert_eq!(number_literal_type("40000", DataModel::Iso), None);
+        assert_eq!(number_literal_type("40000", IntFacts::ISO), None);
         assert_eq!(
-            number_literal_type("40000L", DataModel::Iso),
+            number_literal_type("40000L", IntFacts::ISO),
             signed(Rank::Long)
         );
         assert_eq!(
-            number_literal_type("40000u", DataModel::Iso),
+            number_literal_type("40000u", IntFacts::ISO),
             int(Sign::Unsigned, Rank::Int)
         );
         // int or unsigned int.
-        assert_eq!(number_literal_type("0xffff", DataModel::Iso), None);
+        assert_eq!(number_literal_type("0xffff", IntFacts::ISO), None);
         assert_eq!(
-            number_literal_type("40000", DataModel::Lp64),
+            number_literal_type("40000", IntFacts::LP64),
             signed(Rank::Int)
         );
     }

@@ -8594,7 +8594,7 @@ mod tests {
         let macros = const_eval::collect_macro_constants(
             &tree.root_node(),
             code,
-            crate::settings::DataModel::Lp64,
+            crate::settings::IntFacts::LP64,
         );
         compute_summaries(
             &tree.root_node(),

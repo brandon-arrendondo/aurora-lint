@@ -4,7 +4,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::VisibleTypes;
 use crate::manifest::Severity;
-use crate::settings::{AnalysisSettings, DataModel};
+use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::expr_type::{self, CType, Rank, TypeEnv};
 use lang_parsing_substrate::query;
@@ -22,7 +22,7 @@ pub struct Int02C {
     /// and the one in scope is the file's own.
     visible: RefCell<VisibleTypes>,
     /// The integer data model the settings credit, for typing.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 /// An operand's integer type as this rule reasons about it: its sign, its
@@ -49,7 +49,7 @@ impl IntType {
     /// Whether the integer promotions may make this a signed `int`: it is
     /// below `int` and `int` holds its values on some implementation the
     /// model allows. A signed type below `int` always promotes to it.
-    fn may_promote_to_int(&self, model: DataModel) -> bool {
+    fn may_promote_to_int(&self, model: IntFacts) -> bool {
         match self.rank {
             Some(r) if r >= Rank::Int => false,
             Some(_) if self.signed => true,
@@ -65,7 +65,7 @@ impl IntType {
     /// int` or wider, or a narrower unsigned type as wide as `int` on some
     /// implementation the model allows (an `unsigned short` where `short` and
     /// `int` are both 16 bits).
-    fn may_stay_unsigned(&self, model: DataModel) -> bool {
+    fn may_stay_unsigned(&self, model: IntFacts) -> bool {
         !self.signed
             && match self.rank {
                 Some(r) if r >= Rank::Int => true,
@@ -77,7 +77,7 @@ impl IntType {
     }
 
     /// Its rank and exact width once promoted, when the model fixes both.
-    fn promoted(&self, model: DataModel) -> Option<(Rank, u32)> {
+    fn promoted(&self, model: IntFacts) -> Option<(Rank, u32)> {
         match self.rank? {
             r if r < Rank::Int => Some((Rank::Int, model.exact_width(Rank::Int)?)),
             r => Some((r, self.max_bits?)),
@@ -114,7 +114,7 @@ impl CertRule for Int02C {
     }
 
     fn set_analysis_settings(&self, settings: &std::sync::Arc<AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     // Every question here is answered from the type the operand's own
@@ -377,7 +377,7 @@ impl Int02C {
 /// `char`, whose signedness is implementation-defined, so neither shape can
 /// say what conversion happens (INT16-C leaves it out for the same reason).
 /// An unknown type is never reported, and no text heuristic can supply one.
-fn int_type(t: CType, model: DataModel) -> Option<IntType> {
+fn int_type(t: CType, model: IntFacts) -> Option<IntType> {
     let (sign, rank, max_bits) = match t {
         CType::Int { sign, rank } => (sign, Some(rank), model.exact_width(rank)),
         CType::IntOfWidth { sign, max_bits, .. } => (sign, None, max_bits),

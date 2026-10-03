@@ -51,7 +51,7 @@ use crate::analyze::macro_expand::{collect_function_macros, FunctionMacro};
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
-use crate::settings::DataModel;
+use crate::settings::IntFacts;
 use lang_parsing_substrate::query;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -147,7 +147,7 @@ pub struct Arr30C {
     cached_file_constants: RefCell<HashMap<String, i64>>,
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 /// Represents an index value that can be constant or variable
@@ -227,7 +227,7 @@ const BOUND_NAME_SUBSTRINGS_WITH_LEN: &[&str] = &["size", "length", "count", "le
 
 impl CertRule for Arr30C {
     fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     fn rule_id(&self) -> &'static str {
@@ -382,7 +382,7 @@ impl Arr30C {
             null_sentinel_macros: RefCell::new(HashSet::new()),
             cached_typedefs: RefCell::new(HashMap::new()),
             cached_file_constants: RefCell::new(HashMap::new()),
-            data_model: Cell::new(DataModel::default()),
+            data_model: Cell::new(IntFacts::default()),
         }
     }
 

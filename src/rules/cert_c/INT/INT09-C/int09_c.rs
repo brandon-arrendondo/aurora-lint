@@ -33,7 +33,7 @@ use crate::analyze::const_eval::{
     collect_macro_constants, try_evaluate_text_public, MacroConstantMap,
 };
 use crate::manifest::Severity;
-use crate::settings::DataModel;
+use crate::settings::IntFacts;
 use lang_parsing_substrate::query;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -61,12 +61,12 @@ struct EnumValue {
 pub struct Int09C {
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 impl CertRule for Int09C {
     fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     fn rule_id(&self) -> &'static str {

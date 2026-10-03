@@ -1,7 +1,7 @@
 // Common AST utilities for CERT C rules
 // This module provides reusable functions for navigating and extracting information from the C AST
 
-use crate::utility::cert_c::data_model::{DataModel, IntWidth};
+use crate::utility::cert_c::data_model::{IntFacts, IntWidth};
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -1477,14 +1477,14 @@ pub fn is_signed_type(type_str: &str) -> bool {
 
 /// What `model` knows about the width of a known integer type name, or `None`
 /// when the spelling is not one it recognizes (a typedef out of a header, a
-/// struct, a pointer). See [`DataModel::spelled_width`] for the spellings.
+/// struct, a pointer). See [`IntFacts::spelled_width`] for the spellings.
 ///
 /// The width is not a single number unless a data model is declared: under
 /// ISO C's widths an `int` is at least 16 bits and possibly more. A caller
 /// proving something safe from a width (a shift count below it, a value
 /// inside the type's range) uses `min`; one asking whether one type can be
 /// narrower than another uses [`IntWidth::may_be_narrower_than`].
-pub fn integer_type_width(type_str: &str, model: DataModel) -> Option<IntWidth> {
+pub fn integer_type_width(type_str: &str, model: IntFacts) -> Option<IntWidth> {
     model.spelled_width(type_str).map(|(_, width)| width)
 }
 

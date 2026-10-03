@@ -5,7 +5,7 @@
 //!
 //! Using LoadLibrary() without specifying search paths can allow DLL hijacking attacks.
 
-use crate::settings::DataModel;
+use crate::settings::IntFacts;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -56,7 +56,7 @@ pub struct Win00C {
     project_constants: RefCell<Arc<MacroConstantMap>>,
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 impl Win00C {
@@ -64,7 +64,7 @@ impl Win00C {
         Self {
             project_aliases: RefCell::new(Arc::new(HashMap::new())),
             project_constants: RefCell::new(Arc::new(HashMap::new())),
-            data_model: Cell::new(DataModel::default()),
+            data_model: Cell::new(IntFacts::default()),
         }
     }
 }
@@ -192,7 +192,7 @@ struct FlagMacros {
 
 impl CertRule for Win00C {
     fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     fn rule_id(&self) -> &'static str {

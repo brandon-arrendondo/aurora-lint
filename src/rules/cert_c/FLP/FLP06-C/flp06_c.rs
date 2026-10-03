@@ -4,7 +4,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::VisibleTypes;
 use crate::manifest::Severity;
-use crate::settings::{AnalysisSettings, DataModel};
+use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::expr_type::{self, TypeEnv};
 use std::cell::{Cell, RefCell};
 use tree_sitter::Node;
@@ -16,7 +16,7 @@ pub struct Flp06C {
     /// their declarations.
     visible: RefCell<VisibleTypes>,
     /// The integer data model the settings credit, for typing.
-    data_model: Cell<DataModel>,
+    data_model: Cell<IntFacts>,
 }
 
 impl CertRule for Flp06C {
@@ -38,7 +38,7 @@ impl CertRule for Flp06C {
     }
 
     fn set_analysis_settings(&self, settings: &std::sync::Arc<AnalysisSettings>) {
-        self.data_model.set(settings.data_model);
+        self.data_model.set(settings.facts);
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {

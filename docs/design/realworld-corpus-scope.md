@@ -216,14 +216,19 @@ code rather than an assumption the tool makes:
 |---|---|---|
 | libcrc, sqlite, mosquitto, curl, hostap, lua, raylib, pureftpd, mbedtls, valkey | `linux-x86_64` | `lp64` |
 | sel4 | `linux-x86_64-pc99` | `lp64` |
-| ventoy | `windows-x86` (MSVC) | `ilp32`, following `primary_build_config` |
+| ventoy | `windows-x86` (MSVC) | `ilp32`, following `primary_build_config`, and `wchar_t_bits = 16` (MSVC's `wchar_t`; no data model but `llp64` loads it) |
 
 Juliet is declared `lp64` as well (`JULIET_SETTING_OVERRIDES` in
 `bench/config.py`): the testcases are built for Linux x86_64 with GCC.
 
 A declared corpus therefore reproduces the widths every earlier run assumed,
 except where a proof depended on a width the configuration does not have
-(ventoy's `long`, `size_t` and pointers are 32 bits, not 64). Declaring moves each corpus's settings
+(ventoy's `long`, `size_t` and pointers are 32 bits, not 64), or on one the
+data model never fixed. `wchar_t` is the second kind: `ilp32` and `lp64` are
+Linux and Windows models alike, so they leave `wchar_t` unknown, and only
+ventoy, whose Windows build of record has a 16-bit `wchar_t`, declares it.
+The Linux corpora do not: where one uses `sizeof(wchar_t)` it is no longer a
+constant, and nothing is proven or reported through a guessed size. Declaring moves each corpus's settings
 hash, so runs from before and after the declaration carry different run ids.
 
 

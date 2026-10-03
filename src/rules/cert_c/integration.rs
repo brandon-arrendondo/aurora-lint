@@ -574,12 +574,9 @@ fn run_fixture(
     let settings = AnalysisSettings::resolve(&config)
         .unwrap_or_else(|e| panic!("{:?}: bad Settings: line: {}", test_path, e));
 
-    let mut context = crate::analyze::prescan::prescan_single_file(
-        &test_path,
-        rule.needs_vra(),
-        settings.data_model,
-    )
-    .unwrap_or_else(|e| panic!("Failed to prescan {:?}: {}", test_path, e));
+    let mut context =
+        crate::analyze::prescan::prescan_single_file(&test_path, rule.needs_vra(), settings.facts)
+            .unwrap_or_else(|e| panic!("Failed to prescan {:?}: {}", test_path, e));
     context.settings = std::sync::Arc::new(settings);
     rule.set_analysis_settings(&context.settings);
     rule.set_project_context(&context);

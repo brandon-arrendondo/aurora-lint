@@ -88,7 +88,7 @@ struct PointerTypes<'a> {
     typedef_types: &'a HashMap<String, String>,
     /// The settings' integer data model: how wide such a type is
     /// guaranteed to be.
-    data_model: crate::settings::DataModel,
+    data_model: crate::settings::IntFacts,
 }
 
 pub struct Api00C {
@@ -174,7 +174,7 @@ impl CertRule for Api00C {
             struct_field_types: &struct_field_types,
             facts: &facts,
             typedef_types: &typedef_types,
-            data_model: self.settings.borrow().data_model,
+            data_model: self.settings.borrow().facts,
         };
         for func in query::find_descendants_of_kind(*node, "function_definition") {
             self.check_function_parameter_validation(

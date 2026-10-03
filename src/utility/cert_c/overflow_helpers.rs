@@ -25,7 +25,7 @@
 //! module's version directly instead of maintaining a parallel, buggier one.
 
 use crate::utility::cert_c::ast_utils::{get_node_text, is_unsigned_type};
-use crate::utility::cert_c::data_model::DataModel;
+use crate::utility::cert_c::data_model::IntFacts;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -512,7 +512,7 @@ pub fn resolve_typedef_chain(type_name: &str, typedef_types: &HashMap<String, St
 pub fn is_64bit_signed(
     type_name: &str,
     typedef_types: &HashMap<String, String>,
-    model: DataModel,
+    model: IntFacts,
 ) -> bool {
     let resolved = resolve_typedef_chain(type_name, typedef_types);
     let base = resolved

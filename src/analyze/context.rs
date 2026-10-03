@@ -729,14 +729,11 @@ impl ProjectContext {
 /// without a format bump (adding a key does not change the layout).
 ///
 /// Before `prescan_scope` was recorded the prescan read every file it walked,
-/// so an older cache was built leaving nothing out. Before the data model was
-/// a setting, the macro constants were resolved with LP64's `INT_MAX` and
-/// `sizeof`.
-pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
-    ("include_names", "exact"),
-    ("prescan_scope", ""),
-    ("data_model", "lp64"),
-];
+/// so an older cache was built leaving nothing out. The integer facts the
+/// macro constants are resolved with (`int_facts`) have no implicit value: a
+/// cache from before they were recorded took them from a data model alone.
+pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] =
+    &[("include_names", "exact"), ("prescan_scope", "")];
 
 /// Version of the prescan cache's serialized layout. Bump it with any change
 /// to a serialized field of [`ProjectContext`] (or of a type it holds), or to
@@ -1211,20 +1208,19 @@ mod tests {
         assert!(ctx
             .check_built_under(&map(&[("include_names", "case-insensitive")]), path)
             .is_err());
-        // One from before the data model was a setting resolved its
-        // constants with LP64's limits, so only an LP64 scan may use it.
-        assert!(ctx
-            .check_built_under(&map(&[("data_model", "lp64")]), path)
-            .is_ok());
-        assert!(ctx
-            .check_built_under(&map(&[("data_model", "iso")]), path)
-            .is_err());
-        // A setting with no implicit value cannot be judged when absent.
+        // A setting with no implicit value cannot be judged when absent: the
+        // integer facts constants were resolved with are one, since an old
+        // cache took them from the data model alone.
         let err = ctx
             .check_built_under(&map(&[("declarations", "per-file")]), path)
             .unwrap_err()
             .to_string();
         assert!(err.contains("does not record the declarations"), "{err}");
+        let err = ctx
+            .check_built_under(&map(&[("int_facts", "int_bits=32")]), path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("does not record the int_facts"), "{err}");
     }
 
     #[test]
