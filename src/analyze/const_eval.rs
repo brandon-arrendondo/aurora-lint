@@ -894,6 +894,15 @@ pub fn merged_macro_aliases(
 const MACRO_RANGE_MIN: &str = "[min]";
 const MACRO_RANGE_MAX: &str = "[max]";
 
+/// The name a [`MacroConstantMap`] key belongs to: `NAME` for `NAME`,
+/// `NAME[min]` and `NAME[max]`. For a filter that drops or keeps constants by
+/// name, which must treat a range-valued name's two keys as the name.
+pub fn macro_key_name(key: &str) -> &str {
+    key.strip_suffix(MACRO_RANGE_MIN)
+        .or_else(|| key.strip_suffix(MACRO_RANGE_MAX))
+        .unwrap_or(key)
+}
+
 /// The range of an object-like macro whose body is not one number but is
 /// bounded: `#define HEADER (sizeof(uint32_t) * 2 + sizeof(uint16_t))` under
 /// ISO C's widths, where an exact-width type's size is only known to lie
