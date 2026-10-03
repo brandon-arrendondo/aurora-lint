@@ -349,12 +349,17 @@ impl Int08C {
             // branch a truncation. That is the only shape skipped: where
             // the width is fixed the end is a real value, and a store no
             // limit guard governs is a truncation on every implementation.
-            let open = data_model::is_open_top(range.max) || data_model::is_open_bottom(range.min);
-            if open
-                && !self.value_width_is_fixed(&value, source, variables)
-                && guard_dominance::has_dominating_limit_guard(&value, &value, source)
-            {
-                continue;
+            // The guard has to bound the open end toward the destination, on
+            // the branch the store is in: a cap for an open top, a floor for
+            // an open bottom.
+            let width_open = !self.value_width_is_fixed(&value, source, variables);
+            let open_top = data_model::is_open_top(range.max);
+            let open_bottom = data_model::is_open_bottom(range.min);
+            if width_open && (open_top || open_bottom) {
+                let bounds = guard_dominance::dominating_limit_bounds(&value, &value, source);
+                if (!open_top || bounds.top) && (!open_bottom || bounds.bottom) {
+                    continue;
+                }
             }
             // The width it is guaranteed: a value outside that range is
             // truncated on the narrowest target the data model allows.
@@ -374,12 +379,12 @@ impl Int08C {
                         .split_whitespace()
                         .collect::<Vec<_>>()
                         .join(" "),
-                    if range.min == range.max {
-                        range.min.to_string()
-                    } else if data_model::is_open_top(range.max) {
+                    if width_open && open_top {
                         format!("at least {}", range.min)
-                    } else if data_model::is_open_bottom(range.min) {
+                    } else if width_open && open_bottom {
                         format!("at most {}", range.max)
+                    } else if range.min == range.max {
+                        range.min.to_string()
                     } else {
                         format!("in [{}, {}]", range.min, range.max)
                     },

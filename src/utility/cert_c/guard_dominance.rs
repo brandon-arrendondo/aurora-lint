@@ -1247,6 +1247,115 @@ pub fn has_dominating_limit_guard(expr: &Node, site: &Node, source: &str) -> boo
     })
 }
 
+/// Which ends of a value a limit-macro guard has bounded where a site runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LimitBounds {
+    /// Capped from above: `v <= LIMIT` or `v < LIMIT` holds here.
+    pub top: bool,
+    /// Floored from below: `v >= LIMIT` or `v > LIMIT` holds here.
+    pub bottom: bool,
+}
+
+/// The bounds against an integer-limit name that hold at `site` for the
+/// variables of `expr`, taking each governing condition on the branch the
+/// site is in ([`dominating_condition_branch`]).
+///
+/// Direction and branch both matter. `if (d <= UCHAR_MAX) {} else { site }`
+/// runs where `d > UCHAR_MAX`, a floor and not a cap, and `v >= SCHAR_MAX`
+/// leaves the top of `v` exactly as open as before. A condition contributes
+/// only what it makes true on that branch: both sides of a true `&&` or a
+/// false `||`, nothing from a true `||` or a false `&&`, a negation with the
+/// polarity flipped.
+pub fn dominating_limit_bounds(expr: &Node, site: &Node, source: &str) -> LimitBounds {
+    fn walk(cond: Node, truth: bool, var: &str, source: &str, out: &mut LimitBounds) {
+        match cond.kind() {
+            "parenthesized_expression" => {
+                if let Some(inner) = cond.named_child(0) {
+                    walk(inner, truth, var, source, out);
+                }
+            }
+            "unary_expression" => {
+                let negation = cond
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "!");
+                if let (true, Some(arg)) = (negation, cond.child_by_field_name("argument")) {
+                    walk(arg, !truth, var, source, out);
+                }
+            }
+            "binary_expression" => {
+                let op = cond
+                    .child_by_field_name("operator")
+                    .map(|o| get_node_text(&o, source))
+                    .unwrap_or("");
+                let (Some(left), Some(right)) = (
+                    cond.child_by_field_name("left"),
+                    cond.child_by_field_name("right"),
+                ) else {
+                    return;
+                };
+                match (op, truth) {
+                    ("&&", true) | ("||", false) => {
+                        walk(left, truth, var, source, out);
+                        walk(right, truth, var, source, out);
+                    }
+                    ("<" | "<=" | ">" | ">=" | "==", _) => {
+                        let is_var = |n: &Node| {
+                            let mut n = *n;
+                            while n.kind() == "parenthesized_expression" {
+                                match n.named_child(0) {
+                                    Some(inner) => n = inner,
+                                    None => break,
+                                }
+                            }
+                            n.kind() == "identifier" && get_node_text(&n, source) == var
+                        };
+                        // `limit OP var` is `var FLIPPED limit`.
+                        let (limit, op) = if is_var(&left) {
+                            (right, op)
+                        } else if is_var(&right) {
+                            let flipped = match op {
+                                "<" => ">",
+                                "<=" => ">=",
+                                ">" => "<",
+                                ">=" => "<=",
+                                other => other,
+                            };
+                            (left, flipped)
+                        } else {
+                            return;
+                        };
+                        if !condition_mentions_integer_limit(&limit, source)
+                            && !is_integer_limit_name(get_node_text(&limit, source).trim())
+                        {
+                            return;
+                        }
+                        // What holds on this branch.
+                        let holds = match (op, truth) {
+                            ("<" | "<=", true) | (">" | ">=", false) => (true, false),
+                            (">" | ">=", true) | ("<" | "<=", false) => (false, true),
+                            ("==", true) => (true, true),
+                            _ => (false, false),
+                        };
+                        out.top |= holds.0;
+                        out.bottom |= holds.1;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = LimitBounds::default();
+    let vars = expression_variables(expr, source);
+    for (cond, branch) in dominating_conditions_with_branches(site) {
+        let Some(truth) = branch else { continue };
+        for var in &vars {
+            walk(cond, truth, var, source, &mut out);
+        }
+    }
+    out
+}
+
 /// The identifier names appearing in `expr` — the operands of the arithmetic
 /// whose guard is being looked for.
 fn expression_variables(expr: &Node, source: &str) -> Vec<String> {
