@@ -169,6 +169,9 @@ be set explicitly, down to single options:</p>
 <span class="n">kind</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;freestanding&quot;</span><span class="w">       </span><span class="c1"># &quot;hosted&quot; | &quot;freestanding&quot;; overrides the preset</span>
 <span class="n">libc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;newlib&quot;</span><span class="w">             </span><span class="c1"># iso-posix | glibc | musl | newlib | picolibc | custom</span>
 <span class="n">include_names</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;exact&quot;</span><span class="w">     </span><span class="c1"># &quot;exact&quot; | &quot;case-insensitive&quot; (as cl on Windows)</span>
+<span class="n">data_model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;lp64&quot;</span><span class="w">         </span><span class="c1"># &quot;iso&quot; (the default) | &quot;ilp32&quot; | &quot;lp64&quot; | &quot;llp64&quot;</span>
+<span class="c1"># int_bits = 32             # integer facts the data model loads; write one to</span>
+<span class="c1">#                           # override it (see below)</span>
 
 <span class="k">[environment.overrides]</span>
 <span class="n">static_zero_init</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="w">    </span><span class="c1"># our startup code does not clear .bss</span>
@@ -184,12 +187,12 @@ be set explicitly, down to single options:</p>
 </div>
 <p>The same settings are available on the command line, where they win over the
 manifest: <code class="docutils literal notranslate"><span class="pre">--profile</span></code>, <code class="docutils literal notranslate"><span class="pre">--policy</span></code>, <code class="docutils literal notranslate"><span class="pre">--environment</span></code>, <code class="docutils literal notranslate"><span class="pre">--libc</span></code>,
-<code class="docutils literal notranslate"><span class="pre">--include-names</span></code>, the repeatable <code class="docutils literal notranslate"><span class="pre">--allocator</span> <span class="pre">NAME[=CONTRACT]</span></code> and
+<code class="docutils literal notranslate"><span class="pre">--include-names</span></code>, <code class="docutils literal notranslate"><span class="pre">--data-model</span></code>, the repeatable <code class="docutils literal notranslate"><span class="pre">--allocator</span> <span class="pre">NAME[=CONTRACT]</span></code> and
 <code class="docutils literal notranslate"><span class="pre">--deallocator</span> <span class="pre">NAME[=ARG]</span></code>, and a repeatable <code class="docutils literal notranslate"><span class="pre">--set</span> <span class="pre">NAME=VALUE</span></code>. A
 <code class="docutils literal notranslate"><span class="pre">--profile</span></code> given on the command line starts again from that preset,
 discarding the manifest’s settings except its declared allocators and
-deallocators: those say what the project’s own functions do, which a preset
-never changes.</p>
+deallocators, its <code class="docutils literal notranslate"><span class="pre">data_model</span></code> and its integer facts: those say what the project’s own
+functions do and what it is built for, which a preset never changes.</p>
 <p><code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--list-options</span></code> lists every option with its value under each
 preset and under the current settings (<code class="docutils literal notranslate"><span class="pre">--list-options</span> <span class="pre">json</span></code> for tooling).
 <a class="reference internal" href="options.html"><span class="doc">Policy and Environment Options</span></a> is generated from the same table. An unknown option name, or
@@ -197,7 +200,7 @@ one set on the wrong axis, is an error naming the allowed set. A SARIF
 export records the settings in <code class="docutils literal notranslate"><span class="pre">runs[0].properties[&quot;aurora-lint/settings&quot;]</span></code>,
 so a report always says which reading produced it. Its <code class="docutils literal notranslate"><span class="pre">hash</span></code> is the SHA-256
 of the settings’ canonical JSON (sorted keys): equal settings always hash
-equally, and adding or changing any option changes it.</p>
+equally, and changing any option’s value changes it.</p>
 <p><code class="docutils literal notranslate"><span class="pre">include_names</span></code> says how an <code class="docutils literal notranslate"><span class="pre">#include</span></code> name is matched against the files on
 disk. It describes the toolchain rather than an assumption the rules trust, so
 neither preset sets it. Left unset, it is <code class="docutils literal notranslate"><span class="pre">case-insensitive</span></code> when
@@ -205,6 +208,225 @@ neither preset sets it. Left unset, it is <code class="docutils literal notransl
 <code class="docutils literal notranslate"><span class="pre">exact</span></code> otherwise. The file system of the machine running the scan never
 decides it. It enters the settings hash only when <code class="docutils literal notranslate"><span class="pre">case-insensitive</span></code>, so
 settings that never mention it keep the hash they always had.</p>
+<p>Integer widths are implementation-defined, so the scan credits only what it is
+told. Each width is a plain key under <code class="docutils literal notranslate"><span class="pre">[environment]</span></code>, and <code class="docutils literal notranslate"><span class="pre">data_model</span></code> is a
+named bundle of those keys, loaded as if its lines were in the
+configuration. Selecting <code class="docutils literal notranslate"><span class="pre">data_model</span> <span class="pre">=</span> <span class="pre">&quot;lp64&quot;</span></code> and writing the keys it loads
+by hand are the same thing.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>key</p></th>
+<th class="head"><p>what it is</p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">ilp32</span></code></p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">lp64</span></code></p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">llp64</span></code></p></th>
+<th class="head"><p>ISO minimum</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">char_bits</span></code></p></td>
+<td><p>bits in a <code class="docutils literal notranslate"><span class="pre">char</span></code> (<code class="docutils literal notranslate"><span class="pre">CHAR_BIT</span></code>)</p></td>
+<td><p>8</p></td>
+<td><p>8</p></td>
+<td><p>8</p></td>
+<td><p>8</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">short_bits</span></code></p></td>
+<td><p>bits in a <code class="docutils literal notranslate"><span class="pre">short</span></code></p></td>
+<td><p>16</p></td>
+<td><p>16</p></td>
+<td><p>16</p></td>
+<td><p>16</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">int_bits</span></code></p></td>
+<td><p>bits in an <code class="docutils literal notranslate"><span class="pre">int</span></code></p></td>
+<td><p>32</p></td>
+<td><p>32</p></td>
+<td><p>32</p></td>
+<td><p>16</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">long_bits</span></code></p></td>
+<td><p>bits in a <code class="docutils literal notranslate"><span class="pre">long</span></code></p></td>
+<td><p>32</p></td>
+<td><p>64</p></td>
+<td><p>32</p></td>
+<td><p>32</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">long_long_bits</span></code></p></td>
+<td><p>bits in a <code class="docutils literal notranslate"><span class="pre">long</span> <span class="pre">long</span></code></p></td>
+<td><p>64</p></td>
+<td><p>64</p></td>
+<td><p>64</p></td>
+<td><p>64</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pointer_bits</span></code></p></td>
+<td><p>bits in a pointer, <code class="docutils literal notranslate"><span class="pre">size_t</span></code>, <code class="docutils literal notranslate"><span class="pre">ptrdiff_t</span></code>, <code class="docutils literal notranslate"><span class="pre">intptr_t</span></code></p></td>
+<td><p>32</p></td>
+<td><p>64</p></td>
+<td><p>64</p></td>
+<td><p>16</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">wchar_t_bits</span></code></p></td>
+<td><p>bits in a <code class="docutils literal notranslate"><span class="pre">wchar_t</span></code></p></td>
+<td><p>unknown</p></td>
+<td><p>unknown</p></td>
+<td><p>16</p></td>
+<td><p>8</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">char_signed</span></code></p></td>
+<td><p>whether plain <code class="docutils literal notranslate"><span class="pre">char</span></code> is signed</p></td>
+<td><p>unknown</p></td>
+<td><p>unknown</p></td>
+<td><p>unknown</p></td>
+<td><p>none</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">float_bytes</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">sizeof(float)</span></code></p></td>
+<td><p>4</p></td>
+<td><p>4</p></td>
+<td><p>4</p></td>
+<td><p>none</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">double_bytes</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">sizeof(double)</span></code></p></td>
+<td><p>8</p></td>
+<td><p>8</p></td>
+<td><p>8</p></td>
+<td><p>none</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">long_double_bytes</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">sizeof(long</span> <span class="pre">double)</span></code></p></td>
+<td><p>12</p></td>
+<td><p>16</p></td>
+<td><p>8</p></td>
+<td><p>none</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">time_t_bytes</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">sizeof(time_t)</span></code></p></td>
+<td><p>unknown</p></td>
+<td><p>8</p></td>
+<td><p>unknown</p></td>
+<td><p>none</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">off_t_bytes</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">sizeof(off_t)</span></code></p></td>
+<td><p>unknown</p></td>
+<td><p>8</p></td>
+<td><p>unknown</p></td>
+<td><p>none</p></td>
+</tr>
+</tbody>
+</table>
+<p><code class="docutils literal notranslate"><span class="pre">iso</span></code>, the default data model, loads nothing. A data model is nothing but a list of
+these keys: writing <code class="docutils literal notranslate"><span class="pre">lp64</span></code>’s lines under <code class="docutils literal notranslate"><span class="pre">[environment]</span></code> gives the same
+facts and findings as selecting it; the settings hash and the data model shown
+by <code class="docutils literal notranslate"><span class="pre">--list-options</span></code> differ. Facts
+describe the target the code is built for, and none is required; each has a
+stated default, the ISO C guarantee or unknown.</p>
+<p>Where a fact comes from, highest precedence first:</p>
+<ol class="arabic simple">
+<li><p>the command line (<code class="docutils literal notranslate"><span class="pre">--set</span> <span class="pre">key=value</span></code>, <code class="docutils literal notranslate"><span class="pre">--data-model</span></code>);</p></li>
+<li><p>the project’s own <code class="docutils literal notranslate"><span class="pre">[environment]</span></code> keys;</p></li>
+<li><p>the selected data model’s bundle;</p></li>
+<li><p>the floor, which is what ISO C guarantees: <code class="docutils literal notranslate"><span class="pre">CHAR_BIT</span></code> at least 8,
+<code class="docutils literal notranslate"><span class="pre">short</span></code> and <code class="docutils literal notranslate"><span class="pre">int</span></code> at least 16 bits, <code class="docutils literal notranslate"><span class="pre">long</span></code> at least 32, <code class="docutils literal notranslate"><span class="pre">long</span> <span class="pre">long</span></code>
+at least 64, the rank order, and the exact width of <code class="docutils literal notranslate"><span class="pre">int32_t</span></code> and its
+kind.</p></li>
+</ol>
+<p>An explicit key beats the data model whatever order the lines are in. A key that
+only repeats the value of the bundle its own configuration names declares
+nothing: it is not part of the settings hash, and a <code class="docutils literal notranslate"><span class="pre">--set</span></code> that repeats the
+data model hashes the same as one in a file. When the command line names another
+data model, that model’s bundle replaces the file’s whole bundle, the lines the
+file only repeated from its own model included, while a line that differs from
+the file’s model still wins. <code class="docutils literal notranslate"><span class="pre">--list-options</span></code> shows who wrote a line
+(<code class="docutils literal notranslate"><span class="pre">cli</span></code> or <code class="docutils literal notranslate"><span class="pre">config</span></code>) even when its value equals the data model’s. A fact
+nothing sets is <strong>unknown</strong>, and a scan then credits only the floor: a value is
+proven to fit a type only inside its guaranteed range, a defect that occurs at
+some conforming width (<code class="docutils literal notranslate"><span class="pre">unsigned</span> <span class="pre">char</span> <span class="pre">*</span> <span class="pre">unsigned</span> <span class="pre">char</span></code> overflowing a 16-bit
+<code class="docutils literal notranslate"><span class="pre">int</span></code>) is reported, and nothing is proven or reported through a guessed
+value. No data model sets <code class="docutils literal notranslate"><span class="pre">wchar_t_bits</span></code> but <code class="docutils literal notranslate"><span class="pre">llp64</span></code> (a Windows-only
+model): <code class="docutils literal notranslate"><span class="pre">ilp32</span></code> and <code class="docutils literal notranslate"><span class="pre">lp64</span></code> are Linux and Windows targets alike, so a
+project declares its own. No data model sets <code class="docutils literal notranslate"><span class="pre">char_signed</span></code>; until it is declared,
+<code class="docutils literal notranslate"><span class="pre">CHAR_MAX</span></code> and <code class="docutils literal notranslate"><span class="pre">CHAR_MIN</span></code> are not numbers, and a proof that goes through
+one is lost.</p>
+<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="k">[environment]</span>
+<span class="n">data_model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;ilp32&quot;</span><span class="w">        </span><span class="c1"># the data model: loads 32-bit int, long and pointers</span>
+<span class="n">wchar_t_bits</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">16</span><span class="w">           </span><span class="c1"># override: for a Windows build, whose wchar_t is 16 bits</span>
+<span class="n">char_signed</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span><span class="w">          </span><span class="c1"># plain char is signed on this target</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--list-options</span></code> prints every integer fact with its value and
+where it came from (<code class="docutils literal notranslate"><span class="pre">cli</span></code>, <code class="docutils literal notranslate"><span class="pre">config</span></code>, <code class="docutils literal notranslate"><span class="pre">data-model:NAME</span></code>, <code class="docutils literal notranslate"><span class="pre">iso-floor</span></code> or
+<code class="docutils literal notranslate"><span class="pre">unknown</span></code>), one line per fact, so you can see exactly what a scan will
+credit; <code class="docutils literal notranslate"><span class="pre">--list-options</span> <span class="pre">json</span></code> carries the same rows under <code class="docutils literal notranslate"><span class="pre">facts</span></code>.
+<code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--check-config</span></code> resolves the settings from the manifest and the
+command line exactly as a scan would, validates them, and exits without
+scanning: <code class="docutils literal notranslate"><span class="pre">configuration</span> <span class="pre">ok</span></code> and status 0 when valid, otherwise status 1 and
+one <code class="docutils literal notranslate"><span class="pre">error:</span></code> line per problem. Both use the code a scan runs, so they cannot
+disagree with it.</p>
+<p>Precedence, highest first: the command line (<code class="docutils literal notranslate"><span class="pre">--set</span></code>, <code class="docutils literal notranslate"><span class="pre">--data-model</span></code>), the
+project’s own keys, the data model’s bundle, the ISO minimum. An explicit
+key beats the data model whatever the order of the lines; a key that only repeats
+what the data model loads declares nothing.</p>
+<p><code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--write-config</span> <span class="pre">FILE</span></code> writes a complete configuration with every
+settings key and a one-line description of each. A key at its built-in default
+is commented out; with <code class="docutils literal notranslate"><span class="pre">--data-model</span> <span class="pre">X</span></code> or <code class="docutils literal notranslate"><span class="pre">--set</span></code> the data model’s bundle
+values are active lines marked <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">from</span> <span class="pre">data</span> <span class="pre">model:</span> <span class="pre">X</span></code>, and a fact no data model sets
+is written commented out as <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">unknown</span> <span class="pre">unless</span> <span class="pre">declared</span></code>. It is generated from
+the same tables as <code class="docutils literal notranslate"><span class="pre">--list-options</span></code> and the validation, so it cannot drift
+from them, and the file it writes passes <code class="docutils literal notranslate"><span class="pre">--check-config</span></code> unchanged and
+resolves to exactly the facts of running without it (or with the same
+<code class="docutils literal notranslate"><span class="pre">--data-model</span></code>). It refuses to replace an existing <code class="docutils literal notranslate"><span class="pre">FILE</span></code> unless
+<code class="docutils literal notranslate"><span class="pre">--overwrite</span></code> is given; <code class="docutils literal notranslate"><span class="pre">--write-config</span> <span class="pre">-</span></code> prints to stdout. The workflow:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$ </span>aurora-lint<span class="w"> </span>--write-config<span class="w"> </span>aurora.toml<span class="w"> </span>--data-model<span class="w"> </span>lp64
+<span class="gp">$ </span><span class="nv">$EDITOR</span><span class="w"> </span>aurora.toml<span class="w">                    </span><span class="c1"># e.g. uncomment char_signed</span>
+<span class="gp">$ </span>aurora-lint<span class="w"> </span>--check-config<span class="w"> </span>-m<span class="w"> </span>aurora.toml
+<span class="go">configuration ok</span>
+<span class="gp">$ </span>aurora-lint<span class="w"> </span>-m<span class="w"> </span>aurora.toml<span class="w"> </span>src/
+</pre></div>
+</div>
+<p>A width below its ISO minimum, a width that is not a whole number of 8-bit
+bytes or exceeds 64 bits, and a rank order that shrinks
+(<code class="docutils literal notranslate"><span class="pre">short</span> <span class="pre">&lt;=</span> <span class="pre">int</span> <span class="pre">&lt;=</span> <span class="pre">long</span> <span class="pre">&lt;=</span> <span class="pre">long</span> <span class="pre">long</span></code>, among the widths that are known) are
+refused with the offending key named: the configuration describes no
+conforming implementation. Every declared override is a key of the settings
+hash and is shown in <code class="docutils literal notranslate"><span class="pre">--list-options</span></code> and in a SARIF export, while the run
+label still names only the preset. Each problem is reported once, however
+many rules it breaks. The size keys (<code class="docutils literal notranslate"><span class="pre">float_bytes</span></code>, <code class="docutils literal notranslate"><span class="pre">double_bytes</span></code>,
+<code class="docutils literal notranslate"><span class="pre">long_double_bytes</span></code>, <code class="docutils literal notranslate"><span class="pre">time_t_bytes</span></code>, <code class="docutils literal notranslate"><span class="pre">off_t_bytes</span></code>) are checked to be
+1 to 64 bytes, with no ISO minimum enforced. A command-line argument the parser
+itself rejects, such as an unknown <code class="docutils literal notranslate"><span class="pre">--data-model</span></code> name, is an
+argument-syntax error and exits 2; every problem in a value that parses exits 1
+under <code class="docutils literal notranslate"><span class="pre">--check-config</span></code>.</p>
+<p>Under <code class="docutils literal notranslate"><span class="pre">iso</span></code>, an integer constant too wide for a 16-bit <code class="docutils literal notranslate"><span class="pre">int</span></code> is taken to be
+at least 32 bits wide (<code class="docutils literal notranslate"><span class="pre">int</span></code> on most targets, <code class="docutils literal notranslate"><span class="pre">long</span></code> otherwise); an
+implementation with an <code class="docutils literal notranslate"><span class="pre">int</span></code> between 17 and 31 bits is not modelled. Declare
+<code class="docutils literal notranslate"><span class="pre">int_bits</span></code> for such a target.</p>
+<p>Under <code class="docutils literal notranslate"><span class="pre">iso</span></code> <code class="docutils literal notranslate"><span class="pre">INT_MAX</span></code> and <code class="docutils literal notranslate"><span class="pre">LONG_MAX</span></code> are unknown, and so is
+<code class="docutils literal notranslate"><span class="pre">sizeof(long)</span></code> to the integer rules and the range analysis. The buffer-size
+checks of ARR30-C, ARR38-C and STR31-C do not follow the facts yet: they still
+size an <code class="docutils literal notranslate"><span class="pre">int</span></code> as 4 bytes, a <code class="docutils literal notranslate"><span class="pre">long</span></code> and a pointer as 8, whatever is
+declared.</p>
+<p>Under <code class="docutils literal notranslate"><span class="pre">iso</span></code> even a 64-bit exact-width type such as <code class="docutils literal notranslate"><span class="pre">uint64_t</span></code> is not known
+to be at least as wide as <code class="docutils literal notranslate"><span class="pre">int</span></code> (ISO C gives <code class="docutils literal notranslate"><span class="pre">int</span></code> no upper bound), so a
+bitwise operation on one is still reported by EXP14-C as acting on a type ISO C
+does not guarantee is at least as wide as <code class="docutils literal notranslate"><span class="pre">int</span></code>; declaring a data model
+clears it. Constant expressions such as <code class="docutils literal notranslate"><span class="pre">24</span> <span class="pre">*</span> <span class="pre">3600</span></code> or <code class="docutils literal notranslate"><span class="pre">1</span> <span class="pre">&lt;&lt;</span> <span class="pre">27</span></code> overflow a
+16-bit <code class="docutils literal notranslate"><span class="pre">int</span></code>, so an undeclared project is told about them too; declaring a
+model, or <code class="docutils literal notranslate"><span class="pre">int_bits</span></code>, clears them.</p>
+<p>A known limitation of an unknown width: a limit macro is not a number, so a
+proof that goes through its value is lost even when it holds on every
+implementation. <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">=</span> <span class="pre">INT_MAX;</span> <span class="pre">x</span> <span class="pre">+</span> <span class="pre">1</span></code> overflows everywhere, and a branch
+guarded by <code class="docutils literal notranslate"><span class="pre">d</span> <span class="pre">&lt;</span> <span class="pre">SHRT_MAX</span></code> after <code class="docutils literal notranslate"><span class="pre">d</span> <span class="pre">=</span> <span class="pre">SHRT_MAX</span></code> never runs, but with
+<code class="docutils literal notranslate"><span class="pre">INT_MAX</span></code> and <code class="docutils literal notranslate"><span class="pre">SHRT_MAX</span></code> unknown neither is proven: an undeclared project
+loses such an overflow finding and can be reported inside such a dead branch.
+Declaring the data model avoids both. The same goes for <code class="docutils literal notranslate"><span class="pre">sizeof</span></code> of a type
+whose width is unknown: a product that includes one is not evaluated, so a wrap
+that needs the exact size to show is not reported. An unknown <code class="docutils literal notranslate"><span class="pre">wchar_t</span></code> is
+still an integer type, no wider than the widest integer the facts declare, and
+is bounded by it: <code class="docutils literal notranslate"><span class="pre">calloc(n,</span> <span class="pre">sizeof(wchar_t))</span></code> cannot wrap a 64-bit
+<code class="docutils literal notranslate"><span class="pre">size_t</span></code> whatever <code class="docutils literal notranslate"><span class="pre">wchar_t</span></code> is, and can wrap a 32-bit one.</p>
 <p><code class="docutils literal notranslate"><span class="pre">allocators</span></code> and <code class="docutils literal notranslate"><span class="pre">deallocators</span></code> declare functions the scan has no body
 for, such as a platform hook the build supplies: a deallocator frees the
 argument its position names, and an allocator follows the contract of the

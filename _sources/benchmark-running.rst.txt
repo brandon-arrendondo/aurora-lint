@@ -144,6 +144,14 @@ Runs recorded before settings existed keep their bare ids ("pre-settings");
 nothing is renamed. A bare SHA resolves to the default-preset run of that
 build.
 
+Each benchmark declares the data model of the configuration it measures,
+since aurora-lint credits no integer width beyond ISO C's minimums without
+one: every real-world manifest has ``[environment] data_model`` (``lp64``
+for the Linux corpora), and Juliet runs with ``--set data_model=lp64``, the
+Linux x86_64 GCC build its testcases come from. The reasons per corpus are in
+``docs/design/realworld-corpus-scope.md``. The declaration is part of each
+run's settings and hash.
+
 ``compare`` and ``realworld --compare`` print the option-by-option settings
 difference between the two runs, and flag two runs that share a preset name
 but not a hash: that preset's own options changed between the builds.

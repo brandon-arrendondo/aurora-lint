@@ -281,6 +281,13 @@ suffix in their <code class="docutils literal notranslate"><span class="pre">var
 Runs recorded before settings existed keep their bare ids (“pre-settings”);
 nothing is renamed. A bare SHA resolves to the default-preset run of that
 build.</p>
+<p>Each benchmark declares the data model of the configuration it measures,
+since aurora-lint credits no integer width beyond ISO C’s minimums without
+one: every real-world manifest has <code class="docutils literal notranslate"><span class="pre">[environment]</span> <span class="pre">data_model</span></code> (<code class="docutils literal notranslate"><span class="pre">lp64</span></code>
+for the Linux corpora), and Juliet runs with <code class="docutils literal notranslate"><span class="pre">--set</span> <span class="pre">data_model=lp64</span></code>, the
+Linux x86_64 GCC build its testcases come from. The reasons per corpus are in
+<code class="docutils literal notranslate"><span class="pre">docs/design/realworld-corpus-scope.md</span></code>. The declaration is part of each
+run’s settings and hash.</p>
 <p><code class="docutils literal notranslate"><span class="pre">compare</span></code> and <code class="docutils literal notranslate"><span class="pre">realworld</span> <span class="pre">--compare</span></code> print the option-by-option settings
 difference between the two runs, and flag two runs that share a preset name
 but not a hash: that preset’s own options changed between the builds.</p>

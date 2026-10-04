@@ -185,6 +185,19 @@ Options:
       --libc &lt;MODEL&gt;               C library model whose documented contracts are
                                    trusted [iso-posix, glibc, musl, newlib,
                                    picolibc, custom]
+      --data-model &lt;MODEL&gt;         Data model: the bundle of integer facts the code is built for
+                                   [iso, ilp32, lp64, llp64]. The default, iso,
+                                   loads nothing, so only the widths ISO C
+                                   guarantees are credited and limit macros such as
+                                   INT_MAX are unknown. Same as
+                                   ``[environment] data_model``, which a
+                                   ``--profile`` keeps. Override one fact with
+                                   ``--set int_bits=16`` (also char_bits,
+                                   short_bits, long_bits, long_long_bits,
+                                   pointer_bits, wchar_t_bits, char_signed,
+                                   float_bytes, double_bytes, long_double_bytes,
+                                   time_t_bytes, off_t_bytes). See
+                                   :doc:`configuration`
       --allocator &lt;NAME[=CONTRACT]&gt;
                                    Declare a function the scan cannot see into as an
                                    allocator following the named standard allocator&#39;s
@@ -199,7 +212,20 @@ Options:
                                    --list-options
       --list-options [&lt;FORMAT&gt;]    List every policy and environment option with its
                                    value under each preset and the current settings,
-                                   then exit [text, json, rst]
+                                   and every integer fact with its source (cli,
+                                   config, data-model:NAME, iso-floor, unknown), then
+                                   exit [text, json, rst]
+      --check-config               Resolve the settings from the manifest and the
+                                   command line exactly as a scan would, validate
+                                   them, and exit without scanning: &quot;configuration
+                                   ok&quot; and status 0, or status 1 and one error per
+                                   problem
+      --write-config &lt;FILE&gt;        Write a complete, commented configuration for the
+                                   current settings (the manifest, --data-model and
+                                   --set applied) and exit; a key at its default is
+                                   commented out. Refuses to replace an existing FILE
+                                   unless --overwrite is given; &quot;-&quot; writes to stdout
+      --overwrite                  With --write-config: replace FILE if it exists
       --detect-relevance           Detect categorically-inapplicable rule classes
                                    (CON*/WIN*) in PATH and -d directories, then write
                                    a relevance-gated manifest with --write-manifest.

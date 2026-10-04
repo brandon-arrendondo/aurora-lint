@@ -229,6 +229,22 @@ and <code class="docutils literal notranslate"><span class="pre">exact</span></c
 is marked case-sensitive (Microsoft Learn, “Case sensitivity”).</p></li>
 </ul>
 </dd>
+<dt><code class="docutils literal notranslate"><span class="pre">data_model</span></code></dt><dd><p>How wide the integer types are: <code class="docutils literal notranslate"><span class="pre">iso</span></code>, the default, credits only what ISO C
+guarantees (<code class="docutils literal notranslate"><span class="pre">CHAR_BIT</span></code> at least 8, <code class="docutils literal notranslate"><span class="pre">short</span></code> and <code class="docutils literal notranslate"><span class="pre">int</span></code> at least 16 bits,
+<code class="docutils literal notranslate"><span class="pre">long</span></code> at least 32, <code class="docutils literal notranslate"><span class="pre">long</span> <span class="pre">long</span></code> at least 64, and the exact width of
+<code class="docutils literal notranslate"><span class="pre">int32_t</span></code> and its kind); <code class="docutils literal notranslate"><span class="pre">ilp32</span></code>, <code class="docutils literal notranslate"><span class="pre">lp64</span></code> or <code class="docutils literal notranslate"><span class="pre">llp64</span></code> declares the
+target’s model, so <code class="docutils literal notranslate"><span class="pre">INT_MAX</span></code>, <code class="docutils literal notranslate"><span class="pre">sizeof(long)</span></code> and the like have their
+values there. Under <code class="docutils literal notranslate"><span class="pre">iso</span></code> a limit such as <code class="docutils literal notranslate"><span class="pre">INT_MAX</span></code> is unknown, a value is
+proven to fit a type only within the guaranteed range, and a defect that
+occurs on some conforming width is reported. Neither preset sets it.</p>
+<ul class="simple">
+<li><p>Set with <code class="docutils literal notranslate"><span class="pre">[environment]</span> <span class="pre">data_model</span></code> or <code class="docutils literal notranslate"><span class="pre">--data-model</span></code></p></li>
+<li><p>Part of the settings hash only when not <code class="docutils literal notranslate"><span class="pre">iso</span></code></p></li>
+<li><p>Basis: C11 5.2.4.2.1 (minimum magnitudes), 6.3.1.1 (rank order) and
+7.20.1.1 (exact-width types); integer widths are otherwise
+implementation-defined.</p></li>
+</ul>
+</dd>
 </dl>
 </section>
 <section id="declared-memory-functions">
