@@ -438,9 +438,10 @@ Status of the 16 proposals at the end of this doc, against `72b8f734`:
   - Coccinelle ignores only `#if 0` [Coccinelle].
   - Soundiness: "Every time there are multiple options (e.g., branches of a
     conditional statement…) the analysis models all of them" [Soundiness].
-  - SuperC: Linux `allyesconfig` "enables less than 80% of the code blocks
-    contained in conditionals" [SuperC]. A single configuration misses code
-    by construction.
+  - Tartler et al., as quoted by SuperC: Linux `allyesconfig` "enables less
+    than 80% of the code blocks contained in conditionals" [SuperC, citing
+    Tartler]. The figure is Tartler et al.'s measurement, not SuperC's. A
+    single configuration misses code by construction.
   - TS 17961 asks only that violations be diagnosed "for at least one C
     implementation" [CERT-17961].
 - **Verdict: stricter-and-defensible.** We go past TS 17961's floor. What we
@@ -1134,6 +1135,7 @@ Literature and practice
 - [Ockham] NIST IR 8113. https://nvlpubs.nist.gov/nistpubs/ir/2016/NIST.IR.8113.pdf (checked)
 - [Soundiness] Livshits et al., "In Defense of Soundiness". https://yanniss.github.io/Soundiness-CACM.pdf
 - [SuperC] Gazzillo & Grimm, PLDI 2012. https://paulgazzillo.com/papers/pldi12.pdf
+- [Tartler] Tartler et al., "Configuration coverage in the analysis of large-scale system software", OSR 45(3), 2011 (not checked: cited as SuperC's reference [37], which is the source of the quoted sentence)
 - [TypeChef] Kästner et al., OOPSLA 2011. https://www.cs.cmu.edu/~ckaestne/pdf/oopsla11_typechef.pdf
 - [Engler] Engler et al., SOSP 2001. https://web.stanford.edu/~engler/deviant-sosp-01.pdf
 - [ESP] Das, Lerner, Seigle, PLDI 2002. https://www.cs.cornell.edu/courses/cs711/2005fa/papers/dls-pldi02.pdf
