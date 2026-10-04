@@ -383,10 +383,12 @@ Behaviours that remain after the integer-facts work, stated as what a user
 can see.
 
 - **Residual misfires under the default (`iso`) model.** Where the model does
-  not fix a width, INT08-C, INT30-C and INT32-C can still report three shapes
-  as a possible truncation or overflow: an operand that is a macro, a guard
-  whose operand is a `sizeof` expression, and a narrowing inside a ternary.
-  Declaring a data model supplies the widths these shapes depend on.
+  not fix a width, INT08-C, INT30-C and INT32-C can still report some shapes
+  as a possible truncation or overflow, chiefly an operand that is a macro, a
+  guard whose operand is a `sizeof` expression, and a narrowing inside a
+  ternary; an operand whose typedef does not resolve is also checked at the
+  narrowest width ISO C allows. Declaring a data model supplies the widths
+  these shapes depend on.
 - **Range ends that are open by magnitude.** Value ranges are kept as signed
   64-bit integers, and an end in the top or bottom half of that range counts
   as the open end of a type, not as a bound the code established. A bound
