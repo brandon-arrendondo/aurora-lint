@@ -8,7 +8,9 @@ use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
 use crate::settings::{AnalysisSettings, IntFacts};
-use crate::utility::cert_c::ast_utils::{get_node_text, integer_type_width, is_unsigned_type};
+use crate::utility::cert_c::ast_utils::{
+    self, get_node_text, integer_type_width, is_unsigned_type,
+};
 use crate::utility::cert_c::data_model::{self, Rank};
 use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
 use crate::utility::cert_c::guard_dominance;
@@ -352,7 +354,7 @@ impl Int08C {
             // The guard has to bound the open end toward the destination, on
             // the branch the store is in: a cap for an open top, a floor for
             // an open bottom.
-            let width_open = !self.value_width_is_fixed(&value, source, variables);
+            let width_open = self.value_width_is_open(&value, source);
             let open_top = data_model::is_open_top(range.max);
             let open_bottom = data_model::is_open_bottom(range.min);
             if width_open && (open_top || open_bottom) {
@@ -379,7 +381,7 @@ impl Int08C {
                         .split_whitespace()
                         .collect::<Vec<_>>()
                         .join(" "),
-                    if width_open && open_top {
+                    if open_top && (width_open || self.value_type_exceeds_i64(&value, source)) {
                         format!("at least {}", range.min)
                     } else if width_open && open_bottom {
                         format!("at most {}", range.max)
@@ -405,20 +407,54 @@ impl Int08C {
         }
     }
 
-    /// Whether the data model fixes the width of a variable `value` reads,
-    /// so that a range end at that type's limit is a value and not an
-    /// unknown.
-    fn value_width_is_fixed(
-        &self,
-        value: &Node,
-        source: &str,
-        variables: &HashMap<String, (String, usize)>,
-    ) -> bool {
+    /// Whether the data model leaves open the width of what `value` reads,
+    /// so that a range end at a type's limit is an unknown and not a number.
+    ///
+    /// Decided from the facts first: when they fix the exact width of every
+    /// integer rank (every preset but iso) no limit is open, whatever the
+    /// declaration looks like. Only when a rank is unknown is the type of
+    /// each variable read consulted, resolved from its own declaration
+    /// (qualifiers, storage classes and parameters included); one whose
+    /// width the facts fix is a number.
+    fn value_width_is_open(&self, value: &Node, source: &str) -> bool {
+        let facts = self.data_model.get();
+        const RANKS: [Rank; 5] = [
+            Rank::Char,
+            Rank::Short,
+            Rank::Int,
+            Rank::Long,
+            Rank::LongLong,
+        ];
+        if RANKS.iter().all(|r| facts.width_known(*r)) {
+            return false;
+        }
+        !self
+            .value_types(value, source)
+            .iter()
+            .any(|(_, width)| width.max.is_some())
+    }
+
+    /// Whether a variable `value` reads is an unsigned type of 64 bits or
+    /// more, whose top does not fit the `i64` the ranges are kept in: a range
+    /// end there is a clamp, never a bound.
+    fn value_type_exceeds_i64(&self, value: &Node, source: &str) -> bool {
+        self.value_types(value, source)
+            .iter()
+            .any(|(unsigned, width)| *unsigned && width.max.is_some_and(|m| m >= 64))
+    }
+
+    /// `(is unsigned, width)` for each integer variable `value` reads, from
+    /// the declaration each occurrence resolves to.
+    fn value_types(&self, value: &Node, source: &str) -> Vec<(bool, data_model::IntWidth)> {
         query::find_descendants_of_kind(*value, "identifier")
             .iter()
-            .filter_map(|id| variables.get(get_node_text(id, source)))
-            .filter_map(|(ty, _)| integer_type_width(ty, self.data_model.get()))
-            .any(|width| width.max.is_some())
+            .filter_map(|id| {
+                let name = get_node_text(id, source);
+                let ty = ast_utils::resolve_identifier_declared_type(id, name, source)?;
+                let width = integer_type_width(&ty, self.data_model.get())?;
+                Some((is_unsigned_type(&ty), width))
+            })
+            .collect()
     }
 
     /// Every `(destination name, stored expression)` pair under `node`: both
