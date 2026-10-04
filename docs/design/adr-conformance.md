@@ -1,8 +1,9 @@
 # ADR conformance: known departures (v0.6.0)
 
 **Status:** swept 2026-09-25 against `ca377036`, before the v0.6.0 freeze;
-rows marked against main at `e7764d02` (2026-09-29) and again at `0297353e`
-(2026-10-01). A struck row is fixed,
+rows marked against main at `e7764d02` (2026-09-29), again at `0297353e`
+(2026-10-01) and for the integer-facts rows at `aa24cca3` (2026-10-04). A
+struck row is fixed,
 with what landed beside it; a partly fixed row says what remains. This doc
 goes stale as fixes land; the rows are the checklist.
 
@@ -27,8 +28,9 @@ separately and is not listed.
   family lands, published per-rule figures for its rules carry this
   caveat.
 - **Moved from Tier 1 to v0.6.x:** reaching definitions keyed by name
-  (A4) and MSC13-C's per-arm reads (A3). Both are known departures in
-  v0.6.0.
+  (A4), MSC13-C's per-arm reads (A3), and the A2 rows that do not follow the
+  data model yet (buffer sizes, alignment, a few rule-local tables). All are
+  known departures in v0.6.0; section H lists the behaviours that remain.
 
 Section C lists the rulings the fixes depend on; section D, items outside
 these ADRs.
@@ -66,28 +68,39 @@ The correct pattern already exists as `prescan::seedable_param_states` and `call
 
 ### A2. Implementation-defined widths used as proof (ADR-0011 basis 4)
 
-No row has changed since the sweep. Typing an expression by its declaration,
-which INT02-C and FLP02/03/06-C now use, takes the data model as a
-parameter but implements only LP64, so INT02's width assumption moved there
-rather than going away.
+**Ruling:** integer facts are declared, not assumed. The default credits only
+what ISO C guarantees (C11 5.2.4.2.1: the minimum widths, the conversion-rank
+order, the exact width of an exact-width type). A width, limit macro or
+`sizeof` that neither the data model nor the project's own keys fix is
+unknown, and no rule proves anything from it in either direction. Benchmark
+corpora declare their model.
 
-These all assume LP64 with a 32-bit int and a signed char. **Ruling needed first:** An earlier design note says "int is 32-bit everywhere, correct", which predates ADR-0011 basis 4. Decide whether the tool pins a data model per corpus (the earlier design note's proposal) or stops suppressing on widths.
+Landed for v0.6.0: a data model (`iso`, `ilp32`, `lp64`, `llp64`) is a named
+bundle of plain keys (`int_bits`, `long_bits`, `pointer_bits`,
+`wchar_t_bits`, `char_signed`, ...), read as if its lines were in the
+project's configuration. Precedence, highest first: the command line, the
+project's `[environment]` keys (each fact can be set on its own), the data
+model's bundle, and the ISO floor. `iso`, the default, loads nothing. Each
+question has a guaranteed answer, which a proof that a value fits may use,
+and an exact one, which is unknown unless a fact fixes it. Rows below that
+moved are struck; a row that did not move says why it waits for v0.6.x.
 
 | where | shortcut | consumers | dir | conf | covered |
 |---|---|---|---|---|---|
-| ast_utils.rs `integer_type_width` (1571) | Its doc says: "pinned x86_64 LP64 model... callers use this to *suppress*". | INT08, INT31, INT34, API00 `is_defined_unsigned_shift`, EXP14 | + | C | related (data-model design note) |
-| const_eval.rs `BUILTIN_LIMIT_MACROS` (253), `resolve_sizeof_type` (297) | INT_MAX=2^31-1, LONG_MAX=i64::MAX, CHAR_MIN=-128 and sizeof(long)=8 drive fits and non-zero proofs. The builtins win over a file's own #define. | INT08/10/30-34, FLP03, all const_eval users | both | C | new |
-| const_eval `promoted_range_for_type` (233) + `PROMOTED_ARITH_BITS=32` | "narrow op narrow can't leave int" is true only for a 32-bit int. | INT08, INT30, INT32 | + | P | an earlier design note calls this correct; it conflicts with ADR-0011 |
-| buffer_size.rs `sizeof_type_bytes` (118), `extract_sizeof_value` (168) | long/pointer/size_t = 8, wchar_t = 4. `extract_sizeof_value` falls back to a substring scan, then to "Default to pointer size" 8, so `sizeof(struct foo)` gives 8. | ARR30, ARR38, STR31 | both | C | new |
-| value_range `extract_var_type_from_declaration` (203) | char is signed 8-bit, long is 64-bit. | all VRA rules | both | C | new |
-| overflow_helpers `is_portable_64bit_signed` (511) | intptr_t and ptrdiff_t are called 64-bit "on every data model". | INT32 | + | C | new |
-| rule-local: INT02 `classify` (410); INT30 `operand_width` (2376), `check_allocation_size_wrap` (1401), `calloc_product_fits` (1662); INT34 literal `1L` (~520); INT08 narrow +/- (~215); ARR38 `sizeof_type` (3041, incl. `"twoIntsStruct" => 8`); size_analysis `find_element_size` (unknown → 4); EXP36 alignment table; API07 `check_type_confusion`; STR31 `%d` = 11 chars | Same class, rule-side. | those rules | mostly + | C | new |
+| ~~ast_utils.rs `integer_type_width` (1487)~~ | Its doc said: "pinned x86_64 LP64 model... callers use this to *suppress*". **Fixed:** It takes the resolved facts and answers only what they fix: the guaranteed minimum, and the exact width where one is declared. A spelling it does not recognize, a typedef included, gives no width. | INT08, INT31, INT34, API00 `is_defined_unsigned_shift`, EXP14 | + | C | landed |
+| ~~const_eval.rs `BUILTIN_LIMIT_MACROS` (253), `resolve_sizeof_type` (297)~~ | INT_MAX=2^31-1, LONG_MAX=i64::MAX, CHAR_MIN=-128 and sizeof(long)=8 drove fits and non-zero proofs. The builtins won over a file's own #define. **Fixed:** The builtin table is built from the facts (`builtin_constants`): a limit macro or `sizeof` is a constant only where they fix it. Under iso an unfixed limit is a range bounded by its guaranteed minimum, and `sizeof` of an exact-width type lies between 1 and N/8. A file's own `#define` of such a name wins over the builtin. | INT08/10/30-34, FLP03, all const_eval users | both | C | landed |
+| ~~const_eval `promoted_range_for_type` (233) + `PROMOTED_ARITH_BITS=32`~~ | "narrow op narrow can't leave int" is true only for a 32-bit int. **Fixed:** The constant is gone. `promoted_range_for_type` takes the model, and the width every operation is done in is the `int` width the facts guarantee: 32 on a declared model, 16 under iso. The no-overflow proof therefore holds on a declared model only; under iso a narrow operand's guaranteed range is a witness of overflow, not a proof of safety. | INT08, INT30, INT32 | + | P | landed |
+| buffer_size.rs `sizeof_type_bytes` (118), `extract_sizeof_value` (168) | long/pointer/size_t = 8, wchar_t = 4. `extract_sizeof_value` falls back to a substring scan, then to "Default to pointer size" 8, so `sizeof(struct foo)` gives 8. **Moved to v0.6.x:** this table is shared by the buffer-size rules and does not follow the data model yet. | ARR30, ARR38, STR31 | both | C | v0.6.x |
+| value_range `extract_var_type_from_declaration` (203) | char is signed 8-bit, long is 64-bit. **Partly fixed:** The width comes from the facts (`declared_width`), and an unknown width under iso leaves the range unbounded instead of guessing. Remaining: plain `char` is still taken as signed from its spelling, whatever `char_signed` says. | all VRA rules | both | C | landed (width), v0.6.x (char) |
+| ~~overflow_helpers `is_portable_64bit_signed` (511)~~ | intptr_t and ptrdiff_t are called 64-bit "on every data model". **Fixed:** `is_64bit_signed` takes the model. `long long` and `int64_t` are 64-bit everywhere; `long`, `ptrdiff_t` and `intptr_t` only on a model that says so. | INT32 | + | C | landed |
+| ~~rule-local, moved:~~ INT02 `classify` (410); INT30 `operand_width` (2376), `check_allocation_size_wrap` (1401), `calloc_product_fits` (1662); INT34 widths; INT08 narrow +/- (~215) | Same class, rule-side. **Fixed:** Each reads the facts. An operand's width is what the data model guarantees, and a product or sum is judged by the width it is guaranteed. | those rules | mostly + | C | landed |
+| rule-local, not moved: ARR38 `sizeof_type` (3041, incl. `"twoIntsStruct" => 8`); size_analysis `find_element_size` (unknown → 4); EXP36 alignment table; API07 `check_type_confusion`; STR31 `%d` = 11 chars | Same class, rule-side. **Moved to v0.6.x:** ARR38 and `find_element_size` read the shared buffer-size table above, EXP36's alignment table and API07's text type map (int = 4, long = 8) are fixed by spelling, and STR31's formatted-length arithmetic assumes a 32-bit int. None follows the data model yet, so the ARR30, ARR38 and STR31 buffer sizes stay as they were. | those rules | mostly + | C | v0.6.x |
 
 ### A3. One configuration assumed, or exclusive #if arms merged (ADR-0010 D1/D4)
 
 | where | shortcut | consumers | dir | conf |
 |---|---|---|---|---|
-| const_eval `collect_macro_constants` (484) → cfg.rs `evaluate_constant_condition` (917) | The first definition wins among live build-config arms (`#ifdef X #define F 0 #else #define F 1`), and the CFG then drops the branch as constant-false. The lookup is also by spelling, so a local that shadows a file-scope const or enumerator gets folded too (0006). **Partly fixed since the sweep:** The CFG prunes only on constants fixed in every configuration: a name whose live arms disagree, or an overridable `#ifndef` default, is not folded, and an identifier that binds to a local or parameter is never folded. Remaining: `collect_macro_constants` still keeps the first definition for its value consumers (VRA, INT ranges), and the builtins still win. | every CFG rule: EXP33, EXP34, MEM01, MSC13, ARR30, INT08/10/16/30-34, VRA | both | C |
+| const_eval `collect_macro_constants` (484) → cfg.rs `evaluate_constant_condition` (917) | The first definition wins among live build-config arms (`#ifdef X #define F 0 #else #define F 1`), and the CFG then drops the branch as constant-false. The lookup is also by spelling, so a local that shadows a file-scope const or enumerator gets folded too (0006). **Partly fixed since the sweep:** The CFG prunes only on constants fixed in every configuration: a name whose live arms disagree, or an overridable `#ifndef` default, is not folded, and an identifier that binds to a local or parameter is never folded. Remaining: `collect_macro_constants` still keeps the first definition for its value consumers (VRA, INT ranges). A file's own `#define` of a limit name now wins over the builtin. | every CFG rule: EXP33, EXP34, MEM01, MSC13, ARR30, INT08/10/16/30-34, VRA | both | C |
 | ~~init_state.rs `collect_file_scope_constants` (2543) **[V]**~~ | `type_text.contains("static") \|\| contains("const")`, so a mutable `static int debug = 0;` is a compile-time 0. It is keyed by name, so a shadowing local inherits it (0006). It walks every #if/#else arm and the last one wins. **Fixed since the sweep:** A const object folds; a static folds only when nothing is proven to write it. Arms that disagree give the name no value, `#elifdef` and tentative definitions are read, a file-proven-dead arm is skipped, and a name that binds to a local or parameter is dropped. | FIO30 dead-branch pruning, EXP33 | both | C |
 | ~~const_eval `collect_non_const_static_defs` / `static_var_assigned_after` (666/726)~~ | A mutable static counts as constant if a text scan finds no `X =`, `op=`, `X++` or `X--`. It misses `++X`, `&X` passed out, and writes through pointers, so the CFG prunes live branches (0011 b3). **Fixed since the sweep:** The text scan is replaced by a write proof on the AST, by resolved occurrence: assignment, `++`/`--` either side, `&x`, a mention in a macro body or a function-like macro's arguments, and a block-scope `extern` all count as writes. | CFG rules | - (misfire) / + | C |
 | macro_expand `collect_function_macros` (89), `collect_rec` (780) | The first definition wins among arms the platform profile can't settle. `macro_nulls/frees/writes_param_indices` and bodies of ALWAYS/NEVER-style macros describe one arbitrary configuration. dead_regions.rs counts about 451 such names, with sqlite ALWAYS → (1) as its example. **Partly fixed since the sweep:** Every live definition is kept; the parameter facts (frees, nulls, writes, outputs, clears) hold across all of them, merged in the direction each consumer names; only header definitions are alternatives across files. Remaining: expansion itself still uses the first definition, so the bodies of ALWAYS/NEVER-style macros and other expansion consumers still describe one configuration. | EXP33/34/10/36, MSC13/37, ARR30, DCL13/31/41, MEM03/12/30/31, INT32/34, PRE31, WIN05 | both | C |
@@ -111,10 +124,10 @@ These all assume LP64 with a 32-bit int and a signed char. **Ruling needed first
 
 | where | shortcut | consumers | dir | conf |
 |---|---|---|---|---|
-| prescan.rs 661/663 `struct_field_types`/`typedef_types` `.extend` | A whole-struct, last-file-wins merge, and these rules read it without the file-first overlay that INT02 and ARR36 have. MEM31's case was reproduced by the auditor. **Partly fixed since the sweep:** A file's own struct tags and typedefs now win over the project's for about twenty rules, including every one listed here except DCL05. Remaining: the merge is still last-file-wins between other files, and DCL05 `pointer_typedef_names` unions the project's names over the file's own. | EXP14 (`field_type_text`/`width_of_type_text`), EXP36, EXP10, API00, MEM31 (`collect_value_only_fields`, `resolve_macro_based_field_type`), INT10, INT16 (`set_project_context` 98), INT30, INT31, INT32, DCL05 `pointer_typedef_names` | both | C (EXP14, EXP36, INT16, MEM31), S (rest) |
+| prescan.rs 661/663 `struct_field_types`/`typedef_types` `.extend` | A whole-struct, last-file-wins merge, and these rules read it without the file-first overlay that INT02 and ARR36 have. MEM31's case was reproduced by the auditor. **Partly fixed since the sweep:** A file's own struct tags and typedefs now win over the project's for about twenty rules, including every one listed here except DCL05. Remaining: the merge is still last-file-wins between other files, so a finding that depends on what a typedef names (its width or signedness) can change with the order the files are scanned. The typedef map is also keyed by bare name, so a block-scope typedef that shadows a file-scope one of the same name resolves to the file-scope one. DCL05 `pointer_typedef_names` unions the project's names over the file's own. | EXP14 (`field_type_text`/`width_of_type_text`), EXP36, EXP10, API00, MEM31 (`collect_value_only_fields`, `resolve_macro_based_field_type`), INT10, INT16 (`set_project_context` 98), INT30, INT31, INT32, DCL05 `pointer_typedef_names` | both | C (EXP14, EXP36, INT16, MEM31), S (rest) |
 | ~~prescan.rs 667 `noreturn_functions.extend`~~ | A by-name union that includes inferred **static** fns, so file A's `static void fatal(){exit(1);}` makes file B's returning `fatal()` noreturn (reproduced in MEM31). **Fixed since the sweep:** A `.c` file's static noreturn helpers stay its own. | MEM30, MEM31, abort_check_macros (check_macros) | + | C |
 | ~~prescan.rs 675 `global_var_null_states.extend`~~ | The doc says "joined across all files", but the code does a last-file-wins extend by bare name. **Fixed since the sweep:** The states are joined. | EXP34 extern globals | both | C |
-| overflow_helpers `collect_variable_types` (94); float_typing `collect_variable_types` (180); pointer_typing `expr_is_pointer` (140) | A flat per-function name→type map, file-wide when handed the TU root (API00:159, INT10:136, INT30/32 fallbacks). `expr_is_pointer` resolves the declarator and then lets the map win over it. **Partly fixed since the sweep:** An identifier is typed from its resolved declaration first (locals, parameters, file scope) in the float, integer and pointer predicates, INT30, INT10 and FLP34, and the name map no longer overrides the declarator. Remaining: the name map still answers when an occurrence does not resolve (a header-only global, a declaration under `#if`) and can return another function's local; rule-local maps are unchanged. | API00, INT00/02/08/10/30-33, FLP06/34, ARR36, MSC | both | C |
+| overflow_helpers `collect_variable_types` (94); float_typing `collect_variable_types` (180); pointer_typing `expr_is_pointer` (140) | A flat per-function name→type map, file-wide when handed the TU root (API00:159, INT10:136, INT30/32 fallbacks). `expr_is_pointer` resolves the declarator and then lets the map win over it. **Partly fixed since the sweep:** An identifier is typed from its resolved declaration first (locals, parameters, file scope) in the float, integer and pointer predicates, INT30, INT10 and FLP34, and the name map no longer overrides the declarator. INT30, INT32 and INT33 decide that an operand is floating by its resolved declaration and typedef chain, a floating operand making `+ - * /`, `?:` and unary `+`/`-` floating whatever the other operand's type, and an unknown type is never floating; INT33's own name map and textual alias copier are gone. Remaining: INT08 still uses the name map for the floating test, and the name map still answers when an occurrence does not resolve (a header-only global, a declaration under `#if`) and can return another function's local; rule-local maps are unchanged. | API00, INT00/02/08/10/30-33, FLP06/34, ARR36, MSC | both | C |
 | dataflow.rs `Definition{variable: String}` / `compute_reaching_definitions` | Reaching definitions are keyed by name, so a shadowing inner x and the outer x are one variable. **Moved to v0.6.x** (known departure in v0.6.0). | MSC13, MEM30, MEM31 | both | C (shape) |
 | variable_analysis.rs (all 4 pub fns); size_analysis.rs (`find_element_size`, `find_string_literal_length`, `find_allocation_size`) | Text scans such as `preceding_text.contains(&format!("&{}", var))` and `format!("{} =", var)` with no word boundary. | ARR00, ARR38 | both | C |
 | buffer_size.rs `resolve_strlen_based_alloc_size` (562) | Any line in the function (not the reaching definition) with `var = malloc(strlen(..)+1)` returns usize::MAX ("safe"). | STR31, function_summary | + | C |
@@ -238,7 +251,7 @@ These are mostly misfire generators (ADR-0005 via 0006) or single-rule suppressi
 
 ## C. Rulings needed before fixing (maintainer)
 
-1. **Widths (A2).** Does the tool pin a data model per corpus (the earlier design note's proposal) or stop suppressing on width? The earlier "int is 32-bit, correct" framing predates ADR-0011 basis 4.
+1. ~~**Widths (A2).** Does the tool pin a data model per corpus or stop suppressing on width?~~ Ruled: integer facts are declared, not assumed; the default credits only what ISO C guarantees; benchmark corpora declare their model.
 2. **`_Noreturn` / `__attribute__((noreturn))` as proof (A5).** Decided (ADR-0015): `_Noreturn` is trusted under the default policy only, and the GNU attribute under neither.
 3. ~~**Doc-comment non-NULL contracts (A5)**, `documented_nonnull_parameters` in API00 and EXP34: an internal contract, deliberately credited.~~ Fixed since the sweep: not proof under ADR-0011, and the credit is removed from both rules.
 4. **int_provenance's opt-in taint gate (A5)**: suppression by inference, or config under ADR-0001?
@@ -363,3 +376,32 @@ since.
   replacement list as preprocessing tokens, not text.
 - **Conditional check macros (ADR-0010).** A name every arm of an
   `#if/#else` defines is not conditional.
+
+## H. Known departures in v0.6.0, fixed in v0.6.x
+
+Behaviours that remain after the integer-facts work, stated as what a user
+can see.
+
+- **Residual misfires under the default (`iso`) model.** Where the model does
+  not fix a width, INT08-C, INT30-C and INT32-C can still report three shapes
+  as a possible truncation or overflow: an operand that is a macro, a guard
+  whose operand is a `sizeof` expression, and a narrowing inside a ternary.
+  Declaring a data model supplies the widths these shapes depend on.
+- **Range ends that are open by magnitude.** Value ranges are kept as signed
+  64-bit integers, and an end in the top or bottom half of that range counts
+  as the open end of a type, not as a bound the code established. A bound
+  that really is that large is therefore read as open, an unsigned 64-bit
+  constant above `i64::MAX` has no range at all, and INT08-C's message for an
+  open end says "at least N" even where a tighter bound is known. The loss is
+  visible for a value declared through a typedef: the ranges are seeded from
+  the spelling and know nothing of an alias, so a 32-bit unsigned alias says
+  "at least 256" where the type's own limit would give `[256, 4294967295]`.
+- **The name-keyed typedef map.** A typedef is looked up by bare name: a
+  block-scope typedef that shadows a file-scope one of the same name resolves
+  to the file-scope one, and between files the last one scanned wins, so a
+  finding that depends on what the alias names can change with scan order.
+  The row in A4 carries the merge itself.
+- **INT08-C's destination type.** The type a store narrows into is read by
+  splitting the declaration text on whitespace, so a qualifier, a storage
+  class or an unusual spelling can misread it (ADR-0006). The matching row in
+  section B lists the other rules that read a type from its spelling.
