@@ -4799,3 +4799,88 @@ fn check_config_gives_one_message_per_problem() {
     let (code, _out, _stderr) = run_aurora_lint(&["--check-config", "--data-model", "lp128"]);
     assert_eq!(code, 2);
 }
+
+/// The messages INT08-C prints for `unsigned char r = p;` in the else branch
+/// of `if (p <= UCHAR_MAX)`, one per line of the scanned source, under
+/// `model`. The fixture harness checks that a FAIL fixture reports and never
+/// what it says, so the wording of an open range end is guarded here.
+fn int08_c_messages(model: &str, source: &str) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("scan.c");
+    std::fs::write(&file, source).unwrap();
+    let out = dir.path().join("out.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        "--rules",
+        "INT08-C",
+        "--data-model",
+        model,
+        "-e",
+        out.to_str().unwrap(),
+        file.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let findings: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    findings
+        .iter()
+        .map(|v| v["message"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn int08_c_an_unsigned_64_bit_top_prints_as_at_least_never_as_a_bound() {
+    // Spelled out and through a typedef: the range engine keeps the top of an
+    // unsigned 64-bit type as the i64 limit, which is a clamp and not a bound
+    // of the value, and a typedef name tells it nothing at all.
+    let shapes = [
+        "void f(unsigned long long p) { if (p <= UCHAR_MAX) {} else { unsigned char r = p; } }",
+        "typedef unsigned long long u64;\n\
+         void f(u64 p) { if (p <= UCHAR_MAX) {} else { unsigned char r = p; } }",
+    ];
+    for source in shapes {
+        for model in ["iso", "lp64", "ilp32", "llp64"] {
+            let messages = int08_c_messages(model, &format!("#include <limits.h>\n{source}\n"));
+            assert_eq!(messages.len(), 1, "{model}: {source}: {messages:?}");
+            assert!(
+                messages[0].contains("is at least 256 "),
+                "{model}: {source}: {}",
+                messages[0]
+            );
+            assert!(
+                !messages[0].contains("9223372036854775807"),
+                "{model}: {source}: {}",
+                messages[0]
+            );
+        }
+    }
+    // Under lp64 `unsigned long` is the same 64 bits, so it reads the same.
+    for source in [
+        "void f(unsigned long p) { if (p <= UCHAR_MAX) {} else { unsigned char r = p; } }",
+        "typedef unsigned long ul_t;\n\
+         void f(ul_t p) { if (p <= UCHAR_MAX) {} else { unsigned char r = p; } }",
+    ] {
+        let messages = int08_c_messages("lp64", &format!("#include <limits.h>\n{source}\n"));
+        assert_eq!(messages.len(), 1, "{source}: {messages:?}");
+        assert!(messages[0].contains("is at least 256 "), "{}", messages[0]);
+        assert!(
+            !messages[0].contains("9223372036854775807"),
+            "{}",
+            messages[0]
+        );
+    }
+}
+
+#[test]
+fn int08_c_a_32_bit_unsigned_top_is_the_true_upper_bound() {
+    let messages = int08_c_messages(
+        "ilp32",
+        "#include <limits.h>\n\
+         void f(unsigned long p) { if (p <= UCHAR_MAX) {} else { unsigned char r = p; } }\n",
+    );
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].contains("in [256, 4294967295]"),
+        "{}",
+        messages[0]
+    );
+}

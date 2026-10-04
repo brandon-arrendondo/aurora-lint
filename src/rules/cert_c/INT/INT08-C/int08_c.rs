@@ -14,6 +14,7 @@ use crate::utility::cert_c::ast_utils::{
 use crate::utility::cert_c::data_model::{self, Rank};
 use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
 use crate::utility::cert_c::guard_dominance;
+use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -26,6 +27,9 @@ pub struct Int08C {
     /// The integer data model the settings credit: how wide `int` and the
     /// narrow types are guaranteed to be.
     data_model: Cell<IntFacts>,
+    /// Project-wide typedef aliases, so a declared `u64` is followed to the
+    /// type it names before its width is asked.
+    typedef_types: RefCell<std::sync::Arc<HashMap<String, String>>>,
 }
 
 impl CertRule for Int08C {
@@ -47,6 +51,14 @@ impl CertRule for Int08C {
 
     fn set_analysis_settings(&self, settings: &std::sync::Arc<AnalysisSettings>) {
         self.data_model.set(settings.facts);
+    }
+
+    fn set_project_context(&self, context: &crate::analyze::context::ProjectContext) {
+        *self.typedef_types.borrow_mut() = context.typedef_types.clone();
+    }
+
+    fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
+        *self.typedef_types.borrow_mut() = types.typedef_types.clone();
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -381,7 +393,7 @@ impl Int08C {
                         .split_whitespace()
                         .collect::<Vec<_>>()
                         .join(" "),
-                    if open_top && (width_open || self.value_type_exceeds_i64(&value, source)) {
+                    if open_top && (width_open || !self.value_fits_i64(&value, source, macros)) {
                         format!("at least {}", range.min)
                     } else if width_open && open_bottom {
                         format!("at most {}", range.max)
@@ -411,7 +423,7 @@ impl Int08C {
     /// so that a range end at a type's limit is an unknown and not a number.
     ///
     /// Decided from the facts first: when they fix the exact width of every
-    /// integer rank (every preset but iso) no limit is open, whatever the
+    /// integer rank (every data model but iso) no limit is open, whatever the
     /// declaration looks like. Only when a rank is unknown is the type of
     /// each variable read consulted, resolved from its own declaration
     /// (qualifiers, storage classes and parameters included); one whose
@@ -434,13 +446,24 @@ impl Int08C {
             .any(|(_, width)| width.max.is_some())
     }
 
-    /// Whether a variable `value` reads is an unsigned type of 64 bits or
-    /// more, whose top does not fit the `i64` the ranges are kept in: a range
-    /// end there is a clamp, never a bound.
-    fn value_type_exceeds_i64(&self, value: &Node, source: &str) -> bool {
-        self.value_types(value, source)
+    /// Whether a range end at the `i64` limit is a bound of what `value`
+    /// reads, and not the clamp that stands for something wider or unknown.
+    ///
+    /// It is when every name `value` reads is a macro constant or a variable
+    /// declared with a type spelling the facts give an exact width, which is
+    /// not an unsigned type of 64 bits or more (its top does not fit). A
+    /// variable declared through a typedef never counts: the ranges are
+    /// seeded from the spelling alone and know nothing of what an alias
+    /// names, so the end there is the clamp whatever the alias resolves to.
+    fn value_fits_i64(&self, value: &Node, source: &str, macros: &MacroConstantMap) -> bool {
+        query::find_descendants_of_kind(*value, "identifier")
             .iter()
-            .any(|(unsigned, width)| *unsigned && width.max.is_some_and(|m| m >= 64))
+            .all(|id| match self.identifier_type(id, source) {
+                Some((unsigned, width, aliased)) => {
+                    !aliased && width.max.is_some_and(|m| !unsigned || m < 64)
+                }
+                None => macros.contains_key(get_node_text(id, source)),
+            })
     }
 
     /// `(is unsigned, width)` for each integer variable `value` reads, from
@@ -448,13 +471,24 @@ impl Int08C {
     fn value_types(&self, value: &Node, source: &str) -> Vec<(bool, data_model::IntWidth)> {
         query::find_descendants_of_kind(*value, "identifier")
             .iter()
-            .filter_map(|id| {
-                let name = get_node_text(id, source);
-                let ty = ast_utils::resolve_identifier_declared_type(id, name, source)?;
-                let width = integer_type_width(&ty, self.data_model.get())?;
-                Some((is_unsigned_type(&ty), width))
-            })
+            .filter_map(|id| self.identifier_type(id, source))
+            .map(|(unsigned, width, _)| (unsigned, width))
             .collect()
+    }
+
+    /// The signedness and width of the variable `id` resolves to, following
+    /// the typedef chain of its declared type first, and whether that took
+    /// following an alias.
+    fn identifier_type(
+        &self,
+        id: &Node,
+        source: &str,
+    ) -> Option<(bool, data_model::IntWidth, bool)> {
+        let name = get_node_text(id, source);
+        let declared = ast_utils::resolve_identifier_declared_type(id, name, source)?;
+        let ty = overflow_helpers::resolve_typedef_chain(&declared, &self.typedef_types.borrow());
+        let width = integer_type_width(&ty, self.data_model.get())?;
+        Some((is_unsigned_type(&ty), width, ty != declared.trim()))
     }
 
     /// Every `(destination name, stored expression)` pair under `node`: both
