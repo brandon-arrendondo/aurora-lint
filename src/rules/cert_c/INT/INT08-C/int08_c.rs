@@ -466,12 +466,16 @@ impl Int08C {
             })
     }
 
-    /// `(is unsigned, width)` for each integer variable `value` reads, from
-    /// the declaration each occurrence resolves to.
+    /// `(is unsigned, width)` for each integer variable `value` reads whose
+    /// declaration spells a type the facts recognise. A variable declared
+    /// through a typedef is left out: the alias map is keyed by name alone, so
+    /// it can answer for a same-named alias from another scope or file, and
+    /// an alias never counts as bounded.
     fn value_types(&self, value: &Node, source: &str) -> Vec<(bool, data_model::IntWidth)> {
         query::find_descendants_of_kind(*value, "identifier")
             .iter()
             .filter_map(|id| self.identifier_type(id, source))
+            .filter(|(_, _, aliased)| !aliased)
             .map(|(unsigned, width, _)| (unsigned, width))
             .collect()
     }

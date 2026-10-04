@@ -4853,6 +4853,24 @@ fn int08_c_an_unsigned_64_bit_top_prints_as_at_least_never_as_a_bound() {
             );
         }
     }
+    // A local, not a parameter, with the store in the else of the cap.
+    for model in ["iso", "lp64", "ilp32", "llp64"] {
+        let source = "#include <limits.h>\n\
+             typedef unsigned long long u64;\n\
+             void f(void) { u64 d = ULLONG_MAX; if (d <= UCHAR_MAX) {} else { unsigned char r = d; } }\n";
+        let messages = int08_c_messages(model, source);
+        assert_eq!(messages.len(), 1, "{model}: {messages:?}");
+        assert!(
+            messages[0].contains("is at least 256 "),
+            "{model}: {}",
+            messages[0]
+        );
+        assert!(
+            !messages[0].contains("9223372036854775807"),
+            "{model}: {}",
+            messages[0]
+        );
+    }
     // Under lp64 `unsigned long` is the same 64 bits, so it reads the same.
     for source in [
         "void f(unsigned long p) { if (p <= UCHAR_MAX) {} else { unsigned char r = p; } }",
