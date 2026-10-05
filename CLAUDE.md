@@ -86,7 +86,17 @@ python -m bench corpus-check   # are the real-world checkouts still pinned?
 python -m bench realworld-run [--tool sqc,cppcheck,clang-tidy] [--codebase C,C]
 python -m bench realworld [RUN]        # FP dashboard
 python -m bench realworld-score [RUN]  # measured precision/recall vs oracle
+
+# Held-out shadow set: what a change moves on code nobody tuned against.
+python -m bench reference-ab --base BASE_BIN [--tier quick] [--rules R,R]
 ```
+
+**The reference shadow set (`data/reference_corpus.json`) is never labeled,
+tuned against, or reported** — its only job is catching overfitting to the
+oracle corpora. Don't add its projects to `ground_truth`, don't justify a fix
+by its finding counts, and don't publish its findings (a critical upstream
+disclosure via ADR-0007 is the one exception). See
+`docs/design/reference-corpus-ab.md`.
 
 **Run `corpus-check` before any real-world run or precision claim.** Pins live
 in `data/benchmark_repos.json` (shared with

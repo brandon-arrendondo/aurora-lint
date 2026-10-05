@@ -32,6 +32,11 @@ Commands:
                                             concurrency-context evidence
   corpus-check                             Verify every real-world checkout is
                                             still on its pinned commit
+  reference-fetch [--tier T] [--name N,N]  Shallow-fetch the held-out shadow
+                                            set at its pins
+  reference-ab --base BIN [--target BIN] [--tier T] [--rules R,R]
+                                            Diff two binaries' findings over
+                                            the shadow set (no labels, ever)
   render-docs --realworld-run R [--juliet-run R] [--check] [--force]
                                             Regenerate the DB-derived table in
                                             README.md
@@ -574,6 +579,16 @@ def _validate_label_rows(rows, args):
     imported. Listing the offenders is what makes the CSV fixable.
     """
     from bench.config import load_rule_ids
+    from bench.reference import shadow_names
+    shadow = shadow_names()
+    in_shadow = sorted({(row.get("project") or "").strip() for row in rows} & shadow)
+    if in_shadow:
+        # The shadow set only works as a check while nothing is tuned to it.
+        print(f"Refusing to import {args.csv}: project(s) {', '.join(in_shadow)} "
+              "are in the reference shadow set (data/reference_corpus.json), "
+              "which is never labeled -- see docs/design/reference-corpus-ab.md.\n"
+              "\nNothing was written.")
+        sys.exit(1)
     known = load_rule_ids()
     bad_rule, bad_verdict = [], []
     for n, row in enumerate(rows, start=2):   # +1 header line, +1 for 1-based
@@ -1161,6 +1176,34 @@ def cmd_corpus_check(args):
     sys.exit(code)
 
 
+def _reference_selection(args):
+    from bench import reference
+    names = args.name.split(",") if args.name else None
+    root = Path(args.root).expanduser() if args.root else reference.default_root()
+    return reference, reference.load(args.tier, names), root
+
+
+def cmd_reference_fetch(args):
+    reference, repos, root = _reference_selection(args)
+    failed = 0
+    for repo in repos:
+        try:
+            state = reference.fetch(repo, root)
+        except RuntimeError as e:
+            state, failed = f"FAILED {e}", failed + 1
+        print(f"{repo['name']:<20} {repo['commit'][:12]}  {state}")
+    sys.exit(1 if failed else 0)
+
+
+def cmd_reference_ab(args):
+    reference, repos, root = _reference_selection(args)
+    target = Path(args.target) if args.target else reference.SQC_BIN
+    intended = set(args.rules.split(",")) if args.rules else set()
+    out = reference.run_ab(Path(args.base), target, repos, root, intended,
+                           args.jobs, args.timeout)
+    print(f"\nfull delta: {out}")
+
+
 def cmd_render_docs(args):
     from bench.render_docs import (render_all, realworld_citation_warnings,
                                     resolve_latest_fast_juliet_run)
@@ -1567,6 +1610,33 @@ def main():
     p_cchk.add_argument("--runtime", default="podman",
                         help="Container runtime for --mode container")
     p_cchk.set_defaults(func=cmd_corpus_check)
+
+    for name, func, help_ in (
+            ("reference-fetch", cmd_reference_fetch,
+             "Shallow-fetch the held-out shadow corpus at its pins"),
+            ("reference-ab", cmd_reference_ab,
+             "Diff two binaries' findings over the held-out shadow corpus")):
+        p = sub.add_parser(name, help=help_)
+        p.add_argument("--tier", default="quick",
+                       choices=("quick", "standard", "large", "all"),
+                       help="Each tier includes the smaller ones (default: quick)")
+        p.add_argument("--name", default=None,
+                       help="Comma-separated codebase names (overrides --tier)")
+        p.add_argument("--root", default=None,
+                       help="Checkout root (default: BENCH_ROOT/shadow_corpus)")
+        if name == "reference-ab":
+            p.add_argument("--base", required=True,
+                           help="Binary built at the commit before the change")
+            p.add_argument("--target", default=None,
+                           help="Binary after the change "
+                                "(default: target/release/aurora-lint)")
+            p.add_argument("--rules", default=None,
+                           help="Comma-separated rules the change is meant to "
+                                "move; others that move are flagged")
+            p.add_argument("--jobs", type=int, default=min(os.cpu_count() or 4, 8))
+            p.add_argument("--timeout", type=int, default=1800,
+                           help="Per-scan timeout in seconds")
+        p.set_defaults(func=func)
 
     p_rd = sub.add_parser(
         "render-docs",
