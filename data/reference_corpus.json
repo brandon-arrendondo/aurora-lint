@@ -1,0 +1,668 @@
+{
+  "_comment": [
+    "Held-out reference corpus for before/after A/B of a rule change.",
+    "",
+    "NOT the oracle corpus. data/benchmark_repos.json holds the 12 codebases the",
+    "ground_truth oracle is adjudicated against; nothing here has labels, a",
+    "per-codebase manifest, or a scope predicate, and nothing ever should --",
+    "tuning a rule against this set is exactly the overfitting it exists to catch.",
+    "",
+    "SHADOW SET. Its findings are never imported into ground_truth, never sent",
+    "to Postgres, and never reported anywhere -- the one exception is a critical",
+    "defect disclosed upstream through the ADR-0007 process. 'bench",
+    "realworld-import-labels' refuses any project named here. Selection is for",
+    "breadth only: license terms and how receptive upstream is to contributions",
+    "were deliberately not criteria.",
+    "Every codebase is scanned whole under rules_templates/rules-all.toml.",
+    "",
+    "Used by 'python -m bench reference-fetch' / 'reference-ab'. Pins were",
+    "resolved from each project's latest stable release tag (ref_kind 'tag') or,",
+    "where a project tags nothing, its default branch head (ref_kind 'branch').",
+    "Re-pinning is free -- no labels depend on these SHAs -- but an A/B is only",
+    "comparable between two runs taken at the same pins.",
+    "",
+    "tier: quick (small, every change), standard, large (slow; opt in).",
+    "See docs/design/reference-corpus-ab.md."
+  ],
+  "repos": [
+    {
+      "name": "c-ares",
+      "repo": "https://github.com/c-ares/c-ares.git",
+      "ref": "v1.34.8",
+      "ref_kind": "tag",
+      "commit": "c7a3138dcfe3bb0eaaf10c0c24c36dc66dc790ab",
+      "domain": "network-dns",
+      "tier": "quick"
+    },
+    {
+      "name": "cjson",
+      "repo": "https://github.com/DaveGamble/cJSON.git",
+      "ref": "v1.7.19",
+      "ref_kind": "tag",
+      "commit": "c859b25da02955fef659d658b8f324b5cde87be3",
+      "domain": "json-parser",
+      "tier": "quick"
+    },
+    {
+      "name": "freertos-kernel",
+      "repo": "https://github.com/FreeRTOS/FreeRTOS-Kernel.git",
+      "ref": "V11.3.1",
+      "ref_kind": "tag",
+      "commit": "3a22924e0a9ddbbc8b0758881c33b3422a5cc20d",
+      "domain": "embedded-rtos",
+      "tier": "quick"
+    },
+    {
+      "name": "jansson",
+      "repo": "https://github.com/akheron/jansson.git",
+      "ref": "v2.15.1",
+      "ref_kind": "tag",
+      "commit": "dbb5fb3636e155fccfce4cd215de752779bd6971",
+      "domain": "json-parser",
+      "tier": "quick"
+    },
+    {
+      "name": "jq",
+      "repo": "https://github.com/jqlang/jq.git",
+      "ref": "jq-1.8.2",
+      "ref_kind": "tag",
+      "commit": "34f7186b86743a083a589741b6cea95293524108",
+      "domain": "cli-tool",
+      "tier": "quick"
+    },
+    {
+      "name": "libexpat",
+      "repo": "https://github.com/libexpat/libexpat.git",
+      "ref": "R_2_8_5",
+      "ref_kind": "tag",
+      "commit": "4b3f0b06f39fb5529cead381694f8929901bc273",
+      "domain": "xml-parser",
+      "tier": "quick"
+    },
+    {
+      "name": "libpng",
+      "repo": "https://github.com/pnggroup/libpng.git",
+      "ref": "v1.6.59",
+      "ref_kind": "tag",
+      "commit": "cd952f49f95bb27154ae77dbb103032d95f6e580",
+      "domain": "image-codec",
+      "tier": "quick"
+    },
+    {
+      "name": "libssh2",
+      "repo": "https://github.com/libssh2/libssh2.git",
+      "ref": "libssh2-1.11.1",
+      "ref_kind": "tag",
+      "commit": "a312b43325e3383c865a87bb1d26cb52e3292641",
+      "domain": "network-security",
+      "tier": "quick"
+    },
+    {
+      "name": "libuv",
+      "repo": "https://github.com/libuv/libuv.git",
+      "ref": "v1.53.0",
+      "ref_kind": "tag",
+      "commit": "840404ce8ba7cc0204be52389a6cfff9f2c90fb6",
+      "domain": "event-loop",
+      "tier": "quick"
+    },
+    {
+      "name": "libyaml",
+      "repo": "https://github.com/yaml/libyaml.git",
+      "ref": "0.2.5",
+      "ref_kind": "tag",
+      "commit": "2c891fc7a770e8ba2fec34fc6b545c672beb37e6",
+      "domain": "yaml-parser",
+      "tier": "quick"
+    },
+    {
+      "name": "littlefs",
+      "repo": "https://github.com/littlefs-project/littlefs.git",
+      "ref": "v2.11.3",
+      "ref_kind": "tag",
+      "commit": "6cb4e86540eca0d9ba62500a298385c9d863c8be",
+      "domain": "embedded-fs",
+      "tier": "quick"
+    },
+    {
+      "name": "lwip",
+      "repo": "https://github.com/lwip-tcpip/lwip.git",
+      "ref": "STABLE-2_2_1_RELEASE",
+      "ref_kind": "tag",
+      "commit": "77dcd25a72509eb83f72b033d219b1d40cd8eb95",
+      "domain": "embedded-net",
+      "tier": "quick"
+    },
+    {
+      "name": "lz4",
+      "repo": "https://github.com/lz4/lz4.git",
+      "ref": "v1.10.0",
+      "ref_kind": "tag",
+      "commit": "ebb370ca83af193212df4dcbadcc5d87bc0de2f0",
+      "domain": "compression",
+      "tier": "quick"
+    },
+    {
+      "name": "memcached",
+      "repo": "https://github.com/memcached/memcached.git",
+      "ref": "1.6.45",
+      "ref_kind": "tag",
+      "commit": "2d51e364799bc9698bd4b11728ea978cea12da6e",
+      "domain": "database-cache",
+      "tier": "quick"
+    },
+    {
+      "name": "monocypher",
+      "repo": "https://github.com/LoupVaillant/Monocypher.git",
+      "ref": "4.0.3",
+      "ref_kind": "tag",
+      "commit": "ab2b16dd619ad5f6979a4fbe69cfa324a6fcc35f",
+      "domain": "crypto",
+      "tier": "quick"
+    },
+    {
+      "name": "nanopb",
+      "repo": "https://github.com/nanopb/nanopb.git",
+      "ref": "nanopb-0.4.9.2",
+      "ref_kind": "tag",
+      "commit": "160d4f09e5fabb2b66aa2dea32d4f38ace2c4b3f",
+      "domain": "embedded-serialization",
+      "tier": "quick"
+    },
+    {
+      "name": "opus",
+      "repo": "https://github.com/xiph/opus.git",
+      "ref": "v1.5.2",
+      "ref_kind": "tag",
+      "commit": "ddbe48383984d56acd9e1ab6a090c54ca6b735a6",
+      "domain": "audio-codec",
+      "tier": "quick"
+    },
+    {
+      "name": "quake",
+      "repo": "https://github.com/id-Software/Quake.git",
+      "ref": "master",
+      "ref_kind": "branch",
+      "commit": "bf4ac424ce754894ac8f1dae6a3981954bc9852d",
+      "domain": "game-engine",
+      "tier": "quick"
+    },
+    {
+      "name": "tmux",
+      "repo": "https://github.com/tmux/tmux.git",
+      "ref": "3.7c",
+      "ref_kind": "tag",
+      "commit": "e476c1230b958df0cb12977517d24b3dc931375b",
+      "domain": "terminal",
+      "tier": "quick"
+    },
+    {
+      "name": "zlib",
+      "repo": "https://github.com/madler/zlib.git",
+      "ref": "v1.3.2",
+      "ref_kind": "tag",
+      "commit": "da607da739fa6047df13e66a2af6b8bec7c2a498",
+      "domain": "compression",
+      "tier": "quick"
+    },
+    {
+      "name": "brotli",
+      "repo": "https://github.com/google/brotli.git",
+      "ref": "v1.2.0",
+      "ref_kind": "tag",
+      "commit": "028fb5a23661f123017c060daa546b55cf4bde29",
+      "domain": "compression",
+      "tier": "standard"
+    },
+    {
+      "name": "busybox",
+      "repo": "https://github.com/mirror/busybox.git",
+      "ref": "1_36_1",
+      "ref_kind": "tag",
+      "commit": "1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4",
+      "domain": "system-tool",
+      "tier": "standard"
+    },
+    {
+      "name": "contiki-ng",
+      "repo": "https://github.com/contiki-ng/contiki-ng.git",
+      "ref": "release/v5.2",
+      "ref_kind": "tag",
+      "commit": "4ccd1a3b9e767f168d12ec3df187fe6b7dc736b5",
+      "domain": "embedded-rtos",
+      "tier": "standard"
+    },
+    {
+      "name": "doom",
+      "repo": "https://github.com/id-Software/DOOM.git",
+      "ref": "master",
+      "ref_kind": "branch",
+      "commit": "a77dfb96cb91780ca334d0d4cfd86957558007e0",
+      "domain": "game-engine",
+      "tier": "standard"
+    },
+    {
+      "name": "e2fsprogs",
+      "repo": "https://github.com/tytso/e2fsprogs.git",
+      "ref": "v1.47.4",
+      "ref_kind": "tag",
+      "commit": "7ee1d505ef3b37831215f490411f346fe57e9053",
+      "domain": "filesystem",
+      "tier": "standard"
+    },
+    {
+      "name": "flac",
+      "repo": "https://github.com/xiph/flac.git",
+      "ref": "1.5.0",
+      "ref_kind": "tag",
+      "commit": "1507800de4b70e21be71f38caa0d9079d0bc6e45",
+      "domain": "audio-codec",
+      "tier": "standard"
+    },
+    {
+      "name": "htop",
+      "repo": "https://github.com/htop-dev/htop.git",
+      "ref": "3.5.3",
+      "ref_kind": "tag",
+      "commit": "20882b8ef8271fb49ea0eb74bbfd484e9b0a11d8",
+      "domain": "system-tool",
+      "tier": "standard"
+    },
+    {
+      "name": "iperf",
+      "repo": "https://github.com/esnet/iperf.git",
+      "ref": "3.22",
+      "ref_kind": "tag",
+      "commit": "926bd905501b792bd082d2200d1d1a84aa543e3a",
+      "domain": "network-tool",
+      "tier": "standard"
+    },
+    {
+      "name": "libarchive",
+      "repo": "https://github.com/libarchive/libarchive.git",
+      "ref": "v3.8.9",
+      "ref_kind": "tag",
+      "commit": "27cbc7827172698143e440801fc0ba39ccb4f1f5",
+      "domain": "archive-parser",
+      "tier": "standard"
+    },
+    {
+      "name": "libevent",
+      "repo": "https://github.com/libevent/libevent.git",
+      "ref": "release-2.1.13-stable",
+      "ref_kind": "tag",
+      "commit": "79ddfb460847999b807cba76d04e73891f29c6ee",
+      "domain": "event-loop",
+      "tier": "standard"
+    },
+    {
+      "name": "libgit2",
+      "repo": "https://github.com/libgit2/libgit2.git",
+      "ref": "v1.9.7",
+      "ref_kind": "tag",
+      "commit": "49e408b3208bc3093757a1c2db938d3590f3f412",
+      "domain": "vcs",
+      "tier": "standard"
+    },
+    {
+      "name": "libjpeg-turbo",
+      "repo": "https://github.com/libjpeg-turbo/libjpeg-turbo.git",
+      "ref": "3.2.0",
+      "ref_kind": "tag",
+      "commit": "c85e6b905bf237038faa936dab160ebfc5da0344",
+      "domain": "image-codec",
+      "tier": "standard"
+    },
+    {
+      "name": "libopencm3",
+      "repo": "https://github.com/libopencm3/libopencm3.git",
+      "ref": "master",
+      "ref_kind": "branch",
+      "commit": "ddcbb2889fa018626c604e27ea50e66db5755b78",
+      "domain": "embedded-hal",
+      "tier": "standard"
+    },
+    {
+      "name": "libpcap",
+      "repo": "https://github.com/the-tcpdump-group/libpcap.git",
+      "ref": "libpcap-1.11.0",
+      "ref_kind": "tag",
+      "commit": "87b6a456dd7ac9e34231f8a0a3f99a13a59b4419",
+      "domain": "network-capture",
+      "tier": "standard"
+    },
+    {
+      "name": "libsndfile",
+      "repo": "https://github.com/libsndfile/libsndfile.git",
+      "ref": "1.2.2",
+      "ref_kind": "tag",
+      "commit": "72f6af15e8f85157bd622ed45b979025828b7001",
+      "domain": "audio-io",
+      "tier": "standard"
+    },
+    {
+      "name": "libsodium",
+      "repo": "https://github.com/jedisct1/libsodium.git",
+      "ref": "1.0.22-RELEASE",
+      "ref_kind": "tag",
+      "commit": "77e1ce5d6dee871c49ef211222ba18ef0c486bda",
+      "domain": "crypto",
+      "tier": "standard"
+    },
+    {
+      "name": "libtomcrypt",
+      "repo": "https://github.com/libtom/libtomcrypt.git",
+      "ref": "v1.18.2",
+      "ref_kind": "tag",
+      "commit": "7e7eb695d581782f04b24dc444cbfde86af59853",
+      "domain": "crypto",
+      "tier": "standard"
+    },
+    {
+      "name": "libwebp",
+      "repo": "https://github.com/webmproject/libwebp.git",
+      "ref": "v1.6.0",
+      "ref_kind": "tag",
+      "commit": "4fa21912338357f89e4fd51cf2368325b59e9bd9",
+      "domain": "image-codec",
+      "tier": "standard"
+    },
+    {
+      "name": "libxml2",
+      "repo": "https://github.com/GNOME/libxml2.git",
+      "ref": "v2.15.4",
+      "ref_kind": "tag",
+      "commit": "96498992efa48d52b0e8b83058bd88dbdaf153c1",
+      "domain": "xml-parser",
+      "tier": "standard"
+    },
+    {
+      "name": "lighttpd1.4",
+      "repo": "https://github.com/lighttpd/lighttpd1.4.git",
+      "ref": "lighttpd-1.4.85",
+      "ref_kind": "tag",
+      "commit": "4852959e67ef51ea68084984400d3264b854c97d",
+      "domain": "network-server",
+      "tier": "standard"
+    },
+    {
+      "name": "micropython",
+      "repo": "https://github.com/micropython/micropython.git",
+      "ref": "v1.29.0",
+      "ref_kind": "tag",
+      "commit": "0fd6c573ea815774668bbb16b8e197c8822368b2",
+      "domain": "interpreter",
+      "tier": "standard"
+    },
+    {
+      "name": "mongoose",
+      "repo": "https://github.com/cesanta/mongoose.git",
+      "ref": "7.23",
+      "ref_kind": "tag",
+      "commit": "02bdbb9ed6f0a8f7c42228c6e7cb35d748b60551",
+      "domain": "embedded-net",
+      "tier": "standard"
+    },
+    {
+      "name": "nghttp2",
+      "repo": "https://github.com/nghttp2/nghttp2.git",
+      "ref": "v1.70.0",
+      "ref_kind": "tag",
+      "commit": "85e300c79fb6dbcfa9c1013215c8710c1c2cd3d2",
+      "domain": "network-http",
+      "tier": "standard"
+    },
+    {
+      "name": "nginx",
+      "repo": "https://github.com/nginx/nginx.git",
+      "ref": "release-1.31.6",
+      "ref_kind": "tag",
+      "commit": "0a5db852e18d1c22c62a5ede1412ac3f416111a0",
+      "domain": "network-server",
+      "tier": "standard"
+    },
+    {
+      "name": "opensc",
+      "repo": "https://github.com/OpenSC/OpenSC.git",
+      "ref": "0.27.1",
+      "ref_kind": "tag",
+      "commit": "19868984dc4dc697af6a86d65ab32a1f19a43ea4",
+      "domain": "smartcard",
+      "tier": "standard"
+    },
+    {
+      "name": "openssh-portable",
+      "repo": "https://github.com/openssh/openssh-portable.git",
+      "ref": "V_10_5_P1",
+      "ref_kind": "tag",
+      "commit": "b3f7344209832eea8ece447d871ea748767c444b",
+      "domain": "network-security",
+      "tier": "standard"
+    },
+    {
+      "name": "openvpn",
+      "repo": "https://github.com/OpenVPN/openvpn.git",
+      "ref": "v2.7.7",
+      "ref_kind": "tag",
+      "commit": "85f07f7b784009adf90129b3854c5b742ca3cef9",
+      "domain": "network-vpn",
+      "tier": "standard"
+    },
+    {
+      "name": "tcpdump",
+      "repo": "https://github.com/the-tcpdump-group/tcpdump.git",
+      "ref": "tcpdump-4.99.7",
+      "ref_kind": "tag",
+      "commit": "1c950db294b52c99461c89e2a8d0e541d344cf5a",
+      "domain": "network-parser",
+      "tier": "standard"
+    },
+    {
+      "name": "tinyusb",
+      "repo": "https://github.com/hathach/tinyusb.git",
+      "ref": "0.21.0",
+      "ref_kind": "tag",
+      "commit": "dae3f9a366bfcddbf9dcf1b48d7500286a849539",
+      "domain": "embedded-usb",
+      "tier": "standard"
+    },
+    {
+      "name": "xz",
+      "repo": "https://github.com/tukaani-project/xz.git",
+      "ref": "v5.8.4",
+      "ref_kind": "tag",
+      "commit": "d3e650e63c110e830fd5391e7f8b45df0b91d3da",
+      "domain": "compression",
+      "tier": "standard"
+    },
+    {
+      "name": "zstd",
+      "repo": "https://github.com/facebook/zstd.git",
+      "ref": "v1.5.7",
+      "ref_kind": "tag",
+      "commit": "f8745da6ff1ad1e7bab384bd1f9d742439278e99",
+      "domain": "compression",
+      "tier": "standard"
+    },
+    {
+      "name": "cpython",
+      "repo": "https://github.com/python/cpython.git",
+      "ref": "v3.14.8",
+      "ref_kind": "tag",
+      "commit": "8e6e75d9102e39bed2a2b279203a396741180f12",
+      "domain": "interpreter",
+      "tier": "large"
+    },
+    {
+      "name": "ffmpeg",
+      "repo": "https://github.com/FFmpeg/FFmpeg.git",
+      "ref": "n9.0.2",
+      "ref_kind": "tag",
+      "commit": "946fcce07b6dcd0331c8cc609192aeff5e1924f8",
+      "domain": "multimedia",
+      "tier": "large"
+    },
+    {
+      "name": "git",
+      "repo": "https://github.com/git/git.git",
+      "ref": "v2.56.0",
+      "ref_kind": "tag",
+      "commit": "a018953688f1b10bddf91bff8747068f5f4746a4",
+      "domain": "vcs",
+      "tier": "large"
+    },
+    {
+      "name": "haproxy",
+      "repo": "https://github.com/haproxy/haproxy.git",
+      "ref": "v3.4.0",
+      "ref_kind": "tag",
+      "commit": "64a335366dc1bb5431e28a75e3a22e4226ac9b8f",
+      "domain": "network-proxy",
+      "tier": "large"
+    },
+    {
+      "name": "lvgl",
+      "repo": "https://github.com/lvgl/lvgl.git",
+      "ref": "v9.6.0",
+      "ref_kind": "tag",
+      "commit": "80ca777e37a2b176770726a02e07a6fb79ef0b39",
+      "domain": "embedded-gui",
+      "tier": "large"
+    },
+    {
+      "name": "nuttx",
+      "repo": "https://github.com/apache/nuttx.git",
+      "ref": "nuttx-13.1.0",
+      "ref_kind": "tag",
+      "commit": "2b5c0de5e933281c209f954a63b99cf10c132346",
+      "domain": "embedded-rtos",
+      "tier": "large"
+    },
+    {
+      "name": "openssl",
+      "repo": "https://github.com/openssl/openssl.git",
+      "ref": "openssl-4.0.3",
+      "ref_kind": "tag",
+      "commit": "af1775b60dfa141a4ad762585052cabeb9f37e9e",
+      "domain": "crypto-tls",
+      "tier": "large"
+    },
+    {
+      "name": "php-src",
+      "repo": "https://github.com/php/php-src.git",
+      "ref": "php-8.5.11",
+      "ref_kind": "tag",
+      "commit": "678778973bb4d4185c06ef1320de50f1a975d3c8",
+      "domain": "interpreter",
+      "tier": "large"
+    },
+    {
+      "name": "postgres",
+      "repo": "https://github.com/postgres/postgres.git",
+      "ref": "REL_18_6",
+      "ref_kind": "tag",
+      "commit": "724edf9bde9d356724ad384a2e196edc3c9f80f7",
+      "domain": "database",
+      "tier": "large"
+    },
+    {
+      "name": "riot",
+      "repo": "https://github.com/RIOT-OS/RIOT.git",
+      "ref": "2026.07",
+      "ref_kind": "tag",
+      "commit": "50ae2eba8fe3c533539e68f1a64fd34d66c8d14b",
+      "domain": "embedded-rtos",
+      "tier": "large"
+    },
+    {
+      "name": "ruby",
+      "repo": "https://github.com/ruby/ruby.git",
+      "ref": "v4.0.7",
+      "ref_kind": "tag",
+      "commit": "229531a6cfbf07e3caef30dbac24a2a3f3fed482",
+      "domain": "interpreter",
+      "tier": "large"
+    },
+    {
+      "name": "sdl",
+      "repo": "https://github.com/libsdl-org/SDL.git",
+      "ref": "release-3.4.18",
+      "ref_kind": "tag",
+      "commit": "829a65d769d935c4852f8159e964312c0957260a",
+      "domain": "multimedia",
+      "tier": "large"
+    },
+    {
+      "name": "systemd",
+      "repo": "https://github.com/systemd/systemd.git",
+      "ref": "v262",
+      "ref_kind": "tag",
+      "commit": "8cc40e0c5e9234bf45084751ac53b1fbfe70b492",
+      "domain": "system-daemon",
+      "tier": "large"
+    },
+    {
+      "name": "tcl",
+      "repo": "https://github.com/tcltk/tcl.git",
+      "ref": "core-9-1-0",
+      "ref_kind": "tag",
+      "commit": "0c6bad08d91fa2ad51f05a50a41f8c1ea82ce985",
+      "domain": "interpreter",
+      "tier": "large"
+    },
+    {
+      "name": "u-boot",
+      "repo": "https://github.com/u-boot/u-boot.git",
+      "ref": "v2026.07",
+      "ref_kind": "tag",
+      "commit": "ece349ade2973e220f524ce59e59711cc919263f",
+      "domain": "bootloader",
+      "tier": "large"
+    },
+    {
+      "name": "unbound",
+      "repo": "https://github.com/NLnetLabs/unbound.git",
+      "ref": "release-1.26.1",
+      "ref_kind": "tag",
+      "commit": "13b6717f1716810523ffb60f971a6c9c5e8ce127",
+      "domain": "network-dns",
+      "tier": "large"
+    },
+    {
+      "name": "util-linux",
+      "repo": "https://github.com/util-linux/util-linux.git",
+      "ref": "v2.42.4",
+      "ref_kind": "tag",
+      "commit": "d76cbf8f13e65ff657344f7f6a90042cf755ba59",
+      "domain": "system-tool",
+      "tier": "large"
+    },
+    {
+      "name": "vim",
+      "repo": "https://github.com/vim/vim.git",
+      "ref": "v9.2.1164",
+      "ref_kind": "tag",
+      "commit": "6d862f58dd6d51b292dd26ae658b02fb1e691ca5",
+      "domain": "editor",
+      "tier": "large"
+    },
+    {
+      "name": "wolfssl",
+      "repo": "https://github.com/wolfSSL/wolfssl.git",
+      "ref": "v5.9.4-stable",
+      "ref_kind": "tag",
+      "commit": "3c5eead44904df64e6a5a1f4ebdce377d35a849a",
+      "domain": "crypto-tls",
+      "tier": "large"
+    },
+    {
+      "name": "zephyr",
+      "repo": "https://github.com/zephyrproject-rtos/zephyr.git",
+      "ref": "v4.4.2",
+      "ref_kind": "tag",
+      "commit": "dccb09599635bdff17633fa7e9dab014b91dce90",
+      "domain": "embedded-rtos",
+      "tier": "large"
+    }
+  ]
+}

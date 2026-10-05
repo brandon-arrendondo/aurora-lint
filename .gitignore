@@ -110,3 +110,7 @@ docs/upstream-disclosures.rst
 
 # Vale styles, recreated by `vale sync` (see .vale.ini / `invoke lint-docs`)
 styles/
+
+# Reference shadow-set checkouts are outside the repo; its scans and deltas
+# are local working data and are never published (docs/design/reference-corpus-ab.md).
+data/reference_ab/

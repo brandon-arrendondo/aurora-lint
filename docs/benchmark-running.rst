@@ -478,6 +478,21 @@ A worked example from this pattern: 6 projects, 14 batches, 1,478 findings,
 0.7% delta precision — a very different number than the aggregate raw-count
 comparison suggested.
 
+Reference Shadow Corpus (held-out A/B)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The oracle corpora are what rules get tuned against. To see what a change
+moves on code nobody tuned against, A/B a base and a target binary over the
+pinned, never-labeled codebases in ``data/reference_corpus.json``::
+
+    python -m bench reference-fetch --tier quick
+    python -m bench reference-ab --base BASE_BIN --tier quick --rules RULE,RULE
+
+It reports findings added and removed per rule and codebase, flagging rules
+outside ``--rules`` that moved. It never computes precision, and its findings
+are never labeled or reported. Rules and recipe:
+``docs/design/reference-corpus-ab.md``.
+
 Comparing Across Runs
 ---------------------
 
