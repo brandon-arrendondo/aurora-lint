@@ -669,6 +669,10 @@ fn load_project_context(
         db.merge_defines_into(&mut context, data_model)?;
     }
 
+    // Every alias is known now: keep only the call counts that can rule one
+    // out (`ProjectContext::as_seen_from`).
+    context.retain_alias_call_arities();
+
     // Save prescan cache if requested (after prescan + include resolution).
     // Not when the prescan is incomplete: a later scan loading the cache
     // would inherit the missing facts without knowing (ADR-0017). This scan

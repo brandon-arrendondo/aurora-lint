@@ -152,6 +152,20 @@ pub fn is_deallocator(name: &str) -> bool {
     frees_argument(name).is_some()
 }
 
+/// How many arguments a call to standard function `name` takes, for the
+/// memory-management family whose roles the rules classify (`malloc`,
+/// `calloc`, `realloc`, `aligned_alloc`, `free`, `strdup`, `strndup`):
+/// each has one fixed-arity prototype in every C build. `None` for any other
+/// name, including a project-declared allocator or deallocator, whose
+/// prototype this does not know.
+pub fn standard_arity(name: &str) -> Option<usize> {
+    match name {
+        "malloc" | "free" | "strdup" => Some(1),
+        "calloc" | "realloc" | "aligned_alloc" | "strndup" => Some(2),
+        _ => None,
+    }
+}
+
 /// The argument node a call frees by [`frees_argument`]: `free(p)`'s `p`, or
 /// the argument a declared deallocator names. `None` for any other callee,
 /// or a call with too few arguments. Punctuation and comments are not

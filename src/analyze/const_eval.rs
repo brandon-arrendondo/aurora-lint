@@ -659,7 +659,8 @@ pub fn merge_macro_alias_alternatives(
 }
 
 /// [`merged_macro_aliases`] for the alternatives: the project's, with each
-/// name the current file defines replaced by the file's own targets.
+/// name the current file defines replaced by the file's own targets, less
+/// the targets this file's calls rule out ([`rule_out_alternatives_by_arity`]).
 pub fn merged_macro_alias_alternatives(
     project: &HashMap<String, Vec<String>>,
     root: &Node,
@@ -667,7 +668,214 @@ pub fn merged_macro_alias_alternatives(
 ) -> HashMap<String, Vec<String>> {
     let mut alternatives = project.clone();
     alternatives.extend(collect_macro_alias_alternatives(root, source));
+    rule_out_alternatives_by_arity(
+        &mut alternatives,
+        &call_arities(root, source),
+        &fixed_arities(root, source),
+    );
     alternatives
+}
+
+/// Every argument count each name is called with in this file, for a name
+/// called as a plain identifier (`XFREE(p, heap, type)`).
+///
+/// An object-like alias puts its target in the call's place, so
+/// `#define XFREE free` makes that call `free(p, heap, type)`, which no C
+/// build compiles. Where a file calls a name with a count its alias's target
+/// cannot take, the alias is not the definition in force in that file,
+/// whichever file it was harvested from: hostap's libtomcrypt glue resolves
+/// `tomcrypt_custom.h`'s `#define XFREE free`, and its libtommath copy
+/// defines `XFREE` as the one-argument `os_free`, while its wolfSSL glue
+/// calls wolfSSL's three-argument `XFREE`.
+pub fn call_arities(root: &Node, source: &str) -> HashMap<String, HashSet<usize>> {
+    let mut arities: HashMap<String, HashSet<usize>> = HashMap::new();
+    for call in lang_parsing_substrate::query::find_descendants_of_kind(*root, "call_expression") {
+        let Some(function) = call.child_by_field_name("function") else {
+            continue;
+        };
+        if function.kind() != "identifier" {
+            continue;
+        }
+        let Some(arguments) = call.child_by_field_name("arguments") else {
+            continue;
+        };
+        let count = (0..arguments.child_count())
+            .filter_map(|i| arguments.child(i))
+            .filter(|a| !matches!(a.kind(), "(" | ")" | "," | "comment"))
+            .count();
+        arities
+            .entry(ast_utils::get_node_text(&function, source).to_string())
+            .or_default()
+            .insert(count);
+    }
+    arities
+}
+
+/// The argument counts each function or function-like macro this file
+/// defines or prototypes takes, one entry per distinct count (preprocessor
+/// arms may differ). A variadic one is left out: it takes any count from
+/// its fixed parameters up, so no count rules it out. `f(void)` takes none;
+/// an old-style `f()` declares nothing about its parameters and is left out.
+pub fn fixed_arities(root: &Node, source: &str) -> HashMap<String, Vec<usize>> {
+    let mut arities: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut record = |name: &str, n: usize| {
+        let slot = arities.entry(name.to_string()).or_default();
+        if !slot.contains(&n) {
+            slot.push(n);
+        }
+    };
+    for def in
+        lang_parsing_substrate::query::find_descendants_of_kind(*root, "preproc_function_def")
+    {
+        let (Some(name), Some(params)) = (
+            def.child_by_field_name("name"),
+            def.child_by_field_name("parameters"),
+        ) else {
+            continue;
+        };
+        let mut count = 0;
+        let mut variadic = false;
+        for i in 0..params.child_count() {
+            match params.child(i).map(|c| c.kind()) {
+                Some("identifier") => count += 1,
+                Some("...") => variadic = true,
+                _ => {}
+            }
+        }
+        if !variadic {
+            record(ast_utils::get_node_text(&name, source), count);
+        }
+    }
+    for declarator in
+        lang_parsing_substrate::query::find_descendants_of_kind(*root, "function_declarator")
+    {
+        // Only the declarator naming a function: `int f(int)`, `*f(void)`,
+        // not a function pointer's `(*fp)(int)`.
+        let Some(name) = declarator
+            .child_by_field_name("declarator")
+            .filter(|d| d.kind() == "identifier")
+        else {
+            continue;
+        };
+        let Some(params) = declarator.child_by_field_name("parameters") else {
+            continue;
+        };
+        let mut count = 0;
+        let mut variadic = false;
+        let mut only_void = false;
+        for i in 0..params.child_count() {
+            let Some(child) = params.child(i) else {
+                continue;
+            };
+            match child.kind() {
+                "parameter_declaration" => {
+                    count += 1;
+                    only_void = child.child_by_field_name("declarator").is_none()
+                        && ast_utils::get_node_text(&child, source).trim() == "void";
+                }
+                "variadic_parameter" => variadic = true,
+                _ => {}
+            }
+        }
+        if variadic || count == 0 {
+            continue;
+        }
+        record(
+            ast_utils::get_node_text(&name, source),
+            if count == 1 && only_void { 0 } else { count },
+        );
+    }
+    arities
+}
+
+/// Fold one file's [`fixed_arities`] into a project-wide table.
+pub fn merge_fixed_arities(
+    into: &mut HashMap<String, Vec<usize>>,
+    from: HashMap<String, Vec<usize>>,
+) {
+    for (name, counts) in from {
+        let slot = into.entry(name).or_default();
+        for n in counts {
+            if !slot.contains(&n) {
+                slot.push(n);
+            }
+        }
+    }
+}
+
+/// Whether a file that calls an alias with the counts `calls` cannot be
+/// using it as `target`. The first link of `target`'s alias chain
+/// (`aliases`) whose counts are known decides: a standard function's, else
+/// `known`, a [`fixed_arities`] table; a call with a count it cannot take
+/// rules the target out. Not the chain's end: a rule classifies a callee by
+/// any link of its chain, and hostap's `os.h` aliases `free` itself to a
+/// poison name whose arity nothing records.
+pub fn arity_rules_out(
+    target: &str,
+    calls: &HashSet<usize>,
+    aliases: &HashMap<String, String>,
+    known: &HashMap<String, Vec<usize>>,
+) -> bool {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut link = target;
+    while seen.insert(link) {
+        let standard = crate::utility::cert_c::call_roles::standard_arity(link).map(|n| vec![n]);
+        if let Some(counts) = standard.as_ref().or_else(|| known.get(link)) {
+            return calls.iter().any(|m| !counts.contains(m));
+        }
+        match aliases.get(link) {
+            Some(next) => link = next,
+            None => break,
+        }
+    }
+    false
+}
+
+/// Drop from `alternatives` each target the file's calls of its alias rule
+/// out ([`call_arities`], [`arity_rules_out`]), resolving a target that is
+/// itself an alias through the settled ones first; an alias left with no
+/// target is dropped. Returns whether anything changed.
+pub fn rule_out_alternatives_by_arity(
+    alternatives: &mut HashMap<String, Vec<String>>,
+    calls: &HashMap<String, HashSet<usize>>,
+    known: &HashMap<String, Vec<usize>>,
+) -> bool {
+    let settled = settled_aliases(alternatives);
+    let mut changed = false;
+    for (name, targets) in alternatives.iter_mut() {
+        let Some(counts) = calls.get(name) else {
+            continue;
+        };
+        let before = targets.len();
+        targets.retain(|t| !arity_rules_out(t, counts, &settled, known));
+        changed |= targets.len() != before;
+    }
+    alternatives.retain(|_, targets| !targets.is_empty());
+    changed
+}
+
+/// [`rule_out_alternatives_by_arity`] for settled aliases: drop each alias
+/// whose target, followed through `aliases`, the file's calls rule out.
+pub fn rule_out_aliases_by_arity(
+    aliases: &mut HashMap<String, String>,
+    calls: &HashMap<String, HashSet<usize>>,
+    known: &HashMap<String, Vec<usize>>,
+) -> bool {
+    let ruled_out: Vec<String> = aliases
+        .keys()
+        .filter(|name| {
+            calls.get(*name).is_some_and(|counts| {
+                aliases
+                    .get(*name)
+                    .is_some_and(|target| arity_rules_out(target, counts, aliases, known))
+            })
+        })
+        .cloned()
+        .collect();
+    for name in &ruled_out {
+        aliases.remove(name);
+    }
+    !ruled_out.is_empty()
 }
 
 /// Add to `aliases` each name that `alternatives` does not settle but that
@@ -885,6 +1093,13 @@ pub fn merged_macro_aliases(
             aliases.remove(&name);
         }
     }
+    // An alias whose target this file's own calls of it rule out is not in
+    // force here (`call_arities`).
+    rule_out_aliases_by_arity(
+        &mut aliases,
+        &call_arities(root, source),
+        &fixed_arities(root, source),
+    );
     aliases
 }
 

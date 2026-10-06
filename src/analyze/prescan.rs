@@ -42,6 +42,10 @@ struct FilePrescanResult {
     /// Every live target of each object-like alias this file defines
     /// (`const_eval::collect_macro_alias_alternatives`).
     macro_alias_alternatives: HashMap<String, Vec<String>>,
+    /// `const_eval::fixed_arities` of this file.
+    fixed_arities: HashMap<String, Vec<usize>>,
+    /// `const_eval::call_arities` of this file.
+    call_arities: HashMap<String, Vec<usize>>,
     function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     /// Every `#define` in this file, all arms (see
     /// `ProjectContext::macro_definitions`).
@@ -159,6 +163,8 @@ impl FilePrescanResult {
             macro_constants: HashMap::new(),
             macro_aliases: HashMap::new(),
             macro_alias_alternatives: HashMap::new(),
+            fixed_arities: HashMap::new(),
+            call_arities: HashMap::new(),
             function_macros: HashMap::new(),
             macro_definitions: HashMap::new(),
             conditional_macro_names: HashSet::new(),
@@ -277,6 +283,15 @@ fn process_file(
 
         result.macro_alias_alternatives =
             const_eval::collect_macro_alias_alternatives(&root, &source);
+        result.fixed_arities = const_eval::fixed_arities(&root, &source);
+        result.call_arities = const_eval::call_arities(&root, &source)
+            .into_iter()
+            .map(|(name, counts)| {
+                let mut counts: Vec<usize> = counts.into_iter().collect();
+                counts.sort_unstable();
+                (name, counts)
+            })
+            .collect();
         let file_aliases = const_eval::settled_aliases(&result.macro_alias_alternatives);
         let file_taint_aliases: Vec<String> = file_aliases
             .iter()
@@ -739,6 +754,8 @@ fn prescan_file_list(
     let mut static_defining_files: HashMap<String, HashSet<PathBuf>> = HashMap::new();
     let mut macro_constants: HashMap<String, i64> = HashMap::new();
     let mut macro_alias_alternatives: HashMap<String, Vec<String>> = HashMap::new();
+    let mut function_arities: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut alias_call_arities: HashMap<String, HashMap<String, Vec<usize>>> = HashMap::new();
     // Whether the kept aliases of a name came from a header.
     let mut macro_alias_from_header: HashMap<String, bool> = HashMap::new();
     let mut function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro> =
@@ -960,6 +977,13 @@ fn prescan_file_list(
         // header's aliases replace a .c file's, and two headers' definitions
         // of one name are alternatives.
         let from_header = is_header_path(&file_display);
+        const_eval::merge_fixed_arities(&mut function_arities, r.fixed_arities);
+        if !r.call_arities.is_empty() {
+            alias_call_arities.insert(
+                crate::analyze::compile_commands::real_path(Path::new(&file_display)),
+                r.call_arities,
+            );
+        }
         for (name, targets) in r.macro_alias_alternatives {
             match macro_alias_from_header.get(&name) {
                 None => {
@@ -1594,6 +1618,8 @@ fn prescan_file_list(
         macro_constants: Arc::new(macro_constants),
         macro_aliases: Arc::new(macro_aliases),
         macro_alias_alternatives: Arc::new(macro_alias_alternatives),
+        function_arities: Arc::new(function_arities),
+        alias_call_arities: Arc::new(alias_call_arities),
         function_macros: Arc::new(function_macros),
         macro_definitions: Arc::new(macro_definitions),
         // Filled by `resolve_includes`: every file scanned here is the project's.
@@ -7018,6 +7044,10 @@ fn harvest_header_macros(
     let header_macros = const_eval::collect_macro_constants(root, hsource, model);
     Arc::make_mut(&mut context.macro_constants).extend(header_macros.clone());
 
+    const_eval::merge_fixed_arities(
+        Arc::make_mut(&mut context.function_arities),
+        const_eval::fixed_arities(root, hsource),
+    );
     let header_alias_alternatives = const_eval::collect_macro_alias_alternatives(root, hsource);
     let header_aliases = const_eval::settled_aliases(&header_alias_alternatives);
     let header_taint_aliases: Vec<String> = header_aliases
@@ -9911,6 +9941,46 @@ void caller(char *other) {
         assert!(
             ctx.as_seen_from(&dir.join("c_neither.c")).is_none(),
             "a file defining none of them keeps the shared context, at no cost"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An alias defined in one file is not in force in another that calls
+    /// it with arguments its target cannot take: `#define XFREE free` and
+    /// `#define XFREE os_free` (one-argument, by its prototype) do not make
+    /// a file's three-argument `XFREE(p, heap, type)` a free, while a file
+    /// calling `XFREE(p)` keeps both.
+    #[test]
+    fn an_alias_a_file_calls_with_the_wrong_argument_count_is_not_in_force_there() {
+        let dir = std::env::temp_dir().join("aurora-lint-prescan-alias-arity-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("tom.h"), "#define XFREE free\n").unwrap();
+        std::fs::write(
+            dir.join("tommath.h"),
+            "void os_free(void *ptr);\n#define XFREE os_free\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("wolf.c"), "void f(void *p) { XFREE(p, 0, 38); }\n").unwrap();
+        std::fs::write(dir.join("tomglue.c"), "void g(void *p) { XFREE(p); }\n").unwrap();
+        let ctx = prescan_directories(
+            &[dir.to_string_lossy().to_string()],
+            None,
+            false,
+            &|_, _| false,
+            Default::default(),
+        )
+        .unwrap();
+        let mut both = ctx.macro_alias_alternatives["XFREE"].clone();
+        both.sort();
+        assert_eq!(both, ["free", "os_free"]);
+
+        let wolf = ctx.as_seen_from(&dir.join("wolf.c")).expect("a view");
+        assert!(!wolf.macro_alias_alternatives.contains_key("XFREE"));
+        assert!(!wolf.macro_aliases.contains_key("XFREE"));
+        assert!(
+            ctx.as_seen_from(&dir.join("tomglue.c")).is_none(),
+            "a call either target takes rules nothing out"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

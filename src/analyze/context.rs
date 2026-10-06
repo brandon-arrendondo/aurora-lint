@@ -13,6 +13,10 @@ pub const UNRESOLVED_INCLUDE: &str = "?";
 /// the file may include any header.
 pub const ANY_INCLUDE: &str = "?*";
 
+/// `macro_aliases` and `macro_alias_alternatives` as one file sees them
+/// ([`ProjectContext::as_seen_from`]).
+type AliasTables = (HashMap<String, String>, HashMap<String, Vec<String>>);
+
 /// What one translation unit may include: [`IncludeClosure::of`].
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct IncludeClosure {
@@ -169,6 +173,17 @@ pub struct ProjectContext {
     /// alias accuses through.
     #[serde(default)]
     pub macro_alias_alternatives: Arc<HashMap<String, Vec<String>>>,
+    /// The argument counts each function or function-like macro the
+    /// scanned files and resolved headers define or prototype takes
+    /// (`const_eval::fixed_arities`), one entry per distinct count.
+    #[serde(default)]
+    pub function_arities: Arc<HashMap<String, Vec<usize>>>,
+    /// `file -> name -> the argument counts the file calls it with`, real
+    /// paths, for the names some alias defines (`const_eval::call_arities`).
+    /// An alias whose target cannot take a count a file calls it with is not
+    /// the definition in force in that file: [`Self::as_seen_from`].
+    #[serde(default)]
+    pub alias_call_arities: Arc<HashMap<String, HashMap<String, Vec<usize>>>>,
     /// Struct field types: maps `struct_name -> field_name -> type_text`.
     /// Enables resolving types of `field_expression` nodes (e.g., `s->count` → "int").
     pub struct_field_types: Arc<HashMap<String, HashMap<String, String>>>,
@@ -663,29 +678,94 @@ impl ProjectContext {
     }
 
     /// This context as the file at `path` may use it, or `None` when that is
-    /// this context unchanged -- which is every file but the handful that
-    /// define a name some other file also defines `static`.
+    /// this context unchanged.
     ///
-    /// The returned view differs in one table, `function_summaries`: this
-    /// file's spelling of such a name resolves to its own definition. The
-    /// view is a scope over the shared table, not a copy of it. It used to be a copy of the summary map, which was
-    /// cheap only while few files needed one; in Juliet nearly every file
-    /// defines a `static void goodG2B()`, and the copy per file cost more
-    /// than the rules did.
+    /// The returned view differs in two ways. A file that defines a name
+    /// some other file also defines `static` sees its own definition in
+    /// `function_summaries`: a scope over the shared table, not a copy of
+    /// it. It used to be a copy of the summary map, which was cheap only
+    /// while few files needed one; in Juliet nearly every file defines a
+    /// `static void goodG2B()`, and the copy per file cost more than the
+    /// rules did. And a file does not see an alias whose target cannot take
+    /// the argument counts the file calls it with
+    /// ([`crate::analyze::const_eval::call_arities`]): such a definition is
+    /// not the one in force in that file, whichever file it came from.
     pub fn as_seen_from(&self, path: &Path) -> Option<Self> {
-        if self.scoped_names_by_file.is_empty() {
+        let key = crate::analyze::compile_commands::real_path(path);
+        let statics = self.scoped_names_by_file.get(&key);
+        let aliases = self.aliases_seen_from(&key);
+        if statics.is_none() && aliases.is_none() {
             return None;
         }
-        let key = crate::analyze::compile_commands::real_path(path);
-        let names = self.scoped_names_by_file.get(&key)?;
-        let scope = FileScope {
-            file: Arc::from(key.as_str()),
-            names: Arc::clone(names),
+        let mut view = self.clone();
+        if let Some(names) = statics {
+            view.function_summaries = self.function_summaries.scoped(FileScope {
+                file: Arc::from(key.as_str()),
+                names: Arc::clone(names),
+            });
+        }
+        if let Some((settled, alternatives)) = aliases {
+            view.macro_aliases = Arc::new(settled);
+            view.macro_alias_alternatives = Arc::new(alternatives);
+        }
+        Some(view)
+    }
+
+    /// Drop from `alias_call_arities` every name no alias defines, once the
+    /// alias tables are complete: only an alias's calls can rule it out.
+    pub fn retain_alias_call_arities(&mut self) {
+        let aliases = Arc::clone(&self.macro_aliases);
+        let alternatives = Arc::clone(&self.macro_alias_alternatives);
+        let by_file = Arc::make_mut(&mut self.alias_call_arities);
+        for calls in by_file.values_mut() {
+            calls.retain(|name, _| aliases.contains_key(name) || alternatives.contains_key(name));
+        }
+        by_file.retain(|_, calls| !calls.is_empty());
+    }
+
+    /// `macro_aliases` and `macro_alias_alternatives` less what the calls
+    /// of the file at real path `file` rule out, or `None` when they rule
+    /// out nothing.
+    fn aliases_seen_from(&self, file: &str) -> Option<AliasTables> {
+        use crate::analyze::const_eval;
+        let calls: HashMap<String, HashSet<usize>> = self
+            .alias_call_arities
+            .get(file)?
+            .iter()
+            .map(|(name, counts)| (name.clone(), counts.iter().copied().collect()))
+            .collect();
+        // Most files rule nothing out: ask before copying the tables.
+        let ruled_out = |name: &String, target: &str| {
+            calls.get(name).is_some_and(|counts| {
+                const_eval::arity_rules_out(
+                    target,
+                    counts,
+                    &self.macro_aliases,
+                    &self.function_arities,
+                )
+            })
         };
-        Some(Self {
-            function_summaries: self.function_summaries.scoped(scope),
-            ..self.clone()
-        })
+        let any = calls.keys().any(|name| {
+            self.macro_alias_alternatives
+                .get(name)
+                .is_some_and(|targets| targets.iter().any(|t| ruled_out(name, t)))
+                || self
+                    .macro_aliases
+                    .get(name)
+                    .is_some_and(|t| ruled_out(name, t))
+        });
+        if !any {
+            return None;
+        }
+        let mut alternatives = HashMap::clone(&self.macro_alias_alternatives);
+        let mut settled = HashMap::clone(&self.macro_aliases);
+        let a = const_eval::rule_out_alternatives_by_arity(
+            &mut alternatives,
+            &calls,
+            &self.function_arities,
+        );
+        let b = const_eval::rule_out_aliases_by_arity(&mut settled, &calls, &self.function_arities);
+        (a || b).then_some((settled, alternatives))
     }
 
     /// Refuse a context loaded from `path` if it was built under a value of
