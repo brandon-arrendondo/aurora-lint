@@ -1313,7 +1313,7 @@ Competitor Comparison
      - Partial
      - Enterprise
    * - Commercial "Tool C"
-     - ~73%
+     - ~59%
      - ~7%
      - Inter-procedural
      - Yes (22 CWEs)
@@ -1329,7 +1329,10 @@ fast-mode/CWE-matched.
 
 "Commercial Tool C" is anonymized from `Goseva-Popstojanova & Perhinschi 2015
 <https://community.wvu.edu/~kagoseva/Papers/IST-2015.pdf>`_, tested on 22
-CWEs only.
+C/C++ CWEs only. Its row gives the paper's overall recall (59%) and overall
+probability of false alarm (7%) across those CWEs (Table 3); the false-alarm
+figure is the share of good functions flagged, not the share of reports that
+are false.
 
 Key context from literature:
 
