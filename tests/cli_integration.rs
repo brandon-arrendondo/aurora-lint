@@ -381,6 +381,53 @@ fn a_finding_that_may_depend_on_a_missing_header_says_so() {
     );
 }
 
+/// A finding whose line spells a macro only a header outside the project
+/// defines names that macro and the header (the libtomcrypt `XFREE` shape).
+#[test]
+fn a_finding_names_the_outside_header_a_macro_on_its_line_came_from() {
+    let dir = tempfile::tempdir().unwrap();
+    let proj = dir.path().join("proj");
+    let sys = dir.path().join("sys");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::create_dir_all(&sys).unwrap();
+    std::fs::write(sys.join("tomcustom.h"), "#define XFREE free\n").unwrap();
+    std::fs::write(
+        proj.join("glue.c"),
+        "#include <stdlib.h>\n#include <tomcustom.h>\n\
+         void release(void) {\n    char *p = malloc(4);\n    XFREE(p);\n    XFREE(p);\n}\n",
+    )
+    .unwrap();
+    let json = dir.path().join("out.json");
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        proj.to_str().unwrap(),
+        "-d",
+        proj.to_str().unwrap(),
+        "-I",
+        sys.to_str().unwrap(),
+        "--rules",
+        "MEM30-C",
+        "-v",
+        "-e",
+        json.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let header = std::fs::canonicalize(sys.join("tomcustom.h")).unwrap();
+    let expected = format!("XFREE ({})", header.display());
+    assert!(
+        stdout.contains(&format!(
+            "note: uses macro(s) defined only outside the project: {expected}"
+        )),
+        "stdout: {stdout}"
+    );
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+    let double_free = rows
+        .iter()
+        .find(|r| r["rule_id"] == "MEM30-C" && r["line"] == 6)
+        .unwrap_or_else(|| panic!("no MEM30-C at line 6: {rows:?}"));
+    assert_eq!(double_free["harvested_from"], serde_json::json!([expected]));
+}
+
 // ─── Policy and environment settings ─────────────────────────────────────────
 
 /// Export `violation.c` as SARIF with `args` appended; return the run's

@@ -219,6 +219,11 @@ pub struct HeaderDependence {
     /// A finding's `file_path` -> the missing headers (spellings, sorted)
     /// its include graph reaches; only files with such a finding.
     pub by_file: BTreeMap<String, Arc<[String]>>,
+    /// A finding's (`file_path`, line) -> the macros spelled on that line
+    /// that only headers outside the project define, each as
+    /// `NAME (header path)`, sorted: where a finding that relies on one got
+    /// it (tomcrypt_custom.h's `XFREE` standing in for wolfSSL's).
+    pub harvested: BTreeMap<(String, usize), Arc<[String]>>,
 }
 
 impl HeaderDependence {
@@ -231,16 +236,35 @@ impl HeaderDependence {
         self.by_file.get(file_path).map(|headers| &headers[..])
     }
 
+    /// The outside-header macros on the line of the finding of `rule_id` at
+    /// `file_path`:`line`, or `None`.
+    pub fn harvested_at(&self, rule_id: &str, file_path: &str, line: usize) -> Option<&[String]> {
+        if !self.rules.contains(rule_id) {
+            return None;
+        }
+        self.harvested
+            .get(&(file_path.to_string(), line))
+            .map(|macros| &macros[..])
+    }
+
     /// Build it for `files` (the `file_path`s of the findings of `rules`):
     /// for each, the live unresolved `#include`s of every file in its
     /// include closure ([`IncludeClosure::of`]), or of the file alone when
     /// the graph has no edge out of it.
+    ///
+    /// And for each finding's line, the macros spelled on it that
+    /// `outside_macros` (`ProjectContext::outside_macro_origins`) says only
+    /// headers outside the project define. The file is read once.
     pub fn build<'a>(
         rules: std::collections::BTreeSet<String>,
-        files: impl IntoIterator<Item = &'a str>,
+        findings: impl IntoIterator<Item = (&'a str, usize)>,
         report: &IncludeReport,
         edges: &HashMap<String, Vec<String>>,
+        outside_macros: &BTreeMap<String, Vec<String>>,
     ) -> Self {
+        let findings: Vec<(&str, usize)> = findings.into_iter().collect();
+        let files = findings.iter().map(|&(file, _)| file);
+        let harvested = Self::harvested(&findings, outside_macros);
         let mut by_file = BTreeMap::new();
         let mut live: HashMap<&str, Vec<&str>> = HashMap::new();
         for u in report.live() {
@@ -270,7 +294,51 @@ impl HeaderDependence {
                 }
             }
         }
-        Self { rules, by_file }
+        Self {
+            rules,
+            by_file,
+            harvested,
+        }
+    }
+
+    fn harvested(
+        findings: &[(&str, usize)],
+        outside_macros: &BTreeMap<String, Vec<String>>,
+    ) -> BTreeMap<(String, usize), Arc<[String]>> {
+        let mut out = BTreeMap::new();
+        if outside_macros.is_empty() {
+            return out;
+        }
+        let mut sources: HashMap<&str, Option<String>> = HashMap::new();
+        for &(file, line) in findings {
+            if out.contains_key(&(file.to_string(), line)) {
+                continue;
+            }
+            let source = sources
+                .entry(file)
+                .or_insert_with(|| std::fs::read_to_string(file).ok());
+            let Some(text) = source
+                .as_deref()
+                .and_then(|s| s.lines().nth(line.checked_sub(1)?))
+            else {
+                continue;
+            };
+            let names: std::collections::BTreeSet<&str> = text
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|w| w.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_'))
+                .collect();
+            let macros: Vec<String> = names
+                .into_iter()
+                .filter_map(|name| {
+                    let paths = outside_macros.get(name)?;
+                    Some(format!("{name} ({})", paths.join(", ")))
+                })
+                .collect();
+            if !macros.is_empty() {
+                out.insert((file.to_string(), line), Arc::from(macros));
+            }
+        }
+        out
     }
 }
 
@@ -692,6 +760,11 @@ pub struct ProjectContext {
     /// ([`IncludeReport`]); empty when no search path was given.
     #[serde(default)]
     pub include_report: Arc<IncludeReport>,
+    /// Each macro defined only outside the project (in
+    /// `macros_defined_outside_project`) -> the real paths of the headers
+    /// that define it, sorted: where a finding that relies on one got it.
+    #[serde(default)]
+    pub outside_macro_origins: Arc<BTreeMap<String, Vec<String>>>,
     /// Names of every object-like `#define` whose replacement text is an
     /// unused-attribute annotation — `__attribute__((unused))`,
     /// `[[maybe_unused]]`, and the reserved spellings — collected across all

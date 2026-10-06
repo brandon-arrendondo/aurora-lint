@@ -33,6 +33,9 @@ pub fn export_all_violations_to_json(
             if let Some(missing) = headers.of(v) {
                 row["missing_headers"] = serde_json::json!(missing);
             }
+            if let Some(macros) = headers.harvested(v) {
+                row["harvested_from"] = serde_json::json!(macros);
+            }
             row
         })
         .collect();

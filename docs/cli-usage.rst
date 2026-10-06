@@ -358,6 +358,14 @@ needed something those headers declare, not that it did. A finding without
 the marker did not depend on any missing header, so comparing two hosts'
 exports separates the findings a header explains from the ones it cannot.
 
+The reverse holds too. A macro the scan took from a header outside the
+project, and nowhere else, can decide what a finding sees: one library's
+``#define XFREE free`` read in place of another library's own ``XFREE``. A
+finding of such a rule whose line spells a macro only an outside header
+defines names it and that header: ``harvested_from`` in the JSON export,
+``properties.harvestedFrom`` in SARIF, and a ``note: uses macro(s) defined only
+outside the project`` line with ``-v``.
+
 None of this changes a finding.
 
 Seeing Where the Engine Is Blind

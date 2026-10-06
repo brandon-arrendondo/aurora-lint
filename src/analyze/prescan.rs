@@ -1621,6 +1621,7 @@ fn prescan_file_list(
         function_arities: Arc::new(function_arities),
         alias_call_arities: Arc::new(alias_call_arities),
         include_report: Arc::new(Default::default()),
+        outside_macro_origins: Arc::new(Default::default()),
         function_macros: Arc::new(function_macros),
         macro_definitions: Arc::new(macro_definitions),
         // Filled by `resolve_includes`: every file scanned here is the project's.
@@ -7123,7 +7124,11 @@ fn harvest_header_macros(
     }
     context.macro_gaps.extend(header_audit.gaps);
     let header_definitions = crate::analyze::check_macros::collect_macro_definitions(hsource);
-    origins.record(outside_project, header_definitions.keys());
+    origins.record(
+        outside_project,
+        &crate::analyze::compile_commands::real_path(Path::new(header_path)),
+        header_definitions.keys(),
+    );
     crate::analyze::check_macros::merge_macro_definitions(
         Arc::make_mut(&mut context.macro_definitions),
         header_definitions,
@@ -7143,6 +7148,8 @@ struct MacroOrigins {
     /// judged outside.
     roots: Vec<PathBuf>,
     outside: HashSet<String>,
+    /// The real paths of the outside headers defining each `outside` name.
+    outside_paths: HashMap<String, std::collections::BTreeSet<String>>,
     /// Names the project defines: every name already known, except those an
     /// earlier pass found only outside it -- a context loaded from a prescan
     /// cache (--load-prescan) carries the system headers' definitions too.
@@ -7168,6 +7175,7 @@ impl MacroOrigins {
         Self {
             roots,
             outside: HashSet::new(),
+            outside_paths: HashMap::new(),
             project,
         }
     }
@@ -7177,13 +7185,19 @@ impl MacroOrigins {
         !self.roots.is_empty() && !self.roots.iter().any(|r| canonical.starts_with(r))
     }
 
-    fn record<'n>(&mut self, outside: bool, names: impl Iterator<Item = &'n String>) {
-        let set = if outside {
-            &mut self.outside
+    /// The `#define`d `names` of the header at real path `path`.
+    fn record<'n>(&mut self, outside: bool, path: &str, names: impl Iterator<Item = &'n String>) {
+        if outside {
+            for name in names {
+                self.outside.insert(name.clone());
+                self.outside_paths
+                    .entry(name.clone())
+                    .or_default()
+                    .insert(path.to_string());
+            }
         } else {
-            &mut self.project
-        };
-        set.extend(names.cloned());
+            self.project.extend(names.cloned());
+        }
     }
 
     /// Fold what was found into `context`: a name the project defines
@@ -7192,6 +7206,16 @@ impl MacroOrigins {
         let outside = Arc::make_mut(&mut context.macros_defined_outside_project);
         outside.extend(self.outside);
         outside.retain(|name| !self.project.contains(name));
+        let origins = Arc::make_mut(&mut context.outside_macro_origins);
+        for (name, paths) in self.outside_paths {
+            if outside.contains(&name) {
+                let slot = origins.entry(name).or_default();
+                slot.extend(paths);
+                slot.sort();
+                slot.dedup();
+            }
+        }
+        origins.retain(|name, _| outside.contains(name));
     }
 }
 

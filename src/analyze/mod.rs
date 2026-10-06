@@ -503,16 +503,17 @@ fn header_dependence(
         })
         .map(|(rule_id, _)| rule_id.to_string())
         .collect();
-    let files = violations
+    let findings = violations
         .iter()
         .chain(suppressed.iter().map(|s| &s.violation))
         .filter(|v| rules.contains(&v.rule_id))
-        .map(|v| v.file_path.as_str());
+        .map(|v| (v.file_path.as_str(), v.line));
     context::HeaderDependence::build(
         rules.clone(),
-        files,
+        findings,
         &context.include_report,
         &context.include_edges,
+        &context.outside_macro_origins,
     )
 }
 

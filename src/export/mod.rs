@@ -44,6 +44,12 @@ impl Headers<'_> {
     pub fn of(&self, v: &RuleViolation) -> Option<&[String]> {
         self.dependence?.of(&v.rule_id, &v.file_path)
     }
+
+    /// The outside-header macros on a finding's line, or `None`.
+    pub fn harvested(&self, v: &RuleViolation) -> Option<&[String]> {
+        self.dependence?
+            .harvested_at(&v.rule_id, &v.file_path, v.line)
+    }
 }
 
 /// Write `violations` (and, for SARIF, `suppressed`) to `export_path`,

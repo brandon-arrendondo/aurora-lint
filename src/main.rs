@@ -1001,6 +1001,12 @@ fn run() -> Result<i32> {
                     missing.join(", ")
                 );
             }
+            if let Some(macros) = header_dependence.harvested_at(&v.rule_id, &v.file_path, v.line) {
+                println!(
+                    "  note: uses macro(s) defined only outside the project: {}",
+                    macros.join(", ")
+                );
+            }
         }
     }
 

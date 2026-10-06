@@ -127,6 +127,9 @@ fn violation_to_sarif_result(
         // May, not does: the rule reads facts these headers would supply.
         result["properties"]["missingHeaders"] = serde_json::json!(missing);
     }
+    if let Some(macros) = headers.harvested(v) {
+        result["properties"]["harvestedFrom"] = serde_json::json!(macros);
+    }
     result
 }
 
