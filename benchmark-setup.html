@@ -706,7 +706,8 @@ cargo<span class="w"> </span>build<span class="w"> </span>--release
 <ul class="simple">
 <li><p>cppcheck writes XML to <strong>stderr</strong>, not stdout</p></li>
 <li><p>Never pass <code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include</span></code> – causes parse errors in system headers</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--addon=cert</span></code> is not available on Ubuntu 24.04; <code class="docutils literal notranslate"><span class="pre">--enable=all</span></code> includes CERT checks</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--addon=cert</span></code> does not exist: open-source cppcheck removed the CERT addon in 2.8
+(CERT checking is Cppcheck Premium). <code class="docutils literal notranslate"><span class="pre">--enable=all</span></code> turns on cppcheck’s native checks, not CERT ones</p></li>
 </ul>
 </div>
 </section>
@@ -916,7 +917,7 @@ grep<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;war
 </tr>
 <tr class="row-odd"><td><p>cppcheck <code class="docutils literal notranslate"><span class="pre">--addon=cert</span></code> missing</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">Did</span> <span class="pre">not</span> <span class="pre">find</span> <span class="pre">addon</span> <span class="pre">cert.py</span></code></p></td>
-<td><p>Remove it; <code class="docutils literal notranslate"><span class="pre">--enable=all</span></code> includes CERT</p></td>
+<td><p>Remove it; the addon is gone from open-source cppcheck (2.8 on), so there are no CERT checks to enable</p></td>
 </tr>
 <tr class="row-even"><td><p>cppcheck <code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">syntaxError</span></code> in stdlib.h</p></td>

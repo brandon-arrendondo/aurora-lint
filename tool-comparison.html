@@ -133,14 +133,17 @@ CWEs a given tool actually covers, and those sets differ by a factor of five.</p
 <tr class="row-odd"><td><p><a class="reference external" href="https://cppcheck.sourceforge.io/">cppcheck</a></p></td>
 <td><p>2.13.0</p></td>
 <td><p>No</p></td>
-<td><p>~20 via <code class="docutils literal notranslate"><span class="pre">--addon=cert</span></code></p></td>
-<td><p>Runs unbuilt like aurora-lint. The cert addon is <strong>not</strong> enabled in our runs,
-so its ids are native (<code class="docutils literal notranslate"><span class="pre">nullPointer</span></code>, <code class="docutils literal notranslate"><span class="pre">uninitvar</span></code>).</p></td>
+<td><p>none in the open-source build</p></td>
+<td><p>Runs unbuilt like aurora-lint. Open-source cppcheck dropped its CERT addon
+(<code class="docutils literal notranslate"><span class="pre">addons/cert.py</span></code>) in 2.8, in March 2022; CERT checking is now Cppcheck
+Premium. Our runs therefore report cppcheck’s native ids
+(<code class="docutils literal notranslate"><span class="pre">nullPointer</span></code>, <code class="docutils literal notranslate"><span class="pre">uninitvar</span></code>).</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference external" href="https://clang.llvm.org/extra/clang-tidy/">clang-tidy</a></p></td>
 <td><p>LLVM 21.1.8</p></td>
 <td><p><strong>Yes</strong></p></td>
-<td><p>~20 native <code class="docutils literal notranslate"><span class="pre">cert-*</span></code> checks</p></td>
+<td><p>~20 native C <code class="docutils literal notranslate"><span class="pre">cert-*</span></code> checks (LLVM 21.1.8; the count varies with the
+LLVM version)</p></td>
 <td><p>Wants a compilation database; without correct flags it fails or
 silently under-reports.</p></td>
 </tr>
@@ -186,12 +189,12 @@ produce identical Juliet numbers — see the re-measurement note below.</p></td>
 <tr class="row-odd"><td><p>clang-tidy</p></td>
 <td><p>15</p></td>
 <td><p>8 projects</p></td>
-<td><p>~20 <code class="docutils literal notranslate"><span class="pre">cert-*</span></code> checks</p></td>
+<td><p>~20 C <code class="docutils literal notranslate"><span class="pre">cert-*</span></code> checks (LLVM 21.1.8)</p></td>
 </tr>
 <tr class="row-even"><td><p>cppcheck</p></td>
 <td><p>15</p></td>
 <td><p>8 projects</p></td>
-<td><p>~20 CERT mappings via an addon we do not enable</p></td>
+<td><p>none: the open-source CERT addon was removed in 2.8</p></td>
 </tr>
 <tr class="row-odd"><td><p>Infer</p></td>
 <td><p>10</p></td>
@@ -566,8 +569,9 @@ line, so there is no coordinate to adjudicate — and a count cannot be
 labeled TP or FP by anyone. Competitor real-world precision is therefore
 unmeasured, and the Juliet table above is the only cross-tool precision
 figure that exists.</p>
-<p>cppcheck additionally needs a native-id-to-CERT-C mapping (or
-<code class="docutils literal notranslate"><span class="pre">--addon=cert</span></code> enabled) before a per-rule table is even expressible.</p>
+<p>cppcheck additionally needs a native-id-to-CERT-C mapping before a per-rule
+table is even expressible: its open-source build has no CERT addon to supply
+one (removed in 2.8).</p>
 <p>Tracked as a follow-up for both capture (this repo) and ingest
 (benchmarking_db, plus the <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> key collision that
 adjudicating a second tool at the same coordinate would create).</p>
