@@ -177,6 +177,12 @@ across copies of the checkout as well.
      - ``0.5.2``
      - per checkout content, on one machine; cross-machine, 16 labeled
        keys of 118,837 differ (see below)
+   * - ``v0.6.0``
+     - ``b13bc40c``
+     - ``b13bc40c``
+     - ``0.6.0``
+     - per checkout content, on one machine; cross-machine, 41 labeled
+       keys of 122,452 differ (see below)
 
 Input 2: the labels -- ``benchmark_adjudication`` at a SHA
 ----------------------------------------------------------
@@ -382,16 +388,30 @@ The differing keys have two causes, and the second is the one a
 reproducer will not guess:
 
 1. **The host's installed headers**, which the scan reads through
-   ``-I /usr/include`` and the per-project include paths. A missing
-   third-party header produces DCL31-C *called without prior declaration*
-   findings (curl's ``lib/vauth/gsasl.c`` without ``libgsasl``; mosquitto's
-   MySQL example plugin without ``libmysqlclient``; curl's mbedTLS backend
-   against an older ``libmbedtls``), and a different glibc declares
-   ``gettimeofday``, ``waitpid``, ``asprintf`` and ``fileno`` behind
-   different feature macros, which moved 52 valkey DCL31-C keys in
-   opposite directions. A different glibc, OpenSSL or ``sqlite3.h`` also
-   moves a handful of cross-file EXP34-C / EXP36-C / API00-C / DCL15-C
-   decisions that depend on how a system typedef or prototype resolved.
+   ``-I /usr/include`` and the per-project include paths. Which ``-dev``
+   packages are installed matters, not only their versions, and the
+   effects are not always local to the library a header belongs to. When
+   the prescan meets an ``#include "dir/file.h"`` it cannot resolve but
+   ``dir`` exists, DCL31-C takes the file to be generated at build time and
+   stops reporting undeclared calls for the whole project. A system header
+   can trip that switch: c-ares's ``ares.h`` includes ``sys/bsdskt.h`` in a
+   NetWare-only branch, and on a host whose ``/usr/include/sys`` exists
+   (the ``libc6-dev-i386`` / ``gcc-multilib`` packages create it), curl and
+   mosquitto report no DCL31-C at all; on a host with neither, they report
+   every undeclared call (curl's ``lib/vauth/gsasl.c``, mosquitto's MySQL
+   example plugin). The multilib packages also put
+   ``sys/``, ``bits/`` and ``asm/`` directly under ``/usr/include``, so
+   ``<sys/wait.h>``, ``<sys/time.h>`` and their neighbours resolve through
+   ``-I /usr/include`` on such a host and do not on one without them; that
+   decides DCL31-C on valkey's ``waitpid`` / ``gettimeofday`` /
+   ``getrlimit`` calls and a few API00-C / PRE31-C / EXP10-C decisions
+   that depend on a libc prototype. A different glibc declares ``fileno``
+   differently, and a different ``sqlite3.h`` declares a different API
+   (DCL15-C). Finally, a macro defined by one library's header can stand in
+   for a same-named macro of another's: libtomcrypt's ``tomcrypt_custom.h``
+   defines ``XMALLOC`` as ``malloc``, and with it installed MEM31-C / MEM30-C
+   read hostap's wolfSSL backend's ``XMALLOC`` / ``XFREE`` as ``malloc`` /
+   ``free``.
 
 2. **Directory iteration order.** The cross-file prescan walks the tree in
    the order the filesystem returns entries, and when a name is defined in
@@ -429,10 +449,13 @@ reproducer will not guess:
    benchmark node, labels at ``benchmark_adjudication`` ``e7d70148``).
    16 keys differ -- 11 only on the reproducing machine, 5 only on the
    benchmark node -- against 83 labeled keys at ``e405089a``, and every
-   one of them is cause 1: curl DCL31-C for ``gsasl_init`` (no
-   ``libgsasl-dev``), ``mbedtls_ssl_conf_{min,max}_tls_version`` (an older
-   ``libmbedtls-dev``), ``WSAWaitForMultipleEvents`` and a callback under a
-   Windows-only branch; sqlite DCL15-C on ``sqlite3_is_interrupted`` /
+   one of them is cause 1: curl DCL31-C for ``gsasl_init``,
+   ``mbedtls_ssl_conf_{min,max}_tls_version``, ``WSAWaitForMultipleEvents``
+   and a callback under a Windows-only branch (first attributed to a missing
+   ``libgsasl-dev`` and an older ``libmbedtls-dev``; the same keys recur at
+   ``v0.6.0``, where rebuilding the benchmark node's headers traces them to
+   DCL31-C switching itself off on that node -- see below -- and neither
+   machine has ``libgsasl-dev`` or mbed TLS 3); sqlite DCL15-C on ``sqlite3_is_interrupted`` /
    ``get_clientdata`` / ``set_clientdata`` (the benchmark node's system
    ``sqlite3.h`` predates them); one API00-C decision each in hostap and
    sqlite and two EXP34-C in hostap's nl80211 driver, all hinging on how a
@@ -440,6 +463,69 @@ reproducer will not guess:
    key-identical over the labeled set (libcrc, lua, mbedtls, mosquitto,
    pure-ftpd, raylib, seL4, valkey, Ventoy); not one differing key names a
    multiply-defined function, macro, typedef or struct. Cause 2 is gone.
+
+   **Re-measured at** ``v0.6.0`` (``b13bc40c``), default profile, no
+   Windows headers on either machine: the benchmark node's run against a
+   run of the tagged commit on the reproducing machine (Ubuntu 24.04:
+   glibc 2.39, ``sqlite3.h`` 3.45.1, mbed TLS 2.28.8, wolfSSL 5.6.6; the
+   benchmark node is Debian 12: glibc 2.36, ``sqlite3.h`` 3.40.1, mbed TLS
+   2.28.3, wolfSSL 5.5.4, and neither has libgsasl, MySQL or libwebsockets
+   headers). Of 150,452 keys on the benchmark node, 150,412 reproduce; 40
+   are found only there and 68 only on the reproducing machine. Over the
+   labeled set (122,452 keys, labels at ``benchmark_adjudication``
+   ``5811c46``) 41 differ, 30 only on the benchmark node and 11 only on the
+   reproducing machine, 38 of them FP and 3 TP. Seven projects are
+   key-identical over the whole set, labeled or not (libcrc, lua, mbedtls,
+   pure-ftpd, raylib, seL4, Ventoy). Every differing key is in one of the
+   five projects the runner scans with ``-I /usr/include`` (curl, hostap,
+   mosquitto, sqlite, valkey), and every one is cause 1. Rebuilding the
+   benchmark node's header packages, at its exact versions, over the
+   reproducing machine's ``/usr/include`` and scanning again with the same
+   binary makes all five projects match the benchmark node key for key,
+   with no key gained or lost elsewhere. Adding the packages a few at a
+   time attributes each key:
+
+   .. list-table::
+      :header-rows: 1
+      :widths: 30 12 58
+
+      * - Benchmark-node package(s)
+        - Keys
+        - What moves
+      * - ``libc-ares-dev`` 1.18.1 with ``libc6-dev-i386`` 2.36
+        - 68
+        - curl DCL31-C ×10 and mosquitto DCL31-C ×14 disappear (the
+          project-wide switch above); valkey DCL31-C ×27, API00-C ×6 and
+          PRE31-C ×5, hostap API00-C ×2 and EXP10-C ×2, and one API00-C
+          each in mosquitto and sqlite also disappear, once ``sys/*.h``
+          resolves
+      * - ``libc6-dev`` 2.36
+        - 26
+        - valkey DCL31-C on 25 ``fileno`` calls and one PRE31-C decision
+          appear
+      * - ``libtomcrypt-dev`` 1.18.2
+        - 11
+        - hostap ``src/crypto/crypto_wolfssl.c`` MEM31-C ×10 and MEM30-C ×1
+          appear (``XMALLOC`` read as ``malloc``)
+      * - ``libsqlite3-dev`` 3.40.1
+        - 3
+        - sqlite DCL15-C on ``sqlite3_is_interrupted`` /
+          ``get_clientdata`` / ``set_clientdata`` appear
+
+   The ``libc6-dev`` and ``libsqlite3-dev`` rows were added in one step,
+   together with mbed TLS 2.28.3 and wolfSSL 5.5.4, and that step moved
+   exactly those 29 keys; they are split by what the keys name (``fileno``
+   is declared in ``<stdio.h>``, the three functions in ``sqlite3.h``). The
+   c-ares and multilib packages were added as a second step, and
+   libtomcrypt was confirmed both ways: added alone, it supplies all 11
+   keys, and the other benchmark-node library headers without it supply
+   none. Of the 41 labeled
+   keys, 38 are FP and 3 TP. So seven of twelve projects reproduced key for
+   key on both machines as they stood, and the other five do once the scan
+   sees the same header packages. None of c-ares, multilib or libtomcrypt,
+   which account for 105 of the 108 keys, is among the packages
+   :doc:`benchmark-setup` installs, so following that page alone does not
+   rebuild the benchmark node's header set.
 
 The same binary on the same checkout, run twice, gives byte-identical
 exports on every codebase checked (from ``fc9164fd`` on), with one
@@ -452,7 +538,8 @@ walk-order effect, fixed in the first commit after the ``v0.5.2``
 baseline and worth one key. Otherwise the variation is
 between checkouts, not between runs. So the inputs a SHA does not name are
 the header environment -- :doc:`benchmark-setup` lists the packages the
-benchmark node carries -- and, before ``4ac5710f``, for codebases with
+benchmark node is provisioned with, which is not every header package it
+carries (see the ``v0.6.0`` re-measurement above) -- and, before ``4ac5710f``, for codebases with
 multiply-defined names, the checkout's directory order. A published
 figure's precision and recall do not hinge on either; a claim about an
 exact finding count does, and a key-level diff against a maintainer run at
