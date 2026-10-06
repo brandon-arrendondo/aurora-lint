@@ -43,6 +43,8 @@ The analysis runs in units of work, and each is contained on its own:
   findings in other files, stand.
 - **One file.** If reading, parsing or analysing a file fails outside any
   one rule, that file contributes no findings.
+- **One input file that is not source** (see below): skipped before it is
+  parsed.
 - **One file's prescan.** If collecting a file's cross-file facts (function
   summaries, macros, declared allocators) fails, those facts are missing.
   That can change findings in *other* files, in either direction, which is
@@ -55,6 +57,33 @@ withheld, including those from files where it succeeded. A rule failing that
 often cannot be trusted on this code base, and withholding all of its
 findings keeps the output the same however the parallel scan happened to
 order the work.
+
+Files that are not source
+-------------------------
+
+aurora-lint picks files by extension, so anything named ``.c`` or ``.h`` is
+offered to the parser. Before parsing, each file is checked:
+
+- **too large**: larger than ``--max-file-size`` MiB (default 64; ``0``
+  removes the limit). The largest real C files are amalgamations and SDK
+  headers of about 10 MiB, so the default refuses only something that is not
+  ordinary source.
+- **not source text**: the file starts like a binary or an archive (ELF,
+  Mach-O, zip, gzip, xz, 7z, zstd, tar, ar, PDF, an image), or has a NUL byte
+  in its first 8 KiB. Files with a UTF-16 or UTF-32 byte-order mark are text
+  and are read normally.
+
+A refused file is **skipped and reported**, never parsed, and the scan exits
+``3``:
+
+.. code-block:: text
+
+    Error: input skipped (not source text): build/blob.c: starts like an ELF binary
+    Error: input skipped (too large): gen/table.c: 80 MiB is over --max-file-size 64 MiB
+
+If the file belongs in the tree but is not source, leave it out of the scan
+with ``--exclude-all``. Excluded files are not reported. Files over 8 MiB are
+analysed one at a time, so that several of them are never in memory at once.
 
 Crashes and bounds
 ------------------

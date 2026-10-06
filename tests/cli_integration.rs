@@ -5339,3 +5339,91 @@ fn an_incomplete_prescan_is_reported_and_not_cached() {
     assert!(stderr.contains("not saving the prescan cache"), "{stderr}");
     assert!(!cache.exists());
 }
+
+// ── Input guard: non-source and oversized files (ADR-0017) ─────────────────
+
+#[test]
+fn a_binary_named_dot_c_is_skipped_and_reported() {
+    let dir = copies_of_violation(1);
+    std::fs::write(
+        dir.path().join("blob.c"),
+        b"\x7fELF\x02\x01\x01\x00\x00\x00",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("nul.c"), b"int x;\0\0garbage").unwrap();
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        dir.path().to_str().unwrap(),
+        "-m",
+        manifest_msc04().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 3, "{stderr}");
+    assert!(
+        stderr.contains("input skipped (not source text): ")
+            && stderr.contains("blob.c: starts like an ELF binary"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("nul.c: NUL byte at offset 6"), "{stderr}");
+    assert!(stderr.contains("--exclude-all"), "{stderr}");
+    // The real source in the same scan is still analysed.
+    assert!(stdout.contains("MSC04-C"), "{stdout}");
+}
+
+#[test]
+fn a_file_over_the_size_ceiling_is_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let big = dir.path().join("big.c");
+    let mut src = String::from("void infinite(void) {\n    infinite();\n}\n");
+    while src.len() < 2 * 1024 * 1024 {
+        src.push_str("/* padding padding padding padding padding padding padding */\n");
+    }
+    std::fs::write(&big, &src).unwrap();
+    let (code, _, stderr) = run_aurora_lint(&[
+        big.to_str().unwrap(),
+        "-m",
+        manifest_msc04().to_str().unwrap(),
+        "--max-file-size",
+        "1",
+    ]);
+    assert_eq!(code, 3, "{stderr}");
+    assert!(
+        stderr.contains("input skipped (too large): ")
+            && stderr.contains("is over --max-file-size 1 MiB"),
+        "{stderr}"
+    );
+    // (Admission under the default ceiling is what every other test here
+    // exercises; scanning this padded file in a debug build is slow.)
+}
+
+#[test]
+fn utf16_source_with_a_bom_is_not_mistaken_for_binary() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wide.c");
+    let src = std::fs::read_to_string(fixtures().join("violation.c")).unwrap();
+    let mut bytes = vec![0xFF, 0xFE];
+    for unit in src.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    std::fs::write(&path, bytes).unwrap();
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        path.to_str().unwrap(),
+        "-m",
+        manifest_msc04().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("MSC04-C"), "{stdout}");
+}
+
+#[test]
+fn an_excluded_binary_is_not_reported() {
+    let dir = copies_of_violation(1);
+    std::fs::write(dir.path().join("blob.c"), b"\x7fELF\x02\x01\x01").unwrap();
+    let (code, _, stderr) = run_aurora_lint(&[
+        dir.path().to_str().unwrap(),
+        "-m",
+        manifest_msc04().to_str().unwrap(),
+        "--exclude-all",
+        "blob.c",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(!stderr.contains("input skipped"), "{stderr}");
+}

@@ -134,6 +134,32 @@ Before this decision, a failure anywhere ended the scan.
 8. **Release builds unwind.** Containment depends on it, and the build
    refuses `panic = "abort"` with a compile error.
 
+9. **Input that is not source is refused before it is parsed.** Files are
+   picked by extension, so an archive, a binary or a core dump named `.c`
+   reaches the parser. Parsing it cannot produce a finding and can exhaust
+   memory. An out-of-memory kill cannot be contained after the fact, so it
+   must be prevented. One function (`input_guard::admit`) checks every
+   scanned and prescanned file:
+   - a size ceiling, `--max-file-size`, default 64 MiB. The largest file the
+     corpora scan is about 4 MiB (raylib's `miniaudio.h`). The largest real
+     C inputs a scanner meets are amalgamations and SDK headers of 9-10 MiB.
+     64 MiB is several times either.
+   - a non-text sniff of the first 8 KiB: known binary and archive magic
+     numbers (ELF, Mach-O, zip, gzip, xz, 7z, zstd, tar, ar, PDF, images),
+     and NUL bytes. A UTF-16 or UTF-32 byte-order mark is admitted as text.
+
+   A refused file is skipped and reported like any other failure: stage
+   `input`, exit 3, a SARIF notification. Files the user excluded never get
+   that far and are not reported. Files over 8 MiB are analysed one at a
+   time, however many `--jobs` there are, so several huge inputs cannot be
+   in memory together.
+
+   This is the minimal guard. A fuller content classifier belongs in the
+   shared parsing substrate, so that every tool built on it refuses input
+   the same way. It replaces the body of `admit` without touching a caller.
+   A per-process memory budget is not implemented. The one-at-a-time rule
+   for huge files is the bound until it is.
+
 ## Consequences
 
 - A contained crash is still a bug and is still fixed at its cause:
@@ -154,6 +180,10 @@ Before this decision, a failure anywhere ended the scan.
   So 50 million leaves two orders of magnitude of headroom on real code. A unit that hits it is either a runaway or input far beyond
   anything measured. In both cases the user should hear about it rather
   than wait for it.
+- Measured while writing this: a comment-heavy file is processed in time
+  quadratic in its length. A 1 MiB file takes about 30 s and a 2 MiB file
+  close to 2 minutes with a single rule enabled. That is within the default
+  limits, but it is the kind of input the step and time bounds exist for.
 - This does not make the analyses complete. A bound that degrades to a
   sound approximation stays silent, and the inventory's remaining silent
   truncations are known gaps until each is converted.

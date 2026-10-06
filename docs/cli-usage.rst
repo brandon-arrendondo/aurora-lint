@@ -627,5 +627,5 @@ Code    Meaning
 ======  ==========================================================================
 
 What a failure costs, how it is reported (stderr and SARIF), the
-``--rule-step-limit`` / ``--rule-time-limit`` budgets, and what CI should do
-with ``3``: :doc:`error-handling`.
+``--rule-step-limit`` / ``--rule-time-limit`` budgets, the ``--max-file-size``
+input guard, and what CI should do with ``3``: :doc:`error-handling`.

@@ -14,6 +14,7 @@ Error: rule failure (crashed): MEM35-C: /scan/x/f1.c: begin > end (16 > 11) when
 Error: rule failure (step limit): STR31-C: /scan/x/f2.c: stopped after 1000 steps (--rule-step-limit) [at src/analyze/containment.rs:247:13]
 Error: file failure (crashed): /scan/x/f3.c: index out of bounds [at src/analyze/cfg.rs:10:5]
 Error: prescan failure (time limit): /scan/x/h.h: stopped after 300s (--rule-time-limit)
+Error: input skipped (not source text): /scan/x/blob.c: starts like an ELF binary
 Error: rule abandoned: MEM35-C: failed on 3 or more files; none of its findings are reported
 Error: scan INCOMPLETE: 4 unit(s) of work did not finish in 4 file(s) (rules MEM35-C, STR31-C); ...
 """
@@ -23,7 +24,7 @@ class TestParseFailures(unittest.TestCase):
     def test_every_kind_of_line(self):
         f = parse_failures(LOG)
         self.assertEqual([x["stage"] for x in f],
-                         ["rule", "rule", "file", "prescan", "abandoned"])
+                         ["rule", "rule", "file", "prescan", "input", "abandoned"])
         self.assertEqual(f[0]["rule"], "MEM35-C")
         self.assertEqual(f[0]["file"], "/scan/x/f1.c")
         self.assertEqual(f[0]["cause"], "crashed")
@@ -33,7 +34,9 @@ class TestParseFailures(unittest.TestCase):
         self.assertIsNone(f[2]["rule"])
         self.assertEqual(f[2]["file"], "/scan/x/f3.c")
         self.assertIsNone(f[3]["location"])
-        self.assertEqual(f[4]["rule"], "MEM35-C")
+        self.assertEqual(f[4]["file"], "/scan/x/blob.c")
+        self.assertEqual(f[4]["cause"], "not source text")
+        self.assertEqual(f[5]["rule"], "MEM35-C")
 
     def test_a_clean_log_has_none(self):
         self.assertEqual(parse_failures("Total violations: 3 (0 suppressed)\n"), [])
@@ -41,7 +44,7 @@ class TestParseFailures(unittest.TestCase):
     def test_summary(self):
         self.assertEqual(
             summary(parse_failures(LOG)),
-            "INCOMPLETE: 4 failure(s) (rules MEM35-C, STR31-C), abandoned: MEM35-C")
+            "INCOMPLETE: 5 failure(s) (rules MEM35-C, STR31-C), abandoned: MEM35-C")
 
 
 if __name__ == "__main__":

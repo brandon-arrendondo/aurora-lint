@@ -33,6 +33,7 @@ pub mod function_summary;
 pub mod has_include_angle;
 pub mod include_names;
 pub mod init_state;
+pub mod input_guard;
 /// Pre-parse repair for a label immediately followed by an `#ifdef`/`#if`
 /// block -- `tree-sitter-c`'s `labeled_statement` can't parse that shape.
 pub mod label_preproc_guard;
@@ -323,6 +324,13 @@ pub fn analyze_project(
                         }
                     }
 
+                    // Not source text, or too large: skipped and reported,
+                    // never parsed (ADR-0017).
+                    if let Err(refusal) = input_guard::admit(std::path::Path::new(file_path)) {
+                        let failure = containment::ScanFailure::refused(file_path, &refusal);
+                        return (Vec::new(), Vec::new(), vec![failure]);
+                    }
+                    let _permit = input_guard::large_file_permit(std::path::Path::new(file_path));
                     let mut parser = match CParser::new() {
                         Ok(p) => p,
                         Err(_) => return (Vec::new(), Vec::new(), Vec::new()),
@@ -371,6 +379,7 @@ pub fn analyze_project(
         let abandoned_rules = withhold_abandoned(&escalation, &mut violations, &mut suppressed);
         sort_for_deterministic_output(&mut violations, &mut suppressed);
         failures.sort();
+        failures.dedup();
 
         if let Some(reporter) = progress {
             reporter.report_complete(violations.len());
@@ -398,6 +407,11 @@ pub fn analyze_project(
                 // Return partial results collected so far
                 break;
             }
+        }
+
+        if let Err(refusal) = input_guard::admit(std::path::Path::new(file_path)) {
+            failures.push(containment::ScanFailure::refused(file_path, &refusal));
+            continue;
         }
 
         // Create fresh rule instances per file (matches parallel mode behavior)
@@ -436,6 +450,7 @@ pub fn analyze_project(
     let abandoned_rules = withhold_abandoned(&escalation, &mut violations, &mut suppressed);
     sort_for_deterministic_output(&mut violations, &mut suppressed);
     failures.sort();
+    failures.dedup();
 
     // Report completion
     if let Some(reporter) = progress {

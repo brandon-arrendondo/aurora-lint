@@ -235,6 +235,11 @@ it is stopped and reported, exit 3. Deterministic. Default 50000000;
 \fB\-\-rule\-time\-limit\fR \fISECS\fR
 Seconds one unit of work may run before it is stopped and reported, exit 3.
 The backstop against a hang. Default 300; \fB0\fR removes the limit.
+.TP
+\fB\-\-max\-file\-size\fR \fIMIB\fR
+Skip, and report (exit 3), any input file larger than this instead of
+parsing it. Files that are not source text (binary or archive formats, NUL
+bytes) are skipped and reported too. Default 64; \fB0\fR removes the limit.
 .SS "Performance & Parallelism"
 .TP
 \fB\-j\fR, \fB\-\-jobs\fR \fIN\fR

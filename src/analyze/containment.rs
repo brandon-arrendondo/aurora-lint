@@ -75,6 +75,9 @@ pub const DEFAULT_TIME_LIMIT_SECS: u64 = 300;
 /// Where in the scan a failure happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Stage {
+    /// The file was refused before parsing (`input_guard`): too large, or
+    /// not source text. It contributes nothing.
+    Input,
     /// Collecting one file's cross-file facts before any rule runs. The
     /// file's facts are missing, which can change findings in OTHER files
     /// in either direction.
@@ -99,6 +102,10 @@ pub enum Cause {
     /// An analysis reached one of its own iteration caps, past which its
     /// results are not converged ([`cap_reached`]).
     Cap,
+    /// The file is over `--max-file-size`.
+    TooLarge,
+    /// The file is not source text (a binary format, NUL bytes).
+    NotText,
 }
 
 impl Cause {
@@ -108,6 +115,8 @@ impl Cause {
             Cause::StepLimit => "step limit",
             Cause::TimeLimit => "time limit",
             Cause::Cap => "analysis cap",
+            Cause::TooLarge => "too large",
+            Cause::NotText => "not source text",
         }
     }
 }
@@ -154,6 +163,22 @@ impl ScanFailure {
         }
     }
 
+    /// A file `input_guard` refused.
+    pub fn refused(file: &str, refusal: &crate::analyze::input_guard::Refusal) -> Self {
+        use crate::analyze::input_guard::Refusal;
+        Self {
+            stage: Stage::Input,
+            file: file.to_string(),
+            rule_id: None,
+            cause: match refusal {
+                Refusal::TooLarge(_) => Cause::TooLarge,
+                Refusal::NotText(_) => Cause::NotText,
+            },
+            message: refusal.detail().to_string(),
+            location: None,
+        }
+    }
+
     /// One line, stable enough for a log scraper:
     /// `rule failure (CAUSE): RULE: FILE: MESSAGE [at LOCATION]`,
     /// `file failure (CAUSE): FILE: ...` or `prescan failure (CAUSE): FILE: ...`.
@@ -169,6 +194,9 @@ impl ScanFailure {
                 "rule failure ({cause}): {rule}: {}: {}{at}",
                 self.file, self.message
             ),
+            (Stage::Input, _) => {
+                format!("input skipped ({cause}): {}: {}", self.file, self.message)
+            }
             (Stage::Prescan, _) => {
                 format!(
                     "prescan failure ({cause}): {}: {}{at}",
@@ -447,7 +475,9 @@ pub fn contain<R>(label: &str, f: impl FnOnce() -> R) -> Result<R, Failure> {
 
 // -- watchdog -------------------------------------------------------------------
 
-/// Units of work running now: thread -> (label, started), innermost last.
+/// Units of work running now: thread -> (label, started), innermost last. A
+/// nested unit's budget and deadline are its own, so the watchdog judges the
+/// innermost one.
 type Running = Mutex<HashMap<ThreadId, Vec<(String, Instant)>>>;
 static RUNNING: OnceLock<Running> = OnceLock::new();
 
@@ -506,7 +536,9 @@ pub fn start_watchdog() {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .values()
-                .filter_map(|stack| stack.first())
+                // The innermost unit is the one running: a slow file whose
+                // rules each finish is not a hang.
+                .filter_map(|stack| stack.last())
                 .find(|(_, started)| now.duration_since(*started) > grace)
                 .map(|(label, started)| (label.clone(), now.duration_since(*started)));
             if let Some((label, ran)) = stuck {

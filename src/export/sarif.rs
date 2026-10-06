@@ -139,6 +139,7 @@ fn invocation(incomplete: super::Incomplete<'_>) -> serde_json::Value {
         .iter()
         .map(|f| {
             let stage = match f.stage {
+                Stage::Input => "input",
                 Stage::Prescan => "prescan",
                 Stage::File => "file",
                 Stage::Rule => "rule",
@@ -148,6 +149,8 @@ fn invocation(incomplete: super::Incomplete<'_>) -> serde_json::Value {
                 Cause::StepLimit => "step-limit",
                 Cause::TimeLimit => "time-limit",
                 Cause::Cap => "analysis-cap",
+                Cause::TooLarge => "too-large",
+                Cause::NotText => "not-source-text",
             };
             let mut n = serde_json::json!({
                 "level": "error",

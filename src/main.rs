@@ -427,6 +427,21 @@ fn run() -> Result<i32> {
                 .value_parser(clap::value_parser!(u64)),
         )
         .arg(
+            Arg::new("max_file_size")
+                .long("max-file-size")
+                .help(
+                    "Skip, and report (exit 3), any input file larger than this many MiB \
+                     instead of parsing it (0 = no limit). See docs/error-handling.rst",
+                )
+                .value_name("MIB")
+                .default_value(&*Box::leak(
+                    analyze::input_guard::DEFAULT_MAX_FILE_MIB
+                        .to_string()
+                        .into_boxed_str(),
+                ))
+                .value_parser(clap::value_parser!(u64)),
+        )
+        .arg(
             Arg::new("jobs")
                 .long("jobs")
                 .short('j')
@@ -688,6 +703,9 @@ fn run() -> Result<i32> {
     let jobs = *matches.get_one::<usize>("jobs").unwrap();
     // The bounds every unit of work runs under (ADR-0017).
     let nonzero = |v: u64| (v > 0).then_some(v);
+    analyze::input_guard::set_max_file_mib(nonzero(
+        *matches.get_one::<u64>("max_file_size").unwrap(),
+    ));
     analyze::containment::set_limits(analyze::containment::Limits {
         steps: nonzero(*matches.get_one::<u64>("rule_step_limit").unwrap()),
         time: nonzero(*matches.get_one::<u64>("rule_time_limit").unwrap())
@@ -1066,14 +1084,23 @@ fn run() -> Result<i32> {
                 )
             },
         );
-        if failures
-            .iter()
-            .any(|f| f.cause != analyze::containment::Cause::Panic)
-        {
+        use analyze::containment::Cause;
+        if failures.iter().any(|f| {
+            matches!(
+                f.cause,
+                Cause::StepLimit | Cause::TimeLimit | Cause::TooLarge
+            )
+        }) {
             eprintln!(
-                "  note: a step or time limit stops work that may only be unusually large; \
-                 --rule-step-limit / --rule-time-limit raise them (0 = no limit). See \
-                 docs/error-handling.rst."
+                "  note: a step, time or size limit stops work that may only be unusually \
+                 large; --rule-step-limit / --rule-time-limit / --max-file-size raise them \
+                 (0 = no limit). See docs/error-handling.rst."
+            );
+        }
+        if failures.iter().any(|f| f.cause == Cause::NotText) {
+            eprintln!(
+                "  note: a file that is not C source was skipped; if it belongs in the tree, \
+                 leave it out of the scan with --exclude-all."
             );
         }
         return Ok(analyze::containment::EXIT_INCOMPLETE);

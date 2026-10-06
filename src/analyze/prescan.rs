@@ -632,6 +632,13 @@ fn prescan_file_list(
         all_files
             .par_iter()
             .map(|(path, is_header)| {
+                if let Err(refusal) = super::input_guard::admit(path) {
+                    return (
+                        FilePrescanResult::empty(),
+                        Some(ScanFailure::refused(&path.to_string_lossy(), &refusal)),
+                    );
+                }
+                let _permit = super::input_guard::large_file_permit(path);
                 let label = format!("prescan of {}", path.display());
                 match containment::contain(&label, || {
                     super::test_failure_hook("prescan");
