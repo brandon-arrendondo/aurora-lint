@@ -220,11 +220,11 @@ Criteria, Black & Ribeiro, 2016):
 **Null-dereference analyses anchor at the dereference or at a known-contract
 call.**
 
-- [Hovemeyer & Pugh, PASTE 2007][hp] §3.3, §4.1. FindBugs treats passing a
-  value to a parameter "that must be non-null" as a dereference, and derives
-  parameters "always dereferenced (or passed to methods that, in turn,
-  dereference them)". It reports the null origin plus the dereference
-  location.
+- [Hovemeyer & Pugh, PASTE 2007][hp] §3.3, §3.6, §4.1. FindBugs treats
+  passing a value to a parameter "that must be non-null" as a dereference
+  (§3.6), and derives parameters "always dereferenced (or passed to methods
+  that, in turn, dereference them)" (§3.3). It reports the null origin plus
+  the dereference location (§4.1).
 - [Engler et al., SOSP 2001][engler] §7. A checker that warned whenever a
   tainted value "was passed as a function parameter, rather than checking if
   the call actually dereferenced the value" produced too many false
