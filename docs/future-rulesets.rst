@@ -41,7 +41,9 @@ The Power of 10 Rules (NASA JPL, 2006)
 
 Created by Gerard J. Holzmann at NASA's Jet Propulsion Laboratory, these 10
 rules eliminate C coding practices that make code difficult to review or
-statically analyze. They complement MISRA C guidelines.
+statically analyze. Holzmann presents them as a deliberately short set that
+a tool can check mechanically, in contrast to guidelines of a hundred rules
+or more; the JPL standard below later combined them with MISRA-C:2004.
 
 1. **Restrict control flow** — no ``goto``, no ``setjmp``/``longjmp``, and no recursion, direct or indirect.
 2. **Fixed loop bounds** — all loops must have fixed upper bounds (prevents runaway code).
