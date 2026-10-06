@@ -399,8 +399,9 @@ Status of the 16 proposals at the end of this doc, against `72b8f734`:
   - **Terminology trap.** CERT defines *sound* as "cannot issue
     false-positive results" and *complete* as no false negatives
     [CERT-tools]. That is the reverse of the PL convention used by the
-    soundiness literature and by Ockham [Ockham]. The ADRs and the paper
-    should pick one and say which.
+    soundiness literature. Ockham explains both usages and itself takes
+    CERT's: "we used 'sound' to mean that every finding was correct"
+    [Ockham §2.3]. The ADRs and the paper should pick one and say which.
 
 ### D5 — No preprocessor; ERROR ancestry is not a suppression signal (ADR-0008)
 
