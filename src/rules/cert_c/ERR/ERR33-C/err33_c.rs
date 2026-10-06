@@ -98,6 +98,9 @@ pub struct Err33C {
     project_macros: RefCell<(Arc<Definitions>, Arc<HashSet<String>>)>,
     file_macros: RefCell<(Definitions, HashSet<String>)>,
     macro_test_cache: RefCell<result_checks::MacroTestCache>,
+    /// Identifier bindings resolved in the current file's tree; emptied per
+    /// file, since node ids are unique only within one tree.
+    binding_cache: RefCell<result_checks::BindingCache>,
     /// The typedefs and struct fields this file sees, for typing the object a
     /// result is stored in.
     visible: RefCell<VisibleTypes>,
@@ -118,6 +121,7 @@ impl Err33C {
             project_macros: RefCell::default(),
             file_macros: RefCell::default(),
             macro_test_cache: RefCell::default(),
+            binding_cache: RefCell::default(),
             visible: RefCell::default(),
             data_model: Cell::default(),
         }
@@ -179,15 +183,29 @@ impl CertRule for Err33C {
             check_macros::collect_conditional_macro_names(source),
         );
         self.macro_test_cache.borrow_mut().clear();
+        self.binding_cache.borrow_mut().clear();
 
+        // The file's tree, so a stored result's occurrences resolve once per
+        // file by descent from the root. Only a tree's root qualifies: the
+        // file-scope lookup is the same only from the translation unit.
+        let tree = node.parent().is_none().then_some(result_checks::FileTree {
+            root: *node,
+            bindings: &self.binding_cache,
+        });
         let mut violations = Vec::new();
-        self.check_node(node, source, &mut violations);
+        self.check_node(node, tree.as_ref(), source, &mut violations);
         violations
     }
 }
 
 impl Err33C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn check_node(
+        &self,
+        node: &Node,
+        tree: Option<&result_checks::FileTree>,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         let matches = query::find_descendants_of_kinds(
             *node,
             &[
@@ -211,10 +229,10 @@ impl Err33C {
                     }
                 }
                 "assignment_expression" => {
-                    self.check_assignment(&n, source, violations);
+                    self.check_assignment(&n, tree, source, violations);
                 }
                 "init_declarator" => {
-                    self.check_init_declarator(&n, source, violations);
+                    self.check_init_declarator(&n, tree, source, violations);
                 }
                 _ => {}
             }
@@ -373,7 +391,13 @@ impl Err33C {
         }
     }
 
-    fn check_assignment(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn check_assignment(
+        &self,
+        node: &Node,
+        tree: Option<&result_checks::FileTree>,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         if let (Some(left), Some(right)) = (
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
@@ -416,8 +440,14 @@ impl Err33C {
                         // Tested against the function's error value, in the
                         // assignment's own controlling expression or after it,
                         // before the variable is written again.
-                        if !self.stored_result_is_tested(node, &left, &right, function_name, source)
-                        {
+                        if !self.stored_result_is_tested(
+                            tree,
+                            node,
+                            &left,
+                            &right,
+                            function_name,
+                            source,
+                        ) {
                             let start_point = node.start_position();
                             let call_text = get_node_text(&right, source);
 
@@ -446,6 +476,7 @@ impl Err33C {
     fn check_init_declarator(
         &self,
         node: &Node,
+        tree: Option<&result_checks::FileTree>,
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
@@ -476,6 +507,7 @@ impl Err33C {
                                 let tested =
                                     Self::declarator_name(&declarator).is_some_and(|name_node| {
                                         self.stored_result_is_tested(
+                                            tree,
                                             node,
                                             &name_node,
                                             &call,
@@ -898,6 +930,7 @@ impl Err33C {
     /// its result.
     fn stored_result_is_tested(
         &self,
+        tree: Option<&result_checks::FileTree>,
         store: &Node,
         target: &Node,
         call: &Node,
@@ -915,7 +948,17 @@ impl Err33C {
         };
         let visible = self.visible.borrow();
         let types = TypeEnv::visible(&visible, self.data_model.get());
-        result_checks::stored_result_is_tested(store, target, call, signal, source, &macros, &types)
+        match tree {
+            Some(tree) => {
+                let types = types.in_tree(tree.root);
+                result_checks::stored_result_is_tested_in(
+                    tree, store, target, call, signal, source, &macros, &types,
+                )
+            }
+            None => result_checks::stored_result_is_tested(
+                store, target, call, signal, source, &macros, &types,
+            ),
+        }
     }
 
     /// The identifier a declarator declares (`*p`, `p[4]`, `(*p)` -> `p`).

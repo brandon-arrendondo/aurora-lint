@@ -37,8 +37,8 @@
 use crate::analyze::check_macros::MacroDefinition;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::utility::cert_c::ast_utils::{
-    declaration_declarator_for, find_containing_function, get_node_text,
-    resolve_identifier_declarator,
+    ancestors_from_root, declaration_declarator_for, find_containing_function, get_node_text,
+    resolve_identifier_declarator, resolve_identifier_declarator_on_path,
 };
 use crate::utility::cert_c::expr_type::{self, CType, Rank, Sign, TypeEnv};
 use lang_parsing_substrate::query;
@@ -187,9 +187,50 @@ pub fn stored_result_is_tested(
         source,
         macros,
         types,
+        tree: None,
     };
     tested_from(store, target, call, &cx, MAX_COPY_HOPS)
 }
+
+/// [`stored_result_is_tested`] for a caller asking about many stores in one
+/// file: identifiers resolve by descending from `tree.root`, and each one's
+/// binding is resolved once for the file and kept in `tree.bindings`, rather
+/// than climbed to with `Node::parent` (O(depth) a step) again for every
+/// store whose candidate occurrences include it. The same answer.
+#[allow(clippy::too_many_arguments)]
+pub fn stored_result_is_tested_in(
+    tree: &FileTree,
+    store: &Node,
+    target: &Node,
+    call: &Node,
+    signal: ErrorSignal,
+    source: &str,
+    macros: &MacroView,
+    types: &TypeEnv,
+) -> bool {
+    let cx = Cx {
+        signal,
+        source,
+        macros,
+        types,
+        tree: Some(tree),
+    };
+    tested_from(store, target, call, &cx, MAX_COPY_HOPS)
+}
+
+/// One file's tree, for [`stored_result_is_tested_in`].
+pub struct FileTree<'a> {
+    /// The tree's root: the translation unit.
+    pub root: Node<'a>,
+    /// Bindings already resolved in this tree; the caller empties it when
+    /// the file changes, since node ids are unique only within one tree.
+    pub bindings: &'a RefCell<BindingCache>,
+}
+
+/// [`FileTree::bindings`]: an identifier's node id to the node id of the
+/// declarator binding it (`None` when nothing in the file declares it). Only
+/// nodes of the file's own tree are entered, never a macro expansion's.
+pub type BindingCache = HashMap<usize, Option<usize>>;
 
 /// What every step of one [`stored_result_is_tested`] query shares.
 struct Cx<'s> {
@@ -197,6 +238,7 @@ struct Cx<'s> {
     source: &'s str,
     macros: &'s MacroView<'s>,
     types: &'s TypeEnv<'s>,
+    tree: Option<&'s FileTree<'s>>,
 }
 
 /// Every definition of every macro name in view, and the names some
@@ -252,7 +294,7 @@ const MAX_COPY_HOPS: usize = 2;
 /// times: the copy's own test is a test of the result.
 fn tested_from(store: &Node, target: &Node, call: &Node, cx: &Cx, hops: usize) -> bool {
     let (signal, source) = (cx.signal, cx.source);
-    let stored = stored_object(store, target, source, cx.types);
+    let stored = stored_object(store, target, source, cx.types, cx.tree);
     let requested = requested_count(call, source);
     let judge = |occ: &Node| {
         occurrence_tests(occ, signal, stored, requested.as_deref(), source)
@@ -262,19 +304,47 @@ fn tested_from(store: &Node, target: &Node, call: &Node, cx: &Cx, hops: usize) -
     {
         return true;
     }
-    let Some(func) = find_containing_function(store) else {
+    // The store's ancestors, innermost first: from one descent of the root
+    // when the tree is known, else by climbing as far as each question asks.
+    let held: Option<Vec<Node>> = cx.tree.and_then(|t| {
+        let mut path = ancestors_from_root(&t.root, store)?;
+        path.reverse();
+        path.push(t.root);
+        Some(path)
+    });
+    let store_ancestors = || -> Box<dyn Iterator<Item = Node> + '_> {
+        match &held {
+            Some(path) => Box::new(path.iter().copied()),
+            None => Box::new(std::iter::successors(Some(*store), |n| n.parent()).skip(1)),
+        }
+    };
+    let func = match &held {
+        Some(path) => {
+            if store.kind() == "function_definition" {
+                Some(*store)
+            } else {
+                path.iter()
+                    .copied()
+                    .find(|n| n.kind() == "function_definition")
+            }
+        }
+        None => find_containing_function(store),
+    };
+    let Some(func) = func else {
         return false;
     };
     let Some(body) = func.child_by_field_name("body") else {
         return false;
     };
     let after = store.end_byte();
+    let exclusive = |n: &Node| in_exclusive_branches_from(store, n, store_ancestors());
+    let same = |a: &Node, b: &Node| same_lvalue_in(cx.tree, a, b, source);
 
     if signal == ErrorSignal::ErrnoOrEnd {
-        return strto_result_is_tested(store, call, &body, source);
+        return strto_result_is_tested(store, call, &body, source, &exclusive, &same);
     }
 
-    let until = next_write(&body, store, target, after, source).unwrap_or(usize::MAX);
+    let until = next_write(&body, target, after, &exclusive, &same).unwrap_or(usize::MAX);
     let in_window = |n: &&Node| n.start_byte() >= after && n.start_byte() < until;
     // For a result that is unusable when it signals failure -- a null
     // pointer, a negative length, `(T)-1` -- the test has to come before the
@@ -282,14 +352,15 @@ fn tested_from(store: &Node, target: &Node, call: &Node, cx: &Cx, hops: usize) -
     // pointer already written through. A short count or an EOF is a normal
     // value to consume before the loop test that ends on it.
     let test_first = signal.is_unusable_on_failure();
-    let occurrences = candidate_occurrences(&body, target, source);
+    let occurrences = candidate_occurrences(&body, target, &same);
     // A store in a loop's body or `for` update is followed by the loop's
     // condition, which sits before it in source order:
     // `for (c = fgetc(f); c != EOF; c = fgetc(f))`, or a priming read
     // `l = fgets(...)` at the bottom of `while (l != NULL) { ... }`. The
     // occurrences are visited in the order control reaches them: the rest of
     // the loop region, the condition, then what follows the region.
-    let back_edge = loop_condition_after(store).filter(|&(_, region_end)| until >= region_end);
+    let back_edge = loop_condition_after_from(store, store_ancestors())
+        .filter(|&(_, region_end)| until >= region_end);
     let ordered: Vec<&Node> = match back_edge {
         Some((condition, region_end)) => {
             let region = occurrences
@@ -305,7 +376,7 @@ fn tested_from(store: &Node, target: &Node, call: &Node, cx: &Cx, hops: usize) -
         None => occurrences.iter().filter(in_window).collect(),
     };
     for occ in ordered {
-        if inside_assert(occ, source) || in_exclusive_branches(store, occ) {
+        if inside_assert(occ, source) || exclusive(occ) {
             continue;
         }
         if judge(occ) {
@@ -338,9 +409,12 @@ fn within(outer: &Node, inner: &Node) -> bool {
 /// update holds `store`, and the end of the stretch that runs between the
 /// store and that condition: the rest of the body, or nothing for an
 /// update. `None` when `store` is in no such position.
-fn loop_condition_after<'a>(store: &Node<'a>) -> Option<(Node<'a>, usize)> {
+fn loop_condition_after_from<'a>(
+    store: &Node<'a>,
+    ancestors: impl Iterator<Item = Node<'a>>,
+) -> Option<(Node<'a>, usize)> {
     let mut current = *store;
-    while let Some(parent) = current.parent() {
+    for parent in ancestors {
         match parent.kind() {
             "while_statement" | "for_statement" => {
                 let is = |field: &str| {
@@ -369,7 +443,14 @@ fn loop_condition_after<'a>(store: &Node<'a>) -> Option<(Node<'a>, usize)> {
 /// `&end` is tested before a later call is handed the same pointer. Each
 /// event overwrites only its own channel: `errno = 0` leaves the end pointer
 /// as this call set it, and a later successful call does not clear errno.
-fn strto_result_is_tested(store: &Node, call: &Node, body: &Node, source: &str) -> bool {
+fn strto_result_is_tested(
+    store: &Node,
+    call: &Node,
+    body: &Node,
+    source: &str,
+    exclusive: &dyn Fn(&Node) -> bool,
+    same: &dyn Fn(&Node, &Node) -> bool,
+) -> bool {
     let after = store.end_byte();
     let end_ptr = end_pointer_argument(call);
     let errno_reset = query::find_descendants_of_kind(*body, "assignment_expression")
@@ -381,11 +462,7 @@ fn strto_result_is_tested(store: &Node, call: &Node, body: &Node, source: &str) 
         .map(|a| a.start_byte());
     let end_reused = query::find_descendants_of_kind(*body, "call_expression")
         .into_iter()
-        .filter(|c| {
-            end_ptr.is_some_and(|e| {
-                end_pointer_argument(c).is_some_and(|x| same_lvalue(&x, &e, source))
-            })
-        })
+        .filter(|c| end_ptr.is_some_and(|e| end_pointer_argument(c).is_some_and(|x| same(&x, &e))))
         .map(|c| c.start_byte());
     let errno_until = errno_reset
         .filter(|&s| s >= after)
@@ -397,11 +474,11 @@ fn strto_result_is_tested(store: &Node, call: &Node, body: &Node, source: &str) 
         .unwrap_or(usize::MAX);
     query::find_descendants_of_kind(*body, "identifier")
         .into_iter()
-        .filter(|id| id.start_byte() >= after && !in_exclusive_branches(store, id))
+        .filter(|id| id.start_byte() >= after && !exclusive(id))
         .any(|id| {
             let start = id.start_byte();
             let is_errno = start < errno_until && get_node_text(&id, source) == "errno";
-            let is_end = start < end_until && end_ptr.is_some_and(|e| same_lvalue(&id, &e, source));
+            let is_end = start < end_until && end_ptr.is_some_and(|e| same(&id, &e));
             (is_errno || is_end) && inside_test(&id, source)
         })
 }
@@ -658,10 +735,14 @@ fn requested_count(call: &Node, source: &str) -> Option<String> {
 
 /// Every node under `body` that denotes the same object as `target`: an
 /// identifier, or a field/subscript expression of the same shape.
-fn candidate_occurrences<'a>(body: &Node<'a>, target: &Node, source: &str) -> Vec<Node<'a>> {
+fn candidate_occurrences<'a>(
+    body: &Node<'a>,
+    target: &Node,
+    same: &dyn Fn(&Node, &Node) -> bool,
+) -> Vec<Node<'a>> {
     query::find_descendants_of_kind(*body, strip_parens(*target).kind())
         .into_iter()
-        .filter(|n| same_lvalue(n, target, source))
+        .filter(|n| same(n, target))
         .collect()
 }
 
@@ -670,21 +751,21 @@ fn candidate_occurrences<'a>(body: &Node<'a>, target: &Node, source: &str) -> Ve
 /// rewrites it.
 fn next_write(
     body: &Node,
-    store: &Node,
     target: &Node,
     after: usize,
-    source: &str,
+    exclusive: &dyn Fn(&Node) -> bool,
+    same: &dyn Fn(&Node, &Node) -> bool,
 ) -> Option<usize> {
     query::find_descendants_of_kinds(*body, &["assignment_expression", "update_expression"])
         .into_iter()
         .filter(|n| n.start_byte() >= after)
-        .filter(|n| !in_exclusive_branches(store, n))
+        .filter(|n| !exclusive(n))
         .filter(|n| {
             let written = match n.kind() {
                 "assignment_expression" => n.child_by_field_name("left"),
                 _ => n.child_by_field_name("argument"),
             };
-            written.is_some_and(|w| same_lvalue(&w, target, source))
+            written.is_some_and(|w| same(&w, target))
         })
         .map(|n| n.start_byte())
         .min()
@@ -693,12 +774,15 @@ fn next_write(
 /// Whether `a` and `b` sit in the two arms of one `if`: one in its
 /// consequence, the other in its `else`. Control that ran one has not run
 /// the other, so the later one in source order does not follow the earlier.
-fn in_exclusive_branches(a: &Node, b: &Node) -> bool {
+fn in_exclusive_branches_from<'a>(
+    a: &Node<'a>,
+    b: &Node,
+    a_ancestors: impl Iterator<Item = Node<'a>>,
+) -> bool {
     let within = |outer: &Node, inner: &Node| {
         outer.start_byte() <= inner.start_byte() && inner.end_byte() <= outer.end_byte()
     };
-    let mut current = a.parent();
-    while let Some(n) = current {
+    for n in a_ancestors {
         if n.kind() == "if_statement" && within(&n, b) {
             let arm = |field: &str| n.child_by_field_name(field);
             let (Some(then), Some(alt)) = (arm("consequence"), arm("alternative")) else {
@@ -706,7 +790,6 @@ fn in_exclusive_branches(a: &Node, b: &Node) -> bool {
             };
             return (within(&then, a) && within(&alt, b)) || (within(&alt, a) && within(&then, b));
         }
-        current = n.parent();
     }
     false
 }
@@ -716,6 +799,13 @@ fn in_exclusive_branches(a: &Node, b: &Node) -> bool {
 /// global declared outside the file), or field/subscript chains that match
 /// member by member over the same base.
 pub fn same_lvalue(a: &Node, b: &Node, source: &str) -> bool {
+    same_lvalue_in(None, a, b, source)
+}
+
+/// [`same_lvalue`], resolving identifiers through `tree` when it is given:
+/// each identifier of the file's tree is resolved once, by descent from its
+/// root, and the answer kept.
+fn same_lvalue_in(tree: Option<&FileTree>, a: &Node, b: &Node, source: &str) -> bool {
     let (a, b) = (strip_parens(*a), strip_parens(*b));
     match (a.kind(), b.kind()) {
         ("identifier", "identifier") => {
@@ -723,8 +813,11 @@ pub fn same_lvalue(a: &Node, b: &Node, source: &str) -> bool {
             if an != bn {
                 return false;
             }
-            match (binding_of(&a, an, source), binding_of(&b, bn, source)) {
-                (Some(da), Some(db)) => da.id() == db.id(),
+            match (
+                binding_id(tree, &a, an, source),
+                binding_id(tree, &b, bn, source),
+            ) {
+                (Some(da), Some(db)) => da == db,
                 (None, None) => true,
                 _ => false,
             }
@@ -741,7 +834,7 @@ pub fn same_lvalue(a: &Node, b: &Node, source: &str) -> bool {
                     a.child_by_field_name("argument"),
                     b.child_by_field_name("argument"),
                 ) {
-                    (Some(x), Some(y)) => same_lvalue(&x, &y, source),
+                    (Some(x), Some(y)) => same_lvalue_in(tree, &x, &y, source),
                     _ => false,
                 }
         }
@@ -752,7 +845,7 @@ pub fn same_lvalue(a: &Node, b: &Node, source: &str) -> bool {
                     a.child_by_field_name("argument"),
                     b.child_by_field_name("argument"),
                 ) {
-                    (Some(x), Some(y)) => same_lvalue(&x, &y, source),
+                    (Some(x), Some(y)) => same_lvalue_in(tree, &x, &y, source),
                     _ => false,
                 }
         }
@@ -764,7 +857,7 @@ pub fn same_lvalue(a: &Node, b: &Node, source: &str) -> bool {
                 (Some(x), Some(y)) => {
                     get_node_text(&a, source).starts_with('*')
                         && get_node_text(&b, source).starts_with('*')
-                        && same_lvalue(&x, &y, source)
+                        && same_lvalue_in(tree, &x, &y, source)
                 }
                 _ => false,
             }
@@ -778,8 +871,59 @@ pub fn same_lvalue(a: &Node, b: &Node, source: &str) -> bool {
 /// declaration's own declarator; any other occurrence is resolved by scope
 /// (`resolve_identifier_declarator`).
 fn binding_of<'a>(ident: &Node<'a>, name: &str, source: &str) -> Option<Node<'a>> {
+    binding_from(
+        ident,
+        name,
+        source,
+        std::iter::successors(Some(*ident), |n| n.parent()).skip(1),
+        || resolve_identifier_declarator(ident, name, source),
+    )
+}
+
+/// The node id of [`binding_of`]'s answer. With `tree`, an identifier of
+/// that tree is resolved once, by descent from its root, and kept.
+fn binding_id(tree: Option<&FileTree>, ident: &Node, name: &str, source: &str) -> Option<usize> {
+    let Some(tree) = tree else {
+        return binding_of(ident, name, source).map(|d| d.id());
+    };
+    if let Some(&known) = tree.bindings.borrow().get(&ident.id()) {
+        return known;
+    }
+    let Some(path) = ancestors_from_root(&tree.root, ident) else {
+        // Not of this tree: answer without keeping it.
+        return binding_of(ident, name, source).map(|d| d.id());
+    };
+    let found = binding_on_path(&tree.root, &path, ident, name, source).map(|d| d.id());
+    tree.bindings.borrow_mut().insert(ident.id(), found);
+    found
+}
+
+/// [`binding_of`] for an identifier with `path` = `ancestors_from_root(root,
+/// ident)` in hand: its ancestors and its scope come from that one descent.
+fn binding_on_path<'a>(
+    root: &Node<'a>,
+    path: &[Node<'a>],
+    ident: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<Node<'a>> {
+    let ancestors = path.iter().rev().copied().chain(std::iter::once(*root));
+    binding_from(ident, name, source, ancestors, || {
+        resolve_identifier_declarator_on_path(root, path, ident, name, source)
+    })
+}
+
+/// [`binding_of`] over `ident`'s ancestors, innermost first, with the scope
+/// resolution it falls back on.
+fn binding_from<'a>(
+    ident: &Node<'a>,
+    name: &str,
+    source: &str,
+    ancestors: impl Iterator<Item = Node<'a>>,
+    resolve: impl FnOnce() -> Option<(Node<'a>, Node<'a>)>,
+) -> Option<Node<'a>> {
     let mut current = *ident;
-    while let Some(parent) = current.parent() {
+    for parent in ancestors {
         match parent.kind() {
             "pointer_declarator"
             | "array_declarator"
@@ -811,7 +955,7 @@ fn binding_of<'a>(ident: &Node<'a>, name: &str, source: &str) -> Option<Node<'a>
             _ => break,
         }
     }
-    resolve_identifier_declarator(ident, name, source).map(|(_, d)| d)
+    resolve().map(|(_, d)| d)
 }
 
 /// Whether the value of `occ` is tested against `signal` where it stands:
@@ -915,8 +1059,9 @@ fn stored_object<'a>(
     target: &Node,
     source: &str,
     types: &'a TypeEnv<'a>,
+    tree: Option<&FileTree>,
 ) -> Stored<'a> {
-    let ty = stored_type(store, target, source, types).or_else(|| {
+    let ty = stored_type(store, target, source, types, tree).or_else(|| {
         let value = match store.kind() {
             "assignment_expression" => store.child_by_field_name("right"),
             _ => store.child_by_field_name("value"),
@@ -939,7 +1084,13 @@ fn stored_object<'a>(
 
 /// The type of the object `store` writes: the declared type for an
 /// `init_declarator`, the expression's type for an assignment's left side.
-fn stored_type(store: &Node, target: &Node, source: &str, types: &TypeEnv) -> Option<CType> {
+fn stored_type(
+    store: &Node,
+    target: &Node,
+    source: &str,
+    types: &TypeEnv,
+    tree: Option<&FileTree>,
+) -> Option<CType> {
     let target = strip_parens(*target);
     if store.kind() == "assignment_expression" {
         return expr_type::expr_type(&target, source, types);
@@ -948,7 +1099,12 @@ fn stored_type(store: &Node, target: &Node, source: &str, types: &TypeEnv) -> Op
         return None;
     }
     let name = get_node_text(&target, source);
-    let declarator = binding_of(&target, name, source)?;
+    // By one descent of the file's tree when it is known, as `binding_id`
+    // resolves; else by climbing.
+    let declarator = match tree.and_then(|t| Some((t, ancestors_from_root(&t.root, &target)?))) {
+        Some((t, path)) => binding_on_path(&t.root, &path, &target, name, source)?,
+        None => binding_of(&target, name, source)?,
+    };
     let mut decl = declarator;
     while !matches!(decl.kind(), "declaration" | "parameter_declaration") {
         decl = decl.parent()?;
@@ -1334,7 +1490,21 @@ mod tests {
 
     /// Whether the first stored call result in `code` (an assignment or an
     /// initialized declaration) is tested against its function's error value.
+    /// Asked through both entry points, which must agree.
     fn tested(code: &str) -> bool {
+        let climbed = tested_with(code, None);
+        let bindings = RefCell::new(BindingCache::new());
+        let descended = tested_with(code, Some(&bindings));
+        assert_eq!(
+            climbed, descended,
+            "the two entry points disagree on {code}"
+        );
+        climbed
+    }
+
+    /// [`tested`] through `stored_result_is_tested`, or with `bindings`
+    /// through `stored_result_is_tested_in` and a `TypeEnv` given the root.
+    fn tested_with(code: &str, bindings: Option<&RefCell<BindingCache>>) -> bool {
         let tree = parse(code);
         let root = tree.root_node();
         fn store_of<'a>(c: &Node<'a>) -> Option<Node<'a>> {
@@ -1378,7 +1548,88 @@ mod tests {
             HashMap::new(),
         );
         let types = TypeEnv::new(&t, &f, &sh, &al, Default::default());
-        stored_result_is_tested(&store, &target, &call, signal, code, &macros, &types)
+        match bindings {
+            None => stored_result_is_tested(&store, &target, &call, signal, code, &macros, &types),
+            Some(bindings) => {
+                let file = FileTree { root, bindings };
+                let types = types.in_tree(root);
+                stored_result_is_tested_in(
+                    &file, &store, &target, &call, signal, code, &macros, &types,
+                )
+            }
+        }
+    }
+
+    /// The binding cache trusts an entry by node id alone, and node ids are
+    /// unique only within one live tree: a freed tree's ids can come back in
+    /// the next file's. So the caller must empty it per file (ERR33-C does,
+    /// in `check`). Entries left from another file -- stood in for here by
+    /// keys that name this file's nodes with that file's answers, since
+    /// whether an allocator reuses an address is not something a test can
+    /// force -- change the verdict.
+    #[test]
+    fn the_binding_cache_must_be_emptied_between_files() {
+        let first = "void f(void) { char *p = malloc(4); if (!p) return; }";
+        let bindings = RefCell::new(BindingCache::new());
+        assert!(tested_with(first, Some(&bindings)));
+        assert!(
+            !bindings.borrow().is_empty(),
+            "the first file filled the cache"
+        );
+
+        // A second file, the cache not emptied: its identifiers' ids now map
+        // to stale bindings that disagree with each other.
+        let second = "void g(void) { char *q = malloc(4); if (!q) return; }";
+        let tree = parse(second);
+        let stale: Vec<usize> = bindings.borrow().values().flatten().copied().collect();
+        {
+            let mut cache = bindings.borrow_mut();
+            for (i, ident) in query::find_descendants_of_kind(tree.root_node(), "identifier")
+                .into_iter()
+                .filter(|n| get_node_text(n, second) == "q")
+                .enumerate()
+            {
+                cache.insert(
+                    ident.id(),
+                    Some(stale.first().copied().unwrap_or(0) + i + 1),
+                );
+            }
+        }
+        let call = query::find_descendants_of_kind(tree.root_node(), "call_expression")[0];
+        let store = call.parent().unwrap();
+        let target = store.child_by_field_name("declarator").unwrap();
+        let target = target.child_by_field_name("declarator").unwrap_or(target);
+        let (empty_defs, empty_names) = (HashMap::new(), HashSet::new());
+        let macro_cache = RefCell::new(MacroTestCache::new());
+        let macros = MacroView {
+            defs: [&empty_defs, &empty_defs],
+            conditional: [&empty_names, &empty_names],
+            cache: &macro_cache,
+        };
+        let (t, f, sh, al) = (
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+        );
+        let types = TypeEnv::new(&t, &f, &sh, &al, Default::default());
+        let file = FileTree {
+            root: tree.root_node(),
+            bindings: &bindings,
+        };
+        let signal = error_signal_for("malloc").unwrap_or(ErrorSignal::Any);
+        let with_stale = stored_result_is_tested_in(
+            &file, &store, &target, &call, signal, second, &macros, &types,
+        );
+        assert!(
+            !with_stale,
+            "stale entries make the tested result read as untested"
+        );
+
+        bindings.borrow_mut().clear();
+        assert!(stored_result_is_tested_in(
+            &file, &store, &target, &call, signal, second, &macros, &types
+        ));
     }
 
     #[test]

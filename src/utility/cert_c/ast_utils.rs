@@ -483,10 +483,23 @@ pub fn resolve_identifier_declarator_in<'a>(
     let Some(path) = ancestors_from_root(root, ident_node) else {
         return resolve_identifier_declarator(ident_node, name, source);
     };
-    let decl = match binding_on_path(root, &path, ident_node, name, source)? {
+    resolve_identifier_declarator_on_path(root, &path, ident_node, name, source)
+}
+
+/// [`resolve_identifier_declarator_in`] for a caller that already has
+/// `path` = [`ancestors_from_root`]`(root, ident_node)`, so the tree is not
+/// descended again.
+pub fn resolve_identifier_declarator_on_path<'a>(
+    root: &Node<'a>,
+    path: &[Node<'a>],
+    ident_node: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<(Node<'a>, Node<'a>)> {
+    let decl = match binding_on_path(root, path, ident_node, name, source)? {
         IdentifierBinding::Local(decl) | IdentifierBinding::Global(decl) => decl,
         IdentifierBinding::Parameter(_) => {
-            let func = containing_function_on_path(root, &path)?;
+            let func = containing_function_on_path(root, path)?;
             find_parameter_declaration(&func, name, source)?
         }
     };
