@@ -105,7 +105,7 @@
 <section id="manifest-file">
 <h2>Manifest File<a class="headerlink" href="#manifest-file" title="Link to this heading"></a></h2>
 <p>The rules manifest TOML file controls which rules are active and their severity.
-The default manifest (<code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code>) enables 307 of the 311 tracked rules.
+The default manifest (<code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code>) enables 304 of the 308 tracked rules.
 The other 4 are tracked but not implemented — see <a class="reference internal" href="#tracked-but-not-implemented">Tracked but not implemented</a> below.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Use default (all rules enabled)</span>
 <span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">code</span>
@@ -461,7 +461,7 @@ and says when each one fits.</p>
 </section>
 <section id="supported-cert-c-rules">
 <h2>Supported CERT C Rules<a class="headerlink" href="#supported-cert-c-rules" title="Link to this heading"></a></h2>
-<p>311 rules are tracked across 17 categories; 307 are implemented and enabled by
+<p>308 rules are tracked across 17 categories; 304 are implemented and enabled by
 default (the remaining 4 are tracked but not implemented — see
 <a class="reference internal" href="#tracked-but-not-implemented">Tracked but not implemented</a> below):</p>
 <table class="docutils align-default">
@@ -608,11 +608,15 @@ that removed the rule, why, and which rules cover it, and ignores the block.
 rule with its reason (<code class="docutils literal notranslate"><span class="pre">--list-rules</span> <span class="pre">json</span></code> for tooling). The list is kept in
 <code class="docutils literal notranslate"><span class="pre">rules_templates/removed-rules.toml</span></code>.</p>
 <p>The rules removed so far:</p>
-<p>No rule has been removed yet.</p>
+<ul class="simple">
+<li><p><strong>MSC42-C</strong> (removed in v0.7.0, moved to CWE ruleset): MSC42-C is not a CERT C identifier; the weak-cipher check is unchanged. Now reported as CWE-327 in the CWE ruleset.</p></li>
+<li><p><strong>POS55-C</strong> (removed in v0.7.0, moved to CWE ruleset): CERT C never published a POS55-C; the socket-ordering check is unchanged. Now reported as CWE-666 in the CWE ruleset.</p></li>
+<li><p><strong>WIN05-C</strong> (removed in v0.7.0, moved to CWE ruleset): CERT C never published a WIN05-C; the check is unchanged. Now reported as CWE-428 in the CWE ruleset.</p></li>
+</ul>
 </section>
 <section id="tracked-but-not-implemented">
 <h2>Tracked but not implemented<a class="headerlink" href="#tracked-but-not-implemented" title="Link to this heading"></a></h2>
-<p>4 of the 311 tracked rules have a rule directory and a manifest entry but no
+<p>4 of the 308 tracked rules have a rule directory and a manifest entry but no
 detection logic (no <code class="docutils literal notranslate"><span class="pre">.rs</span></code> file). This is a deliberate policy, not a gap:
 aurora-lint does not implement against incomplete CERT-C rule content, since there is
 ample well-established work to do and a stub implementation would mean
@@ -646,7 +650,7 @@ the closest of the 4 to being implementable.</p></li>
 <h2>Enabled but out of scope<a class="headerlink" href="#enabled-but-out-of-scope" title="Link to this heading"></a></h2>
 <p>The four rules above have no detection logic <em>yet</em>. This is a different
 list: rules that <strong>do</strong> have a <code class="docutils literal notranslate"><span class="pre">.rs</span></code> file, <strong>are</strong> enabled by default, and
-count toward 307 above, but are not claimed as working
+count toward 304 above, but are not claimed as working
 detection — because no amount of further work makes them one. A rule
 belongs here only when there is a specific, checkable reason automated
 analysis cannot do the job, not merely because it has produced few or no

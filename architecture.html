@@ -114,7 +114,7 @@
 <span class="p">[</span><span class="n">Dataflow</span> <span class="n">Analysis</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="n">Null</span> <span class="n">state</span><span class="p">,</span> <span class="n">value</span> <span class="nb">range</span><span class="p">,</span> <span class="n">reaching</span> <span class="n">defs</span><span class="p">,</span> <span class="n">init</span> <span class="n">state</span>
     <span class="o">|</span>
     <span class="n">v</span>
-<span class="p">[</span><span class="n">Rule</span> <span class="n">Evaluation</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="mi">307</span> <span class="n">CERT</span> <span class="n">C</span> <span class="n">rules</span> <span class="n">applied</span> <span class="n">to</span> <span class="n">AST</span> <span class="o">+</span> <span class="n">CFG</span> <span class="o">+</span> <span class="n">context</span>
+<span class="p">[</span><span class="n">Rule</span> <span class="n">Evaluation</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="mi">304</span> <span class="n">CERT</span> <span class="n">C</span> <span class="n">rules</span> <span class="n">applied</span> <span class="n">to</span> <span class="n">AST</span> <span class="o">+</span> <span class="n">CFG</span> <span class="o">+</span> <span class="n">context</span>
     <span class="o">|</span>
     <span class="n">v</span>
 <span class="p">[</span><span class="n">Suppression</span> <span class="n">Filter</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="n">Hash</span><span class="o">-</span><span class="n">based</span> <span class="o">+</span> <span class="n">wildcard</span> <span class="p">(</span><span class="n">glob</span><span class="o">/</span><span class="n">prefix</span><span class="p">)</span> <span class="n">suppression</span>
@@ -189,7 +189,7 @@ macro’s name (as of this writing: output-param writes, the “safe free”
 free+null idiom, generic writes, forwarding to another macro, plain frees,
 clears, and callee-released-parameter detection — see the file’s own
 <code class="docutils literal notranslate"><span class="pre">pub</span> <span class="pre">fn</span></code> list for the current, authoritative set rather than trusting a
-count here). Consumed by 24 rules: ARR30-C, DCL13-C, DCL16-C, DCL18-C, DCL31-C, DCL41-C, EXP10-C, EXP33-C, EXP34-C, EXP36-C, INT32-C, INT34-C, MEM03-C, MEM12-C, MEM30-C, MEM31-C, MSC13-C, MSC37-C, PRE05-C, PRE30-C, PRE31-C, PRE32-C, SIG30-C, and WIN05-C.
+count here). Consumed by 23 rules: ARR30-C, DCL13-C, DCL16-C, DCL18-C, DCL31-C, DCL41-C, EXP10-C, EXP33-C, EXP34-C, EXP36-C, INT32-C, INT34-C, MEM03-C, MEM12-C, MEM30-C, MEM31-C, MSC13-C, MSC37-C, PRE05-C, PRE30-C, PRE31-C, PRE32-C, and SIG30-C.
 Before adding a name-heuristic workaround for a macro-opacity false
 positive, check whether this engine already covers it — see
 <code class="docutils literal notranslate"><span class="pre">docs/design/macro-expansion.md</span></code> for the full design rationale and a
@@ -320,7 +320,7 @@ custom-deallocator credit (MEM31-C)</p></td>
 <td><p>Arbitrary macro bodies are not expanded.  A
 registry-based engine (<code class="docutils literal notranslate"><span class="pre">macro_expand.rs</span></code>,
 see above) name-independently recognizes a
-growing set of shapes for 24
+growing set of shapes for 23
 rules; outside those shapes macros are still
 opaque function
 calls, partially mitigated by
