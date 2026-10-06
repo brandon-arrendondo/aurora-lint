@@ -13,6 +13,7 @@ use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::{
     declares_static, get_node_text, static_macro_names_in_scope,
 };
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -79,10 +80,8 @@ impl Dcl15C {
         // a nested translation_unit if we're not already at one (e.g. an
         // unbalanced extern "C" makes tree-sitter return an ERROR root).
         for tu in query::find_descendants_of_kind(*node, "translation_unit") {
-            for i in 0..tu.child_count() {
-                if let Some(child) = tu.child(i) {
-                    self.check_file_scope_declaration(&child, source, violations);
-                }
+            for child in tu.child_nodes() {
+                self.check_file_scope_declaration(&child, source, violations);
             }
         }
     }
@@ -217,11 +216,9 @@ impl Dcl15C {
             Some(get_node_text(node, source).to_string())
         } else {
             // Recursively search for identifier
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if let Some(id) = self.extract_identifier(&child, source) {
-                        return Some(id);
-                    }
+            for child in node.child_nodes() {
+                if let Some(id) = self.extract_identifier(&child, source) {
+                    return Some(id);
                 }
             }
             None
@@ -245,19 +242,17 @@ impl Dcl15C {
 
     fn is_variable_declaration(&self, node: &Node, source: &str) -> bool {
         // Check if this declaration contains a declarator (not just a type definition)
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                // Skip typedef, struct, union, enum declarations
-                if child.kind() == "storage_class_specifier" {
-                    let text = get_node_text(&child, source);
-                    if text == "typedef" || text == "extern" {
-                        return false;
-                    }
+        for child in node.child_nodes() {
+            // Skip typedef, struct, union, enum declarations
+            if child.kind() == "storage_class_specifier" {
+                let text = get_node_text(&child, source);
+                if text == "typedef" || text == "extern" {
+                    return false;
                 }
-                // If it has an init_declarator or declarator, it's a variable declaration
-                if child.kind() == "init_declarator" || child.kind() == "declarator" {
-                    return true;
-                }
+            }
+            // If it has an init_declarator or declarator, it's a variable declaration
+            if child.kind() == "init_declarator" || child.kind() == "declarator" {
+                return true;
             }
         }
         false
@@ -265,15 +260,13 @@ impl Dcl15C {
 
     fn extract_variable_name(&self, declaration: &Node, source: &str) -> Option<String> {
         // Look for declarator or init_declarator
-        for i in 0..declaration.child_count() {
-            if let Some(child) = declaration.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(declarator) = child.child_by_field_name("declarator") {
-                        return self.extract_identifier(&declarator, source);
-                    }
-                } else if child.kind() == "declarator" {
-                    return self.extract_identifier(&child, source);
+        for child in declaration.child_nodes() {
+            if child.kind() == "init_declarator" {
+                if let Some(declarator) = child.child_by_field_name("declarator") {
+                    return self.extract_identifier(&declarator, source);
                 }
+            } else if child.kind() == "declarator" {
+                return self.extract_identifier(&child, source);
             }
         }
         None

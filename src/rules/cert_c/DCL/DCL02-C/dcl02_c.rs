@@ -31,6 +31,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::node_children::NodeChildren;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -150,10 +151,8 @@ impl ScopeAnalyzer {
                     // descend into it even when it is a compound statement.
                     let is_root = node.id() == root_id;
                     if is_root || node.kind() != "compound_statement" {
-                        for i in (0..node.child_count()).rev() {
-                            if let Some(child) = node.child(i) {
-                                stack.push(child);
-                            }
+                        for child in node.child_nodes().collect::<Vec<_>>().into_iter().rev() {
+                            stack.push(child);
                         }
                     }
                 }
@@ -175,10 +174,8 @@ impl ScopeAnalyzer {
         // re-analyze itself at depth+1 repeatedly (up to MAX_SCOPE_DEPTH), emitting the
         // same finding ~100 times.
         let mut stack: Vec<Node> = Vec::new();
-        for i in (0..root.child_count()).rev() {
-            if let Some(child) = root.child(i) {
-                stack.push(child);
-            }
+        for child in root.child_nodes().collect::<Vec<_>>().into_iter().rev() {
+            stack.push(child);
         }
 
         while let Some(node) = stack.pop() {
@@ -208,10 +205,8 @@ impl ScopeAnalyzer {
                 }
                 _ => {
                     // Add children to stack to find nested scopes
-                    for i in (0..node.child_count()).rev() {
-                        if let Some(child) = node.child(i) {
-                            stack.push(child);
-                        }
+                    for child in node.child_nodes().collect::<Vec<_>>().into_iter().rev() {
+                        stack.push(child);
                     }
                 }
             }
@@ -252,10 +247,8 @@ impl ScopeAnalyzer {
             _ => {
                 // Recurse into children (except function bodies which are separate scopes)
                 if node.kind() != "compound_statement" || !self.is_function_body(node) {
-                    for i in 0..node.child_count() {
-                        if let Some(child) = node.child(i) {
-                            self.collect_identifiers(&child, source);
-                        }
+                    for child in node.child_nodes() {
+                        self.collect_identifiers(&child, source);
                     }
                 }
             }
@@ -290,10 +283,8 @@ impl ScopeAnalyzer {
             }
             _ => {
                 // Recurse to find nested scopes
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        self.analyze_child_scopes(&child, source, violations);
-                    }
+                for child in node.child_nodes() {
+                    self.analyze_child_scopes(&child, source, violations);
                 }
             }
         }
@@ -301,19 +292,17 @@ impl ScopeAnalyzer {
 
     fn collect_parameters(&mut self, declarator: &Node, source: &str) {
         if let Some(params) = declarator.child_by_field_name("parameters") {
-            for i in 0..params.child_count() {
-                if let Some(param) = params.child(i) {
-                    if param.kind() == "parameter_declaration" {
-                        if let Some(identifier) = self.extract_identifier(&param, source) {
-                            let normalized = normalize_identifier(&identifier);
-                            let pos = param.start_position();
+            for param in params.child_nodes() {
+                if param.kind() == "parameter_declaration" {
+                    if let Some(identifier) = self.extract_identifier(&param, source) {
+                        let normalized = normalize_identifier(&identifier);
+                        let pos = param.start_position();
 
-                            self.identifiers.entry(normalized).or_default().push((
-                                identifier,
-                                pos.row + 1,
-                                pos.column + 1,
-                            ));
-                        }
+                        self.identifiers.entry(normalized).or_default().push((
+                            identifier,
+                            pos.row + 1,
+                            pos.column + 1,
+                        ));
                     }
                 }
             }
@@ -351,14 +340,12 @@ impl ScopeAnalyzer {
         }
 
         // Fallback: search for identifier node
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "identifier" {
-                    return Some(ast_utils::get_node_text_owned(&child, source));
-                }
-                if let Some(name) = self.extract_identifier_with_depth(&child, source, depth + 1) {
-                    return Some(name);
-                }
+        for child in node.child_nodes() {
+            if child.kind() == "identifier" {
+                return Some(ast_utils::get_node_text_owned(&child, source));
+            }
+            if let Some(name) = self.extract_identifier_with_depth(&child, source, depth + 1) {
+                return Some(name);
             }
         }
 
@@ -397,16 +384,14 @@ impl ScopeAnalyzer {
                 }
 
                 // Fallback: find identifier child
-                for i in 0..declarator.child_count() {
-                    if let Some(child) = declarator.child(i) {
-                        if child.kind() == "identifier" {
-                            return Some(ast_utils::get_node_text_owned(&child, source));
-                        }
-                        if let Some(name) =
-                            self.get_declarator_name_with_depth(&child, source, depth + 1)
-                        {
-                            return Some(name);
-                        }
+                for child in declarator.child_nodes() {
+                    if child.kind() == "identifier" {
+                        return Some(ast_utils::get_node_text_owned(&child, source));
+                    }
+                    if let Some(name) =
+                        self.get_declarator_name_with_depth(&child, source, depth + 1)
+                    {
+                        return Some(name);
                     }
                 }
                 None

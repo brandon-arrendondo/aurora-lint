@@ -15,6 +15,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use tree_sitter::Node;
 
 pub struct Dcl20C;
@@ -42,10 +43,8 @@ impl Dcl20C {
         }
 
         // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for child in node.child_nodes() {
+            self.check_node(&child, source, violations);
         }
     }
 
@@ -75,10 +74,8 @@ impl Dcl20C {
             }
         } else {
             // Recurse to find function_declarator
-            for i in 0..declarator.child_count() {
-                if let Some(child) = declarator.child(i) {
-                    self.check_function_declarator(&child, source, violations);
-                }
+            for child in declarator.child_nodes() {
+                self.check_function_declarator(&child, source, violations);
             }
         }
     }
@@ -91,11 +88,9 @@ impl Dcl20C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for function_declarator in the declaration
-        for i in 0..decl.child_count() {
-            if let Some(child) = decl.child(i) {
-                if child.kind() == "function_declarator" || child.kind() == "init_declarator" {
-                    self.check_function_declarator(&child, source, violations);
-                }
+        for child in decl.child_nodes() {
+            if child.kind() == "function_declarator" || child.kind() == "init_declarator" {
+                self.check_function_declarator(&child, source, violations);
             }
         }
     }
@@ -111,21 +106,19 @@ impl Dcl20C {
 
         // Check if there are any parameter_declaration children
         let mut has_params = false;
-        for i in 0..params.child_count() {
-            if let Some(child) = params.child(i) {
-                if child.kind() == "parameter_declaration" {
-                    has_params = true;
-                    // Check if it's a void parameter
-                    let param_text = get_node_text(&child, source).trim();
-                    if param_text == "void" {
-                        return false; // Has explicit void, no violation
-                    }
-                } else if child.kind() == "type_identifier" {
-                    // Direct type identifier child
-                    let type_text = get_node_text(&child, source).trim();
-                    if type_text == "void" {
-                        return false; // Has explicit void
-                    }
+        for child in params.child_nodes() {
+            if child.kind() == "parameter_declaration" {
+                has_params = true;
+                // Check if it's a void parameter
+                let param_text = get_node_text(&child, source).trim();
+                if param_text == "void" {
+                    return false; // Has explicit void, no violation
+                }
+            } else if child.kind() == "type_identifier" {
+                // Direct type identifier child
+                let type_text = get_node_text(&child, source).trim();
+                if type_text == "void" {
+                    return false; // Has explicit void
                 }
             }
         }

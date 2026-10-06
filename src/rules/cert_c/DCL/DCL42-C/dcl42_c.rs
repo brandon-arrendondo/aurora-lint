@@ -26,6 +26,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -47,13 +48,11 @@ impl Dcl42C {
     /// Collect the attribute names (e.g. "reproducible", "unsequenced") attached
     /// to a function definition, without descending into the function body.
     fn collect_attributes(&self, func_def: &Node, source: &str, out: &mut HashSet<String>) {
-        for i in 0..func_def.child_count() {
-            if let Some(child) = func_def.child(i) {
-                if child.kind() == "compound_statement" {
-                    continue;
-                }
-                self.collect_attributes_recursive(&child, source, out);
+        for child in func_def.child_nodes() {
+            if child.kind() == "compound_statement" {
+                continue;
             }
+            self.collect_attributes_recursive(&child, source, out);
         }
     }
 
@@ -64,34 +63,28 @@ impl Dcl42C {
             }
             return;
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_attributes_recursive(&child, source, out);
-            }
+        for child in node.child_nodes() {
+            self.collect_attributes_recursive(&child, source, out);
         }
     }
 
     /// Collect the names of variables declared at file (global) scope, looking
     /// through preprocessor conditional blocks and skipping function prototypes.
     fn collect_global_names(&self, root: &Node, source: &str, out: &mut HashSet<String>) {
-        for i in 0..root.child_count() {
-            if let Some(child) = root.child(i) {
-                match child.kind() {
-                    "declaration" => {
-                        if query::find_first_descendant(child, |n| {
-                            n.kind() == "function_declarator"
-                        })
+        for child in root.child_nodes() {
+            match child.kind() {
+                "declaration" => {
+                    if query::find_first_descendant(child, |n| n.kind() == "function_declarator")
                         .is_some()
-                        {
-                            continue;
-                        }
-                        self.collect_declarator_names(&child, source, out);
+                    {
+                        continue;
                     }
-                    k if k.starts_with("preproc_") => {
-                        self.collect_global_names(&child, source, out);
-                    }
-                    _ => {}
+                    self.collect_declarator_names(&child, source, out);
                 }
+                k if k.starts_with("preproc_") => {
+                    self.collect_global_names(&child, source, out);
+                }
+                _ => {}
             }
         }
     }

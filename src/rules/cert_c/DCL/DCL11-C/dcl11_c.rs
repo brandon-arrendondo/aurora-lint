@@ -16,6 +16,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::call_roles;
+use crate::utility::cert_c::node_children::NodeChildren;
 use tree_sitter::Node;
 
 pub struct Dcl11C;
@@ -46,10 +47,8 @@ impl Dcl11C {
         }
 
         // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for child in node.child_nodes() {
+            self.check_node(&child, source, violations);
         }
     }
 
@@ -144,11 +143,9 @@ impl Dcl11C {
     fn extract_arguments<'a>(&self, args_node: &Node<'a>, _source: &'a str) -> Vec<Node<'a>> {
         let mut args = Vec::new();
 
-        for i in 0..args_node.child_count() {
-            if let Some(child) = args_node.child(i) {
-                if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
-                    args.push(child);
-                }
+        for child in args_node.child_nodes() {
+            if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
+                args.push(child);
             }
         }
 
@@ -420,11 +417,9 @@ impl Dcl11C {
         }
 
         // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(init) = self.search_for_initializer(&child, var_name, source) {
-                    return Some(init);
-                }
+        for child in node.child_nodes() {
+            if let Some(init) = self.search_for_initializer(&child, var_name, source) {
+                return Some(init);
             }
         }
 
@@ -455,11 +450,9 @@ impl Dcl11C {
         }
 
         // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(type_str) = self.search_for_declaration(&child, var_name, source) {
-                    return Some(type_str);
-                }
+        for child in node.child_nodes() {
+            if let Some(type_str) = self.search_for_declaration(&child, var_name, source) {
+                return Some(type_str);
             }
         }
 
@@ -477,14 +470,12 @@ impl Dcl11C {
         }
 
         // Handle pointer declarator, array declarator, etc.
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "identifier" {
-                    return Some(get_node_text(&child, source).to_string());
-                }
-                if let Some(id) = self.find_identifier_in_declarator(&child, source) {
-                    return Some(id);
-                }
+        for child in node.child_nodes() {
+            if child.kind() == "identifier" {
+                return Some(get_node_text(&child, source).to_string());
+            }
+            if let Some(id) = self.find_identifier_in_declarator(&child, source) {
+                return Some(id);
             }
         }
 

@@ -19,6 +19,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -72,13 +73,11 @@ impl CertRule for Dcl30C {
 impl Dcl30C {
     /// Recursively collect file-scope declarations, including inside preprocessor blocks.
     fn collect_file_scope_declarations<'a>(node: &Node<'a>, decls: &mut Vec<Node<'a>>) {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "declaration" {
-                    decls.push(child);
-                } else if child.kind().starts_with("preproc_") {
-                    Self::collect_file_scope_declarations(&child, decls);
-                }
+        for child in node.child_nodes() {
+            if child.kind() == "declaration" {
+                decls.push(child);
+            } else if child.kind().starts_with("preproc_") {
+                Self::collect_file_scope_declarations(&child, decls);
             }
         }
     }
@@ -86,51 +85,49 @@ impl Dcl30C {
     /// Check if a return statement returns a pointer to a local variable
     fn check_return_local(&self, return_node: &Node, source: &str) -> Option<RuleViolation> {
         // Get the returned expression
-        for i in 0..return_node.child_count() {
-            if let Some(child) = return_node.child(i) {
-                if child.kind() == "identifier" {
-                    let var_name = ast_utils::get_node_text(&child, source).to_string();
+        for child in return_node.child_nodes() {
+            if child.kind() == "identifier" {
+                let var_name = ast_utils::get_node_text(&child, source).to_string();
 
-                    // Only flag if the local is a pointer or array type.
-                    // Returning a scalar by value copies the value — it is safe and
-                    // is NOT what DCL30-C is about.
-                    if self.is_local_variable(&child, source)
-                        && self.local_var_is_pointer_or_array(&child, &var_name, source)
-                    {
-                        // Don't flag if the pointer was assigned from heap allocation
-                        // (malloc, calloc, realloc, or wrapper functions). Returning
-                        // a heap pointer via a local variable is safe — the allocated
-                        // memory outlives the function scope. This is the standard
-                        // factory/constructor pattern in C.
-                        if self.local_var_is_heap_allocated(&child, &var_name, source) {
-                            return None;
-                        }
-
-                        // Don't flag if the pointer was assigned from a static
-                        // variable's address (e.g., ptrCharString = &staticArray[1]).
-                        // Static storage outlives the function scope.
-                        if self.local_ptr_points_to_static(&child, &var_name, source) {
-                            return None;
-                        }
-
-                        let start_point = return_node.start_position();
-
-                        return Some(RuleViolation {
-                            rule_id: "DCL30-C".to_string(),
-                            severity: Severity::High,
-                            message: format!(
-                                "Function returns pointer to local variable '{}' with automatic storage duration",
-                                var_name
-                            ),
-                            file_path: String::new(),
-                            line: start_point.row + 1,
-                            column: start_point.column + 1,
-                            suggestion: Some(
-                                "Use static storage, allocated memory, or pass output buffer as parameter".to_string()
-                            ),
-                            ..Default::default()
-                        });
+                // Only flag if the local is a pointer or array type.
+                // Returning a scalar by value copies the value — it is safe and
+                // is NOT what DCL30-C is about.
+                if self.is_local_variable(&child, source)
+                    && self.local_var_is_pointer_or_array(&child, &var_name, source)
+                {
+                    // Don't flag if the pointer was assigned from heap allocation
+                    // (malloc, calloc, realloc, or wrapper functions). Returning
+                    // a heap pointer via a local variable is safe — the allocated
+                    // memory outlives the function scope. This is the standard
+                    // factory/constructor pattern in C.
+                    if self.local_var_is_heap_allocated(&child, &var_name, source) {
+                        return None;
                     }
+
+                    // Don't flag if the pointer was assigned from a static
+                    // variable's address (e.g., ptrCharString = &staticArray[1]).
+                    // Static storage outlives the function scope.
+                    if self.local_ptr_points_to_static(&child, &var_name, source) {
+                        return None;
+                    }
+
+                    let start_point = return_node.start_position();
+
+                    return Some(RuleViolation {
+                        rule_id: "DCL30-C".to_string(),
+                        severity: Severity::High,
+                        message: format!(
+                            "Function returns pointer to local variable '{}' with automatic storage duration",
+                            var_name
+                        ),
+                        file_path: String::new(),
+                        line: start_point.row + 1,
+                        column: start_point.column + 1,
+                        suggestion: Some(
+                            "Use static storage, allocated memory, or pass output buffer as parameter".to_string()
+                        ),
+                        ..Default::default()
+                    });
                 }
             }
         }
@@ -222,32 +219,30 @@ impl Dcl30C {
     fn find_static_address_assignment(&self, body: &Node, var_name: &str, source: &str) -> bool {
         let mut stack = vec![*body];
         while let Some(cur_body) = stack.pop() {
-            for i in 0..cur_body.child_count() {
-                if let Some(child) = cur_body.child(i) {
-                    if child.kind() == "expression_statement" {
-                        if let Some(expr) = child.child(0) {
-                            if expr.kind() == "assignment_expression" {
-                                if let (Some(left), Some(right)) = (
-                                    expr.child_by_field_name("left"),
-                                    expr.child_by_field_name("right"),
-                                ) {
-                                    let left_text = ast_utils::get_node_text(&left, source);
-                                    if left_text == var_name {
-                                        if let Some(src_var) =
-                                            self.extract_address_of_target(&right, source)
-                                        {
-                                            if self.is_static_local(&cur_body, &src_var, source) {
-                                                return true;
-                                            }
+            for child in cur_body.child_nodes() {
+                if child.kind() == "expression_statement" {
+                    if let Some(expr) = child.child(0) {
+                        if expr.kind() == "assignment_expression" {
+                            if let (Some(left), Some(right)) = (
+                                expr.child_by_field_name("left"),
+                                expr.child_by_field_name("right"),
+                            ) {
+                                let left_text = ast_utils::get_node_text(&left, source);
+                                if left_text == var_name {
+                                    if let Some(src_var) =
+                                        self.extract_address_of_target(&right, source)
+                                    {
+                                        if self.is_static_local(&cur_body, &src_var, source) {
+                                            return true;
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                    if child.kind() == "compound_statement" || child.kind() == "if_statement" {
-                        stack.push(child);
-                    }
+                }
+                if child.kind() == "compound_statement" || child.kind() == "if_statement" {
+                    stack.push(child);
                 }
             }
         }
@@ -303,18 +298,16 @@ impl Dcl30C {
 
     /// Check if `var_name` is declared with `static` storage in the function body.
     fn is_static_local(&self, body: &Node, var_name: &str, source: &str) -> bool {
-        for i in 0..body.child_count() {
-            if let Some(child) = body.child(i) {
-                if child.kind() == "declaration" {
-                    if self.declaration_contains_var_by_name(&child, var_name, source) {
-                        let decl_text = ast_utils::get_node_text(&child, source);
-                        return decl_text.contains("static");
-                    }
+        for child in body.child_nodes() {
+            if child.kind() == "declaration" {
+                if self.declaration_contains_var_by_name(&child, var_name, source) {
+                    let decl_text = ast_utils::get_node_text(&child, source);
+                    return decl_text.contains("static");
                 }
-                if child.kind() == "compound_statement" {
-                    if self.is_static_local(&child, var_name, source) {
-                        return true;
-                    }
+            }
+            if child.kind() == "compound_statement" {
+                if self.is_static_local(&child, var_name, source) {
+                    return true;
                 }
             }
         }
@@ -324,38 +317,36 @@ impl Dcl30C {
     /// Search a function body for evidence that `var_name` holds a heap pointer
     /// or a pointer copied from another (non-local-address) source.
     fn find_heap_allocation_for_var(&self, body: &Node, var_name: &str, source: &str) -> bool {
-        for i in 0..body.child_count() {
-            if let Some(child) = body.child(i) {
-                if child.kind() == "declaration" {
-                    if self.declaration_contains_var_by_name(&child, var_name, source) {
-                        // Check initializer for alloc
-                        if self.declaration_has_alloc_initializer(&child, source) {
+        for child in body.child_nodes() {
+            if child.kind() == "declaration" {
+                if self.declaration_contains_var_by_name(&child, var_name, source) {
+                    // Check initializer for alloc
+                    if self.declaration_has_alloc_initializer(&child, source) {
+                        return true;
+                    }
+                    // If left uninitialized or initialized to NULL, the variable's
+                    // real value comes from a later assignment — check that instead.
+                    // "No initializer at all" must be treated the same as "NULL"
+                    // here: `char **nnames;` declared bare and only ever set via
+                    // `nnames = os_realloc_array(...)` inside a loop is the standard
+                    // realloc-into-local idiom and is just as heap-derived as an
+                    // explicit `= NULL` placeholder.
+                    if self.declaration_var_uninitialized_or_null(&child, var_name, source) {
+                        if self.has_alloc_assignment_in_body(body, var_name, source) {
                             return true;
                         }
-                        // If left uninitialized or initialized to NULL, the variable's
-                        // real value comes from a later assignment — check that instead.
-                        // "No initializer at all" must be treated the same as "NULL"
-                        // here: `char **nnames;` declared bare and only ever set via
-                        // `nnames = os_realloc_array(...)` inside a loop is the standard
-                        // realloc-into-local idiom and is just as heap-derived as an
-                        // explicit `= NULL` placeholder.
-                        if self.declaration_var_uninitialized_or_null(&child, var_name, source) {
-                            if self.has_alloc_assignment_in_body(body, var_name, source) {
-                                return true;
-                            }
-                            // Also safe: pointer assigned from struct member access or function call
-                            // (not address-of local). If only assigned from field_expression or
-                            // call_expression, it holds a non-local pointer.
-                            if self.only_assigned_safe_sources(body, var_name, source) {
-                                return true;
-                            }
+                        // Also safe: pointer assigned from struct member access or function call
+                        // (not address-of local). If only assigned from field_expression or
+                        // call_expression, it holds a non-local pointer.
+                        if self.only_assigned_safe_sources(body, var_name, source) {
+                            return true;
                         }
                     }
                 }
-                if child.kind() == "compound_statement" {
-                    if self.find_heap_allocation_for_var(&child, var_name, source) {
-                        return true;
-                    }
+            }
+            if child.kind() == "compound_statement" {
+                if self.find_heap_allocation_for_var(&child, var_name, source) {
+                    return true;
                 }
             }
         }
@@ -372,28 +363,24 @@ impl Dcl30C {
         var_name: &str,
         source: &str,
     ) -> bool {
-        for i in 0..decl.child_count() {
-            if let Some(child) = decl.child(i) {
-                match child.kind() {
-                    "init_declarator"
-                        if self.contains_identifier_by_name(&child, var_name, source) =>
-                    {
-                        return match child.child_by_field_name("value") {
-                            Some(value) => {
-                                let text = ast_utils::get_node_text(&value, source);
-                                text == "NULL" || text == "0" || text == "nullptr"
-                            }
-                            None => true,
-                        };
-                    }
-                    "pointer_declarator" | "array_declarator" | "identifier"
-                        if self.contains_identifier_by_name(&child, var_name, source) =>
-                    {
-                        // Plain declarator, no initializer at all.
-                        return true;
-                    }
-                    _ => {}
+        for child in decl.child_nodes() {
+            match child.kind() {
+                "init_declarator" if self.contains_identifier_by_name(&child, var_name, source) => {
+                    return match child.child_by_field_name("value") {
+                        Some(value) => {
+                            let text = ast_utils::get_node_text(&value, source);
+                            text == "NULL" || text == "0" || text == "nullptr"
+                        }
+                        None => true,
+                    };
                 }
+                "pointer_declarator" | "array_declarator" | "identifier"
+                    if self.contains_identifier_by_name(&child, var_name, source) =>
+                {
+                    // Plain declarator, no initializer at all.
+                    return true;
+                }
+                _ => {}
             }
         }
         false
@@ -411,35 +398,32 @@ impl Dcl30C {
     fn has_alloc_assignment_in_body(&self, body: &Node, var_name: &str, source: &str) -> bool {
         let mut stack = vec![*body];
         while let Some(cur_body) = stack.pop() {
-            for i in 0..cur_body.child_count() {
-                if let Some(child) = cur_body.child(i) {
-                    if child.kind() == "expression_statement" {
-                        if let Some(expr) = child.child(0) {
-                            if expr.kind() == "assignment_expression" {
-                                if let (Some(left), Some(right)) = (
-                                    expr.child_by_field_name("left"),
-                                    expr.child_by_field_name("right"),
-                                ) {
-                                    let left_text = ast_utils::get_node_text(&left, source);
-                                    if left_text == var_name
-                                        && self.is_alloc_expression(&right, source)
-                                    {
-                                        return true;
-                                    }
+            for child in cur_body.child_nodes() {
+                if child.kind() == "expression_statement" {
+                    if let Some(expr) = child.child(0) {
+                        if expr.kind() == "assignment_expression" {
+                            if let (Some(left), Some(right)) = (
+                                expr.child_by_field_name("left"),
+                                expr.child_by_field_name("right"),
+                            ) {
+                                let left_text = ast_utils::get_node_text(&left, source);
+                                if left_text == var_name && self.is_alloc_expression(&right, source)
+                                {
+                                    return true;
                                 }
                             }
                         }
                     }
-                    // Queue if-blocks, etc.
-                    if child.kind() == "if_statement" || child.kind() == "compound_statement" {
-                        stack.push(child);
-                    }
-                    if let Some(consequence) = child.child_by_field_name("consequence") {
-                        stack.push(consequence);
-                    }
-                    if let Some(alternative) = child.child_by_field_name("alternative") {
-                        stack.push(alternative);
-                    }
+                }
+                // Queue if-blocks, etc.
+                if child.kind() == "if_statement" || child.kind() == "compound_statement" {
+                    stack.push(child);
+                }
+                if let Some(consequence) = child.child_by_field_name("consequence") {
+                    stack.push(consequence);
+                }
+                if let Some(alternative) = child.child_by_field_name("alternative") {
+                    stack.push(alternative);
                 }
             }
         }
@@ -480,12 +464,10 @@ impl Dcl30C {
 
     /// Check if a declaration has an initializer that is a heap allocation call.
     fn declaration_has_alloc_initializer(&self, decl: &Node, source: &str) -> bool {
-        for i in 0..decl.child_count() {
-            if let Some(child) = decl.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(value) = child.child_by_field_name("value") {
-                        return self.is_alloc_expression(&value, source);
-                    }
+        for child in decl.child_nodes() {
+            if child.kind() == "init_declarator" {
+                if let Some(value) = child.child_by_field_name("value") {
+                    return self.is_alloc_expression(&value, source);
                 }
             }
         }
@@ -549,19 +531,17 @@ impl Dcl30C {
     /// Search a compound statement for a declaration of `var_name` that is a
     /// pointer (`*`) or array (`[`) declarator.
     fn find_pointer_or_array_declaration(&self, body: &Node, var_name: &str, source: &str) -> bool {
-        for i in 0..body.child_count() {
-            if let Some(child) = body.child(i) {
-                if child.kind() == "declaration" {
-                    if self.declaration_contains_var_by_name(&child, var_name, source) {
-                        // Check the declarator kind: pointer_declarator or array_declarator
-                        // means it is a pointer/array type.
-                        return self.declaration_has_pointer_or_array_declarator(&child);
-                    }
+        for child in body.child_nodes() {
+            if child.kind() == "declaration" {
+                if self.declaration_contains_var_by_name(&child, var_name, source) {
+                    // Check the declarator kind: pointer_declarator or array_declarator
+                    // means it is a pointer/array type.
+                    return self.declaration_has_pointer_or_array_declarator(&child);
                 }
-                if child.kind() == "compound_statement" {
-                    if self.find_pointer_or_array_declaration(&child, var_name, source) {
-                        return true;
-                    }
+            }
+            if child.kind() == "compound_statement" {
+                if self.find_pointer_or_array_declaration(&child, var_name, source) {
+                    return true;
                 }
             }
         }
@@ -575,15 +555,13 @@ impl Dcl30C {
         var_name: &str,
         source: &str,
     ) -> bool {
-        for i in 0..decl_node.child_count() {
-            if let Some(child) = decl_node.child(i) {
-                if matches!(
-                    child.kind(),
-                    "init_declarator" | "array_declarator" | "pointer_declarator" | "identifier"
-                ) {
-                    if self.contains_identifier_by_name(&child, var_name, source) {
-                        return true;
-                    }
+        for child in decl_node.child_nodes() {
+            if matches!(
+                child.kind(),
+                "init_declarator" | "array_declarator" | "pointer_declarator" | "identifier"
+            ) {
+                if self.contains_identifier_by_name(&child, var_name, source) {
+                    return true;
                 }
             }
         }
@@ -593,23 +571,18 @@ impl Dcl30C {
     /// True if the declaration node contains a pointer_declarator or array_declarator,
     /// indicating the declared variable is a pointer or array.
     fn declaration_has_pointer_or_array_declarator(&self, decl_node: &Node) -> bool {
-        for i in 0..decl_node.child_count() {
-            if let Some(child) = decl_node.child(i) {
-                match child.kind() {
-                    "pointer_declarator" | "array_declarator" => return true,
-                    "init_declarator" => {
-                        // init_declarator wraps the actual declarator
-                        for j in 0..child.child_count() {
-                            if let Some(inner) = child.child(j) {
-                                if matches!(inner.kind(), "pointer_declarator" | "array_declarator")
-                                {
-                                    return true;
-                                }
-                            }
+        for child in decl_node.child_nodes() {
+            match child.kind() {
+                "pointer_declarator" | "array_declarator" => return true,
+                "init_declarator" => {
+                    // init_declarator wraps the actual declarator
+                    for inner in child.child_nodes() {
+                        if matches!(inner.kind(), "pointer_declarator" | "array_declarator") {
+                            return true;
                         }
                     }
-                    _ => {}
                 }
+                _ => {}
             }
         }
         false
@@ -748,21 +721,19 @@ impl Dcl30C {
 
     /// Find if a variable is declared locally (not static)
     fn find_local_declaration(&self, body: &Node, var_name: &str, source: &str) -> bool {
-        for i in 0..body.child_count() {
-            if let Some(child) = body.child(i) {
-                if child.kind() == "declaration" {
-                    // Check if this declaration declares our variable
-                    if self.declaration_contains_var(&child, var_name, source) {
-                        // Check if it's NOT static
-                        let decl_text = ast_utils::get_node_text(&child, source);
-                        return !decl_text.contains("static");
-                    }
+        for child in body.child_nodes() {
+            if child.kind() == "declaration" {
+                // Check if this declaration declares our variable
+                if self.declaration_contains_var(&child, var_name, source) {
+                    // Check if it's NOT static
+                    let decl_text = ast_utils::get_node_text(&child, source);
+                    return !decl_text.contains("static");
                 }
-                // Recursively search compound statements
-                if child.kind() == "compound_statement" {
-                    if self.find_local_declaration(&child, var_name, source) {
-                        return true;
-                    }
+            }
+            // Recursively search compound statements
+            if child.kind() == "compound_statement" {
+                if self.find_local_declaration(&child, var_name, source) {
+                    return true;
                 }
             }
         }
@@ -771,17 +742,15 @@ impl Dcl30C {
 
     /// Check if a declaration contains a specific variable name
     fn declaration_contains_var(&self, decl_node: &Node, var_name: &str, source: &str) -> bool {
-        for i in 0..decl_node.child_count() {
-            if let Some(child) = decl_node.child(i) {
-                // Look for init_declarator or direct declarators
-                if matches!(
-                    child.kind(),
-                    "init_declarator" | "array_declarator" | "pointer_declarator" | "identifier"
-                ) {
-                    // Search recursively for identifier nodes using text comparison
-                    if self.contains_identifier_by_name(&child, var_name, source) {
-                        return true;
-                    }
+        for child in decl_node.child_nodes() {
+            // Look for init_declarator or direct declarators
+            if matches!(
+                child.kind(),
+                "init_declarator" | "array_declarator" | "pointer_declarator" | "identifier"
+            ) {
+                // Search recursively for identifier nodes using text comparison
+                if self.contains_identifier_by_name(&child, var_name, source) {
+                    return true;
                 }
             }
         }
@@ -866,11 +835,9 @@ impl Dcl30C {
     /// Get all statements within a compound statement (flattened)
     fn get_statements_in_body<'a>(&self, body: &Node<'a>) -> Vec<Node<'a>> {
         let mut statements = Vec::new();
-        for i in 0..body.child_count() {
-            if let Some(child) = body.child(i) {
-                if child.kind() == "expression_statement" {
-                    statements.push(child);
-                }
+        for child in body.child_nodes() {
+            if child.kind() == "expression_statement" {
+                statements.push(child);
             }
         }
         statements
@@ -879,14 +846,12 @@ impl Dcl30C {
     /// Check if a statement assigns to a specific variable
     fn assigns_to_variable(&self, stmt: &Node, var_name: &str, source: &str) -> bool {
         if stmt.kind() == "expression_statement" {
-            for i in 0..stmt.child_count() {
-                if let Some(child) = stmt.child(i) {
-                    if child.kind() == "assignment_expression" {
-                        if let Some(left) = child.child_by_field_name("left") {
-                            let left_text = ast_utils::get_node_text(&left, source);
-                            if left_text == var_name {
-                                return true;
-                            }
+            for child in stmt.child_nodes() {
+                if child.kind() == "assignment_expression" {
+                    if let Some(left) = child.child_by_field_name("left") {
+                        let left_text = ast_utils::get_node_text(&left, source);
+                        if left_text == var_name {
+                            return true;
                         }
                     }
                 }

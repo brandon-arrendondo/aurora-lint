@@ -17,6 +17,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use tree_sitter::Node;
 
 pub struct Dcl07C;
@@ -44,10 +45,8 @@ impl Dcl07C {
         }
 
         // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for child in node.child_nodes() {
+            self.check_node(&child, source, violations);
         }
     }
 
@@ -71,15 +70,13 @@ impl Dcl07C {
             let declarator_end = declarator.end_byte();
 
             // Look for declarations between declarator and body
-            for i in 0..func_node.child_count() {
-                if let Some(child) = func_node.child(i) {
-                    if child.start_byte() > declarator_end && child.kind() == "declaration" {
-                        // Check if this is before the body
-                        if let Some(body) = func_node.child_by_field_name("body") {
-                            if child.start_byte() < body.start_byte() {
-                                found_declarations_after_declarator = true;
-                                break;
-                            }
+            for child in func_node.child_nodes() {
+                if child.start_byte() > declarator_end && child.kind() == "declaration" {
+                    // Check if this is before the body
+                    if let Some(body) = func_node.child_by_field_name("body") {
+                        if child.start_byte() < body.start_byte() {
+                            found_declarations_after_declarator = true;
+                            break;
                         }
                     }
                 }
@@ -198,11 +195,9 @@ impl Dcl07C {
         }
 
         // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(count) = self.find_declaration_params(&child, source, var_name) {
-                    return Some(count);
-                }
+        for child in node.child_nodes() {
+            if let Some(count) = self.find_declaration_params(&child, source, var_name) {
+                return Some(count);
             }
         }
 
@@ -216,11 +211,9 @@ impl Dcl07C {
         source: &'a str,
     ) -> Option<usize> {
         // Look for parameter_list in the declaration
-        for i in 0..decl_node.child_count() {
-            if let Some(child) = decl_node.child(i) {
-                if let Some(count) = self.find_and_count_params(&child, source) {
-                    return Some(count);
-                }
+        for child in decl_node.child_nodes() {
+            if let Some(count) = self.find_and_count_params(&child, source) {
+                return Some(count);
             }
         }
         None
@@ -233,11 +226,9 @@ impl Dcl07C {
         }
 
         // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(count) = self.find_and_count_params(&child, source) {
-                    return Some(count);
-                }
+        for child in node.child_nodes() {
+            if let Some(count) = self.find_and_count_params(&child, source) {
+                return Some(count);
             }
         }
 
@@ -248,13 +239,11 @@ impl Dcl07C {
     fn count_parameters<'a>(&self, params_node: &Node<'a>, source: &'a str) -> usize {
         let mut count = 0;
 
-        for i in 0..params_node.child_count() {
-            if let Some(child) = params_node.child(i) {
-                if child.kind() == "parameter_declaration" {
-                    count += 1;
-                } else if child.kind() == "parameter_list" {
-                    count = self.count_parameters(&child, source);
-                }
+        for child in params_node.child_nodes() {
+            if child.kind() == "parameter_declaration" {
+                count += 1;
+            } else if child.kind() == "parameter_list" {
+                count = self.count_parameters(&child, source);
             }
         }
 
@@ -300,11 +289,9 @@ impl Dcl07C {
         }
 
         // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(count) = self.search_function_definition(&child, source, func_name) {
-                    return Some(count);
-                }
+        for child in node.child_nodes() {
+            if let Some(count) = self.search_function_definition(&child, source, func_name) {
+                return Some(count);
             }
         }
 
@@ -331,14 +318,12 @@ impl Dcl07C {
             }
             _ => {
                 // Search children
-                for i in 0..declarator.child_count() {
-                    if let Some(child) = declarator.child(i) {
-                        if child.kind() == "identifier" {
-                            return Some(get_node_text(&child, source));
-                        }
-                        if let Some(name) = self.get_function_name(&child, source) {
-                            return Some(name);
-                        }
+                for child in declarator.child_nodes() {
+                    if child.kind() == "identifier" {
+                        return Some(get_node_text(&child, source));
+                    }
+                    if let Some(name) = self.get_function_name(&child, source) {
+                        return Some(name);
                     }
                 }
                 None
@@ -355,11 +340,9 @@ impl Dcl07C {
         }
 
         // Recurse to find function_declarator
-        for i in 0..declarator.child_count() {
-            if let Some(child) = declarator.child(i) {
-                if let Some(count) = self.count_function_params(&child, source) {
-                    return Some(count);
-                }
+        for child in declarator.child_nodes() {
+            if let Some(count) = self.count_function_params(&child, source) {
+                return Some(count);
             }
         }
 

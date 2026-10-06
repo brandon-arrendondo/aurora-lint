@@ -16,6 +16,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::{operand_params_in_scope, OperandParams};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::pp_tokens::{
     define_directives, in_sorted_ranges, is_spelled_operand, LineIndex, PpKind,
 };
@@ -59,10 +60,8 @@ impl Dcl16C {
         }
 
         // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, defines, violations);
-            }
+        for child in node.child_nodes() {
+            self.check_node(&child, source, defines, violations);
         }
     }
 

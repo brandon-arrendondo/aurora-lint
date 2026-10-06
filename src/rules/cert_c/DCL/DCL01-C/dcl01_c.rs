@@ -4,6 +4,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::node_children::NodeChildren;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -105,10 +106,8 @@ fn check_scope_for_shadowing(
             }
             _ => {
                 // For other nodes, queue children for processing
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        stack.push((child, current_scope.clone()));
-                    }
+                for child in node.child_nodes() {
+                    stack.push((child, current_scope.clone()));
                 }
             }
         }
@@ -126,11 +125,9 @@ fn check_translation_unit_shadowing<'a>(
     let mut global_vars = HashMap::new();
     collect_declarations_in_node(node, source, &mut global_vars);
 
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "function_definition" {
-                stack.push((child, global_vars.clone()));
-            }
+    for child in node.child_nodes() {
+        if child.kind() == "function_definition" {
+            stack.push((child, global_vars.clone()));
         }
     }
 }
@@ -191,8 +188,7 @@ fn check_compound_statement_shadowing<'a>(
 ) {
     let mut block_vars = HashMap::new();
 
-    for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else { continue };
+    for child in node.child_nodes() {
         if child.kind() != "declaration" {
             continue;
         }
@@ -223,8 +219,7 @@ fn check_compound_statement_shadowing<'a>(
 
     // Queue nested scopes, in reverse so they're popped in original
     // left-to-right document order.
-    for i in (0..node.child_count()).rev() {
-        let Some(child) = node.child(i) else { continue };
+    for child in node.child_nodes().collect::<Vec<_>>().into_iter().rev() {
         if matches!(
             child.kind(),
             "compound_statement"
@@ -312,13 +307,11 @@ fn collect_declarations_in_node(
     source: &str,
     vars: &mut HashMap<String, (usize, usize)>,
 ) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "declaration" {
-                let decls = extract_declarations(&child, source);
-                for (var_name, line, col) in decls {
-                    vars.insert(var_name, (line, col));
-                }
+    for child in node.child_nodes() {
+        if child.kind() == "declaration" {
+            let decls = extract_declarations(&child, source);
+            for (var_name, line, col) in decls {
+                vars.insert(var_name, (line, col));
             }
         }
     }
@@ -331,28 +324,25 @@ fn extract_declarations(decl_node: &Node, source: &str) -> Vec<(String, usize, u
     let mut declarations = Vec::new();
 
     // Look for declarators in the declaration
-    for i in 0..decl_node.child_count() {
-        if let Some(child) = decl_node.child(i) {
-            match child.kind() {
-                "init_declarator" => {
-                    if let Some(declarator) = child.child_by_field_name("declarator") {
-                        let var_name =
-                            ast_utils::get_identifier_from_declarator(&declarator, source);
-                        if !var_name.is_empty() {
-                            let pos = declarator.start_position();
-                            declarations.push((var_name, pos.row + 1, pos.column + 1));
-                        }
-                    }
-                }
-                "pointer_declarator" | "array_declarator" | "identifier" => {
-                    let var_name = ast_utils::get_identifier_from_declarator(&child, source);
+    for child in decl_node.child_nodes() {
+        match child.kind() {
+            "init_declarator" => {
+                if let Some(declarator) = child.child_by_field_name("declarator") {
+                    let var_name = ast_utils::get_identifier_from_declarator(&declarator, source);
                     if !var_name.is_empty() {
-                        let pos = child.start_position();
+                        let pos = declarator.start_position();
                         declarations.push((var_name, pos.row + 1, pos.column + 1));
                     }
                 }
-                _ => {}
             }
+            "pointer_declarator" | "array_declarator" | "identifier" => {
+                let var_name = ast_utils::get_identifier_from_declarator(&child, source);
+                if !var_name.is_empty() {
+                    let pos = child.start_position();
+                    declarations.push((var_name, pos.row + 1, pos.column + 1));
+                }
+            }
+            _ => {}
         }
     }
 
@@ -366,43 +356,30 @@ fn extract_function_parameters(func_node: &Node, source: &str) -> Vec<(String, u
     let mut parameters = Vec::new();
 
     // Find the function_declarator
-    for i in 0..func_node.child_count() {
-        if let Some(child) = func_node.child(i) {
-            if child.kind() == "function_declarator" {
-                // Find parameter_list
-                for j in 0..child.child_count() {
-                    if let Some(param_list) = child.child(j) {
-                        if param_list.kind() == "parameter_list" {
-                            // Extract each parameter
-                            for k in 0..param_list.child_count() {
-                                if let Some(param) = param_list.child(k) {
-                                    if param.kind() == "parameter_declaration" {
-                                        // Find the declarator in the parameter
-                                        for m in 0..param.child_count() {
-                                            if let Some(declarator) = param.child(m) {
-                                                if matches!(
-                                                    declarator.kind(),
-                                                    "identifier"
-                                                        | "pointer_declarator"
-                                                        | "array_declarator"
-                                                        | "function_declarator"
-                                                ) {
-                                                    let param_name =
-                                                        ast_utils::get_identifier_from_declarator(
-                                                            &declarator,
-                                                            source,
-                                                        );
-                                                    if !param_name.is_empty() {
-                                                        let pos = declarator.start_position();
-                                                        parameters.push((
-                                                            param_name,
-                                                            pos.row + 1,
-                                                            pos.column + 1,
-                                                        ));
-                                                    }
-                                                }
-                                            }
-                                        }
+    for child in func_node.child_nodes() {
+        if child.kind() == "function_declarator" {
+            // Find parameter_list
+            for param_list in child.child_nodes() {
+                if param_list.kind() == "parameter_list" {
+                    // Extract each parameter
+                    for param in param_list.child_nodes() {
+                        if param.kind() == "parameter_declaration" {
+                            // Find the declarator in the parameter
+                            for declarator in param.child_nodes() {
+                                if matches!(
+                                    declarator.kind(),
+                                    "identifier"
+                                        | "pointer_declarator"
+                                        | "array_declarator"
+                                        | "function_declarator"
+                                ) {
+                                    let param_name = ast_utils::get_identifier_from_declarator(
+                                        &declarator,
+                                        source,
+                                    );
+                                    if !param_name.is_empty() {
+                                        let pos = declarator.start_position();
+                                        parameters.push((param_name, pos.row + 1, pos.column + 1));
                                     }
                                 }
                             }
@@ -418,12 +395,7 @@ fn extract_function_parameters(func_node: &Node, source: &str) -> Vec<(String, u
 
 /// Find the compound_statement (body) of a function
 fn find_compound_statement<'a>(func_node: &Node<'a>) -> Option<Node<'a>> {
-    for i in 0..func_node.child_count() {
-        if let Some(child) = func_node.child(i) {
-            if child.kind() == "compound_statement" {
-                return Some(child);
-            }
-        }
-    }
-    None
+    func_node
+        .child_nodes()
+        .find(|&child| child.kind() == "compound_statement")
 }

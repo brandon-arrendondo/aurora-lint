@@ -27,6 +27,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -192,11 +193,9 @@ impl Dcl39C {
 
     /// Extract struct name from struct_specifier
     fn extract_struct_name(&self, struct_node: &Node, source: &str) -> String {
-        for i in 0..struct_node.child_count() {
-            if let Some(child) = struct_node.child(i) {
-                if child.kind() == "type_identifier" {
-                    return get_node_text(&child, source).to_string();
-                }
+        for child in struct_node.child_nodes() {
+            if child.kind() == "type_identifier" {
+                return get_node_text(&child, source).to_string();
             }
         }
         String::new()
@@ -204,16 +203,12 @@ impl Dcl39C {
 
     /// Check if struct has explicit padding fields
     fn has_explicit_padding_fields(&self, struct_node: &Node, source: &str) -> bool {
-        for i in 0..struct_node.child_count() {
-            if let Some(child) = struct_node.child(i) {
-                if child.kind() == "field_declaration_list" {
-                    for j in 0..child.child_count() {
-                        if let Some(field) = child.child(j) {
-                            let field_text = get_node_text(&field, source).to_lowercase();
-                            if field_text.contains("padding") {
-                                return true;
-                            }
-                        }
+        for child in struct_node.child_nodes() {
+            if child.kind() == "field_declaration_list" {
+                for field in child.child_nodes() {
+                    let field_text = get_node_text(&field, source).to_lowercase();
+                    if field_text.contains("padding") {
+                        return true;
                     }
                 }
             }
@@ -223,18 +218,14 @@ impl Dcl39C {
 
     /// Check if struct has bitfield padding
     fn has_bitfield_padding(&self, struct_node: &Node, source: &str) -> bool {
-        for i in 0..struct_node.child_count() {
-            if let Some(child) = struct_node.child(i) {
-                if child.kind() == "field_declaration_list" {
-                    for j in 0..child.child_count() {
-                        if let Some(field) = child.child(j) {
-                            if field.kind() == "field_declaration" {
-                                let field_text = get_node_text(&field, source).to_lowercase();
-                                // Check for bitfield with padding in name
-                                if field_text.contains(":") && field_text.contains("padding") {
-                                    return true;
-                                }
-                            }
+        for child in struct_node.child_nodes() {
+            if child.kind() == "field_declaration_list" {
+                for field in child.child_nodes() {
+                    if field.kind() == "field_declaration" {
+                        let field_text = get_node_text(&field, source).to_lowercase();
+                        // Check for bitfield with padding in name
+                        if field_text.contains(":") && field_text.contains("padding") {
+                            return true;
                         }
                     }
                 }
@@ -253,21 +244,19 @@ impl Dcl39C {
         source: &str,
         struct_vars: &mut HashMap<String, StructVarInfo>,
     ) {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "declaration" {
-                    if let Some((var_name, struct_type)) =
-                        self.extract_struct_declaration(&child, source)
-                    {
-                        struct_vars.insert(
-                            var_name.clone(),
-                            StructVarInfo {
-                                var_name,
-                                struct_type,
-                                is_zeroed: false,
-                            },
-                        );
-                    }
+        for child in node.child_nodes() {
+            if child.kind() == "declaration" {
+                if let Some((var_name, struct_type)) =
+                    self.extract_struct_declaration(&child, source)
+                {
+                    struct_vars.insert(
+                        var_name.clone(),
+                        StructVarInfo {
+                            var_name,
+                            struct_type,
+                            is_zeroed: false,
+                        },
+                    );
                 }
             }
         }
@@ -363,14 +352,12 @@ impl Dcl39C {
         let mut struct_type = String::new();
         let mut var_name = String::new();
 
-        for i in 0..decl.child_count() {
-            if let Some(child) = decl.child(i) {
-                if child.kind() == "struct_specifier" || child.kind() == "type_identifier" {
-                    struct_type = get_node_text(&child, source).to_string();
-                }
-                if child.kind() == "init_declarator" || child.kind() == "identifier" {
-                    var_name = self.extract_var_name(&child, source);
-                }
+        for child in decl.child_nodes() {
+            if child.kind() == "struct_specifier" || child.kind() == "type_identifier" {
+                struct_type = get_node_text(&child, source).to_string();
+            }
+            if child.kind() == "init_declarator" || child.kind() == "identifier" {
+                var_name = self.extract_var_name(&child, source);
             }
         }
 
@@ -388,12 +375,10 @@ impl Dcl39C {
         }
 
         // Recurse to find identifier
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                let name = self.extract_var_name(&child, source);
-                if !name.is_empty() {
-                    return name;
-                }
+        for child in node.child_nodes() {
+            let name = self.extract_var_name(&child, source);
+            if !name.is_empty() {
+                return name;
             }
         }
 
@@ -419,13 +404,11 @@ impl Dcl39C {
     fn get_arguments(&self, args_node: &Node, source: &str) -> Vec<String> {
         let mut arguments = Vec::new();
 
-        for i in 0..args_node.child_count() {
-            if let Some(child) = args_node.child(i) {
-                let kind = child.kind();
-                if kind != "," && kind != "(" && kind != ")" {
-                    let arg_text = get_node_text(&child, source).to_string();
-                    arguments.push(arg_text);
-                }
+        for child in args_node.child_nodes() {
+            let kind = child.kind();
+            if kind != "," && kind != "(" && kind != ")" {
+                let arg_text = get_node_text(&child, source).to_string();
+                arguments.push(arg_text);
             }
         }
 
