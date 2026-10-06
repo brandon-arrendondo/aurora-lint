@@ -21,6 +21,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -112,23 +113,21 @@ impl Flp05C {
             let type_text = get_node_text(&type_node, source).to_string();
 
             // Find all declarators in the declaration
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "init_declarator" || child.kind() == "identifier" {
-                        // Get the variable name
-                        let var_name = if child.kind() == "init_declarator" {
-                            // Look for identifier in init_declarator
-                            child
-                                .child_by_field_name("declarator")
-                                .map(|d| get_node_text(&d, source).to_string())
-                                .unwrap_or_default()
-                        } else {
-                            get_node_text(&child, source).to_string()
-                        };
+            for child in node.child_nodes() {
+                if child.kind() == "init_declarator" || child.kind() == "identifier" {
+                    // Get the variable name
+                    let var_name = if child.kind() == "init_declarator" {
+                        // Look for identifier in init_declarator
+                        child
+                            .child_by_field_name("declarator")
+                            .map(|d| get_node_text(&d, source).to_string())
+                            .unwrap_or_default()
+                    } else {
+                        get_node_text(&child, source).to_string()
+                    };
 
-                        if !var_name.is_empty() {
-                            var_types.insert(var_name, type_text.clone());
-                        }
+                    if !var_name.is_empty() {
+                        var_types.insert(var_name, type_text.clone());
                     }
                 }
             }
@@ -145,12 +144,10 @@ impl Flp05C {
         // Check for multiplication or division with denormalized constants
         let operator = node.child_by_field_name("operator").or_else(|| {
             // Fallback: look for operator in children
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    let kind = child.kind();
-                    if kind == "*" || kind == "/" {
-                        return Some(child);
-                    }
+            for child in node.child_nodes() {
+                let kind = child.kind();
+                if kind == "*" || kind == "/" {
+                    return Some(child);
                 }
             }
             None
