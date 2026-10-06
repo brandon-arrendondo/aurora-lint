@@ -42,6 +42,7 @@ use crate::utility::cert_c::ast_utils::{
     extract_struct_name_from_type, find_containing_function, get_node_text,
     resolve_identifier_declarator,
 };
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -90,13 +91,11 @@ impl CertRule for Arr01C {
 impl Arr01C {
     /// Recursively collect file-scope declarations, including inside preprocessor blocks.
     fn collect_file_scope_declarations<'a>(node: &Node<'a>, decls: &mut Vec<Node<'a>>) {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "declaration" {
-                    decls.push(child);
-                } else if child.kind().starts_with("preproc_") {
-                    Self::collect_file_scope_declarations(&child, decls);
-                }
+        for child in node.child_nodes() {
+            if child.kind() == "declaration" {
+                decls.push(child);
+            } else if child.kind().starts_with("preproc_") {
+                Self::collect_file_scope_declarations(&child, decls);
             }
         }
     }
@@ -187,11 +186,9 @@ impl Arr01C {
         }
 
         // Check children recursively
-        for i in 0..declarator.child_count() {
-            if let Some(child) = declarator.child(i) {
-                if self.is_incomplete_array_declarator(&child) {
-                    return true;
-                }
+        for child in declarator.child_nodes() {
+            if self.is_incomplete_array_declarator(&child) {
+                return true;
             }
         }
 
@@ -223,11 +220,9 @@ impl Arr01C {
         // Find parameters list
         if let Some(params_node) = self.find_parameters_node(declarator) {
             // Process each parameter
-            for i in 0..params_node.child_count() {
-                if let Some(param) = params_node.child(i) {
-                    if param.kind() == "parameter_declaration" {
-                        self.process_parameter_declaration(&param, source, array_params);
-                    }
+            for param in params_node.child_nodes() {
+                if param.kind() == "parameter_declaration" {
+                    self.process_parameter_declaration(&param, source, array_params);
                 }
             }
         }
@@ -240,14 +235,12 @@ impl Arr01C {
         }
 
         // Recursively search in child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "function_declarator" {
-                    return child.child_by_field_name("parameters");
-                }
-                if let Some(found) = self.find_parameters_node(&child) {
-                    return Some(found);
-                }
+        for child in node.child_nodes() {
+            if child.kind() == "function_declarator" {
+                return child.child_by_field_name("parameters");
+            }
+            if let Some(found) = self.find_parameters_node(&child) {
+                return Some(found);
             }
         }
 
@@ -301,11 +294,9 @@ impl Arr01C {
         }
 
         // Check children
-        for i in 0..declarator.child_count() {
-            if let Some(child) = declarator.child(i) {
-                if self.is_pointer_declarator(&child) {
-                    return true;
-                }
+        for child in declarator.child_nodes() {
+            if self.is_pointer_declarator(&child) {
+                return true;
             }
         }
 
@@ -319,11 +310,9 @@ impl Arr01C {
         }
 
         // Check children recursively
-        for i in 0..declarator.child_count() {
-            if let Some(child) = declarator.child(i) {
-                if self.is_array_declarator(&child) {
-                    return true;
-                }
+        for child in declarator.child_nodes() {
+            if self.is_array_declarator(&child) {
+                return true;
             }
         }
 
@@ -351,11 +340,9 @@ impl Arr01C {
             }
             _ => {
                 // Search children
-                for i in 0..declarator.child_count() {
-                    if let Some(child) = declarator.child(i) {
-                        if let Some(name) = self.extract_param_name(&child, source) {
-                            return Some(name);
-                        }
+                for child in declarator.child_nodes() {
+                    if let Some(name) = self.extract_param_name(&child, source) {
+                        return Some(name);
                     }
                 }
                 None
@@ -513,11 +500,9 @@ impl Arr01C {
         }
 
         // Check children
-        for i in 0..declarator.child_count() {
-            if let Some(child) = declarator.child(i) {
-                if self.is_init_declarator_with_va_arg(&child, var_name, source) {
-                    return true;
-                }
+        for child in declarator.child_nodes() {
+            if self.is_init_declarator_with_va_arg(&child, var_name, source) {
+                return true;
             }
         }
 
@@ -535,11 +520,9 @@ impl Arr01C {
         }
 
         // Check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.is_va_arg_call(&child, source) {
-                    return true;
-                }
+        for child in node.child_nodes() {
+            if self.is_va_arg_call(&child, source) {
+                return true;
             }
         }
 
@@ -642,8 +625,8 @@ impl FlexibleArrayMembers {
             let Some(body) = spec.child_by_field_name("body") else {
                 continue;
             };
-            let fields: Vec<Node> = (0..body.named_child_count())
-                .filter_map(|i| body.named_child(i))
+            let fields: Vec<Node> = body
+                .named_child_nodes()
                 .filter(|f| f.kind() == "field_declaration")
                 .collect();
             let Some(last) = fields.last() else {
@@ -672,8 +655,8 @@ impl FlexibleArrayMembers {
             if let Some(parent) = spec.parent() {
                 if parent.kind() == "type_definition" {
                     names.extend(
-                        (0..parent.named_child_count())
-                            .filter_map(|i| parent.named_child(i))
+                        parent
+                            .named_child_nodes()
                             .filter(|c| c.kind() == "type_identifier")
                             .map(|c| get_node_text(&c, source).to_string()),
                     );

@@ -11,6 +11,7 @@ use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::{self, find_containing_function, get_node_text};
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::guard_dominance;
+use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -342,10 +343,8 @@ impl Arr38C {
                 }
                 _ => {}
             }
-            for i in (0..n.child_count()).rev() {
-                if let Some(child) = n.child(i) {
-                    stack.push(child);
-                }
+            for child in n.child_nodes().collect::<Vec<_>>().into_iter().rev() {
+                stack.push(child);
             }
         }
     }
@@ -1707,11 +1706,9 @@ impl Arr38C {
         let mut args = Vec::new();
 
         if let Some(arguments) = node.child_by_field_name("arguments") {
-            for i in 0..arguments.child_count() {
-                if let Some(child) = arguments.child(i) {
-                    if child.kind() != "," && child.kind() != "(" && child.kind() != ")" {
-                        args.push(get_node_text(&child, source).to_string());
-                    }
+            for child in arguments.child_nodes() {
+                if child.kind() != "," && child.kind() != "(" && child.kind() != ")" {
+                    args.push(get_node_text(&child, source).to_string());
                 }
             }
         }
@@ -3402,10 +3399,8 @@ impl Arr38C {
                 functions.push(node);
                 continue; // Don't recurse into nested function definitions
             }
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i) {
-                    stack.push(child);
-                }
+            for child in node.child_nodes().collect::<Vec<_>>().into_iter().rev() {
+                stack.push(child);
             }
         }
     }
@@ -3506,10 +3501,8 @@ impl Arr38C {
                 }
             }
 
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i) {
-                    stack.push(child);
-                }
+            for child in node.child_nodes().collect::<Vec<_>>().into_iter().rev() {
+                stack.push(child);
             }
         }
     }

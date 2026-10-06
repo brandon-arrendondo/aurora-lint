@@ -69,6 +69,7 @@ use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::guard_dominance::{
     self, collect_call_arg_guards, has_dominating_comparison, ComparisonKind,
 };
+use crate::utility::cert_c::node_children::NodeChildren;
 
 pub struct Arr30C {
     /// Macros any scanned file defines as `static`
@@ -642,17 +643,15 @@ impl Arr30C {
         }
 
         // Recursively process children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.extract_buffers_from_ast(
-                    &child,
-                    source,
-                    buffers,
-                    typedefs,
-                    macros,
-                    include_function_bodies,
-                );
-            }
+        for child in node.child_nodes() {
+            self.extract_buffers_from_ast(
+                &child,
+                source,
+                buffers,
+                typedefs,
+                macros,
+                include_function_bodies,
+            );
         }
     }
 
@@ -673,20 +672,16 @@ impl Arr30C {
         buffers: &mut HashMap<String, BufferInfo>,
     ) {
         // Find the field_declaration_list child node
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "field_declaration_list" {
-                    // Process each field_declaration within the list
-                    for j in 0..child.child_count() {
-                        if let Some(field) = child.child(j) {
-                            if field.kind() == "field_declaration" {
-                                // Extract array member from field_declaration
-                                if let Some(member_info) =
-                                    self.extract_array_from_field_declaration(&field, source)
-                                {
-                                    buffers.insert(member_info.name.clone(), member_info);
-                                }
-                            }
+        for child in node.child_nodes() {
+            if child.kind() == "field_declaration_list" {
+                // Process each field_declaration within the list
+                for field in child.child_nodes() {
+                    if field.kind() == "field_declaration" {
+                        // Extract array member from field_declaration
+                        if let Some(member_info) =
+                            self.extract_array_from_field_declaration(&field, source)
+                        {
+                            buffers.insert(member_info.name.clone(), member_info);
                         }
                     }
                 }
@@ -702,53 +697,51 @@ impl Arr30C {
         source: &str,
     ) -> Option<BufferInfo> {
         // Look for array_declarator within the field_declaration
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "array_declarator" {
-                    // Extract member name and size from array_declarator
-                    let mut member_name: Option<String> = None;
-                    let mut array_size: Option<usize> = None;
+        for child in node.child_nodes() {
+            if child.kind() == "array_declarator" {
+                // Extract member name and size from array_declarator
+                let mut member_name: Option<String> = None;
+                let mut array_size: Option<usize> = None;
 
-                    for j in 0..child.child_count() {
-                        if let Some(declarator_child) = child.child(j) {
-                            match declarator_child.kind() {
-                                "field_identifier" => {
-                                    // Struct member names use field_identifier
-                                    member_name = Some(
-                                        source[declarator_child.start_byte()
-                                            ..declarator_child.end_byte()]
-                                            .to_string(),
-                                    );
-                                }
-                                "identifier" if j == 0 => {
-                                    // Could also be a regular identifier in some cases
-                                    member_name = Some(
-                                        source[declarator_child.start_byte()
-                                            ..declarator_child.end_byte()]
-                                            .to_string(),
-                                    );
-                                }
-                                "number_literal" => {
-                                    // Array size
-                                    let size_str = &source[declarator_child.start_byte()
-                                        ..declarator_child.end_byte()];
-                                    array_size = size_str.parse().ok();
-                                }
-                                _ => {}
+                for j in 0..child.child_count() {
+                    if let Some(declarator_child) = child.child(j) {
+                        match declarator_child.kind() {
+                            "field_identifier" => {
+                                // Struct member names use field_identifier
+                                member_name = Some(
+                                    source[declarator_child.start_byte()
+                                        ..declarator_child.end_byte()]
+                                        .to_string(),
+                                );
                             }
+                            "identifier" if j == 0 => {
+                                // Could also be a regular identifier in some cases
+                                member_name = Some(
+                                    source[declarator_child.start_byte()
+                                        ..declarator_child.end_byte()]
+                                        .to_string(),
+                                );
+                            }
+                            "number_literal" => {
+                                // Array size
+                                let size_str = &source
+                                    [declarator_child.start_byte()..declarator_child.end_byte()];
+                                array_size = size_str.parse().ok();
+                            }
+                            _ => {}
                         }
                     }
+                }
 
-                    // If we found both name and size, create BufferInfo
-                    if let (Some(name), Some(size)) = (member_name, array_size) {
-                        return Some(BufferInfo {
-                            name,
-                            size: BufferSize::Static(size),
-                            element_type: "struct_member".to_string(),
-                            allocation_line: node.start_position().row + 1,
-                            alloc_bytes: None,
-                        });
-                    }
+                // If we found both name and size, create BufferInfo
+                if let (Some(name), Some(size)) = (member_name, array_size) {
+                    return Some(BufferInfo {
+                        name,
+                        size: BufferSize::Static(size),
+                        element_type: "struct_member".to_string(),
+                        allocation_line: node.start_position().row + 1,
+                        alloc_bytes: None,
+                    });
                 }
             }
         }
@@ -763,18 +756,16 @@ impl Arr30C {
         _typedefs: &HashMap<String, usize>,
     ) -> Option<BufferInfo> {
         // Look for array_declarator with identifier size (not number_literal)
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "init_declarator" {
-                    // Check first child for array_declarator
-                    if let Some(declarator) = child.child(0) {
-                        if declarator.kind() == "array_declarator" {
-                            return self.extract_vla_from_array_declarator(&declarator, source);
-                        }
+        for child in node.child_nodes() {
+            if child.kind() == "init_declarator" {
+                // Check first child for array_declarator
+                if let Some(declarator) = child.child(0) {
+                    if declarator.kind() == "array_declarator" {
+                        return self.extract_vla_from_array_declarator(&declarator, source);
                     }
-                } else if child.kind() == "array_declarator" {
-                    return self.extract_vla_from_array_declarator(&child, source);
                 }
+            } else if child.kind() == "array_declarator" {
+                return self.extract_vla_from_array_declarator(&child, source);
             }
         }
         None
@@ -891,10 +882,8 @@ impl Arr30C {
         }
 
         // Recursively process children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.extract_aliases_from_ast(&child, source, buffers, aliases);
-            }
+        for child in node.child_nodes() {
+            self.extract_aliases_from_ast(&child, source, buffers, aliases);
         }
     }
 
@@ -1219,11 +1208,8 @@ impl Arr30C {
     /// can resolve. Counts arguments the way [`Self::get_function_arguments`]
     /// does, so the index matches its returned text.
     fn argument_identifier_node<'a>(&self, call: &Node<'a>, idx: usize) -> Option<Node<'a>> {
-        let args = (0..call.child_count())
-            .filter_map(|i| call.child(i))
-            .find(|c| c.kind() == "argument_list")?;
-        (0..args.child_count())
-            .filter_map(|j| args.child(j))
+        let args = call.child_nodes().find(|c| c.kind() == "argument_list")?;
+        args.child_nodes()
             .filter(|a| !matches!(a.kind(), "(" | ")" | ","))
             .nth(idx)
             .filter(|a| a.kind() == "identifier")
@@ -1468,8 +1454,7 @@ impl Arr30C {
         if let Some(init) = Self::declaration_initializer_for(&decl, name, source) {
             last_value_expr = Some(init);
         }
-        for i in 0..block.child_count() {
-            let Some(stmt) = block.child(i) else { continue };
+        for stmt in block.child_nodes() {
             if stmt.id() == decl.id() {
                 continue;
             }
@@ -1580,8 +1565,7 @@ impl Arr30C {
         name: &str,
         source: &str,
     ) -> Option<Node<'a>> {
-        for i in 0..decl.child_count() {
-            let child = decl.child(i)?;
+        for child in decl.child_nodes() {
             if child.kind() != "init_declarator" {
                 continue;
             }
@@ -1672,11 +1656,9 @@ impl Arr30C {
     /// Visit every descendant of `node` (not including `node` itself),
     /// preorder, calling `visit` on each.
     fn for_each_descendant<'a>(node: &Node<'a>, visit: &mut impl FnMut(Node<'a>)) {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                visit(child);
-                Self::for_each_descendant(&child, visit);
-            }
+        for child in node.child_nodes() {
+            visit(child);
+            Self::for_each_descendant(&child, visit);
         }
     }
 
@@ -1721,29 +1703,27 @@ impl Arr30C {
         ];
         if let Some(declarator) = func_node.child_by_field_name("declarator") {
             if let Some(param_list) = find_param_list_node(&declarator) {
-                for i in 0..param_list.child_count() {
-                    if let Some(param) = param_list.child(i) {
-                        if param.kind() != "parameter_declaration" {
-                            continue;
-                        }
-                        // Check if the declarator contains param_name
-                        let param_text = &source[param.start_byte()..param.end_byte()];
-                        if !param_text.contains(param_name) {
-                            continue;
-                        }
-                        // Get the type
-                        if let Some(type_node) = param.child_by_field_name("type") {
-                            let type_text = &source[type_node.start_byte()..type_node.end_byte()];
-                            let stripped = type_text
-                                .replace("const", "")
-                                .replace("volatile", "")
-                                .replace("restrict", "")
-                                .replace("struct", "")
-                                .replace("union", "")
-                                .replace("enum", "");
-                            let stripped = stripped.trim();
-                            return !primitive_types.contains(&stripped);
-                        }
+                for param in param_list.child_nodes() {
+                    if param.kind() != "parameter_declaration" {
+                        continue;
+                    }
+                    // Check if the declarator contains param_name
+                    let param_text = &source[param.start_byte()..param.end_byte()];
+                    if !param_text.contains(param_name) {
+                        continue;
+                    }
+                    // Get the type
+                    if let Some(type_node) = param.child_by_field_name("type") {
+                        let type_text = &source[type_node.start_byte()..type_node.end_byte()];
+                        let stripped = type_text
+                            .replace("const", "")
+                            .replace("volatile", "")
+                            .replace("restrict", "")
+                            .replace("struct", "")
+                            .replace("union", "")
+                            .replace("enum", "");
+                        let stripped = stripped.trim();
+                        return !primitive_types.contains(&stripped);
                     }
                 }
             }
@@ -1813,26 +1793,24 @@ impl Arr30C {
         // Find enclosing function
         if let Some(func_node) = find_containing_function(subscript_node) {
             // Get function name
-            for i in 0..func_node.child_count() {
-                if let Some(child) = func_node.child(i) {
-                    if child.kind() == "function_declarator" {
-                        // Get function name (first child of function_declarator)
-                        if let Some(name_node) = child.child(0) {
-                            let func_name = &source[name_node.start_byte()..name_node.end_byte()];
+            for child in func_node.child_nodes() {
+                if child.kind() == "function_declarator" {
+                    // Get function name (first child of function_declarator)
+                    if let Some(name_node) = child.child(0) {
+                        let func_name = &source[name_node.start_byte()..name_node.end_byte()];
 
-                            // Search function body for calls to itself
-                            let func_text = Self::text_sans_comments_and_strings(func_node, source);
+                        // Search function body for calls to itself
+                        let func_text = Self::text_sans_comments_and_strings(func_node, source);
 
-                            // Look for function calls in the body (skip the declaration part)
-                            // Pattern: function_name( — \b-anchored so a name that's a
-                            // substring of another identifier (e.g. "foo" inside "myfoo")
-                            // can't inflate the match count.
-                            let call_pattern = format!(r"\b{}\s*\(", regex::escape(func_name));
-                            if let Ok(re) = regex::Regex::new(&call_pattern) {
-                                // Count matches - if more than 1, it's recursive (declaration + call)
-                                let matches: Vec<_> = re.find_iter(&func_text).collect();
-                                return matches.len() > 1;
-                            }
+                        // Look for function calls in the body (skip the declaration part)
+                        // Pattern: function_name( — \b-anchored so a name that's a
+                        // substring of another identifier (e.g. "foo" inside "myfoo")
+                        // can't inflate the match count.
+                        let call_pattern = format!(r"\b{}\s*\(", regex::escape(func_name));
+                        if let Ok(re) = regex::Regex::new(&call_pattern) {
+                            // Count matches - if more than 1, it's recursive (declaration + call)
+                            let matches: Vec<_> = re.find_iter(&func_text).collect();
+                            return matches.len() > 1;
                         }
                     }
                 }
@@ -1903,14 +1881,10 @@ impl Arr30C {
 
     /// Get function name from function_definition node
     fn get_function_name(&self, func_node: &Node, source: &str) -> Option<String> {
-        for i in 0..func_node.child_count() {
-            if let Some(child) = func_node.child(i) {
-                if child.kind() == "function_declarator" {
-                    if let Some(name_node) = child.child(0) {
-                        return Some(
-                            source[name_node.start_byte()..name_node.end_byte()].to_string(),
-                        );
-                    }
+        for child in func_node.child_nodes() {
+            if child.kind() == "function_declarator" {
+                if let Some(name_node) = child.child(0) {
+                    return Some(source[name_node.start_byte()..name_node.end_byte()].to_string());
                 }
             }
         }
@@ -2014,36 +1988,30 @@ impl Arr30C {
         let index_text = index_var.as_deref().unwrap_or("");
 
         // Check loop condition for safe bounds
-        for i in 0..for_node.child_count() {
-            if let Some(child) = for_node.child(i) {
-                if let Some(result) = self.condition_child_bounds_verdict(
-                    &child,
-                    source,
-                    size,
-                    macro_constants,
-                    index_text,
-                ) {
-                    return result;
-                }
+        for child in for_node.child_nodes() {
+            if let Some(result) = self.condition_child_bounds_verdict(
+                &child,
+                source,
+                size,
+                macro_constants,
+                index_text,
+            ) {
+                return result;
             }
         }
 
         // Also check inside parenthesized expressions
-        for i in 0..for_node.child_count() {
-            if let Some(child) = for_node.child(i) {
-                if child.kind() == "parenthesized_expression" {
-                    for j in 0..child.child_count() {
-                        if let Some(grandchild) = child.child(j) {
-                            if let Some(result) = self.condition_child_bounds_verdict(
-                                &grandchild,
-                                source,
-                                size,
-                                macro_constants,
-                                index_text,
-                            ) {
-                                return result;
-                            }
-                        }
+        for child in for_node.child_nodes() {
+            if child.kind() == "parenthesized_expression" {
+                for grandchild in child.child_nodes() {
+                    if let Some(result) = self.condition_child_bounds_verdict(
+                        &grandchild,
+                        source,
+                        size,
+                        macro_constants,
+                        index_text,
+                    ) {
+                        return result;
                     }
                 }
             }
@@ -2143,11 +2111,9 @@ impl Arr30C {
 
     /// Extract the condition text from an if_statement node (just the parenthesized expression)
     fn extract_if_condition_text(&self, if_node: &Node, source: &str) -> Option<String> {
-        for i in 0..if_node.child_count() {
-            if let Some(child) = if_node.child(i) {
-                if child.kind() == "parenthesized_expression" {
-                    return Some(source[child.start_byte()..child.end_byte()].to_string());
-                }
+        for child in if_node.child_nodes() {
+            if child.kind() == "parenthesized_expression" {
+                return Some(source[child.start_byte()..child.end_byte()].to_string());
             }
         }
         None
@@ -2208,31 +2174,27 @@ impl Arr30C {
     /// For loops like `for (int i = 0; i < 10; i++)`, extracts "i"
     fn extract_loop_index_variable(&self, for_node: &Node, source: &str) -> Option<String> {
         // Look for the loop initialization to find the index variable
-        for i in 0..for_node.child_count() {
-            if let Some(child) = for_node.child(i) {
-                // Look for declaration or assignment in loop init
-                if child.kind() == "declaration" {
-                    // Pattern: int i = 0
-                    for j in 0..child.child_count() {
-                        if let Some(declarator) = child.child(j) {
-                            if declarator.kind() == "init_declarator" {
-                                if let Some(identifier) = declarator.child(0) {
-                                    if identifier.kind() == "identifier" {
-                                        return Some(
-                                            source[identifier.start_byte()..identifier.end_byte()]
-                                                .to_string(),
-                                        );
-                                    }
-                                }
+        for child in for_node.child_nodes() {
+            // Look for declaration or assignment in loop init
+            if child.kind() == "declaration" {
+                // Pattern: int i = 0
+                for declarator in child.child_nodes() {
+                    if declarator.kind() == "init_declarator" {
+                        if let Some(identifier) = declarator.child(0) {
+                            if identifier.kind() == "identifier" {
+                                return Some(
+                                    source[identifier.start_byte()..identifier.end_byte()]
+                                        .to_string(),
+                                );
                             }
                         }
                     }
-                } else if child.kind() == "assignment_expression" {
-                    // Pattern: i = 0
-                    if let Some(left) = child.child(0) {
-                        if left.kind() == "identifier" {
-                            return Some(source[left.start_byte()..left.end_byte()].to_string());
-                        }
+                }
+            } else if child.kind() == "assignment_expression" {
+                // Pattern: i = 0
+                if let Some(left) = child.child(0) {
+                    if left.kind() == "identifier" {
+                        return Some(source[left.start_byte()..left.end_byte()].to_string());
                     }
                 }
             }
@@ -2255,21 +2217,19 @@ impl Arr30C {
         let mut right_node: Option<Node> = None;
         let mut found_assign = false;
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "=" {
-                    found_assign = true;
-                } else if !found_assign {
-                    left_node = Some(child);
-                } else if child.kind() == "call_expression" {
-                    right_node = Some(child);
+        for child in node.child_nodes() {
+            if child.kind() == "=" {
+                found_assign = true;
+            } else if !found_assign {
+                left_node = Some(child);
+            } else if child.kind() == "call_expression" {
+                right_node = Some(child);
+                break;
+            } else if child.kind() == "cast_expression" {
+                // Handle (type *)malloc(...) — unwrap cast to find call_expression
+                if let Some(inner_call) = Self::unwrap_cast_to_call(&child) {
+                    right_node = Some(inner_call);
                     break;
-                } else if child.kind() == "cast_expression" {
-                    // Handle (type *)malloc(...) — unwrap cast to find call_expression
-                    if let Some(inner_call) = Self::unwrap_cast_to_call(&child) {
-                        right_node = Some(inner_call);
-                        break;
-                    }
                 }
             }
         }
@@ -2340,14 +2300,8 @@ impl Arr30C {
     /// Unwrap cast_expression to find inner call_expression
     /// Handles: (char *)malloc(...), (int *)calloc(...), etc.
     fn unwrap_cast_to_call<'a>(node: &Node<'a>) -> Option<Node<'a>> {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "call_expression" {
-                    return Some(child);
-                }
-            }
-        }
-        None
+        node.child_nodes()
+            .find(|&child| child.kind() == "call_expression")
     }
 
     /// Get base array name from subscript expression (e.g., "matrix" from "matrix[i]")
@@ -2383,26 +2337,22 @@ impl Arr30C {
         let func_name = &source[func_name_node.start_byte()..func_name_node.end_byte()];
 
         // Find argument_list
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "argument_list" {
-                    // For realloc, the size is the second argument
-                    // For malloc/calloc, the size is in the first argument
-                    let arg_index = if func_name == "realloc" { 1 } else { 0 };
+        for child in node.child_nodes() {
+            if child.kind() == "argument_list" {
+                // For realloc, the size is the second argument
+                // For malloc/calloc, the size is in the first argument
+                let arg_index = if func_name == "realloc" { 1 } else { 0 };
 
-                    let mut current_arg = 0;
-                    for j in 0..child.child_count() {
-                        if let Some(arg) = child.child(j) {
-                            if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
-                                if current_arg == arg_index {
-                                    let arg_text = &source[arg.start_byte()..arg.end_byte()];
-                                    let size = buffer_size::calculate_malloc_size(arg_text)?;
-                                    let alloc_bytes = buffer_size::calculate_alloc_bytes(arg_text);
-                                    return Some((size, alloc_bytes));
-                                }
-                                current_arg += 1;
-                            }
+                let mut current_arg = 0;
+                for arg in child.child_nodes() {
+                    if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
+                        if current_arg == arg_index {
+                            let arg_text = &source[arg.start_byte()..arg.end_byte()];
+                            let size = buffer_size::calculate_malloc_size(arg_text)?;
+                            let alloc_bytes = buffer_size::calculate_alloc_bytes(arg_text);
+                            return Some((size, alloc_bytes));
                         }
+                        current_arg += 1;
                     }
                 }
             }
@@ -2949,12 +2899,10 @@ impl Arr30C {
                 }
             }
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::walk_for_mod_roundup_followup(&child, tmp, source, found);
-                if *found {
-                    return;
-                }
+        for child in node.child_nodes() {
+            Self::walk_for_mod_roundup_followup(&child, tmp, source, found);
+            if *found {
+                return;
             }
         }
     }
@@ -3091,12 +3039,10 @@ impl Arr30C {
                 }
             }
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::walk_for_alloc_size_arg(&child, array_name, source, result);
-                if result.is_some() {
-                    return;
-                }
+        for child in node.child_nodes() {
+            Self::walk_for_alloc_size_arg(&child, array_name, source, result);
+            if result.is_some() {
+                return;
             }
         }
     }
@@ -3117,8 +3063,8 @@ impl Arr30C {
             return None;
         }
         let arg_list = call.child_by_field_name("arguments")?;
-        let args: Vec<Node> = (0..arg_list.child_count())
-            .filter_map(|i| arg_list.child(i))
+        let args: Vec<Node> = arg_list
+            .child_nodes()
             .filter(|c| !matches!(c.kind(), "(" | ")" | ","))
             .collect();
         match args.len() {
@@ -3173,12 +3119,10 @@ impl Arr30C {
                 }
             }
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::walk_for_local_init_expr(&child, name, source, result);
-                if result.is_some() {
-                    return;
-                }
+        for child in node.child_nodes() {
+            Self::walk_for_local_init_expr(&child, name, source, result);
+            if result.is_some() {
+                return;
             }
         }
     }
@@ -3187,10 +3131,7 @@ impl Arr30C {
     fn strip_parens<'a>(node: &Node<'a>) -> Node<'a> {
         let mut n = *node;
         while n.kind() == "parenthesized_expression" {
-            let Some(inner) = (0..n.child_count())
-                .filter_map(|i| n.child(i))
-                .find(|c| !matches!(c.kind(), "(" | ")"))
-            else {
+            let Some(inner) = n.child_nodes().find(|c| !matches!(c.kind(), "(" | ")")) else {
                 break;
             };
             n = inner;
@@ -4194,10 +4135,7 @@ impl Arr30C {
         let mut violations = Vec::new();
 
         // Look for binary_expression children (e.g., "buffer + offset")
-        for i in 0..return_node.child_count() {
-            let Some(child) = return_node.child(i) else {
-                continue;
-            };
+        for child in return_node.child_nodes() {
             if child.kind() != "binary_expression" {
                 continue;
             }
@@ -4300,15 +4238,11 @@ impl Arr30C {
         offset: &str,
         source: &str,
     ) -> Option<Node<'a>> {
-        for j in 0..func_declarator.child_count() {
-            let param_list = func_declarator.child(j)?;
+        for param_list in func_declarator.child_nodes() {
             if param_list.kind() != "parameter_list" {
                 continue;
             }
-            for k in 0..param_list.child_count() {
-                let Some(param_decl) = param_list.child(k) else {
-                    continue;
-                };
+            for param_decl in param_list.child_nodes() {
                 if param_decl.kind() != "parameter_declaration" {
                     continue;
                 }
@@ -4703,14 +4637,12 @@ impl Arr30C {
         }
         // Fallback: last statement-like child.
         let mut found = None;
-        for i in 0..loop_node.child_count() {
-            if let Some(child) = loop_node.child(i) {
-                if matches!(
-                    child.kind(),
-                    "compound_statement" | "expression_statement" | "if_statement"
-                ) {
-                    found = Some(child);
-                }
+        for child in loop_node.child_nodes() {
+            if matches!(
+                child.kind(),
+                "compound_statement" | "expression_statement" | "if_statement"
+            ) {
+                found = Some(child);
             }
         }
         found
@@ -4938,11 +4870,9 @@ impl Arr30C {
             "parenthesized_expression" => {
                 // The wrapped expression is the non-punctuation child.
                 let mut found = None;
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.is_named() {
-                            found = Self::unwrap_to_identifier(&child, source);
-                        }
+                for child in node.child_nodes() {
+                    if child.is_named() {
+                        found = Self::unwrap_to_identifier(&child, source);
                     }
                 }
                 found
@@ -5041,10 +4971,8 @@ impl Arr30C {
                 }
             }
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_overread_helpers(&child, source, out);
-            }
+        for child in node.child_nodes() {
+            self.collect_overread_helpers(&child, source, out);
         }
     }
 
@@ -5176,11 +5104,9 @@ impl Arr30C {
                 .and_then(|v| Self::arg_base_identifier(&v, source)),
             "parenthesized_expression" => {
                 let mut found = None;
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.is_named() {
-                            found = Self::arg_base_identifier(&child, source);
-                        }
+                for child in node.child_nodes() {
+                    if child.is_named() {
+                        found = Self::arg_base_identifier(&child, source);
                     }
                 }
                 found
@@ -5230,11 +5156,9 @@ impl Arr30C {
             None => return violations,
         };
         let mut args: Vec<Node> = Vec::new();
-        for i in 0..arg_list.child_count() {
-            if let Some(child) = arg_list.child(i) {
-                if child.is_named() {
-                    args.push(child);
-                }
+        for child in arg_list.child_nodes() {
+            if child.is_named() {
+                args.push(child);
             }
         }
 
@@ -5382,20 +5306,18 @@ impl Arr30C {
     ) {
         // Check current node for malloc assignment
         if node.kind() == "declaration" {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "init_declarator" {
-                        if child
-                            .child_by_field_name("value")
-                            .is_some_and(|v| Self::is_alloc_call(&v, source))
-                        {
-                            if let Some(var_name) = self.extract_assignment_lhs(node, source) {
-                                let line = node.start_position().row + 1;
-                                malloc_vars.insert(var_name, line);
-                            }
+            for child in node.child_nodes() {
+                if child.kind() == "init_declarator" {
+                    if child
+                        .child_by_field_name("value")
+                        .is_some_and(|v| Self::is_alloc_call(&v, source))
+                    {
+                        if let Some(var_name) = self.extract_assignment_lhs(node, source) {
+                            let line = node.start_position().row + 1;
+                            malloc_vars.insert(var_name, line);
                         }
-                        break;
                     }
+                    break;
                 }
             }
         } else if node.kind() == "assignment_expression" {
@@ -5411,10 +5333,8 @@ impl Arr30C {
         }
 
         // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_malloc_assignments(&child, source, malloc_vars);
-            }
+        for child in node.child_nodes() {
+            self.find_malloc_assignments(&child, source, malloc_vars);
         }
     }
 
@@ -5422,14 +5342,12 @@ impl Arr30C {
     fn extract_assignment_lhs(&self, node: &Node, source: &str) -> Option<String> {
         // For declaration: char *buffer = malloc(...)
         if node.kind() == "declaration" {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "init_declarator" {
-                        // Get the declarator (left side)
-                        if let Some(declarator) = child.child(0) {
-                            let name = get_identifier_from_declarator(&declarator, source);
-                            return if name.is_empty() { None } else { Some(name) };
-                        }
+            for child in node.child_nodes() {
+                if child.kind() == "init_declarator" {
+                    // Get the declarator (left side)
+                    if let Some(declarator) = child.child(0) {
+                        let name = get_identifier_from_declarator(&declarator, source);
+                        return if name.is_empty() { None } else { Some(name) };
                     }
                 }
             }
@@ -5471,11 +5389,9 @@ impl Arr30C {
         }
 
         // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.find_safe_null_check(&child, source, var_name) {
-                    return true;
-                }
+        for child in node.child_nodes() {
+            if self.find_safe_null_check(&child, source, var_name) {
+                return true;
             }
         }
 
@@ -5575,11 +5491,9 @@ impl Arr30C {
         }
 
         // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(line) = self.find_pointer_arithmetic_usage(&child, source, var_name) {
-                    return Some(line);
-                }
+        for child in node.child_nodes() {
+            if let Some(line) = self.find_pointer_arithmetic_usage(&child, source, var_name) {
+                return Some(line);
             }
         }
 
@@ -5725,10 +5639,8 @@ impl Arr30C {
         }
 
         // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_flexible_array_structs(&child, source, flexible_structs);
-            }
+        for child in node.child_nodes() {
+            self.collect_flexible_array_structs(&child, source, flexible_structs);
         }
     }
 
@@ -5737,11 +5649,9 @@ impl Arr30C {
     fn find_flexible_array_member(&self, body_node: &Node, source: &str) -> Option<String> {
         // Get the last field_declaration
         let mut last_field = None;
-        for i in 0..body_node.child_count() {
-            if let Some(child) = body_node.child(i) {
-                if child.kind() == "field_declaration" {
-                    last_field = Some(child);
-                }
+        for child in body_node.child_nodes() {
+            if child.kind() == "field_declaration" {
+                last_field = Some(child);
             }
         }
 
@@ -5792,11 +5702,9 @@ impl Arr30C {
         }
 
         // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(id) = self.find_identifier_in_node(&child, source) {
-                    return Some(id);
-                }
+        for child in node.child_nodes() {
+            if let Some(id) = self.find_identifier_in_node(&child, source) {
+                return Some(id);
             }
         }
 
@@ -5935,11 +5843,9 @@ impl Arr30C {
         }
 
         // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(line) = self.find_member_walk_loop(&child, source, walk_names) {
-                    return Some(line);
-                }
+        for child in node.child_nodes() {
+            if let Some(line) = self.find_member_walk_loop(&child, source, walk_names) {
+                return Some(line);
             }
         }
 
@@ -5949,18 +5855,14 @@ impl Arr30C {
     /// Find the function_declarator node within a function_definition
     /// Handles both direct children and nested cases (e.g., pointer return types)
     fn find_function_declarator<'a>(&self, func_def_node: &'a Node) -> Option<Node<'a>> {
-        for i in 0..func_def_node.child_count() {
-            if let Some(child) = func_def_node.child(i) {
-                if child.kind() == "function_declarator" {
-                    return Some(child);
-                } else if child.kind() == "pointer_declarator" {
-                    // For pointer return types like int *f(...), the function_declarator is nested
-                    for j in 0..child.child_count() {
-                        if let Some(nested) = child.child(j) {
-                            if nested.kind() == "function_declarator" {
-                                return Some(nested);
-                            }
-                        }
+        for child in func_def_node.child_nodes() {
+            if child.kind() == "function_declarator" {
+                return Some(child);
+            } else if child.kind() == "pointer_declarator" {
+                // For pointer return types like int *f(...), the function_declarator is nested
+                for nested in child.child_nodes() {
+                    if nested.kind() == "function_declarator" {
+                        return Some(nested);
                     }
                 }
             }
@@ -5976,20 +5878,18 @@ impl Arr30C {
         let mut right_name = None;
         let mut found_plus = false;
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                match child.kind() {
-                    "identifier" if left_name.is_none() => {
-                        left_name = Some(source[child.start_byte()..child.end_byte()].to_string());
-                    }
-                    "+" => {
-                        found_plus = true;
-                    }
-                    "identifier" if found_plus && right_name.is_none() => {
-                        right_name = Some(source[child.start_byte()..child.end_byte()].to_string());
-                    }
-                    _ => {}
+        for child in node.child_nodes() {
+            match child.kind() {
+                "identifier" if left_name.is_none() => {
+                    left_name = Some(source[child.start_byte()..child.end_byte()].to_string());
                 }
+                "+" => {
+                    found_plus = true;
+                }
+                "identifier" if found_plus && right_name.is_none() => {
+                    right_name = Some(source[child.start_byte()..child.end_byte()].to_string());
+                }
+                _ => {}
             }
         }
 
@@ -6221,26 +6121,24 @@ impl Arr30C {
 
         // Recursively check children, accumulating declarations as we go
         // This ensures declarations are visible to subsequent siblings
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.update_local_state_from_child(
-                    &child,
-                    source,
-                    &mut local_buffers,
-                    &mut local_aliases,
-                );
+        for child in node.child_nodes() {
+            self.update_local_state_from_child(
+                &child,
+                source,
+                &mut local_buffers,
+                &mut local_aliases,
+            );
 
-                // Recursively check this child with the accumulated context
-                violations.extend(self.check_with_buffer_info(
-                    &child,
-                    source,
-                    &local_buffers,
-                    &local_aliases,
-                    function_macros,
-                    flexible_array_structs,
-                    macro_constants,
-                ));
-            }
+            // Recursively check this child with the accumulated context
+            violations.extend(self.check_with_buffer_info(
+                &child,
+                source,
+                &local_buffers,
+                &local_aliases,
+                function_macros,
+                flexible_array_structs,
+                macro_constants,
+            ));
         }
 
         violations
@@ -6337,8 +6235,7 @@ impl Arr30C {
             // compared against it as a whole -- every arm of the chain is
             // mutually exclusive with the `then` arm either way.
             let mut then_arm = HashMap::new();
-            for i in 0..cond.child_count() {
-                let Some(child) = cond.child(i) else { continue };
+            for child in cond.child_nodes() {
                 if child.id() == alternative.id() {
                     continue;
                 }
@@ -6382,8 +6279,7 @@ impl Arr30C {
     /// See the call sites for why the `=` is the discriminator rather than
     /// `has_error()` alone.
     fn declarator_split_by_parse_error(node: &Node, source: &str) -> bool {
-        for i in 0..node.child_count() {
-            let Some(child) = node.child(i) else { continue };
+        for child in node.child_nodes() {
             if child.kind() == "ERROR" && get_node_text(&child, source).contains('=') {
                 return true;
             }
@@ -6418,29 +6314,27 @@ impl Arr30C {
         }
 
         // Look for declarator nodes that contain array or pointer declarations
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                match child.kind() {
-                    "init_declarator" => {
-                        // Handles: int arr[5] = {...};
-                        return self.extract_buffer_from_init_declarator_with_typedefs(
-                            &child, source, typedefs,
-                        );
-                    }
-                    "array_declarator" => {
-                        // Handles: int arr[5];
-                        return self.extract_buffer_from_array_declarator(&child, source);
-                    }
-                    // For function pointer arrays like void (*functions[3])(void)
-                    // the array_declarator is nested inside function_declarator
-                    "function_declarator" | "pointer_declarator" => {
-                        // Recursively search for array_declarator
-                        if let Some(buffer) = self.find_array_declarator_in_node(&child, source) {
-                            return Some(buffer);
-                        }
-                    }
-                    _ => {}
+        for child in node.child_nodes() {
+            match child.kind() {
+                "init_declarator" => {
+                    // Handles: int arr[5] = {...};
+                    return self.extract_buffer_from_init_declarator_with_typedefs(
+                        &child, source, typedefs,
+                    );
                 }
+                "array_declarator" => {
+                    // Handles: int arr[5];
+                    return self.extract_buffer_from_array_declarator(&child, source);
+                }
+                // For function pointer arrays like void (*functions[3])(void)
+                // the array_declarator is nested inside function_declarator
+                "function_declarator" | "pointer_declarator" => {
+                    // Recursively search for array_declarator
+                    if let Some(buffer) = self.find_array_declarator_in_node(&child, source) {
+                        return Some(buffer);
+                    }
+                }
+                _ => {}
             }
         }
         None
@@ -6453,11 +6347,9 @@ impl Arr30C {
         }
 
         // Recursively search children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(buffer) = self.find_array_declarator_in_node(&child, source) {
-                    return Some(buffer);
-                }
+        for child in node.child_nodes() {
+            if let Some(buffer) = self.find_array_declarator_in_node(&child, source) {
+                return Some(buffer);
             }
         }
         None
@@ -6472,19 +6364,17 @@ impl Arr30C {
         }
 
         // Look for declarator nodes that contain array or pointer declarations
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                match child.kind() {
-                    "init_declarator" => {
-                        // Handles: int arr[5] = {...};
-                        return self.extract_buffer_from_init_declarator(&child, source);
-                    }
-                    "array_declarator" => {
-                        // Handles: int arr[5];
-                        return self.extract_buffer_from_array_declarator(&child, source);
-                    }
-                    _ => {}
+        for child in node.child_nodes() {
+            match child.kind() {
+                "init_declarator" => {
+                    // Handles: int arr[5] = {...};
+                    return self.extract_buffer_from_init_declarator(&child, source);
                 }
+                "array_declarator" => {
+                    // Handles: int arr[5];
+                    return self.extract_buffer_from_array_declarator(&child, source);
+                }
+                _ => {}
             }
         }
         None
@@ -6508,20 +6398,14 @@ impl Arr30C {
             return self.find_array_declarator_in_node(&declarator, source);
         } else if declarator.kind() == "pointer_declarator" {
             // Check if this is a malloc/calloc/alloca assignment
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "call_expression" {
-                        return self.extract_buffer_from_malloc_call(&declarator, &child, source);
-                    }
-                    // Handle cast expression wrapping allocation: (type *)ALLOCA(...)
-                    if child.kind() == "cast_expression" {
-                        if let Some(call) = self.find_call_in_cast(&child) {
-                            return self.extract_buffer_from_malloc_call(
-                                &declarator,
-                                &call,
-                                source,
-                            );
-                        }
+            for child in node.child_nodes() {
+                if child.kind() == "call_expression" {
+                    return self.extract_buffer_from_malloc_call(&declarator, &child, source);
+                }
+                // Handle cast expression wrapping allocation: (type *)ALLOCA(...)
+                if child.kind() == "cast_expression" {
+                    if let Some(call) = self.find_call_in_cast(&child) {
+                        return self.extract_buffer_from_malloc_call(&declarator, &call, source);
                     }
                 }
             }
@@ -6530,20 +6414,14 @@ impl Arr30C {
             let var_name = &source[declarator.start_byte()..declarator.end_byte()];
 
             // Check if this declaration has an initializer that's a call_expression (malloc)
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "call_expression" {
-                        return self.extract_buffer_from_malloc_call(&declarator, &child, source);
-                    }
-                    // Handle cast expression wrapping allocation: (type *)ALLOCA(...)
-                    if child.kind() == "cast_expression" {
-                        if let Some(call) = self.find_call_in_cast(&child) {
-                            return self.extract_buffer_from_malloc_call(
-                                &declarator,
-                                &call,
-                                source,
-                            );
-                        }
+            for child in node.child_nodes() {
+                if child.kind() == "call_expression" {
+                    return self.extract_buffer_from_malloc_call(&declarator, &child, source);
+                }
+                // Handle cast expression wrapping allocation: (type *)ALLOCA(...)
+                if child.kind() == "cast_expression" {
+                    if let Some(call) = self.find_call_in_cast(&child) {
+                        return self.extract_buffer_from_malloc_call(&declarator, &call, source);
                     }
                 }
             }
@@ -6568,20 +6446,14 @@ impl Arr30C {
             return self.extract_buffer_from_array_declarator(&declarator, source);
         } else if declarator.kind() == "pointer_declarator" {
             // Check if this is a malloc/calloc/alloca assignment
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "call_expression" {
-                        return self.extract_buffer_from_malloc_call(&declarator, &child, source);
-                    }
-                    // Handle cast expression wrapping allocation: (type *)ALLOCA(...)
-                    if child.kind() == "cast_expression" {
-                        if let Some(call) = self.find_call_in_cast(&child) {
-                            return self.extract_buffer_from_malloc_call(
-                                &declarator,
-                                &call,
-                                source,
-                            );
-                        }
+            for child in node.child_nodes() {
+                if child.kind() == "call_expression" {
+                    return self.extract_buffer_from_malloc_call(&declarator, &child, source);
+                }
+                // Handle cast expression wrapping allocation: (type *)ALLOCA(...)
+                if child.kind() == "cast_expression" {
+                    if let Some(call) = self.find_call_in_cast(&child) {
+                        return self.extract_buffer_from_malloc_call(&declarator, &call, source);
                     }
                 }
             }
@@ -6590,20 +6462,14 @@ impl Arr30C {
             let var_name = &source[declarator.start_byte()..declarator.end_byte()];
 
             // Check if this declaration has an initializer that's a call_expression (malloc)
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "call_expression" {
-                        return self.extract_buffer_from_malloc_call(&declarator, &child, source);
-                    }
-                    // Handle cast expression wrapping allocation: (type *)ALLOCA(...)
-                    if child.kind() == "cast_expression" {
-                        if let Some(call) = self.find_call_in_cast(&child) {
-                            return self.extract_buffer_from_malloc_call(
-                                &declarator,
-                                &call,
-                                source,
-                            );
-                        }
+            for child in node.child_nodes() {
+                if child.kind() == "call_expression" {
+                    return self.extract_buffer_from_malloc_call(&declarator, &child, source);
+                }
+                // Handle cast expression wrapping allocation: (type *)ALLOCA(...)
+                if child.kind() == "cast_expression" {
+                    if let Some(call) = self.find_call_in_cast(&child) {
+                        return self.extract_buffer_from_malloc_call(&declarator, &call, source);
                     }
                 }
             }
@@ -6746,13 +6612,11 @@ impl Arr30C {
         macros: &HashMap<String, i64>,
     ) {
         // Find the array_declarator in the declaration
-        for i in 0..decl_node.child_count() {
-            if let Some(child) = decl_node.child(i) {
-                if child.kind() == "array_declarator" || child.kind() == "init_declarator" {
-                    // Found the declarator - extract inner dimensions
-                    self.extract_inner_dimensions(&child, base_name, source, buffers, macros);
-                    return;
-                }
+        for child in decl_node.child_nodes() {
+            if child.kind() == "array_declarator" || child.kind() == "init_declarator" {
+                // Found the declarator - extract inner dimensions
+                self.extract_inner_dimensions(&child, base_name, source, buffers, macros);
+                return;
             }
         }
     }
@@ -6855,17 +6719,15 @@ impl Arr30C {
         let func_name = &source[func_name_node.start_byte()..func_name_node.end_byte()];
 
         // Find argument_list
-        for i in 0..call_node.child_count() {
-            if let Some(child) = call_node.child(i) {
-                if child.kind() == "argument_list" {
-                    return self.parse_malloc_arguments(
-                        func_name,
-                        &child,
-                        source,
-                        &var_name,
-                        call_node.start_position().row + 1,
-                    );
-                }
+        for child in call_node.child_nodes() {
+            if child.kind() == "argument_list" {
+                return self.parse_malloc_arguments(
+                    func_name,
+                    &child,
+                    source,
+                    &var_name,
+                    call_node.start_position().row + 1,
+                );
             }
         }
 
@@ -6874,14 +6736,9 @@ impl Arr30C {
 
     /// Find call_expression inside a cast_expression (e.g., (int *)ALLOCA(100))
     fn find_call_in_cast<'a>(&self, cast_node: &Node<'a>) -> Option<Node<'a>> {
-        for i in 0..cast_node.child_count() {
-            if let Some(child) = cast_node.child(i) {
-                if child.kind() == "call_expression" {
-                    return Some(child);
-                }
-            }
-        }
-        None
+        cast_node
+            .child_nodes()
+            .find(|&child| child.kind() == "call_expression")
     }
 
     /// Parse malloc/calloc/realloc arguments from argument_list node
@@ -6896,31 +6753,27 @@ impl Arr30C {
         match func_name {
             "malloc" | "alloca" | "ALLOCA" => {
                 // Get first argument
-                for i in 0..arg_list.child_count() {
-                    if let Some(child) = arg_list.child(i) {
-                        if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
-                            let arg_text = &source[child.start_byte()..child.end_byte()];
-                            let alloc_bytes = buffer_size::calculate_alloc_bytes(arg_text);
-                            let size = buffer_size::calculate_malloc_size(arg_text)?;
-                            return Some(BufferInfo {
-                                name: var_name.to_string(),
-                                size,
-                                element_type: "unknown".to_string(),
-                                allocation_line: line,
-                                alloc_bytes,
-                            });
-                        }
+                for child in arg_list.child_nodes() {
+                    if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
+                        let arg_text = &source[child.start_byte()..child.end_byte()];
+                        let alloc_bytes = buffer_size::calculate_alloc_bytes(arg_text);
+                        let size = buffer_size::calculate_malloc_size(arg_text)?;
+                        return Some(BufferInfo {
+                            name: var_name.to_string(),
+                            size,
+                            element_type: "unknown".to_string(),
+                            allocation_line: line,
+                            alloc_bytes,
+                        });
                     }
                 }
             }
             "realloc" => {
                 // Get second argument (size) - first arg is the old pointer
                 let mut args = Vec::new();
-                for i in 0..arg_list.child_count() {
-                    if let Some(child) = arg_list.child(i) {
-                        if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
-                            args.push(&source[child.start_byte()..child.end_byte()]);
-                        }
+                for child in arg_list.child_nodes() {
+                    if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
+                        args.push(&source[child.start_byte()..child.end_byte()]);
                     }
                 }
                 if args.len() >= 2 {
@@ -6938,11 +6791,9 @@ impl Arr30C {
             "calloc" => {
                 // Get first argument (count)
                 let mut args = Vec::new();
-                for i in 0..arg_list.child_count() {
-                    if let Some(child) = arg_list.child(i) {
-                        if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
-                            args.push(&source[child.start_byte()..child.end_byte()]);
-                        }
+                for child in arg_list.child_nodes() {
+                    if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
+                        args.push(&source[child.start_byte()..child.end_byte()]);
                     }
                 }
                 if args.len() >= 2 {
@@ -6973,21 +6824,19 @@ impl Arr30C {
         typedefs: &HashMap<String, usize>,
     ) -> Option<BufferInfo> {
         // Get type from declaration
-        for i in 0..decl_node.child_count() {
-            if let Some(child) = decl_node.child(i) {
-                if child.kind() == "type_identifier" {
-                    let type_name = &source[child.start_byte()..child.end_byte()];
+        for child in decl_node.child_nodes() {
+            if child.kind() == "type_identifier" {
+                let type_name = &source[child.start_byte()..child.end_byte()];
 
-                    // Check if this type is in our cached typedefs
-                    if let Some(&size) = typedefs.get(type_name) {
-                        return Some(BufferInfo {
-                            name: var_name.to_string(),
-                            size: BufferSize::Static(size),
-                            element_type: type_name.to_string(),
-                            allocation_line: decl_node.start_position().row + 1,
-                            alloc_bytes: None,
-                        });
-                    }
+                // Check if this type is in our cached typedefs
+                if let Some(&size) = typedefs.get(type_name) {
+                    return Some(BufferInfo {
+                        name: var_name.to_string(),
+                        size: BufferSize::Static(size),
+                        element_type: type_name.to_string(),
+                        allocation_line: decl_node.start_position().row + 1,
+                        alloc_bytes: None,
+                    });
                 }
             }
         }
@@ -7002,11 +6851,9 @@ impl Arr30C {
         buffers: &HashMap<String, BufferInfo>,
     ) -> Option<PointerAlias> {
         // Look for init_declarator with pointer assignment
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "init_declarator" {
-                    return self.extract_alias_from_init_declarator(&child, source, buffers);
-                }
+        for child in node.child_nodes() {
+            if child.kind() == "init_declarator" {
+                return self.extract_alias_from_init_declarator(&child, source, buffers);
             }
         }
         None
@@ -7022,14 +6869,12 @@ impl Arr30C {
         // First, check for cast expression (int *ptr = (int *)buffer)
         let mut declarator_child: Option<Node> = None;
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "pointer_declarator" || child.kind() == "identifier" {
-                    declarator_child = Some(child);
-                } else if child.kind() == "cast_expression" {
-                    if let Some(decl) = declarator_child {
-                        return self.extract_alias_from_cast(&decl, &child, source, buffers);
-                    }
+        for child in node.child_nodes() {
+            if child.kind() == "pointer_declarator" || child.kind() == "identifier" {
+                declarator_child = Some(child);
+            } else if child.kind() == "cast_expression" {
+                if let Some(decl) = declarator_child {
+                    return self.extract_alias_from_cast(&decl, &child, source, buffers);
                 }
             }
         }
@@ -7072,25 +6917,20 @@ impl Arr30C {
         let mut cast_type: Option<&str> = None;
         let mut target: Option<&str> = None;
 
-        for i in 0..cast_node.child_count() {
-            if let Some(child) = cast_node.child(i) {
-                match child.kind() {
-                    "type_descriptor" => {
-                        // Extract type from type_descriptor
-                        for j in 0..child.child_count() {
-                            if let Some(type_node) = child.child(j) {
-                                if type_node.kind() == "primitive_type" {
-                                    cast_type =
-                                        Some(&source[type_node.start_byte()..type_node.end_byte()]);
-                                }
-                            }
+        for child in cast_node.child_nodes() {
+            match child.kind() {
+                "type_descriptor" => {
+                    // Extract type from type_descriptor
+                    for type_node in child.child_nodes() {
+                        if type_node.kind() == "primitive_type" {
+                            cast_type = Some(&source[type_node.start_byte()..type_node.end_byte()]);
                         }
                     }
-                    "identifier" => {
-                        target = Some(&source[child.start_byte()..child.end_byte()]);
-                    }
-                    _ => {}
                 }
+                "identifier" => {
+                    target = Some(&source[child.start_byte()..child.end_byte()]);
+                }
+                _ => {}
             }
         }
 
@@ -7675,23 +7515,16 @@ impl Arr30C {
     /// Extract function arguments from a call_expression node
     fn get_function_arguments(&self, node: &Node, source: &str) -> Option<Vec<String>> {
         // Find the argument_list node
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "argument_list" {
-                    let mut args = Vec::new();
-                    for j in 0..child.child_count() {
-                        if let Some(arg_node) = child.child(j) {
-                            if arg_node.kind() != "("
-                                && arg_node.kind() != ")"
-                                && arg_node.kind() != ","
-                            {
-                                let arg_text = &source[arg_node.start_byte()..arg_node.end_byte()];
-                                args.push(arg_text.to_string());
-                            }
-                        }
+        for child in node.child_nodes() {
+            if child.kind() == "argument_list" {
+                let mut args = Vec::new();
+                for arg_node in child.child_nodes() {
+                    if arg_node.kind() != "(" && arg_node.kind() != ")" && arg_node.kind() != "," {
+                        let arg_text = &source[arg_node.start_byte()..arg_node.end_byte()];
+                        args.push(arg_text.to_string());
                     }
-                    return Some(args);
                 }
+                return Some(args);
             }
         }
         None
@@ -7787,13 +7620,11 @@ impl Arr30C {
     /// operator nodes rather than on `" < "` in the condition text, for the
     /// reason given on [`Self::condition_bounds_index`].
     fn check_for_loop_bounds_generic(&self, for_node: &Node, source: &str) -> bool {
-        for i in 0..for_node.child_count() {
-            if let Some(child) = for_node.child(i) {
-                if (child.kind() == "binary_expression" || child.kind() == "comparison_expression")
-                    && subtree_has_strict_less_bound(child, source)
-                {
-                    return true;
-                }
+        for child in for_node.child_nodes() {
+            if (child.kind() == "binary_expression" || child.kind() == "comparison_expression")
+                && subtree_has_strict_less_bound(child, source)
+            {
+                return true;
             }
         }
         false
@@ -7802,14 +7633,11 @@ impl Arr30C {
     /// Generic if bounds check (when the index variable is unknown). See
     /// [`Self::check_for_loop_bounds_generic`].
     fn check_if_bounds_generic(&self, if_node: &Node, source: &str) -> bool {
-        for i in 0..if_node.child_count() {
-            if let Some(child) = if_node.child(i) {
-                if (child.kind() == "parenthesized_expression"
-                    || child.kind() == "binary_expression")
-                    && subtree_has_strict_less_bound(child, source)
-                {
-                    return true;
-                }
+        for child in if_node.child_nodes() {
+            if (child.kind() == "parenthesized_expression" || child.kind() == "binary_expression")
+                && subtree_has_strict_less_bound(child, source)
+            {
+                return true;
             }
         }
         false
@@ -8236,8 +8064,8 @@ fn classifier_arg_reads_walked_data(node: Node, source: &str, depth: usize) -> b
     let Some(args) = n.child_by_field_name("arguments") else {
         return false;
     };
-    let inner: Vec<Node> = (0..args.child_count())
-        .filter_map(|i| args.child(i))
+    let inner: Vec<Node> = args
+        .child_nodes()
         .filter(|a| a.is_named() && a.kind() != "comment")
         .collect();
     match inner.as_slice() {
@@ -8269,8 +8097,7 @@ fn is_nul_false_classifier_call(node: Node, source: &str) -> bool {
     let Some(args) = n.child_by_field_name("arguments") else {
         return false;
     };
-    (0..args.child_count())
-        .filter_map(|i| args.child(i))
+    args.child_nodes()
         .filter(|a| a.is_named() && a.kind() != "comment")
         .any(|a| classifier_arg_reads_walked_data(a, source, 0))
 }
@@ -8351,8 +8178,7 @@ fn loop_has_decrementing_counter_bound(condition: Node, body: Node, source: &str
         return false;
     }
     let counter = &source[counter.start_byte()..counter.end_byte()];
-    (0..body.child_count())
-        .filter_map(|i| body.child(i))
+    body.child_nodes()
         .filter(|st| st.kind() == "expression_statement")
         .filter_map(|st| st.named_child(0))
         .filter(|e| e.kind() == "update_expression")
@@ -8439,11 +8265,9 @@ fn find_param_list_node<'a>(node: &Node<'a>) -> Option<Node<'a>> {
     if node.kind() == "parameter_list" {
         return Some(*node);
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if let Some(found) = find_param_list_node(&child) {
-                return Some(found);
-            }
+    for child in node.child_nodes() {
+        if let Some(found) = find_param_list_node(&child) {
+            return Some(found);
         }
     }
     None

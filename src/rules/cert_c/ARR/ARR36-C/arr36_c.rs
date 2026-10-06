@@ -7,6 +7,7 @@ use crate::analyze::context::{self, ProjectContext};
 use crate::analyze::preproc_arms::PreprocArms;
 use crate::analyze::prescan;
 use crate::manifest::Severity;
+use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::{ast_utils, overflow_helpers};
 use lang_parsing_substrate::query;
 use std::borrow::Cow;
@@ -455,8 +456,9 @@ fn parameter_indices(func: &Node, source: &str) -> HashMap<String, usize> {
     else {
         return indices;
     };
-    let params = (0..list.child_count())
-        .filter_map(|i| list.child(i))
+    let mut cursor = list.walk();
+    let params = list
+        .children(&mut cursor)
         .filter(|child| child.kind() == "parameter_declaration");
     for (position, param) in params.enumerate() {
         if let Some(param_declarator) = param.child_by_field_name("declarator") {
@@ -619,13 +621,11 @@ impl PointerAnalyzer {
         match node.kind() {
             "translation_unit" | "preproc_ifdef" | "preproc_if" | "preproc_else"
             | "preproc_elif" => {
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "declaration" {
-                            self.process_declaration(&child, source);
-                        } else if child.kind().starts_with("preproc_") {
-                            self.collect_file_scope(&child, source);
-                        }
+                for child in node.child_nodes() {
+                    if child.kind() == "declaration" {
+                        self.process_declaration(&child, source);
+                    } else if child.kind().starts_with("preproc_") {
+                        self.collect_file_scope(&child, source);
                     }
                 }
             }
@@ -739,51 +739,47 @@ impl PointerAnalyzer {
     /// the same array rather than changing which array it points to.
     fn process_assignment(&mut self, node: &Node, source: &str) {
         // expression_statement contains an assignment_expression child
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "assignment_expression" {
-                    // Skip compound assignments (+=, -=, etc.) — they advance a pointer
-                    // within the same array rather than changing which array it points to.
-                    // tree-sitter puts the operator as a direct child: "=", "+=", "-=", etc.
-                    let mut is_simple_assign = false;
-                    for j in 0..child.child_count() {
-                        if let Some(op) = child.child(j) {
-                            if ast_utils::get_node_text(&op, source) == "=" {
-                                is_simple_assign = true;
-                                break;
-                            }
-                        }
+        for child in node.child_nodes() {
+            if child.kind() == "assignment_expression" {
+                // Skip compound assignments (+=, -=, etc.) — they advance a pointer
+                // within the same array rather than changing which array it points to.
+                // tree-sitter puts the operator as a direct child: "=", "+=", "-=", etc.
+                let mut is_simple_assign = false;
+                for op in child.child_nodes() {
+                    if ast_utils::get_node_text(&op, source) == "=" {
+                        is_simple_assign = true;
+                        break;
                     }
-                    if !is_simple_assign {
+                }
+                if !is_simple_assign {
+                    continue;
+                }
+                if let (Some(left), Some(right)) = (
+                    child.child_by_field_name("left"),
+                    child.child_by_field_name("right"),
+                ) {
+                    let var_name = ast_utils::get_node_text(&left, source).to_string();
+                    if var_name.is_empty()
+                        || !var_name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    {
                         continue;
                     }
-                    if let (Some(left), Some(right)) = (
-                        child.child_by_field_name("left"),
-                        child.child_by_field_name("right"),
-                    ) {
-                        let var_name = ast_utils::get_node_text(&left, source).to_string();
-                        if var_name.is_empty()
-                            || !var_name.chars().all(|c| c.is_alphanumeric() || c == '_')
-                        {
-                            continue;
-                        }
-                        // Only a declared pointer or array can be IN an array.
-                        // Without this gate an ordinary scalar swap --
-                        // `startAngle = endAngle; endAngle = tmp;` over three
-                        // floats -- puts both names in `variable_arrays`, and the
-                        // subtraction below them is then reported as pointer
-                        // subtraction between different arrays.
-                        if !self.objects.pointer_vars.contains(&var_name) {
-                            continue;
-                        }
-                        let array_base = self.extract_array_base(&right, source);
-                        if !array_base.is_empty() {
-                            // The assignment site, so the base takes effect
-                            // below this statement and no operand above it
-                            // is re-based.
-                            self.variable_arrays
-                                .record(var_name, left.start_byte(), array_base);
-                        }
+                    // Only a declared pointer or array can be IN an array.
+                    // Without this gate an ordinary scalar swap --
+                    // `startAngle = endAngle; endAngle = tmp;` over three
+                    // floats -- puts both names in `variable_arrays`, and the
+                    // subtraction below them is then reported as pointer
+                    // subtraction between different arrays.
+                    if !self.objects.pointer_vars.contains(&var_name) {
+                        continue;
+                    }
+                    let array_base = self.extract_array_base(&right, source);
+                    if !array_base.is_empty() {
+                        // The assignment site, so the base takes effect
+                        // below this statement and no operand above it
+                        // is re-based.
+                        self.variable_arrays
+                            .record(var_name, left.start_byte(), array_base);
                     }
                 }
             }
@@ -973,11 +969,9 @@ impl PointerAnalyzer {
                         // Return value points into the first argument
                         if let Some(args) = node.child_by_field_name("arguments") {
                             // First real argument (skip '(' which is child 0)
-                            for j in 0..args.child_count() {
-                                if let Some(arg) = args.child(j) {
-                                    if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
-                                        return self.extract_array_base(&arg, source);
-                                    }
+                            for arg in args.child_nodes() {
+                                if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
+                                    return self.extract_array_base(&arg, source);
                                 }
                             }
                         }
@@ -1291,12 +1285,10 @@ fn merge_file_struct_fields<'a>(
 }
 
 fn get_operator(node: &Node, source: &str) -> Option<String> {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            let text = source[child.start_byte()..child.end_byte()].to_string();
-            if matches!(text.as_str(), "-" | "<" | "<=" | ">" | ">=") {
-                return Some(text);
-            }
+    for child in node.child_nodes() {
+        let text = source[child.start_byte()..child.end_byte()].to_string();
+        if matches!(text.as_str(), "-" | "<" | "<=" | ">" | ">=") {
+            return Some(text);
         }
     }
     None
