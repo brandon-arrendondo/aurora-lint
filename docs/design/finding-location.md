@@ -171,7 +171,7 @@ Three things follow from the table:
 ### 3. Benchmarks
 
 **Juliet C/C++ 1.3, CWE-476 and CWE-690** (read from the local checkout's
-`manifest.xml`, sources and User Guide). All 1,452 flaw lines were classified:
+`manifest.xml`, sources and the v1.2 User Guide, which 1.3 still ships). All 1,452 flaw lines were classified:
 
 | Kind of line | Count |
 |---|---|
@@ -188,7 +188,7 @@ dereference inside the target function, not at `funcPtr(data)`.
 **Juliet has no CWE-20 at all** (0 manifest flaws), so no benchmark supplies
 ground truth for a parameter-validation finding.
 
-**Scoring caveat.** User Guide §8.1 scores by function name, not line: any
+**Scoring caveat.** The v1.2 User Guide's §8.1 scores by function name, not line: any
 CWE-476 report inside a `*bad*` function is a TP. A report at the forwarder
 `_54b_badSink` would score TP there, but FP plus FN under a line-exact scorer.
 
