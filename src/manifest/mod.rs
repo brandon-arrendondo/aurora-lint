@@ -70,7 +70,11 @@ impl ScopeConfig {
 /// Rule configs grouped by family.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleNamespaces {
-    /// CERT C rules (`ARR30-C`, `STR31-C`, ...), keyed by rule ID.
+    /// CERT C rules (`ARR30-C`, `STR31-C`, ...), keyed by rule ID. Optional
+    /// like the other families: a configuration may name only CWE-ruleset or
+    /// BRULE rules (the per-CWE Juliet manifest for a CWE only the CWE
+    /// ruleset covers has no CERT C table at all).
+    #[serde(default)]
     pub cert_c: HashMap<String, RuleConfig>,
     /// BISSELL-specific rules (`BRULE-###`), keyed by rule ID.
     #[serde(default)]
@@ -557,6 +561,18 @@ threshold = "4"
 enabled = true
 category = "Recommendation"
 "#;
+
+    #[test]
+    fn a_configuration_with_only_cwe_ruleset_rules_loads() {
+        let manifest = RuleManifest::from_toml_str(
+            "[metadata]\nname = \"CWE-focused manifest for CWE-327\"\nversion = \"1.0.0\"\n\
+             cert_version = \"2016\"\n\n[rules.cwe.\"CWE-327\"]\nenabled = true\n",
+        )
+        .unwrap();
+        assert!(manifest.rules.cert_c.is_empty());
+        assert!(manifest.get_rule("CWE-327").unwrap().enabled);
+        assert_eq!(manifest.enabled_rules().count(), 1);
+    }
 
     #[test]
     fn removed_keys_still_load() {

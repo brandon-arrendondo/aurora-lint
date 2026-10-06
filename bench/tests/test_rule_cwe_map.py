@@ -110,5 +110,40 @@ class TestCweEntriesAreJulietCwes(unittest.TestCase):
         self.assertEqual(stored, json.loads(json.dumps(gen.generate_map(REPO))))
 
 
+
+def _built_binary():
+    """The newest built aurora-lint, or None when nothing is built."""
+    built = [p for p in (REPO / "target" / "release" / "aurora-lint",
+                         REPO / "target" / "debug" / "aurora-lint") if p.is_file()]
+    return max(built, key=lambda p: p.stat().st_mtime, default=None)
+
+
+class TestGeneratedManifestsLoad(unittest.TestCase):
+    """Every per-CWE manifest fast mode runs must load. A CWE that maps only
+    to CWE-ruleset rules gets a manifest with no [rules.cert_c] table, which
+    once failed with "missing field `cert_c`" and stopped fast mode for that
+    CWE."""
+
+    def test_every_generated_manifest_passes_check_config(self):
+        import subprocess
+        binary = _built_binary()
+        if binary is None:
+            self.skipTest("no built aurora-lint (target/release or target/debug)")
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "src").symlink_to(REPO / "src")
+            mapping = gen.generate_map(REPO)
+            gen.generate_cwe_manifests(project, mapping["cwe_to_rules"])
+            manifests = sorted((project / "rules_templates" / "cwe").glob("CWE-*.toml"))
+            self.assertTrue(manifests)
+            bad = []
+            for path in manifests:
+                result = subprocess.run([str(binary), "--check-config", "-m", str(path)],
+                                        capture_output=True, text=True)
+                if result.returncode != 0:
+                    bad.append(f"{path.name}: {result.stderr.strip()[:200]}")
+            self.assertEqual(bad, [])
+
+
 if __name__ == "__main__":
     unittest.main()
