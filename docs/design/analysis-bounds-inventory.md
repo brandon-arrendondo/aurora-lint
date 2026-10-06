@@ -42,14 +42,14 @@ Kinds:
 | `cfg::CfgBuilder::process_statement` and its siblings | none: native recursion per nesting level, with a checkpoint per statement | – | stack, see above | – |
 | `dataflow::compute_reaching_definitions` | blocks × (defs+1) + blocks | c | **reported** (`cap_reached`) | was silent: unvisited blocks read as "no reaching definition", so MSC13-C reported false positives |
 | `null_state::run_null_state_worklist` | 500 × blocks | c | **reported** | was silent: missing state reads as not null, so EXP34-C missed findings |
-| `init_state::analyze_init_states_with_statics` | 500 × blocks | c | **reported** | was silent: EXP33-C missed findings. Its `worklist.contains` is O(n) per push |
+| `init_state::analyze_init_states_with_statics` | 500 × blocks | c | **warning** (`not_converged`): known not to converge | hit by EXP33-C on sqlite `ext/fts5/fts5_index.c` and `src/json.c`, and valkey `src/valkey-cli.c`; still hit at 100× the cap. Its `worklist.contains` is O(n) per push |
 
 ## Value ranges
 
 | Where | Bound | Kind | On hit | Effect if hit |
 |---|---|---|---|---|
 | `value_range::analyze_value_ranges` | `VRA_BLOCK_LIMIT` = 150 blocks | d | silent: no ranges | **hit routinely**. Mostly lost suppressions, so extra findings in large functions |
-| `value_range::analyze_value_ranges` | 500 × blocks iterations | c | **reported** | was silent: unconverged ranges can be too narrow, which is unsound and can suppress real INT/ARR findings |
+| `value_range::analyze_value_ranges` | 500 × blocks iterations | c | **warning** (`not_converged`): known not to converge | hit on hostap `hostapd/ctrl_iface.c` and `wpa_supplicant/ctrl_iface_udp.c`, valkey `src/rdma.c` and pureftpd `src/bsd-getopt_long.c`; still hit at 100× the cap. Unconverged ranges can be too narrow, which is unsound |
 | `value_range::maybe_widen` / `widen_typed` | widen after 3 visits | c | sound | – |
 | `const_eval` `resolve_*_var_range` | 3 identifier hops | b | silent | unresolved range, either direction |
 
@@ -131,5 +131,8 @@ graph walks keep visited sets. The real exposures are:
 
 - unchecked native recursion: CFG construction, dataflow definition
   extraction and the prescan collectors, all relying on the 16 MiB stack;
-- the three worklists whose termination rested on their caps (null state,
-  init state, value ranges), now reported when hit.
+- the worklists whose termination rested on their caps. The null-state cap
+  is never reached on the corpora and is now reported when hit. The
+  init-state and value-range caps are reached on real code, which shows
+  their transfer functions are not monotone there. They are counted and
+  warned about until fixed.

@@ -84,11 +84,27 @@ Before this decision, a failure anywhere ended the scan.
      - a SARIF `toolExecutionNotifications` entry, with
        `invocations[0].executionSuccessful: false`;
      - exit status **3**.
-   - The four worklist caps that used to `break` silently (reaching
-     definitions, null state, init state, value ranges) now do this.
+   - Two worklist caps that used to `break` silently now do this: reaching
+     definitions and null state. Neither is reached on the Juliet suite or
+     the real-world corpora, so reaching one means a runaway.
    - **Sound approximations are not incomplete.** A bound whose fallback over-approximates
      is the analysis working as designed: widening to the type's range, or
      "not proven, so report". It is not reported.
+   - **Known non-convergence is a warning, not silence.** Two analyses
+     reach their iteration caps on real code without converging, even with
+     100 times the iterations: the value-range analysis and the
+     initialization-state analysis. Each fails on a handful of files across
+     the corpora, so this is oscillation, not slow convergence. Reporting
+     those caps as incomplete would leave four of the twelve corpora
+     unscorable. So for now they stop and keep what they have, as before:
+     - findings are unchanged;
+     - every occurrence is counted;
+     - the count is printed as a warning and written as a SARIF `warning`
+       notification;
+     - the run stays successful.
+
+     Each analysis leaves this list when its convergence is fixed. Its cap
+     then reports like the others.
    - The remaining silent truncations listed in the inventory are follow-up
      work. Each becomes either a sound fallback or a reported bound.
 
@@ -132,7 +148,10 @@ Before this decision, a failure anywhere ended the scan.
 - A rule can lose good findings to escalation. That is deliberate:
   findings from a rule that failed three times in one scan are not trusted.
 - The step budget's default is far above anything the measured corpora
-  reach. A unit that hits it is either a runaway or input far beyond
+  reach. The busiest unit of work across the twelve corpora took about
+  126,000 steps (EXP34-C on lua's `lvm.c`). With the two non-converging
+  analyses given 100 times their iterations, the busiest took 5.5 million.
+  So 50 million leaves two orders of magnitude of headroom on real code. A unit that hits it is either a runaway or input far beyond
   anything measured. In both cases the user should hear about it rather
   than wait for it.
 - This does not make the analyses complete. A bound that degrades to a
