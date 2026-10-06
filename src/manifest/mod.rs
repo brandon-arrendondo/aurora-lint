@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 
+pub mod removed;
+
+use removed::RemovedRule;
+
 /// The parsed rule manifest (TOML config): which rules run, at what
 /// severity, and with what per-rule overrides.
 ///
@@ -257,6 +261,43 @@ fn removed_rule_key_warnings(content: &str) -> Vec<String> {
     warnings
 }
 
+/// One warning per removed rule (see [`removed`]) that `content` still has
+/// a `[rules.<namespace>.<id>]` block for, in `removed` order. Empty when
+/// `content` is not valid TOML: the real parse reports that.
+fn removed_rule_warnings(content: &str, removed: &[RemovedRule]) -> Vec<String> {
+    let Ok(doc) = content.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    let Some(namespaces) = doc.get("rules").and_then(|r| r.as_table()) else {
+        return Vec::new();
+    };
+    removed
+        .iter()
+        .filter(|rule| {
+            namespaces
+                .values()
+                .filter_map(|n| n.as_table())
+                .any(|rules| rules.contains_key(&rule.id))
+        })
+        .map(RemovedRule::warning)
+        .collect()
+}
+
+/// Print `warning` on stderr unless this process already has: a run that
+/// loads the same configuration twice still says it once.
+fn warn_once(warning: &str) {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    let seen = SEEN.get_or_init(Default::default);
+    if seen
+        .lock()
+        .map(|mut s| s.insert(warning.to_string()))
+        .unwrap_or(true)
+    {
+        eprintln!("Warning: {warning}");
+    }
+}
+
 impl RuleManifest {
     /// Read and parse `path` as a TOML rule manifest.
     pub fn load(path: &str) -> Result<Self> {
@@ -268,13 +309,33 @@ impl RuleManifest {
     }
 
     /// Parse `content` as a TOML rule manifest, warning on stderr about any
-    /// per-rule key in [`REMOVED_RULE_KEYS`] (ignored, never an error).
+    /// per-rule key in [`REMOVED_RULE_KEYS`] and any block for a removed rule
+    /// (both ignored, never an error).
     pub fn from_toml_str(content: &str) -> Result<Self> {
+        Self::from_toml_str_with(content, removed::removed_rules())
+    }
+
+    /// [`from_toml_str`](Self::from_toml_str) against an explicit
+    /// removed-rules table.
+    fn from_toml_str_with(content: &str, removed: &[RemovedRule]) -> Result<Self> {
         for warning in removed_rule_key_warnings(content) {
             eprintln!("Warning: {warning}");
         }
-        let manifest: RuleManifest = toml::from_str(content)?;
+        for warning in removed_rule_warnings(content, removed) {
+            warn_once(&warning);
+        }
+        let mut manifest: RuleManifest = toml::from_str(content)?;
+        manifest.drop_removed(removed);
         Ok(manifest)
+    }
+
+    /// Forget every block for a rule in `removed`, so a removed rule is
+    /// neither run nor reported as unimplemented.
+    fn drop_removed(&mut self, removed: &[RemovedRule]) {
+        for rule in removed {
+            self.rules.cert_c.remove(&rule.id);
+            self.rules.brules.remove(&rule.id);
+        }
     }
 
     /// The policy and environment settings this manifest declares, before
@@ -456,7 +517,8 @@ impl Default for RuleManifest {
 
 #[cfg(test)]
 mod tests {
-    use super::{removed_rule_key_warnings, RuleCategory, RuleManifest};
+    use super::removed::{parse_removed_rules, removed_rules, Disposition, RemovedRule};
+    use super::{removed_rule_key_warnings, removed_rule_warnings, RuleCategory, RuleManifest};
 
     const WITH_REMOVED_KEYS: &str = r#"
 [metadata]
@@ -552,5 +614,109 @@ category = "Recommendation"
         ] {
             assert_eq!(RuleCategory::from_cert_id(id), None, "{id}");
         }
+    }
+
+    /// A removed-rules table for the tests only: no real rule is removed.
+    fn test_removed() -> Vec<RemovedRule> {
+        parse_removed_rules(
+            r#"
+[[removed]]
+id = "STR31-C"
+removed_in = "9.9.9"
+disposition = "covered"
+reason = "Test-only entry."
+covered_by = ["ARR30-C"]
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_removed_rule_still_loads_and_is_dropped() {
+        let manifest =
+            RuleManifest::from_toml_str_with(WITH_REMOVED_KEYS, &test_removed()).unwrap();
+        assert!(manifest.get_rule("STR31-C").is_none());
+        assert!(manifest.get_rule("ARR30-C").unwrap().enabled);
+    }
+
+    #[test]
+    fn a_removed_rule_warns_once_with_its_reason() {
+        let warnings = removed_rule_warnings(WITH_REMOVED_KEYS, &test_removed());
+        assert_eq!(
+            warnings,
+            [
+                "STR31-C was removed in v9.9.9 (covered by another rule): Test-only entry; \
+              covered by ARR30-C. Its configuration block is ignored."
+            ]
+        );
+    }
+
+    #[test]
+    fn a_manifest_without_removed_rules_warns_about_nothing() {
+        let default_manifest = include_str!("../../rules_templates/rules-all.toml");
+        assert!(removed_rule_warnings(default_manifest, removed_rules()).is_empty());
+    }
+
+    #[test]
+    fn the_shipped_removed_rules_table_parses() {
+        // removed_rules() panics on an invalid table; this makes CI say so.
+        let _ = removed_rules();
+    }
+
+    #[test]
+    fn no_removed_rule_is_still_in_the_default_manifest() {
+        let default_manifest: toml::Table = include_str!("../../rules_templates/rules-all.toml")
+            .parse()
+            .unwrap();
+        let rules = default_manifest["rules"].as_table().unwrap();
+        for rule in removed_rules() {
+            assert!(
+                rules
+                    .values()
+                    .filter_map(|n| n.as_table())
+                    .all(|ns| !ns.contains_key(&rule.id)),
+                "{} is removed but still has a block in rules-all.toml",
+                rule.id
+            );
+        }
+    }
+
+    #[test]
+    fn a_covered_removal_must_name_its_covering_rule() {
+        let err = parse_removed_rules(
+            r#"
+[[removed]]
+id = "ERR00-C"
+removed_in = "1.0.0"
+disposition = "covered"
+reason = "x"
+"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("names no covering rule"), "{err}");
+    }
+
+    #[test]
+    fn a_deprecated_removal_names_its_successor_as_replaced_by() {
+        let rule = RemovedRule {
+            id: "FIO04-C".into(),
+            removed_in: "1.0.0".into(),
+            disposition: Disposition::Deprecated,
+            reason: "CERT merged it.".into(),
+            covered_by: vec!["ERR33-C".into()],
+        };
+        assert!(rule.warning().contains("; replaced by ERR33-C."));
+    }
+
+    #[test]
+    fn a_duplicate_or_v_prefixed_entry_is_refused() {
+        let entry = |v: &str| {
+            format!(
+                "[[removed]]\nid = \"ERR00-C\"\nremoved_in = \"{v}\"\n\
+                 disposition = \"unenforceable\"\nreason = \"x\"\n"
+            )
+        };
+        assert!(parse_removed_rules(&entry("v1.0.0")).is_err());
+        assert!(parse_removed_rules(&format!("{}{}", entry("1.0.0"), entry("1.0.0"))).is_err());
     }
 }

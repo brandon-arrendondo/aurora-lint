@@ -1,0 +1,26 @@
+# Rules aurora-lint no longer ships (ADR-0013, Decisions 4 and 6).
+#
+# A removed rule is gone from the tool, not disabled: its implementation,
+# its manifest blocks and its fixtures are deleted in the change that
+# removes it, and an entry goes here in that same change. This file is what
+# keeps the name in the inventory with its reason:
+#
+#   - a configuration that still has a [rules.cert_c.<id>] block for it
+#     loads, with one warning naming the reason, and the block is ignored;
+#   - `aurora-lint --list-rules` lists it under the removed rules;
+#   - the real-world manifest check names it as removed rather than unknown.
+#
+# One [[removed]] table per rule:
+#
+#   [[removed]]
+#   id = "ERR00-C"
+#   removed_in = "0.7.0"              # the release the removal ships in
+#   disposition = "covered"           # ADR-0013 Decision 2, one of:
+#                                     #   unenforceable, fails-criterion,
+#                                     #   covered, deprecated
+#   reason = "..."                    # one sentence, for users
+#   covered_by = ["ERR33-C", "EXP12-C"]
+#                                     # required for "covered"; for
+#                                     # "deprecated", the successor if any
+#
+# No rule has been removed yet.
