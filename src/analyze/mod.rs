@@ -1362,7 +1362,12 @@ pub(crate) fn compute_vra_if_needed(
             }
         }
         let mut callsite_int_args = std::collections::HashMap::new();
-        prescan::collect_callsite_int_args_from_tree(root_node, source, &mut callsite_int_args);
+        prescan::collect_callsite_int_args_from_tree(
+            root_node,
+            source,
+            &macros,
+            &mut callsite_int_args,
+        );
         prescan::aggregate_callsite_int_args(
             &callsite_int_args,
             &mut file_summaries,

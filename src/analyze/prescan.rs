@@ -425,7 +425,12 @@ fn process_file(
                 &mut result.callsite_field_args,
                 &mut result.callsite_pointee_args,
             );
-            collect_callsite_int_args_from_tree(&root, &source, &mut result.callsite_int_args);
+            collect_callsite_int_args_from_tree(
+                &root,
+                &source,
+                &result.macro_constants,
+                &mut result.callsite_int_args,
+            );
             collect_callsite_buf_args_from_tree(
                 &root,
                 &source,
@@ -2874,6 +2879,7 @@ pub(crate) fn wraps_definitions(kind: &str) -> bool {
 pub(crate) fn collect_callsite_int_args_from_tree(
     node: &Node,
     source: &str,
+    macros: &const_eval::MacroConstantMap,
     callsite_int_args: &mut HashMap<String, Vec<Vec<Option<i64>>>>,
 ) {
     for i in 0..node.child_count() {
@@ -2881,12 +2887,18 @@ pub(crate) fn collect_callsite_int_args_from_tree(
             match child.kind() {
                 "function_definition" => {
                     if let Some(body) = child.child_by_field_name("body") {
-                        let local_ints = collect_local_var_int_values(&body, source);
-                        collect_int_calls_in_node(&body, source, &local_ints, callsite_int_args);
+                        let local_ints = collect_local_var_int_values(&body, source, macros);
+                        collect_int_calls_in_node(
+                            &body,
+                            source,
+                            macros,
+                            &local_ints,
+                            callsite_int_args,
+                        );
                     }
                 }
                 kind if wraps_definitions(kind) => {
-                    collect_callsite_int_args_from_tree(&child, source, callsite_int_args);
+                    collect_callsite_int_args_from_tree(&child, source, macros, callsite_int_args);
                 }
                 _ => {}
             }
@@ -2896,9 +2908,13 @@ pub(crate) fn collect_callsite_int_args_from_tree(
 
 /// Collect the last constant integer assignment to each local variable in a function body.
 /// Variables passed by address to any call are invalidated (fscanf-style side effects).
-fn collect_local_var_int_values(body: &Node, source: &str) -> HashMap<String, i64> {
+fn collect_local_var_int_values(
+    body: &Node,
+    source: &str,
+    macros: &const_eval::MacroConstantMap,
+) -> HashMap<String, i64> {
     let mut result = HashMap::new();
-    collect_int_assignments_in_node(body, source, &mut result);
+    collect_int_assignments_in_node(body, source, macros, &mut result);
     // Invalidate any variable that appears as &var in a call — it may be written via pointer.
     invalidate_address_taken_vars(body, source, &mut result);
     result
@@ -2938,7 +2954,19 @@ fn invalidate_address_taken_vars(node: &Node, source: &str, vals: &mut HashMap<S
     }
 }
 
-fn collect_int_assignments_in_node(node: &Node, source: &str, vals: &mut HashMap<String, i64>) {
+/// An integer constant `node` folds to: a literal, or an expression over the
+/// macro constants in force (a project `#define`, or a limit macro such as
+/// `UINT_MAX` that the declared data model gives a value).
+fn constant_int(node: &Node, source: &str, macros: &const_eval::MacroConstantMap) -> Option<i64> {
+    parse_int_literal(node, source).or_else(|| const_eval::try_evaluate_expr(node, source, macros))
+}
+
+fn collect_int_assignments_in_node(
+    node: &Node,
+    source: &str,
+    macros: &const_eval::MacroConstantMap,
+    vals: &mut HashMap<String, i64>,
+) {
     match node.kind() {
         "assignment_expression" => {
             if let (Some(left), Some(right)) = (
@@ -2947,13 +2975,14 @@ fn collect_int_assignments_in_node(node: &Node, source: &str, vals: &mut HashMap
             ) {
                 if left.kind() == "identifier" {
                     let name = left.utf8_text(source.as_bytes()).unwrap_or("");
-                    match parse_int_literal(&right, source) {
+                    match constant_int(&right, source, macros) {
                         Some(v) => {
                             vals.insert(name.to_string(), v);
                         }
                         None => {
-                            // Non-literal RHS (e.g. LLONG_MAX macro, rand(), fscanf result):
-                            // invalidate any earlier constant we tracked for this variable.
+                            // Non-constant RHS (rand(), an fscanf result, a limit macro
+                            // the data model leaves open): invalidate any earlier
+                            // constant we tracked for this variable.
                             vals.remove(name);
                         }
                     }
@@ -2962,7 +2991,7 @@ fn collect_int_assignments_in_node(node: &Node, source: &str, vals: &mut HashMap
             // Also recurse into RHS
             for i in 0..node.child_count() {
                 if let Some(child) = node.child(i) {
-                    collect_int_assignments_in_node(&child, source, vals);
+                    collect_int_assignments_in_node(&child, source, macros, vals);
                 }
             }
         }
@@ -2973,7 +3002,7 @@ fn collect_int_assignments_in_node(node: &Node, source: &str, vals: &mut HashMap
             ) {
                 let name = extract_init_decl_name(&decl, source);
                 if !name.is_empty() {
-                    if let Some(v) = parse_int_literal(&val_node, source) {
+                    if let Some(v) = constant_int(&val_node, source, macros) {
                         vals.insert(name, v);
                     }
                 }
@@ -2982,7 +3011,7 @@ fn collect_int_assignments_in_node(node: &Node, source: &str, vals: &mut HashMap
         _ => {
             for i in 0..node.child_count() {
                 if let Some(child) = node.child(i) {
-                    collect_int_assignments_in_node(&child, source, vals);
+                    collect_int_assignments_in_node(&child, source, macros, vals);
                 }
             }
         }
@@ -3033,6 +3062,7 @@ fn extract_init_decl_name(node: &Node, source: &str) -> String {
 fn collect_int_calls_in_node(
     node: &Node,
     source: &str,
+    macros: &const_eval::MacroConstantMap,
     local_ints: &HashMap<String, i64>,
     callsite_int_args: &mut HashMap<String, Vec<Vec<Option<i64>>>>,
 ) {
@@ -3048,13 +3078,20 @@ fn collect_int_calls_in_node(
                                 if matches!(arg.kind(), "," | "(" | ")") {
                                     continue;
                                 }
-                                let val = if let Some(v) = parse_int_literal(&arg, source) {
-                                    Some(v)
-                                } else if arg.kind() == "identifier" {
+                                // A local the body last set to a constant reads
+                                // as that constant; anything else folds only over
+                                // the macro constants, so a local the body set
+                                // otherwise stays unknown.
+                                let val = if arg.kind() == "identifier" {
                                     let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
-                                    local_ints.get(name).copied().map(Some).unwrap_or(None)
+                                    local_ints.get(name).copied().or_else(|| {
+                                        macros
+                                            .contains_key(name)
+                                            .then(|| constant_int(&arg, source, macros))
+                                            .flatten()
+                                    })
                                 } else {
-                                    None
+                                    constant_int(&arg, source, macros)
                                 };
                                 arg_vals.push(val);
                             }
@@ -3072,7 +3109,7 @@ fn collect_int_calls_in_node(
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            collect_int_calls_in_node(&child, source, local_ints, callsite_int_args);
+            collect_int_calls_in_node(&child, source, macros, local_ints, callsite_int_args);
         }
     }
 }
