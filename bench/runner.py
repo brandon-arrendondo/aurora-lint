@@ -218,7 +218,9 @@ def _warm_prescan(cwe_dir_name: str, cwe_dir_str: str, manifest: str,
                 "error": stderr[:500] or "prescan cache was not written",
             }
         return {"cwe_dir_name": cwe_dir_name, "status": "completed",
-                "duration_s": duration_s}
+                "duration_s": duration_s,
+                "not_converged": parse_not_converged(
+                    proc.stderr.decode(errors="replace"))}
     except subprocess.TimeoutExpired:
         return {"cwe_dir_name": cwe_dir_name, "status": "failed",
                 "duration_s": round(time.monotonic() - start_time, 1),
@@ -518,6 +520,8 @@ def _run_submissions(db: BenchDB, run_id: str, scan_map: dict, work_items: list[
                                   incomplete=result["status"] == "incomplete")
                         continue
                     warm_duration[cwe_dir_name] = result["duration_s"]
+                    merge_not_converged(trace["not_converged"],
+                                        result.get("not_converged") or {})
                     for sub in submissions:
                         if sub["cwe_dir_name"] == cwe_dir_name:
                             _submit_shard(sub)
@@ -687,6 +691,19 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     db.finish_run(run_id, final_status, finished_at)
     sidecar = PROJECT_DIR / "results" / "juliet" / f"{run_id}.meta.json"
     sidecar.parent.mkdir(parents=True, exist_ok=True)
+    # A resumed run scans only the CWEs left over. Which CWEs are incomplete
+    # comes from the run's own rows, across every invocation (a CWE re-run
+    # to completion drops out); the not-converged counts add up the
+    # invocations' sidecars.
+    try:
+        earlier = json.loads(sidecar.read_text())
+    except (OSError, ValueError):
+        earlier = {}
+    trace["incomplete_cwes"] = db.incomplete_cwes(run_id)
+    merge_not_converged(trace["not_converged"], earlier.get("not_converged", {}))
+    if trace["incomplete_cwes"]:
+        final_status = "incomplete"
+        db.finish_run(run_id, final_status, finished_at)
     sidecar.write_text(json.dumps({"status": final_status, **trace}, indent=2))
     if trace["incomplete_cwes"]:
         print(f"INCOMPLETE: {', '.join(sorted(trace['incomplete_cwes']))} -- run not scored")

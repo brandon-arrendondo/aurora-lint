@@ -8,9 +8,10 @@
 //! reported (exit 3, a stderr line, a SARIF notification), never parsed and
 //! never silently dropped.
 //!
-//! This is deliberately minimal -- a size ceiling and a non-text sniff -- and
-//! everything sits behind `admit`, so a fuller content classifier can
-//! replace the body without touching a caller.
+//! The decision is the shared parsing substrate's classifier
+//! (`lang_parsing_substrate::classify_file`), so every tool built on it
+//! refuses input the same way; `admit` adds only this tool's policy: the size
+//! ceiling, admitting empty files, and refusing what cannot be classified.
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -81,8 +82,10 @@ impl Refusal {
 /// size), so every tool built on the substrate refuses input the same way.
 ///
 /// Empty files are admitted: an empty `.c` is valid source with nothing in
-/// it. A file that cannot be classified (unreadable, not a regular file) is
-/// admitted too, so the parser reports it as it always has.
+/// it. A file that cannot be classified -- not a regular file (a FIFO or a
+/// device, which a read can block on forever), or unreadable -- is refused,
+/// as is any classification this version does not know: neither is source
+/// the parser should be handed.
 pub fn admit(path: &Path) -> Result<(), Refusal> {
     use lang_parsing_substrate::{classify_file, ClassifyLimits, FileClass};
     let limits = ClassifyLimits {
@@ -99,7 +102,13 @@ pub fn admit(path: &Path) -> Result<(), Refusal> {
             Some(mime) => format!("looks like binary data ({kind:?}, {mime})"),
             None => format!("looks like binary data ({kind:?})"),
         })),
-        _ => Ok(()),
+        Ok(FileClass::Empty) | Ok(FileClass::SourceText(_)) => Ok(()),
+        Ok(other) => Err(Refusal::NotText(format!(
+            "unrecognised file classification {other:?}"
+        ))),
+        Err(e) => Err(Refusal::NotText(format!(
+            "cannot be classified as a regular readable file ({e})"
+        ))),
     }
 }
 
@@ -144,6 +153,19 @@ mod tests {
             admit(file(&[0xFF, 0xFE, b'#', 0, b'i', 0, b'n', 0]).path()),
             Ok(())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_refused_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("pipe.c");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(matches!(admit(&fifo), Err(Refusal::NotText(_))));
     }
 
     #[test]

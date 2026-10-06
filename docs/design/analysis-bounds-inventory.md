@@ -36,6 +36,13 @@ Kinds:
   seven files across four of the twelve corpora (listed in the rows below).
   Every one still fails to converge at a hundred times the cap. That is why
   those two are warnings, not failures, until they are fixed.
+- **Reported caps.** The reaching-definitions and null-state iteration
+  caps are reached neither on the Juliet suite nor on the twelve corpora,
+  so ADR-0017 has them report: reaching one means a runaway.
+- **Size ceiling.** The largest file the corpora scan is about 4 MiB
+  (raylib's `miniaudio.h`). The largest real C inputs a scanner meets are
+  amalgamations and SDK headers of 9-10 MiB (sqlite3.c, the Windows SDK's
+  biggest WinRT header). The 64 MiB default is several times either.
 - **Quadratic input.** A comment-heavy file is processed in time quadratic
   in its length, in a file-level pass rather than a rule. With one rule
   enabled, 1 MiB takes about 30 s and 2 MiB close to 2 minutes. This is
@@ -86,10 +93,10 @@ Kinds:
 
 | Where | Bound | Kind | On hit | Effect if hit |
 |---|---|---|---|---|
-| `prescan::collect_local_tainted_vars` | `MAX_LOCAL_TAINT_PASSES` = 4 | c | silent | **turns into a "clean" verdict for closed callees** that FIO30-C trusts: missed findings |
+| `prescan::collect_local_tainted_vars` | none: runs to its fixpoint (was `MAX_LOCAL_TAINT_PASSES` = 4) | – | terminates: each pass only adds to a finite set | – (the cap used to turn into a "clean" verdict for closed callees that FIO30-C trusted) |
 | `prescan::propagate_param_buffer_sizes` | `MAX_BUFFER_PROP_PASSES` = 6 | c | silent | deep forwarders leave buffer sizes unknown |
 | `prescan::propagate_param_null_states` | `MAX_PROPAGATION_PASSES` = 64 | c | warns on stderr, but no exit 3 | either direction; the measured worst case is 19 passes |
-| `function_summary::propagate_*` (18 cross-file passes: frees, taint, stores, closes, clears, returns_allocation, may_leave_null, …) | 10 passes, one call-graph hop per pass | c | silent | wrapper chains deeper than 10 lose the fact. Missed findings for taint, allocation, frees and may-leave-null; extra findings for frees, stores, closes and clears credit |
+| `function_summary::propagate_*` (18 cross-file passes: frees, taint, stores, closes, clears, returns_allocation, may_leave_null, …) | none: each runs to its fixpoint (was 10 passes) | – | terminates: each pass only adds facts to a finite set or sets a flag one way | – (the cap used to stop wrapper chains deeper than 10; curl's store and hostap's free propagation ran past it) |
 | `function_summary::macro_calls_taint_source` | 8 nested macros | b | silent | missed findings |
 | `function_summary::writes_on_all_paths_capped` | depth 96 | b | sound (no write credit) | – |
 | `function_summary::clean_paths` | depth 96 | b | silent ("claims nothing") | missed findings |
@@ -98,7 +105,7 @@ Kinds:
 | `noreturn::infer_terminating_definitions` | 4 rounds | c | silent | **also order-dependent**: it iterates a randomly seeded `HashMap` while updating it, so a chain of 5 or more terminating wrappers resolves or not from run to run. A determinism bug in its own right |
 | `side_effects` SCC fixpoint, `tarjan_sccs` | none; monotone over a finite set | a | – | terminates |
 | `side_effects` macro nesting | depth 4 | b | sound (opaque), except in lenient mode, where it reads nothing | lenient mode misses findings |
-| `const_eval` macro constant and range resolution | 5 rounds | c | silent | unresolved constants and ranges, either direction |
+| `const_eval` macro constant and range resolution | none: runs to its fixpoint (was 5 rounds) | – | terminates: each round resolves at least one more name or stops | – (the cap used to leave `#define` chains written against file order unresolved) |
 | `const_eval` alias chains | 8 links | b | silent | renamed allocator/free chains go unseen |
 | `check_macros` | `MAX_DEPTH` = 8 | b | sound | – |
 

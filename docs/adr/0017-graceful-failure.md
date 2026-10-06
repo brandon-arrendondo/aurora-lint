@@ -83,9 +83,8 @@ Before this decision, a failure anywhere ended the scan.
      - a SARIF `toolExecutionNotifications` entry, with
        `invocations[0].executionSuccessful: false`;
      - exit status **3**.
-   - Two worklist caps that used to `break` silently now do this: reaching
-     definitions and null state. Neither is reached on the Juliet suite or
-     the real-world corpora, so reaching one means a runaway.
+   - An iteration cap that only a runaway should reach reports this way
+     instead of stopping silently. The inventory lists which caps do.
    - **Sound approximations are not incomplete.** A bound whose fallback over-approximates
      is the analysis working as designed: widening to the type's range, or
      "not proven, so report". It is not reported.
@@ -142,17 +141,17 @@ Before this decision, a failure anywhere ended the scan.
    memory. An out-of-memory kill cannot be contained after the fact, so it
    must be prevented. One function (`input_guard::admit`) checks every
    scanned and prescanned file:
-   - a size ceiling, `--max-file-size`, default 64 MiB. The largest file the
-     corpora scan is about 4 MiB (raylib's `miniaudio.h`). The largest real
-     C inputs a scanner meets are amalgamations and SDK headers of 9-10 MiB.
-     64 MiB is several times either.
+   - a size ceiling, `--max-file-size`, set several times above the largest
+     real C inputs (the inventory records the calibration);
    - the shared parsing substrate's file classifier
      (`lang_parsing_substrate::classify_file`). It checks magic numbers
      (archives, compressed streams, ELF, PE, Mach-O, images, PDF, office
      documents, media, fonts), then the ratio of NUL, control and
      invalid-UTF-8 bytes in the first 8 KiB. It was calibrated so that no
      C-family file in the benchmark corpora or Juliet is classed binary. A
-     UTF-16 byte-order mark is read as text. Empty files are admitted.
+     UTF-16 byte-order mark is read as text. Empty files are admitted. A
+     file that cannot be classified (a FIFO, a device, an unreadable path)
+     is refused, since reading it can block.
 
    A refused file is skipped and reported like any other failure: stage
    `input`, exit 3, a SARIF notification. Files the user excluded never get

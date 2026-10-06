@@ -73,6 +73,8 @@ offered to the parser. Before parsing, each file is checked:
   PE, Mach-O, zip, gzip, xz, 7z, zstd, tar, PDF, an image, and so on), or
   its first 8 KiB has too many NUL, control or invalid-UTF-8 bytes to be
   text. This is a heuristic, tuned so that real C source is never refused.
+  A path that is not a regular readable file (a FIFO, a device) is refused
+  the same way, since reading it could block.
   Files with a UTF-16 byte-order mark are text and are read normally, and
   empty files are fine.
 

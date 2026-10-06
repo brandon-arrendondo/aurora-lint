@@ -459,7 +459,7 @@ pub fn contain<R>(label: &str, f: impl FnOnce() -> R) -> Result<R, Failure> {
     CONTAINING.with(|c| c.set(c.get() + 1));
     let token = watchdog_enter(label, started);
     let result = panic::catch_unwind(AssertUnwindSafe(f));
-    watchdog_leave(token);
+    watchdog_leave(token, started);
     CONTAINING.with(|c| c.set(c.get() - 1));
     // The enclosing unit's clock stops while this one runs: a file whose
     // rules each finish in time has not itself run long.
@@ -512,7 +512,7 @@ fn watchdog_enter(label: &str, started: Instant) -> bool {
     true
 }
 
-fn watchdog_leave(token: bool) {
+fn watchdog_leave(token: bool, started: Instant) {
     if !token {
         return;
     }
@@ -520,6 +520,12 @@ fn watchdog_leave(token: bool) {
     let id = std::thread::current().id();
     if let Some(stack) = map.get_mut(&id) {
         stack.pop();
+        // The enclosing unit's clock stops while a nested one runs, as its
+        // deadline does: between two rules, the file unit is the innermost
+        // entry, and it must not look as old as all its rules together.
+        if let Some(outer) = stack.last_mut() {
+            outer.1 += started.elapsed();
+        }
         if stack.is_empty() {
             map.remove(&id);
         }
@@ -698,6 +704,22 @@ mod tests {
         })
         .unwrap();
         assert_eq!(steps_after, 1);
+    }
+
+    #[test]
+    fn leaving_a_nested_unit_moves_the_outer_start_forward() {
+        let t0 = Instant::now();
+        let id = std::thread::current().id();
+        running()
+            .lock()
+            .unwrap()
+            .insert(id, vec![("outer".into(), t0), ("inner".into(), t0)]);
+        let inner_started = Instant::now();
+        std::thread::sleep(Duration::from_millis(30));
+        watchdog_leave(true, inner_started);
+        let outer = running().lock().unwrap().get(&id).unwrap()[0].1;
+        assert!(outer >= t0 + Duration::from_millis(30));
+        running().lock().unwrap().remove(&id);
     }
 
     #[test]

@@ -696,6 +696,16 @@ class BenchDB:
         with self._cursor() as cur:
             cur.execute(f"UPDATE cwe_scans SET {cols} WHERE id = ?", vals)
 
+    def incomplete_cwes(self, run_id: str) -> list[str]:
+        """The CWE directories of `run_id` that aurora-lint left incomplete
+        (exit 3, ADR-0017), across every invocation of the run."""
+        with self._cursor() as cur:
+            cur.execute("""
+                SELECT cwe_dir_name FROM cwe_scans
+                WHERE run_id = ? AND status = 'incomplete' ORDER BY cwe_dir_name
+            """, (run_id,))
+            return [r["cwe_dir_name"] for r in cur.fetchall()]
+
     def get_cwe_scan(self, scan_id: int) -> dict | None:
         with self._cursor() as cur:
             cur.execute("SELECT * FROM cwe_scans WHERE id = ?", (scan_id,))
