@@ -45,7 +45,7 @@ use crate::analyze::dead_regions::DeadRegions;
 use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use tree_sitter::Node;
 
 /// A value computed under each combination of the two options that decide
@@ -293,14 +293,17 @@ pub fn collect_noreturn_names(root: &Node, source: &str) -> NoreturnNames {
     }
 }
 
-/// Maximum fixpoint rounds for [`infer_terminating_definitions`]. A wrapper
-/// chain deeper than this is vanishingly rare, and a cap keeps a pathological
-/// file from paying for repeated whole-tree walks.
-const INFERENCE_MAX_ROUNDS: usize = 4;
-
 /// Add every function *defined* in `root` whose body unconditionally ends the
-/// process, iterating until nothing new is found so a wrapper calling a
-/// wrapper is caught too.
+/// process, iterating to a fixpoint so a wrapper calling a wrapper, to any
+/// depth, is caught too.
+///
+/// The set only grows, so its fixpoint is unique and does not depend on the
+/// order candidates are visited in. A worklist reaches it: every candidate is
+/// checked once in name order, and is checked again only when a function it
+/// calls at top level has just been added. A fixed number of rounds over a
+/// hash map, as this once was, resolved a chain deeper than the round count
+/// only when the map happened to visit it in call order, so the same file
+/// gave different answers from run to run.
 ///
 /// A name defined more than once (in `#if` arms no platform profile settles)
 /// qualifies only when every live definition ends the process: noreturn
@@ -317,10 +320,10 @@ const INFERENCE_MAX_ROUNDS: usize = 4;
 fn infer_terminating_definitions(root: &Node, source: &str, names: &mut HashSet<String>) {
     // Only a name all of whose live definitions have no `return` and no
     // `goto` can ever qualify (see `body_unconditionally_terminates`), and
-    // that does not change between rounds -- so the candidates are found
-    // once, and the rounds only re-ask which of them now call a known
+    // that does not change as names are added -- so the candidates are found
+    // once, and the worklist only re-asks which of them now call a known
     // terminator.
-    let mut candidates: HashMap<String, Vec<Node>> = HashMap::new();
+    let mut candidates: BTreeMap<String, Vec<Node>> = BTreeMap::new();
     let mut returning: HashSet<String> = HashSet::new();
     for (def, name) in live_definitions(root, source) {
         if body_has_no_return_or_goto(&def) {
@@ -330,22 +333,35 @@ fn infer_terminating_definitions(root: &Node, source: &str, names: &mut HashSet<
         }
     }
     candidates.retain(|name, _| !returning.contains(name));
-    for _ in 0..INFERENCE_MAX_ROUNDS {
-        let mut added = false;
-        for (name, defs) in &candidates {
-            if names.contains(name) {
+    // Which candidates call each name in a top-level statement: the only
+    // calls `body_unconditionally_terminates` reads.
+    let mut callers: HashMap<String, Vec<&str>> = HashMap::new();
+    for (name, defs) in &candidates {
+        for def in defs {
+            let Some(body) = def.child_by_field_name("body") else {
                 continue;
-            }
-            if defs
-                .iter()
-                .all(|def| body_unconditionally_terminates(def, source, names))
-            {
-                names.insert(name.clone());
-                added = true;
+            };
+            let mut cursor = body.walk();
+            for stmt in body.children(&mut cursor) {
+                if let Some(callee) = terminating_call_name(&stmt, source) {
+                    callers.entry(callee).or_default().push(name.as_str());
+                }
             }
         }
-        if !added {
-            break;
+    }
+    let mut queue: VecDeque<&str> = candidates.keys().map(String::as_str).collect();
+    while let Some(name) = queue.pop_front() {
+        if names.contains(name) {
+            continue;
+        }
+        if candidates[name]
+            .iter()
+            .all(|def| body_unconditionally_terminates(def, source, names))
+        {
+            names.insert(name.to_string());
+            if let Some(dependents) = callers.get(name) {
+                queue.extend(dependents.iter().copied());
+            }
         }
     }
 }
@@ -633,6 +649,31 @@ mod tests {
             parse("static void no_mem(void) { fprintf(stderr, \"oom\"); exit(1); }\n");
         let names = collect_noreturn_names(&tree.root_node(), &source).keyword_and_stdlib;
         assert!(names.contains("no_mem"));
+    }
+
+    /// A chain of terminating wrappers resolves completely, and identically
+    /// on every collection: each `HashMap` gets its own random seed, so
+    /// collecting many times walks the candidates in many orders.
+    #[test]
+    fn a_deep_wrapper_chain_resolves_the_same_way_every_time() {
+        let (tree, source) = parse(
+            "static void w6(void) { w5(); }\n\
+             static void w5(void) { w4(); }\n\
+             static void w4(void) { w3(); }\n\
+             static void w3(void) { w2(); }\n\
+             static void w2(void) { w1(); }\n\
+             static void w1(void) { fputs(\"fatal\", stderr); exit(1); }\n",
+        );
+        let want: HashSet<String> = ["w1", "w2", "w3", "w4", "w5", "w6"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        for _ in 0..64 {
+            let names = collect_noreturn_names(&tree.root_node(), &source).keyword_and_stdlib;
+            let inferred: HashSet<String> =
+                names.into_iter().filter(|n| n.starts_with('w')).collect();
+            assert_eq!(inferred, want);
+        }
     }
 
     #[test]
