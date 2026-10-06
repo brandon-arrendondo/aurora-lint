@@ -40,6 +40,9 @@ pub mod library_effects;
 /// recognized structurally so an overflow rule stops reading a loop-bounded
 /// subtraction as an unguarded one.
 pub mod loop_consumption;
+/// A node's children in order at linear cost: indexed when there are few,
+/// a cursor when there are many (`child(i)` walks from the first child).
+pub mod node_children;
 /// Shared helpers for arithmetic-overflow-detection rules (INT30-C, INT32-C).
 pub mod overflow_helpers;
 /// Positive pointer-type inference, so the integer-hazard rules (INT00-C,

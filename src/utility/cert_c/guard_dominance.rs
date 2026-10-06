@@ -43,6 +43,7 @@
 
 use super::ast_utils::get_node_text;
 use crate::analyze::const_eval::{try_evaluate_expr, MacroConstantMap};
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -130,10 +131,7 @@ fn call_arg_guards_from<'a>(
     // argument; collect them once for every argument to consult. Lazily,
     // since a call with no bare-identifier argument never asks.
     let mut conditions: Option<Vec<Node>> = None;
-    for i in 0..arg_list.child_count() {
-        let Some(arg) = arg_list.child(i) else {
-            continue;
-        };
+    for arg in arg_list.child_nodes() {
         if !arg.is_named() || arg.kind() == "comment" {
             continue;
         }
@@ -213,10 +211,7 @@ pub fn strip_arg_wrappers<'a>(node: &Node<'a>) -> Node<'a> {
 fn strip_parens<'a>(node: &Node<'a>) -> Node<'a> {
     let mut n = *node;
     while n.kind() == "parenthesized_expression" {
-        let Some(inner) = (0..n.child_count())
-            .filter_map(|i| n.child(i))
-            .find(|c| !matches!(c.kind(), "(" | ")"))
-        else {
+        let Some(inner) = n.child_nodes().find(|c| !matches!(c.kind(), "(" | ")")) else {
             break;
         };
         n = inner;
@@ -1734,13 +1729,11 @@ pub fn always_diverges(stmt: &Node) -> bool {
         "goto_statement" | "return_statement" | "break_statement" | "continue_statement" => true,
         "compound_statement" => {
             let mut last = None;
-            for i in 0..stmt.child_count() {
-                if let Some(child) = stmt.child(i) {
-                    if matches!(child.kind(), "comment" | "{" | "}") {
-                        continue;
-                    }
-                    last = Some(child);
+            for child in stmt.child_nodes() {
+                if matches!(child.kind(), "comment" | "{" | "}") {
+                    continue;
                 }
+                last = Some(child);
             }
             last.is_some_and(|l| always_diverges(&l))
         }
@@ -2457,12 +2450,11 @@ fn do_body_jumps_before(do_body: &Node, before: usize) -> bool {
             "switch_statement" => (in_loop, true),
             _ => (in_loop, in_switch),
         };
-        (0..n.child_count())
-            .filter_map(|i| n.child(i))
+        n.child_nodes()
             .any(|c| walk(&c, before, loop_here, switch_here))
     }
-    (0..do_body.child_count())
-        .filter_map(|i| do_body.child(i))
+    do_body
+        .child_nodes()
         .any(|c| walk(&c, before, false, false))
 }
 

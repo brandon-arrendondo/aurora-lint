@@ -2,6 +2,7 @@
 // This module provides reusable functions for navigating and extracting information from the C AST
 
 use crate::utility::cert_c::data_model::{IntFacts, IntWidth};
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -412,8 +413,7 @@ pub fn declaration_declarator_for<'a>(
     name: &str,
     source: &str,
 ) -> Option<Node<'a>> {
-    for i in 0..decl_node.child_count() {
-        let child = decl_node.child(i)?;
+    for child in decl_node.child_nodes() {
         let declarator = match child.kind() {
             "init_declarator" => child.child_by_field_name("declarator").unwrap_or(child),
             "identifier" | "pointer_declarator" | "array_declarator" | "function_declarator" => {
@@ -440,8 +440,8 @@ pub fn find_parameter_declaration<'a>(
 ) -> Option<Node<'a>> {
     let declarator = find_function_declarator(function_node)?;
     let params = declarator.child_by_field_name("parameters")?;
-    (0..params.child_count())
-        .filter_map(|i| params.child(i))
+    params
+        .child_nodes()
         .filter(|p| p.kind() == "parameter_declaration")
         .find(|p| declaration_declarator_for(p, name, source).is_some())
 }
@@ -602,14 +602,12 @@ pub fn identifier_type<'m>(
 /// record.
 pub fn declaration_type_spelling(decl: &Node, declarator: &Node, source: &str) -> Option<String> {
     let mut base = String::new();
-    for i in 0..decl.child_count() {
-        if let Some(child) = decl.child(i) {
-            if matches!(
-                child.kind(),
-                "primitive_type" | "sized_type_specifier" | "type_identifier" | "struct_specifier"
-            ) {
-                base = get_node_text(&child, source).to_string();
-            }
+    for child in decl.child_nodes() {
+        if matches!(
+            child.kind(),
+            "primitive_type" | "sized_type_specifier" | "type_identifier" | "struct_specifier"
+        ) {
+            base = get_node_text(&child, source).to_string();
         }
     }
     if base.is_empty() {
@@ -655,8 +653,7 @@ pub fn find_global_declaration_for_identifier<'a>(
     while let Some(p) = top.parent() {
         top = p;
     }
-    (0..top.child_count())
-        .filter_map(|i| top.child(i))
+    top.child_nodes()
         .find(|decl| decl.kind() == "declaration" && declaration_binds_name(decl, name, source))
 }
 
@@ -733,8 +730,7 @@ fn binding_on_path<'a>(
     }
     // The climbing version's translation unit is the topmost ancestor.
     let top = std::iter::once(*root).chain(path.iter().copied()).next()?;
-    (0..top.child_count())
-        .filter_map(|i| top.child(i))
+    top.child_nodes()
         .find(|decl| decl.kind() == "declaration" && declaration_binds_name(decl, name, source))
         .map(IdentifierBinding::Global)
 }
@@ -754,8 +750,7 @@ fn containing_function_on_path<'a>(root: &Node<'a>, path: &[Node<'a>]) -> Option
 /// hand-rolled in ARR39-C, MSC15-C, and FIO34-C before being
 /// consolidated here.
 pub fn declaration_type_text(decl: &Node, source: &str) -> String {
-    (0..decl.child_count())
-        .filter_map(|i| decl.child(i))
+    decl.child_nodes()
         .take_while(|c| {
             !matches!(
                 c.kind(),
@@ -1151,15 +1146,13 @@ pub fn get_identifier_from_declarator(declarator: &Node, source: &str) -> String
         | "function_declarator"
         | "parenthesized_declarator" => {
             // Recursively search for the identifier
-            for i in 0..declarator.child_count() {
-                if let Some(child) = declarator.child(i) {
-                    if child.kind() == "identifier" {
-                        return get_node_text_owned(&child, source);
-                    }
-                    let nested = get_identifier_from_declarator(&child, source);
-                    if !nested.is_empty() {
-                        return nested;
-                    }
+            for child in declarator.child_nodes() {
+                if child.kind() == "identifier" {
+                    return get_node_text_owned(&child, source);
+                }
+                let nested = get_identifier_from_declarator(&child, source);
+                if !nested.is_empty() {
+                    return nested;
                 }
             }
             String::new() // Return empty string for consistency with original implementations
@@ -1274,10 +1267,7 @@ pub fn error_declarations(node: &Node, source: &str) -> Vec<ErrorDeclaration> {
 
 fn collect_error_declarations(node: &Node, source: &str, out: &mut Vec<ErrorDeclaration>) {
     let mut specifiers: Vec<String> = Vec::new();
-    for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else {
-            continue;
-        };
+    for child in node.child_nodes() {
         match child.kind() {
             "storage_class_specifier"
             | "type_qualifier"
@@ -1336,8 +1326,8 @@ fn pointer_depth(declarator: &Node) -> usize {
     if declarator.kind() != "pointer_declarator" {
         return 0;
     }
-    let nested = (0..declarator.child_count())
-        .filter_map(|i| declarator.child(i))
+    let nested = declarator
+        .child_nodes()
         .map(|c| pointer_depth(&c))
         .max()
         .unwrap_or(0);
@@ -1351,12 +1341,10 @@ fn parameters_of_declarator(declarator: &Node, source: &str) -> Vec<(String, Str
     if declarator.kind() == "function_declarator" {
         return extract_parameters(declarator, source).unwrap_or_default();
     }
-    for i in 0..declarator.child_count() {
-        if let Some(child) = declarator.child(i) {
-            let nested = parameters_of_declarator(&child, source);
-            if !nested.is_empty() {
-                return nested;
-            }
+    for child in declarator.child_nodes() {
+        let nested = parameters_of_declarator(&child, source);
+        if !nested.is_empty() {
+            return nested;
         }
     }
     Vec::new()
@@ -1405,8 +1393,7 @@ pub fn get_function_parameters(
 /// parameter it lands on is restrict-qualified.
 pub fn restrict_parameter_indices(root: &Node, source: &str) -> HashMap<String, Vec<usize>> {
     fn walk(node: &Node, source: &str, out: &mut HashMap<String, Vec<usize>>) {
-        for i in 0..node.child_count() {
-            let Some(child) = node.child(i) else { continue };
+        for child in node.child_nodes() {
             match child.kind() {
                 "function_definition" | "declaration" => {
                     if let Some(declarator) = find_function_declarator(&child) {
@@ -1443,8 +1430,8 @@ pub fn restrict_parameter_indices(root: &Node, source: &str) -> HashMap<String, 
         let Some(params) = declarator.child_by_field_name("parameters") else {
             return;
         };
-        let indices: Vec<usize> = (0..params.named_child_count())
-            .filter_map(|i| params.named_child(i))
+        let indices: Vec<usize> = params
+            .named_child_nodes()
             .filter(|p| p.kind() == "parameter_declaration")
             .enumerate()
             .filter(|(_, p)| {
@@ -1474,8 +1461,7 @@ pub fn restrict_parameter_indices(root: &Node, source: &str) -> HashMap<String, 
 /// name(...)`) it is nested one level deeper inside a `pointer_declarator`,
 /// which the previous direct-children-only scan missed entirely.
 fn find_function_declarator<'a>(function_node: &Node<'a>) -> Option<Node<'a>> {
-    for i in 0..function_node.child_count() {
-        let child = function_node.child(i)?;
+    for child in function_node.child_nodes() {
         match child.kind() {
             "function_declarator" => return Some(child),
             "pointer_declarator" => {
@@ -1494,18 +1480,13 @@ fn extract_parameters(declarator_node: &Node, source: &str) -> Option<Vec<(Strin
     let mut parameters = Vec::new();
 
     // Find parameter_list node
-    for i in 0..declarator_node.child_count() {
-        if let Some(child) = declarator_node.child(i) {
-            if child.kind() == "parameter_list" {
-                // Extract each parameter
-                for j in 0..child.child_count() {
-                    if let Some(param) = child.child(j) {
-                        if param.kind() == "parameter_declaration" {
-                            if let Some((name, param_type)) = extract_parameter_info(&param, source)
-                            {
-                                parameters.push((name, param_type));
-                            }
-                        }
+    for child in declarator_node.child_nodes() {
+        if child.kind() == "parameter_list" {
+            // Extract each parameter
+            for param in child.child_nodes() {
+                if param.kind() == "parameter_declaration" {
+                    if let Some((name, param_type)) = extract_parameter_info(&param, source) {
+                        parameters.push((name, param_type));
                     }
                 }
             }
@@ -1524,21 +1505,19 @@ fn extract_parameter_info(param_node: &Node, source: &str) -> Option<(String, St
     let param_text = get_node_text(param_node, source);
 
     // Look for declarator pattern
-    for i in 0..param_node.child_count() {
-        if let Some(child) = param_node.child(i) {
-            if matches!(
-                child.kind(),
-                "array_declarator" | "pointer_declarator" | "function_declarator"
-            ) {
-                // Found array, pointer, or function pointer parameter
-                if let Some(identifier) = find_identifier_in_declarator(&child, source) {
-                    return Some((identifier, param_text.to_string()));
-                }
-            } else if child.kind() == "identifier" {
-                // Simple parameter
-                let name = get_node_text(&child, source);
-                return Some((name.to_string(), param_text.to_string()));
+    for child in param_node.child_nodes() {
+        if matches!(
+            child.kind(),
+            "array_declarator" | "pointer_declarator" | "function_declarator"
+        ) {
+            // Found array, pointer, or function pointer parameter
+            if let Some(identifier) = find_identifier_in_declarator(&child, source) {
+                return Some((identifier, param_text.to_string()));
             }
+        } else if child.kind() == "identifier" {
+            // Simple parameter
+            let name = get_node_text(&child, source);
+            return Some((name.to_string(), param_text.to_string()));
         }
     }
 
@@ -1548,21 +1527,17 @@ fn extract_parameter_info(param_node: &Node, source: &str) -> Option<(String, St
 /// Check if a variable name appears in the function's parameter list
 pub fn is_function_parameter(function_node: &Node, var_name: &str, source: &str) -> bool {
     // Find parameter list in function
-    for i in 0..function_node.child_count() {
-        if let Some(child) = function_node.child(i) {
-            if child.kind() == "function_declarator" {
-                for j in 0..child.child_count() {
-                    if let Some(param_list) = child.child(j) {
-                        if param_list.kind() == "parameter_list" {
-                            let param_text = get_node_text(&param_list, source);
-                            // Check for word boundaries to avoid substring matches
-                            let words: Vec<&str> = param_text
-                                .split(|c: char| !c.is_alphanumeric() && c != '_')
-                                .collect();
-                            if words.contains(&var_name) {
-                                return true;
-                            }
-                        }
+    for child in function_node.child_nodes() {
+        if child.kind() == "function_declarator" {
+            for param_list in child.child_nodes() {
+                if param_list.kind() == "parameter_list" {
+                    let param_text = get_node_text(&param_list, source);
+                    // Check for word boundaries to avoid substring matches
+                    let words: Vec<&str> = param_text
+                        .split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .collect();
+                    if words.contains(&var_name) {
+                        return true;
                     }
                 }
             }
@@ -1701,43 +1676,41 @@ pub fn is_win32_unsigned_typedef(type_str: &str) -> bool {
 /// Extract the operator from a binary expression node
 pub fn get_binary_operator<'a>(node: &Node, source: &'a str) -> Option<&'a str> {
     // The operator is usually a child of the binary expression
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            let kind = child.kind();
-            // Check if this is an operator token
-            if matches!(
-                kind,
-                "+" | "-"
-                    | "*"
-                    | "/"
-                    | "%"
-                    | "=="
-                    | "!="
-                    | "<"
-                    | ">"
-                    | "<="
-                    | ">="
-                    | "&&"
-                    | "||"
-                    | "&"
-                    | "|"
-                    | "^"
-                    | "<<"
-                    | ">>"
-                    | "="
-                    | "+="
-                    | "-="
-                    | "*="
-                    | "/="
-                    | "%="
-                    | "&="
-                    | "|="
-                    | "^="
-                    | "<<="
-                    | ">>="
-            ) {
-                return Some(get_node_text(&child, source));
-            }
+    for child in node.child_nodes() {
+        let kind = child.kind();
+        // Check if this is an operator token
+        if matches!(
+            kind,
+            "+" | "-"
+                | "*"
+                | "/"
+                | "%"
+                | "=="
+                | "!="
+                | "<"
+                | ">"
+                | "<="
+                | ">="
+                | "&&"
+                | "||"
+                | "&"
+                | "|"
+                | "^"
+                | "<<"
+                | ">>"
+                | "="
+                | "+="
+                | "-="
+                | "*="
+                | "/="
+                | "%="
+                | "&="
+                | "|="
+                | "^="
+                | "<<="
+                | ">>="
+        ) {
+            return Some(get_node_text(&child, source));
         }
     }
     None
