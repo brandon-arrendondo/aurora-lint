@@ -2,8 +2,8 @@
 
 **Status:** research input for Brandon, 2026-09-25; revision 2 against the ADRs accepted at `72b8f734`.
 Nothing here changes an ADR. Every "amend" below is a proposal to rule on.
-Parts (a) internal consistency and (b) clarifications are the coordinator's,
-in `docs/design/adr-review-2026-09.md`. This doc is the external half they
+Parts (a) internal consistency and (b) clarifications are the maintainers'
+own review, kept outside this repository. This doc is the external half they
 cite.
 
 **Scope.** The first pass (sections D, P and E) read ADR-0001..0011 as of

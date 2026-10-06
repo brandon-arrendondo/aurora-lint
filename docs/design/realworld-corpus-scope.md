@@ -181,7 +181,7 @@ predicate, not a re-implementation.
 denominator gap, listed here so it can be measured, not closed here.
 **Closing one is not a mechanical follow-up:** narrowing `scope_exclude` to
 match a declaration would drop existing `ground_truth` rows out of the
-oracle, which is Brandon's call (and an earlier coordinator note already
+oracle, which is Brandon's call (and an earlier maintainer note already
 warns against piecemeal re-scoping, with a real TP at stake in valkey).
 
 **ventoy is the exception worth reading twice.** ADR-0010 says the

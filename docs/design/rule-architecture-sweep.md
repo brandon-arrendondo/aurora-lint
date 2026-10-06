@@ -226,7 +226,7 @@ priority order and reasoning:
    existing design.
 8. **Tier 2 broader sweep** (optional, lowest priority) — apply the
    text-heuristic-without-AST-resolution mechanical filter from §6 across
-   the remaining ~289 rules as a cheap first pass, if the coordinator wants
+   the remaining ~289 rules as a cheap first pass, if the maintainers want
    the sweep extended that far.
 
 ## 8. What this sweep did not do

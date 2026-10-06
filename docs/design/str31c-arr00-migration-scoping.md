@@ -190,8 +190,7 @@ delete whenever this file is next touched).
 
 ## 5. Suggested follow-up tasks
 
-Not filed by this pass — listed here for the coordinator to create via
-`todo-sqlite-cli add`:
+Not filed by this pass — listed here for the maintainers to file:
 
 1. **P2, infra** — "STR31-C Phase 1: dedup pointer-alias + fixed/alloca
    numeric sizing against `buffer_size::resolve_bare_alias_in_range` /

@@ -292,7 +292,7 @@ A proposed CWE rule is admitted only if all of these hold:
 
 None of them is worth a suite today.
 
-## Follow-ups this exploration proposes (for the coordinator to file or not)
+## Follow-ups this exploration proposes (for the maintainers to file or not)
 
 1. **tcb mapping:** apply §1, including the Frama-C clause-keyed patterns and
    excluding Juliet entry-function `unusedFunction`, before the comparison paper's tables

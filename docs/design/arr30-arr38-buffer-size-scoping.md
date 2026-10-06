@@ -171,8 +171,7 @@ unblocked by this doc).
 
 ## 4. Suggested follow-up tasks
 
-Not filed by this pass — listed here for the coordinator to create via
-`todo-sqlite-cli add`:
+Not filed by this pass — listed here for the maintainers to file:
 
 1. **P2, infra** — "ARR30-C: delete self-duplicated
    `find_identifier_in_declarator`/`extract_variable_name_from_declarator`,
@@ -471,7 +470,7 @@ checking-layer dispatch structure is reasonably factored.
 
 ## 8. This document's own extension pass follow-up tasks filed
 
-Filed via `todo-sqlite-cli add ... --depends-on 512`:
+Filed as follow-ups that depend on this pass:
 
 - **ARR30-C**: word-boundary/sanitization fix for the three regex
   helpers (6.1); dedup of the size/length/count/len substring heuristic

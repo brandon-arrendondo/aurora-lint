@@ -148,7 +148,7 @@ def _cwe_shard_dirs(cwe_dir: Path) -> list[Path] | None:
 # submitting shard_count(cwe) futures per CWE and merging them once all land
 # . No DB writes happen here: multiple shards of the same CWE
 # would race on the same `cwe_scans` row (UNIQUE(run_id, cwe_dir_name)), so
-# writing is deferred to the coordinator after `merge_shards`.
+# writing is deferred to the parent process after `merge_shards`.
 
 def _prescan_args(cwe_dir_str: str, compile_db: str | None) -> list[str]:
     """The cross-file context arguments every scan of a CWE shares: the whole

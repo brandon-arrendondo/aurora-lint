@@ -122,7 +122,7 @@ FIXTURE = [
     (17, "macro-gaps: informal 'release note' prose must not shadow the real directive",
      {"release-note", "rule-bug"},
      "RELEASE NOTE: proposing one, since this is documented CLI output and\n"
-     "the old kind no longer appears. Coordinator's call on tagging:\n"
+     "the old kind no longer appears. Maintainers' call on tagging:\n"
      "  release-note: the real, tagged bullet text.\n"
      "  category: fixed\nmore prose",
      "aurora_lint", "done", T % 17),
@@ -205,7 +205,7 @@ class TestGenerator(unittest.TestCase):
 
     def test_wrapped_release_note_is_joined_not_truncated(self):
         # Regression: RELEASE_NOTE_LINE used to anchor on end-of-line ($), so a
-        # bullet wrapped across several lines (as the coordinator writes them)
+        # bullet wrapped across several lines (as the maintainers write them)
         # published only its first line.
         self.assertIn(
             "API00-C again reports a function that passes an unvalidated "
