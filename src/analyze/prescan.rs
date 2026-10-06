@@ -3452,8 +3452,8 @@ fn mark_taint_from_assignment_like(
 /// `node`'s subtree into `tainted`. Not flow-sensitive (matches the rest of
 /// prescan's local-variable heuristics, e.g. `collect_local_var_int_values`):
 /// facts are gathered regardless of statement order, then
-/// `collect_local_tainted_vars` reruns this to a small fixpoint so a short
-/// chain (`x = fgets(...); y = x; sink(y);`) resolves within a few passes.
+/// `collect_local_tainted_vars` reruns this to a fixpoint so a chain
+/// (`x = fgets(...); y = x; sink(y);`) resolves however it is ordered.
 fn collect_taint_pass(
     node: &Node,
     source: &str,
@@ -3474,15 +3474,9 @@ fn collect_taint_pass(
     }
 }
 
-/// Maximum taint-propagation passes per function body when resolving local
-/// taint chains for cross-file call-site taint collection. Small bound: this
-/// is intra-function only (no wrapper-call chasing), so short chains
-/// converge in 2-3 passes; the cap is a safety net.
-const MAX_LOCAL_TAINT_PASSES: usize = 4;
-
 /// Compute the set of local variable names within `body` that are tainted by
 /// a known taint source (fgets/recv/scanf/getenv/... or `argv`), including
-/// short propagation chains through plain assignment and string-copy/format
+/// propagation chains through plain assignment and string-copy/format
 /// calls. Scoped to a single function body — this feeds
 /// `collect_callsite_taint_args_from_tree`'s per-call-site taint check, not a
 /// standalone taint model.
@@ -3492,7 +3486,11 @@ fn collect_local_tainted_vars(
     aliases: &HashMap<String, String>,
 ) -> HashSet<String> {
     let mut tainted = HashSet::new();
-    for _ in 0..MAX_LOCAL_TAINT_PASSES {
+    // Until the set stops growing, not for a fixed count: a pass only adds
+    // names, so this ends within one pass per name in the body, and stopping
+    // early would leave the tail of a chain untainted, its call site
+    // recorded as passing clean data.
+    loop {
         let before = tainted.len();
         collect_taint_pass(body, source, aliases, &mut tainted);
         if tainted.len() == before {
@@ -10219,5 +10217,70 @@ void caller(char *other) {
         assert!(!good.callsite_param_taint_observed.contains(&0));
         assert!(!good.callsite_param_tainted.contains(&0));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn prescan_one(dir_name: &str, code: &str) -> ProjectContext {
+        let dir = std::env::temp_dir().join(dir_name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("one.c"), code).unwrap();
+        let ctx = prescan_directories(
+            &[dir.to_string_lossy().to_string()],
+            None,
+            false,
+            &|_, _| false,
+            Default::default(),
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        ctx
+    }
+
+    /// A local taint chain written against the statement order resolves one
+    /// link per pass. Six links reach the call: the passes run until the
+    /// tainted set stops growing, so a call fed by a long chain is never
+    /// recorded as clean. Its twin over a literal stays clean.
+    #[test]
+    fn a_long_local_taint_chain_reaches_the_call_site() {
+        let ctx = prescan_one(
+            "aurora-lint-prescan-long-local-taint-test",
+            "static void bad_sink(char *fmt) { printf(fmt); }
+             static void good_sink(char *fmt) { printf(fmt); }
+             void bad(void) {
+                 char a[8]; char *b, *c, *d, *e, *f, *g;
+                 for (;;) { bad_sink(g); g = f; f = e; e = d; d = c; c = b; b = a; fgets(a, 8, stdin); }
+             }
+             void good(void) {
+                 char *b, *c, *d, *e, *f, *g;
+                 for (;;) { good_sink(g); g = f; f = e; e = d; d = c; c = b; b = \"fixed\"; }
+             }
+",
+        );
+        let bad = ctx.function_summaries.get("bad_sink").unwrap();
+        assert!(bad.callsite_param_taint_observed.contains(&0));
+        assert!(bad.callsite_param_tainted.contains(&0));
+        let good = ctx.function_summaries.get("good_sink").unwrap();
+        assert!(good.callsite_param_taint_observed.contains(&0));
+        assert!(!good.callsite_param_tainted.contains(&0));
+    }
+
+    /// A sink reached by a clean caller directly and by tainted data through
+    /// twelve forwarding wrappers. The clean call settles it as observed at
+    /// once; the taint arrives one hop per pass. Stopping before it arrives
+    /// would leave a clean verdict for a sink that is passed tainted data.
+    #[test]
+    fn taint_through_a_long_forwarding_chain_overrides_an_early_clean_verdict() {
+        let mut code = String::from("static void sink(char *fmt) { printf(fmt); }\n");
+        code.push_str("static void t11(char *p) { sink(p); }\n");
+        for i in (0..11).rev() {
+            code.push_str(&format!("static void t{i}(char *p) {{ t{}(p); }}\n", i + 1));
+        }
+        code.push_str("void good(void) { sink(\"fixed\"); }\n");
+        code.push_str("void bad(void) { char b[8]; fgets(b, 8, stdin); t0(b); }\n");
+        let ctx = prescan_one("aurora-lint-prescan-long-forwarding-taint-test", &code);
+        let sink = ctx.function_summaries.get("sink").unwrap();
+        assert!(sink.caller_set_is_closed());
+        assert!(sink.callsite_param_taint_observed.contains(&0));
+        assert!(sink.callsite_param_tainted.contains(&0));
     }
 }

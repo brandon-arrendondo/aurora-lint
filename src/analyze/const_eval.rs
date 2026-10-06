@@ -937,12 +937,13 @@ pub fn collect_macro_constants(root: &Node, source: &str, model: IntFacts) -> Ma
         macros.remove(&format!("{name}{MACRO_RANGE_MAX}"));
     }
 
-    // Iteratively resolve — handles forward references and chains
+    // Iteratively resolve — handles forward references and chains. A round
+    // settles every definition whose references are settled, so a chain
+    // written against file order takes one round per link; rounds run until
+    // one settles nothing (each that does settles one more definition).
     let mut changed = true;
-    let mut iterations = 0;
-    while changed && iterations < 5 {
+    while changed {
         changed = false;
-        iterations += 1;
         for (name, value_text) in &raw_defs {
             if macros.contains_key(name) {
                 continue;
@@ -971,10 +972,8 @@ pub fn collect_macro_constants(root: &Node, source: &str, model: IntFacts) -> Ma
 fn record_macro_ranges(raw_defs: &[(String, String)], macros: &mut MacroConstantMap) {
     let empty = VarRangeMap::new();
     let mut changed = true;
-    let mut iterations = 0;
-    while changed && iterations < 5 {
+    while changed {
         changed = false;
-        iterations += 1;
         for (name, value_text) in raw_defs {
             if macros.contains_key(name) || macros.contains_key(&format!("{name}{MACRO_RANGE_MIN}"))
             {
@@ -4380,6 +4379,49 @@ int f(unsigned long s) { return LINEBITS(s); }
         let lp64 = collect_macro_constants(&tree.root_node(), &source, IntFacts::LP64);
         assert_eq!(lp64.get("HDR"), Some(&10));
         assert_eq!(macro_range(&lp64, "HDR"), None);
+    }
+
+    /// A chain of definitions each naming the one written after it resolves
+    /// one link per round, so its depth is the number of rounds it needs.
+    /// Seven links resolve as well as one: the rounds run until nothing
+    /// changes rather than stopping at a fixed count.
+    #[test]
+    fn a_definition_chain_written_in_reverse_resolves_to_any_depth() {
+        let code = "#define N0 (N1 + 1)\n\
+                    #define N1 (N2 + 1)\n\
+                    #define N2 (N3 + 1)\n\
+                    #define N3 (N4 + 1)\n\
+                    #define N4 (N5 + 1)\n\
+                    #define N5 (N6 + 1)\n\
+                    #define N6 (N7 + 1)\n\
+                    #define N7 10\n";
+        let (tree, source) = crate::parser::CParser::new()
+            .unwrap()
+            .parse_source(code)
+            .unwrap();
+        let macros = collect_macro_constants(&tree.root_node(), &source, IntFacts::LP64);
+        assert_eq!(macros.get("N7"), Some(&10));
+        assert_eq!(macros.get("N0"), Some(&17));
+    }
+
+    /// The same for a range-valued chain: each link is bounded once the one
+    /// after it is, however deep the chain is written in reverse.
+    #[test]
+    fn a_range_chain_written_in_reverse_resolves_to_any_depth() {
+        let code = "#define R0 (R1 + 1)\n\
+                    #define R1 (R2 + 1)\n\
+                    #define R2 (R3 + 1)\n\
+                    #define R3 (R4 + 1)\n\
+                    #define R4 (R5 + 1)\n\
+                    #define R5 (R6 + 1)\n\
+                    #define R6 (sizeof(uint32_t) * 2)\n";
+        let (tree, source) = crate::parser::CParser::new()
+            .unwrap()
+            .parse_source(code)
+            .unwrap();
+        let iso = collect_macro_constants(&tree.root_node(), &source, IntFacts::ISO);
+        assert_eq!(macro_range(&iso, "R6"), Some(ValueRange::new(2, 8)));
+        assert_eq!(macro_range(&iso, "R0"), Some(ValueRange::new(8, 14)));
     }
 
     #[test]

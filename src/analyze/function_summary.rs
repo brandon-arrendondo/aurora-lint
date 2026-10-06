@@ -2530,7 +2530,7 @@ pub fn propagate_nonnull_returns(
             summary.can_return_null = true;
         }
     }
-    for _pass in 0..10 {
+    loop {
         // A callee settles only as a pointer-returning function that cannot
         // return NULL: an integer-returning one is never null-capable, yet a
         // pointer cast from its result may well be NULL.
@@ -7263,6 +7263,13 @@ fn edge_target<'a>(
 /// then B transitively frees param 0. Iterates to fixpoint for deep chains
 /// (e.g., A → B → C → D where D calls free).
 ///
+/// This and the sibling `propagate_*` passes carry a fact one call-graph hop
+/// per pass and run until a pass changes nothing, never for a fixed count.
+/// Each only adds facts (inserts into a per-function set, or sets a flag one
+/// way), so every pass that changes anything adds at least one of finitely
+/// many and the loop ends. A fixed count stopped real wrapper chains part
+/// way, leaving the outer wrappers without the fact.
+///
 /// `macro_aliases` is the project-wide `#define ALIAS target` map: a
 /// pass-through edge names the callee as spelled, and `credit_frees_params`
 /// credits only a literal `free`, so a body that frees through
@@ -7276,7 +7283,7 @@ pub fn propagate_transitive_frees(
     summaries: &mut HashMap<String, FunctionSummary>,
     macro_aliases: &HashMap<String, String>,
 ) {
-    for _pass in 0..10 {
+    loop {
         let mut changed = false;
         let frees_snapshot: HashMap<String, HashSet<usize>> = summaries
             .iter()
@@ -7321,7 +7328,7 @@ pub fn propagate_transitive_frees(
     // forwarding call site in each hop of the chain are unconditional
     // — otherwise a helper that only frees its argument on an
     // error path gets treated as always freeing it at every call site.
-    for _pass in 0..10 {
+    loop {
         let mut changed = false;
         let unconditional_snapshot: HashMap<String, HashSet<usize>> = summaries
             .iter()
@@ -7381,7 +7388,7 @@ pub fn propagate_may_leave_null(summaries: &mut HashMap<String, FunctionSummary>
             s.may_leave_null_through_params.insert(idx);
         }
     }
-    for _pass in 0..10 {
+    loop {
         let snapshot: HashMap<String, HashSet<usize>> = summaries
             .iter()
             .filter(|(_, s)| !s.may_leave_null_through_params.is_empty())
@@ -7436,7 +7443,7 @@ fn iso_vformat_index(name: &str) -> Option<usize> {
 /// counts; any forwarding path counts, since the conversion then exists on
 /// that path.
 pub fn propagate_iso_format_params(summaries: &mut HashMap<String, FunctionSummary>) {
-    for _pass in 0..10 {
+    loop {
         let known: HashMap<String, usize> = summaries
             .iter()
             .filter_map(|(n, s)| s.iso_format_param.map(|i| (n.clone(), i)))
@@ -7516,7 +7523,7 @@ pub fn apply_macro_jumps_to_out_param_facts(
 /// as the forwarding is (`a -> b -> c`). Purely additive: a pass only ever
 /// inserts, so it converges and cannot withdraw a write already proven.
 pub fn propagate_transitive_modifies(summaries: &mut HashMap<String, FunctionSummary>) {
-    for _pass in 0..10 {
+    loop {
         let snapshot: HashMap<String, HashSet<usize>> = summaries
             .iter()
             .map(|(n, s)| (n.clone(), s.unconditional_modifies_params.clone()))
@@ -7599,7 +7606,7 @@ pub fn propagate_transitive_modifies(summaries: &mut HashMap<String, FunctionSum
 /// might reach an unresolvable call" only needs one reachable path, not
 /// every path (see EXP33-C piece (b)).
 pub fn propagate_forwards_to_indirect_call(summaries: &mut HashMap<String, FunctionSummary>) {
-    for _pass in 0..10 {
+    loop {
         let snapshot: HashMap<String, HashSet<usize>> = summaries
             .iter()
             .map(|(n, s)| (n.clone(), s.forwards_to_indirect_call.clone()))
@@ -7653,7 +7660,7 @@ pub fn propagate_transitive_param_taint(
     summaries: &mut HashMap<String, FunctionSummary>,
     header_declared: &HashSet<String>,
 ) {
-    for _pass in 0..10 {
+    loop {
         let mut changed = false;
 
         // Snapshot every forwarding edge (is the source param observed/
@@ -7725,7 +7732,7 @@ pub fn propagate_transitive_stores(
     summaries: &mut HashMap<String, FunctionSummary>,
     macro_aliases: &HashMap<String, String>,
 ) {
-    for _pass in 0..10 {
+    loop {
         let mut changed = false;
         let stores_snapshot: HashMap<String, HashSet<usize>> = summaries
             .iter()
@@ -7767,7 +7774,7 @@ pub fn propagate_transitive_stores(
 /// (fclose/close/CloseHandle), then B transitively closes param 0. Mirrors
 /// `propagate_transitive_frees` for FIO42-C's resource-close tracking.
 pub fn propagate_transitive_closes(summaries: &mut HashMap<String, FunctionSummary>) {
-    for _pass in 0..10 {
+    loop {
         let mut changed = false;
         let closes_snapshot: HashMap<String, HashSet<usize>> = summaries
             .iter()
@@ -7809,7 +7816,7 @@ pub fn propagate_transitive_clears(
 ) {
     use crate::utility::cert_c::call_roles;
 
-    for _pass in 0..10 {
+    loop {
         let mut changed = false;
         let snapshot: HashMap<String, HashSet<usize>> = summaries
             .iter()
@@ -7961,10 +7968,6 @@ fn released_params(summary: &FunctionSummary) -> HashSet<usize> {
 /// `protects_process_memory` is recomputed from
 /// `protects_process_obligations`, the same way the lock facts are.
 ///
-/// Each fixpoint runs at most 10 passes, so a wrapper chain deeper than
-/// that is left unresolved: the fact stays false and MEM06-C reports, which
-/// errs toward a finding rather than a silent miss.
-///
 /// The lock facts are MUST facts and are recomputed from scratch here, so a
 /// second call gives the same answer: `locks_params` from
 /// `lock_param_obligations` (a page-lock call at argument 0 with no project
@@ -8003,7 +8006,7 @@ pub fn propagate_transitive_credential_facts(
         }
     }
 
-    for _pass in 0..10 {
+    loop {
         let mut changed = false;
         let locked_returns: HashMap<String, bool> = summaries
             .iter()
@@ -8121,7 +8124,7 @@ pub fn propagate_transitive_credential_facts(
 /// callee frees that parameter's pointee too. Same shape as the field version,
 /// and needed for the same reason — real code layers these helpers.
 pub fn propagate_transitive_frees_param_pointees(summaries: &mut HashMap<String, FunctionSummary>) {
-    for _pass in 0..10 {
+    loop {
         let mut changed = false;
         let snapshot: HashMap<String, HashSet<usize>> = summaries
             .iter()
@@ -8244,7 +8247,7 @@ pub fn resolve_field_free_edges(
 /// `message__cleanup_all(mosq)` and `will__clear(mosq)`, which are the ones
 /// that actually free `mosq`'s fields (an earlier fix: MEM31-C ownership model).
 pub fn propagate_transitive_frees_param_fields(summaries: &mut HashMap<String, FunctionSummary>) {
-    for _pass in 0..10 {
+    loop {
         let mut changed = false;
         let snapshot: HashMap<String, HashMap<usize, HashSet<String>>> = summaries
             .iter()
@@ -8375,7 +8378,7 @@ pub fn resolve_reallocating(
         )
         .contains(&0)
     };
-    for _pass in 0..10 {
+    loop {
         let proven: HashSet<String> = summaries
             .iter()
             .filter(|(_, s)| s.reallocates_first_param)
@@ -8454,10 +8457,10 @@ fn unwrap_to_call_node<'a>(mut node: Node<'a>) -> Node<'a> {
 /// wrapper that hands back what an allocating callee produced is an
 /// allocator to ITS caller. `scard = os_zalloc(sizeof(*scard)); ... return
 /// scard;` names no allocator, and before this every os_zalloc-backed
-/// constructor was dark to MEM31-C. Bounded like the sibling
-/// fixpoints.
+/// constructor was dark to MEM31-C. Runs until nothing changes, like the
+/// sibling fixpoints.
 pub fn propagate_returns_allocation(summaries: &mut HashMap<String, FunctionSummary>) {
-    for _pass in 0..10 {
+    loop {
         let mut changed = false;
         let snapshot: HashMap<String, bool> = summaries
             .iter()
@@ -8495,7 +8498,7 @@ pub fn propagate_returned_value_escapes(
     summaries: &mut HashMap<String, FunctionSummary>,
     macro_aliases: &HashMap<String, String>,
 ) {
-    for _pass in 0..10 {
+    loop {
         let mut changed = false;
         let stores: HashMap<String, HashSet<usize>> = summaries
             .iter()
@@ -8544,10 +8547,12 @@ pub fn propagate_returned_value_escapes(
 /// `returns_from_callees`. If `g` returns the result of `f(...)` and
 /// `f.returns_tainted`, then `g.returns_tainted` too.
 ///
-/// Bounded at 10 passes (matches `propagate_transitive_frees`) to keep
-/// prescan cost predictable; Juliet's deepest wrapper chains are 2-3 hops.
+/// Runs until nothing changes, like `propagate_transitive_frees`: a pass
+/// only ever sets the flag, so there are at most as many passes as
+/// functions, and a fixed count would leave the tail of a long chain
+/// untainted.
 pub fn propagate_return_taint(summaries: &mut HashMap<String, FunctionSummary>) {
-    for _pass in 0..10 {
+    loop {
         let mut changed = false;
         let snapshot: HashMap<String, bool> = summaries
             .iter()
@@ -9492,6 +9497,27 @@ void caller(void) { }
         assert_eq!(deinit.definitions.len(), 2);
         assert!(deinit.at(code, 7).frees_params.contains(&0));
         assert!(!deinit.at_all(code, 7).frees_params.contains(&0));
+    }
+
+    /// A free reached through twelve forwarding wrappers is a free of the
+    /// outermost wrapper's parameter. The propagation runs until nothing
+    /// changes, one hop per pass, so the depth of the chain is no limit.
+    #[test]
+    fn a_free_through_a_twelve_deep_wrapper_chain_reaches_the_outermost() {
+        let mut code = String::from("void w11(void *p) { free(p); }\n");
+        for i in (0..11).rev() {
+            code.push_str(&format!("void w{i}(void *p) {{ w{}(p); }}\n", i + 1));
+        }
+        let mut summaries = parse_and_summarize(&code);
+        propagate_transitive_frees(&mut summaries, &HashMap::new());
+        for i in 0..12 {
+            let w = &summaries[&format!("w{i}")];
+            assert!(w.frees_params.contains(&0), "w{i} frees its parameter");
+            assert!(
+                w.unconditional_frees_params.contains(&0),
+                "w{i} always frees its parameter"
+            );
+        }
     }
 
     /// A callee that frees only a field of what it is handed is that
