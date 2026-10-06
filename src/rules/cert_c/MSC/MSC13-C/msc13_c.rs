@@ -40,6 +40,7 @@ use crate::utility::cert_c::ast_utils::{
     self, collect_unused_attribute_macro_names, find_enclosing_declaration_for_identifier,
     get_identifier_from_declarator, get_node_text, has_unused_attribute, is_c_keyword,
 };
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -186,20 +187,16 @@ impl Msc13C {
             {
                 let mut vars = Vec::new();
                 let decl_start = node.start_byte();
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        self.extract_declared_names(&child, source, decl_start, None, &mut vars);
-                    }
+                for child in node.child_nodes() {
+                    self.extract_declared_names(&child, source, decl_start, None, &mut vars);
                 }
                 names.extend(vars.into_iter().map(|(name, _, _, _, _)| name));
             }
         }
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() != "function_definition" {
-                    self.walk_for_single_invocation_locals(&child, source, names);
-                }
+        for child in node.child_nodes() {
+            if child.kind() != "function_definition" {
+                self.walk_for_single_invocation_locals(&child, source, names);
             }
         }
     }
@@ -227,20 +224,16 @@ impl Msc13C {
             } else {
                 let decl_start = node.start_byte();
                 let scope_start = Self::enclosing_scope_start(node);
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        self.extract_declared_names(&child, source, decl_start, scope_start, vars);
-                    }
+                for child in node.child_nodes() {
+                    self.extract_declared_names(&child, source, decl_start, scope_start, vars);
                 }
             }
         }
 
         // Recurse into children (but not into nested function definitions)
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() != "function_definition" {
-                    self.walk_for_declarations(&child, source, vars);
-                }
+        for child in node.child_nodes() {
+            if child.kind() != "function_definition" {
+                self.walk_for_declarations(&child, source, vars);
             }
         }
     }
@@ -294,11 +287,9 @@ impl Msc13C {
             }
         }
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() != "function_definition" {
-                    self.walk_for_unused_annotated_decls(&child, source, unused_attr_macros, out);
-                }
+        for child in node.child_nodes() {
+            if child.kind() != "function_definition" {
+                self.walk_for_unused_annotated_decls(&child, source, unused_attr_macros, out);
             }
         }
     }
@@ -477,18 +468,16 @@ impl Msc13C {
             }
         }
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                // Don't recurse into nested function definitions
-                if child.kind() != "function_definition" {
-                    let opens_scope = ast_utils::is_declaration_scope(&child);
-                    if opens_scope {
-                        scopes.insert(0, child);
-                    }
-                    self.walk_for_reads(&child, source, var_name, decl_starts, scopes, count);
-                    if opens_scope {
-                        scopes.remove(0);
-                    }
+        for child in node.child_nodes() {
+            // Don't recurse into nested function definitions
+            if child.kind() != "function_definition" {
+                let opens_scope = ast_utils::is_declaration_scope(&child);
+                if opens_scope {
+                    scopes.insert(0, child);
+                }
+                self.walk_for_reads(&child, source, var_name, decl_starts, scopes, count);
+                if opens_scope {
+                    scopes.remove(0);
                 }
             }
         }
@@ -546,11 +535,9 @@ impl Msc13C {
                 }
             }
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() != "function_definition" {
-                    self.collect_invoked_names(&child, source, out);
-                }
+        for child in node.child_nodes() {
+            if child.kind() != "function_definition" {
+                self.collect_invoked_names(&child, source, out);
             }
         }
     }
@@ -703,14 +690,12 @@ impl Msc13C {
         }
 
         // Recurse into preproc blocks and other containers
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() != "function_definition"
-                    || node.kind() == "translation_unit"
-                    || node.kind().starts_with("preproc_")
-                {
-                    self.check_functions(&child, source, macros, unused_attr_macros, violations);
-                }
+        for child in node.child_nodes() {
+            if child.kind() != "function_definition"
+                || node.kind() == "translation_unit"
+                || node.kind().starts_with("preproc_")
+            {
+                self.check_functions(&child, source, macros, unused_attr_macros, violations);
             }
         }
     }
@@ -1222,11 +1207,9 @@ impl Msc13C {
                 }
             }
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() != "function_definition" {
-                    self.collect_reads_in_node(&child, source, macros, out);
-                }
+        for child in node.child_nodes() {
+            if child.kind() != "function_definition" {
+                self.collect_reads_in_node(&child, source, macros, out);
             }
         }
     }
@@ -1243,11 +1226,9 @@ impl Msc13C {
         if node.kind() == "compound_statement" {
             self.scan_block_direct_children(node, source, violations);
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() != "function_definition" {
-                    self.check_dead_stores_in_blocks(&child, source, violations);
-                }
+        for child in node.child_nodes() {
+            if child.kind() != "function_definition" {
+                self.check_dead_stores_in_blocks(&child, source, violations);
             }
         }
     }
@@ -1285,14 +1266,12 @@ impl Msc13C {
             "declaration" => {
                 let line = stmt.start_position().row + 1;
                 let mut writes = Vec::new();
-                for i in 0..stmt.child_count() {
-                    if let Some(c) = stmt.child(i) {
-                        if c.kind() == "init_declarator" {
-                            if let Some(declarator) = c.child_by_field_name("declarator") {
-                                let name = get_identifier_from_declarator(&declarator, source);
-                                if !name.is_empty() {
-                                    writes.push((name, line));
-                                }
+                for c in stmt.child_nodes() {
+                    if c.kind() == "init_declarator" {
+                        if let Some(declarator) = c.child_by_field_name("declarator") {
+                            let name = get_identifier_from_declarator(&declarator, source);
+                            if !name.is_empty() {
+                                writes.push((name, line));
                             }
                         }
                     }
@@ -1319,8 +1298,7 @@ impl Msc13C {
         let mut pending: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
 
-        for i in 0..block.child_count() {
-            let Some(stmt) = block.child(i) else { continue };
+        for stmt in block.child_nodes() {
             if matches!(stmt.kind(), "{" | "}") {
                 continue;
             }
@@ -1391,11 +1369,9 @@ impl Msc13C {
         if matches!(node.kind(), "goto_statement" | "labeled_statement") {
             return true;
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() != "function_definition" && self.contains_goto_or_label(&child) {
-                    return true;
-                }
+        for child in node.child_nodes() {
+            if child.kind() != "function_definition" && self.contains_goto_or_label(&child) {
+                return true;
             }
         }
         false
@@ -1407,13 +1383,11 @@ impl Msc13C {
         if node.kind() == "identifier" && get_node_text(node, source) == var_name {
             return true;
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() != "function_definition"
-                    && self.mentions_identifier(&child, source, var_name)
-                {
-                    return true;
-                }
+        for child in node.child_nodes() {
+            if child.kind() != "function_definition"
+                && self.mentions_identifier(&child, source, var_name)
+            {
+                return true;
             }
         }
         false
