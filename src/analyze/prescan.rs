@@ -114,6 +114,9 @@ struct FilePrescanResult {
     callsite_buf_args: HashMap<String, Vec<Vec<Option<usize>>>>,
     callsite_field_buf_args: HashMap<String, Vec<Vec<HashMap<String, usize>>>>,
     callsite_taint_args: HashMap<String, Vec<Vec<bool>>>,
+    /// Per callee name, each direct call site's caller and argument origins
+    /// (`arg_origin`).
+    callsite_arg_origins: HashMap<String, Vec<super::arg_origin::CallSiteOrigins>>,
     /// Per callee name, the argument-position pairs at which a call site in
     /// this file hands the callee two DIFFERENT named storage objects
     /// .
@@ -194,6 +197,7 @@ impl FilePrescanResult {
             callsite_buf_args: HashMap::new(),
             callsite_field_buf_args: HashMap::new(),
             callsite_taint_args: HashMap::new(),
+            callsite_arg_origins: HashMap::new(),
             callsite_distinct_objects: HashMap::new(),
             callsite_validated_args: HashMap::new(),
             source_path: None,
@@ -433,6 +437,11 @@ fn process_file(
                 &source,
                 &result.macro_aliases,
                 &mut result.callsite_taint_args,
+            );
+            super::arg_origin::collect_callsite_arg_origins_from_tree(
+                &root,
+                &source,
+                &mut result.callsite_arg_origins,
             );
             collect_callsite_distinct_objects_from_tree(
                 &root,
@@ -769,6 +778,8 @@ fn prescan_file_list(
     let mut callsite_field_buf_args: HashMap<String, Vec<Vec<HashMap<String, usize>>>> =
         HashMap::new();
     let mut callsite_taint_args: HashMap<String, Vec<Vec<bool>>> = HashMap::new();
+    let mut callsite_arg_origins: HashMap<String, Vec<super::arg_origin::CallSiteOrigins>> =
+        HashMap::new();
     let mut callsite_distinct_objects: HashMap<String, HashSet<(usize, usize)>> = HashMap::new();
     let mut callsite_validated_args: HashMap<String, Vec<Vec<bool>>> = HashMap::new();
     let mut source_files: Vec<PathBuf> = Vec::new();
@@ -1163,6 +1174,19 @@ fn prescan_file_list(
                 .or_default()
                 .extend(args);
         }
+        // Both ends keyed as the scoped call graph keys them, so a caller
+        // here is the caller `callers` names.
+        for (callee, sites) in r.callsite_arg_origins {
+            callsite_arg_origins
+                .entry(scoped_callee(&scoped_names, file_key.as_deref(), callee))
+                .or_default()
+                .extend(sites.into_iter().map(|(caller, args)| {
+                    (
+                        scoped_callee(&scoped_names, file_key.as_deref(), caller),
+                        args,
+                    )
+                }));
+        }
         for (callee, args) in r.callsite_validated_args {
             callsite_validated_args
                 .entry(scoped_callee(&scoped_names, file_key.as_deref(), callee))
@@ -1308,6 +1332,25 @@ fn prescan_file_list(
         &header_declared_functions,
     );
     aggregate_callsite_validated_args(&callsite_validated_args, &mut function_summaries);
+    {
+        // The call graph inverted WITHOUT `invert_call_graph`'s pooling of
+        // same-named statics under the bare name: each definition's own
+        // callers, so a caller missing from the origin record is a real gap.
+        let mut exact_callers: HashMap<String, HashSet<String>> = HashMap::new();
+        for (caller, callees) in &scoped_call_graph {
+            for callee in callees {
+                exact_callers
+                    .entry(callee.clone())
+                    .or_default()
+                    .insert(caller.clone());
+            }
+        }
+        super::arg_origin::aggregate(
+            &callsite_arg_origins,
+            &exact_callers,
+            &mut function_summaries,
+        );
+    }
     function_summary::propagate_transitive_param_taint(
         &mut function_summaries,
         &header_declared_functions,
@@ -2820,7 +2863,7 @@ pub(crate) fn collect_callsite_distinct_objects_from_tree(
 /// Consistent with ADR-0008: the test is not "does this node sit under an
 /// `ERROR`", which predicts nothing about correctness, but "is this node a
 /// `function_definition`" -- asked at every depth the walk can reach.
-fn wraps_definitions(kind: &str) -> bool {
+pub(crate) fn wraps_definitions(kind: &str) -> bool {
     kind.starts_with("preproc_") || kind == "ERROR"
 }
 

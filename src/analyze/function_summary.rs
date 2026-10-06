@@ -915,6 +915,20 @@ pub struct FunctionSummary {
     /// passing an unguarded variable, disqualifies the position entirely.
     #[serde(default)]
     pub callsite_param_validated: HashSet<usize>,
+    /// Per parameter index, per caller (keyed as the call graph keys it),
+    /// where the argument that caller passes comes from
+    /// ([`crate::analyze::arg_origin`]). Judged by
+    /// [`crate::analyze::arg_origin::param_is_risky`].
+    #[serde(default)]
+    pub callsite_arg_origins: HashMap<usize, crate::analyze::arg_origin::OriginsByCaller>,
+    /// The callers some direct call site was collected from.
+    #[serde(default)]
+    pub callsite_origin_callers: std::collections::BTreeSet<String>,
+    /// The call graph names a caller no collected call site came from (a
+    /// call through a pointer alias, or one the collection could not read),
+    /// so `callsite_arg_origins` does not describe every caller.
+    #[serde(default)]
+    pub callsite_origin_gap: bool,
     /// The definition's parameter list is empty or exactly `(void)`, so no
     /// value a caller passes can reach its body through a parameter. That is
     /// where a walk up the reverse call graph for "what reaches this value"

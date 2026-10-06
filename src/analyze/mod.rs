@@ -1,5 +1,6 @@
 /// Which storage object a call argument names, in the caller's frame
 /// .
+pub mod arg_origin;
 pub mod argument_objects;
 /// Shared AST-based fixed-array-declaration size resolution.
 pub mod array_size;

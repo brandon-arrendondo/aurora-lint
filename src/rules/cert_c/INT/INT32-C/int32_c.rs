@@ -86,7 +86,7 @@ pub struct Int32C {
     callers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
     /// Per-function memo of parameter names, keyed by function node id; cleared
     /// per file alongside `risky_vars_cache`.
-    param_names_cache: RefCell<HashMap<usize, HashSet<String>>>,
+    param_names_cache: RefCell<HashMap<usize, Vec<String>>>,
     /// Per-function memo of `get_sanitized_node_text`, keyed by the containing
     /// function's tree-sitter node id. `has_function_level_overflow_check_scoped`
     /// re-sanitized (a full AST descendant walk to blank comments/strings) the
@@ -3245,24 +3245,18 @@ impl Int32C {
         {
             let mut cache = self.param_names_cache.borrow_mut();
             cache.entry(func_id).or_insert_with(|| {
+                // Every position kept, unnamed ones included: a call site's
+                // argument is matched to its parameter by position.
                 function_summary::collect_param_names(&func, source)
-                    .into_iter()
-                    .filter(|n| !n.is_empty())
-                    .collect()
             });
         }
         let param_names = self.param_names_cache.borrow();
-        let callers = self.callers.borrow();
         let param_ctx = match (
             cfg::get_function_name(&func, source),
             param_names.get(&func_id),
         ) {
             (Some(func_name), Some(params)) if !summaries.is_empty() => {
-                Some(int_provenance::ParamContext {
-                    func_name,
-                    params,
-                    callers: &callers,
-                })
+                Some(int_provenance::ParamContext { func_name, params })
             }
             _ => None,
         };

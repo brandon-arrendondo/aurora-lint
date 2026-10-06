@@ -18,7 +18,6 @@
 use crate::analyze::context::SummaryLookup;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::std_functions;
-use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -27,16 +26,15 @@ use tree_sitter::Node;
 ///
 /// A parameter holds whatever its callers pass, so its provenance is a
 /// property of the call sites and cannot be read off the function body. Pass
-/// `None` where no call-graph context exists (a scan without `-d`, or a
+/// `None` where no cross-file context exists (a scan without `-d`, or a
 /// consumer that never built one); that keeps the older policy, under which
 /// every parameter counts as bounded local state.
 pub struct ParamContext<'a> {
     /// Name of the function whose body the operand sits in.
     pub func_name: &'a str,
-    /// Parameter names of that function.
-    pub params: &'a HashSet<String>,
-    /// Reverse call graph: callee name → the functions that call it.
-    pub callers: &'a HashMap<String, HashSet<String>>,
+    /// Parameter names of that function, in declaration order: a call site
+    /// is matched to a parameter by position.
+    pub params: &'a [String],
 }
 
 /// True when `callee` (any function-reference text) names a source of untrusted
@@ -63,31 +61,48 @@ pub fn callee_is_risky_source(callee: &str, summaries: &(impl SummaryLookup + ?S
     matches!(summaries.get(ident), Some(s) if s.has_env03_taint_source || s.returns_tainted)
 }
 
-/// True when a parameter of `func_name` must be treated as carrying untrusted
-/// or unbounded input.
+/// True when parameter `idx` of `func_name` must be treated as carrying
+/// untrusted or unbounded input: judged by what every caller passes there,
+/// exactly as [`operand_is_risky`] would judge that argument in the caller's
+/// own body ([`crate::analyze::arg_origin::param_is_risky`]).
 ///
-/// Risky whenever the scan cannot prove what reaches it:
-///   - `func_name` has callers outside the scanned source -- external linkage,
-///     or an address that escapes (ADR-0011: the visible callers are then a
-///     sample, not the set); or
-///   - no caller of it is known, or some caller on the way up carries taint,
-///     forwards a parameter of its own from an open caller set, or has no
-///     summary to judge by (`function_summary::every_caller_is_clean`).
+/// Risky whenever the scan cannot say what reaches it: a caller set that is
+/// open (external linkage, or an address that escapes; ADR-0011), a caller
+/// the record does not describe, no caller at all, or a caller whose argument
+/// derives from a risky source ([`callee_is_risky_source`], which counts the
+/// full-range parsers such as `rand` and `atoi` as the caller's own body
+/// would) or from a tainted global. An argument that forwards the caller's
+/// own parameter is judged up the chain.
 ///
-/// Bounded only when every such caller is taint-free. That is an
-/// approximation of "every caller passes bounded values": the prescan
-/// summaries carry per-function taint, not per-argument value ranges, so a
-/// taint-free caller is taken to pass bounded arguments. It is the same
-/// judgement INT31-C's `var_is_taint_free` already makes for its own parameter
-/// case, lifted here so INT30-C and INT32-C share it.
+/// Not risky is the gate's reporting scope, not a proof that the value fits:
+/// a constant every caller passes reaches the value-range check through the
+/// parameter's entry range, which decides the arithmetic either way.
 pub fn parameter_is_risky(
     func_name: &str,
-    callers: &HashMap<String, HashSet<String>>,
+    idx: usize,
     summaries: &(impl SummaryLookup + ?Sized),
+    global_writers: &HashMap<String, HashSet<String>>,
 ) -> bool {
-    !crate::analyze::function_summary::every_caller_is_clean(func_name, callers, summaries, |s| {
-        !s.has_env03_taint_source && !s.returns_tainted
+    crate::analyze::arg_origin::param_is_risky(func_name, idx, summaries, |origin| {
+        origin_is_risky(origin, summaries, global_writers)
     })
+}
+
+/// Whether one caller's argument derives from a risky source: a risky callee
+/// reaches it, or it reads a global a tainted function writes.
+pub fn origin_is_risky(
+    origin: &crate::analyze::arg_origin::ArgOrigin,
+    summaries: &(impl SummaryLookup + ?Sized),
+    global_writers: &HashMap<String, HashSet<String>>,
+) -> bool {
+    origin
+        .calls
+        .iter()
+        .any(|callee| callee_is_risky_source(callee, summaries))
+        || origin
+            .names
+            .iter()
+            .any(|name| global_is_tainted(name, global_writers, summaries))
 }
 
 /// Walk `body` ONCE and collect every variable name fed from a risky source:
@@ -102,9 +117,15 @@ pub fn collect_risky_vars(
     summaries: &(impl SummaryLookup + ?Sized),
     source: &str,
 ) -> HashSet<String> {
-    let mut set = HashSet::new();
-    collect_risky_vars_walk(body, summaries, source, &mut set);
-    set
+    crate::analyze::arg_origin::variable_feeders(body, source)
+        .into_iter()
+        .filter(|(_, callees)| {
+            callees
+                .iter()
+                .any(|callee| callee_is_risky_source(callee, summaries))
+        })
+        .map(|(name, _)| name)
+        .collect()
 }
 
 /// Classify a single operand subtree's provenance against the precomputed
@@ -130,11 +151,9 @@ pub fn operand_is_risky(
             if risky_vars.contains(name) || global_is_tainted(name, global_writers, summaries) {
                 return true;
             }
-            match params {
-                Some(p) if p.params.contains(name) => {
-                    parameter_is_risky(p.func_name, p.callers, summaries)
-                }
-                _ => false,
+            match params.and_then(|p| Some((p, p.params.iter().position(|n| n == name)?))) {
+                Some((p, idx)) => parameter_is_risky(p.func_name, idx, summaries, global_writers),
+                None => false,
             }
         }
         "parenthesized_expression" => match op.named_child(0) {
@@ -191,108 +210,5 @@ fn global_is_tainted(
             matches!(summaries.get(w), Some(s) if s.has_env03_taint_source || s.returns_tainted)
         }),
         None => false,
-    }
-}
-
-fn collect_risky_vars_walk(
-    node: &Node,
-    summaries: &(impl SummaryLookup + ?Sized),
-    source: &str,
-    set: &mut HashSet<String>,
-) {
-    let candidates = query::find_descendants_of_kinds(
-        *node,
-        &[
-            "assignment_expression",
-            "init_declarator",
-            "call_expression",
-        ],
-    );
-    for node in candidates {
-        match node.kind() {
-            // var = riskyCall(...)
-            "assignment_expression" => {
-                if let (Some(lhs), Some(rhs)) = (
-                    node.child_by_field_name("left"),
-                    node.child_by_field_name("right"),
-                ) {
-                    if lhs.kind() == "identifier" && rhs_is_risky_call(&rhs, summaries, source) {
-                        set.insert(get_node_text(&lhs, source).trim().to_string());
-                    }
-                }
-            }
-            // T var = riskyCall(...)
-            "init_declarator" => {
-                if let (Some(decl), Some(value)) = (
-                    node.child_by_field_name("declarator"),
-                    node.child_by_field_name("value"),
-                ) {
-                    if rhs_is_risky_call(&value, summaries, source) {
-                        if let Some(name) = init_declarator_name(&decl, source) {
-                            set.insert(name);
-                        }
-                    }
-                }
-            }
-            // riskySource(..., &var, ...) — fill by reference: any identifier
-            // appearing in the argument list of a risky call is conservatively
-            // treated as fed (covers scanf-into-&var and recv-into-buf).
-            "call_expression" => {
-                if let Some(f) = node.child_by_field_name("function") {
-                    if callee_is_risky_source(&get_node_text(&f, source), summaries) {
-                        if let Some(args) = node.child_by_field_name("arguments") {
-                            collect_arg_identifiers(&args, source, set);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Insert every identifier appearing in `args` into `set`.
-fn collect_arg_identifiers(args: &Node, source: &str, set: &mut HashSet<String>) {
-    for ident in query::find_descendants_of_kind(*args, "identifier") {
-        set.insert(get_node_text(&ident, source).trim().to_string());
-    }
-}
-
-/// Resolve the bare identifier inside a (possibly pointer/array-wrapped)
-/// declarator.
-fn init_declarator_name(decl: &Node, source: &str) -> Option<String> {
-    let mut current = *decl;
-    loop {
-        if current.kind() == "identifier" || current.kind() == "field_identifier" {
-            return Some(get_node_text(&current, source).trim().to_string());
-        }
-        match current.child_by_field_name("declarator") {
-            Some(inner) => current = inner,
-            None => return None,
-        }
-    }
-}
-
-/// True when `rhs`, after stripping casts/parens, is a call to a risky source.
-fn rhs_is_risky_call(rhs: &Node, summaries: &(impl SummaryLookup + ?Sized), source: &str) -> bool {
-    let mut node = *rhs;
-    loop {
-        match node.kind() {
-            "parenthesized_expression" => match node.named_child(0) {
-                Some(inner) => node = inner,
-                None => return false,
-            },
-            "cast_expression" => match node.child_by_field_name("value") {
-                Some(value) => node = value,
-                None => return false,
-            },
-            "call_expression" => {
-                return match node.child_by_field_name("function") {
-                    Some(f) => callee_is_risky_source(&get_node_text(&f, source), summaries),
-                    None => false,
-                };
-            }
-            _ => return false,
-        }
     }
 }

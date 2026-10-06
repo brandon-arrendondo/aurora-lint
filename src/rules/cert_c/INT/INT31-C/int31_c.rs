@@ -48,7 +48,7 @@ pub struct Int31C {
     risky_vars_cache: RefCell<HashMap<usize, HashSet<String>>>,
     /// Per-function memo of parameter names, keyed by function node id; cleared
     /// per file alongside `risky_vars_cache`.
-    param_names_cache: RefCell<HashMap<usize, HashSet<String>>>,
+    param_names_cache: RefCell<HashMap<usize, Vec<String>>>,
     /// Cross-file typedef alias map, reached through the shared
     /// [`overflow_helpers::resolve_typedef_chain`] before every
     /// `get_type_width` lookup so a `typedef double real_t;` (an earlier fix
@@ -143,24 +143,18 @@ impl Int31C {
         {
             let mut cache = self.param_names_cache.borrow_mut();
             cache.entry(func_id).or_insert_with(|| {
+                // Every position kept, unnamed ones included: a call site's
+                // argument is matched to its parameter by position.
                 function_summary::collect_param_names(&func, source)
-                    .into_iter()
-                    .filter(|n| !n.is_empty())
-                    .collect()
             });
         }
         let param_names = self.param_names_cache.borrow();
-        let callers = self.callers.borrow();
         let param_ctx = match (
             cfg::get_function_name(&func, source),
             param_names.get(&func_id),
         ) {
             (Some(func_name), Some(params)) if !summaries.is_empty() => {
-                Some(int_provenance::ParamContext {
-                    func_name,
-                    params,
-                    callers: &callers,
-                })
+                Some(int_provenance::ParamContext { func_name, params })
             }
             _ => None,
         };
@@ -332,13 +326,18 @@ impl Int31C {
         }
 
         if is_function_parameter(&func, var_name, source) {
-            // Parameter case: defer taint judgement to callers, which proves
-            // something only over a closed caller set (ADR-0011).
-            return crate::analyze::function_summary::every_caller_is_clean(
+            // Parameter case: judged by what every caller passes at this
+            // position, as the caller's own body would judge it, over a
+            // closed caller set (ADR-0011; `int_provenance::parameter_is_risky`).
+            let params = function_summary::collect_param_names(&func, source);
+            let Some(idx) = params.iter().position(|p| p == var_name) else {
+                return false;
+            };
+            return !int_provenance::parameter_is_risky(
                 func_name,
-                &self.callers.borrow(),
+                idx,
                 &*summaries,
-                |s| !s.has_env03_taint_source,
+                &self.global_writers.borrow(),
             );
         }
 
