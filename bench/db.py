@@ -1980,7 +1980,7 @@ class BenchDB:
         """Normalize an absolute scan path to a project-relative path.
 
         realworld_violations store machine-specific absolute paths like
-        ``/home/brandon/toolchain/curl/lib/doh.c``; ground-truth labels are
+        ``/home/user/toolchain/curl/lib/doh.c``; ground-truth labels are
         keyed on the portable ``lib/doh.c`` form so they survive a move of
         the checkout root. Strips everything up to and including the FIRST
         ``/<project>/`` segment; returns the input unchanged if absent.
