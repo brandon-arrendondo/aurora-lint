@@ -32,10 +32,11 @@ Kinds:
   value-range and init-state iteration caps raised a hundredfold, the
   busiest took 5.5 million steps. So the 50 million default leaves about
   two orders of magnitude of headroom on real code.
-- **Non-convergence.** The value-range and init-state caps are reached on
-  seven files across four of the twelve corpora (listed in the rows below).
-  Every one still fails to converge at a hundred times the cap. That is why
-  those two are warnings, not failures, until they are fixed.
+- **Non-convergence.** The init-state cap is reached on three files across
+  two of the twelve corpora (listed in its row), and still is at a hundred
+  times the cap, so it is a warning until fixed. The value-range cap was
+  reached on four files for a missing widening point; after that fix none of
+  the corpora reaches it, and the cap itself now falls back soundly.
 - **Reported caps.** The reaching-definitions and null-state iteration
   caps are reached neither on the Juliet suite nor on the twelve corpora,
   so ADR-0017 has them report: reaching one means a runaway.
@@ -85,7 +86,7 @@ Kinds:
 | Where | Bound | Kind | On hit | Effect if hit |
 |---|---|---|---|---|
 | `value_range::analyze_value_ranges` | `VRA_BLOCK_LIMIT` = 150 blocks | d | silent: no ranges | **hit routinely**. Mostly lost suppressions, so extra findings in large functions |
-| `value_range::analyze_value_ranges` | 500 × blocks iterations | c | **warning** (`not_converged`): known not to converge | hit on hostap `hostapd/ctrl_iface.c` and `wpa_supplicant/ctrl_iface_udp.c`, valkey `src/rdma.c` and pureftpd `src/bsd-getopt_long.c`; still hit at 100× the cap. Unconverged ranges can be too narrow, which is unsound |
+| `value_range::analyze_value_ranges` | 500 × blocks iterations | c | **sound + warning**: the function gets no ranges (`not_converged` counts it) | was hit on four files (hostap `hostapd/ctrl_iface.c` and `wpa_supplicant/ctrl_iface_udp.c`, valkey `src/rdma.c`, pureftpd `src/bsd-getopt_long.c`) because a backward-goto loop head was never widened. Widening now applies there too, and none of the corpora reaches the cap |
 | `value_range::maybe_widen` / `widen_typed` | widen after 3 visits | c | sound | – |
 | `const_eval` `resolve_*_var_range` | 3 identifier hops | b | silent | unresolved range, either direction |
 
@@ -169,6 +170,6 @@ graph walks keep visited sets. The real exposures are:
   extraction and the prescan collectors, all relying on the 16 MiB stack;
 - the worklists whose termination rested on their caps. The null-state cap
   is never reached on the corpora and is now reported when hit. The
-  init-state and value-range caps are reached on real code, which shows
-  their transfer functions are not monotone there. They are counted and
-  warned about until fixed.
+  value-range cap was reached for a missing widening point, now fixed. The
+  init-state cap is reached on real code, which shows its transfer is not
+  monotone there; it is counted and warned about until fixed.

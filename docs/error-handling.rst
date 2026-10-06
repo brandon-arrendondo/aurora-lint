@@ -108,17 +108,20 @@ A unit of work stops for one of four reasons, each reported the same way:
 - **analysis cap**: an analysis reached an iteration cap past which its
   results would not have converged.
 
-Two analyses are known not to converge on some real code: the value-range
-analysis and the initialization-state analysis. When either stops short,
-the scan keeps what it has, as it always did. It prints a warning after the
-findings and adds a SARIF ``warning`` notification. The exit code is not
-changed:
+Two analyses can stop short of converging, and each is reported as a
+warning after the findings and a SARIF ``warning`` notification, without
+changing the exit code:
+
+- the **value-range analysis**. If it reaches its cap, that function gets no
+  value ranges at all: a sound fallback, which only costs precision (checks
+  that a range would have proven safe are reported).
+- the **initialization-state analysis**, which is known not to converge on
+  some real code. It keeps what it has, as it always did, until its
+  convergence is fixed.
 
 .. code-block:: text
 
-    Warning: value-range analysis did not converge 3 time(s); results there may be incomplete (a known issue, see docs/error-handling.rst)
-
-These leave the list as their convergence is fixed.
+    Warning: value-range analysis did not converge 1 time(s); results there may be incomplete (a known issue, see docs/error-handling.rst)
 
 Stopping early is never treated as "nothing found". An analysis that is cut
 short has not shown that the code is safe, so treating it as safe would be
