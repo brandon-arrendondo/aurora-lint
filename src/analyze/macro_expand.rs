@@ -25,6 +25,7 @@
 //     free" macros that free AND null their argument (`Curl_safefree`).
 
 use super::dead_regions::DeadRegions;
+use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::pp_tokens::{parse_define_directive, PpKind};
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -2369,23 +2370,21 @@ fn collect_rec(
     dead: &DeadRegions,
     out: &mut HashMap<String, FunctionMacro>,
 ) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "preproc_function_def" => {
-                    if dead.contains_node(&child) {
-                        continue;
-                    }
-                    if let Some((name, m)) = parse_function_def(&child, source) {
-                        // First definition wins; redefinitions under a
-                        // build-config `#ifdef` the platform profile cannot
-                        // settle are ambiguous, so keep the first.
-                        out.entry(name).or_insert(m);
-                    }
+    for child in node.child_nodes() {
+        match child.kind() {
+            "preproc_function_def" => {
+                if dead.contains_node(&child) {
+                    continue;
                 }
-                kind if kind.starts_with("preproc_") => collect_rec(&child, source, dead, out),
-                _ => {}
+                if let Some((name, m)) = parse_function_def(&child, source) {
+                    // First definition wins; redefinitions under a
+                    // build-config `#ifdef` the platform profile cannot
+                    // settle are ambiguous, so keep the first.
+                    out.entry(name).or_insert(m);
+                }
             }
+            kind if kind.starts_with("preproc_") => collect_rec(&child, source, dead, out),
+            _ => {}
         }
     }
 }
@@ -2399,14 +2398,12 @@ fn parse_function_def(node: &Node, source: &str) -> Option<(String, FunctionMacr
 
     let params_node = node.child_by_field_name("parameters")?;
     let mut params = Vec::new();
-    for i in 0..params_node.child_count() {
-        if let Some(p) = params_node.child(i) {
-            match p.kind() {
-                "identifier" => params.push(p.utf8_text(source.as_bytes()).ok()?.to_string()),
-                // variadic param: bail (unsupported)
-                "..." => return None,
-                _ => {}
-            }
+    for p in params_node.child_nodes() {
+        match p.kind() {
+            "identifier" => params.push(p.utf8_text(source.as_bytes()).ok()?.to_string()),
+            // variadic param: bail (unsupported)
+            "..." => return None,
+            _ => {}
         }
     }
 

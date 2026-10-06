@@ -79,6 +79,7 @@ use super::progress::ProgressReporter;
 use super::rules::{RuleRegistry, RuleViolation};
 use suppression::SuppressionManager;
 
+use crate::utility::cert_c::node_children::NodeChildren;
 use anyhow::Result;
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -1407,13 +1408,11 @@ fn find_function_at_byte<'a>(
     if node.kind() == "function_definition" && node.start_byte() == start_byte {
         return Some(*node);
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            // Prune: only descend into children whose range contains start_byte.
-            if child.start_byte() <= start_byte && child.end_byte() >= start_byte {
-                if let Some(found) = find_function_at_byte(&child, start_byte) {
-                    return Some(found);
-                }
+    for child in node.child_nodes() {
+        // Prune: only descend into children whose range contains start_byte.
+        if child.start_byte() <= start_byte && child.end_byte() >= start_byte {
+            if let Some(found) = find_function_at_byte(&child, start_byte) {
+                return Some(found);
             }
         }
     }
@@ -1452,10 +1451,8 @@ fn collect_function_cfgs_with_constants(
             cfgs.insert(node.start_byte(), function_cfg);
         }
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_function_cfgs_with_constants(&child, source, cfgs, constants, noreturn_names);
-        }
+    for child in node.child_nodes() {
+        collect_function_cfgs_with_constants(&child, source, cfgs, constants, noreturn_names);
     }
 }
 

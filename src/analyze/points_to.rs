@@ -1,4 +1,5 @@
 use crate::utility::cert_c::ast_utils::{get_node_text, is_dereference_expression};
+use crate::utility::cert_c::node_children::NodeChildren;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use tree_sitter::Node;
@@ -81,8 +82,7 @@ pub fn lvalue_of(node: &Node, source: &str) -> Option<LValue> {
             lvalue_of(&base_node, source)
         }
         "parenthesized_expression" => {
-            for i in 0..node.child_count() {
-                let child = node.child(i)?;
+            for child in node.child_nodes() {
                 if child.kind() != "(" && child.kind() != ")" {
                     return lvalue_of(&child, source);
                 }
@@ -132,8 +132,7 @@ pub fn lvalue_of_crossing_deref(node: &Node, source: &str) -> Option<(LValue, bo
                 walk(&base_node, source, crossed)
             }
             "parenthesized_expression" => {
-                for i in 0..node.child_count() {
-                    let child = node.child(i)?;
+                for child in node.child_nodes() {
                     if child.kind() != "(" && child.kind() != ")" {
                         return walk(&child, source, crossed);
                     }
@@ -188,11 +187,9 @@ mod tests {
                 // function signature contributes no matches for our kinds).
                 return Some(node);
             }
-            for i in 0..node.child_count() {
-                if let Some(c) = node.child(i) {
-                    if let Some(found) = find(c, kind, source) {
-                        return Some(found);
-                    }
+            for c in node.child_nodes() {
+                if let Some(found) = find(c, kind, source) {
+                    return Some(found);
                 }
             }
             None

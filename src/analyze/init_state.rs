@@ -7,6 +7,7 @@
 use super::cfg::{BasicBlock, BlockId, CfgEdge, FunctionCfg};
 use super::const_eval;
 use super::dataflow::find_node_at_range;
+use crate::utility::cert_c::node_children::NodeChildren;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tree_sitter::Node;
 
@@ -525,11 +526,9 @@ fn process_statement(
         "declaration" => process_declaration(node, source, state, tracked_vars, config),
         "expression_statement" => {
             // Unwrap to the actual expression
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() != ";" {
-                        process_expression(&child, source, state, tracked_vars, config);
-                    }
+            for child in node.child_nodes() {
+                if child.kind() != ";" {
+                    process_expression(&child, source, state, tracked_vars, config);
                 }
             }
         }
@@ -593,100 +592,98 @@ fn process_declaration(
         crate::utility::cert_c::ast_utils::declaration_has_storage_class(node, "extern", source);
 
     // Process each declarator
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "init_declarator" => {
-                    let var_name = get_declarator_name(&child, source);
-                    if var_name.is_empty() {
-                        continue;
-                    }
-                    tracked_vars.insert(var_name.clone());
+    for child in node.child_nodes() {
+        match child.kind() {
+            "init_declarator" => {
+                let var_name = get_declarator_name(&child, source);
+                if var_name.is_empty() {
+                    continue;
+                }
+                tracked_vars.insert(var_name.clone());
 
-                    // Has initializer — determine what kind
-                    if let Some(value) = child.child_by_field_name("value") {
-                        // Process the initializer for side effects first (e.g.
-                        // `int rc = sqlite3_prepare_v2(db, sql, -1, &pStmt, 0);`
-                        // writes through `&pStmt` via the call's output
-                        // argument). Mirrors `process_assignment_init`, which
-                        // does the same for the RHS of a plain assignment —
-                        // without this, a call embedded in a declaration's
-                        // initializer was invisible to the output-parameter
-                        // write recognition that already existed for
-                        // assignment-statement form.
-                        process_expression(&value, source, state, tracked_vars, config);
-                        let init_state = classify_initializer(&value, source, config);
-                        let is_array = is_array_declarator(&child);
-                        let mut info = VarInfo::new(init_state);
-                        info.is_unsigned_char = is_unsigned_char;
-                        info.is_char_type = is_char_type;
-                        info.is_array = is_array;
-                        info.is_static = is_static;
-                        if matches!(init_state, InitState::MallocUninitialized) {
-                            info.allocation_count = extract_allocation_count(&value, source);
-                        }
-                        state.insert(var_name, info);
+                // Has initializer — determine what kind
+                if let Some(value) = child.child_by_field_name("value") {
+                    // Process the initializer for side effects first (e.g.
+                    // `int rc = sqlite3_prepare_v2(db, sql, -1, &pStmt, 0);`
+                    // writes through `&pStmt` via the call's output
+                    // argument). Mirrors `process_assignment_init`, which
+                    // does the same for the RHS of a plain assignment —
+                    // without this, a call embedded in a declaration's
+                    // initializer was invisible to the output-parameter
+                    // write recognition that already existed for
+                    // assignment-statement form.
+                    process_expression(&value, source, state, tracked_vars, config);
+                    let init_state = classify_initializer(&value, source, config);
+                    let is_array = is_array_declarator(&child);
+                    let mut info = VarInfo::new(init_state);
+                    info.is_unsigned_char = is_unsigned_char;
+                    info.is_char_type = is_char_type;
+                    info.is_array = is_array;
+                    info.is_static = is_static;
+                    if matches!(init_state, InitState::MallocUninitialized) {
+                        info.allocation_count = extract_allocation_count(&value, source);
                     }
+                    state.insert(var_name, info);
                 }
-                "identifier" => {
-                    // Plain declaration without initializer: `int x;`
-                    let var_name = get_text(node, &child, source);
-                    if !var_name.is_empty() && !is_type_keyword(&var_name) {
-                        tracked_vars.insert(var_name.clone());
-                        let init_state = uninitialized_unless_static(
-                            (is_static && !config.static_storage_not_zeroed) || is_extern,
-                        );
-                        let is_array = false;
-                        let mut info = VarInfo::new(init_state);
-                        info.is_unsigned_char = is_unsigned_char;
-                        info.is_char_type = is_char_type;
-                        info.is_array = is_array;
-                        info.is_static = is_static;
-                        state.insert(var_name, info);
-                    }
+            }
+            "identifier" => {
+                // Plain declaration without initializer: `int x;`
+                let var_name = get_text(node, &child, source);
+                if !var_name.is_empty() && !is_type_keyword(&var_name) {
+                    tracked_vars.insert(var_name.clone());
+                    let init_state = uninitialized_unless_static(
+                        (is_static && !config.static_storage_not_zeroed) || is_extern,
+                    );
+                    let is_array = false;
+                    let mut info = VarInfo::new(init_state);
+                    info.is_unsigned_char = is_unsigned_char;
+                    info.is_char_type = is_char_type;
+                    info.is_array = is_array;
+                    info.is_static = is_static;
+                    state.insert(var_name, info);
                 }
-                "pointer_declarator" | "array_declarator" => {
-                    // `int *p;` or `int arr[10];` without initializer --
-                    // but NOT a pointer-returning function prototype
-                    // (`extern const char *NAME(Params);` also parses as a
-                    // pointer_declarator, wrapping a function_declarator
-                    // rather than a plain identifier). See
-                    // `is_function_declarator_chain`.
-                    if is_function_declarator_chain(&child) {
-                        continue;
-                    }
-                    let var_name = get_declarator_name(&child, source);
-                    if !var_name.is_empty() {
-                        tracked_vars.insert(var_name.clone());
-                        let init_state = uninitialized_unless_static(
-                            (is_static && !config.static_storage_not_zeroed) || is_extern,
-                        );
-                        let is_array = child.kind() == "array_declarator";
-                        let mut info = VarInfo::new(init_state);
-                        info.is_unsigned_char = is_unsigned_char;
-                        info.is_char_type = is_char_type;
-                        info.is_array = is_array;
-                        info.is_static = is_static;
-                        // Track declared array size (e.g., int arr[10]) so that
-                        // array-to-pointer decay propagation can preserve the count
-                        // for partial-init detection (MallocUninitialized flow).
-                        if is_array {
-                            if let Some(size_node) = child.child_by_field_name("size") {
-                                let empty: HashMap<String, i64> = HashMap::new();
-                                if let Some(sz) =
-                                    const_eval::try_evaluate_expr(&size_node, source, &empty)
-                                {
-                                    if sz > 0 {
-                                        info.allocation_count = Some(sz as usize);
-                                    }
+            }
+            "pointer_declarator" | "array_declarator" => {
+                // `int *p;` or `int arr[10];` without initializer --
+                // but NOT a pointer-returning function prototype
+                // (`extern const char *NAME(Params);` also parses as a
+                // pointer_declarator, wrapping a function_declarator
+                // rather than a plain identifier). See
+                // `is_function_declarator_chain`.
+                if is_function_declarator_chain(&child) {
+                    continue;
+                }
+                let var_name = get_declarator_name(&child, source);
+                if !var_name.is_empty() {
+                    tracked_vars.insert(var_name.clone());
+                    let init_state = uninitialized_unless_static(
+                        (is_static && !config.static_storage_not_zeroed) || is_extern,
+                    );
+                    let is_array = child.kind() == "array_declarator";
+                    let mut info = VarInfo::new(init_state);
+                    info.is_unsigned_char = is_unsigned_char;
+                    info.is_char_type = is_char_type;
+                    info.is_array = is_array;
+                    info.is_static = is_static;
+                    // Track declared array size (e.g., int arr[10]) so that
+                    // array-to-pointer decay propagation can preserve the count
+                    // for partial-init detection (MallocUninitialized flow).
+                    if is_array {
+                        if let Some(size_node) = child.child_by_field_name("size") {
+                            let empty: HashMap<String, i64> = HashMap::new();
+                            if let Some(sz) =
+                                const_eval::try_evaluate_expr(&size_node, source, &empty)
+                            {
+                                if sz > 0 {
+                                    info.allocation_count = Some(sz as usize);
                                 }
                             }
                         }
-                        state.insert(var_name, info);
                     }
+                    state.insert(var_name, info);
                 }
-                _ => {}
             }
+            _ => {}
         }
     }
 }
@@ -715,11 +712,9 @@ fn classify_initializer(value: &Node, source: &str, config: &InitAnalysisConfig)
 
     // Cast expressions: (type *)malloc(...)
     if value.kind() == "cast_expression" {
-        for i in 0..value.child_count() {
-            if let Some(child) = value.child(i) {
-                if child.kind() == "call_expression" {
-                    return classify_initializer(&child, source, config);
-                }
+        for child in value.child_nodes() {
+            if child.kind() == "call_expression" {
+                return classify_initializer(&child, source, config);
             }
         }
     }
@@ -764,12 +759,10 @@ fn extract_allocation_count(value: &Node, source: &str) -> Option<usize> {
     // Get the first real argument (skip parentheses and commas)
     let arg = {
         let mut found = None;
-        for i in 0..args.child_count() {
-            if let Some(c) = args.child(i) {
-                if c.kind() != "(" && c.kind() != ")" && c.kind() != "," {
-                    found = Some(c);
-                    break;
-                }
+        for c in args.child_nodes() {
+            if c.kind() != "(" && c.kind() != ")" && c.kind() != "," {
+                found = Some(c);
+                break;
             }
         }
         found?
@@ -821,15 +814,13 @@ fn extract_allocation_count_from_text(text: &str) -> Option<usize> {
 
 /// Find the operator text in a binary_expression.
 fn find_operator_text<'a>(node: &Node, source: &'a str) -> &'a str {
-    for i in 0..node.child_count() {
-        if let Some(c) = node.child(i) {
-            let k = c.kind();
-            if matches!(
-                k,
-                "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<" | ">" | "<=" | ">="
-            ) {
-                return c.utf8_text(source.as_bytes()).unwrap_or("");
-            }
+    for c in node.child_nodes() {
+        let k = c.kind();
+        if matches!(
+            k,
+            "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<" | ">" | "<=" | ">="
+        ) {
+            return c.utf8_text(source.as_bytes()).unwrap_or("");
         }
     }
     ""
@@ -909,11 +900,9 @@ fn process_expression(
             process_call_expression(node, source, state, tracked_vars, config);
         }
         "comma_expression" => {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() != "," {
-                        process_expression(&child, source, state, tracked_vars, config);
-                    }
+            for child in node.child_nodes() {
+                if child.kind() != "," {
+                    process_expression(&child, source, state, tracked_vars, config);
                 }
             }
         }
@@ -925,11 +914,9 @@ fn process_expression(
         }
         "parenthesized_expression" => {
             // Unwrap (expr) to process inner expression
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() != "(" && child.kind() != ")" {
-                        process_expression(&child, source, state, tracked_vars, config);
-                    }
+            for child in node.child_nodes() {
+                if child.kind() != "(" && child.kind() != ")" {
+                    process_expression(&child, source, state, tracked_vars, config);
                 }
             }
         }
@@ -1115,10 +1102,8 @@ fn find_and_process_init_expressions(
             process_gnu_asm(node, source, state);
         }
         _ => {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    find_and_process_init_expressions(&child, source, state, tracked_vars, config);
-                }
+            for child in node.child_nodes() {
+                find_and_process_init_expressions(&child, source, state, tracked_vars, config);
             }
         }
     }
@@ -1139,8 +1124,7 @@ fn process_misparsed_asm_call(node: &Node, source: &str, state: &mut InitStateMa
 /// `"=r"(var)` / `"=m"(var)` patterns — misparsed asm output operands.
 /// When found, mark the identifier argument as Initialized.
 fn collect_asm_output_inits(node: &Node, source: &str, state: &mut InitStateMap) {
-    for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else { continue };
+    for child in node.child_nodes() {
         match child.kind() {
             "call_expression" => {
                 let Some(func) = child.child_by_field_name("function") else {
@@ -1156,10 +1140,7 @@ fn collect_asm_output_inits(node: &Node, source: &str, state: &mut InitStateMap)
                 let Some(inner_args) = child.child_by_field_name("arguments") else {
                     continue;
                 };
-                for j in 0..inner_args.child_count() {
-                    let Some(ident) = inner_args.child(j) else {
-                        continue;
-                    };
+                for ident in inner_args.child_nodes() {
                     if ident.kind() == "identifier" {
                         let name = ident.utf8_text(source.as_bytes()).unwrap_or("");
                         if !name.is_empty() {
@@ -1191,10 +1172,7 @@ fn process_gnu_asm(node: &Node, source: &str, state: &mut InitStateMap) {
     let Some(output_list) = node.child_by_field_name("output_operands") else {
         return;
     };
-    for i in 0..output_list.child_count() {
-        let Some(child) = output_list.child(i) else {
-            continue;
-        };
+    for child in output_list.child_nodes() {
         if child.kind() != "gnu_asm_output_operand" {
             continue;
         }
@@ -1292,8 +1270,7 @@ fn try_process_misparsed_asm_output_operand(
         return false;
     }
     if let Some(args) = node.child_by_field_name("arguments") {
-        for i in 0..args.child_count() {
-            let Some(arg) = args.child(i) else { continue };
+        for arg in args.child_nodes() {
             if arg.kind() != "identifier" {
                 continue;
             }
@@ -1321,8 +1298,7 @@ fn try_process_va_start(
         return false;
     }
     if let Some(args) = node.child_by_field_name("arguments") {
-        for i in 0..args.child_count() {
-            let Some(arg) = args.child(i) else { continue };
+        for arg in args.child_nodes() {
             if arg.kind() == "identifier" {
                 let var_name = arg.utf8_text(source.as_bytes()).unwrap_or("").to_string();
                 if let Some(info) = state.get_mut(&var_name) {
@@ -1436,8 +1412,7 @@ fn try_process_cross_file_conditional_output_params(
     };
     let mut arg_idx = 0;
     let mut matched = false;
-    for i in 0..args.child_count() {
-        let Some(arg) = args.child(i) else { continue };
+    for arg in args.child_nodes() {
         if matches!(arg.kind(), "," | "(" | ")") {
             continue;
         }
@@ -1488,8 +1463,7 @@ fn try_process_cross_file_output_params(
     };
     let mut arg_idx = 0;
     let mut matched = false;
-    for i in 0..args.child_count() {
-        let Some(arg) = args.child(i) else { continue };
+    for arg in args.child_nodes() {
         if matches!(arg.kind(), "," | "(" | ")") {
             continue;
         }
@@ -1570,8 +1544,7 @@ fn try_process_known_initializing_function(
     }
     if let Some(args) = node.child_by_field_name("arguments") {
         let mut arg_idx = 0;
-        for i in 0..args.child_count() {
-            let Some(arg) = args.child(i) else { continue };
+        for arg in args.child_nodes() {
             if matches!(arg.kind(), "," | "(" | ")") {
                 continue;
             }
@@ -1623,8 +1596,7 @@ fn process_unknown_function_call(
         return;
     };
     let mut arg_idx: usize = 0;
-    for i in 0..args.child_count() {
-        let Some(arg) = args.child(i) else { continue };
+    for arg in args.child_nodes() {
         if matches!(arg.kind(), "," | "(" | ")") {
             continue;
         }
@@ -1863,8 +1835,7 @@ fn apply_init_edge_refinement(
 
     let mut state = pred_exit.clone();
     let mut arg_idx: usize = 0;
-    for i in 0..args.child_count() {
-        let Some(arg) = args.child(i) else { continue };
+    for arg in args.child_nodes() {
         if matches!(arg.kind(), "," | "(" | ")") {
             continue;
         }
@@ -2217,25 +2188,21 @@ fn collect_param_init_state(
     };
 
     // Find parameter_list
-    for i in 0..func_decl.child_count() {
-        if let Some(child) = func_decl.child(i) {
-            if child.kind() == "parameter_list" {
-                for j in 0..child.child_count() {
-                    if let Some(param) = child.child(j) {
-                        if param.kind() == "parameter_declaration" {
-                            let param_name = get_declarator_name(&param, source);
-                            if !param_name.is_empty() {
-                                let type_text = extract_type_text(&param, source);
-                                let is_unsigned_char = type_text.contains("unsigned char")
-                                    || type_text.contains("uint8_t");
-                                let is_array = param_has_array_declarator(&param);
-                                let mut info = VarInfo::new(InitState::Initialized);
-                                info.is_unsigned_char = is_unsigned_char;
-                                info.is_array = is_array;
-                                state.insert(param_name.clone(), info);
-                                tracked_vars.insert(param_name);
-                            }
-                        }
+    for child in func_decl.child_nodes() {
+        if child.kind() == "parameter_list" {
+            for param in child.child_nodes() {
+                if param.kind() == "parameter_declaration" {
+                    let param_name = get_declarator_name(&param, source);
+                    if !param_name.is_empty() {
+                        let type_text = extract_type_text(&param, source);
+                        let is_unsigned_char =
+                            type_text.contains("unsigned char") || type_text.contains("uint8_t");
+                        let is_array = param_has_array_declarator(&param);
+                        let mut info = VarInfo::new(InitState::Initialized);
+                        info.is_unsigned_char = is_unsigned_char;
+                        info.is_array = is_array;
+                        state.insert(param_name.clone(), info);
+                        tracked_vars.insert(param_name);
                     }
                 }
             }
@@ -2247,11 +2214,9 @@ fn find_function_declarator<'a>(node: &Node<'a>) -> Option<Node<'a>> {
     if node.kind() == "function_declarator" {
         return Some(*node);
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if let Some(found) = find_function_declarator(&child) {
-                return Some(found);
-            }
+    for child in node.child_nodes() {
+        if let Some(found) = find_function_declarator(&child) {
+            return Some(found);
         }
     }
     None
@@ -2260,20 +2225,18 @@ fn find_function_declarator<'a>(node: &Node<'a>) -> Option<Node<'a>> {
 /// Extract the type text from a declaration node.
 fn extract_type_text(node: &Node, source: &str) -> String {
     let mut parts = Vec::new();
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "primitive_type"
-                | "sized_type_specifier"
-                | "type_identifier"
-                | "storage_class_specifier"
-                | "type_qualifier" => {
-                    if let Ok(t) = child.utf8_text(source.as_bytes()) {
-                        parts.push(t.to_string());
-                    }
+    for child in node.child_nodes() {
+        match child.kind() {
+            "primitive_type"
+            | "sized_type_specifier"
+            | "type_identifier"
+            | "storage_class_specifier"
+            | "type_qualifier" => {
+                if let Ok(t) = child.utf8_text(source.as_bytes()) {
+                    parts.push(t.to_string());
                 }
-                _ => {}
             }
+            _ => {}
         }
     }
     parts.join(" ")
@@ -2282,28 +2245,24 @@ fn extract_type_text(node: &Node, source: &str) -> String {
 /// Get the variable name from a declarator node.
 fn get_declarator_name(node: &Node, source: &str) -> String {
     // Direct identifier
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "identifier" {
-                return child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-            }
+    for child in node.child_nodes() {
+        if child.kind() == "identifier" {
+            return child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
         }
     }
     // Recurse into nested declarators
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "init_declarator"
-                | "pointer_declarator"
-                | "array_declarator"
-                | "function_declarator" => {
-                    let name = get_declarator_name(&child, source);
-                    if !name.is_empty() {
-                        return name;
-                    }
+    for child in node.child_nodes() {
+        match child.kind() {
+            "init_declarator"
+            | "pointer_declarator"
+            | "array_declarator"
+            | "function_declarator" => {
+                let name = get_declarator_name(&child, source);
+                if !name.is_empty() {
+                    return name;
                 }
-                _ => {}
             }
+            _ => {}
         }
     }
     String::new()
@@ -2337,25 +2296,21 @@ fn is_array_declarator(node: &Node) -> bool {
     if node.kind() == "array_declarator" {
         return true;
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if is_array_declarator(&child) {
-                return true;
-            }
+    for child in node.child_nodes() {
+        if is_array_declarator(&child) {
+            return true;
         }
     }
     false
 }
 
 fn param_has_array_declarator(node: &Node) -> bool {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "array_declarator" {
-                return true;
-            }
-            if param_has_array_declarator(&child) {
-                return true;
-            }
+    for child in node.child_nodes() {
+        if child.kind() == "array_declarator" {
+            return true;
+        }
+        if param_has_array_declarator(&child) {
+            return true;
         }
     }
     false
@@ -2491,27 +2446,25 @@ fn extract_subscript_base(node: &Node, source: &str) -> String {
 /// Handles chains like `arr[0].field`, `s.arr[0]`, `ptr->arr[i].field`, etc.
 /// Returns (base_name, has_subscript_in_chain).
 fn extract_nested_base_ex(node: &Node, source: &str) -> (String, bool) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "identifier" => {
-                    let name = child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-                    return (name, false);
-                }
-                "subscript_expression" => {
-                    let (name, _) = extract_nested_base_ex(&child, source);
-                    if !name.is_empty() {
-                        return (name, true);
-                    }
-                }
-                "field_expression" | "parenthesized_expression" => {
-                    let result = extract_nested_base_ex(&child, source);
-                    if !result.0.is_empty() {
-                        return result;
-                    }
-                }
-                _ => {}
+    for child in node.child_nodes() {
+        match child.kind() {
+            "identifier" => {
+                let name = child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                return (name, false);
             }
+            "subscript_expression" => {
+                let (name, _) = extract_nested_base_ex(&child, source);
+                if !name.is_empty() {
+                    return (name, true);
+                }
+            }
+            "field_expression" | "parenthesized_expression" => {
+                let result = extract_nested_base_ex(&child, source);
+                if !result.0.is_empty() {
+                    return result;
+                }
+            }
+            _ => {}
         }
     }
     (String::new(), false)
@@ -2529,29 +2482,26 @@ pub fn collect_file_scope_statics(root: &Node, source: &str) -> InitStateMap {
 }
 
 fn collect_file_scope_statics_recursive(node: &Node, source: &str, state: &mut InitStateMap) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "declaration" => {
-                    let type_text = extract_type_text(&child, source);
-                    let is_static =
-                        type_text.contains("static") || type_text.contains("_Thread_local");
-                    if is_static {
-                        let mut tracked = HashSet::new();
-                        process_declaration(
-                            &child,
-                            source,
-                            state,
-                            &mut tracked,
-                            &InitAnalysisConfig::default(),
-                        );
-                    }
+    for child in node.child_nodes() {
+        match child.kind() {
+            "declaration" => {
+                let type_text = extract_type_text(&child, source);
+                let is_static = type_text.contains("static") || type_text.contains("_Thread_local");
+                if is_static {
+                    let mut tracked = HashSet::new();
+                    process_declaration(
+                        &child,
+                        source,
+                        state,
+                        &mut tracked,
+                        &InitAnalysisConfig::default(),
+                    );
                 }
-                "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif" => {
-                    collect_file_scope_statics_recursive(&child, source, state);
-                }
-                _ => {}
             }
+            "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif" => {
+                collect_file_scope_statics_recursive(&child, source, state);
+            }
+            _ => {}
         }
     }
 }
@@ -2671,15 +2621,13 @@ fn decl_qualifiers(decl: &Node, source: &str) -> DeclQualifiers {
         is_extern: false,
         is_volatile: false,
     };
-    for k in 0..decl.child_count() {
-        if let Some(c) = decl.child(k) {
-            match c.kind() {
-                "type_qualifier" if text_of(c) == "const" => q.is_const = true,
-                "type_qualifier" if text_of(c) == "volatile" => q.is_volatile = true,
-                "storage_class_specifier" if text_of(c) == "static" => q.is_static = true,
-                "storage_class_specifier" if text_of(c) == "extern" => q.is_extern = true,
-                _ => {}
-            }
+    for c in decl.child_nodes() {
+        match c.kind() {
+            "type_qualifier" if text_of(c) == "const" => q.is_const = true,
+            "type_qualifier" if text_of(c) == "volatile" => q.is_volatile = true,
+            "storage_class_specifier" if text_of(c) == "static" => q.is_static = true,
+            "storage_class_specifier" if text_of(c) == "extern" => q.is_extern = true,
+            _ => {}
         }
     }
     q
@@ -2690,10 +2638,7 @@ fn decl_qualifiers(decl: &Node, source: &str) -> DeclQualifiers {
 /// that initializer.
 fn initialized_names_in_arm(node: &Node, source: &str, dead: &[(usize, usize)]) -> HashSet<String> {
     let mut names = HashSet::new();
-    for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else {
-            continue;
-        };
+    for child in node.child_nodes() {
         if child.kind() != "declaration" || starts_in_dead_lines(&child, dead) {
             continue;
         }
@@ -2742,10 +2687,7 @@ fn declaration_constants(
         return Vec::new();
     }
     let mut out = Vec::new();
-    for j in 0..decl_node.child_count() {
-        let Some(decl) = decl_node.child(j) else {
-            continue;
-        };
+    for decl in decl_node.child_nodes() {
         if decl.kind() == "identifier" && !q.is_extern {
             let Ok(name) = decl.utf8_text(source.as_bytes()) else {
                 continue;
@@ -2796,10 +2738,7 @@ fn collect_constants_recursive(
 ) {
     let mut initialized = initialized_names_in_arm(node, source, dead);
     initialized.extend(enclosing_initialized.iter().cloned());
-    for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else {
-            continue;
-        };
+    for child in node.child_nodes() {
         match child.kind() {
             "declaration" if starts_in_dead_lines(&child, dead) => {}
             "declaration" => {
@@ -2841,26 +2780,24 @@ fn collect_constant_functions_in(
     dead: &[(usize, usize)],
     seen: &mut HashMap<String, Option<i64>>,
 ) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "function_definition" if starts_in_dead_lines(&child, dead) => {}
-                "function_definition" => {
-                    let Some(name) = crate::analyze::cfg::get_function_name(&child, source) else {
-                        continue;
-                    };
-                    let value = extract_constant_function(&child, source).map(|(_, v)| v);
-                    let entry = seen.entry(name.to_string()).or_insert(value);
-                    if *entry != value {
-                        *entry = None;
-                    }
+    for child in node.child_nodes() {
+        match child.kind() {
+            "function_definition" if starts_in_dead_lines(&child, dead) => {}
+            "function_definition" => {
+                let Some(name) = crate::analyze::cfg::get_function_name(&child, source) else {
+                    continue;
+                };
+                let value = extract_constant_function(&child, source).map(|(_, v)| v);
+                let entry = seen.entry(name.to_string()).or_insert(value);
+                if *entry != value {
+                    *entry = None;
                 }
-                "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
-                | "preproc_elifdef" => {
-                    collect_constant_functions_in(&child, source, dead, seen);
-                }
-                _ => {}
             }
+            "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
+            | "preproc_elifdef" => {
+                collect_constant_functions_in(&child, source, dead, seen);
+            }
+            _ => {}
         }
     }
 }
@@ -2895,24 +2832,20 @@ fn extract_constant_function(func_node: &Node, source: &str) -> Option<(String, 
     let body = func_node.child_by_field_name("body")?;
     let mut return_val: Option<i64> = None;
     let mut non_return_stmts = 0usize;
-    for i in 0..body.child_count() {
-        if let Some(stmt) = body.child(i) {
-            match stmt.kind() {
-                "{" | "}" => {}
-                "return_statement" => {
-                    // Find the expression child (skip 'return' keyword and ';')
-                    for j in 0..stmt.child_count() {
-                        if let Some(child) = stmt.child(j) {
-                            if child.kind() != "return" && child.kind() != ";" {
-                                let empty: HashMap<String, i64> = HashMap::new();
-                                return_val = const_eval::try_evaluate_expr(&child, source, &empty);
-                            }
-                        }
+    for stmt in body.child_nodes() {
+        match stmt.kind() {
+            "{" | "}" => {}
+            "return_statement" => {
+                // Find the expression child (skip 'return' keyword and ';')
+                for child in stmt.child_nodes() {
+                    if child.kind() != "return" && child.kind() != ";" {
+                        let empty: HashMap<String, i64> = HashMap::new();
+                        return_val = const_eval::try_evaluate_expr(&child, source, &empty);
                     }
                 }
-                _ => {
-                    non_return_stmts += 1;
-                }
+            }
+            _ => {
+                non_return_stmts += 1;
             }
         }
     }
@@ -2935,32 +2868,26 @@ fn replay_within_switch_case(
     byte_offset: usize,
 ) {
     // Find the switch body (compound_statement)
-    for i in 0..switch_node.child_count() {
-        if let Some(child) = switch_node.child(i) {
-            if child.kind() == "compound_statement" {
-                // Find the case_statement whose range contains byte_offset
-                for j in 0..child.child_count() {
-                    if let Some(case_node) = child.child(j) {
-                        if case_node.kind() == "case_statement"
-                            && case_node.start_byte() < byte_offset
-                            && case_node.end_byte() > byte_offset
-                        {
-                            // Replay sub-statements of this case that end before byte_offset
-                            for k in 0..case_node.child_count() {
-                                if let Some(stmt) = case_node.child(k) {
-                                    if stmt.end_byte() <= byte_offset {
-                                        process_statement(&stmt, source, state, tracked, config);
-                                    } else if stmt.start_byte() >= byte_offset {
-                                        break;
-                                    }
-                                }
-                            }
-                            return;
+    for child in switch_node.child_nodes() {
+        if child.kind() == "compound_statement" {
+            // Find the case_statement whose range contains byte_offset
+            for case_node in child.child_nodes() {
+                if case_node.kind() == "case_statement"
+                    && case_node.start_byte() < byte_offset
+                    && case_node.end_byte() > byte_offset
+                {
+                    // Replay sub-statements of this case that end before byte_offset
+                    for stmt in case_node.child_nodes() {
+                        if stmt.end_byte() <= byte_offset {
+                            process_statement(&stmt, source, state, tracked, config);
+                        } else if stmt.start_byte() >= byte_offset {
+                            break;
                         }
                     }
+                    return;
                 }
-                break;
             }
+            break;
         }
     }
 }
@@ -2987,11 +2914,9 @@ fn find_short_circuit_chain<'a>(
             return Some(*node);
         }
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if let Some(found) = find_short_circuit_chain(&child, source, byte_offset) {
-                return Some(found);
-            }
+    for child in node.child_nodes() {
+        if let Some(found) = find_short_circuit_chain(&child, source, byte_offset) {
+            return Some(found);
         }
     }
     None
@@ -3074,13 +2999,11 @@ mod tests {
         let tree = parser.parse(code, None).unwrap();
         let root = tree.root_node();
 
-        for i in 0..root.child_count() {
-            if let Some(child) = root.child(i) {
-                if child.kind() == "function_definition" {
-                    let cfg = build_function_cfg(&child, code).unwrap();
-                    let result = analyze_init_states(&cfg, &child, code);
-                    return (cfg, result, code.to_string());
-                }
+        for child in root.child_nodes() {
+            if child.kind() == "function_definition" {
+                let cfg = build_function_cfg(&child, code).unwrap();
+                let result = analyze_init_states(&cfg, &child, code);
+                return (cfg, result, code.to_string());
             }
         }
         panic!("No function definition found");

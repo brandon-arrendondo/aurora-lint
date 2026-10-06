@@ -9,6 +9,7 @@ use super::dataflow::find_node_at_range;
 use crate::analyze::context::SummaryLookup;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::init_state;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tree_sitter::Node;
@@ -462,17 +463,9 @@ fn process_statement_for_null_state(
             // Recognize assert(var) / assert(var != NULL) as making var NotNull
             process_assert_for_null_state(node, source, state, summaries, policy);
             // Recurse into compound expressions to find nested assignments
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "assignment_expression" {
-                        process_expression_null(
-                            &child,
-                            source,
-                            state,
-                            declared_pointers,
-                            summaries,
-                        );
-                    }
+            for child in node.child_nodes() {
+                if child.kind() == "assignment_expression" {
+                    process_expression_null(&child, source, state, declared_pointers, summaries);
                 }
             }
         }
@@ -491,32 +484,30 @@ fn walk_switch_body_for_null_state(
     summaries: &(impl SummaryLookup + ?Sized),
     policy: NullPolicy,
 ) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "case_statement" | "compound_statement" => {
-                    // Recurse into case/default bodies and compound blocks
-                    walk_switch_body_for_null_state(
-                        &child,
-                        source,
-                        state,
-                        declared_pointers,
-                        summaries,
-                        policy,
-                    );
-                }
-                "declaration" | "expression_statement" | "assignment_expression" => {
-                    process_statement_for_null_state(
-                        &child,
-                        source,
-                        state,
-                        declared_pointers,
-                        summaries,
-                        policy,
-                    );
-                }
-                _ => {}
+    for child in node.child_nodes() {
+        match child.kind() {
+            "case_statement" | "compound_statement" => {
+                // Recurse into case/default bodies and compound blocks
+                walk_switch_body_for_null_state(
+                    &child,
+                    source,
+                    state,
+                    declared_pointers,
+                    summaries,
+                    policy,
+                );
             }
+            "declaration" | "expression_statement" | "assignment_expression" => {
+                process_statement_for_null_state(
+                    &child,
+                    source,
+                    state,
+                    declared_pointers,
+                    summaries,
+                    policy,
+                );
+            }
+            _ => {}
         }
     }
 }
@@ -528,8 +519,7 @@ fn process_declaration_null(
     declared_pointers: &mut HashSet<String>,
     summaries: &(impl SummaryLookup + ?Sized),
 ) {
-    for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else { continue };
+    for child in node.child_nodes() {
         match child.kind() {
             "init_declarator" => {
                 process_init_declarator_null(&child, source, state, declared_pointers, summaries)
@@ -735,8 +725,7 @@ fn apply_cross_file_output_params_null(
         return;
     };
     let mut arg_idx: usize = 0;
-    for i in 0..args.child_count() {
-        let Some(arg) = args.child(i) else { continue };
+    for arg in args.child_nodes() {
         if matches!(arg.kind(), "," | "(" | ")") {
             continue;
         }
@@ -799,8 +788,7 @@ fn apply_cross_file_nulls_params_null(
         return;
     };
     let mut arg_idx: usize = 0;
-    for i in 0..args.child_count() {
-        let Some(arg) = args.child(i) else { continue };
+    for arg in args.child_nodes() {
         if matches!(arg.kind(), "," | "(" | ")") {
             continue;
         }
@@ -952,21 +940,19 @@ fn process_assert_for_null_state(
     };
 
     let mut arg_idx = 0usize;
-    for i in 0..args.child_count() {
-        if let Some(arg) = args.child(i) {
-            if arg.kind() == "(" || arg.kind() == ")" || arg.kind() == "," {
-                continue;
-            }
-            if arg_idx == cond_index {
-                if strict {
-                    collect_checked_nonnull(&arg, source, state);
-                } else {
-                    collect_assert_nonnull(&arg, source, true, state);
-                }
-                return;
-            }
-            arg_idx += 1;
+    for arg in args.child_nodes() {
+        if arg.kind() == "(" || arg.kind() == ")" || arg.kind() == "," {
+            continue;
         }
+        if arg_idx == cond_index {
+            if strict {
+                collect_checked_nonnull(&arg, source, state);
+            } else {
+                collect_assert_nonnull(&arg, source, true, state);
+            }
+            return;
+        }
+        arg_idx += 1;
     }
 }
 
@@ -1286,52 +1272,43 @@ fn collect_file_scope_pointer_decls(
     result: &mut StateMap,
     summaries: &(impl SummaryLookup + ?Sized),
 ) {
-    for i in 0..node.child_count() {
-        let child = match node.child(i) {
-            Some(c) => c,
-            None => continue,
-        };
-
+    for child in node.child_nodes() {
         match child.kind() {
             "declaration" => {
                 // Check if any declarator is a pointer type
-                for j in 0..child.child_count() {
-                    if let Some(declarator) = child.child(j) {
-                        if declarator.kind() == "init_declarator" {
-                            if let Some(decl) = declarator.child_by_field_name("declarator") {
-                                if is_pointer_or_array_declarator(&decl) && !contains_array(&decl) {
-                                    let name = get_identifier_from_declarator(&decl, source);
-                                    if !name.is_empty() {
-                                        global_vars.insert(name.clone());
+                for declarator in child.child_nodes() {
+                    if declarator.kind() == "init_declarator" {
+                        if let Some(decl) = declarator.child_by_field_name("declarator") {
+                            if is_pointer_or_array_declarator(&decl) && !contains_array(&decl) {
+                                let name = get_identifier_from_declarator(&decl, source);
+                                if !name.is_empty() {
+                                    global_vars.insert(name.clone());
 
-                                        // Classify the initializer if present
-                                        if let Some(value) = declarator.child_by_field_name("value")
-                                        {
-                                            let state =
-                                                classify_rvalue_null(&value, source, summaries);
-                                            result.insert(name, state);
-                                        }
-                                        // No initializer: C default for file-scope is zero/NULL
-                                        // but we'll be conservative and leave as Unknown to
-                                        // let assignments determine the state
+                                    // Classify the initializer if present
+                                    if let Some(value) = declarator.child_by_field_name("value") {
+                                        let state = classify_rvalue_null(&value, source, summaries);
+                                        result.insert(name, state);
                                     }
+                                    // No initializer: C default for file-scope is zero/NULL
+                                    // but we'll be conservative and leave as Unknown to
+                                    // let assignments determine the state
                                 }
                             }
-                        } else if is_pointer_or_array_declarator(&declarator)
-                            && !contains_array(&declarator)
+                        }
+                    } else if is_pointer_or_array_declarator(&declarator)
+                        && !contains_array(&declarator)
+                    {
+                        // Direct declarator without init (e.g., `static char *p;`)
+                        let name = get_identifier_from_declarator(&declarator, source);
+                        if !name.is_empty()
+                            && declarator.kind() != "storage_class_specifier"
+                            && declarator.kind() != "type_qualifier"
+                            && declarator.kind() != "primitive_type"
+                            && declarator.kind() != "type_identifier"
                         {
-                            // Direct declarator without init (e.g., `static char *p;`)
-                            let name = get_identifier_from_declarator(&declarator, source);
-                            if !name.is_empty()
-                                && declarator.kind() != "storage_class_specifier"
-                                && declarator.kind() != "type_qualifier"
-                                && declarator.kind() != "primitive_type"
-                                && declarator.kind() != "type_identifier"
-                            {
-                                global_vars.insert(name);
-                                // File-scope without initializer: technically zero-initialized
-                                // but leave as Unknown to let assignments drive the state
-                            }
+                            global_vars.insert(name);
+                            // File-scope without initializer: technically zero-initialized
+                            // but leave as Unknown to let assignments drive the state
                         }
                     }
                 }
@@ -1353,12 +1330,7 @@ fn collect_global_assignments(
     result: &mut StateMap,
     summaries: &(impl SummaryLookup + ?Sized),
 ) {
-    for i in 0..node.child_count() {
-        let child = match node.child(i) {
-            Some(c) => c,
-            None => continue,
-        };
-
+    for child in node.child_nodes() {
         match child.kind() {
             "function_definition" => {
                 if let Some(body) = child.child_by_field_name("body") {
@@ -1419,10 +1391,8 @@ fn scan_body_for_global_assignments(
     }
 
     // Recurse into children
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            scan_body_for_global_assignments(&child, source, global_vars, result, summaries);
-        }
+    for child in node.child_nodes() {
+        scan_body_for_global_assignments(&child, source, global_vars, result, summaries);
     }
 }
 
@@ -1459,19 +1429,17 @@ fn check_preceding_null_assign(assignment_node: &Node, var_name: &str, source: &
         }
         // Check for declaration: `char *data = NULL;` or `char *data;`
         if prev.kind() == "declaration" {
-            for i in 0..prev.child_count() {
-                if let Some(child) = prev.child(i) {
-                    if child.kind() == "init_declarator" {
-                        if let Some(decl) = child.child_by_field_name("declarator") {
-                            let name = get_identifier_from_declarator(&decl, source);
-                            if name == var_name {
-                                if let Some(value) = child.child_by_field_name("value") {
-                                    let vtext = get_text(&value, source);
-                                    if is_null_value(vtext.trim()) {
-                                        return NullState::DefinitelyNull;
-                                    }
-                                    return classify_rvalue_null(&value, source, &HashMap::new());
+            for child in prev.child_nodes() {
+                if child.kind() == "init_declarator" {
+                    if let Some(decl) = child.child_by_field_name("declarator") {
+                        let name = get_identifier_from_declarator(&decl, source);
+                        if name == var_name {
+                            if let Some(value) = child.child_by_field_name("value") {
+                                let vtext = get_text(&value, source);
+                                if is_null_value(vtext.trim()) {
+                                    return NullState::DefinitelyNull;
                                 }
+                                return classify_rvalue_null(&value, source, &HashMap::new());
                             }
                         }
                     }
@@ -2120,57 +2088,47 @@ fn collect_param_pointer_state(
     if declarator.kind() == "function_declarator" {
         if let Some(params) = declarator.child_by_field_name("parameters") {
             let mut param_idx: usize = 0;
-            for i in 0..params.child_count() {
-                if let Some(param) = params.child(i) {
-                    if param.kind() == "parameter_declaration" {
-                        let param_text = get_text(&param, source);
-                        if let Some(param_decl) = param.child_by_field_name("declarator") {
-                            let name = get_identifier_from_declarator(&param_decl, source);
-                            if !name.is_empty()
-                                && (is_pointer_or_array_declarator(&param_decl)
-                                    || param_text.contains('*')
-                                    || param_text.starts_with("FILE")
-                                    || name.contains("callback"))
-                            {
-                                declared_pointers.insert(name.clone());
-                                // Use call-site-derived state if available,
-                                // falling back to PossiblyNull (default)
-                                let seed_state = if let Some(cs) = callsite_states {
-                                    // Have inter-procedural call-site data.
-                                    // If prescan resolved a concrete state, use it.
-                                    // If Unknown or missing, treat as NotNull — same
-                                    // as no-callsite-data ("callers are responsible").
-                                    cs.get(&param_idx)
-                                        .copied()
-                                        .map(|s| match s {
-                                            NullState::Unknown => NullState::NotNull,
-                                            other => other,
-                                        })
-                                        .unwrap_or(NullState::NotNull)
-                                } else {
-                                    // No call-site data — assume params are non-null
-                                    // (callers are responsible for null checks)
-                                    NullState::NotNull
-                                };
-                                state.insert(name, seed_state);
-                            }
+            for param in params.child_nodes() {
+                if param.kind() == "parameter_declaration" {
+                    let param_text = get_text(&param, source);
+                    if let Some(param_decl) = param.child_by_field_name("declarator") {
+                        let name = get_identifier_from_declarator(&param_decl, source);
+                        if !name.is_empty()
+                            && (is_pointer_or_array_declarator(&param_decl)
+                                || param_text.contains('*')
+                                || param_text.starts_with("FILE")
+                                || name.contains("callback"))
+                        {
+                            declared_pointers.insert(name.clone());
+                            // Use call-site-derived state if available,
+                            // falling back to PossiblyNull (default)
+                            let seed_state = if let Some(cs) = callsite_states {
+                                // Have inter-procedural call-site data.
+                                // If prescan resolved a concrete state, use it.
+                                // If Unknown or missing, treat as NotNull — same
+                                // as no-callsite-data ("callers are responsible").
+                                cs.get(&param_idx)
+                                    .copied()
+                                    .map(|s| match s {
+                                        NullState::Unknown => NullState::NotNull,
+                                        other => other,
+                                    })
+                                    .unwrap_or(NullState::NotNull)
+                            } else {
+                                // No call-site data — assume params are non-null
+                                // (callers are responsible for null checks)
+                                NullState::NotNull
+                            };
+                            state.insert(name, seed_state);
                         }
-                        param_idx += 1;
                     }
+                    param_idx += 1;
                 }
             }
         }
     } else {
-        for i in 0..declarator.child_count() {
-            if let Some(child) = declarator.child(i) {
-                collect_param_pointer_state(
-                    &child,
-                    source,
-                    state,
-                    declared_pointers,
-                    callsite_states,
-                );
-            }
+        for child in declarator.child_nodes() {
+            collect_param_pointer_state(&child, source, state, declared_pointers, callsite_states);
         }
     }
 }
@@ -2269,11 +2227,9 @@ pub fn is_pointer_or_array_declarator(declarator: &Node) -> bool {
         "pointer_declarator" => true,
         "array_declarator" => true,
         _ => {
-            for i in 0..declarator.child_count() {
-                if let Some(child) = declarator.child(i) {
-                    if is_pointer_or_array_declarator(&child) {
-                        return true;
-                    }
+            for child in declarator.child_nodes() {
+                if is_pointer_or_array_declarator(&child) {
+                    return true;
                 }
             }
             false
@@ -2285,11 +2241,9 @@ fn contains_array(node: &Node) -> bool {
     if node.kind() == "array_declarator" {
         return true;
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if contains_array(&child) {
-                return true;
-            }
+    for child in node.child_nodes() {
+        if contains_array(&child) {
+            return true;
         }
     }
     false
@@ -2306,11 +2260,9 @@ fn get_identifier_from_declarator(declarator: &Node, source: &str) -> String {
             }
         }
         _ => {
-            for i in 0..declarator.child_count() {
-                if let Some(child) = declarator.child(i) {
-                    if child.kind() == "identifier" {
-                        return get_text(&child, source);
-                    }
+            for child in declarator.child_nodes() {
+                if child.kind() == "identifier" {
+                    return get_text(&child, source);
                 }
             }
             String::new()
@@ -2328,8 +2280,8 @@ mod tests {
         parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         let root = tree.root_node();
-        let func = (0..root.child_count())
-            .filter_map(|i| root.child(i))
+        let func = root
+            .child_nodes()
             .find(|c| c.kind() == "function_definition")
             .unwrap();
         let cfg = build_function_cfg(&func, code).unwrap();
@@ -2382,8 +2334,8 @@ void foo(void) {
         parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         let root = tree.root_node();
-        let func = (0..root.child_count())
-            .filter_map(|i| root.child(i))
+        let func = root
+            .child_nodes()
             .find(|c| c.kind() == "function_definition")
             .unwrap();
         let cfg = build_function_cfg(&func, code).unwrap();
@@ -2424,8 +2376,8 @@ void foo(void) {
         parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         let root = tree.root_node();
-        let func = (0..root.child_count())
-            .filter_map(|i| root.child(i))
+        let func = root
+            .child_nodes()
             .find(|c| c.kind() == "function_definition")
             .unwrap();
         let cfg = build_function_cfg(&func, code).unwrap();
@@ -2599,8 +2551,8 @@ void sink() {
         assert_eq!(globals.get("globalData"), Some(&NullState::DefinitelyNull));
 
         // Now analyze sink() with global states
-        let sink_func = (0..root.child_count())
-            .filter_map(|i| root.child(i))
+        let sink_func = root
+            .child_nodes()
             .find(|c| {
                 c.kind() == "function_definition"
                     && code[c.start_byte()..c.end_byte()].contains("sink")

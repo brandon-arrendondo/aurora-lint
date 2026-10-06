@@ -9,6 +9,7 @@ use crate::analyze::init_state;
 use crate::analyze::null_state::NullState;
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::guard_dominance;
+use crate::utility::cert_c::node_children::NodeChildren;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -1177,10 +1178,7 @@ fn walk_for_relative_command_write(
                     | "wcsncat"
             ) {
                 if let Some(args) = node.child_by_field_name("arguments") {
-                    let named: Vec<_> = (0..args.child_count())
-                        .filter_map(|i| args.child(i))
-                        .filter(|c| c.is_named())
-                        .collect();
+                    let named: Vec<_> = args.child_nodes().filter(|c| c.is_named()).collect();
                     // Second named arg is the source string for str/wcs copy/cat
                     if let Some(second) = named.get(1) {
                         let s = *second;
@@ -1199,16 +1197,14 @@ fn walk_for_relative_command_write(
         // itself was checked; inner calls are handled by the outer loop.
         return;
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            // Don't cross into a nested (swallowed-sibling) function boundary.
-            if is_real_nested_function_definition(&child, source) {
-                continue;
-            }
-            walk_for_relative_command_write(&child, source, string_macros, found);
-            if *found {
-                return;
-            }
+    for child in node.child_nodes() {
+        // Don't cross into a nested (swallowed-sibling) function boundary.
+        if is_real_nested_function_definition(&child, source) {
+            continue;
+        }
+        walk_for_relative_command_write(&child, source, string_macros, found);
+        if *found {
+            return;
         }
     }
 }
@@ -1384,10 +1380,8 @@ fn collect_function_summaries(
         // FunctionSummary (MSC04-C, EXP34-C, MEM30/31-C, null-state, taint).
         // Walking everywhere instead still finds and summarizes it under its
         // own name, even though it's nested in the AST.
-        for i in (0..current.child_count()).rev() {
-            if let Some(child) = current.child(i) {
-                stack.push(child);
-            }
+        for child in current.child_nodes().collect::<Vec<_>>().into_iter().rev() {
+            stack.push(child);
         }
     }
 }
@@ -1448,8 +1442,7 @@ fn is_c_keyword(name: &str) -> bool {
 /// inside `node`'s subtree (`node` itself excluded), if any. Only meaningful
 /// to call when `node.has_error()` — see `is_real_nested_function_definition`.
 fn find_nested_function_boundary(node: &Node, source: &str) -> Option<usize> {
-    for i in 0..node.child_count() {
-        let child = node.child(i)?;
+    for child in node.child_nodes() {
         if is_real_nested_function_definition(&child, source) {
             return Some(child.start_byte());
         }
@@ -1789,8 +1782,7 @@ fn find_variadic_arity_in_declarator(node: &Node) -> Option<usize> {
     if node.kind() == "function_declarator" {
         let param_list = node.child_by_field_name("parameters")?;
         let mut fixed = 0usize;
-        for i in 0..param_list.child_count() {
-            let child = param_list.child(i)?;
+        for child in param_list.child_nodes() {
             match child.kind() {
                 "parameter_declaration" => fixed += 1,
                 "variadic_parameter" => return Some(fixed),
@@ -1960,24 +1952,20 @@ fn declarator_denotes_pointer_return(declarator: &Node) -> bool {
 fn collect_params_recursive(node: &Node, source: &str, params: &mut Vec<String>) {
     if node.kind() == "function_declarator" {
         if let Some(param_list) = node.child_by_field_name("parameters") {
-            for i in 0..param_list.child_count() {
-                if let Some(param) = param_list.child(i) {
-                    if param.kind() == "parameter_declaration" {
-                        if let Some(decl) = param.child_by_field_name("declarator") {
-                            let name = extract_leaf_identifier(&decl, source);
-                            params.push(name);
-                        } else {
-                            params.push(String::new()); // Unnamed parameter
-                        }
+            for param in param_list.child_nodes() {
+                if param.kind() == "parameter_declaration" {
+                    if let Some(decl) = param.child_by_field_name("declarator") {
+                        let name = extract_leaf_identifier(&decl, source);
+                        params.push(name);
+                    } else {
+                        params.push(String::new()); // Unnamed parameter
                     }
                 }
             }
         }
     } else {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                collect_params_recursive(&child, source, params);
-            }
+        for child in node.child_nodes() {
+            collect_params_recursive(&child, source, params);
         }
     }
 }
@@ -2143,8 +2131,7 @@ fn body_returned_callees(body: &Node, source: &str, text_end: usize) -> Option<H
     let returned: HashSet<String> = returns
         .iter()
         .flat_map(|ret| {
-            (0..ret.child_count())
-                .filter_map(|i| ret.child(i))
+            ret.child_nodes()
                 .filter(|c| c.is_named())
                 .flat_map(|expr| expr_sources(&expr, source, &sources))
                 .collect::<Vec<_>>()
@@ -2435,12 +2422,10 @@ fn nonnull_return_deps(body: &Node, source: &str, text_end: usize) -> Option<Non
         {
             return Err(());
         }
-        let is_static = (0..decl.child_count())
-            .filter_map(|i| decl.child(i))
-            .any(|c| {
-                c.kind() == "storage_class_specifier"
-                    && c.utf8_text(source.as_bytes()).ok() == Some("static")
-            });
+        let is_static = decl.child_nodes().any(|c| {
+            c.kind() == "storage_class_specifier"
+                && c.utf8_text(source.as_bytes()).ok() == Some("static")
+        });
         match declarator.parent() {
             Some(init) if init.kind() == "init_declarator" => {
                 value_deps(&init.child_by_field_name("value").ok_or(())?, source, deps)?;
@@ -2584,34 +2569,32 @@ fn check_returns_all_nonnull_recursive(node: &Node, source: &str, found_any: &mu
     if node.kind() == "return_statement" {
         *found_any = true;
         // Check if the returned value is provably non-null
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "return" || child.kind() == ";" {
-                    continue;
-                }
-                // `return &expr` — the address of an object is non-null, but
-                // `&*q` is `q` itself (C11 6.5.3.2p3), as null as `q` is.
-                let e = init_state::strip_arg_casts(&child);
-                if e.kind() == "pointer_expression"
-                    && e.child_by_field_name("operator").map(|o| o.kind()) == Some("&")
-                {
-                    return !e
-                        .child_by_field_name("argument")
-                        .map(|a| init_state::strip_arg_casts(&a))
-                        .is_some_and(|a| {
-                            a.kind() == "pointer_expression"
-                                && a.child_by_field_name("operator").map(|o| o.kind()) == Some("*")
-                        });
-                }
-                // Text-level: `return &identifier`
-                let text = child.utf8_text(source.as_bytes()).unwrap_or("").trim();
-                if let Some(rest) = text.strip_prefix('&') {
-                    return !rest
-                        .trim_start_matches(|c: char| c == '(' || c.is_whitespace())
-                        .starts_with('*');
-                }
-                return false;
+        for child in node.child_nodes() {
+            if child.kind() == "return" || child.kind() == ";" {
+                continue;
             }
+            // `return &expr` — the address of an object is non-null, but
+            // `&*q` is `q` itself (C11 6.5.3.2p3), as null as `q` is.
+            let e = init_state::strip_arg_casts(&child);
+            if e.kind() == "pointer_expression"
+                && e.child_by_field_name("operator").map(|o| o.kind()) == Some("&")
+            {
+                return !e
+                    .child_by_field_name("argument")
+                    .map(|a| init_state::strip_arg_casts(&a))
+                    .is_some_and(|a| {
+                        a.kind() == "pointer_expression"
+                            && a.child_by_field_name("operator").map(|o| o.kind()) == Some("*")
+                    });
+            }
+            // Text-level: `return &identifier`
+            let text = child.utf8_text(source.as_bytes()).unwrap_or("").trim();
+            if let Some(rest) = text.strip_prefix('&') {
+                return !rest
+                    .trim_start_matches(|c: char| c == '(' || c.is_whitespace())
+                    .starts_with('*');
+            }
+            return false;
         }
         return false;
     }
@@ -2621,11 +2604,9 @@ fn check_returns_all_nonnull_recursive(node: &Node, source: &str, found_any: &mu
         return true; // Neutral for parent's all-nonnull check
     }
 
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if !check_returns_all_nonnull_recursive(&child, source, found_any) {
-                return false;
-            }
+    for child in node.child_nodes() {
+        if !check_returns_all_nonnull_recursive(&child, source, found_any) {
+            return false;
         }
     }
     true
@@ -2633,27 +2614,23 @@ fn check_returns_all_nonnull_recursive(node: &Node, source: &str, found_any: &mu
 
 fn check_returns_null(body: &Node, source: &str) -> bool {
     if body.kind() == "return_statement" {
-        for i in 0..body.child_count() {
-            if let Some(child) = body.child(i) {
-                if child.kind() != "return" {
-                    let text = child.utf8_text(source.as_bytes()).unwrap_or("").trim();
-                    if text == "NULL" || text == "0" || text == "nullptr" {
-                        return true;
-                    }
+        for child in body.child_nodes() {
+            if child.kind() != "return" {
+                let text = child.utf8_text(source.as_bytes()).unwrap_or("").trim();
+                if text == "NULL" || text == "0" || text == "nullptr" {
+                    return true;
                 }
             }
         }
     }
 
-    for i in 0..body.child_count() {
-        if let Some(child) = body.child(i) {
-            // Don't cross into a nested (swallowed-sibling) function boundary.
-            if is_real_nested_function_definition(&child, source) {
-                continue;
-            }
-            if check_returns_null(&child, source) {
-                return true;
-            }
+    for child in body.child_nodes() {
+        // Don't cross into a nested (swallowed-sibling) function boundary.
+        if is_real_nested_function_definition(&child, source) {
+            continue;
+        }
+        if check_returns_null(&child, source) {
+            return true;
         }
     }
 
@@ -3554,8 +3531,7 @@ fn library_written_roots<'a>(call: &Node<'a>, source: &str) -> Vec<Node<'a>> {
         return roots;
     };
     let mut arg_idx = 0usize;
-    for i in 0..args.child_count() {
-        let Some(arg) = args.child(i) else { continue };
+    for arg in args.child_nodes() {
         if matches!(arg.kind(), "," | "(" | ")") {
             continue;
         }
@@ -3904,10 +3880,7 @@ fn forwarded_argument_names(body: &Node, source: &str) -> HashSet<String> {
         let Some(arguments) = call.child_by_field_name("arguments") else {
             continue;
         };
-        for i in 0..arguments.child_count() {
-            let Some(arg) = arguments.child(i) else {
-                continue;
-            };
+        for arg in arguments.child_nodes() {
             let stripped = init_state::strip_arg_casts(&arg);
             if stripped.kind() == "identifier" {
                 if let Ok(name) = stripped.utf8_text(source.as_bytes()) {
@@ -3953,10 +3926,7 @@ fn forwarded_write_obligation(expr: &Node, source: &str, param: &str) -> Option<
             continue;
         };
         let mut callee_idx = 0usize;
-        for i in 0..arguments.child_count() {
-            let Some(arg) = arguments.child(i) else {
-                continue;
-            };
+        for arg in arguments.child_nodes() {
             if matches!(arg.kind(), "," | "(" | ")") {
                 continue;
             }
@@ -5516,8 +5486,8 @@ fn credit_credential_facts(
         let Some(arguments) = call.child_by_field_name("arguments") else {
             continue;
         };
-        let args: Vec<Node> = (0..arguments.named_child_count())
-            .filter_map(|i| arguments.named_child(i))
+        let args: Vec<Node> = arguments
+            .named_child_nodes()
             .filter(|a| a.kind() != "comment")
             .collect();
         // An argument keyed by the object it names (ADR-0006), for matching
@@ -5834,8 +5804,8 @@ pub fn sets_zero_core_limit(call: &Node, args: &[Node], source: &str) -> bool {
             if v.kind() != "initializer_list" {
                 return false;
             }
-            let items: Vec<Node> = (0..v.named_child_count())
-                .filter_map(|i| v.named_child(i))
+            let items: Vec<Node> = v
+                .named_child_nodes()
                 .filter(|c| c.kind() != "comment")
                 .collect();
             let designated = items.iter().find(|c| {
@@ -5889,11 +5859,7 @@ pub fn sets_zero_core_limit(call: &Node, args: &[Node], source: &str) -> bool {
         }
         let cargs: Vec<Node> = c
             .child_by_field_name("arguments")
-            .map(|a| {
-                (0..a.named_child_count())
-                    .filter_map(|i| a.named_child(i))
-                    .collect()
-            })
+            .map(|a| a.named_child_nodes().collect())
             .unwrap_or_default();
         let dest = cargs.first().map(|d| init_state::strip_arg_casts(d));
         let targets_rl = dest.is_some_and(|d| {
@@ -6706,10 +6672,7 @@ fn closes_param_before_reassignment(sweep: &BodySweep, source: &str, param_name:
         .filter(|call| {
             call.child_by_field_name("arguments")
                 .map(|args| {
-                    let real: Vec<_> = (0..args.child_count())
-                        .filter_map(|i| args.child(i))
-                        .filter(|a| a.is_named())
-                        .collect();
+                    let real: Vec<_> = args.child_nodes().filter(|a| a.is_named()).collect();
                     real.len() == 1
                         && real[0].kind() == "identifier"
                         && query::node_text(real[0], source.as_bytes()) == param_name
@@ -6772,8 +6735,8 @@ fn collect_frees_param_fields(
     // Real (non-punctuation) arguments in call order, matching how macro/
     // function parameter indices are counted.
     fn real_args<'a>(arguments: &Node<'a>) -> Vec<Node<'a>> {
-        (0..arguments.child_count())
-            .filter_map(|i| arguments.child(i))
+        arguments
+            .child_nodes()
             .filter(|a| !matches!(a.kind(), "," | "(" | ")"))
             .collect()
     }
@@ -7128,54 +7091,48 @@ fn collect_param_passthroughs(
                 if let Some(arguments) = node.child_by_field_name("arguments") {
                     let reached = is_unconditionally_reached(node, body);
                     let mut callee_idx = 0usize;
-                    for i in 0..arguments.child_count() {
-                        if let Some(arg) = arguments.child(i) {
-                            if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
-                                continue;
-                            }
-                            // `backend_free((unsigned char *)p)` forwards
-                            // `p` as surely as a bare `p` would; matching only
-                            // a bare identifier left the transitive-free walk
-                            // with no edge to follow.
-                            let stripped = init_state::strip_arg_casts(&arg);
-                            if stripped.kind() == "identifier" {
-                                let arg_text = stripped.utf8_text(source.as_bytes()).unwrap_or("");
-                                // A local that is an exact copy of a
-                                // parameter forwards it as well
-                                // (`struct aes_ctx *actx = ctx;
-                                // bin_clear_free(actx, ...)`).
-                                let copy_of = (!params
-                                    .iter()
-                                    .any(|p| !p.is_empty() && p == arg_text))
+                    for arg in arguments.child_nodes() {
+                        if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
+                            continue;
+                        }
+                        // `backend_free((unsigned char *)p)` forwards
+                        // `p` as surely as a bare `p` would; matching only
+                        // a bare identifier left the transitive-free walk
+                        // with no edge to follow.
+                        let stripped = init_state::strip_arg_casts(&arg);
+                        if stripped.kind() == "identifier" {
+                            let arg_text = stripped.utf8_text(source.as_bytes()).unwrap_or("");
+                            // A local that is an exact copy of a
+                            // parameter forwards it as well
+                            // (`struct aes_ctx *actx = ctx;
+                            // bin_clear_free(actx, ...)`).
+                            let copy_of = (!params.iter().any(|p| !p.is_empty() && p == arg_text))
                                 .then(|| {
                                     param_behind_local(node, stripped, body, source, params, false)
                                 })
                                 .flatten();
-                                for (param_idx, param_name) in params.iter().enumerate() {
-                                    if !param_name.is_empty()
-                                        && (arg_text == param_name || copy_of == Some(param_idx))
+                            for (param_idx, param_name) in params.iter().enumerate() {
+                                if !param_name.is_empty()
+                                    && (arg_text == param_name || copy_of == Some(param_idx))
+                                {
+                                    summary
+                                        .param_passthroughs
+                                        .entry(param_idx)
+                                        .or_default()
+                                        .push((callee_name.clone(), callee_idx));
+                                    if reached
+                                        && !returns_before(node, body, source, param_name, false)
                                     {
                                         summary
-                                            .param_passthroughs
+                                            .unconditional_param_passthroughs
                                             .entry(param_idx)
                                             .or_default()
                                             .push((callee_name.clone(), callee_idx));
-                                        if reached
-                                            && !returns_before(
-                                                node, body, source, param_name, false,
-                                            )
-                                        {
-                                            summary
-                                                .unconditional_param_passthroughs
-                                                .entry(param_idx)
-                                                .or_default()
-                                                .push((callee_name.clone(), callee_idx));
-                                        }
                                     }
                                 }
                             }
-                            callee_idx += 1;
                         }
+                        callee_idx += 1;
                     }
                 }
             }
@@ -7183,14 +7140,12 @@ fn collect_param_passthroughs(
         return; // Don't recurse into call_expression children
     }
 
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            // Don't cross into a nested (swallowed-sibling) function boundary.
-            if is_real_nested_function_definition(&child, source) {
-                continue;
-            }
-            collect_param_passthroughs(&child, body, source, params, summary);
+    for child in node.child_nodes() {
+        // Don't cross into a nested (swallowed-sibling) function boundary.
+        if is_real_nested_function_definition(&child, source) {
+            continue;
         }
+        collect_param_passthroughs(&child, body, source, params, summary);
     }
 }
 
@@ -7213,18 +7168,16 @@ fn collect_param_forwards_to_indirect_call(
         if let Some(func_node) = node.child_by_field_name("function") {
             if func_node.kind() == "field_expression" {
                 if let Some(arguments) = node.child_by_field_name("arguments") {
-                    for i in 0..arguments.child_count() {
-                        if let Some(arg) = arguments.child(i) {
-                            if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
-                                continue;
-                            }
-                            let stripped = init_state::strip_arg_casts(&arg);
-                            if stripped.kind() == "identifier" {
-                                let arg_text = stripped.utf8_text(source.as_bytes()).unwrap_or("");
-                                for (param_idx, param_name) in params.iter().enumerate() {
-                                    if !param_name.is_empty() && arg_text == param_name {
-                                        summary.forwards_to_indirect_call.insert(param_idx);
-                                    }
+                    for arg in arguments.child_nodes() {
+                        if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
+                            continue;
+                        }
+                        let stripped = init_state::strip_arg_casts(&arg);
+                        if stripped.kind() == "identifier" {
+                            let arg_text = stripped.utf8_text(source.as_bytes()).unwrap_or("");
+                            for (param_idx, param_name) in params.iter().enumerate() {
+                                if !param_name.is_empty() && arg_text == param_name {
+                                    summary.forwards_to_indirect_call.insert(param_idx);
                                 }
                             }
                         }
@@ -7235,13 +7188,11 @@ fn collect_param_forwards_to_indirect_call(
         return; // Don't recurse into call_expression children
     }
 
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if is_real_nested_function_definition(&child, source) {
-                continue;
-            }
-            collect_param_forwards_to_indirect_call(&child, source, params, summary);
+    for child in node.child_nodes() {
+        if is_real_nested_function_definition(&child, source) {
+            continue;
         }
+        collect_param_forwards_to_indirect_call(&child, source, params, summary);
     }
 }
 
@@ -8313,8 +8264,8 @@ fn collect_realloc_candidates(body: &Node, source: &str, first: &str, out: &mut 
             return None;
         }
         let arguments = call.child_by_field_name("arguments")?;
-        let arg0 = (0..arguments.child_count())
-            .filter_map(|i| arguments.child(i))
+        let arg0 = arguments
+            .child_nodes()
             .find(|a| !matches!(a.kind(), "(" | ")" | "," | "comment"))?;
         let arg0 = unwrap_to_call_node(arg0);
         (arg0.kind() == "identifier" && text(&arg0) == first).then(|| text(&function))
@@ -8664,26 +8615,22 @@ fn returns_only_compile_time_constants(
 fn collect_return_expressions<'a>(node: &Node<'a>, source: &str, out: &mut Vec<Node<'a>>) {
     if node.kind() == "return_statement" {
         // The return expression is the first non-keyword child
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() != "return" && child.kind() != ";" {
-                    out.push(child);
-                    return;
-                }
+        for child in node.child_nodes() {
+            if child.kind() != "return" && child.kind() != ";" {
+                out.push(child);
+                return;
             }
         }
         // Bare `return;` — no expression (void-style)
         return;
     }
 
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            // Don't cross into a nested (swallowed-sibling) function boundary.
-            if is_real_nested_function_definition(&child, source) {
-                continue;
-            }
-            collect_return_expressions(&child, source, out);
+    for child in node.child_nodes() {
+        // Don't cross into a nested (swallowed-sibling) function boundary.
+        if is_real_nested_function_definition(&child, source) {
+            continue;
         }
+        collect_return_expressions(&child, source, out);
     }
 }
 
@@ -8710,11 +8657,9 @@ fn extract_leaf_identifier(node: &Node, source: &str) -> String {
             }
         }
         _ => {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "identifier" {
-                        return child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-                    }
+            for child in node.child_nodes() {
+                if child.kind() == "identifier" {
+                    return child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
                 }
             }
             String::new()

@@ -16,6 +16,7 @@
 //! prescan runs the same code over every translation unit to reach the
 //! callers ARR36-C's own file-local pass cannot see.
 
+use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::{ast_utils, overflow_helpers};
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
@@ -138,8 +139,7 @@ impl ObjectFrame {
         match node.kind() {
             "translation_unit" | "preproc_ifdef" | "preproc_if" | "preproc_else"
             | "preproc_elif" => {
-                for i in 0..node.child_count() {
-                    let Some(child) = node.child(i) else { continue };
+                for child in node.child_nodes() {
                     if child.kind() == "declaration" {
                         self.record_declaration(&child, source);
                     } else if child.kind().starts_with("preproc_") {
@@ -257,8 +257,7 @@ pub struct DeclaredPointer<'tree> {
 /// `init_declarator` for the initializer the frame has no use for.
 pub fn declared_pointers<'tree>(node: &Node<'tree>, source: &str) -> Vec<DeclaredPointer<'tree>> {
     let mut declared = Vec::new();
-    for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else { continue };
+    for child in node.child_nodes() {
         let declarator = if child.kind() == "init_declarator" {
             child.child_by_field_name("declarator")
         } else if is_pointer_declarator(&child) {
@@ -311,8 +310,8 @@ pub fn declarator_depth(declarator: &Node) -> usize {
             .child_by_field_name("declarator")
             .map_or(0, |inner| declarator_depth(&inner)),
         // No `declarator` field to follow -- the declarator is just wrapped.
-        "parenthesized_declarator" => (0..declarator.named_child_count())
-            .filter_map(|i| declarator.named_child(i))
+        "parenthesized_declarator" => declarator
+            .named_child_nodes()
             .map(|child| declarator_depth(&child))
             .max()
             .unwrap_or(0),
@@ -334,11 +333,9 @@ pub fn is_pointer_or_array_parameter(param_node: &Node) -> bool {
             return true;
         }
         // Nested declarators, e.g. `char *argv[]`.
-        for i in 0..declarator.child_count() {
-            if let Some(child) = declarator.child(i) {
-                if is_pointer_declarator(&child) {
-                    return true;
-                }
+        for child in declarator.child_nodes() {
+            if is_pointer_declarator(&child) {
+                return true;
             }
         }
     }
@@ -376,8 +373,7 @@ fn allocation_object(node: &Node, source: &str) -> Option<String> {
 /// the parentheses and commas, which are unnamed, and any comment between
 /// arguments.
 pub fn argument_nodes<'tree>(args: &Node<'tree>) -> Vec<Node<'tree>> {
-    (0..args.child_count())
-        .filter_map(|i| args.child(i))
+    args.child_nodes()
         .filter(|child| child.is_named() && child.kind() != "comment")
         .collect()
 }

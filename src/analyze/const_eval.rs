@@ -11,6 +11,7 @@ use crate::analyze::dead_regions::DeadRegions;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::data_model::{Fact, IntFacts, Rank};
+use crate::utility::cert_c::node_children::NodeChildren;
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 use tree_sitter::Node;
@@ -1120,62 +1121,60 @@ fn collect_preproc_defs_rec(
     dead: &DeadRegions,
     defs: &mut Vec<(String, String)>,
 ) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "preproc_def" => {
-                    if dead.contains_node(&child) {
-                        continue;
-                    }
-                    // preproc_def has children: name (identifier), value (preproc_arg)
-                    let name = child
-                        .child_by_field_name("name")
-                        .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                        .unwrap_or("")
-                        .to_string();
-                    let value = child
-                        .child_by_field_name("value")
-                        .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                        .unwrap_or("")
-                        .trim()
-                        .to_string();
-                    if !name.is_empty() && !value.is_empty() {
-                        // Skip function-like macros (have parenthesized params)
-                        if !value.starts_with('(')
-                            || value.chars().filter(|&c| c == '(').count()
-                                == value.chars().filter(|&c| c == ')').count()
-                        {
-                            defs.push((name, value));
-                        }
+    for child in node.child_nodes() {
+        match child.kind() {
+            "preproc_def" => {
+                if dead.contains_node(&child) {
+                    continue;
+                }
+                // preproc_def has children: name (identifier), value (preproc_arg)
+                let name = child
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                    .unwrap_or("")
+                    .to_string();
+                let value = child
+                    .child_by_field_name("value")
+                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if !name.is_empty() && !value.is_empty() {
+                    // Skip function-like macros (have parenthesized params)
+                    if !value.starts_with('(')
+                        || value.chars().filter(|&c| c == '(').count()
+                            == value.chars().filter(|&c| c == ')').count()
+                    {
+                        defs.push((name, value));
                     }
                 }
-                // Recurse into nested preproc constructs (#if/#ifdef bodies),
-                // ERROR nodes, and extern "C" linkage blocks:
-                //
-                // - ERROR: a single unrelated syntax error elsewhere in a
-                //   large #ifndef-guarded block can make tree-sitter-c fall
-                //   back to one giant ERROR node wrapping the rest of the
-                //   file -- the `preproc_def` children underneath are still
-                //   individually well-formed and worth collecting even
-                //   though their ancestor is an error-recovery node.
-                // - linkage_specification/declaration_list: the standard
-                //   `#ifdef __cplusplus extern "C" { #endif ... }` C/C++
-                //   interop idiom (virtually every public C header) parses
-                //   as a `linkage_specification` whose body is a
-                //   `declaration_list` -- without recursing into these, EVERY
-                //   #define inside that near-universal wrapper (i.e. most of
-                //   the file, in practice) was invisible to macro-constant
-                //   collection (found via curl.h's CURLINFO_*
-                //   macros all sitting inside its `extern "C" { ... }` block).
-                kind if kind.starts_with("preproc_")
-                    || kind == "ERROR"
-                    || kind == "linkage_specification"
-                    || kind == "declaration_list" =>
-                {
-                    collect_preproc_defs_rec(&child, source, dead, defs);
-                }
-                _ => {}
             }
+            // Recurse into nested preproc constructs (#if/#ifdef bodies),
+            // ERROR nodes, and extern "C" linkage blocks:
+            //
+            // - ERROR: a single unrelated syntax error elsewhere in a
+            //   large #ifndef-guarded block can make tree-sitter-c fall
+            //   back to one giant ERROR node wrapping the rest of the
+            //   file -- the `preproc_def` children underneath are still
+            //   individually well-formed and worth collecting even
+            //   though their ancestor is an error-recovery node.
+            // - linkage_specification/declaration_list: the standard
+            //   `#ifdef __cplusplus extern "C" { #endif ... }` C/C++
+            //   interop idiom (virtually every public C header) parses
+            //   as a `linkage_specification` whose body is a
+            //   `declaration_list` -- without recursing into these, EVERY
+            //   #define inside that near-universal wrapper (i.e. most of
+            //   the file, in practice) was invisible to macro-constant
+            //   collection (found via curl.h's CURLINFO_*
+            //   macros all sitting inside its `extern "C" { ... }` block).
+            kind if kind.starts_with("preproc_")
+                || kind == "ERROR"
+                || kind == "linkage_specification"
+                || kind == "declaration_list" =>
+            {
+                collect_preproc_defs_rec(&child, source, dead, defs);
+            }
+            _ => {}
         }
     }
 }
@@ -1183,11 +1182,7 @@ fn collect_preproc_defs_rec(
 /// Collect file-scope `static const int NAME = VALUE;` and `const int NAME = VALUE;`
 /// declarations. These behave as compile-time constants in C.
 fn collect_static_const_defs(root: &Node, source: &str, defs: &mut Vec<(String, String)>) {
-    for i in 0..root.child_count() {
-        let child = match root.child(i) {
-            Some(c) => c,
-            None => continue,
-        };
+    for child in root.child_nodes() {
         if child.kind() != "declaration" {
             continue;
         }
@@ -1207,24 +1202,18 @@ fn collect_static_const_defs(root: &Node, source: &str, defs: &mut Vec<(String, 
             continue;
         }
         // Extract init_declarator children for `NAME = VALUE`
-        for j in 0..child.named_child_count() {
-            let gc = match child.named_child(j) {
-                Some(c) => c,
-                None => continue,
-            };
+        for gc in child.named_child_nodes() {
             if gc.kind() != "init_declarator" {
                 continue;
             }
             // Look for identifier and value
             let mut name = None;
             let mut value = None;
-            for k in 0..gc.named_child_count() {
-                if let Some(ggc) = gc.named_child(k) {
-                    if ggc.kind() == "identifier" && name.is_none() {
-                        name = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
-                    } else if ggc.kind() == "number_literal" && name.is_some() {
-                        value = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
-                    }
+            for ggc in gc.named_child_nodes() {
+                if ggc.kind() == "identifier" && name.is_none() {
+                    name = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+                } else if ggc.kind() == "number_literal" && name.is_some() {
+                    value = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
                 }
             }
             if let (Some(n), Some(v)) = (name, value) {
@@ -1240,11 +1229,7 @@ fn collect_static_const_defs(root: &Node, source: &str, defs: &mut Vec<(String, 
 fn collect_non_const_static_defs(root: &Node, source: &str, defs: &mut Vec<(String, String)>) {
     let mut candidates: Vec<(String, String, usize)> = Vec::new();
 
-    for i in 0..root.child_count() {
-        let child = match root.child(i) {
-            Some(c) => c,
-            None => continue,
-        };
+    for child in root.child_nodes() {
         if child.kind() != "declaration" {
             continue;
         }
@@ -1266,23 +1251,17 @@ fn collect_non_const_static_defs(root: &Node, source: &str, defs: &mut Vec<(Stri
         }
         let decl_end = child.end_byte();
 
-        for j in 0..child.named_child_count() {
-            let gc = match child.named_child(j) {
-                Some(c) => c,
-                None => continue,
-            };
+        for gc in child.named_child_nodes() {
             if gc.kind() != "init_declarator" {
                 continue;
             }
             let mut name = None;
             let mut value = None;
-            for k in 0..gc.named_child_count() {
-                if let Some(ggc) = gc.named_child(k) {
-                    if ggc.kind() == "identifier" && name.is_none() {
-                        name = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
-                    } else if ggc.kind() == "number_literal" && name.is_some() {
-                        value = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
-                    }
+            for ggc in gc.named_child_nodes() {
+                if ggc.kind() == "identifier" && name.is_none() {
+                    name = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+                } else if ggc.kind() == "number_literal" && name.is_some() {
+                    value = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
                 }
             }
             if let (Some(n), Some(v)) = (name, value) {
@@ -1413,8 +1392,7 @@ pub fn file_scope_static_names(root: &Node, source: &str) -> std::collections::H
         declaration_has_storage_class, get_identifier_from_declarator,
     };
     fn walk(n: &Node, source: &str, out: &mut std::collections::HashSet<String>) {
-        for i in 0..n.child_count() {
-            let Some(child) = n.child(i) else { continue };
+        for child in n.child_nodes() {
             match child.kind() {
                 "declaration" if declaration_has_storage_class(&child, "static", source) => {
                     let mut cursor = child.walk();
@@ -1591,10 +1569,7 @@ fn collect_enum_constants(root: &Node, source: &str, defs: &mut Vec<(String, Str
         if node.kind() == "enumerator_list" {
             let mut prev_name: Option<String> = None;
             let mut implicit_idx: i64 = 0;
-            for i in 0..node.named_child_count() {
-                let Some(e) = node.named_child(i) else {
-                    continue;
-                };
+            for e in node.named_child_nodes() {
                 if e.kind() != "enumerator" {
                     continue;
                 }
@@ -1627,10 +1602,8 @@ fn collect_enum_constants(root: &Node, source: &str, defs: &mut Vec<(String, Str
                 }
             }
         }
-        for i in 0..node.child_count() {
-            if let Some(c) = node.child(i) {
-                walk(&c, source, defs);
-            }
+        for c in node.child_nodes() {
+            walk(&c, source, defs);
         }
     }
     walk(root, source, defs);
@@ -1864,26 +1837,24 @@ pub fn try_evaluate_expr(node: &Node, source: &str, macros: &MacroConstantMap) -
             let right = node.child_by_field_name("right")?;
             let op = node.child_by_field_name("operator").or_else(|| {
                 // tree-sitter C grammar: operator is sometimes an unnamed child
-                for i in 0..node.child_count() {
-                    if let Some(c) = node.child(i) {
-                        let k = c.kind();
-                        if matches!(
-                            k,
-                            "+" | "-"
-                                | "*"
-                                | "/"
-                                | "%"
-                                | "<<"
-                                | ">>"
-                                | "=="
-                                | "!="
-                                | "<"
-                                | ">"
-                                | "<="
-                                | ">="
-                        ) {
-                            return Some(c);
-                        }
+                for c in node.child_nodes() {
+                    let k = c.kind();
+                    if matches!(
+                        k,
+                        "+" | "-"
+                            | "*"
+                            | "/"
+                            | "%"
+                            | "<<"
+                            | ">>"
+                            | "=="
+                            | "!="
+                            | "<"
+                            | ">"
+                            | "<="
+                            | ">="
+                    ) {
+                        return Some(c);
                     }
                 }
                 None
@@ -1981,21 +1952,19 @@ fn resolve_sizeof_node(node: &Node, source: &str, macros: &MacroConstantMap) -> 
 /// The type a sizeof_expression names: its type_descriptor, or a
 /// parenthesized identifier that may be a typedef name (`sizeof(wchar_t)`).
 fn sizeof_node_type<'a>(node: &Node, source: &'a str) -> Option<&'a str> {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "type_descriptor" | "primitive_type" | "sized_type_specifier" => {
-                    return child.utf8_text(source.as_bytes()).ok();
-                }
-                "parenthesized_expression" => {
-                    if let Some(inner) = child.child(1) {
-                        if inner.kind() == "identifier" {
-                            return inner.utf8_text(source.as_bytes()).ok();
-                        }
+    for child in node.child_nodes() {
+        match child.kind() {
+            "type_descriptor" | "primitive_type" | "sized_type_specifier" => {
+                return child.utf8_text(source.as_bytes()).ok();
+            }
+            "parenthesized_expression" => {
+                if let Some(inner) = child.child(1) {
+                    if inner.kind() == "identifier" {
+                        return inner.utf8_text(source.as_bytes()).ok();
                     }
                 }
-                _ => {}
             }
+            _ => {}
         }
     }
     None
@@ -2077,9 +2046,7 @@ pub fn is_compile_time_constant_expr(
             };
             recurse(&left) && recurse(&right)
         }
-        "conditional_expression" => (0..node.named_child_count())
-            .filter_map(|i| node.named_child(i))
-            .all(|c| recurse(&c)),
+        "conditional_expression" => node.named_child_nodes().all(|c| recurse(&c)),
         "cast_expression" => node
             .child_by_field_name("value")
             .is_some_and(|v| recurse(&v)),
@@ -2106,11 +2073,7 @@ pub fn is_compile_time_constant_expr(
                 return false;
             }
             node.child_by_field_name("arguments")
-                .map(|args| {
-                    (0..args.named_child_count())
-                        .filter_map(|i| args.named_child(i))
-                        .all(|a| recurse(&a))
-                })
+                .map(|args| args.named_child_nodes().all(|a| recurse(&a)))
                 .unwrap_or(false)
         }
         "identifier" => {
@@ -2291,12 +2254,10 @@ fn try_evaluate_range_inner(
             let left = node.child_by_field_name("left")?;
             let right = node.child_by_field_name("right")?;
             let op = node.child_by_field_name("operator").or_else(|| {
-                for i in 0..node.child_count() {
-                    if let Some(c) = node.child(i) {
-                        let k = c.kind();
-                        if matches!(k, "+" | "-" | "*" | "/" | "%" | "<<" | ">>" | "&") {
-                            return Some(c);
-                        }
+                for c in node.child_nodes() {
+                    let k = c.kind();
+                    if matches!(k, "+" | "-" | "*" | "/" | "%" | "<<" | ">>" | "&") {
+                        return Some(c);
                     }
                 }
                 None
@@ -2415,12 +2376,10 @@ fn try_evaluate_range_inner(
             let arg = node.child_by_field_name("argument")?;
             let op = node.child_by_field_name("operator").or_else(|| {
                 // Operator may be first or last child depending on prefix/postfix
-                for i in 0..node.child_count() {
-                    if let Some(c) = node.child(i) {
-                        let k = c.kind();
-                        if k == "++" || k == "--" {
-                            return Some(c);
-                        }
+                for c in node.child_nodes() {
+                    let k = c.kind();
+                    if k == "++" || k == "--" {
+                        return Some(c);
                     }
                 }
                 None
@@ -2725,22 +2684,20 @@ fn extract_init_from_for(
     // Handle `int var = expr` (declaration) or `var = expr` (assignment_expression)
     match init.kind() {
         "declaration" => {
-            for i in 0..init.child_count() {
-                if let Some(child) = init.child(i) {
-                    if child.kind() == "init_declarator" {
-                        if let (Some(declarator), Some(value)) = (
-                            child.child_by_field_name("declarator"),
-                            child.child_by_field_name("value"),
-                        ) {
-                            let var_name = declarator
-                                .utf8_text(source.as_bytes())
-                                .unwrap_or("")
-                                .to_string();
-                            if !var_name.is_empty() {
-                                if let Some(val) = try_evaluate_expr(&value, source, macros) {
-                                    if let Some(range) = ranges.get_mut(&var_name) {
-                                        range.min = val;
-                                    }
+            for child in init.child_nodes() {
+                if child.kind() == "init_declarator" {
+                    if let (Some(declarator), Some(value)) = (
+                        child.child_by_field_name("declarator"),
+                        child.child_by_field_name("value"),
+                    ) {
+                        let var_name = declarator
+                            .utf8_text(source.as_bytes())
+                            .unwrap_or("")
+                            .to_string();
+                        if !var_name.is_empty() {
+                            if let Some(val) = try_evaluate_expr(&value, source, macros) {
+                                if let Some(range) = ranges.get_mut(&var_name) {
+                                    range.min = val;
                                 }
                             }
                         }
@@ -2829,29 +2786,27 @@ fn resolve_local_var_range_depth(
             let node_start = node.start_byte();
             let mut last_range: Option<ValueRange> = None;
             let mut invalidated = false;
-            for i in 0..parent.child_count() {
-                if let Some(stmt) = parent.child(i) {
-                    if stmt.start_byte() >= node_start {
-                        break;
-                    }
-                    // Check for evaluable assignment (data = CONST or data = expr)
-                    if let Some(range) = check_stmt_for_var_assignment(
-                        &stmt,
-                        var_name,
-                        source,
-                        macros,
-                        loop_ranges,
-                        fmacros,
-                        depth,
-                    ) {
-                        last_range = Some(range);
-                        invalidated = false;
-                    } else if stmt_modifies_var(&stmt, var_name, source) {
-                        // Assignment found but RHS unevaluable (e.g., rand()),
-                        // or variable modified through pointer (e.g., fscanf(&var))
-                        last_range = None;
-                        invalidated = true;
-                    }
+            for stmt in parent.child_nodes() {
+                if stmt.start_byte() >= node_start {
+                    break;
+                }
+                // Check for evaluable assignment (data = CONST or data = expr)
+                if let Some(range) = check_stmt_for_var_assignment(
+                    &stmt,
+                    var_name,
+                    source,
+                    macros,
+                    loop_ranges,
+                    fmacros,
+                    depth,
+                ) {
+                    last_range = Some(range);
+                    invalidated = false;
+                } else if stmt_modifies_var(&stmt, var_name, source) {
+                    // Assignment found but RHS unevaluable (e.g., rand()),
+                    // or variable modified through pointer (e.g., fscanf(&var))
+                    last_range = None;
+                    invalidated = true;
                 }
             }
             if invalidated {
@@ -2971,8 +2926,7 @@ fn check_assignment_expr_for_var(
     fmacros: Option<&HashMap<String, FunctionMacro>>,
     depth: u32,
 ) -> Option<ValueRange> {
-    for i in 0..stmt.child_count() {
-        let child = stmt.child(i)?;
+    for child in stmt.child_nodes() {
         if child.kind() != "assignment_expression" {
             continue;
         }
@@ -3011,8 +2965,7 @@ fn check_init_declarator_for_var(
     fmacros: Option<&HashMap<String, FunctionMacro>>,
     depth: u32,
 ) -> Option<ValueRange> {
-    for i in 0..stmt.child_count() {
-        let child = stmt.child(i)?;
+    for child in stmt.child_nodes() {
         if child.kind() != "init_declarator" {
             continue;
         }
@@ -3043,8 +2996,7 @@ fn check_control_flow_body_for_var(
     fmacros: Option<&HashMap<String, FunctionMacro>>,
     depth: u32,
 ) -> Option<ValueRange> {
-    for i in 0..stmt.child_count() {
-        let child = stmt.child(i)?;
+    for child in stmt.child_nodes() {
         if child.kind() != "compound_statement" {
             continue;
         }
@@ -3052,10 +3004,7 @@ fn check_control_flow_body_for_var(
             return None; // inner-scope shadow — don't evaluate
         }
         let mut last_range: Option<ValueRange> = None;
-        for j in 0..child.child_count() {
-            let Some(inner) = child.child(j) else {
-                continue;
-            };
+        for inner in child.child_nodes() {
             if let Some(r) = check_stmt_for_var_assignment(
                 &inner,
                 var_name,
@@ -3083,37 +3032,33 @@ fn check_control_flow_body_for_var(
 fn stmt_modifies_var(stmt: &Node, var_name: &str, source: &str) -> bool {
     match stmt.kind() {
         "expression_statement" => {
-            for i in 0..stmt.child_count() {
-                if let Some(child) = stmt.child(i) {
-                    // Direct assignment: var = <unevaluable>
-                    if child.kind() == "assignment_expression" {
-                        if let Some(left) = child.child_by_field_name("left") {
-                            if left.kind() == "identifier" {
-                                let name = left.utf8_text(source.as_bytes()).unwrap_or("");
-                                if name == var_name {
-                                    return true;
-                                }
+            for child in stmt.child_nodes() {
+                // Direct assignment: var = <unevaluable>
+                if child.kind() == "assignment_expression" {
+                    if let Some(left) = child.child_by_field_name("left") {
+                        if left.kind() == "identifier" {
+                            let name = left.utf8_text(source.as_bytes()).unwrap_or("");
+                            if name == var_name {
+                                return true;
                             }
                         }
                     }
-                    // Pointer modification: func(..., &var, ...)
-                    if child.kind() == "call_expression" {
-                        if call_takes_address_of(&child, var_name, source) {
-                            return true;
-                        }
+                }
+                // Pointer modification: func(..., &var, ...)
+                if child.kind() == "call_expression" {
+                    if call_takes_address_of(&child, var_name, source) {
+                        return true;
                     }
                 }
             }
         }
         "declaration" => {
-            for i in 0..stmt.child_count() {
-                if let Some(child) = stmt.child(i) {
-                    if child.kind() == "init_declarator" {
-                        if let Some(declarator) = child.child_by_field_name("declarator") {
-                            let name = extract_leaf_identifier(&declarator, source);
-                            if name == var_name && child.child_by_field_name("value").is_some() {
-                                return true;
-                            }
+            for child in stmt.child_nodes() {
+                if child.kind() == "init_declarator" {
+                    if let Some(declarator) = child.child_by_field_name("declarator") {
+                        let name = extract_leaf_identifier(&declarator, source);
+                        if name == var_name && child.child_by_field_name("value").is_some() {
+                            return true;
                         }
                     }
                 }
@@ -3126,50 +3071,42 @@ fn stmt_modifies_var(stmt: &Node, var_name: &str, source: &str) -> bool {
         // so that `int data = dataCopy;` blocks don't invalidate the outer `data`.
         "if_statement" | "while_statement" | "for_statement" | "do_statement"
         | "switch_statement" => {
-            for i in 0..stmt.child_count() {
-                if let Some(child) = stmt.child(i) {
-                    match child.kind() {
-                        // Skip if this block declares var_name (shadow)
-                        "compound_statement"
-                            if !compound_declares_var(&child, var_name, source) =>
-                        {
-                            for j in 0..child.child_count() {
-                                if let Some(inner) = child.child(j) {
-                                    if stmt_modifies_var(&inner, var_name, source) {
-                                        return true;
-                                    }
-                                }
+            for child in stmt.child_nodes() {
+                match child.kind() {
+                    // Skip if this block declares var_name (shadow)
+                    "compound_statement" if !compound_declares_var(&child, var_name, source) => {
+                        for inner in child.child_nodes() {
+                            if stmt_modifies_var(&inner, var_name, source) {
+                                return true;
                             }
                         }
-                        "compound_statement" => {}
-                        // Single-statement bodies (no braces): check directly
-                        "expression_statement" | "declaration"
-                            if stmt_modifies_var(&child, var_name, source) =>
-                        {
-                            return true;
-                        }
-                        "expression_statement" | "declaration" => {}
-                        // Nested control flow (else-if chains, etc.)
-                        "if_statement" | "while_statement" | "for_statement" | "do_statement"
-                        | "switch_statement"
-                            if stmt_modifies_var(&child, var_name, source) =>
-                        {
-                            return true;
-                        }
-                        "if_statement" | "while_statement" | "for_statement" | "do_statement"
-                        | "switch_statement" => {}
-                        // switch case labels and goto targets
-                        "case_statement" | "default_statement" | "labeled_statement" => {
-                            for j in 0..child.child_count() {
-                                if let Some(inner) = child.child(j) {
-                                    if stmt_modifies_var(&inner, var_name, source) {
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
                     }
+                    "compound_statement" => {}
+                    // Single-statement bodies (no braces): check directly
+                    "expression_statement" | "declaration"
+                        if stmt_modifies_var(&child, var_name, source) =>
+                    {
+                        return true;
+                    }
+                    "expression_statement" | "declaration" => {}
+                    // Nested control flow (else-if chains, etc.)
+                    "if_statement" | "while_statement" | "for_statement" | "do_statement"
+                    | "switch_statement"
+                        if stmt_modifies_var(&child, var_name, source) =>
+                    {
+                        return true;
+                    }
+                    "if_statement" | "while_statement" | "for_statement" | "do_statement"
+                    | "switch_statement" => {}
+                    // switch case labels and goto targets
+                    "case_statement" | "default_statement" | "labeled_statement" => {
+                        for inner in child.child_nodes() {
+                            if stmt_modifies_var(&inner, var_name, source) {
+                                return true;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -3181,22 +3118,18 @@ fn stmt_modifies_var(stmt: &Node, var_name: &str, source: &str) -> bool {
 /// Returns true if the compound_statement has a direct-child declaration of `var_name`,
 /// meaning any assignments to `var_name` within it target an inner-scope shadow variable.
 fn compound_declares_var(compound: &Node, var_name: &str, source: &str) -> bool {
-    for i in 0..compound.child_count() {
-        if let Some(stmt) = compound.child(i) {
-            if stmt.kind() == "declaration" {
-                for j in 0..stmt.child_count() {
-                    if let Some(child) = stmt.child(j) {
-                        if child.kind() == "init_declarator" {
-                            if let Some(decl) = child.child_by_field_name("declarator") {
-                                if extract_leaf_identifier(&decl, source) == var_name {
-                                    return true;
-                                }
-                            }
-                        } else if child.kind() == "identifier" {
-                            if child.utf8_text(source.as_bytes()).unwrap_or("") == var_name {
-                                return true;
-                            }
+    for stmt in compound.child_nodes() {
+        if stmt.kind() == "declaration" {
+            for child in stmt.child_nodes() {
+                if child.kind() == "init_declarator" {
+                    if let Some(decl) = child.child_by_field_name("declarator") {
+                        if extract_leaf_identifier(&decl, source) == var_name {
+                            return true;
                         }
+                    }
+                } else if child.kind() == "identifier" {
+                    if child.utf8_text(source.as_bytes()).unwrap_or("") == var_name {
+                        return true;
                     }
                 }
             }
@@ -3208,14 +3141,12 @@ fn compound_declares_var(compound: &Node, var_name: &str, source: &str) -> bool 
 /// Check if a call expression passes `&var_name` as an argument.
 fn call_takes_address_of(call: &Node, var_name: &str, source: &str) -> bool {
     if let Some(args) = call.child_by_field_name("arguments") {
-        for i in 0..args.child_count() {
-            if let Some(arg) = args.child(i) {
-                // Match &var_name (unary_expression with & operator)
-                if arg.kind() == "pointer_expression" || arg.kind() == "unary_expression" {
-                    let text = arg.utf8_text(source.as_bytes()).unwrap_or("");
-                    if text == format!("&{}", var_name) {
-                        return true;
-                    }
+        for arg in args.child_nodes() {
+            // Match &var_name (unary_expression with & operator)
+            if arg.kind() == "pointer_expression" || arg.kind() == "unary_expression" {
+                let text = arg.utf8_text(source.as_bytes()).unwrap_or("");
+                if text == format!("&{}", var_name) {
+                    return true;
                 }
             }
         }
@@ -3235,11 +3166,9 @@ fn extract_leaf_identifier(node: &Node, source: &str) -> String {
             }
         }
         _ => {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "identifier" {
-                        return child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-                    }
+            for child in node.child_nodes() {
+                if child.kind() == "identifier" {
+                    return child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
                 }
             }
             String::new()
@@ -3480,10 +3409,8 @@ pub fn resolve_identifiers_in_expr(
             }
         }
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            resolve_identifiers_in_expr(&child, source, macros, loop_ranges, var_ranges);
-        }
+    for child in node.child_nodes() {
+        resolve_identifiers_in_expr(&child, source, macros, loop_ranges, var_ranges);
     }
 }
 
@@ -3500,15 +3427,13 @@ fn assignment_operator_text(node: &Node, source: &str) -> String {
             return text.to_string();
         }
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            let kind = child.kind();
-            if matches!(
-                kind,
-                "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "|=" | "^="
-            ) {
-                return kind.to_string();
-            }
+    for child in node.child_nodes() {
+        let kind = child.kind();
+        if matches!(
+            kind,
+            "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "|=" | "^="
+        ) {
+            return kind.to_string();
         }
     }
     "=".to_string()
@@ -3516,15 +3441,13 @@ fn assignment_operator_text(node: &Node, source: &str) -> String {
 
 /// True when `node` is a `<<` expression specifically (not `>>`).
 fn is_left_shift(node: &Node, source: &str) -> bool {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "<<" {
+    for child in node.child_nodes() {
+        if child.kind() == "<<" {
+            return true;
+        }
+        if let Ok(text) = child.utf8_text(source.as_bytes()) {
+            if text == "<<" {
                 return true;
-            }
-            if let Ok(text) = child.utf8_text(source.as_bytes()) {
-                if text == "<<" {
-                    return true;
-                }
             }
         }
     }
@@ -3532,16 +3455,14 @@ fn is_left_shift(node: &Node, source: &str) -> bool {
 }
 
 fn is_shift_operator(node: &Node, source: &str) -> bool {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "<<" || child.kind() == ">>" {
+    for child in node.child_nodes() {
+        if child.kind() == "<<" || child.kind() == ">>" {
+            return true;
+        }
+        // Also check text content for operator nodes
+        if let Ok(text) = child.utf8_text(source.as_bytes()) {
+            if text == "<<" || text == ">>" {
                 return true;
-            }
-            // Also check text content for operator nodes
-            if let Ok(text) = child.utf8_text(source.as_bytes()) {
-                if text == "<<" || text == ">>" {
-                    return true;
-                }
             }
         }
     }
@@ -3549,27 +3470,25 @@ fn is_shift_operator(node: &Node, source: &str) -> bool {
 }
 
 fn get_operator_text(node: &Node, source: &str) -> String {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            let kind = child.kind();
-            if matches!(
-                kind,
-                "<" | "<="
-                    | ">"
-                    | ">="
-                    | "=="
-                    | "!="
-                    | "+"
-                    | "-"
-                    | "*"
-                    | "/"
-                    | "<<"
-                    | ">>"
-                    | "&&"
-                    | "||"
-            ) {
-                return child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-            }
+    for child in node.child_nodes() {
+        let kind = child.kind();
+        if matches!(
+            kind,
+            "<" | "<="
+                | ">"
+                | ">="
+                | "=="
+                | "!="
+                | "+"
+                | "-"
+                | "*"
+                | "/"
+                | "<<"
+                | ">>"
+                | "&&"
+                | "||"
+        ) {
+            return child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
         }
     }
     String::new()
@@ -4466,16 +4385,14 @@ int f(unsigned long s) { return LINEBITS(s); }
         let root = tree.root_node();
         let decl = root.child(0).unwrap();
         // Navigate to init_declarator → value (sizeof_expression)
-        for i in 0..decl.child_count() {
-            if let Some(child) = decl.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(value) = child.child_by_field_name("value") {
-                        let macros = builtin_constants(IntFacts::LP64);
-                        let result = try_evaluate_expr(&value, code, macros);
-                        assert_eq!(result, Some(4), "sizeof(int) should be 4 on LP64");
-                        let iso = builtin_constants(IntFacts::ISO);
-                        assert_eq!(try_evaluate_expr(&value, code, iso), None);
-                    }
+        for child in decl.child_nodes() {
+            if child.kind() == "init_declarator" {
+                if let Some(value) = child.child_by_field_name("value") {
+                    let macros = builtin_constants(IntFacts::LP64);
+                    let result = try_evaluate_expr(&value, code, macros);
+                    assert_eq!(result, Some(4), "sizeof(int) should be 4 on LP64");
+                    let iso = builtin_constants(IntFacts::ISO);
+                    assert_eq!(try_evaluate_expr(&value, code, iso), None);
                 }
             }
         }
@@ -4492,12 +4409,10 @@ int f(unsigned long s) { return LINEBITS(s); }
         let macros = MacroConstantMap::new();
         let root = tree.root_node();
         let decl = root.child(0).unwrap();
-        for i in 0..decl.child_count() {
-            if let Some(child) = decl.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(value) = child.child_by_field_name("value") {
-                        assert_eq!(try_evaluate_expr(&value, code, &macros), Some(-42));
-                    }
+        for child in decl.child_nodes() {
+            if child.kind() == "init_declarator" {
+                if let Some(value) = child.child_by_field_name("value") {
+                    assert_eq!(try_evaluate_expr(&value, code, &macros), Some(-42));
                 }
             }
         }
@@ -4512,12 +4427,10 @@ int f(unsigned long s) { return LINEBITS(s); }
         let macros = MacroConstantMap::new();
         let root = tree.root_node();
         let decl = root.child(0).unwrap();
-        for i in 0..decl.child_count() {
-            if let Some(child) = decl.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(value) = child.child_by_field_name("value") {
-                        assert_eq!(try_evaluate_expr(&value, code, &macros), Some(42));
-                    }
+        for child in decl.child_nodes() {
+            if child.kind() == "init_declarator" {
+                if let Some(value) = child.child_by_field_name("value") {
+                    assert_eq!(try_evaluate_expr(&value, code, &macros), Some(42));
                 }
             }
         }
@@ -4532,12 +4445,10 @@ int f(unsigned long s) { return LINEBITS(s); }
         let macros = MacroConstantMap::new();
         let root = tree.root_node();
         let decl = root.child(0).unwrap();
-        for i in 0..decl.child_count() {
-            if let Some(child) = decl.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(value) = child.child_by_field_name("value") {
-                        assert_eq!(try_evaluate_expr(&value, code, &macros), Some(2));
-                    }
+        for child in decl.child_nodes() {
+            if child.kind() == "init_declarator" {
+                if let Some(value) = child.child_by_field_name("value") {
+                    assert_eq!(try_evaluate_expr(&value, code, &macros), Some(2));
                 }
             }
         }
@@ -4557,16 +4468,14 @@ int f(unsigned long s) { return LINEBITS(s); }
 
         let root = tree.root_node();
         let decl = root.child(0).unwrap();
-        for i in 0..decl.child_count() {
-            if let Some(child) = decl.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(value) = child.child_by_field_name("value") {
-                        let range = try_evaluate_range(&value, code, &macros, &var_ranges);
-                        assert!(range.is_some());
-                        let r = range.unwrap();
-                        assert_eq!(r.min, 10);
-                        assert_eq!(r.max, 60);
-                    }
+        for child in decl.child_nodes() {
+            if child.kind() == "init_declarator" {
+                if let Some(value) = child.child_by_field_name("value") {
+                    let range = try_evaluate_range(&value, code, &macros, &var_ranges);
+                    assert!(range.is_some());
+                    let r = range.unwrap();
+                    assert_eq!(r.min, 10);
+                    assert_eq!(r.max, 60);
                 }
             }
         }
@@ -4584,16 +4493,14 @@ int f(unsigned long s) { return LINEBITS(s); }
 
         let root = tree.root_node();
         let decl = root.child(0).unwrap();
-        for i in 0..decl.child_count() {
-            if let Some(child) = decl.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(value) = child.child_by_field_name("value") {
-                        let range = try_evaluate_range(&value, code, &macros, &var_ranges);
-                        assert!(range.is_some());
-                        let r = range.unwrap();
-                        assert_eq!(r.min, -10);
-                        assert_eq!(r.max, -5);
-                    }
+        for child in decl.child_nodes() {
+            if child.kind() == "init_declarator" {
+                if let Some(value) = child.child_by_field_name("value") {
+                    let range = try_evaluate_range(&value, code, &macros, &var_ranges);
+                    assert!(range.is_some());
+                    let r = range.unwrap();
+                    assert_eq!(r.min, -10);
+                    assert_eq!(r.max, -5);
                 }
             }
         }
@@ -4611,13 +4518,11 @@ int f(unsigned long s) { return LINEBITS(s); }
 
         let root = tree.root_node();
         let decl = root.child(0).unwrap();
-        for i in 0..decl.child_count() {
-            if let Some(child) = decl.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(value) = child.child_by_field_name("value") {
-                        assert!(expression_fits_in_signed(&value, code, &macros, 16));
-                        assert!(expression_fits_in_signed(&value, code, &macros, 32));
-                    }
+        for child in decl.child_nodes() {
+            if child.kind() == "init_declarator" {
+                if let Some(value) = child.child_by_field_name("value") {
+                    assert!(expression_fits_in_signed(&value, code, &macros, 16));
+                    assert!(expression_fits_in_signed(&value, code, &macros, 32));
                 }
             }
         }
@@ -4633,13 +4538,11 @@ int f(unsigned long s) { return LINEBITS(s); }
 
         let root = tree.root_node();
         let decl = root.child(0).unwrap();
-        for i in 0..decl.child_count() {
-            if let Some(child) = decl.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(value) = child.child_by_field_name("value") {
-                        assert!(expression_fits_in_unsigned(&value, code, &macros, 8));
-                        assert!(expression_fits_in_unsigned(&value, code, &macros, 16));
-                    }
+        for child in decl.child_nodes() {
+            if child.kind() == "init_declarator" {
+                if let Some(value) = child.child_by_field_name("value") {
+                    assert!(expression_fits_in_unsigned(&value, code, &macros, 8));
+                    assert!(expression_fits_in_unsigned(&value, code, &macros, 16));
                 }
             }
         }
@@ -4677,11 +4580,9 @@ void foo() {
                     }
                 }
             }
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if let Some(found) = find_identifier(&child, name, source) {
-                        return Some(found);
-                    }
+            for child in node.child_nodes() {
+                if let Some(found) = find_identifier(&child, name, source) {
+                    return Some(found);
                 }
             }
             None

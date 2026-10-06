@@ -15,6 +15,7 @@ use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::declarator_utils;
 use crate::utility::cert_c::expr_type;
 use crate::utility::cert_c::guard_dominance;
+use crate::utility::cert_c::node_children::NodeChildren;
 
 use anyhow::Result;
 use lang_parsing_substrate::query;
@@ -1711,38 +1712,36 @@ pub fn sibling_headers(parent_dir: &str) -> Vec<PathBuf> {
 /// Collect function declarations (prototypes) from a header file.
 /// These represent public API functions with intentional external linkage.
 fn collect_header_declarations(node: &Node, source: &str, names: &mut HashSet<String>) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "declaration"
-                    // Only collect non-static function prototypes
-                    if !has_static_specifier(&child, source) => {
-                        if let Some(name) = extract_function_name_from_declaration(&child, source) {
-                            names.insert(name);
-                        }
+    for child in node.child_nodes() {
+        match child.kind() {
+            "declaration"
+                // Only collect non-static function prototypes
+                if !has_static_specifier(&child, source) => {
+                    if let Some(name) = extract_function_name_from_declaration(&child, source) {
+                        names.insert(name);
                     }
-                // An `ERROR` node here is not a dead end. Recovery keeps
-                // real `declaration` nodes inside it -- raylib's
-                // `rgestures.h` holds ten prototypes under a
-                // `linkage_specification` nested in one -- and this walk
-                // stopped at the `ERROR` and never saw them, so every
-                // prototype in the file read as undeclared. Read the loose
-                // specifier-run declarations back out, then recurse for the
-                // structured ones.
-                "ERROR" => {
-                    for decl in ast_utils::error_declarations(&child, source) {
-                        names.insert(decl.name);
-                    }
-                    collect_header_declarations(&child, source, names);
                 }
-                kind if kind.starts_with("preproc_")
-                    || kind == "linkage_specification"
-                    || kind == "declaration_list" =>
-                {
-                    collect_header_declarations(&child, source, names);
+            // An `ERROR` node here is not a dead end. Recovery keeps
+            // real `declaration` nodes inside it -- raylib's
+            // `rgestures.h` holds ten prototypes under a
+            // `linkage_specification` nested in one -- and this walk
+            // stopped at the `ERROR` and never saw them, so every
+            // prototype in the file read as undeclared. Read the loose
+            // specifier-run declarations back out, then recurse for the
+            // structured ones.
+            "ERROR" => {
+                for decl in ast_utils::error_declarations(&child, source) {
+                    names.insert(decl.name);
                 }
-                _ => {}
+                collect_header_declarations(&child, source, names);
             }
+            kind if kind.starts_with("preproc_")
+                || kind == "linkage_specification"
+                || kind == "declaration_list" =>
+            {
+                collect_header_declarations(&child, source, names);
+            }
+            _ => {}
         }
     }
 }
@@ -1891,13 +1890,11 @@ fn scope_summary_callees(
 
 /// Check if a declaration node has a `static` storage class specifier.
 fn has_static_specifier(node: &Node, source: &str) -> bool {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "storage_class_specifier" {
-                if let Ok(text) = child.utf8_text(source.as_bytes()) {
-                    if text == "static" {
-                        return true;
-                    }
+    for child in node.child_nodes() {
+        if child.kind() == "storage_class_specifier" {
+            if let Ok(text) = child.utf8_text(source.as_bytes()) {
+                if text == "static" {
+                    return true;
                 }
             }
         }
@@ -1914,17 +1911,15 @@ pub(crate) fn collect_static_function_names(
     source: &str,
     names: &mut HashSet<String>,
 ) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "function_definition" {
-                if has_static_specifier(&child, source) {
-                    if let Some(name) = extract_function_name_from_declarator(&child, source) {
-                        names.insert(name);
-                    }
+    for child in node.child_nodes() {
+        if child.kind() == "function_definition" {
+            if has_static_specifier(&child, source) {
+                if let Some(name) = extract_function_name_from_declarator(&child, source) {
+                    names.insert(name);
                 }
-            } else {
-                collect_static_function_names(&child, source, names);
             }
+        } else {
+            collect_static_function_names(&child, source, names);
         }
     }
 }
@@ -1937,50 +1932,48 @@ pub(crate) fn collect_static_function_names(
 /// `compound_statement` nodes at the top level. Even inside error recovery,
 /// tree-sitter correctly identifies `function_definition` nodes.
 fn collect_function_names(node: &Node, source: &str, names: &mut HashSet<String>) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "function_definition" => {
-                    if let Some(name) = extract_function_name_from_declarator(&child, source) {
+    for child in node.child_nodes() {
+        match child.kind() {
+            "function_definition" => {
+                if let Some(name) = extract_function_name_from_declarator(&child, source) {
+                    names.insert(name);
+                }
+            }
+            "declaration" => {
+                // Only collect if it contains a function_declarator (i.e. a prototype)
+                if let Some(name) = extract_function_name_from_declaration(&child, source) {
+                    names.insert(name);
+                }
+            }
+            "preproc_function_def" => {
+                // Collect function-like macro names so DCL07-C/DCL31-C
+                // don't flag macro invocations as undeclared functions.
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = name_node
+                        .utf8_text(source.as_bytes())
+                        .unwrap_or("")
+                        .to_string();
+                    if !name.is_empty() {
                         names.insert(name);
                     }
                 }
-                "declaration" => {
-                    // Only collect if it contains a function_declarator (i.e. a prototype)
-                    if let Some(name) = extract_function_name_from_declaration(&child, source) {
-                        names.insert(name);
-                    }
+                collect_function_names(&child, source, names);
+            }
+            "ERROR" => {
+                // An `ERROR` node can *be* a declaration tree-sitter could
+                // not finish -- a prototype with a trailing `__THROW`, or a
+                // definition whose declarator is split by an `#if`. Read the
+                // name back out before recursing, since the subtree holds no
+                // `declaration`/`function_definition` node to find.
+                for decl in ast_utils::error_declarations(&child, source) {
+                    names.insert(decl.name);
                 }
-                "preproc_function_def" => {
-                    // Collect function-like macro names so DCL07-C/DCL31-C
-                    // don't flag macro invocations as undeclared functions.
-                    if let Some(name_node) = child.child_by_field_name("name") {
-                        let name = name_node
-                            .utf8_text(source.as_bytes())
-                            .unwrap_or("")
-                            .to_string();
-                        if !name.is_empty() {
-                            names.insert(name);
-                        }
-                    }
-                    collect_function_names(&child, source, names);
-                }
-                "ERROR" => {
-                    // An `ERROR` node can *be* a declaration tree-sitter could
-                    // not finish -- a prototype with a trailing `__THROW`, or a
-                    // definition whose declarator is split by an `#if`. Read the
-                    // name back out before recursing, since the subtree holds no
-                    // `declaration`/`function_definition` node to find.
-                    for decl in ast_utils::error_declarations(&child, source) {
-                        names.insert(decl.name);
-                    }
-                    collect_function_names(&child, source, names);
-                }
-                _ => {
-                    // Recurse into all other nodes (preproc_*, linkage_specification,
-                    // compound_statement, etc.) to find buried definitions.
-                    collect_function_names(&child, source, names);
-                }
+                collect_function_names(&child, source, names);
+            }
+            _ => {
+                // Recurse into all other nodes (preproc_*, linkage_specification,
+                // compound_statement, etc.) to find buried definitions.
+                collect_function_names(&child, source, names);
             }
         }
     }
@@ -2115,10 +2108,8 @@ pub(crate) fn collect_value_position_identifiers(
         }
     }
 
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_value_position_identifiers(&child, source, out);
-        }
+    for child in node.child_nodes() {
+        collect_value_position_identifiers(&child, source, out);
     }
 }
 
@@ -2173,10 +2164,8 @@ fn collect_initializer_function_refs(node: &Node, source: &str, out: &mut HashSe
         }
     }
 
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_initializer_function_refs(&child, source, out);
-        }
+    for child in node.child_nodes() {
+        collect_initializer_function_refs(&child, source, out);
     }
 }
 
@@ -2192,34 +2181,27 @@ fn extract_function_name_from_declarator(node: &Node, source: &str) -> Option<St
 /// pointer-returning declarators (`int *foo(...)`) where tree-sitter
 /// wraps the function_declarator inside a pointer_declarator.
 fn extract_function_name_from_declaration(node: &Node, source: &str) -> Option<String> {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "function_declarator" => {
-                    return extract_identifier_from_declarator(&child, source);
-                }
-                "pointer_declarator" => {
-                    // e.g. `ArrayList *ArrayList_New(int a, int b);`
-                    // pointer_declarator wraps the function_declarator
-                    return extract_func_name_from_nested_declarator(&child, source);
-                }
-                "init_declarator" => {
-                    for j in 0..child.child_count() {
-                        if let Some(grandchild) = child.child(j) {
-                            if grandchild.kind() == "function_declarator" {
-                                return extract_identifier_from_declarator(&grandchild, source);
-                            }
-                            if grandchild.kind() == "pointer_declarator" {
-                                return extract_func_name_from_nested_declarator(
-                                    &grandchild,
-                                    source,
-                                );
-                            }
-                        }
+    for child in node.child_nodes() {
+        match child.kind() {
+            "function_declarator" => {
+                return extract_identifier_from_declarator(&child, source);
+            }
+            "pointer_declarator" => {
+                // e.g. `ArrayList *ArrayList_New(int a, int b);`
+                // pointer_declarator wraps the function_declarator
+                return extract_func_name_from_nested_declarator(&child, source);
+            }
+            "init_declarator" => {
+                for grandchild in child.child_nodes() {
+                    if grandchild.kind() == "function_declarator" {
+                        return extract_identifier_from_declarator(&grandchild, source);
+                    }
+                    if grandchild.kind() == "pointer_declarator" {
+                        return extract_func_name_from_nested_declarator(&grandchild, source);
                     }
                 }
-                _ => {}
             }
+            _ => {}
         }
     }
     None
@@ -2229,17 +2211,15 @@ fn extract_function_name_from_declaration(node: &Node, source: &str) -> Option<S
 /// and extract its identifier.  Handles chains like
 /// `pointer_declarator -> function_declarator -> identifier`.
 fn extract_func_name_from_nested_declarator(node: &Node, source: &str) -> Option<String> {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "function_declarator" => {
-                    return extract_identifier_from_declarator(&child, source);
-                }
-                "pointer_declarator" => {
-                    return extract_func_name_from_nested_declarator(&child, source);
-                }
-                _ => {}
+    for child in node.child_nodes() {
+        match child.kind() {
+            "function_declarator" => {
+                return extract_identifier_from_declarator(&child, source);
             }
+            "pointer_declarator" => {
+                return extract_func_name_from_nested_declarator(&child, source);
+            }
+            _ => {}
         }
     }
     None
@@ -2272,8 +2252,7 @@ fn macro_wrapped_declarator_name(node: &Node, source: &str) -> Option<String> {
     }
     let params = inner.child_by_field_name("parameters")?;
     let mut only: Option<Node> = None;
-    for i in 0..params.named_child_count() {
-        let child = params.named_child(i)?;
+    for child in params.named_child_nodes() {
         if child.kind() != "parameter_declaration" {
             return None;
         }
@@ -2323,13 +2302,11 @@ fn extract_identifier_from_declarator(node: &Node, source: &str) -> Option<Strin
         }
         _ => {
             // Fallback: search children for an identifier
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "identifier" {
-                        let name = child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-                        if !name.is_empty() {
-                            return Some(name);
-                        }
+            for child in node.child_nodes() {
+                if child.kind() == "identifier" {
+                    let name = child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                    if !name.is_empty() {
+                        return Some(name);
                     }
                 }
             }
@@ -2887,26 +2864,24 @@ pub(crate) fn collect_callsite_int_args_from_tree(
     macros: &const_eval::MacroConstantMap,
     callsite_int_args: &mut HashMap<String, Vec<Vec<Option<i64>>>>,
 ) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "function_definition" => {
-                    if let Some(body) = child.child_by_field_name("body") {
-                        let local_ints = collect_local_var_int_values(&body, source, macros);
-                        collect_int_calls_in_node(
-                            &body,
-                            source,
-                            macros,
-                            &local_ints,
-                            callsite_int_args,
-                        );
-                    }
+    for child in node.child_nodes() {
+        match child.kind() {
+            "function_definition" => {
+                if let Some(body) = child.child_by_field_name("body") {
+                    let local_ints = collect_local_var_int_values(&body, source, macros);
+                    collect_int_calls_in_node(
+                        &body,
+                        source,
+                        macros,
+                        &local_ints,
+                        callsite_int_args,
+                    );
                 }
-                kind if wraps_definitions(kind) => {
-                    collect_callsite_int_args_from_tree(&child, source, macros, callsite_int_args);
-                }
-                _ => {}
             }
+            kind if wraps_definitions(kind) => {
+                collect_callsite_int_args_from_tree(&child, source, macros, callsite_int_args);
+            }
+            _ => {}
         }
     }
 }
@@ -2929,22 +2904,19 @@ fn collect_local_var_int_values(
 fn invalidate_address_taken_vars(node: &Node, source: &str, vals: &mut HashMap<String, i64>) {
     if node.kind() == "call_expression" {
         if let Some(args_node) = node.child_by_field_name("arguments") {
-            for i in 0..args_node.child_count() {
-                if let Some(arg) = args_node.child(i) {
-                    // tree-sitter-c uses "pointer_expression" for &var and *var
-                    if arg.kind() == "pointer_expression" {
-                        let op = arg
-                            .child_by_field_name("operator")
-                            .or_else(|| arg.child(0))
-                            .and_then(|n| n.utf8_text(source.as_bytes()).ok());
-                        if op == Some("&") {
-                            let operand =
-                                arg.child_by_field_name("argument").or_else(|| arg.child(1));
-                            if let Some(operand) = operand {
-                                if operand.kind() == "identifier" {
-                                    let name = operand.utf8_text(source.as_bytes()).unwrap_or("");
-                                    vals.remove(name);
-                                }
+            for arg in args_node.child_nodes() {
+                // tree-sitter-c uses "pointer_expression" for &var and *var
+                if arg.kind() == "pointer_expression" {
+                    let op = arg
+                        .child_by_field_name("operator")
+                        .or_else(|| arg.child(0))
+                        .and_then(|n| n.utf8_text(source.as_bytes()).ok());
+                    if op == Some("&") {
+                        let operand = arg.child_by_field_name("argument").or_else(|| arg.child(1));
+                        if let Some(operand) = operand {
+                            if operand.kind() == "identifier" {
+                                let name = operand.utf8_text(source.as_bytes()).unwrap_or("");
+                                vals.remove(name);
                             }
                         }
                     }
@@ -2952,10 +2924,8 @@ fn invalidate_address_taken_vars(node: &Node, source: &str, vals: &mut HashMap<S
             }
         }
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            invalidate_address_taken_vars(&child, source, vals);
-        }
+    for child in node.child_nodes() {
+        invalidate_address_taken_vars(&child, source, vals);
     }
 }
 
@@ -2996,10 +2966,8 @@ fn collect_int_assignments_in_node(
                 }
             }
             // Also recurse into RHS
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    collect_int_assignments_in_node(&child, source, macros, vals);
-                }
+            for child in node.child_nodes() {
+                collect_int_assignments_in_node(&child, source, macros, vals);
             }
         }
         "init_declarator" => {
@@ -3016,10 +2984,8 @@ fn collect_int_assignments_in_node(
             }
         }
         _ => {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    collect_int_assignments_in_node(&child, source, macros, vals);
-                }
+            for child in node.child_nodes() {
+                collect_int_assignments_in_node(&child, source, macros, vals);
             }
         }
     }
@@ -3080,28 +3046,26 @@ fn collect_int_calls_in_node(
                 if !callee.is_empty() {
                     if let Some(args_node) = node.child_by_field_name("arguments") {
                         let mut arg_vals = Vec::new();
-                        for i in 0..args_node.child_count() {
-                            if let Some(arg) = args_node.child(i) {
-                                if matches!(arg.kind(), "," | "(" | ")") {
-                                    continue;
-                                }
-                                // A local the body last set to a constant reads
-                                // as that constant; anything else folds only over
-                                // the macro constants, so a local the body set
-                                // otherwise stays unknown.
-                                let val = if arg.kind() == "identifier" {
-                                    let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
-                                    local_ints.get(name).copied().or_else(|| {
-                                        macros
-                                            .contains_key(name)
-                                            .then(|| constant_int(&arg, source, macros))
-                                            .flatten()
-                                    })
-                                } else {
-                                    constant_int(&arg, source, macros)
-                                };
-                                arg_vals.push(val);
+                        for arg in args_node.child_nodes() {
+                            if matches!(arg.kind(), "," | "(" | ")") {
+                                continue;
                             }
+                            // A local the body last set to a constant reads
+                            // as that constant; anything else folds only over
+                            // the macro constants, so a local the body set
+                            // otherwise stays unknown.
+                            let val = if arg.kind() == "identifier" {
+                                let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
+                                local_ints.get(name).copied().or_else(|| {
+                                    macros
+                                        .contains_key(name)
+                                        .then(|| constant_int(&arg, source, macros))
+                                        .flatten()
+                                })
+                            } else {
+                                constant_int(&arg, source, macros)
+                            };
+                            arg_vals.push(val);
                         }
                         if !arg_vals.is_empty() {
                             callsite_int_args
@@ -3114,10 +3078,8 @@ fn collect_int_calls_in_node(
             }
         }
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_int_calls_in_node(&child, source, macros, local_ints, callsite_int_args);
-        }
+    for child in node.child_nodes() {
+        collect_int_calls_in_node(&child, source, macros, local_ints, callsite_int_args);
     }
 }
 
@@ -3357,8 +3319,8 @@ pub(crate) fn aggregate_callsite_validated_args(
 
 /// Real (non-punctuation) arguments of a call's `arguments` node, in order.
 fn real_call_args<'a>(arguments: &Node<'a>) -> Vec<Node<'a>> {
-    (0..arguments.child_count())
-        .filter_map(|i| arguments.child(i))
+    arguments
+        .child_nodes()
         .filter(|a| !matches!(a.kind(), "," | "(" | ")"))
         .collect()
 }
@@ -3374,11 +3336,9 @@ fn taint_dest_base_var(node: &Node, source: &str) -> Option<String> {
             .child_by_field_name("value")
             .and_then(|v| taint_dest_base_var(&v, source)),
         "parenthesized_expression" => {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if !matches!(child.kind(), "(" | ")") {
-                        return taint_dest_base_var(&child, source);
-                    }
+            for child in node.child_nodes() {
+                if !matches!(child.kind(), "(" | ")") {
+                    return taint_dest_base_var(&child, source);
                 }
             }
             None
@@ -3401,11 +3361,9 @@ fn taint_dest_base_var(node: &Node, source: &str) -> Option<String> {
             }
         }
         _ => {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "identifier" {
-                        return Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
-                    }
+            for child in node.child_nodes() {
+                if child.kind() == "identifier" {
+                    return Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
                 }
             }
             None
@@ -3455,11 +3413,9 @@ fn taint_arg_is_tainted(
             false
         }
         _ => {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if taint_arg_is_tainted(&child, source, aliases, tainted) {
-                        return true;
-                    }
+            for child in node.child_nodes() {
+                if taint_arg_is_tainted(&child, source, aliases, tainted) {
+                    return true;
                 }
             }
             false
@@ -3586,10 +3542,8 @@ fn collect_taint_pass(
         }
         _ => {}
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_taint_pass(&child, source, aliases, tainted);
-        }
+    for child in node.child_nodes() {
+        collect_taint_pass(&child, source, aliases, tainted);
     }
 }
 
@@ -3659,17 +3613,15 @@ fn collect_taint_calls_in_node(
             }
         }
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_taint_calls_in_node(
-                &child,
-                source,
-                aliases,
-                tainted_vars,
-                funcptr_bindings,
-                callsite_taint_args,
-            );
-        }
+    for child in node.child_nodes() {
+        collect_taint_calls_in_node(
+            &child,
+            source,
+            aliases,
+            tainted_vars,
+            funcptr_bindings,
+            callsite_taint_args,
+        );
     }
 }
 
@@ -3686,33 +3638,26 @@ pub(crate) fn collect_callsite_taint_args_from_tree(
     aliases: &HashMap<String, String>,
     callsite_taint_args: &mut HashMap<String, Vec<Vec<bool>>>,
 ) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "function_definition" => {
-                    if let Some(body) = child.child_by_field_name("body") {
-                        let tainted_vars = collect_local_tainted_vars(&body, source, aliases);
-                        let funcptr_bindings = collect_funcptr_bindings(&body, source);
-                        collect_taint_calls_in_node(
-                            &body,
-                            source,
-                            aliases,
-                            &tainted_vars,
-                            &funcptr_bindings,
-                            callsite_taint_args,
-                        );
-                    }
-                }
-                kind if wraps_definitions(kind) => {
-                    collect_callsite_taint_args_from_tree(
-                        &child,
+    for child in node.child_nodes() {
+        match child.kind() {
+            "function_definition" => {
+                if let Some(body) = child.child_by_field_name("body") {
+                    let tainted_vars = collect_local_tainted_vars(&body, source, aliases);
+                    let funcptr_bindings = collect_funcptr_bindings(&body, source);
+                    collect_taint_calls_in_node(
+                        &body,
                         source,
                         aliases,
+                        &tainted_vars,
+                        &funcptr_bindings,
                         callsite_taint_args,
                     );
                 }
-                _ => {}
             }
+            kind if wraps_definitions(kind) => {
+                collect_callsite_taint_args_from_tree(&child, source, aliases, callsite_taint_args);
+            }
+            _ => {}
         }
     }
 }
@@ -3869,54 +3814,49 @@ fn collect_callsite_buf_args_with_param_sizes(
     scope: FileScope<'_>,
     callsite_buf_args: &mut HashMap<String, Vec<Vec<Option<usize>>>>,
 ) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "function_definition" => {
-                    if let Some(body) = child.child_by_field_name("body") {
-                        let mut local_bufs = collect_local_buffer_sizes(&body, source);
-                        if let Some(func_name) = extract_function_name(&child, source) {
-                            if let Some(param_map) =
-                                param_sizes.get(&scoped_name(scope, &func_name))
-                            {
-                                let param_names =
-                                    function_summary::collect_param_names(&child, source);
-                                for (idx, name) in param_names.iter().enumerate() {
-                                    if let Some(sz) = param_map.get(&idx) {
-                                        // A local declaration/reassignment of the
-                                        // same name takes precedence over the seed.
-                                        local_bufs.entry(name.clone()).or_insert(*sz);
-                                    }
+    for child in node.child_nodes() {
+        match child.kind() {
+            "function_definition" => {
+                if let Some(body) = child.child_by_field_name("body") {
+                    let mut local_bufs = collect_local_buffer_sizes(&body, source);
+                    if let Some(func_name) = extract_function_name(&child, source) {
+                        if let Some(param_map) = param_sizes.get(&scoped_name(scope, &func_name)) {
+                            let param_names = function_summary::collect_param_names(&child, source);
+                            for (idx, name) in param_names.iter().enumerate() {
+                                if let Some(sz) = param_map.get(&idx) {
+                                    // A local declaration/reassignment of the
+                                    // same name takes precedence over the seed.
+                                    local_bufs.entry(name.clone()).or_insert(*sz);
                                 }
                             }
                         }
-                        // This relay pass only propagates scalar buffer
-                        // sizes forwarded through a parameter; field sizes
-                        // aren't threaded through it, so the
-                        // collected field data (and its strict input map)
-                        // is discarded here.
-                        let mut unused_field_buf_args = HashMap::new();
-                        collect_buf_calls_in_node(
-                            &body,
-                            source,
-                            &local_bufs,
-                            &HashMap::new(),
-                            callsite_buf_args,
-                            &mut unused_field_buf_args,
-                        );
                     }
-                }
-                kind if wraps_definitions(kind) => {
-                    collect_callsite_buf_args_with_param_sizes(
-                        &child,
+                    // This relay pass only propagates scalar buffer
+                    // sizes forwarded through a parameter; field sizes
+                    // aren't threaded through it, so the
+                    // collected field data (and its strict input map)
+                    // is discarded here.
+                    let mut unused_field_buf_args = HashMap::new();
+                    collect_buf_calls_in_node(
+                        &body,
                         source,
-                        param_sizes,
-                        scope,
+                        &local_bufs,
+                        &HashMap::new(),
                         callsite_buf_args,
+                        &mut unused_field_buf_args,
                     );
                 }
-                _ => {}
             }
+            kind if wraps_definitions(kind) => {
+                collect_callsite_buf_args_with_param_sizes(
+                    &child,
+                    source,
+                    param_sizes,
+                    scope,
+                    callsite_buf_args,
+                );
+            }
+            _ => {}
         }
     }
 }
@@ -3931,33 +3871,31 @@ pub(crate) fn collect_callsite_buf_args_from_tree(
     callsite_buf_args: &mut HashMap<String, Vec<Vec<Option<usize>>>>,
     callsite_field_buf_args: &mut HashMap<String, Vec<Vec<HashMap<String, usize>>>>,
 ) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "function_definition" => {
-                    if let Some(body) = child.child_by_field_name("body") {
-                        let local_bufs = collect_local_buffer_sizes(&body, source);
-                        let strict_local_bufs = collect_local_buffer_sizes_strict(&body, source);
-                        collect_buf_calls_in_node(
-                            &body,
-                            source,
-                            &local_bufs,
-                            &strict_local_bufs,
-                            callsite_buf_args,
-                            callsite_field_buf_args,
-                        );
-                    }
-                }
-                kind if wraps_definitions(kind) => {
-                    collect_callsite_buf_args_from_tree(
-                        &child,
+    for child in node.child_nodes() {
+        match child.kind() {
+            "function_definition" => {
+                if let Some(body) = child.child_by_field_name("body") {
+                    let local_bufs = collect_local_buffer_sizes(&body, source);
+                    let strict_local_bufs = collect_local_buffer_sizes_strict(&body, source);
+                    collect_buf_calls_in_node(
+                        &body,
                         source,
+                        &local_bufs,
+                        &strict_local_bufs,
                         callsite_buf_args,
                         callsite_field_buf_args,
                     );
                 }
-                _ => {}
             }
+            kind if wraps_definitions(kind) => {
+                collect_callsite_buf_args_from_tree(
+                    &child,
+                    source,
+                    callsite_buf_args,
+                    callsite_field_buf_args,
+                );
+            }
+            _ => {}
         }
     }
 }
@@ -4001,17 +3939,13 @@ fn collect_buf_sizes_in_node(
         "declaration" => collect_buf_sizes_from_declaration(node, source, sizes, strict),
         "assignment_expression" => {
             collect_buf_sizes_from_assignment(node, source, sizes, strict);
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    collect_buf_sizes_in_node(&child, source, sizes, strict);
-                }
+            for child in node.child_nodes() {
+                collect_buf_sizes_in_node(&child, source, sizes, strict);
             }
         }
         _ => {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    collect_buf_sizes_in_node(&child, source, sizes, strict);
-                }
+            for child in node.child_nodes() {
+                collect_buf_sizes_in_node(&child, source, sizes, strict);
             }
         }
     }
@@ -4025,8 +3959,7 @@ fn collect_buf_sizes_from_declaration(
     sizes: &mut HashMap<String, usize>,
     strict: bool,
 ) {
-    for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else { continue };
+    for child in node.child_nodes() {
         match child.kind() {
             // `char buf[100];` (no initializer)
             "array_declarator" => {
@@ -4135,11 +4068,9 @@ fn resolve_buffer_size_expr(
             resolve_buffer_size_expr(&value, source, sizes, strict)
         }
         "parenthesized_expression" => {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if !matches!(child.kind(), "(" | ")") {
-                        return resolve_buffer_size_expr(&child, source, sizes, strict);
-                    }
+            for child in node.child_nodes() {
+                if !matches!(child.kind(), "(" | ")") {
+                    return resolve_buffer_size_expr(&child, source, sizes, strict);
                 }
             }
             None
@@ -4287,10 +4218,8 @@ fn collect_funcptr_bindings_in_node(
         }
         _ => {}
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_funcptr_bindings_in_node(&child, source, bindings);
-        }
+    for child in node.child_nodes() {
+        collect_funcptr_bindings_in_node(&child, source, bindings);
     }
 }
 
@@ -4316,24 +4245,22 @@ fn collect_buf_calls_in_node_with_bindings(
                         let mut arg_sizes = Vec::new();
                         let mut arg_field_sizes = Vec::new();
                         let mut has_field_sizes = false;
-                        for i in 0..args_node.child_count() {
-                            if let Some(arg) = args_node.child(i) {
-                                if matches!(arg.kind(), "," | "(" | ")") {
-                                    continue;
-                                }
-                                let sz = if arg.kind() == "identifier" {
-                                    let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
-                                    local_bufs.get(name).copied()
-                                } else {
-                                    None
-                                };
-                                arg_sizes.push(sz);
-
-                                let fields =
-                                    collect_arg_buf_field_sizes(&arg, source, strict_local_bufs);
-                                has_field_sizes |= !fields.is_empty();
-                                arg_field_sizes.push(fields);
+                        for arg in args_node.child_nodes() {
+                            if matches!(arg.kind(), "," | "(" | ")") {
+                                continue;
                             }
+                            let sz = if arg.kind() == "identifier" {
+                                let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
+                                local_bufs.get(name).copied()
+                            } else {
+                                None
+                            };
+                            arg_sizes.push(sz);
+
+                            let fields =
+                                collect_arg_buf_field_sizes(&arg, source, strict_local_bufs);
+                            has_field_sizes |= !fields.is_empty();
+                            arg_field_sizes.push(fields);
                         }
                         if !arg_sizes.is_empty() {
                             callsite_buf_args
@@ -4352,18 +4279,16 @@ fn collect_buf_calls_in_node_with_bindings(
             }
         }
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_buf_calls_in_node_with_bindings(
-                &child,
-                source,
-                local_bufs,
-                strict_local_bufs,
-                funcptr_bindings,
-                callsite_buf_args,
-                callsite_field_buf_args,
-            );
-        }
+    for child in node.child_nodes() {
+        collect_buf_calls_in_node_with_bindings(
+            &child,
+            source,
+            local_bufs,
+            strict_local_bufs,
+            funcptr_bindings,
+            callsite_buf_args,
+            callsite_field_buf_args,
+        );
     }
 }
 
@@ -4594,82 +4519,78 @@ fn collect_callsite_args_with_param_states(
     callsite_field_args: &mut HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
     callsite_pointee_args: &mut HashMap<String, Vec<Vec<NullState>>>,
 ) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "function_definition" => {
-                    if let Some(body) = child.child_by_field_name("body") {
-                        let mut local_states = collect_local_var_states(&body, source);
-                        collect_early_return_null_guards(&body, source, &mut local_states);
+    for child in node.child_nodes() {
+        match child.kind() {
+            "function_definition" => {
+                if let Some(body) = child.child_by_field_name("body") {
+                    let mut local_states = collect_local_var_states(&body, source);
+                    collect_early_return_null_guards(&body, source, &mut local_states);
 
-                        // Extract function name and seed parameter states
-                        let func_name = extract_function_name(&child, source);
-                        if let Some(func_name) = func_name {
-                            if let Some(func_param_states) =
-                                param_states.get(&scoped_name(scope, &func_name))
-                            {
-                                // Get parameter names for this function
-                                let param_names =
-                                    function_summary::collect_param_names(&child, source);
-                                for (idx, name) in param_names.iter().enumerate() {
-                                    if !name.is_empty() && !local_states.contains_key(name.as_str())
-                                    {
-                                        // Only seed if the param isn't already in local_states
-                                        // (guards and assignments take priority)
-                                        if let Some(&state) = func_param_states.get(&idx) {
-                                            local_states.insert(name.clone(), state);
-                                        }
+                    // Extract function name and seed parameter states
+                    let func_name = extract_function_name(&child, source);
+                    if let Some(func_name) = func_name {
+                        if let Some(func_param_states) =
+                            param_states.get(&scoped_name(scope, &func_name))
+                        {
+                            // Get parameter names for this function
+                            let param_names = function_summary::collect_param_names(&child, source);
+                            for (idx, name) in param_names.iter().enumerate() {
+                                if !name.is_empty() && !local_states.contains_key(name.as_str()) {
+                                    // Only seed if the param isn't already in local_states
+                                    // (guards and assignments take priority)
+                                    if let Some(&state) = func_param_states.get(&idx) {
+                                        local_states.insert(name.clone(), state);
                                     }
                                 }
                             }
                         }
-
-                        collect_calls_with_locals(
-                            &body,
-                            source,
-                            &local_states,
-                            &guard_dominance::WriteIndex::new(&body, source),
-                            callsite_args,
-                            callsite_field_args,
-                            callsite_pointee_args,
-                        );
                     }
-                }
-                kind if wraps_definitions(kind) => {
-                    collect_callsite_args_with_param_states(
-                        &child,
+
+                    collect_calls_with_locals(
+                        &body,
                         source,
-                        param_states,
-                        scope,
+                        &local_states,
+                        &guard_dominance::WriteIndex::new(&body, source),
                         callsite_args,
                         callsite_field_args,
                         callsite_pointee_args,
                     );
                 }
-                "linkage_specification" => {
-                    collect_callsite_args_with_param_states(
-                        &child,
-                        source,
-                        param_states,
-                        scope,
-                        callsite_args,
-                        callsite_field_args,
-                        callsite_pointee_args,
-                    );
-                }
-                "declaration_list" => {
-                    collect_callsite_args_with_param_states(
-                        &child,
-                        source,
-                        param_states,
-                        scope,
-                        callsite_args,
-                        callsite_field_args,
-                        callsite_pointee_args,
-                    );
-                }
-                _ => {}
             }
+            kind if wraps_definitions(kind) => {
+                collect_callsite_args_with_param_states(
+                    &child,
+                    source,
+                    param_states,
+                    scope,
+                    callsite_args,
+                    callsite_field_args,
+                    callsite_pointee_args,
+                );
+            }
+            "linkage_specification" => {
+                collect_callsite_args_with_param_states(
+                    &child,
+                    source,
+                    param_states,
+                    scope,
+                    callsite_args,
+                    callsite_field_args,
+                    callsite_pointee_args,
+                );
+            }
+            "declaration_list" => {
+                collect_callsite_args_with_param_states(
+                    &child,
+                    source,
+                    param_states,
+                    scope,
+                    callsite_args,
+                    callsite_field_args,
+                    callsite_pointee_args,
+                );
+            }
+            _ => {}
         }
     }
 }
@@ -4706,11 +4627,9 @@ fn extract_func_name_recursive(node: &Node, source: &str) -> Option<String> {
             Some(name.trim().to_string())
         }
         _ => {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if let Some(name) = extract_func_name_recursive(&child, source) {
-                        return Some(name);
-                    }
+            for child in node.child_nodes() {
+                if let Some(name) = extract_func_name_recursive(&child, source) {
+                    return Some(name);
                 }
             }
             None
@@ -4728,38 +4647,36 @@ fn collect_callsite_args_from_tree(
     callsite_field_args: &mut HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
     callsite_pointee_args: &mut HashMap<String, Vec<Vec<NullState>>>,
 ) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "function_definition" => {
-                    // Collect local variable states within this function
-                    if let Some(body) = child.child_by_field_name("body") {
-                        let mut local_states = collect_local_var_states(&body, source);
-                        // Detect early-return null guards: `if (p == NULL) return;`
-                        // After the guard, p is guaranteed NotNull.
-                        collect_early_return_null_guards(&body, source, &mut local_states);
-                        collect_calls_with_locals(
-                            &body,
-                            source,
-                            &local_states,
-                            &guard_dominance::WriteIndex::new(&body, source),
-                            callsite_args,
-                            callsite_field_args,
-                            callsite_pointee_args,
-                        );
-                    }
-                }
-                kind if wraps_definitions(kind) => {
-                    collect_callsite_args_from_tree(
-                        &child,
+    for child in node.child_nodes() {
+        match child.kind() {
+            "function_definition" => {
+                // Collect local variable states within this function
+                if let Some(body) = child.child_by_field_name("body") {
+                    let mut local_states = collect_local_var_states(&body, source);
+                    // Detect early-return null guards: `if (p == NULL) return;`
+                    // After the guard, p is guaranteed NotNull.
+                    collect_early_return_null_guards(&body, source, &mut local_states);
+                    collect_calls_with_locals(
+                        &body,
                         source,
+                        &local_states,
+                        &guard_dominance::WriteIndex::new(&body, source),
                         callsite_args,
                         callsite_field_args,
                         callsite_pointee_args,
                     );
                 }
-                _ => {}
             }
+            kind if wraps_definitions(kind) => {
+                collect_callsite_args_from_tree(
+                    &child,
+                    source,
+                    callsite_args,
+                    callsite_field_args,
+                    callsite_pointee_args,
+                );
+            }
+            _ => {}
         }
     }
 }
@@ -4782,28 +4699,26 @@ fn collect_early_return_null_guards(
     source: &str,
     states: &mut HashMap<String, NullState>,
 ) {
-    for i in 0..body.child_count() {
-        if let Some(child) = body.child(i) {
-            if child.kind() == "if_statement" {
-                if let Some(condition) = child.child_by_field_name("condition") {
-                    // Check if consequence contains a return statement (early exit)
-                    if has_early_return_consequence(&child) {
-                        let consequence = child.child_by_field_name("consequence");
-                        // Extract variable names from null-check condition
-                        for var_name in extract_null_checked_vars(&condition, source) {
-                            // `states` is a flat, whole-function map that
-                            // `collect_calls_with_locals` applies uniformly to every
-                            // call site in the body, including ones inside this very
-                            // branch. If the early-return branch itself uses the
-                            // guarded variable (`if (!p) return f(p);`), that use is
-                            // evaluated while p may still be null, so crediting
-                            // NotNull here would leak the wrong state into it.
-                            let used_in_branch = consequence
-                                .map(|c| node_references_identifier(&c, source, &var_name))
-                                .unwrap_or(false);
-                            if !used_in_branch {
-                                states.insert(var_name, NullState::NotNull);
-                            }
+    for child in body.child_nodes() {
+        if child.kind() == "if_statement" {
+            if let Some(condition) = child.child_by_field_name("condition") {
+                // Check if consequence contains a return statement (early exit)
+                if has_early_return_consequence(&child) {
+                    let consequence = child.child_by_field_name("consequence");
+                    // Extract variable names from null-check condition
+                    for var_name in extract_null_checked_vars(&condition, source) {
+                        // `states` is a flat, whole-function map that
+                        // `collect_calls_with_locals` applies uniformly to every
+                        // call site in the body, including ones inside this very
+                        // branch. If the early-return branch itself uses the
+                        // guarded variable (`if (!p) return f(p);`), that use is
+                        // evaluated while p may still be null, so crediting
+                        // NotNull here would leak the wrong state into it.
+                        let used_in_branch = consequence
+                            .map(|c| node_references_identifier(&c, source, &var_name))
+                            .unwrap_or(false);
+                        if !used_in_branch {
+                            states.insert(var_name, NullState::NotNull);
                         }
                     }
                 }
@@ -4824,11 +4739,9 @@ fn node_contains_return(node: &Node) -> bool {
     if matches!(node.kind(), "return_statement" | "goto_statement") {
         return true;
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if node_contains_return(&child) {
-                return true;
-            }
+    for child in node.child_nodes() {
+        if node_contains_return(&child) {
+            return true;
         }
     }
     false
@@ -4843,11 +4756,9 @@ fn node_references_identifier(node: &Node, source: &str, var_name: &str) -> bool
             }
         }
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if node_references_identifier(&child, source, var_name) {
-                return true;
-            }
+    for child in node.child_nodes() {
+        if node_references_identifier(&child, source, var_name) {
+            return true;
         }
     }
     false
@@ -5078,10 +4989,8 @@ fn collect_assignments_recursive(
         _ => {}
     }
 
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_assignments_recursive(&child, source, states);
-        }
+    for child in node.child_nodes() {
+        collect_assignments_recursive(&child, source, states);
     }
 }
 
@@ -5092,8 +5001,7 @@ fn collect_assignment_statement(
     source: &str,
     states: &mut HashMap<String, NullState>,
 ) {
-    for i in 0..stmt.child_count() {
-        let Some(child) = stmt.child(i) else { continue };
+    for child in stmt.child_nodes() {
         if child.kind() != "assignment_expression" {
             continue;
         }
@@ -5228,8 +5136,7 @@ fn collect_declaration_states(node: &Node, source: &str, states: &mut HashMap<St
         extract_init_state(&decl, node, source, states);
     }
     // Also check for multiple declarators and array declarations
-    for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else { continue };
+    for child in node.child_nodes() {
         if child.kind() == "init_declarator" {
             extract_init_state(&child, node, source, states);
         }
@@ -5282,11 +5189,9 @@ fn extract_leaf_id(node: &Node, source: &str) -> String {
             }
         }
         _ => {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "identifier" {
-                        return child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-                    }
+            for child in node.child_nodes() {
+                if child.kind() == "identifier" {
+                    return child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
                 }
             }
             String::new()
@@ -5647,11 +5552,7 @@ fn collect_global_var_null_states(
     }
 
     // Step 2: Walk function bodies for assignments to these globals.
-    for i in 0..root.child_count() {
-        let child = match root.child(i) {
-            Some(c) => c,
-            None => continue,
-        };
+    for child in root.child_nodes() {
         match child.kind() {
             "function_definition" => {
                 if let Some(body) = child.child_by_field_name("body") {
@@ -5672,19 +5573,17 @@ fn collect_global_var_null_states(
         global_vars: &HashSet<String>,
         states: &mut HashMap<String, NullState>,
     ) {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                match child.kind() {
-                    "function_definition" => {
-                        if let Some(body) = child.child_by_field_name("body") {
-                            scan_global_var_assignments(&body, source, global_vars, states);
-                        }
+        for child in node.child_nodes() {
+            match child.kind() {
+                "function_definition" => {
+                    if let Some(body) = child.child_by_field_name("body") {
+                        scan_global_var_assignments(&body, source, global_vars, states);
                     }
-                    k if k.starts_with("preproc_") => {
-                        scan_preproc_for_functions(&child, source, global_vars, states);
-                    }
-                    _ => {}
                 }
+                k if k.starts_with("preproc_") => {
+                    scan_preproc_for_functions(&child, source, global_vars, states);
+                }
+                _ => {}
             }
         }
     }
@@ -5759,10 +5658,8 @@ fn collect_global_var_null_states(
                 }
             }
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                scan_global_var_assignments(&child, source, global_vars, states);
-            }
+        for child in node.child_nodes() {
+            scan_global_var_assignments(&child, source, global_vars, states);
         }
     }
 
@@ -5794,14 +5691,12 @@ fn collect_global_var_null_states(
             }
             // Check declaration: `TYPE *var = EXPR;`
             if prev.kind() == "declaration" {
-                for i in 0..prev.child_count() {
-                    if let Some(child) = prev.child(i) {
-                        if child.kind() == "init_declarator" {
-                            let name = extract_declarator_name(&child, source);
-                            if name == var_name {
-                                if let Some(value) = child.child_by_field_name("value") {
-                                    return classify_rhs(&value, source);
-                                }
+                for child in prev.child_nodes() {
+                    if child.kind() == "init_declarator" {
+                        let name = extract_declarator_name(&child, source);
+                        if name == var_name {
+                            if let Some(value) = child.child_by_field_name("value") {
+                                return classify_rhs(&value, source);
                             }
                         }
                     }
@@ -5833,8 +5728,7 @@ fn collect_value_only_global_candidates(
     candidates: &mut HashSet<String>,
     pointer_named: &mut HashSet<String>,
 ) {
-    for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else { continue };
+    for child in node.child_nodes() {
         match child.kind() {
             "declaration" => {
                 let mut cursor = child.walk();
@@ -5874,8 +5768,7 @@ fn declaration_storage_flags(decl: &Node, source: &str) -> (bool, bool, bool) {
     let mut has_extern = false;
     let mut has_static = false;
     let mut has_pointer = false;
-    for j in 0..decl.child_count() {
-        let Some(tc) = decl.child(j) else { continue };
+    for tc in decl.child_nodes() {
         if tc.kind() == "storage_class_specifier" {
             let text = tc.utf8_text(source.as_bytes()).unwrap_or("");
             if text == "extern" {
@@ -5947,11 +5840,7 @@ fn collect_prescan_pointer_globals(
     global_vars: &mut HashSet<String>,
     states: &mut HashMap<String, NullState>,
 ) {
-    for i in 0..node.child_count() {
-        let child = match node.child(i) {
-            Some(c) => c,
-            None => continue,
-        };
+    for child in node.child_nodes() {
         match child.kind() {
             "declaration" => {
                 let (has_extern, has_static, has_pointer) =
@@ -5959,10 +5848,8 @@ fn collect_prescan_pointer_globals(
                 if has_extern || has_static || !has_pointer {
                     continue;
                 }
-                for j in 0..child.child_count() {
-                    if let Some(decl) = child.child(j) {
-                        record_pointer_global_declarator(&decl, source, global_vars, states);
-                    }
+                for decl in child.child_nodes() {
+                    record_pointer_global_declarator(&decl, source, global_vars, states);
                 }
             }
             k if k.starts_with("preproc_") => {
@@ -5977,19 +5864,16 @@ fn collect_prescan_pointer_globals(
 /// Narrowed to pointer types because they are the taint-relevant read-site
 /// pattern that ENV03-C/ENV33-C watch for (`char *data = g_static;`).
 fn collect_static_pointer_globals(node: &Node, source: &str, out: &mut HashSet<String>) {
-    for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else { continue };
+    for child in node.child_nodes() {
         match child.kind() {
             "declaration" => {
                 let mut has_extern = false;
-                for j in 0..child.child_count() {
-                    if let Some(tc) = child.child(j) {
-                        if tc.kind() == "storage_class_specifier"
-                            && tc.utf8_text(source.as_bytes()).unwrap_or("") == "extern"
-                        {
-                            has_extern = true;
-                            break;
-                        }
+                for tc in child.child_nodes() {
+                    if tc.kind() == "storage_class_specifier"
+                        && tc.utf8_text(source.as_bytes()).unwrap_or("") == "extern"
+                    {
+                        has_extern = true;
+                        break;
                     }
                 }
                 // Collect file-scope pointer definitions: static (internal linkage) and
@@ -6001,8 +5885,7 @@ fn collect_static_pointer_globals(node: &Node, source: &str, out: &mut HashSet<S
                 if has_extern {
                     continue;
                 }
-                for j in 0..child.child_count() {
-                    let Some(decl) = child.child(j) else { continue };
+                for decl in child.child_nodes() {
                     match decl.kind() {
                         "init_declarator" => {
                             if let Some(inner) = decl.child_by_field_name("declarator") {
@@ -6046,8 +5929,7 @@ fn collect_global_writers(
     if file_globals.is_empty() {
         return;
     }
-    for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else { continue };
+    for child in node.child_nodes() {
         match child.kind() {
             "function_definition" => {
                 if let Some(func_name) = extract_function_name(&child, source) {
@@ -6090,20 +5972,16 @@ fn scan_body_for_global_writes(
             }
         }
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            scan_body_for_global_writes(&child, source, func_name, file_globals, writers);
-        }
+    for child in node.child_nodes() {
+        scan_body_for_global_writes(&child, source, func_name, file_globals, writers);
     }
 }
 
 /// Check if a declarator node contains a pointer indicator (`*`).
 fn has_pointer_in_declarator(node: &Node) -> bool {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "pointer_declarator" {
-                return true;
-            }
+    for child in node.child_nodes() {
+        if child.kind() == "pointer_declarator" {
+            return true;
         }
     }
     false
@@ -6120,100 +5998,93 @@ fn collect_global_constants(
     closure_dependent: &mut HashSet<String>,
     disqualified: &mut HashSet<String>,
 ) {
-    for i in 0..root.child_count() {
-        if let Some(child) = root.child(i) {
-            match child.kind() {
-                // An arm the file proves dead is no configuration (ADR-0010 D2).
-                "declaration" if crate::analyze::init_state::starts_in_dead_lines(&child, dead) => {
-                }
-                "declaration" => {
-                    let type_text = {
-                        let mut text = String::new();
-                        for j in 0..child.child_count() {
-                            if let Some(tc) = child.child(j) {
-                                if tc.kind() == "storage_class_specifier"
-                                    || tc.kind() == "type_qualifier"
-                                    || tc.kind() == "primitive_type"
-                                    || tc.kind() == "sized_type_specifier"
-                                {
-                                    if let Ok(t) = tc.utf8_text(source.as_bytes()) {
-                                        text.push_str(t);
-                                        text.push(' ');
-                                    }
-                                }
-                            }
-                        }
-                        text
-                    };
-                    // Skip static declarations (handled per-file in init_state),
-                    // and volatile ones, which may change unseen (C11 6.7.3p7).
-                    if type_text.contains("static") || type_text.contains("volatile") {
-                        continue;
-                    }
-                    // Accept: const TYPE NAME = VALUE; or TYPE NAME = VALUE;
-                    // (non-const globals are included for benchmark support)
-                    for j in 0..child.child_count() {
-                        if let Some(decl) = child.child(j) {
-                            if decl.kind() == "init_declarator" {
-                                // Only a plain object: `int *p = 0;` is a
-                                // pointer and `int a[2] = {0}` an array, not
-                                // the integer constant 0.
-                                if decl
-                                    .child_by_field_name("declarator")
-                                    .is_some_and(|d| d.kind() != "identifier")
-                                {
-                                    continue;
-                                }
-                                let name = extract_declarator_name(&decl, source);
-                                if name.is_empty() {
-                                    continue;
-                                }
-                                let empty_macros: HashMap<String, i64> = HashMap::new();
-                                let val = decl.child_by_field_name("value").and_then(|value| {
-                                    const_eval::try_evaluate_expr(&value, source, &empty_macros)
-                                });
-                                match val {
-                                    Some(val) => {
-                                        // A `const` object cannot be written by
-                                        // any translation unit; a plain one can.
-                                        if !type_text.contains("const") {
-                                            closure_dependent.insert(name.clone());
-                                        }
-                                        constants.push((name, val));
-                                    }
-                                    // A definition whose value is not a constant
-                                    // (in any arm) leaves the name no one value.
-                                    None => {
-                                        disqualified.insert(name);
-                                    }
-                                }
-                            } else if decl.kind() == "identifier" && !type_text.contains("extern") {
-                                // A tentative definition, `int g;`: in the
-                                // configuration that compiles it, g is not the
-                                // value another arm initializes it to. This
-                                // also withholds `int g;` followed by
-                                // `int g = 1;` in one configuration, which only
-                                // loses pruning.
-                                if let Ok(name) = decl.utf8_text(source.as_bytes()) {
-                                    disqualified.insert(name.to_string());
-                                }
+    for child in root.child_nodes() {
+        match child.kind() {
+            // An arm the file proves dead is no configuration (ADR-0010 D2).
+            "declaration" if crate::analyze::init_state::starts_in_dead_lines(&child, dead) => {}
+            "declaration" => {
+                let type_text = {
+                    let mut text = String::new();
+                    for tc in child.child_nodes() {
+                        if tc.kind() == "storage_class_specifier"
+                            || tc.kind() == "type_qualifier"
+                            || tc.kind() == "primitive_type"
+                            || tc.kind() == "sized_type_specifier"
+                        {
+                            if let Ok(t) = tc.utf8_text(source.as_bytes()) {
+                                text.push_str(t);
+                                text.push(' ');
                             }
                         }
                     }
+                    text
+                };
+                // Skip static declarations (handled per-file in init_state),
+                // and volatile ones, which may change unseen (C11 6.7.3p7).
+                if type_text.contains("static") || type_text.contains("volatile") {
+                    continue;
                 }
-                "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
-                | "preproc_elifdef" => {
-                    collect_global_constants(
-                        &child,
-                        source,
-                        dead,
-                        constants,
-                        closure_dependent,
-                        disqualified,
-                    );
+                // Accept: const TYPE NAME = VALUE; or TYPE NAME = VALUE;
+                // (non-const globals are included for benchmark support)
+                for decl in child.child_nodes() {
+                    if decl.kind() == "init_declarator" {
+                        // Only a plain object: `int *p = 0;` is a
+                        // pointer and `int a[2] = {0}` an array, not
+                        // the integer constant 0.
+                        if decl
+                            .child_by_field_name("declarator")
+                            .is_some_and(|d| d.kind() != "identifier")
+                        {
+                            continue;
+                        }
+                        let name = extract_declarator_name(&decl, source);
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let empty_macros: HashMap<String, i64> = HashMap::new();
+                        let val = decl.child_by_field_name("value").and_then(|value| {
+                            const_eval::try_evaluate_expr(&value, source, &empty_macros)
+                        });
+                        match val {
+                            Some(val) => {
+                                // A `const` object cannot be written by
+                                // any translation unit; a plain one can.
+                                if !type_text.contains("const") {
+                                    closure_dependent.insert(name.clone());
+                                }
+                                constants.push((name, val));
+                            }
+                            // A definition whose value is not a constant
+                            // (in any arm) leaves the name no one value.
+                            None => {
+                                disqualified.insert(name);
+                            }
+                        }
+                    } else if decl.kind() == "identifier" && !type_text.contains("extern") {
+                        // A tentative definition, `int g;`: in the
+                        // configuration that compiles it, g is not the
+                        // value another arm initializes it to. This
+                        // also withholds `int g;` followed by
+                        // `int g = 1;` in one configuration, which only
+                        // loses pruning.
+                        if let Ok(name) = decl.utf8_text(source.as_bytes()) {
+                            disqualified.insert(name.to_string());
+                        }
+                    }
                 }
-                _ => {}
             }
+            "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
+            | "preproc_elifdef" => {
+                collect_global_constants(
+                    &child,
+                    source,
+                    dead,
+                    constants,
+                    closure_dependent,
+                    disqualified,
+                );
+            }
+            _ => {}
         }
     }
 }
@@ -6228,39 +6099,30 @@ fn collect_constant_return_functions(
     constants: &mut Vec<(String, i64)>,
     disqualified: &mut HashSet<String>,
 ) {
-    for i in 0..root.child_count() {
-        if let Some(child) = root.child(i) {
-            match child.kind() {
-                "function_definition"
-                    if crate::analyze::init_state::starts_in_dead_lines(&child, dead) => {}
-                "function_definition" => {
-                    let before = constants.len();
-                    collect_one_constant_function(&child, source, constants);
-                    // A non-static definition that computes its value (in any
-                    // #if arm) leaves the name no one constant, whatever
-                    // another arm's definition returns (ADR-0010).
-                    let is_static =
-                        crate::utility::cert_c::ast_utils::declaration_has_storage_class(
-                            &child, "static", source,
-                        );
-                    if constants.len() == before && !is_static {
-                        if let Some(name) = crate::analyze::cfg::get_function_name(&child, source) {
-                            disqualified.insert(name.to_string());
-                        }
+    for child in root.child_nodes() {
+        match child.kind() {
+            "function_definition"
+                if crate::analyze::init_state::starts_in_dead_lines(&child, dead) => {}
+            "function_definition" => {
+                let before = constants.len();
+                collect_one_constant_function(&child, source, constants);
+                // A non-static definition that computes its value (in any
+                // #if arm) leaves the name no one constant, whatever
+                // another arm's definition returns (ADR-0010).
+                let is_static = crate::utility::cert_c::ast_utils::declaration_has_storage_class(
+                    &child, "static", source,
+                );
+                if constants.len() == before && !is_static {
+                    if let Some(name) = crate::analyze::cfg::get_function_name(&child, source) {
+                        disqualified.insert(name.to_string());
                     }
                 }
-                "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
-                | "preproc_elifdef" => {
-                    collect_constant_return_functions(
-                        &child,
-                        source,
-                        dead,
-                        constants,
-                        disqualified,
-                    );
-                }
-                _ => {}
             }
+            "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
+            | "preproc_elifdef" => {
+                collect_constant_return_functions(&child, source, dead, constants, disqualified);
+            }
+            _ => {}
         }
     }
 }
@@ -6278,13 +6140,11 @@ fn collect_one_constant_function(
         }
     }
     // Check storage class in the declaration specifiers
-    for i in 0..func_node.child_count() {
-        if let Some(child) = func_node.child(i) {
-            if child.kind() == "storage_class_specifier" {
-                let text = child.utf8_text(source.as_bytes()).unwrap_or("");
-                if text == "static" {
-                    return;
-                }
+    for child in func_node.child_nodes() {
+        if child.kind() == "storage_class_specifier" {
+            let text = child.utf8_text(source.as_bytes()).unwrap_or("");
+            if text == "static" {
+                return;
             }
         }
     }
@@ -6329,23 +6189,19 @@ fn collect_one_constant_function(
     };
     let mut return_val: Option<i64> = None;
     let mut non_return_stmts = 0usize;
-    for i in 0..body.child_count() {
-        if let Some(stmt) = body.child(i) {
-            match stmt.kind() {
-                "{" | "}" => {}
-                "return_statement" => {
-                    for j in 0..stmt.child_count() {
-                        if let Some(child) = stmt.child(j) {
-                            if child.kind() != "return" && child.kind() != ";" {
-                                let empty: HashMap<String, i64> = HashMap::new();
-                                return_val = const_eval::try_evaluate_expr(&child, source, &empty);
-                            }
-                        }
+    for stmt in body.child_nodes() {
+        match stmt.kind() {
+            "{" | "}" => {}
+            "return_statement" => {
+                for child in stmt.child_nodes() {
+                    if child.kind() != "return" && child.kind() != ";" {
+                        let empty: HashMap<String, i64> = HashMap::new();
+                        return_val = const_eval::try_evaluate_expr(&child, source, &empty);
                     }
                 }
-                _ => {
-                    non_return_stmts += 1;
-                }
+            }
+            _ => {
+                non_return_stmts += 1;
             }
         }
     }
@@ -6361,28 +6217,24 @@ fn find_func_declarator<'a>(node: &Node<'a>) -> Option<Node<'a>> {
     if node.kind() == "function_declarator" {
         return Some(*node);
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if let Some(found) = find_func_declarator(&child) {
-                return Some(found);
-            }
+    for child in node.child_nodes() {
+        if let Some(found) = find_func_declarator(&child) {
+            return Some(found);
         }
     }
     None
 }
 
 fn extract_func_name(func_decl: &Node, source: &str) -> String {
-    for i in 0..func_decl.child_count() {
-        if let Some(child) = func_decl.child(i) {
-            match child.kind() {
-                "identifier" => {
-                    return child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-                }
-                "pointer_declarator" => {
-                    return extract_func_name(&child, source);
-                }
-                _ => {}
+    for child in func_decl.child_nodes() {
+        match child.kind() {
+            "identifier" => {
+                return child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
             }
+            "pointer_declarator" => {
+                return extract_func_name(&child, source);
+            }
+            _ => {}
         }
     }
     String::new()
@@ -6390,17 +6242,15 @@ fn extract_func_name(func_decl: &Node, source: &str) -> String {
 
 /// Extract declarator name from an init_declarator node.
 fn extract_declarator_name(decl: &Node, source: &str) -> String {
-    for i in 0..decl.child_count() {
-        if let Some(child) = decl.child(i) {
-            match child.kind() {
-                "identifier" => {
-                    return child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-                }
-                "pointer_declarator" => {
-                    return extract_declarator_name(&child, source);
-                }
-                _ => {}
+    for child in decl.child_nodes() {
+        match child.kind() {
+            "identifier" => {
+                return child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
             }
+            "pointer_declarator" => {
+                return extract_declarator_name(&child, source);
+            }
+            _ => {}
         }
     }
     String::new()
@@ -6438,41 +6288,32 @@ pub(crate) fn collect_struct_tables(
     struct_field_types: &mut FieldTable,
     shapes: &mut FieldTable,
 ) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "struct_specifier" => {
-                    // Pattern 1: `struct Name { ... };` (top-level or inside declaration)
-                    collect_from_struct_specifier(&child, source, struct_field_types, shapes);
-                }
-                "type_definition" => {
-                    // Pattern 2/3: `typedef struct { ... } Name;`
-                    collect_from_typedef(&child, source, struct_field_types, shapes);
-                }
-                "declaration" => {
-                    // Struct definitions can appear inside declarations:
-                    // `struct Name { ... } var;`
-                    for j in 0..child.child_count() {
-                        if let Some(gc) = child.child(j) {
-                            if gc.kind() == "struct_specifier" {
-                                collect_from_struct_specifier(
-                                    &gc,
-                                    source,
-                                    struct_field_types,
-                                    shapes,
-                                );
-                            }
-                        }
+    for child in node.child_nodes() {
+        match child.kind() {
+            "struct_specifier" => {
+                // Pattern 1: `struct Name { ... };` (top-level or inside declaration)
+                collect_from_struct_specifier(&child, source, struct_field_types, shapes);
+            }
+            "type_definition" => {
+                // Pattern 2/3: `typedef struct { ... } Name;`
+                collect_from_typedef(&child, source, struct_field_types, shapes);
+            }
+            "declaration" => {
+                // Struct definitions can appear inside declarations:
+                // `struct Name { ... } var;`
+                for gc in child.child_nodes() {
+                    if gc.kind() == "struct_specifier" {
+                        collect_from_struct_specifier(&gc, source, struct_field_types, shapes);
                     }
                 }
-                kind if kind.starts_with("preproc_")
-                    || kind == "linkage_specification"
-                    || kind == "declaration_list" =>
-                {
-                    collect_struct_tables(&child, source, struct_field_types, shapes);
-                }
-                _ => {}
             }
+            kind if kind.starts_with("preproc_")
+                || kind == "linkage_specification"
+                || kind == "declaration_list" =>
+            {
+                collect_struct_tables(&child, source, struct_field_types, shapes);
+            }
+            _ => {}
         }
     }
 }
@@ -6511,21 +6352,19 @@ fn collect_from_typedef(
     let mut struct_spec = None;
     let mut typedef_name = None;
 
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "struct_specifier" {
-                struct_spec = Some(child);
-            }
-            // The typedef alias is a type_identifier at the end
-            if child.kind() == "type_identifier" {
-                typedef_name = Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
-            }
-            // Handle pointer typedefs: `typedef struct Foo *FooPtr;`
-            if child.kind() == "pointer_declarator" {
-                if let Some(inner) = child.child_by_field_name("declarator") {
-                    if inner.kind() == "type_identifier" {
-                        // Skip pointer typedefs — we want value types only
-                    }
+    for child in node.child_nodes() {
+        if child.kind() == "struct_specifier" {
+            struct_spec = Some(child);
+        }
+        // The typedef alias is a type_identifier at the end
+        if child.kind() == "type_identifier" {
+            typedef_name = Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+        }
+        // Handle pointer typedefs: `typedef struct Foo *FooPtr;`
+        if child.kind() == "pointer_declarator" {
+            if let Some(inner) = child.child_by_field_name("declarator") {
+                if inner.kind() == "type_identifier" {
+                    // Skip pointer typedefs — we want value types only
                 }
             }
         }
@@ -6570,20 +6409,18 @@ pub(crate) fn collect_struct_typedef_aliases(
     source: &str,
     struct_typedef_aliases: &mut HashMap<String, String>,
 ) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "type_definition" => {
-                    collect_from_struct_tag_typedef(&child, source, struct_typedef_aliases);
-                }
-                kind if kind.starts_with("preproc_")
-                    || kind == "linkage_specification"
-                    || kind == "declaration_list" =>
-                {
-                    collect_struct_typedef_aliases(&child, source, struct_typedef_aliases);
-                }
-                _ => {}
+    for child in node.child_nodes() {
+        match child.kind() {
+            "type_definition" => {
+                collect_from_struct_tag_typedef(&child, source, struct_typedef_aliases);
             }
+            kind if kind.starts_with("preproc_")
+                || kind == "linkage_specification"
+                || kind == "declaration_list" =>
+            {
+                collect_struct_typedef_aliases(&child, source, struct_typedef_aliases);
+            }
+            _ => {}
         }
     }
 }
@@ -6654,20 +6491,18 @@ fn collect_typedef_aliases_rec(
     dead: &DeadRegions,
     typedef_types: &mut HashMap<String, String>,
 ) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "type_definition" if !dead.contains_node(&child) => {
-                    collect_from_simple_typedef(&child, source, typedef_types);
-                }
-                kind if kind.starts_with("preproc_")
-                    || kind == "linkage_specification"
-                    || kind == "declaration_list" =>
-                {
-                    collect_typedef_aliases_rec(&child, source, dead, typedef_types);
-                }
-                _ => {}
+    for child in node.child_nodes() {
+        match child.kind() {
+            "type_definition" if !dead.contains_node(&child) => {
+                collect_from_simple_typedef(&child, source, typedef_types);
             }
+            kind if kind.starts_with("preproc_")
+                || kind == "linkage_specification"
+                || kind == "declaration_list" =>
+            {
+                collect_typedef_aliases_rec(&child, source, dead, typedef_types);
+            }
+            _ => {}
         }
     }
 }
@@ -6681,37 +6516,32 @@ fn collect_typedef_aliases_rec(
 /// function pointer?" question cannot be answered from `typedef_types`
 /// alone.
 fn collect_function_pointer_typedef_names(node: &Node, source: &str, names: &mut HashSet<String>) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "type_definition" => {
-                    if let Some(declarator) = child.child_by_field_name("declarator") {
-                        if crate::utility::cert_c::declarator_utils::is_function_declarator(
-                            &declarator,
-                        ) {
-                            // In a typedef, the being-declared name is a
-                            // `type_identifier` (tree-sitter-c's C scanner
-                            // installs it as such because the surrounding
-                            // `typedef` keyword marks it as introducing a
-                            // type name), not a plain `identifier` -- so a
-                            // walker keyed only on `identifier` misses it.
-                            if let Some(name) =
-                                find_type_or_ident_in_declarator(&declarator, source)
-                            {
-                                names.insert(name);
-                            }
+    for child in node.child_nodes() {
+        match child.kind() {
+            "type_definition" => {
+                if let Some(declarator) = child.child_by_field_name("declarator") {
+                    if crate::utility::cert_c::declarator_utils::is_function_declarator(&declarator)
+                    {
+                        // In a typedef, the being-declared name is a
+                        // `type_identifier` (tree-sitter-c's C scanner
+                        // installs it as such because the surrounding
+                        // `typedef` keyword marks it as introducing a
+                        // type name), not a plain `identifier` -- so a
+                        // walker keyed only on `identifier` misses it.
+                        if let Some(name) = find_type_or_ident_in_declarator(&declarator, source) {
+                            names.insert(name);
                         }
                     }
                 }
-                "preproc_ifdef"
-                | "preproc_if"
-                | "preproc_else"
-                | "preproc_elif"
-                | "linkage_specification" => {
-                    collect_function_pointer_typedef_names(&child, source, names);
-                }
-                _ => {}
             }
+            "preproc_ifdef"
+            | "preproc_if"
+            | "preproc_else"
+            | "preproc_elif"
+            | "linkage_specification" => {
+                collect_function_pointer_typedef_names(&child, source, names);
+            }
+            _ => {}
         }
     }
 }
@@ -6724,25 +6554,23 @@ fn collect_function_pointer_typedef_names(node: &Node, source: &str, names: &mut
 /// so the prescan and the in-file check can never disagree about what a
 /// pointer typedef is.
 fn collect_pointer_typedef_names(node: &Node, source: &str, names: &mut HashSet<String>) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "type_definition" => {
-                    names.extend(
-                        crate::utility::cert_c::declarator_utils::pointer_typedef_names_in(
-                            &child, source,
-                        ),
-                    );
-                }
-                "preproc_ifdef"
-                | "preproc_if"
-                | "preproc_else"
-                | "preproc_elif"
-                | "linkage_specification" => {
-                    collect_pointer_typedef_names(&child, source, names);
-                }
-                _ => {}
+    for child in node.child_nodes() {
+        match child.kind() {
+            "type_definition" => {
+                names.extend(
+                    crate::utility::cert_c::declarator_utils::pointer_typedef_names_in(
+                        &child, source,
+                    ),
+                );
             }
+            "preproc_ifdef"
+            | "preproc_if"
+            | "preproc_else"
+            | "preproc_elif"
+            | "linkage_specification" => {
+                collect_pointer_typedef_names(&child, source, names);
+            }
+            _ => {}
         }
     }
 }
@@ -6755,11 +6583,9 @@ fn find_type_or_ident_in_declarator(node: &Node, source: &str) -> Option<String>
     if matches!(node.kind(), "identifier" | "type_identifier") {
         return Some(get_node_text(node, source).to_string());
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if let Some(name) = find_type_or_ident_in_declarator(&child, source) {
-                return Some(name);
-            }
+    for child in node.child_nodes() {
+        if let Some(name) = find_type_or_ident_in_declarator(&child, source) {
+            return Some(name);
         }
     }
     None
@@ -6823,66 +6649,60 @@ pub(crate) fn collect_packed_structs(
     packed: &mut HashSet<String>,
     candidates: &mut Vec<(String, String)>,
 ) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "struct_specifier" => {
-                    record_packed_signal(&child, source, packed, candidates);
-                }
-                "type_definition" => {
-                    let mut struct_spec = None;
-                    let mut typedef_name = None;
-                    for j in 0..child.child_count() {
-                        if let Some(gc) = child.child(j) {
-                            if gc.kind() == "struct_specifier" {
-                                struct_spec = Some(gc);
-                            }
-                            if gc.kind() == "type_identifier" {
-                                typedef_name =
-                                    Some(gc.utf8_text(source.as_bytes()).unwrap_or("").to_string());
-                            }
-                        }
-                    }
-                    if let Some(spec) = struct_spec {
-                        let names: Vec<String> = spec
-                            .child_by_field_name("name")
-                            .map(|n| n.utf8_text(source.as_bytes()).unwrap_or("").to_string())
-                            .into_iter()
-                            .chain(typedef_name)
-                            .filter(|n| !n.is_empty())
-                            .collect();
-                        match crate::utility::cert_c::ast_utils::struct_specifier_packed_signal(
-                            &spec, source,
-                        ) {
-                            crate::utility::cert_c::ast_utils::PackedSignal::Direct => {
-                                packed.extend(names);
-                            }
-                            crate::utility::cert_c::ast_utils::PackedSignal::MacroCandidate(m) => {
-                                for n in names {
-                                    candidates.push((n, m.clone()));
-                                }
-                            }
-                            crate::utility::cert_c::ast_utils::PackedSignal::No => {}
-                        }
-                    }
-                }
-                "declaration" => {
-                    for j in 0..child.child_count() {
-                        if let Some(gc) = child.child(j) {
-                            if gc.kind() == "struct_specifier" {
-                                record_packed_signal(&gc, source, packed, candidates);
-                            }
-                        }
-                    }
-                }
-                kind if kind.starts_with("preproc_")
-                    || kind == "linkage_specification"
-                    || kind == "declaration_list" =>
-                {
-                    collect_packed_structs(&child, source, packed, candidates);
-                }
-                _ => {}
+    for child in node.child_nodes() {
+        match child.kind() {
+            "struct_specifier" => {
+                record_packed_signal(&child, source, packed, candidates);
             }
+            "type_definition" => {
+                let mut struct_spec = None;
+                let mut typedef_name = None;
+                for gc in child.child_nodes() {
+                    if gc.kind() == "struct_specifier" {
+                        struct_spec = Some(gc);
+                    }
+                    if gc.kind() == "type_identifier" {
+                        typedef_name =
+                            Some(gc.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    }
+                }
+                if let Some(spec) = struct_spec {
+                    let names: Vec<String> = spec
+                        .child_by_field_name("name")
+                        .map(|n| n.utf8_text(source.as_bytes()).unwrap_or("").to_string())
+                        .into_iter()
+                        .chain(typedef_name)
+                        .filter(|n| !n.is_empty())
+                        .collect();
+                    match crate::utility::cert_c::ast_utils::struct_specifier_packed_signal(
+                        &spec, source,
+                    ) {
+                        crate::utility::cert_c::ast_utils::PackedSignal::Direct => {
+                            packed.extend(names);
+                        }
+                        crate::utility::cert_c::ast_utils::PackedSignal::MacroCandidate(m) => {
+                            for n in names {
+                                candidates.push((n, m.clone()));
+                            }
+                        }
+                        crate::utility::cert_c::ast_utils::PackedSignal::No => {}
+                    }
+                }
+            }
+            "declaration" => {
+                for gc in child.child_nodes() {
+                    if gc.kind() == "struct_specifier" {
+                        record_packed_signal(&gc, source, packed, candidates);
+                    }
+                }
+            }
+            kind if kind.starts_with("preproc_")
+                || kind == "linkage_specification"
+                || kind == "declaration_list" =>
+            {
+                collect_packed_structs(&child, source, packed, candidates);
+            }
+            _ => {}
         }
     }
 }
@@ -6927,17 +6747,15 @@ fn extract_struct_fields(
 ) -> (HashMap<String, String>, HashMap<String, String>) {
     let mut fields = HashMap::new();
     let mut shapes = HashMap::new();
-    for i in 0..body.child_count() {
-        if let Some(child) = body.child(i) {
-            if child.kind() == "field_declaration" {
-                if let Some((field_name, type_text, shape)) = extract_field_decl(&child, source) {
-                    fields.insert(field_name.clone(), type_text);
-                    shapes.insert(field_name, shape);
-                } else if let Some(inner) = find_anonymous_inner_body(&child) {
-                    let (inner_fields, inner_shapes) = extract_struct_fields(&inner, source);
-                    fields.extend(inner_fields);
-                    shapes.extend(inner_shapes);
-                }
+    for child in body.child_nodes() {
+        if child.kind() == "field_declaration" {
+            if let Some((field_name, type_text, shape)) = extract_field_decl(&child, source) {
+                fields.insert(field_name.clone(), type_text);
+                shapes.insert(field_name, shape);
+            } else if let Some(inner) = find_anonymous_inner_body(&child) {
+                let (inner_fields, inner_shapes) = extract_struct_fields(&inner, source);
+                fields.extend(inner_fields);
+                shapes.extend(inner_shapes);
             }
         }
     }
@@ -6948,8 +6766,7 @@ fn extract_struct_fields(
 /// inner `field_declaration_list`. Returns `None` for named or non-anonymous
 /// specifiers — those are treated as typed fields, not flattened.
 fn find_anonymous_inner_body<'a>(field_decl: &Node<'a>) -> Option<Node<'a>> {
-    for i in 0..field_decl.child_count() {
-        let child = field_decl.child(i)?;
+    for child in field_decl.child_nodes() {
         if matches!(child.kind(), "union_specifier" | "struct_specifier")
             && child.child_by_field_name("name").is_none()
         {
@@ -6981,47 +6798,45 @@ fn extract_field_decl(node: &Node, source: &str) -> Option<(String, String, Stri
     let mut has_pointer = false;
     let mut shape = String::new();
 
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "type_qualifier"
-                | "primitive_type"
-                | "sized_type_specifier"
-                | "struct_specifier"
-                | "enum_specifier"
-                | "union_specifier"
-                | "type_identifier" => {
-                    type_parts.push(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
-                }
-                "field_identifier" => {
-                    field_name = Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
-                    shape.clear();
-                }
-                "pointer_declarator" => {
-                    has_pointer = true;
-                    // Extract field_identifier from inside pointer_declarator
-                    field_name = extract_field_id_from_declarator(&child, source);
-                    shape = expr_type::declarator_shape(&child);
-                }
-                "array_declarator" => {
-                    // e.g., `char name[64];` — extract field_identifier
-                    field_name = extract_field_id_from_declarator(&child, source);
-                    shape = expr_type::declarator_shape(&child);
-                }
-                "bitfield_clause" => {
-                    // `unsigned type : 4;` -- the width, after the name.
-                    let width = child
-                        .named_child(0)
-                        .and_then(|w| w.utf8_text(source.as_bytes()).ok())
-                        .unwrap_or("");
-                    shape = format!(":{}", width.trim());
-                }
-                "function_declarator" => {
-                    // Function pointer fields — skip for type resolution purposes
-                    return None;
-                }
-                _ => {}
+    for child in node.child_nodes() {
+        match child.kind() {
+            "type_qualifier"
+            | "primitive_type"
+            | "sized_type_specifier"
+            | "struct_specifier"
+            | "enum_specifier"
+            | "union_specifier"
+            | "type_identifier" => {
+                type_parts.push(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
             }
+            "field_identifier" => {
+                field_name = Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                shape.clear();
+            }
+            "pointer_declarator" => {
+                has_pointer = true;
+                // Extract field_identifier from inside pointer_declarator
+                field_name = extract_field_id_from_declarator(&child, source);
+                shape = expr_type::declarator_shape(&child);
+            }
+            "array_declarator" => {
+                // e.g., `char name[64];` — extract field_identifier
+                field_name = extract_field_id_from_declarator(&child, source);
+                shape = expr_type::declarator_shape(&child);
+            }
+            "bitfield_clause" => {
+                // `unsigned type : 4;` -- the width, after the name.
+                let width = child
+                    .named_child(0)
+                    .and_then(|w| w.utf8_text(source.as_bytes()).ok())
+                    .unwrap_or("");
+                shape = format!(":{}", width.trim());
+            }
+            "function_declarator" => {
+                // Function pointer fields — skip for type resolution purposes
+                return None;
+            }
+            _ => {}
         }
     }
 
@@ -7040,17 +6855,15 @@ fn extract_field_decl(node: &Node, source: &str) -> Option<(String, String, Stri
 
 /// Extract field_identifier from a declarator chain (pointer_declarator, array_declarator).
 fn extract_field_id_from_declarator(node: &Node, source: &str) -> Option<String> {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "field_identifier" => {
-                    return Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
-                }
-                "pointer_declarator" | "array_declarator" => {
-                    return extract_field_id_from_declarator(&child, source);
-                }
-                _ => {}
+    for child in node.child_nodes() {
+        match child.kind() {
+            "field_identifier" => {
+                return Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
             }
+            "pointer_declarator" | "array_declarator" => {
+                return extract_field_id_from_declarator(&child, source);
+            }
+            _ => {}
         }
     }
     None
@@ -7697,10 +7510,8 @@ fn extract_includes_recursive(node: &Node, source: &str, directives: &mut Vec<(S
         }
         kind if kind.starts_with("preproc_") => {
             // Recurse into conditional compilation blocks
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    extract_includes_recursive(&child, source, directives);
-                }
+            for child in node.child_nodes() {
+                extract_includes_recursive(&child, source, directives);
             }
         }
         _ => {}
@@ -7708,10 +7519,8 @@ fn extract_includes_recursive(node: &Node, source: &str, directives: &mut Vec<(S
 
     // For non-preproc nodes, walk children (translation_unit, etc.)
     if !node.kind().starts_with("preproc_") {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                extract_includes_recursive(&child, source, directives);
-            }
+        for child in node.child_nodes() {
+            extract_includes_recursive(&child, source, directives);
         }
     }
 }
