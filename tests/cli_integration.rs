@@ -303,6 +303,21 @@ fn cli_profile_restarts_from_the_preset() {
 }
 
 #[test]
+fn list_rules_lists_shipped_rules_then_removed_ones() {
+    let (code, stdout, _) = run_aurora_lint(&["--list-rules"]);
+    assert_eq!(code, 0);
+    assert!(stdout.starts_with("Rules ("), "stdout: {stdout}");
+    assert!(stdout.contains("  ARR30-C    on "), "stdout: {stdout}");
+    assert!(stdout.contains("\nRemoved rules"), "stdout: {stdout}");
+
+    let (code, stdout, _) = run_aurora_lint(&["--list-rules", "json"]);
+    assert_eq!(code, 0);
+    let listing: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(listing["rules"].as_array().unwrap().len() > 300);
+    assert!(listing["removed"].is_array());
+}
+
+#[test]
 fn unknown_or_misplaced_option_is_refused() {
     let (code, _, stderr) = run_aurora_lint(&["--list-options", "--set", "no_such=true"]);
     assert_eq!(code, 2);

@@ -456,6 +456,19 @@ aggregate real-world precision across this project's own benchmark corpus
 rather than hand-picked, is tracked as a follow-up rather than shipped
 speculatively here.
 
+Removed rules
+-------------
+
+A rule aurora-lint no longer ships (ADR-0013: it is unenforceable, fails the
+shipping criterion, is covered by another rule, or CERT deprecated it) is
+removed from the tool, not disabled. A configuration written for an older
+release may still have a ``[rules.cert_c.<ID>]`` block for it. That
+configuration still loads: aurora-lint prints one warning naming the release
+that removed the rule, why, and which rules cover it, and ignores the block.
+``aurora-lint --list-rules`` lists every shipped rule, then every removed
+rule with its reason (``--list-rules json`` for tooling). The list is kept in
+``rules_templates/removed-rules.toml``.
+
 Tracked but not implemented
 ----------------------------
 

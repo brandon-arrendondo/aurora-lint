@@ -512,6 +512,15 @@ fn run() -> Result<i32> {
                 .value_parser(["text", "json", "rst"]),
         )
         .arg(
+            Arg::new("list_rules")
+                .long("list-rules")
+                .help("List every rule the tool ships and whether the configuration enables it, then the rules it no longer ships and why, then exit")
+                .value_name("FORMAT")
+                .num_args(0..=1)
+                .default_missing_value("text")
+                .value_parser(["text", "json"]),
+        )
+        .arg(
             Arg::new("detect_relevance")
                 .long("detect-relevance")
                 .help("Detect categorically-inapplicable rule classes (CON*/WIN*) in PATH and -d directories, then write a relevance-gated manifest with --write-manifest. Does not run an analysis.")
@@ -723,6 +732,25 @@ fn run() -> Result<i32> {
             })?;
             std::io::Write::write_all(&mut file, text.as_bytes())?;
             println!("Wrote configuration to: {target}");
+        }
+        return Ok(0);
+    }
+
+    if let Some(format) = matches.get_one::<String>("list_rules") {
+        let manifest = load_manifest(manifest_path)?;
+        let registry = aurora_lint::rules::RuleRegistry::new();
+        let removed = manifest::removed::removed_rules();
+        match format.as_str() {
+            "json" => println!(
+                "{}",
+                serde_json::to_string_pretty(&aurora_lint::rules::listing::render_json(
+                    &registry, &manifest, removed
+                ))?
+            ),
+            _ => print!(
+                "{}",
+                aurora_lint::rules::listing::render_text(&registry, &manifest, removed)
+            ),
         }
         return Ok(0);
     }

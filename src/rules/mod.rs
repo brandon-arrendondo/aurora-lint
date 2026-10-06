@@ -5,6 +5,8 @@
 /// BISSELL-specific rules (`BRULE-###`) beyond the CERT C standard set.
 pub mod brules;
 mod cert_c;
+/// `--list-rules`: shipped and removed rules.
+pub mod listing;
 
 use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::context::ProjectContext;
