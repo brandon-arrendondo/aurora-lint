@@ -62,8 +62,8 @@ impl Msc12C {
     /// pre-scan. A parenthesis-less macro invoked as a bare identifier
     /// statement (`NODE_LOCK_SYS;`, `IPI_MEM_BARRIER;`) may expand to real
     /// code (lock acquire/release, a memory-barrier instruction) that
-    /// tree-sitter can't see without preprocessing. See
-    /// data/precision_audit/sel4/README.md.
+    /// tree-sitter can't see without preprocessing, as seL4's adjudication
+    /// found.
     fn is_known_macro(&self, name: &str, source: &str) -> bool {
         is_defined_macro_name(name, source) || self.cross_file_macro_names.borrow().contains(name)
     }
@@ -150,9 +150,8 @@ impl Msc12C {
                 // braced-with-a-lone-semicolon form `while (cond) { ; }`):
                 // the condition itself does the real work (reads through a
                 // pointer/field/subscript, or calls a function), so an
-                // "empty" body is the idiom, not a bug. See
-                // data/precision_audit/sel4/README.md — this
-                // was the dominant MSC12-C FP family on real embedded/kernel
+                // "empty" body is the idiom, not a bug. In seL4's
+                // adjudication this was the dominant MSC12-C FP family on real embedded/kernel
                 // code (UART/timer/IOMMU register polling).
                 if let Some(cond) = self.enclosing_loop_condition_for_empty_body(node) {
                     if self.condition_indicates_polling(&cond, source) {
@@ -1303,8 +1302,8 @@ impl Msc12C {
                 // and there is no structural signal separating a deliberate
                 // no-op from a forgotten body -- `case cap_asid_control_cap:
                 // break;` and an unfinished case look identical. Flag
-                // rather than guess; see data/precision_audit/sel4/README.md
-                // for the measured ambiguity.
+                // rather than guess; seL4's adjudication measured the
+                // ambiguity.
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: self.severity(),
@@ -1477,7 +1476,7 @@ impl Msc12C {
     /// contains at least one comment — a deliberate "this is a documented
     /// no-op" idiom (`/* Don't need to do anything */`, `/* Do nothing */`)
     /// pervasive in real embedded/kernel platform-abstraction stub
-    /// functions (see data/precision_audit/sel4/README.md).
+    /// functions, as seL4's adjudication found.
     ///
     /// Deliberately scoped to `check_empty_function` ONLY — the same
     /// "lone comment in an otherwise-empty block" shape is also how CERT's

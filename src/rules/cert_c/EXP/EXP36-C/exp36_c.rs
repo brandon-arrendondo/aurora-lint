@@ -683,8 +683,7 @@ impl Exp36C {
             // default below, fabricating an alignment-1-to-4 violation for
             // every `u8 *`/`s8 *` cast — a single root cause behind a large,
             // recurring EXP36-C false-positive class across the hostap
-            // corpus (see data/precision_audit/hostap/categorical_patterns.md,
-            // e.g. `taxonomy.c:73`/`upnp_xml.c:125`/driver_ndis.c's `(const u8 *)`
+            // corpus (found in its adjudication, e.g. `taxonomy.c:73`/`upnp_xml.c:125`/driver_ndis.c's `(const u8 *)`
             // casts/eap_server_tls_common.c's `test_sha384`).
             ("u8", 1),
             ("u8 *", 1),

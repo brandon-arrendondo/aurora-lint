@@ -115,7 +115,7 @@ impl Exp20C {
                                     // logical-NOT of a comparison call). Surface it but flag for
                                     // manual review instead of full-confidence, rather than
                                     // suppressing it outright (some are real TPs on untrusted
-                                    // input; see data/precision_audit/mosquitto/adversarial_verification.md).
+                                    // input, per an adversarial review of mosquitto's findings).
                                     let is_cmp_idiom = Self::is_comparison_function(callee_name);
                                     violations.push(RuleViolation {
                                         rule_id: self.rule_id().to_string(),
