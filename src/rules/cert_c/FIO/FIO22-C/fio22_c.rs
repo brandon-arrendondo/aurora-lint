@@ -26,7 +26,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use tree_sitter::Node;
 
 pub struct Fio22C;
@@ -57,14 +57,15 @@ impl CertRule for Fio22C {
 }
 
 struct Fio22CChecker {
-    /// Track open files: variable name -> line where opened
-    open_files: HashMap<String, usize>,
+    /// Track open files: variable name -> line where opened. Ordered, so a
+    /// finding naming several open files lists them the same way every run.
+    open_files: BTreeMap<String, usize>,
 }
 
 impl Fio22CChecker {
     fn new() -> Self {
         Self {
-            open_files: HashMap::new(),
+            open_files: BTreeMap::new(),
         }
     }
 

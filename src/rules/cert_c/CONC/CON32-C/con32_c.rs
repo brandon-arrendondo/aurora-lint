@@ -70,9 +70,9 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declared_type};
 use lang_parsing_substrate::query;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use tree_sitter::Node;
 
 pub struct Con32C;
@@ -108,13 +108,14 @@ impl CertRule for Con32C {
 }
 
 impl Con32C {
-    /// Collect struct names that contain bit-fields and their bit-field member names
+    /// Collect struct names that contain bit-fields and their bit-field member
+    /// names, ordered by struct name (see [`Self::owning_bitfield_struct`]).
     fn collect_bitfield_structs(
         &self,
         node: &Node,
         source: &str,
-    ) -> HashMap<String, HashSet<String>> {
-        let mut bitfield_structs = HashMap::new();
+    ) -> BTreeMap<String, HashSet<String>> {
+        let mut bitfield_structs = BTreeMap::new();
         self.find_bitfield_structs(node, source, &mut bitfield_structs);
         bitfield_structs
     }
@@ -123,7 +124,7 @@ impl Con32C {
         &self,
         node: &Node,
         source: &str,
-        bitfield_structs: &mut HashMap<String, HashSet<String>>,
+        bitfield_structs: &mut BTreeMap<String, HashSet<String>>,
     ) {
         for struct_node in query::find_descendants_of_kind(*node, "struct_specifier") {
             if let Some(name_node) = struct_node.child_by_field_name("name") {
@@ -215,7 +216,7 @@ impl Con32C {
         &self,
         node: &Node,
         source: &str,
-        bitfield_structs: &HashMap<String, HashSet<String>>,
+        bitfield_structs: &BTreeMap<String, HashSet<String>>,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for function definitions that might be thread functions
@@ -233,7 +234,7 @@ impl Con32C {
         &self,
         function_node: &Node,
         source: &str,
-        bitfield_structs: &HashMap<String, HashSet<String>>,
+        bitfield_structs: &BTreeMap<String, HashSet<String>>,
         violations: &mut Vec<RuleViolation>,
     ) {
         let func_name = self
@@ -347,7 +348,7 @@ impl Con32C {
         &self,
         node: &Node,
         source: &str,
-        bitfield_structs: &HashMap<String, HashSet<String>>,
+        bitfield_structs: &BTreeMap<String, HashSet<String>>,
     ) -> Vec<(String, String, usize)> {
         let mut accesses = Vec::new();
         self.collect_bitfield_accesses(node, source, bitfield_structs, &mut accesses);
@@ -358,7 +359,7 @@ impl Con32C {
         &self,
         node: &Node,
         source: &str,
-        bitfield_structs: &HashMap<String, HashSet<String>>,
+        bitfield_structs: &BTreeMap<String, HashSet<String>>,
         accesses: &mut Vec<(String, String, usize)>,
     ) {
         // Look for field_expression (e.g., flags.flag1)
@@ -371,28 +372,65 @@ impl Con32C {
                     let object_text = get_node_text(&object, source);
 
                     // Check if this field belongs to a bit-field struct
-                    for (struct_name, members) in bitfield_structs {
-                        if members.contains(&field_name) {
-                            // Found a bit-field access
-                            let line = field_expr.start_position().row + 1;
-                            accesses.push((struct_name.clone(), field_name.clone(), line));
-                            break;
-                        }
+                    if let Some(struct_name) =
+                        Self::owning_bitfield_struct(&object, &field_name, bitfield_structs, source)
+                    {
+                        // Found a bit-field access
+                        let line = field_expr.start_position().row + 1;
+                        accesses.push((struct_name.clone(), field_name.clone(), line));
                     }
 
                     // Also check for nested access like flags.s.flag1
                     if object_text.contains('.') {
                         // This is a nested field access
-                        for (struct_name, members) in bitfield_structs {
-                            if members.contains(&field_name) {
-                                let line = field_expr.start_position().row + 1;
-                                accesses.push((struct_name.clone(), field_name.clone(), line));
-                                break;
-                            }
+                        if let Some(struct_name) = Self::owning_bitfield_struct(
+                            &object,
+                            &field_name,
+                            bitfield_structs,
+                            source,
+                        ) {
+                            let line = field_expr.start_position().row + 1;
+                            accesses.push((struct_name.clone(), field_name.clone(), line));
                         }
                     }
                 }
             }
         }
+    }
+
+    /// The bit-field struct a `object.field` / `object->field` access reads.
+    /// When `object` is a variable declared with one of the bit-field
+    /// structs (or a pointer to one) declaring `field`, that struct;
+    /// otherwise the first struct by name that declares a bit-field
+    /// `field`. Two structs may share a member name, so the declared type
+    /// comes first, and the fallback is by name rather than by the hash
+    /// map's order, which changes from run to run.
+    fn owning_bitfield_struct<'m>(
+        object: &Node,
+        field_name: &str,
+        bitfield_structs: &'m BTreeMap<String, HashSet<String>>,
+        source: &str,
+    ) -> Option<&'m String> {
+        let declared = (object.kind() == "identifier")
+            .then(|| {
+                resolve_identifier_declared_type(object, get_node_text(object, source), source)
+            })
+            .flatten();
+        let declared_struct = declared.as_deref().and_then(|t| {
+            t.trim_end_matches(" *")
+                .strip_prefix("struct ")
+                .map(str::trim)
+        });
+        if let Some((name, _)) = declared_struct.and_then(|d| {
+            bitfield_structs
+                .get_key_value(d)
+                .filter(|(_, members)| members.contains(field_name))
+        }) {
+            return Some(name);
+        }
+        bitfield_structs
+            .iter()
+            .find(|(_, members)| members.contains(field_name))
+            .map(|(name, _)| name)
     }
 }

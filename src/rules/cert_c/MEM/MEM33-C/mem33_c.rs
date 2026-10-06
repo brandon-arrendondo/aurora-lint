@@ -3621,27 +3621,39 @@ impl FlexibleArrayAnalyzer {
             return None;
         }
 
-        // Check if sizeof is applied to a flexible array struct
-        for struct_name in self.flexible_structs.keys() {
-            if node_text.contains(&format!("sizeof(struct {})", struct_name))
-                || node_text.contains(&format!("sizeof({})", struct_name))
-            {
-                // This is sizeof applied to a flexible array struct in pointer arithmetic
-                let start_point = node.start_position();
-                return Some(RuleViolation {
-                    rule_id: "MEM33-C".to_string(),
-                    severity: Severity::High,
-                    message: format!(
-                        "Pointer arithmetic using sizeof(struct {}) doesn't account for flexible array member size. Each structure instance may have different actual sizes.",
-                        struct_name
-                    ),
-                    file_path: String::new(),
-                    line: start_point.row + 1,
-                    column: start_point.column + 1,
-                    suggestion: Some("Flexible array structures cannot be stored in contiguous arrays. Use an array of pointers to individually allocated structures instead.".to_string()),
-                    ..Default::default()
-                });
-            }
+        // Check if sizeof is applied to a flexible array struct. With two
+        // such sizeofs in one cast, name the one written first: the map's
+        // own order changes from run to run.
+        let first_sizeof = self
+            .flexible_structs
+            .keys()
+            .filter_map(|struct_name| {
+                [
+                    format!("sizeof(struct {})", struct_name),
+                    format!("sizeof({})", struct_name),
+                ]
+                .iter()
+                .filter_map(|pattern| node_text.find(pattern.as_str()))
+                .min()
+                .map(|at| (at, struct_name))
+            })
+            .min();
+        if let Some((_, struct_name)) = first_sizeof {
+            // This is sizeof applied to a flexible array struct in pointer arithmetic
+            let start_point = node.start_position();
+            return Some(RuleViolation {
+                rule_id: "MEM33-C".to_string(),
+                severity: Severity::High,
+                message: format!(
+                    "Pointer arithmetic using sizeof(struct {}) doesn't account for flexible array member size. Each structure instance may have different actual sizes.",
+                    struct_name
+                ),
+                file_path: String::new(),
+                line: start_point.row + 1,
+                column: start_point.column + 1,
+                suggestion: Some("Flexible array structures cannot be stored in contiguous arrays. Use an array of pointers to individually allocated structures instead.".to_string()),
+                ..Default::default()
+            });
         }
 
         // Also check common patterns

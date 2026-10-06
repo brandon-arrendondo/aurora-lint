@@ -513,38 +513,17 @@ enum Expect {
     Clean,
 }
 
-/// The body of every generated fixture test. build.rs emits one `#[test]` per
-/// `.c` fixture that only calls this, rather than inlining the pipeline into
-/// each of several thousand functions: the inlined form was ~170K lines of
-/// generated code, and compiling it dominated the test build's time and peak
-/// memory.
-///
-/// Every fixture is analysed with the context the shipped scan builds for it:
-/// a prescan of the file itself (what `-d` gives a real run -- see
-/// `prescan_single_file`), then CFGs and VRA through the same
-/// `build_file_analysis` the scan calls. Both come from the scan's own code
-/// rather than a test-only reimplementation of it. There is no opt-in: a
-/// fixture checked without context exercises an analysis strictly weaker than
-/// anything the tool ships, and a green result under it says nothing about
-/// what a real scan does.
-///
-/// The prescan runs BEFORE the parse for the same reason: the parse-repair
-/// pass consults its macro table to decide which token a misparsed
-/// declaration should lose, so parsing first would hand the rule a weaker
-/// repair than a real scan performs.
-///
-/// `preset` and `overrides` (the fixture header's `Settings:` line,
-/// `name=value` pairs separated by commas) are the policy and environment
-/// settings the fixture runs under; every fixture runs under each preset.
+/// One rule's findings on one fixture, through the pipeline a real scan
+/// runs (see [`run_fixture`]). Every call builds a fresh registry, so the
+/// rule's own collections, and the prescan's, are new: each `HashMap` takes
+/// its own random seed, and two calls are two independent runs.
 #[cfg(test)]
-fn run_fixture(
-    test_name: &str,
+fn fixture_findings(
     rule_id: &str,
     relative_path: &str,
-    expect: Expect,
     preset: &str,
     overrides: &str,
-) {
+) -> Vec<crate::rules::RuleViolation> {
     use crate::parser::CParser;
     use crate::rules::RuleRegistry;
     use crate::settings::{AnalysisSettings, SettingsConfig};
@@ -595,7 +574,45 @@ fn run_fixture(
     );
     analysis.apply_to(rule);
 
-    let violations = rule.check(&tree.root_node(), &source);
+    rule.check(&tree.root_node(), &source)
+}
+
+/// The body of every generated fixture test. build.rs emits one `#[test]` per
+/// `.c` fixture that only calls this, rather than inlining the pipeline into
+/// each of several thousand functions: the inlined form was ~170K lines of
+/// generated code, and compiling it dominated the test build's time and peak
+/// memory.
+///
+/// Every fixture is analysed with the context the shipped scan builds for it:
+/// a prescan of the file itself (what `-d` gives a real run -- see
+/// `prescan_single_file`), then CFGs and VRA through the same
+/// `build_file_analysis` the scan calls. Both come from the scan's own code
+/// rather than a test-only reimplementation of it. There is no opt-in: a
+/// fixture checked without context exercises an analysis strictly weaker than
+/// anything the tool ships, and a green result under it says nothing about
+/// what a real scan does.
+///
+/// The prescan runs BEFORE the parse for the same reason: the parse-repair
+/// pass consults its macro table to decide which token a misparsed
+/// declaration should lose, so parsing first would hand the rule a weaker
+/// repair than a real scan performs.
+///
+/// `preset` and `overrides` (the fixture header's `Settings:` line,
+/// `name=value` pairs separated by commas) are the policy and environment
+/// settings the fixture runs under; every fixture runs under each preset.
+#[cfg(test)]
+fn run_fixture(
+    test_name: &str,
+    rule_id: &str,
+    relative_path: &str,
+    expect: Expect,
+    preset: &str,
+    overrides: &str,
+) {
+    let test_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative_path);
+    let raw = fs::read_to_string(&test_path)
+        .unwrap_or_else(|e| panic!("Failed to read {:?}: {}", test_path, e));
+    let violations = fixture_findings(rule_id, relative_path, preset, overrides);
 
     // The test summary (docs/test-summary.md) records the default preset's
     // run of each fixture; the other presets are asserted, not tabulated.
@@ -683,3 +700,84 @@ fn fixture_description(source: &str) -> Option<String> {
 
 // Include the auto-generated test functions from build.rs
 include!(concat!(env!("OUT_DIR"), "/integration_tests.rs"));
+
+/// Fixtures where a rule once chose what to report by iterating a hash map:
+/// which struct a bit-field belongs to, the order of a list of names, which
+/// of several matches is named, which `#define` sizes a buffer. Each
+/// `HashMap` takes its own random seed, so the old code gave different
+/// findings on different runs of one binary over one file, and a fixture
+/// asserting only that some violation exists could not see it. Each fixture
+/// here is checked [`DETERMINISM_RUNS`] times, and every run must report
+/// the same findings, down to the message.
+#[cfg(test)]
+const DETERMINISM_FIXTURES: &[(&str, &str)] = &[
+    (
+        "CON32-C",
+        "src/rules/cert_c/CONC/CON32-C/tests/fail/testcases_shared_member_name_variable.c",
+    ),
+    (
+        "CON32-C",
+        "src/rules/cert_c/CONC/CON32-C/tests/fail/testcases_shared_member_name_pointer.c",
+    ),
+    (
+        "FIO22-C",
+        "src/rules/cert_c/FIO/FIO22-C/tests/fail/testcases_two_open_files.c",
+    ),
+    (
+        "FIO22-C",
+        "src/rules/cert_c/FIO/FIO22-C/tests/fail/testcases_three_open_files_condition.c",
+    ),
+    (
+        "MEM33-C",
+        "src/rules/cert_c/MEM/MEM33-C/tests/fail/testcases_sizeof_two_flex_structs.c",
+    ),
+    (
+        "MEM33-C",
+        "src/rules/cert_c/MEM/MEM33-C/tests/fail/testcases_sizeof_two_flex_structs_typedef.c",
+    ),
+    (
+        "STR31-C",
+        "src/rules/cert_c/STR/STR31-C/tests/fail/testcases_define_prefix_name_overflow.c",
+    ),
+    (
+        "STR31-C",
+        "src/rules/cert_c/STR/STR31-C/tests/pass/testcases_define_prefix_name_fits.c",
+    ),
+    (
+        "STR31-C",
+        "src/rules/cert_c/STR/STR31-C/tests/fail/testcases_strcat_two_buffers.c",
+    ),
+    (
+        "STR31-C",
+        "src/rules/cert_c/STR/STR31-C/tests/fail/testcases_strcat_three_buffers.c",
+    ),
+];
+
+/// Runs per fixture in [`fixtures_report_the_same_findings_every_run`].
+/// With two candidates a hash map's order is a coin flip, so 32 runs of the
+/// old code agree by chance about once in two billion.
+#[cfg(test)]
+const DETERMINISM_RUNS: usize = 32;
+
+#[test]
+fn fixtures_report_the_same_findings_every_run() {
+    for &(rule_id, relative_path) in DETERMINISM_FIXTURES {
+        let findings = || {
+            let mut found: Vec<_> = fixture_findings(rule_id, relative_path, "default", "")
+                .into_iter()
+                .map(|v| (v.line, v.column, v.message, v.suggestion))
+                .collect();
+            found.sort();
+            found
+        };
+        let first = findings();
+        for run in 1..DETERMINISM_RUNS {
+            let again = findings();
+            assert_eq!(
+                first, again,
+                "[{}] {}: run {} reported different findings from run 0",
+                rule_id, relative_path, run
+            );
+        }
+    }
+}

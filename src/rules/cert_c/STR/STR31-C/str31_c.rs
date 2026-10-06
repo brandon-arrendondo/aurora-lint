@@ -168,13 +168,18 @@ impl Str31C {
             }
         }
 
-        // Second pass: check if var_name uses any of these constants in array declaration
+        // Second pass: check if var_name uses any of these constants in array
+        // declaration. A constant counts as a whole identifier, first in the
+        // line wins: matching names as substrings let `BUF` match a line
+        // declaring `buf[BUF_LEN]`, and which of the two sizes came back
+        // depended on the hash map's order.
         for line in &lines {
             if line.contains(var_name) && line.contains("[") && line.contains("]") {
-                for (const_name, &const_value) in &defines {
-                    if line.contains(const_name) {
-                        return Some(const_value);
-                    }
+                let const_value = line
+                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .find_map(|token| defines.get(token));
+                if let Some(&const_value) = const_value {
+                    return Some(const_value);
                 }
             }
         }
@@ -2042,10 +2047,15 @@ impl Str31C {
             }
         }
 
-        // Group strcat operations by destination variable
-        let mut dest_groups: HashMap<String, Vec<(usize, String)>> = HashMap::new();
+        // Group strcat operations by destination variable, in the order each
+        // destination is first appended to: only the first overflowing group
+        // is reported, so the order has to be the source's, not a hash map's.
+        let mut dest_groups: Vec<(String, Vec<(usize, String)>)> = Vec::new();
         for (line_num, dest, src) in strcat_operations {
-            dest_groups.entry(dest).or_default().push((line_num, src));
+            match dest_groups.iter_mut().find(|(d, _)| *d == dest) {
+                Some((_, operations)) => operations.push((line_num, src)),
+                None => dest_groups.push((dest, vec![(line_num, src)])),
+            }
         }
 
         // Analyze each destination for cumulative overflow
