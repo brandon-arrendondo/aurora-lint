@@ -211,6 +211,6 @@ safety-critical user unprotected.
 - Safety-critical and certified users get the reading safety-critical
   coding standards take: a check counts as protection only when its failure
   leads to an explicit recovery action in the deployed code (JPL's Power of
-  Ten, Rule 5; JPL D-60411, Rules 15-16), and C lets `NDEBUG` remove
+  Ten, Rule 5; JPL D-60411, Rule 16), and C lets `NDEBUG` remove
   `assert` entirely (C11 7.2p1). Everyone else gets the reading mainstream
   tools use.
