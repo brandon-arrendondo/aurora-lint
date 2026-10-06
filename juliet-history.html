@@ -1876,46 +1876,22 @@ accuracy. The overall direction of changes was generally correct.</p>
 <td><p>–</p></td>
 </tr>
 <tr class="row-odd"><td><p>Semgrep CE</p></td>
-<td><p>44–48%</p></td>
-<td><p>Very low</p></td>
+<td><p>44–48% (not C)</p></td>
+<td><p>1 FP / 0 FP (not C)</p></td>
 <td><p>AST (tree-sitter)</p></td>
 <td><p>No</p></td>
 <td><p>Community</p></td>
 <td><p>Free</p></td>
 </tr>
 <tr class="row-even"><td><p>Semgrep Pro</p></td>
-<td><p>72–75%</p></td>
-<td><p>Very low</p></td>
+<td><p>72–75% (not C)</p></td>
+<td><p>1 FP / 0 FP (not C)</p></td>
 <td><p>AST + taint + inter-file</p></td>
 <td><p>No</p></td>
 <td><p>Community</p></td>
 <td><p>Commercial</p></td>
 </tr>
-<tr class="row-odd"><td><p>Infer</p></td>
-<td><p>~55%</p></td>
-<td><p>~45%</p></td>
-<td><p>Separation logic</p></td>
-<td><p>Partial (4 CWEs)</p></td>
-<td><p>No</p></td>
-<td><p>Free</p></td>
-</tr>
-<tr class="row-even"><td><p>Flawfinder</p></td>
-<td><p>~40%</p></td>
-<td><p>High</p></td>
-<td><p>Lexical scanning</p></td>
-<td><p>Indirect</p></td>
-<td><p>No</p></td>
-<td><p>Free</p></td>
-</tr>
-<tr class="row-odd"><td><p>CodeQL</p></td>
-<td><p>~29%</p></td>
-<td><p>Moderate</p></td>
-<td><p>Data-flow, taint</p></td>
-<td><p>Indirect</p></td>
-<td><p>Partial</p></td>
-<td><p>Free/Commercial</p></td>
-</tr>
-<tr class="row-even"><td><p>Cppcheck</p></td>
+<tr class="row-odd"><td><p>Cppcheck</p></td>
 <td><p>Low</p></td>
 <td><p>Very low</p></td>
 <td><p>Data-flow</p></td>
@@ -1923,16 +1899,16 @@ accuracy. The overall direction of changes was generally correct.</p>
 <td><p>Partial</p></td>
 <td><p>Free</p></td>
 </tr>
-<tr class="row-odd"><td><p>Coverity</p></td>
-<td><p>Best-in-class</p></td>
-<td><p>~15–20%</p></td>
+<tr class="row-even"><td><p>Coverity</p></td>
+<td><p>Not published</p></td>
+<td><p>Target &lt;20%</p></td>
 <td><p>Inter-procedural, path-sensitive</p></td>
 <td><p>Not public</p></td>
 <td><p>Partial</p></td>
 <td><p>Enterprise</p></td>
 </tr>
-<tr class="row-even"><td><p>Commercial “Tool C”</p></td>
-<td><p>~73%</p></td>
+<tr class="row-odd"><td><p>Commercial “Tool C”</p></td>
+<td><p>~59%</p></td>
 <td><p>~7%</p></td>
 <td><p>Inter-procedural</p></td>
 <td><p>Yes (22 CWEs)</p></td>
@@ -1948,7 +1924,18 @@ figure) but is not directly comparable since the competitor figures below
 were not re-measured
 fast-mode/CWE-matched.</p>
 <p>“Commercial Tool C” is anonymized from <a class="reference external" href="https://community.wvu.edu/~kagoseva/Papers/IST-2015.pdf">Goseva-Popstojanova &amp; Perhinschi 2015</a>, tested on 22
-CWEs only.</p>
+C/C++ CWEs only. Its row gives the paper’s overall recall (59%) and overall
+probability of false alarm (7%) across those CWEs (Table 3); the false-alarm
+figure is the share of good functions flagged, not the share of reports that
+are false.</p>
+<p>The Coverity FP entry is a design target, not a measurement: Bessey et
+al. write that Coverity aims “for below 20% for ‘stable’ checkers”
+(<em>Communications of the ACM</em> 53(2), 2010). No published Juliet detection
+rate was found for it.</p>
+<p>The two Semgrep rows are not C results. Semgrep’s own comparison measured
+them on OWASP WebGoat (Java) and OWASP Juice Shop (Node), and reports one
+false positive on WebGoat and none on Juice Shop for either edition. They
+are not comparable with the Juliet C rows.</p>
 <p>Key context from literature:</p>
 <ul class="simple">
 <li><p>On real-world vulnerabilities, even the best single C analyzer studied
@@ -1965,8 +1952,8 @@ respondents accepted 20% (<a class="reference external" href="https://doi.org/10
 <p>Sources: <a class="reference external" href="https://dl.acm.org/doi/10.1145/3533767.3534380">ISSTA 2022</a> |
 <a class="reference external" href="https://community.wvu.edu/~kagoseva/Papers/IST-2015.pdf">Goseva 2015</a> |
 <a class="reference external" href="https://doi.org/10.1145/2970276.2970347">ASE 2016</a> |
-<a class="reference external" href="https://www.se.jku.at/wp-content/uploads/2014/08/2014.Using-the-Juliet-Test-Suite.pdf">JKU 2014</a> |
-<a class="reference external" href="https://semgrep.dev/blog/2025/security-research-comparing-semgrep-community-edition-and-semgrep-code-for-static-analysis/">Semgrep Blog 2025</a></p>
+<a class="reference external" href="https://www.se.jku.at/wp-content/uploads/2014/08/2014.Using-the-Juliet-Test-Suite.pdf">Wagner &amp; Sametinger, “Using the Juliet Test Suite to compare Static Security Scanners”, SECRYPT 2014</a> |
+<a class="reference external" href="https://semgrep.dev/blog/2025/security-research-comparing-semgrep-community-edition-and-semgrep-code-for-static-analysis/">DeLancey, Semgrep blog, 2025</a></p>
 </section>
 <section id="version-history-v0-2-1-v0-3-17">
 <h2>Version History (v0.2.1 – v0.3.17)<a class="headerlink" href="#version-history-v0-2-1-v0-3-17" title="Link to this heading"></a></h2>

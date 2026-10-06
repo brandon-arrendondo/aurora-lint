@@ -137,31 +137,36 @@ like anyone else’s.</p></li>
 </ul>
 <p>So the question this page answers is not “what would we add if we could afford
 MISRA” but “which open standards add coverage CERT C does not already give
-us”. Two rules on that list are already implemented — see the note under
-The Power of 10 Rules below.</p>
+us”. Two rules from the JPL lists below are already implemented — see the
+note under The Power of 10 Rules below.</p>
 </section>
 <section id="the-power-of-10-rules-nasa-jpl-2006">
 <h2>The Power of 10 Rules (NASA JPL, 2006)<a class="headerlink" href="#the-power-of-10-rules-nasa-jpl-2006" title="Link to this heading"></a></h2>
 <p>Created by Gerard J. Holzmann at NASA’s Jet Propulsion Laboratory, these 10
 rules eliminate C coding practices that make code difficult to review or
-statically analyze. They complement MISRA C guidelines.</p>
+statically analyze. Holzmann presents them as a deliberately short set that
+a tool can check mechanically, in contrast to guidelines of a hundred rules
+or more; the JPL standard below later combined them with MISRA-C:2004.</p>
 <ol class="arabic simple">
-<li><p><strong>Restrict control flow</strong> — avoid complex flow constructs like <code class="docutils literal notranslate"><span class="pre">goto</span></code> and recursion.</p></li>
+<li><p><strong>Restrict control flow</strong> — no <code class="docutils literal notranslate"><span class="pre">goto</span></code>, no <code class="docutils literal notranslate"><span class="pre">setjmp</span></code>/<code class="docutils literal notranslate"><span class="pre">longjmp</span></code>, and no recursion, direct or indirect.</p></li>
 <li><p><strong>Fixed loop bounds</strong> — all loops must have fixed upper bounds (prevents runaway code).</p></li>
-<li><p><strong>No dynamic memory after init</strong> — do not use dynamic memory allocation after initialization.</p></li>
+<li><p><strong>No dynamic memory after init</strong> — all allocation happens during initialization, none after it.</p></li>
 <li><p><strong>Function size limits</strong> — no function longer than ~60 lines (one printed page).</p></li>
 <li><p><strong>Assertion density</strong> — average at least two assertions per function.</p></li>
-<li><p><strong>Limited scope</strong> — declare all data objects at the smallest possible scope.</p></li>
+<li><p><strong>Limited scope</strong> — each data object lives in the innermost scope that can hold it.</p></li>
 <li><p><strong>Check return values</strong> — check the return value of all non-void functions.</p></li>
 <li><p><strong>Limited preprocessor use</strong> — limit to file inclusion and simple macros.</p></li>
-<li><p><strong>Limited pointer complexity</strong> — max 2 levels of dereferencing.</p></li>
+<li><p><strong>Limited pointer use</strong> — at most one level of dereferencing, no dereference hidden in a macro or typedef, and no function pointers.</p></li>
 <li><p><strong>Compiler warnings + static analysis</strong> — compile with all warnings enabled; use static analysis tools.</p></li>
 </ol>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p><strong>Rules 3 and 9 are already implemented</strong>, as <code class="docutils literal notranslate"><span class="pre">BRULE-060</span></code> (no dynamic
-memory allocation after initialization) and <code class="docutils literal notranslate"><span class="pre">BRULE-065</span></code> (no excessive
-pointer indirection) in <code class="docutils literal notranslate"><span class="pre">src/rules/brules/</span></code>. They are the only non-CERT-C
+<p><strong>Rule 3 is already implemented</strong>, as <code class="docutils literal notranslate"><span class="pre">BRULE-060</span></code> (no dynamic memory
+allocation after initialization) in <code class="docutils literal notranslate"><span class="pre">src/rules/brules/</span></code>. Next to it,
+<code class="docutils literal notranslate"><span class="pre">BRULE-065</span></code> (no excessive pointer indirection) flags a declaration with
+more than two levels of pointer indirection. That is the JPL standard’s
+threshold (D-60411 Rule 26, from MISRA-C:2004 Rule 17.5), not rule 9’s
+stricter one level. They are the only non-CERT-C
 rules aurora-lint ships, and they are enabled through
 <code class="docutils literal notranslate"><span class="pre">src/rules/brules/rules-all.toml</span></code> rather than the CERT C manifests. The
 rest of the Power of Ten remains a candidate: rules 1, 2, 4, 6 and 8 are
@@ -176,24 +181,25 @@ all.</p>
 addresses multi-threaded software risks that neither of those covered.</p>
 <section id="multi-threading-concurrency">
 <h3>Multi-threading / Concurrency<a class="headerlink" href="#multi-threading-concurrency" title="Link to this heading"></a></h3>
+<p>Paraphrased; the rule numbers are D-60411’s.</p>
 <ul class="simple">
-<li><p>Use IPC messages for task communication; avoid callbacks.</p></li>
-<li><p>Task synchronization shall not be performed through task delays.</p></li>
-<li><p>Data objects in shared memory should have a single owning task with explicit ownership transfer.</p></li>
-<li><p>Avoid semaphores/locks; if used, avoid nested use.</p></li>
-<li><p>Use memory protection, safety margins, and barrier patterns.</p></li>
+<li><p>Tasks talk to each other through IPC messages, not callbacks (Rule 6).</p></li>
+<li><p>No task waits out a delay as a way to synchronize with another (Rule 7).</p></li>
+<li><p>Each shared data object has one owning task, and ownership is handed over explicitly (Rule 8).</p></li>
+<li><p>Semaphores and locks are best avoided; where they are used, not nested, or else always taken in one documented order (Rule 9).</p></li>
+<li><p>Memory protection where the operating system offers it; otherwise safety margins and barrier patterns that expose access violations (Rule 10).</p></li>
 </ul>
 </section>
 <section id="other-key-rules">
 <h3>Other Key Rules<a class="headerlink" href="#other-key-rules" title="Link to this heading"></a></h3>
 <ul class="simple">
-<li><p>No selective value assignments to elements of an enum list (except first or all).</p></li>
-<li><p>Use typedefs that indicate size and signedness (<code class="docutils literal notranslate"><span class="pre">I32</span></code>, <code class="docutils literal notranslate"><span class="pre">U16</span></code>, etc.) instead of basic types.</p></li>
-<li><p>Make order of evaluation in compound expressions explicit with parentheses.</p></li>
-<li><p>Boolean expressions shall have no side effects.</p></li>
-<li><p>No more than two levels of indirection per declaration.</p></li>
-<li><p>Do not hide dereference operations in macros or typedefs.</p></li>
-<li><p>Non-constant function pointers should not be used.</p></li>
+<li><p>An enumerator list sets explicit values on its first member only, or on every member (Rule 12).</p></li>
+<li><p>Fixed-width typedefs that name their signedness, such as <code class="docutils literal notranslate"><span class="pre">I32</span></code> and <code class="docutils literal notranslate"><span class="pre">U16</span></code>, stand in for the basic types (Rule 17).</p></li>
+<li><p>Parentheses spell out the intended evaluation order in compound expressions (Rule 18).</p></li>
+<li><p>Evaluating a Boolean expression changes no state (Rule 19).</p></li>
+<li><p>A declaration carries at most two levels of pointer indirection (Rule 26).</p></li>
+<li><p>Macros and typedefs never conceal a pointer dereference (Rule 28).</p></li>
+<li><p>Any function pointer is constant (Rule 29).</p></li>
 </ul>
 </section>
 <section id="earlier-standards-referenced-by-jpl">
@@ -211,15 +217,10 @@ addresses multi-threaded software risks that neither of those covered.</p>
 </section>
 <section id="barr-c-embedded-c-coding-standard">
 <h2>BARR-C Embedded C Coding Standard<a class="headerlink" href="#barr-c-embedded-c-coding-standard" title="Link to this heading"></a></h2>
-<p>Barr Group’s standard minimizes bugs in firmware by focusing on practical rules.
-BARR-C:2018 has been fully harmonized with MISRA C:2012 in its stylistic rules.
-Key embedded-specific areas:</p>
-<ul class="simple">
-<li><p>Proper use of the <code class="docutils literal notranslate"><span class="pre">volatile</span></code> keyword for hardware registers and ISR-accessed variables.</p></li>
-<li><p>File naming and organization conventions.</p></li>
-<li><p>Comment standards.</p></li>
-<li><p>Specific brace placement rules selected to reduce bugs.</p></li>
-</ul>
+<p>Barr Group says its standard “was developed to minimize bugs in firmware by
+focusing on practical rules that keep bugs out”, and that in BARR-C:2018 “the
+stylistic coding rules have been fully harmonized with MISRA C: 2012”
+(barrgroup.com, <em>Embedded C Coding Standard</em>).</p>
 </section>
 <section id="candidate-rules-for-implementation">
 <h2>Candidate Rules for Implementation<a class="headerlink" href="#candidate-rules-for-implementation" title="Link to this heading"></a></h2>

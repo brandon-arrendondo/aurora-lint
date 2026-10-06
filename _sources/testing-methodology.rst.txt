@@ -516,7 +516,9 @@ We did not find any published CERT-C violation rates per KLOC on production
 open-source code. Valid comparison strategies:
 
 1. aurora-lint vs. cppcheck vs. clang-tidy on same codebase (done for 5 projects)
-2. aurora-lint on JasPer with reference to SEI SCALe 2015 report (only named CERT-C audit)
+2. aurora-lint on JasPer with reference to David Svoboda, *SCALe Analysis of
+   JasPer Codebase* (SEI, April 2015), a CERT C audit of JasPer and the only
+   published audit of a named codebase against CERT C that we found
 3. aurora-lint TP rate vs. TrustInSoft's synthetic CERT-C benchmark as upper bound
 
 For academic context on tool effectiveness, FP rates, and the Juliet benchmark
