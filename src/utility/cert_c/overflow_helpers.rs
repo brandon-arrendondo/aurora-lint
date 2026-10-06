@@ -266,7 +266,7 @@ pub fn contains_word(text: &str, word: &str) -> bool {
         if before_ok && after_ok {
             return true;
         }
-        start = abs_pos + 1;
+        start = crate::utility::cert_c::text_bounds::next_boundary(text, abs_pos + 1);
     }
     false
 }

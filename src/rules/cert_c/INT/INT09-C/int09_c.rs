@@ -157,7 +157,9 @@ impl Int09C {
         if inner_end <= inner_start || inner_end > source.len() {
             return;
         }
-        let list_text = &source[inner_start..inner_end];
+        let Some(list_text) = source.get(inner_start..inner_end) else {
+            return;
+        };
 
         let mut enumerators: Vec<EnumValue> = Vec::new();
         let mut current_value: i64 = 0;

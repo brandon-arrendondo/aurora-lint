@@ -690,7 +690,7 @@ fn message_contains_prefix(message: &str, prefix: &str) -> bool {
         if at_boundary {
             return true;
         }
-        search_from = abs_pos + 1;
+        search_from = crate::utility::cert_c::text_bounds::next_boundary(message, abs_pos + 1);
     }
     false
 }

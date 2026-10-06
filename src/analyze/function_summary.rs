@@ -6942,7 +6942,7 @@ fn contains_word_with_op(text: &str, word: &str, op: &str, lit: &str) -> bool {
                 }
             }
         }
-        start = pos + 1;
+        start = crate::utility::cert_c::text_bounds::next_boundary(text, pos + 1);
     }
     false
 }
@@ -6989,7 +6989,7 @@ fn contains_lit_with_op_word(text: &str, lit: &str, op: &str, word: &str) -> boo
                 }
             }
         }
-        start = pos + 1;
+        start = crate::utility::cert_c::text_bounds::next_boundary(text, pos + 1);
     }
     false
 }

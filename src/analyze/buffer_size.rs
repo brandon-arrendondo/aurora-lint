@@ -474,7 +474,7 @@ pub fn resolve_bare_alias_in_range(
     );
     let re = regex::Regex::new(&pattern).ok()?;
     let end = end.min(lines.len().saturating_sub(1));
-    for line in &lines[start..=end] {
+    for line in lines.get(start..=end).unwrap_or_default() {
         if let Some(caps) = re.captures(line) {
             let target = &caps[1];
             if target == var_name || target == "NULL" || target == "0" {
@@ -506,7 +506,7 @@ pub fn resolve_alloc_assigned_in_range(
     let re = regex::Regex::new(&pattern).ok()?;
     let end = end.min(lines.len().saturating_sub(1));
     let mut best: Option<usize> = None;
-    for line in &lines[start..=end] {
+    for line in lines.get(start..=end).unwrap_or_default() {
         let Some(caps) = re.captures(line) else {
             continue;
         };
