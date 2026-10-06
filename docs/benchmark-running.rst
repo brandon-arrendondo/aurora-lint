@@ -229,8 +229,10 @@ Supported codebases: ``libcrc``, ``sqlite``, ``mosquitto``, ``curl``, ``hostap``
 ``lua``, ``raylib``, ``pureftpd``, ``sel4``, ``mbedtls``, ``valkey``, ``ventoy``
 (aurora-lint-only for ``pureftpd``, ``sel4``, ``mbedtls`` and ``valkey`` — no
 cppcheck/clang-tidy baseline yet; ``ventoy`` is the Win32 oracle,
-``Ventoy2Disk/Ventoy2Disk/`` only, and ``<windows.h>`` is unresolved on a
-Linux node for every tool alike)
+``Ventoy2Disk/Ventoy2Disk/`` only; aurora-lint scans it against the pinned
+Windows SDK/CRT header tree, which must be provisioned first -- see
+:doc:`benchmark-setup` -- while cppcheck and clang-tidy still run without
+``<windows.h>``)
 
 .. note::
 

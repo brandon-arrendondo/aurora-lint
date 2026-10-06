@@ -31,6 +31,13 @@
 #   ansible-playbook playbooks/setup-benchmark-repos-macos.yml -i "localhost," -c local \
 #     -e bench_root=/Users/you/toolchain
 #
+# Corpora that declare a pinned system-header tree (ventoy: the Windows SDK
+# and MSVC CRT headers) need it fetched too, which accepts Microsoft's license
+# terms for this machine, so it only happens when asked for:
+#   ansible-playbook playbooks/setup-benchmark-repos-macos.yml -i "localhost," -c local \
+#     -e accept_microsoft_license=true --tags header-trees
+# See playbooks/tasks/header-trees.yml.
+#
 # After running:
 #   git -C ~/toolchain/libcrc rev-parse HEAD   # etc., verify pinned SHAs
 
@@ -125,6 +132,13 @@
     #     ansible-core) misclassifies brew 6.x's "already installed and
     #     up-to-date" warning as a task failure, so a plain re-run against
     #     a partially-provisioned host aborts on the first hit.
+    - name: Pinned system-header trees (ventoy's Windows SDK/CRT; needs -e accept_microsoft_license=true)
+      include_tasks:
+        file: tasks/header-trees.yml
+        apply:
+          tags: [header-trees]
+      tags: [header-trees]
+
     - name: Compute which header packages are not yet installed
       shell: |
         set -o pipefail

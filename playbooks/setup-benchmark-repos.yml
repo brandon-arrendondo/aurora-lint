@@ -19,6 +19,13 @@
 #   ansible-playbook playbooks/setup-benchmark-repos.yml -i "localhost," -c local \
 #     -e bench_root=/data/toolchain
 #
+# Corpora that declare a pinned system-header tree (ventoy: the Windows SDK
+# and MSVC CRT headers) need it fetched too, which accepts Microsoft's license
+# terms for this machine, so it only happens when asked for:
+#   ansible-playbook playbooks/setup-benchmark-repos.yml -i "localhost," -c local \
+#     -e accept_microsoft_license=true --tags header-trees
+# See playbooks/tasks/header-trees.yml.
+#
 # After running:
 #   git -C ~/toolchain/libcrc rev-parse HEAD   # etc., verify pinned SHAs
 
@@ -66,6 +73,13 @@
       loop: "{{ checkout_heads.results }}"
       loop_control:
         label: "{{ item.item.name }}"
+
+    - name: Pinned system-header trees (ventoy's Windows SDK/CRT; needs -e accept_microsoft_license=true)
+      include_tasks:
+        file: tasks/header-trees.yml
+        apply:
+          tags: [header-trees]
+      tags: [header-trees]
 
     - name: Third-party library headers (resolves -I include paths; see docs/benchmark-setup.rst)
       become: true

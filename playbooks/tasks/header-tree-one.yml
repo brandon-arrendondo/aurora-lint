@@ -1,0 +1,103 @@
+---
+# One corpus's pinned header tree (see header-trees.yml). `corpus` is its
+# data/benchmark_repos.json entry.
+
+- name: "{{ corpus.name }}: paths and xwin flags"
+  set_fact:
+    ht: "{{ corpus.header_tree }}"
+    ht_dir: "{{ bench_root }}/header-trees/{{ corpus.header_tree.id }}"
+    # Staged beside the destination so xwin's moves out of its cache, and the
+    # final rename, stay on one filesystem.
+    ht_stage: "{{ bench_root }}/header-trees/.{{ corpus.header_tree.id }}.partial"
+    xwin_bin: "{{ ansible_env.HOME }}/.cargo/bin/xwin"
+
+- name: "{{ corpus.name }}: is the tree already present with the pinned hash?"
+  command: python3 -m bench.header_tree verify {{ corpus.name }}
+  args:
+    chdir: "{{ playbook_dir }}/.."
+  environment:
+    SQC_BENCH_ROOT: "{{ bench_root }}"
+  register: ht_verify
+  changed_when: false
+  failed_when: false
+
+- name: "{{ corpus.name }}: fetch the tree"
+  when: ht_verify.rc != 0
+  block:
+    - name: "{{ corpus.name }}: installed xwin version"
+      command: "{{ xwin_bin }} --version"
+      register: xwin_version
+      changed_when: false
+      failed_when: false
+
+    - name: "{{ corpus.name }}: install xwin {{ ht.fetch.tool_version }}"
+      command: >-
+        {{ ansible_env.HOME }}/.cargo/bin/cargo install xwin
+        --version {{ ht.fetch.tool_version }} --locked --force
+      when: xwin_version.rc != 0 or
+            xwin_version.stdout | trim != 'xwin ' ~ ht.fetch.tool_version
+
+    - name: "{{ corpus.name }}: clear a previous or partial tree"
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop: ["{{ ht_dir }}", "{{ ht_stage }}"]
+
+    - name: "{{ corpus.name }}: create the staging directory"
+      file:
+        path: "{{ ht_stage }}"
+        state: directory
+        mode: "0755"
+
+    # --accept-license: accepts Microsoft's license terms for the Windows SDK
+    # and MSVC CRT on this machine. Only reached with
+    # accept_microsoft_license=true (header-trees.yml).
+    - name: "{{ corpus.name }}: xwin splat (downloads from Microsoft, ~120 MiB)"
+      command: >-
+        {{ xwin_bin }} --accept-license
+        --cache-dir {{ ht_stage }}/cache
+        --manifest-version {{ ht.fetch.manifest_version }}
+        --channel {{ ht.fetch.channel }}
+        --arch {{ ht.fetch.arch }}
+        --variant {{ ht.fetch.variant }}
+        --sdk-version {{ ht.fetch.sdk_version }}
+        --crt-version {{ ht.fetch.crt_version }}
+        --http-retry 3
+        splat
+        {{ '' if ht.fetch.case_symlinks else '--disable-symlinks' }}
+        --output {{ ht_stage }}/splat
+
+    - name: "{{ corpus.name }}: drop the download cache and the libraries (a scan reads headers only)"
+      file:
+        path: "{{ ht_stage }}/{{ item }}"
+        state: absent
+      loop: [cache, splat/crt/lib, splat/sdk/lib]
+
+    - name: "{{ corpus.name }}: move the tree into place"
+      command: mv "{{ ht_stage }}/splat" "{{ ht_dir }}"
+
+    - name: "{{ corpus.name }}: remove the staging directory"
+      file:
+        path: "{{ ht_stage }}"
+        state: absent
+
+    - name: "{{ corpus.name }}: verify the fetched tree against the pinned hash"
+      command: python3 -m bench.header_tree verify {{ corpus.name }}
+      args:
+        chdir: "{{ playbook_dir }}/.."
+      environment:
+        SQC_BENCH_ROOT: "{{ bench_root }}"
+      register: ht_reverify
+      changed_when: false
+      failed_when: false
+
+    - name: "{{ corpus.name }}: fail on a hash mismatch"
+      fail:
+        msg: >-
+          {{ ht_reverify.stdout }} -- Microsoft's servers returned different
+          headers for the pinned versions. Do not re-declare the hash to match:
+          scans against this tree are not comparable to scans against the
+          pinned one. Report it; re-pinning is a deliberate change
+          (data/benchmark_repos.json, with a re-confirmation against native
+          MSVC headers).
+      when: ht_reverify.rc != 0

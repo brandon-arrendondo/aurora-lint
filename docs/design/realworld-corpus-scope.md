@@ -188,8 +188,9 @@ warns against piecemeal re-scoping, with a real TP at stake in valkey).
 configuration is "POSIX/Linux on the benchmark host for every corpus"; that
 is true of eleven. ventoy's `Ventoy2Disk` is a Win32 GUI installer, onboarded
 deliberately as the suite's Win32 oracle — it is *scanned* on the Linux host
-(with no `-I`, since `windows.h` is not there) but it *measures* Windows
-code. The primary configuration is a property of the code being measured, not
+(against a pinned Windows SDK/CRT header tree, `header_tree` in
+`data/benchmark_repos.json`, since the host has no `windows.h`) but it
+*measures* Windows code. The primary configuration is a property of the code being measured, not
 of the host running the scanner.
 
 Why ventoy specifically (Brandon, 2026-09-22): the suite had no other heavy

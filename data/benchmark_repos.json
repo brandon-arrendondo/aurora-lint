@@ -82,7 +82,18 @@
     "that writes '*' and means it gets the narrower answer, which is usually",
     "what you want -- and benchmarking_db's assertions check both directions of",
     "drift between what these globs accept and what the runner actually",
-    "scans."
+    "scans.",
+    "",
+    "'header_tree' (ventoy only): the platform headers a corpus is scanned",
+    "against, pinned like its commit. ventoy is Win32 code and a Linux node",
+    "has no <windows.h>; without one, every Win32 call is an undeclared",
+    "identifier and the findings describe the node, not the corpus. The tree",
+    "is fetched per machine by xwin from Microsoft under Microsoft's license",
+    "terms and never committed, so the pin is the 'fetch' versions plus a",
+    "'manifest_sha256' over the header files. The runner refuses to scan the",
+    "corpus without a matching tree and records the tree with each scan;",
+    "corpus-check verifies it. Field meanings and the hash definition:",
+    "bench/header_tree.py. Provisioning: playbooks/setup-benchmark-repos.yml."
   ],
   "repos": [
     {
@@ -344,7 +355,30 @@
         "Ventoy2Disk/Ventoy2Disk/fat_io_lib/**",
         "Ventoy2Disk/Ventoy2Disk/ff14/**",
         "Ventoy2Disk/Ventoy2Disk/xz-embedded-20130513/**"
-      ]
+      ],
+      "header_tree": {
+        "id": "msvc-x86-sdk10.0.26100-crt14.44.17.14-xwin0.10.0",
+        "fetch": {
+          "tool": "xwin",
+          "tool_version": "0.10.0",
+          "manifest_version": "17",
+          "channel": "release",
+          "arch": "x86",
+          "variant": "desktop",
+          "sdk_version": "10.0.26100",
+          "crt_version": "14.44.17.14",
+          "case_symlinks": false
+        },
+        "hashed_dirs": ["crt/include", "sdk/include"],
+        "manifest_sha256": "c020cfafb2ebeb16fea5bc1337c6273ba541185587b7c5b4950147376a64e3bb",
+        "include_dirs": [
+          "crt/include",
+          "sdk/include/ucrt",
+          "sdk/include/um",
+          "sdk/include/shared",
+          "sdk/include/winrt"
+        ]
+      }
     }
   ]
 }

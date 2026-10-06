@@ -590,9 +590,10 @@ CODEBASES = {
             # nothing in scope can use.
             "scan_path": "{path}/Ventoy2Disk/Ventoy2Disk",
             "manifest": "conf/realworld/ventoy-rules.toml",
-            # No -I: <windows.h> and the COM/VDS headers are not on a Linux
-            # node, and aurora-lint parses without them (same precedent as
-            # hostap's <netlink/*.h> gap on macOS).
+            # No -I here: the Windows SDK/CRT headers come from the pinned
+            # header tree data/benchmark_repos.json declares for ventoy
+            # (bench/header_tree.py), which run_one verifies and appends.
+            # A node without that tree does not scan ventoy at all.
             "includes": [],
             "extra_args": [
                 "-d", "{path}/Ventoy2Disk/Ventoy2Disk",
@@ -601,11 +602,12 @@ CODEBASES = {
                 "--report-exclude", "xz-embedded-20130513/**",
             ],
         },
-        # Same top-level-only scope for the competitor tools. Neither can
-        # resolve <windows.h> on the benchmark node any more than aurora-lint
-        # can; cppcheck carries on regardless (missingIncludeSystem is
-        # suppressed suite-wide), clang-tidy reports the unresolved include
-        # per TU and analyses what it can parse past it.
+        # Same top-level-only scope for the competitor tools. They do not
+        # get the header tree: neither resolves <windows.h> here, so their
+        # ventoy baseline is still header-less. cppcheck carries on
+        # regardless (missingIncludeSystem is suppressed suite-wide),
+        # clang-tidy reports the unresolved include per TU and analyses what
+        # it can parse past it.
         "cppcheck": {
             "includes": [],
             "source_dirs": ["{path}/Ventoy2Disk/Ventoy2Disk/"],
@@ -757,7 +759,8 @@ def _sqc_manifest(cfg: dict) -> Path:
 
 def _build_sqc_cmd(cfg: dict, results_dir: Path, run_id: str,
                    compile_db: str | None = None,
-                   profile: str = DEFAULT_PROFILE) -> list[str]:
+                   profile: str = DEFAULT_PROFILE,
+                   header_includes: list[str] | None = None) -> list[str]:
     path = str(cfg["path"])
     scan_path = cfg["sqc"].get("scan_path")
     scan_path = _expand([scan_path], path)[0] if scan_path else path
@@ -780,7 +783,29 @@ def _build_sqc_cmd(cfg: dict, results_dir: Path, run_id: str,
         cmd.extend(["--compile-commands", compile_db])
     cmd.extend(extra)
     cmd.extend(includes)
+    cmd.extend(header_includes or [])
     return cmd
+
+
+def _verified_header_tree(codebase: str):
+    """The pinned header tree `codebase` declares (bench/header_tree.py), or
+    None if it declares none. Raises if the tree is missing or its manifest
+    hash does not match: scanning without it would record header-less
+    findings under the same run identity as the real ones."""
+    from bench import header_tree
+    spec = header_tree.spec_for(codebase)
+    if spec is None:
+        return None
+    res = header_tree.check(spec)
+    if res["status"] != header_tree.OK:
+        detail = ("is missing" if res["status"] == header_tree.MISSING
+                  else f"has manifest hash {res['actual'][:12]}, expected "
+                       f"{res['expected'][:12]}")
+        raise FileNotFoundError(
+            f"header tree {res['path']} {detail}.\n"
+            f"{codebase} is scanned against pinned system headers; "
+            + header_tree.fix_hint(codebase))
+    return spec
 
 
 def _build_cppcheck_cmd(cfg: dict) -> list[str]:
@@ -1582,7 +1607,9 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
         compile_db = str(found)
 
     settings = None
+    header_spec = None
     if tool == "sqc":
+        header_spec = _verified_header_tree(codebase)
         settings = resolve_settings(
             profile, compile_db=compile_db, manifest=_sqc_manifest(cfg),
             extra_args=_expand(cfg["sqc"].get("extra_args", []), str(cfg["path"])))
@@ -1612,7 +1639,9 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
 
     with log_path.open("w") as log_fh:
         if tool == "sqc":
-            cmd = _build_sqc_cmd(cfg, version_dir, run_id, compile_db, profile)
+            from bench.header_tree import include_args
+            cmd = _build_sqc_cmd(cfg, version_dir, run_id, compile_db, profile,
+                                 include_args(header_spec) if header_spec else None)
             result_file = version_dir / f"{run_id}.json"
             proc = subprocess.run(cmd, stdout=log_fh, stderr=subprocess.STDOUT)
         elif tool == "cppcheck":
@@ -1654,6 +1683,11 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
         "scanned_loc": scanned_loc,
         "scanned_basis": "sqc_scan_path+sqc_excludes",
     }
+    if header_spec:
+        # The system headers this scan resolved against. Like the commit,
+        # true only at scan time, so the sidecar carries it.
+        from bench.header_tree import provenance
+        meta["header_tree"] = provenance(header_spec)
     (version_dir / f"{run_id}.meta.json").write_text(json.dumps(meta))
 
     parsed = _parse_result_file(result_file, tool, cfg) if result_file.exists() \

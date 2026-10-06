@@ -309,6 +309,48 @@ covers all of these):
     # mosquitto, sqlite, valkey). amd64 only; an arm64 host has no equivalent
     sudo apt-get install -y libc6-dev-i386
 
+Windows SDK and CRT Headers (ventoy)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``ventoy`` is Win32 code, so a Linux or macOS node has none of its system
+headers. Without ``<windows.h>`` every Win32 call is an undeclared identifier:
+the scan reports several hundred DCL31-C findings that describe the node, not
+the code, and API00-C and INT30-C see different code too. So ventoy is scanned
+against a pinned tree of the Windows SDK and MSVC CRT headers, declared in
+``data/benchmark_repos.json`` (``header_tree``) next to its commit pin: the
+exact `xwin <https://github.com/Jake-Shadle/xwin>`_ versions that produce it,
+and a manifest hash over the header files (definition in
+``bench/header_tree.py``). The tree was pinned after a scan against it gave
+findings identical to a scan against a native Visual Studio installation of
+the same SDK and CRT.
+
+The headers are Microsoft's. Fetching them accepts Microsoft's license terms
+for the Windows SDK and the MSVC CRT, so the playbook only does it when you
+say so:
+
+.. code-block:: bash
+
+    ansible-playbook playbooks/setup-benchmark-repos.yml -i "localhost," -c local \
+      -e accept_microsoft_license=true --tags header-trees
+
+(``setup-benchmark-repos-macos.yml`` on macOS; the step is the same.) It
+installs the pinned xwin with ``cargo`` if needed, downloads about 120 MiB,
+keeps the headers (about 370 MB) under
+``$SQC_BENCH_ROOT/header-trees/<id>/``, and fails if their hash differs from
+the pin. Each machine fetches its own copy: never commit the tree or copy it
+between machines.
+
+``corpus-check`` reports the tree as ``MISSING`` or ``MISMATCH`` like a
+drifted commit, and ``realworld-run`` refuses to scan ventoy without a
+matching tree rather than produce header-less findings. Each scan records the
+tree it used (``header_tree``) in its ``.meta.json`` sidecar. cppcheck and
+clang-tidy are not given the tree: their ventoy baselines remain header-less.
+
+To re-pin (a new SDK or CRT), change the ``fetch`` versions and the ``id``,
+fetch the tree, print its hash with
+``python3 -m bench.header_tree hash ventoy <tree-dir>``, confirm the findings
+match a native-header scan, and only then declare the new hash.
+
 Per-Project Include Paths
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 

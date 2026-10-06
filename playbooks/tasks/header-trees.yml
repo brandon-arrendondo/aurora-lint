@@ -1,0 +1,44 @@
+---
+# Pinned system-header trees (included by setup-benchmark-repos.yml and
+# setup-benchmark-repos-macos.yml; the steps are the same on both).
+#
+# A corpus that declares 'header_tree' in data/benchmark_repos.json is scanned
+# against those headers instead of the host's (today: ventoy, against the
+# Windows SDK and MSVC CRT headers). The tree is fetched with xwin from
+# Microsoft's servers at the pinned versions, its libraries are pruned, and
+# its manifest hash is checked against the declared one. See
+# bench/header_tree.py for the fields and the hash.
+#
+# LICENSE. xwin downloads the Windows SDK and the MSVC CRT under Microsoft's
+# license terms, and running this step with -e accept_microsoft_license=true
+# accepts them for the machine it runs on (the flag is passed to xwin as
+# --accept-license). Every machine fetches its own copy. Never commit the
+# tree to a repository or copy it to another machine: provision each one
+# with this step instead.
+#
+# Without the flag nothing is downloaded; corpus-check then reports the tree
+# MISSING and `bench realworld-run` refuses to scan that corpus.
+
+- name: Corpora that declare a pinned header tree
+  set_fact:
+    header_tree_repos: "{{ repos | selectattr('header_tree', 'defined') | list }}"
+
+- name: Header trees need the Microsoft license accepted
+  debug:
+    msg: >-
+      Skipping the header trees for {{ header_tree_repos | map(attribute='name') | join(', ') }}:
+      fetching them accepts Microsoft's license terms for the Windows SDK and
+      MSVC CRT. Re-run with -e accept_microsoft_license=true --tags header-trees
+      to accept them and fetch. Until then those corpora fail corpus-check and
+      are not scanned.
+  when:
+    - header_tree_repos | length > 0
+    - not (accept_microsoft_license | default(false) | bool)
+
+- name: Fetch and verify each pinned header tree
+  include_tasks: header-tree-one.yml
+  loop: "{{ header_tree_repos }}"
+  loop_control:
+    loop_var: corpus
+    label: "{{ corpus.name }}: {{ corpus.header_tree.id }}"
+  when: accept_microsoft_license | default(false) | bool

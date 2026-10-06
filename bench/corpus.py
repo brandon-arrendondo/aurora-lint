@@ -38,6 +38,12 @@ Independently of status, three contamination flags are reported:
               gitignored sqlite3.c amalgamation, which would silently add
               ~250k lines to every sqlite scan.
 
+A corpus that declares a pinned system-header tree (ventoy's Windows SDK/CRT;
+see bench/header_tree.py) has it checked too: present under
+BENCH_ROOT/header-trees/, with the declared manifest hash. A missing or
+different tree fails the check like a drifted commit, since the runner
+refuses to scan the corpus without it.
+
 Both untracked and gitignored counts are run through the SAME --exclude-all
 globs `bench/realworld_runner.py`'s CODEBASES[...]["sqc"]["extra_args"] passes
 to the real scan: a stray .c/.h sitting under a tree the scan leaves out of
@@ -213,7 +219,12 @@ def check_repo(entry, bench_root=None):
         "dirty": 0, "untracked_scanned": 0, "untracked_ignored": 0,
         "gitignored_scanned": 0, "untracked_scanned_but_excluded": 0,
         "gitignored_scanned_but_excluded": 0,
+        "header_tree": None,
     }
+    spec = entry.get("header_tree")
+    if spec:
+        from bench.header_tree import check
+        res["header_tree"] = check(spec, bench_root)
 
     if not path.is_dir():
         res["status"] = "MISSING"
@@ -269,6 +280,11 @@ def check_repo(entry, bench_root=None):
     return res
 
 
+def header_tree_bad(r):
+    """True if `r` declares a header tree that is not present and matching."""
+    return bool(r["header_tree"]) and r["header_tree"]["status"] != "OK"
+
+
 def check_all(bench_root=None):
     """Inspect every pinned checkout, worst status first."""
     results = [check_repo(e, bench_root) for e in load_repos()]
@@ -293,6 +309,7 @@ def report(bench_root=None, as_json=False):
     root = Path(bench_root) if bench_root else BENCH_ROOT
     results = check_all(bench_root)
     bad = [r for r in results if r["status"] != "OK"]
+    bad_trees = [r for r in results if header_tree_bad(r)]
     contaminated = [r for r in results
                     if r["dirty"] or r["untracked_scanned"]
                     or r["gitignored_scanned"]]
@@ -301,10 +318,10 @@ def report(bench_root=None, as_json=False):
         print(json.dumps({
             "bench_root": str(root),
             "bench_root_exists": root.is_dir(),
-            "clean": not bad and not contaminated,
+            "clean": not bad and not bad_trees and not contaminated,
             "repos": results,
         }, indent=2))
-        return 0 if not bad and not contaminated else 1
+        return 0 if not bad and not bad_trees and not contaminated else 1
 
     print(f"BENCH_ROOT: {root}"
           f"{'' if root.is_dir() else '   *** DOES NOT EXIST ***'}")
@@ -329,6 +346,8 @@ def report(bench_root=None, as_json=False):
         if r["untracked_scanned_but_excluded"]:
             notes.append(f"{r['untracked_scanned_but_excluded']} untracked "
                          "under a scan --exclude-all (harmless)")
+        if r["header_tree"]:
+            notes.append(f"header tree {r['header_tree']['status']}")
         if r["gitignored_scanned_but_excluded"]:
             notes.append(f"{r['gitignored_scanned_but_excluded']} gitignored "
                          "under a scan --exclude-all (harmless)")
@@ -340,6 +359,15 @@ def report(bench_root=None, as_json=False):
         print(f"\n{len(bad)} checkout(s) not pinned:")
         for r in bad:
             print(f"  {r['name']:<11} {r['status']:<11} {_fix_hint(r)}")
+    if bad_trees:
+        from bench.header_tree import fix_hint
+        print(f"\n{len(bad_trees)} pinned header tree(s) missing or different:")
+        for r in bad_trees:
+            t = r["header_tree"]
+            got = f"manifest {t['actual'][:12]}, expected {t['expected'][:12]}" \
+                if t["actual"] else "not present"
+            print(f"  {r['name']:<11} {t['status']:<11} {t['path']} ({got})\n"
+                  f"  {'':<11} {fix_hint(r['name'])}")
     if contaminated:
         print(f"\n{len(contaminated)} checkout(s) with modified or scannable "
               f"untracked files -- scanned source differs from the pin:")
@@ -347,10 +375,10 @@ def report(bench_root=None, as_json=False):
             print(f"  {r['name']:<11} dirty={r['dirty']} "
                   f"untracked_scanned={r['untracked_scanned']} "
                   f"gitignored_scanned={r['gitignored_scanned']}")
-    if not bad and not contaminated:
+    if not bad and not bad_trees and not contaminated:
         print(f"\nAll {len(results)} checkouts detached at their pinned "
               "commits, working trees clean.")
     else:
         print("\nFindings taken off a non-OK checkout are NOT comparable to "
               "ground_truth,\nwhich is keyed on project+commit+file+line+rule.")
-    return 0 if not bad and not contaminated else 1
+    return 0 if not bad and not bad_trees and not contaminated else 1
