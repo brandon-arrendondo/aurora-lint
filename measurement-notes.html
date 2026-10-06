@@ -69,6 +69,11 @@
 <li class="toctree-l3"><a class="reference internal" href="#reading-an-err33-c-figure">Reading an ERR33-C figure</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="#what-changed-in-how-v0-6-0-is-measured">What changed in how v0.6.0 is measured</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#juliet">Juliet</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#real-world">Real-world</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#precision-intervals">Precision intervals</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#the-views">The views</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#regenerating-an-interval-exactly">Regenerating an interval exactly</a></li>
@@ -109,10 +114,10 @@
              
   <section id="measurement-notes">
 <h1>Measurement Notes<a class="headerlink" href="#measurement-notes" title="Link to this heading"></a></h1>
-<p>Three things a reader needs to compare real-world figures across
-releases: why the v0.5.0 baseline is a trend break rather than a gain, how the
-ERR33-C labels moved between oracle snapshots, and how the precision intervals
-are computed. The paper states the finding and cites this page at a pinned
+<p>What a reader needs to compare figures across releases: why the v0.5.0
+baseline is a trend break rather than a gain, how the ERR33-C labels moved
+between oracle snapshots, what changed in how v0.6.0 is measured, and how the
+precision intervals are computed. The paper states the finding and cites this page at a pinned
 version for the detail.</p>
 <nav class="contents local" id="contents">
 <ul class="simple">
@@ -129,10 +134,16 @@ version for the detail.</p>
 <li><p><a class="reference internal" href="#reading-an-err33-c-figure" id="id7">Reading an ERR33-C figure</a></p></li>
 </ul>
 </li>
-<li><p><a class="reference internal" href="#precision-intervals" id="id8">Precision intervals</a></p>
+<li><p><a class="reference internal" href="#what-changed-in-how-v0-6-0-is-measured" id="id8">What changed in how v0.6.0 is measured</a></p>
 <ul>
-<li><p><a class="reference internal" href="#the-views" id="id9">The views</a></p></li>
-<li><p><a class="reference internal" href="#regenerating-an-interval-exactly" id="id10">Regenerating an interval exactly</a></p></li>
+<li><p><a class="reference internal" href="#juliet" id="id9">Juliet</a></p></li>
+<li><p><a class="reference internal" href="#real-world" id="id10">Real-world</a></p></li>
+</ul>
+</li>
+<li><p><a class="reference internal" href="#precision-intervals" id="id11">Precision intervals</a></p>
+<ul>
+<li><p><a class="reference internal" href="#the-views" id="id12">The views</a></p></li>
+<li><p><a class="reference internal" href="#regenerating-an-interval-exactly" id="id13">Regenerating an interval exactly</a></p></li>
 </ul>
 </li>
 </ul>
@@ -293,8 +304,61 @@ separates the three, not as a single number.</p></li>
 </ul>
 </section>
 </section>
+<section id="what-changed-in-how-v0-6-0-is-measured">
+<h2><a class="toc-backref" href="#id8" role="doc-backlink">What changed in how v0.6.0 is measured</a><a class="headerlink" href="#what-changed-in-how-v0-6-0-is-measured" title="Link to this heading"></a></h2>
+<p>Between v0.5.3 and v0.6.0 every movement in the benchmark figures was traced
+to the commit that caused it, before the release was cut. Most are changes in
+what the rules detect, and the changelog lists them. The ones below change
+<em>how</em> a figure is measured, so they are trend breaks: compare a v0.6.0 figure
+with a v0.5.x one only after accounting for them. The figures themselves come
+from the release’s citation runs, not from this page.</p>
+<section id="juliet">
+<h3><a class="toc-backref" href="#id9" role="doc-backlink">Juliet</a><a class="headerlink" href="#juliet" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>Which rules run on each CWE.</strong> Fast mode runs, for each Juliet CWE, the
+rules that map to it. Since this release a rule’s mapping holds only the
+CWEs its own Juliet cases verify; the rest moved to a list of related CWEs.
+Whole blocks of a rule’s findings on a CWE therefore appear or vanish, and
+the per-file denominator changes with them. Some true positives that
+disappeared from a CWE (for example STR31-C on CWE-124 and CWE-127) are
+mapping removals, not detection losses.</p></li>
+<li><p><strong>What a flaw line is.</strong> A flaw line is now the code a <code class="docutils literal notranslate"><span class="pre">FLAW</span></code> comment
+annotates, counted once. This changes the flaw-line figures and nothing else.</p></li>
+<li><p><strong>Caller sets.</strong> Under ADR-0011 a check made by every visible caller proves
+a parameter only when the caller set is closed: the function is <code class="docutils literal notranslate"><span class="pre">static</span></code>
+and its address stays inside the scanned source. Juliet’s functions have
+external linkage, so they count as open, and the rules now report inside
+good functions whose callers pass only safe values. Most of those are the
+hardcoded-value good functions NIST describes as Juliet’s most widespread
+issue. The Juliet runs declare <code class="docutils literal notranslate"><span class="pre">closed_program</span></code>, but in this release that
+option applies only to EXP33-C (<a class="reference internal" href="options.html"><span class="doc">Policy and Environment Options</span></a>). Juliet’s false positives
+rise accordingly. On real-world code the same change is the intended reading,
+because exported and library functions do have callers the scan cannot see.</p></li>
+</ul>
+</section>
+<section id="real-world">
+<h3><a class="toc-backref" href="#id10" role="doc-backlink">Real-world</a><a class="headerlink" href="#real-world" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>What counts as the corpus.</strong> The benchmark runner now excludes each
+project’s test, demo and tooling trees from the scan entirely, including
+from the cross-file facts other files are checked against, as declared in
+<code class="docutils literal notranslate"><span class="pre">docs/design/realworld-corpus-scope.md</span></code>. Findings in those trees leave the
+figures.</p></li>
+<li><p><strong>Declared facts.</strong> Each real-world manifest now declares its data model and,
+where the project frees memory through its own functions, its deallocators
+(<code class="docutils literal notranslate"><span class="pre">conf/realworld/</span></code>). Since frees count only by proof, a declaration can
+remove leak reports a project’s wrapper used to cause, or let a rule see a
+free it missed and report where it was silent.</p></li>
+<li><p><strong>Analysis time.</strong> Real-world analysis is markedly slower than in v0.5.3,
+mostly because of one new null-state proof whose cost grows with the square
+of a function’s length, and partly because previously unparsable code now
+parses. Juliet’s short functions show little of it. Compare analysis times
+only between runs of the same release on the same node.</p></li>
+</ul>
+</section>
+</section>
 <section id="precision-intervals">
-<h2><a class="toc-backref" href="#id8" role="doc-backlink">Precision intervals</a><a class="headerlink" href="#precision-intervals" title="Link to this heading"></a></h2>
+<h2><a class="toc-backref" href="#id11" role="doc-backlink">Precision intervals</a><a class="headerlink" href="#precision-intervals" title="Link to this heading"></a></h2>
 <p>A pooled precision figure is one number over projects whose labeled
 populations differ by orders of magnitude. It mostly describes the largest
 project and a few high-volume rules. So the same run is reported several ways,
@@ -306,7 +370,7 @@ top three rules, each with its Wilson interval, macro-average and
 file-clustered bootstrap interval; the coverage bounds; and the resample
 count, seed, cluster order and CI definition version.</em></p>
 <section id="the-views">
-<h3><a class="toc-backref" href="#id9" role="doc-backlink">The views</a><a class="headerlink" href="#the-views" title="Link to this heading"></a></h3>
+<h3><a class="toc-backref" href="#id12" role="doc-backlink">The views</a><a class="headerlink" href="#the-views" title="Link to this heading"></a></h3>
 <p><strong>Pooled Wilson.</strong> The pooled figure is labeled TP over labeled TP plus FP,
 with a Wilson score interval. Wilson assumes findings are independent, so it
 runs too narrow. Findings cluster: one defect pattern in one function yields a
@@ -333,7 +397,7 @@ quoted with the bracket beside it.</p>
 counts, precision and Wilson interval.</em></p>
 </section>
 <section id="regenerating-an-interval-exactly">
-<h3><a class="toc-backref" href="#id10" role="doc-backlink">Regenerating an interval exactly</a><a class="headerlink" href="#regenerating-an-interval-exactly" title="Link to this heading"></a></h3>
+<h3><a class="toc-backref" href="#id13" role="doc-backlink">Regenerating an interval exactly</a><a class="headerlink" href="#regenerating-an-interval-exactly" title="Link to this heading"></a></h3>
 <p>A seeded bootstrap draws the <em>indices</em> of clusters. Its interval is therefore a
 function of the seed, the replicate count, <strong>and the order in which the
 clusters are listed</strong>. The same clusters in another order give different
