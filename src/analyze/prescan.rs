@@ -6353,8 +6353,11 @@ fn collect_from_struct_specifier(
         let (fields, field_shapes) = extract_struct_fields(&body, source);
         if !fields.is_empty() {
             struct_field_types.insert(name.clone(), fields);
-            shapes.insert(name.clone(), field_shapes);
         }
+        // Filed even when empty: a definition whose members are all guarded
+        // or anonymous-nested still REPLACES another definition's table, so
+        // none of that one's members can answer for this one.
+        shapes.insert(name.clone(), field_shapes);
         file_guarded_and_nested_member_shapes(&body, source, &name, shapes);
     }
 }
@@ -6386,9 +6389,6 @@ fn file_guarded_and_nested_member_shapes(
 ) {
     let mut table = shapes.remove(owner).unwrap_or_default();
     file_member_paths(body, source, "", &mut table);
-    if table.is_empty() {
-        return;
-    }
     shapes.insert(owner.to_string(), table);
 }
 
@@ -6407,17 +6407,19 @@ fn file_member_paths(body: &Node, source: &str, prefix: &str, table: &mut HashMa
                     table.insert(path.clone(), shape.clone());
                 }
             }
+            if matches!(shape.as_str(), "" | "*") {
+                if let Some(inner) = find_anonymous_inner_body(&decl) {
+                    file_member_paths(&inner, source, &format!("{path}."), table);
+                }
+            }
+            // After the recursion, so the paths this declaration's own arm
+            // just filed are poisoned too, whichever arm came first.
             if repeated {
                 let below = format!("{path}.");
                 for (k, v) in table.iter_mut() {
                     if k.starts_with(&below) {
                         *v = "?".to_string();
                     }
-                }
-            }
-            if matches!(shape.as_str(), "" | "*") {
-                if let Some(inner) = find_anonymous_inner_body(&decl) {
-                    file_member_paths(&inner, source, &format!("{path}."), table);
                 }
             }
         } else if let Some(inner) = find_anonymous_inner_body(&decl) {
@@ -6483,8 +6485,8 @@ fn collect_from_typedef(
                     let (fields, field_shapes) = extract_struct_fields(&body, source);
                     if !fields.is_empty() {
                         struct_field_types.insert(alias.clone(), fields);
-                        shapes.insert(alias.clone(), field_shapes);
                     }
+                    shapes.insert(alias.clone(), field_shapes);
                     file_guarded_and_nested_member_shapes(&body, source, &alias, shapes);
                 }
             }
@@ -7764,6 +7766,34 @@ mod tests {
         parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         (tree, code.to_string())
+    }
+
+    // -- member shapes of a struct redefined into the shared table --
+
+    fn collect_into(code: &str, shapes: &mut FieldTable) {
+        let (tree, source) = parse_c(code);
+        let mut types = FieldTable::new();
+        collect_struct_tables(&tree.root_node(), &source, &mut types, shapes);
+    }
+
+    #[test]
+    fn redefinition_with_only_guarded_members_replaces_the_earlier_table() {
+        // The first definition has an anonymous `sme` with an array `ie`; the
+        // second defines the same tag with every member inside #ifdef, so
+        // it has no unconditional member. Merging into the shared table must
+        // replace the first definition's table, not extend it: its `sme.ie`
+        // must not outlive it.
+        let mut shapes = FieldTable::new();
+        collect_into(
+            "struct S { struct { unsigned char ie[8]; } sme; };",
+            &mut shapes,
+        );
+        assert_eq!(shapes["S"].get("sme.ie").map(String::as_str), Some("["));
+        collect_into(
+            "struct S {\n#ifdef WITH_SME\n    struct sme_t sme;\n#endif\n};",
+            &mut shapes,
+        );
+        assert_eq!(shapes["S"].get("sme.ie"), None, "{:?}", shapes["S"]);
     }
 
     // -- typedef aliases under platform-conditional redefinition --
