@@ -787,7 +787,8 @@ Status of the 16 proposals at the end of this doc, against `72b8f734`:
   - ESP must "reason about branch correlations, which is usually necessary to
     control the number of false error reports" [ESP].
   - Bodik et al.: "from 9 to 40 % of conditionals" show compile-time
-    detectable correlation [Bodik].
+    detectable correlation [Bodik, quoting their own PLDI 1997
+    measurement].
   - Path-sensitive tools handle the exact intraprocedural case (per-tool
     **unverified**).
 - **Verdict: aligned.** "Every path, no reassignment" is the soundness
