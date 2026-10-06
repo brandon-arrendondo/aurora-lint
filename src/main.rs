@@ -300,6 +300,12 @@ fn run() -> Result<i32> {
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
+            Arg::new("report_headers")
+                .long("report-headers")
+                .help("Write what #include resolution could and could not see to FILE as JSON: the header search path, every #include that resolved to no file (includer, line, whether in a never-compiled arm or named only by a system header), and every header read from outside the project with its SHA-256, so two hosts' reports diff to the cause of a header-driven difference. Never changes a finding")
+                .value_name("JSON_FILE"),
+        )
+        .arg(
             Arg::new("report_macro_gaps")
                 .long("report-macro-gaps")
                 .help("After the scan, report where the macro-expansion engine was blind: macro definitions it skipped (variadic, #/##, platform-dead, ambiguous or conflicting), #includes it could not resolve, and calls it could not expand or attribute. Prints a summary to stdout; --report-macro-gaps=FILE also writes every row as JSON. Never changes a finding")
@@ -675,6 +681,7 @@ fn run() -> Result<i32> {
     // Some(path) when the flag was given; the path is empty for the bare
     // flag (summary only) and a file name when the user wants the JSON too.
     let report_macro_gaps: Option<String> = matches.get_one::<String>("report_macro_gaps").cloned();
+    let report_headers: Option<String> = matches.get_one::<String>("report_headers").cloned();
     let report_deallocator_candidates: Option<String> = matches
         .get_one::<String>("report_deallocator_candidates")
         .cloned();
@@ -944,6 +951,23 @@ fn run() -> Result<i32> {
     let failures = results.failures;
     let abandoned_rules = results.abandoned_rules;
     let not_converged = results.not_converged;
+    let include_report = results.include_report;
+
+    // Headers the scan could not find change what rules can see, so they are
+    // loud: one stderr line whenever a live #include did not resolve, every
+    // row with -v, all of it (with each outside header's hash) on request.
+    if let Some(line) = include_report.summary_line() {
+        eprintln!("{line}");
+    }
+    if verbosity >= 1 {
+        eprint!("{}", include_report.render_verbose());
+    }
+    if let Some(json_path) = &report_headers {
+        let json = serde_json::to_string_pretty(&include_report.to_json_with_hashes())?;
+        fs::write(json_path, json)
+            .with_context(|| format!("Failed to write header report to {json_path}"))?;
+        eprintln!("Wrote header report to: {json_path}");
+    }
 
     // Post-analysis filtering
     if let Some(ref min_sev) = min_severity {
@@ -983,6 +1007,7 @@ fn run() -> Result<i32> {
                 abandoned_rules: &abandoned_rules,
                 not_converged: &not_converged,
             },
+            &include_report,
         )?;
         println!(
             "Exported {} violations ({} suppressed) to: {}",

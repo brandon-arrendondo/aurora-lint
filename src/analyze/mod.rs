@@ -114,6 +114,9 @@ pub struct AnalysisResults {
     /// this scan, with how often ([`containment::not_converged`]): reported
     /// as warnings, not as an incomplete scan.
     pub not_converged: Vec<(String, u64)>,
+    /// What `#include` resolution could and could not see
+    /// ([`context::IncludeReport`]): reported, never a finding.
+    pub include_report: std::sync::Arc<context::IncludeReport>,
 }
 
 /// Which files a scan leaves out, as path globs relative to the scanned root
@@ -396,6 +399,7 @@ pub fn analyze_project(
             failures,
             abandoned_rules,
             not_converged: containment::take_not_converged(),
+            include_report: std::sync::Arc::clone(&context.include_report),
         });
     }
 
@@ -469,6 +473,7 @@ pub fn analyze_project(
         failures,
         abandoned_rules,
         not_converged: containment::take_not_converged(),
+        include_report: std::sync::Arc::clone(&context.include_report),
     })
 }
 
@@ -1669,6 +1674,7 @@ mod tests {
             failures: vec![],
             abandoned_rules: vec![],
             not_converged: vec![],
+            include_report: Default::default(),
         };
         assert!(results.violations.is_empty());
         assert!(results.suppressed.is_empty());

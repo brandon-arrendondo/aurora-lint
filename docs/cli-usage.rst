@@ -53,6 +53,10 @@ Full Command Reference
                                        Off by default: it spawns a compiler. Usable with or
                                        without --compile-commands, which can never contain
                                        these paths
+          --report-headers FILE        Write what #include resolution could and could not
+                                       see as JSON: the search path, every #include that
+                                       resolved to no file, every header read from outside
+                                       the project with its SHA-256. Never changes a finding
           --report-macro-gaps[=FILE]   After the scan, report where the macro-expansion
                                        engine was blind: definitions it skipped, #includes
                                        it could not resolve, calls it could not attribute.
@@ -316,6 +320,34 @@ Two properties worth knowing:
 The compiler's own built-in system header directories are *not* in a compile
 database (they are implicit), so headers found only in ``/usr/include`` remain
 out of reach.
+
+Headers the Scan Could Not Find
+-------------------------------
+
+A header the scan cannot find changes what it can see: the declarations,
+macros and function bodies that header would supply are missing, and findings
+that rely on them can differ from a scan on a host that has the header. So a
+missing header is never silent. Whenever an ``#include`` in code some
+configuration compiles resolves to no file, aurora-lint prints one line on
+stderr naming how many headers were not found and the first few of them; with
+``-v`` it lists each one with the file and line that includes it and the
+search path it was looked up on. An ``#include`` inside an arm its own file
+proves is never compiled (``#if 0``) is counted, not listed, and one written
+only inside a system header (often a platform arm, such as a NetWare-only
+include in a Linux library header) is listed apart from the project's own.
+
+The SARIF export records the same rows under the run's
+``aurora-lint/headers`` property, with a ``note``-level
+``toolExecutionNotifications`` entry: a missing header is a difference in the
+scan's input, not an incomplete scan, so the run stays successful and the exit
+status is unaffected. ``--report-headers FILE`` writes everything as JSON,
+including each header read from outside the project with its SHA-256, so the
+reports of two hosts diff to the header that explains a difference in their
+findings::
+
+    aurora-lint src/ -d src/ -I include/ -I /usr/include --report-headers headers.json
+
+None of this changes a finding.
 
 Seeing Where the Engine Is Blind
 --------------------------------

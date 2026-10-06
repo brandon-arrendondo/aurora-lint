@@ -17,6 +17,195 @@ pub const ANY_INCLUDE: &str = "?*";
 /// ([`ProjectContext::as_seen_from`]).
 type AliasTables = (HashMap<String, String>, HashMap<String, Vec<String>>);
 
+/// How an `#include` names its header.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum IncludeForm {
+    /// `#include "name.h"`.
+    Quoted,
+    /// `#include <name.h>`.
+    Angle,
+    /// `#include MACRO`: the spelling is the macro, whose value the scan
+    /// does not know.
+    Computed,
+}
+
+/// One `#include` that resolved to no file ([`IncludeReport::unresolved`]).
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct UnresolvedInclude {
+    /// The spelling, delimiters stripped.
+    pub spelling: String,
+    /// How the directive names it.
+    pub form: IncludeForm,
+    /// Real path of the file whose directive it is; empty for a forced
+    /// include, which no file names.
+    pub includer: String,
+    /// 1-based line of the directive; 0 for a forced include.
+    pub line: usize,
+    /// The directive sits in an arm its own file proves is never compiled
+    /// (ADR-0010 D2): counted, never headlined.
+    pub in_dead_arm: bool,
+    /// The includer lies outside every project root: a system header's own
+    /// include, often a platform arm (`ares.h`'s NetWare `<sys/bsdskt.h>`).
+    pub includer_outside_project: bool,
+    /// Classified as a missing project header, presumably generated at build
+    /// time (`ProjectContext::unresolved_project_headers`).
+    pub project_header: bool,
+}
+
+/// What the scan's `#include` resolution could and could not see: the facts
+/// that make a scan's findings depend on the host it ran on. Built by
+/// `prescan::resolve_includes`, sorted, so two hosts' reports diff straight
+/// to the cause. Reports only: nothing here changes a finding.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IncludeReport {
+    /// The header search path in order (`-I`, compile database, system
+    /// directories). A quoted or computed include is looked up in its
+    /// includer's directory first.
+    pub search_paths: Vec<String>,
+    /// Forced includes (cl's `/FI`, `-include`), in command-line order.
+    pub forced_includes: Vec<String>,
+    /// Every distinct unresolved `#include`, sorted.
+    pub unresolved: Vec<UnresolvedInclude>,
+    /// Real paths of the headers read from outside every project root,
+    /// sorted: the system headers whose declarations and macros the scan
+    /// folded in.
+    pub outside_headers: Vec<String>,
+}
+
+impl IncludeReport {
+    /// The unresolved includes in code some configuration compiles.
+    pub fn live(&self) -> impl Iterator<Item = &UnresolvedInclude> {
+        self.unresolved.iter().filter(|u| !u.in_dead_arm)
+    }
+
+    /// The one-line stderr summary, or `None` when every live `#include`
+    /// resolved. Distinct spellings are counted, so a header missing from
+    /// fifty files reads as one missing header.
+    pub fn summary_line(&self) -> Option<String> {
+        let live: Vec<&UnresolvedInclude> = self.live().collect();
+        if live.is_empty() {
+            return None;
+        }
+        let distinct = |rows: &mut dyn Iterator<Item = &&UnresolvedInclude>| {
+            rows.map(|u| u.spelling.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+        };
+        let all = distinct(&mut live.iter());
+        let in_project = distinct(&mut live.iter().filter(|u| !u.includer_outside_project));
+        let in_system = distinct(&mut live.iter().filter(|u| u.includer_outside_project));
+        let mut examples: Vec<&str> = live
+            .iter()
+            .filter(|u| !u.includer_outside_project)
+            .map(|u| u.spelling.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .take(3)
+            .collect();
+        if examples.is_empty() {
+            examples = live
+                .iter()
+                .map(|u| u.spelling.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .take(3)
+                .collect();
+        }
+        let more = if all > examples.len() { ", ..." } else { "" };
+        Some(format!(
+            "Headers: {all} #include'd header(s) not found ({in_project} named by project files, \
+             {in_system} only by system headers): {}{more}. Declarations and macros they would \
+             supply were not seen, so findings that depend on them can differ from a host that \
+             has them; -v lists each, --report-headers FILE writes them all.",
+            examples.join(", ")
+        ))
+    }
+
+    /// The `--report-headers` JSON: this report, each outside header given
+    /// with the SHA-256 of its bytes so "same header, different version"
+    /// shows up as a diff line (unreadable now: `null`).
+    pub fn to_json_with_hashes(&self) -> serde_json::Value {
+        use sha2::{Digest, Sha256};
+        let outside: Vec<serde_json::Value> = self
+            .outside_headers
+            .iter()
+            .map(|path| {
+                let sha256 = std::fs::read(path)
+                    .ok()
+                    .map(|bytes| format!("{:x}", Sha256::digest(bytes)));
+                serde_json::json!({ "path": path, "sha256": sha256 })
+            })
+            .collect();
+        serde_json::json!({
+            "search_paths": self.search_paths,
+            "forced_includes": self.forced_includes,
+            "unresolved": self.unresolved,
+            "outside_headers": outside,
+        })
+    }
+
+    /// The `-v` listing: the search path once, then one line per live
+    /// unresolved `#include`, then the dead-arm count.
+    pub fn render_verbose(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+        let live: Vec<&UnresolvedInclude> = self.live().collect();
+        if live.is_empty() {
+            return out;
+        }
+        let _ = writeln!(
+            out,
+            "Header search path (after the includer's own directory for \"...\" and computed \
+             includes): {}",
+            if self.search_paths.is_empty() {
+                "(none)".to_string()
+            } else {
+                self.search_paths.join(", ")
+            }
+        );
+        for u in live {
+            let (open, close) = match u.form {
+                IncludeForm::Quoted => ("\"", "\""),
+                IncludeForm::Angle => ("<", ">"),
+                IncludeForm::Computed => ("", ""),
+            };
+            let from = if u.includer.is_empty() {
+                "forced include".to_string()
+            } else {
+                format!("{}:{}", u.includer, u.line)
+            };
+            let what = match (u.includer_outside_project, u.project_header) {
+                (true, _) => "named by a system header",
+                (false, true) => "project header, presumably generated at build time",
+                (false, false) => "named by a project file",
+            };
+            let computed = if u.form == IncludeForm::Computed {
+                " (computed: the macro's value is unknown)"
+            } else {
+                ""
+            };
+            let _ = writeln!(
+                out,
+                "unresolved #include {open}{}{close} from {from}: {what}{computed}",
+                u.spelling
+            );
+        }
+        let dead = self.unresolved.len() - self.live().count();
+        if dead > 0 {
+            let _ = writeln!(
+                out,
+                "({dead} more in arms their own file proves are never compiled)"
+            );
+        }
+        out
+    }
+}
+
 /// What one translation unit may include: [`IncludeClosure::of`].
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct IncludeClosure {
@@ -431,6 +620,10 @@ pub struct ProjectContext {
     /// generated header if any of them does.
     #[serde(default)]
     pub include_edges_beyond_search_path: Arc<HashMap<String, Vec<String>>>,
+    /// What `#include` resolution could and could not see
+    /// ([`IncludeReport`]); empty when no search path was given.
+    #[serde(default)]
+    pub include_report: Arc<IncludeReport>,
     /// Names of every object-like `#define` whose replacement text is an
     /// unused-attribute annotation — `__attribute__((unused))`,
     /// `[[maybe_unused]]`, and the reserved spellings — collected across all

@@ -132,7 +132,14 @@ fn violation_to_sarif_result(
 /// `toolExecutionNotifications` entry at level `error` -- where SARIF 2.1.0
 /// puts "the tool hit a problem", and where code-scanning viewers show tool
 /// errors.
-fn invocation(incomplete: super::Incomplete<'_>) -> serde_json::Value {
+///
+/// Headers the scan could not find are a `note`, not an error: a missing
+/// header is a difference in the scan's input, not an incomplete scan, so it
+/// leaves `executionSuccessful` alone (ADR-0017).
+fn invocation(
+    incomplete: super::Incomplete<'_>,
+    headers: &crate::analyze::context::IncludeReport,
+) -> serde_json::Value {
     use crate::analyze::containment::{Cause, Stage};
     let mut notifications: Vec<serde_json::Value> = incomplete
         .failures
@@ -194,6 +201,13 @@ fn invocation(incomplete: super::Incomplete<'_>) -> serde_json::Value {
             ) },
         })
     }));
+    if let Some(summary) = headers.summary_line() {
+        notifications.push(serde_json::json!({
+            "level": "note",
+            "descriptor": { "id": "aurora-lint/headers-not-found" },
+            "message": { "text": summary },
+        }));
+    }
     serde_json::json!({
         "executionSuccessful": successful,
         "toolExecutionNotifications": notifications,
@@ -206,13 +220,15 @@ fn invocation(incomplete: super::Incomplete<'_>) -> serde_json::Value {
 /// `artifacts`, so the report stands on its own without the scanned tree.
 /// The run's `properties` record the policy and environment `settings` the
 /// findings were produced under, since the same code yields different
-/// findings under each.
+/// findings under each, and the `#include`s the scan could not resolve
+/// (`headers`), since a host's missing headers do too.
 pub fn export_all_violations_to_sarif(
     violations: &[RuleViolation],
     suppressed: &[SuppressedViolation],
     sarif_path: &str,
     settings: &AnalysisSettings,
     incomplete: super::Incomplete<'_>,
+    headers: &crate::analyze::context::IncludeReport,
 ) -> Result<()> {
     // Collect unique rules from both active and suppressed violations
     let mut rules_map: BTreeMap<String, &RuleViolation> = BTreeMap::new();
@@ -289,9 +305,17 @@ pub fn export_all_violations_to_sarif(
             },
             "artifacts": artifacts_array,
             "results": results_array,
-            "invocations": [invocation(incomplete)],
+            "invocations": [invocation(incomplete, headers)],
             "properties": {
-                "aurora-lint/settings": settings.to_json()
+                "aurora-lint/settings": settings.to_json(),
+                // What #include resolution could not see, so two hosts'
+                // reports diff to the cause of a header-driven difference.
+                "aurora-lint/headers": {
+                    "searchPaths": headers.search_paths,
+                    "forcedIncludes": headers.forced_includes,
+                    "unresolved": headers.unresolved,
+                    "outsideHeaderCount": headers.outside_headers.len(),
+                }
             }
         }]
     });

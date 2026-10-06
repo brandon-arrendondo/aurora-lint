@@ -40,6 +40,7 @@ pub fn export_all_violations(
     export_path: &str,
     settings: &AnalysisSettings,
     incomplete: Incomplete<'_>,
+    headers: &crate::analyze::context::IncludeReport,
 ) -> Result<()> {
     if export_path.ends_with(".sarif") || export_path.ends_with(".sarif.json") {
         return export_all_violations_to_sarif(
@@ -48,6 +49,7 @@ pub fn export_all_violations(
             export_path,
             settings,
             incomplete,
+            headers,
         );
     }
     if export_path.ends_with(".json") {

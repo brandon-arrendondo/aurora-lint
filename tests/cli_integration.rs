@@ -223,6 +223,93 @@ fn export_sarif_structure() {
     assert_eq!(sha.len(), 64);
 }
 
+/// A header the scan cannot find is loud: one stderr line by default, every
+/// row with -v, a SARIF note that leaves the run successful, and the whole
+/// report with --report-headers. None of it changes a finding.
+#[test]
+fn missing_headers_are_reported_on_stderr_in_sarif_and_on_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let proj = dir.path().join("proj");
+    let sys = dir.path().join("sys");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::create_dir_all(&sys).unwrap();
+    std::fs::write(sys.join("lib.h"), "int lib_init(void);\n").unwrap();
+    std::fs::write(
+        proj.join("main.c"),
+        "#include <lib.h>\n#include <missing_dep.h>\nint main(void) { return lib_init(); }\n",
+    )
+    .unwrap();
+    let sarif = dir.path().join("out.sarif");
+    let report = dir.path().join("headers.json");
+    let manifest = manifest_msc04();
+    let base = [
+        proj.to_str().unwrap(),
+        "-d",
+        proj.to_str().unwrap(),
+        "-I",
+        sys.to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+    ];
+
+    let (code, _, stderr) = run_aurora_lint(&base);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stderr.contains(
+            "Headers: 1 #include'd header(s) not found (1 named by project files, 0 only by \
+             system headers): missing_dep.h. Declarations and macros they would supply were \
+             not seen"
+        ),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("unresolved #include"),
+        "rows only with -v: {stderr}"
+    );
+
+    let mut args = base.to_vec();
+    args.extend([
+        "-v",
+        "-e",
+        sarif.to_str().unwrap(),
+        "--report-headers",
+        report.to_str().unwrap(),
+    ]);
+    let (code, _, stderr) = run_aurora_lint(&args);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stderr.contains("unresolved #include <missing_dep.h> from "),
+        "{stderr}"
+    );
+
+    let sarif: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&sarif).unwrap()).unwrap();
+    let run = &sarif["runs"][0];
+    let invocation = &run["invocations"][0];
+    assert_eq!(invocation["executionSuccessful"], true);
+    let notes = invocation["toolExecutionNotifications"].as_array().unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0]["level"], "note");
+    assert_eq!(
+        notes[0]["descriptor"]["id"],
+        "aurora-lint/headers-not-found"
+    );
+    let headers = &run["properties"]["aurora-lint/headers"];
+    assert_eq!(headers["unresolved"][0]["spelling"], "missing_dep.h");
+    assert_eq!(headers["outsideHeaderCount"], 1);
+
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report).unwrap()).unwrap();
+    assert_eq!(report["unresolved"][0]["line"], 2);
+    assert_eq!(
+        report["outside_headers"][0]["sha256"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
+}
+
 // ─── Policy and environment settings ─────────────────────────────────────────
 
 /// Export `violation.c` as SARIF with `args` appended; return the run's
