@@ -1,7 +1,8 @@
 # ADR-0016 conformance: where the published artifacts fall short
 
 **Status:** swept 2026-10-05 against `1d8778d5` (after the v0.6.0 release),
-under the strict reading of ADR-0016. A struck row is fixed, with the
+under the strict reading of ADR-0016, with the maintainer's rulings of the same
+day applied. A struck row is fixed or closed, with the
 commit beside it. This doc goes stale as fixes land; the rows are the
 checklist.
 
@@ -33,8 +34,8 @@ F records what the sweep noticed there.
 
 - **Cond**: which ADR-0016 condition (1–4), or L for legal review and
   copyright.
-- **Fix**: `done` (struck, commit beside it), `follow-up` (needs more than
-  a trivial edit) or `ruling` (the maintainer's call; proposed wording given).
+- **Fix**: `done` (struck, commit beside it), `closed` (struck, ruled not a
+  departure), `follow-up` (needs more than a trivial edit) or `ruling`.
 
 ---
 
@@ -56,20 +57,15 @@ F records what the sweep noticed there.
 | `scripts/generate_changelog.py` usage example; `bench/tests/test_generate_changelog.py` "fleet task schema" | Names the task database's file and calls the tracker by an internal name. | 2 | follow-up (low) |
 | `src/` comments pointing at `data/precision_audit/...` (EXP20-C, EXP36-C, MSC12-C ×4) | Pointers to private working data no reader can open. Not a leak in itself, but they ship in the crate and point at nothing. | 2 | follow-up (low): state the finding inline, drop the path |
 | `.claude/commands/*.md`, `.claude/lock-list.yaml` | An agent workflow for a proposals directory that is not in the tree. | 2 | follow-up (low): confirm still wanted in the public tree |
-| `CLAUDE.md` | Describes worker nodes, the shared Postgres instance by name, the benchmark-data repos and maintainer workflow. It is the agent instruction file, so some of this is its purpose. | 2 | ruling: what a public `CLAUDE.md` may say |
+| `CLAUDE.md` | A public `CLAUDE.md` should hold only instructions relevant to anyone cloning the repo, with pointers to the ADRs (maintainer's ruling). Maintainer workflow that should move out: "Where benchmark data lives" (the shared Postgres instance, the benchmark-data and dataset repos, worker nodes; keep the local-run paragraph); "Protocol" steps on pushing for the shared queue, the multi-node version-bump rationale, and delta-adjudication against the shared oracle (keep commit-before-benchmarking, don't-rebuild-mid-run and the `sqc` identifier note); "Querying results" except its first paragraph; "Refreshing published doc numbers" on publishing from Postgres; "Task tracking" (keep only the rule against task ids in public text, pointing at ADR-0016); the paper and gate-status rows of "Documentation"; the per-machine memory guidance in "Maintaining this file". | 2 | follow-up: restructure as its own change |
 | README, `docs/reproducing-published-numbers.rst`, `docs/testing-methodology.rst`, `docs/design/macro-expansion.md`: "run #265" and similar | Benchmark run ids. These are measurement provenance (run 265's keys are under `tests/golden/run-265/`), not task-tracker ids. | 2 | no change proposed |
 | `docs/design/finding-location.md` batch names (`task-644-full-reaudit`, …) | Batch directory names in the public label dataset, which may be cited as dataset identifiers. | 2 | no change proposed (renaming belongs to the dataset) |
 
-## B. Condition 2: ADR text (proposed wording only)
+## B. Condition 2: ADR text
 
-The accepted ADRs credit a build machine by name. The edits are cosmetic,
-but they change accepted ADR text, so they are proposed rather than made.
-
-| where | today | proposed |
-|---|---|---|
-| ADR-0005, Consequences | "came out of dev-180's own catch, the same day ADR-0002 was written — worth stating explicitly rather than learned per-agent per-session." | "came out of a review the same day ADR-0002 was written — worth stating explicitly rather than relearned case by case." |
-| ADR-0006, Consequences | "Credit: pattern identified by dev-180 across EXP05-C, INT02-C, and INT16-C …" | "Credit: pattern identified in review across EXP05-C, INT02-C, and INT16-C …" |
-| ADR-0008, Consequences | "Credit: measured by dev-180 under that audit, …" | "Credit: measured under that audit, …" |
+| where | what leaked | cond | fix |
+|---|---|---|---|
+| ~~ADR-0005, ADR-0006, ADR-0008, Consequences~~ | Each credit named an internal build machine. **Fixed:** `dccd2f21`; the credits now say the finding came from development or testing. | 2 | done |
 
 ## C. Condition 1: citations, plagiarism, derived files
 
@@ -96,7 +92,7 @@ so each needs its own re-check at the source before the edit.
 | `docs/future-rulesets.rst` ~44 | "They complement MISRA C guidelines" is not in Holzmann's paper (the link is D-60411's). | 1 | follow-up |
 | `docs/future-rulesets.rst` ~48, 51, 79–93, 111 | Rule text from Power of Ten, D-60411 and Barr Group's own description copied near-verbatim without quotation marks. | 1 | follow-up: quote and cite, or rephrase |
 | `docs/testing-methodology.rst` ~519 | "SEI SCALe 2015 report" lacks author and title (Svoboda, *SCALe Analysis of JasPer Codebase*, SEI, 2015). | 1 | follow-up |
-| ADR-0010 ~110, ADR-0015 ~213 | "JPL D-60411, Rules 15–16" for explicit recovery: only Rule 16 says it; Rule 15 is parameter validity. | 1 | ruling (ADR text): "Rule 16" |
+| ~~ADR-0010 ~110, ADR-0015 ~213~~ | "JPL D-60411, Rules 15–16" for explicit recovery: only Rule 16 says it; Rule 15 is parameter validity. **Fixed:** `cc6fff6d`. | 1 | done |
 | FL ~209–215 | SATE IV sections: §2.6, §2.7.1 and §2.9.7, not "§2.6 and §2.9.6". | 1 | follow-up |
 | FL ~222–226 | Hovemeyer & Pugh: the non-null-parameter point is §3.6. | 1 | follow-up |
 | FL ~227–231 | Engler et al. §7.2 is hypothetical ("would cause"), blames type coercion, and concerns a user-pointer checker; "direct evidence" overstates it. | 1 | follow-up |
@@ -114,23 +110,25 @@ so each needs its own re-check at the source before the edit.
 
 | where | what | cond | fix |
 |---|---|---|---|
-| Wiki-derived test fixtures (`src/rules/cert_c/*/*/tests/**`, those with a `Source: wiki` header) | Each declares its provenance, and `NOTICE`, `thirdparty/cert/LICENSE` and `docs/licensing.rst` record the licence centrally. No fixture carries the licence notice itself, what was changed, or which wiki page holds the unmodified original, which the strict reading of condition 1's third bullet asks of each derived file. These ship in the crate. | 1 | ruling: whether the central record suffices; if not, a mechanical header pass (`scripts/fixture_provenance.py` already finds the set) |
-| Rule manifests (`src/rules/cert_c/*/*/*-C.toml`) | `metadata.title`/`description` lifted from the CERT standard and reflowed; licence recorded centrally, and most cite their wiki page. Same question as the fixtures. | 1 | ruling (same as above) |
+| ~~Wiki-derived test fixtures (`src/rules/cert_c/*/*/tests/**`, those with a `Source: wiki` header)~~ | Each declares its provenance; `NOTICE`, `thirdparty/cert/LICENSE` and `docs/licensing.rst` record the licence centrally, and no fixture carries a per-file notice, change record or link to its original. **Closed:** the CERT code examples are under a permissive licence, so the central record suffices (maintainer's ruling). | 1 | closed |
+| ~~Rule manifests (`src/rules/cert_c/*/*/*-C.toml`)~~ | `metadata.title`/`description` lifted from the CERT standard and reflowed; licence recorded centrally. **Closed** on the same ruling. | 1 | closed |
 
 ## D. Condition 3: the accountable Associate
 
-No artifact in this repository records who holds final review
-responsibility. ADR-0016 defaults it to Brandon Arrendondo but asks that it
-be recorded with the artifact. Proposed lines, one per artifact:
+ADR-0016 asks that each artifact record the Associate who holds final
+review responsibility. For this repository's artifacts the line is:
+"Brandon Arrendondo is the accountable BISSELL Associate for aurora-lint:
+he maintains it and writes its documentation."
 
-| artifact | where | proposed line |
+| artifact | where | fix |
 |---|---|---|
-| the tool (repo, crate, release archives) | README, a short paragraph under "License" (README ships in all three) | "Final review responsibility for this repository, its releases and its documentation rests with Brandon Arrendondo, BISSELL Homecare, Inc." |
-| the man page | `docs/aurora-lint.1`, `.SH AUTHORS`, after the author list | "Final review: Brandon Arrendondo." |
-| the Pages site | `docs/index.rst`, a closing line, or `docs/licensing.rst` | same sentence as README |
-| the public label dataset | its README (out of scope here) | "Final review responsibility for this dataset rests with Brandon Arrendondo, BISSELL Homecare, Inc." |
-| each paper | front matter / author note (out of scope here) | "Brandon Arrendondo (BISSELL Homecare, Inc.) holds final review responsibility for this paper." |
-| the book | copyright page (out of scope here) | same form as the papers |
+| ~~the tool (repo, crate, release archives)~~ | README, under "License" (README ships in all three). **Fixed:** `45cdbfae`. | done |
+| ~~the man page~~ | `docs/aurora-lint.1`, `.SH AUTHORS`, after the author list. **Fixed:** `45cdbfae`. | done |
+| ~~the Pages site~~ | `docs/index.rst`, the opening page. **Fixed:** `45cdbfae`. | done |
+| the public label dataset | its README (another repository) | follow-up there: same name; Brandon Arrendondo maintains the dataset and its README |
+| knots | its README (another repository) | follow-up there: same name; he maintains it |
+| each paper | front matter or author note (other repositories) | follow-up there: same name, as the responsible Associate for the paper |
+| the book | copyright page (outside this repository) | follow-up there: same name, as the responsible Associate for the book |
 
 ## E. Condition 4 and legal review
 
@@ -139,7 +137,7 @@ be recorded with the artifact. Proposed lines, one per artifact:
 | README "AI Assistance" | Present, and README ships in the crate and every release archive. | 4 | none |
 | Pages site, man page | Neither carries an AI-use line. ADR-0016 names README as the tool's mechanism, so this is not a departure; a one-line pointer in `docs/index.rst` would make the site self-contained. | 4 | follow-up (optional) |
 | Copyright | `NOTICE`, `docs/licensing.rst`, `docs/conf.py`, the man page and README all name BISSELL Homecare, Inc.; third-party terms are recorded in `NOTICE`, `thirdparty/cert/LICENSE` and `THIRD_PARTY_LICENSES.txt`. Every person named (`Cargo.toml` authors, the man page, `CONTRIBUTORS.md`) is a git commit author, which condition 2 already makes public. | L | none |
-| Legal review | Nothing in the tree records that an artifact went through legal review before publication, and ADR-0016 does not say where that is recorded. | L | ruling: whether the pre-publication checklist (kept outside this repo) is the record |
+| Legal review | Recorded, when available, under `docs/legal/` (maintainer's ruling). No review is recorded there yet, and the directory does not exist until one is. | L | pending a review to record |
 
 ## F. Outside this repo (noted, not edited)
 
