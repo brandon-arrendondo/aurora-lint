@@ -562,7 +562,8 @@ cppcheck
 
     - cppcheck writes XML to **stderr**, not stdout
     - Never pass ``-I /usr/include`` -- causes parse errors in system headers
-    - ``--addon=cert`` is not available on Ubuntu 24.04; ``--enable=all`` includes CERT checks
+    - ``--addon=cert`` does not exist: open-source cppcheck removed the CERT addon in 2.8
+      (CERT checking is Cppcheck Premium). ``--enable=all`` turns on cppcheck's native checks, not CERT ones
 
 clang-tidy
 ~~~~~~~~~~
@@ -769,7 +770,7 @@ Known Pitfalls
      - Pass ``--manifest`` with absolute path
    * - cppcheck ``--addon=cert`` missing
      - ``Did not find addon cert.py``
-     - Remove it; ``--enable=all`` includes CERT
+     - Remove it; the addon is gone from open-source cppcheck (2.8 on), so there are no CERT checks to enable
    * - cppcheck ``-I /usr/include``
      - ``syntaxError`` in stdlib.h
      - Never pass system include paths to cppcheck

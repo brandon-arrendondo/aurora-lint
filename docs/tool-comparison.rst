@@ -30,13 +30,16 @@ The Tools
    * - `cppcheck <https://cppcheck.sourceforge.io/>`_
      - 2.13.0
      - No
-     - ~20 via ``--addon=cert``
-     - Runs unbuilt like aurora-lint. The cert addon is **not** enabled in our runs,
-       so its ids are native (``nullPointer``, ``uninitvar``).
+     - none in the open-source build
+     - Runs unbuilt like aurora-lint. Open-source cppcheck dropped its CERT addon
+       (``addons/cert.py``) in 2.8, in March 2022; CERT checking is now Cppcheck
+       Premium. Our runs therefore report cppcheck's native ids
+       (``nullPointer``, ``uninitvar``).
    * - `clang-tidy <https://clang.llvm.org/extra/clang-tidy/>`_
      - LLVM 21.1.8
      - **Yes**
-     - ~20 native ``cert-*`` checks
+     - ~20 native C ``cert-*`` checks (LLVM 21.1.8; the count varies with the
+       LLVM version)
      - Wants a compilation database; without correct flags it fails or
        silently under-reports.
    * - `Frama-C <https://frama-c.com/>`_
@@ -70,11 +73,11 @@ Coverage Is The Difference
    * - clang-tidy
      - 15
      - 8 projects
-     - ~20 ``cert-*`` checks
+     - ~20 C ``cert-*`` checks (LLVM 21.1.8)
    * - cppcheck
      - 15
      - 8 projects
-     - ~20 CERT mappings via an addon we do not enable
+     - none: the open-source CERT addon was removed in 2.8
    * - Infer
      - 10
      - supported, not yet swept
@@ -412,8 +415,9 @@ Real-World Precision, Per Rule
    unmeasured, and the Juliet table above is the only cross-tool precision
    figure that exists.
 
-   cppcheck additionally needs a native-id-to-CERT-C mapping (or
-   ``--addon=cert`` enabled) before a per-rule table is even expressible.
+   cppcheck additionally needs a native-id-to-CERT-C mapping before a per-rule
+   table is even expressible: its open-source build has no CERT addon to supply
+   one (removed in 2.8).
 
    Tracked as a follow-up for both capture (this repo) and ingest
    (benchmarking_db, plus the ``ground_truth`` key collision that
