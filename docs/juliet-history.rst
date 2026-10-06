@@ -1264,15 +1264,15 @@ Competitor Comparison
      - 283 rules
      - --
    * - Semgrep CE
-     - 44–48%
-     - Very low
+     - 44–48% (not C)
+     - 1 FP / 0 FP (not C)
      - AST (tree-sitter)
      - No
      - Community
      - Free
    * - Semgrep Pro
-     - 72–75%
-     - Very low
+     - 72–75% (not C)
+     - 1 FP / 0 FP (not C)
      - AST + taint + inter-file
      - No
      - Community
@@ -1334,6 +1334,11 @@ probability of false alarm (7%) across those CWEs (Table 3); the false-alarm
 figure is the share of good functions flagged, not the share of reports that
 are false.
 
+The two Semgrep rows are not C results. Semgrep's own comparison measured
+them on OWASP WebGoat (Java) and OWASP Juice Shop (Node), and reports one
+false positive on WebGoat and none on Juice Shop for either edition. They
+are not comparable with the Juliet C rows.
+
 Key context from literature:
 
 - On real-world vulnerabilities, even the best single C analyzer studied
@@ -1353,7 +1358,7 @@ Sources: `ISSTA 2022 <https://dl.acm.org/doi/10.1145/3533767.3534380>`_ |
 `Goseva 2015 <https://community.wvu.edu/~kagoseva/Papers/IST-2015.pdf>`_ |
 `ASE 2016 <https://doi.org/10.1145/2970276.2970347>`_ |
 `JKU 2014 <https://www.se.jku.at/wp-content/uploads/2014/08/2014.Using-the-Juliet-Test-Suite.pdf>`_ |
-`Semgrep Blog 2025 <https://semgrep.dev/blog/2025/security-research-comparing-semgrep-community-edition-and-semgrep-code-for-static-analysis/>`_
+`DeLancey, Semgrep blog, 2025 <https://semgrep.dev/blog/2025/security-research-comparing-semgrep-community-edition-and-semgrep-code-for-static-analysis/>`_
 
 Version History (v0.2.1 – v0.3.17)
 --------------------------------------
