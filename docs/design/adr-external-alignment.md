@@ -423,8 +423,10 @@ Status of the 16 proposals at the end of this doc, against `72b8f734`:
   - **The variability-aware literature** calls parse-as-is heuristic and
     offers rigorous alternatives (TypeChef, SuperC) that no production CERT
     checker uses [TypeChef; SuperC].
-  - **Published error rates** for this design are scarce. Padioleau's ~96%
-    parse figure is **unverified** (paywalled).
+  - **Published figures** for this design are scarce. Padioleau's ~96%
+    figure for Yacfe [Padioleau] is a parse-success rate (the share of code
+    parsed without preprocessing), not an error rate, and is **unverified**
+    here: the full text could not be reached.
 - **Verdict: aligned.**
 - **Attack:** "A CERT conformance claim on code that was never preprocessed
   is not a claim about a translation unit" [CERT-17961: conformance is "with
@@ -1149,6 +1151,7 @@ Literature and practice
 - [Soundiness] Livshits et al., "In Defense of Soundiness". https://yanniss.github.io/Soundiness-CACM.pdf
 - [SuperC] Gazzillo & Grimm, PLDI 2012. https://paulgazzillo.com/papers/pldi12.pdf
 - [Tartler] Tartler et al., "Configuration coverage in the analysis of large-scale system software", OSR 45(3), 2011 (not checked: cited as SuperC's reference [37], which is the source of the quoted sentence)
+- [Padioleau] Padioleau, Y., "Parsing C/C++ Code without Pre-processing", Compiler Construction (CC 2009), LNCS 5501, pp. 109-125, 2009. https://doi.org/10.1007/978-3-642-00722-4_9 (not checked: full text unreachable)
 - [TypeChef] Kästner et al., OOPSLA 2011. https://www.cs.cmu.edu/~ckaestne/pdf/oopsla11_typechef.pdf
 - [Engler] Engler et al., SOSP 2001. https://web.stanford.edu/~engler/deviant-sosp-01.pdf
 - [ESP] Das, Lerner, Seigle, PLDI 2002. https://www.cs.cornell.edu/courses/cs711/2005fa/papers/dls-pldi02.pdf
@@ -1180,7 +1183,7 @@ Literature and practice
   (all returned 403).
 - Heckman & Williams 2011, Muske & Serebrenik 2016, Abal et al. 2014 and
   Medeiros et al. (full texts not retrieved).
-- Padioleau's 96% figure.
+- Padioleau's 96% figure (a parse-success rate; full text unreachable).
 - Coverity vendor documentation.
 - Infer's default assert modeling.
 - Frama-C WP `ensures`.
