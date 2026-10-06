@@ -6294,8 +6294,11 @@ pub(crate) fn collect_struct_definitions(
 /// [`collect_struct_definitions`], also filing each field's declarator shape
 /// ([`expr_type::declarator_shape`]) under the same name in `shapes`. The two
 /// tables are filled by one traversal, so a name redefined later in the file
-/// replaces its entry in both, and every field in one has an entry in the
-/// other.
+/// replaces its entry in both, and every field `struct_field_types` holds has
+/// a shape. The shapes table holds more: members inside the body's
+/// preprocessor blocks, and the dotted paths of an anonymous struct's members
+/// ([`file_guarded_and_nested_member_shapes`]), which `struct_field_types`
+/// deliberately does not.
 pub(crate) fn collect_struct_tables(
     node: &Node,
     source: &str,
@@ -6360,43 +6363,67 @@ fn collect_from_struct_specifier(
 /// only -- `struct_field_types` and what reads it stay as they were:
 ///
 /// * a member inside a preprocessor block of the body (`#ifdef CONFIG_SME`
-///   around `u8 ie[1500];`) is filed under `owner`;
+///   around `u8 ie[1500];`) is filed under its own name;
 /// * the members of an anonymous struct or union that is itself a named
-///   member (`struct { u8 ie[1500]; } sme;`) are filed under
-///   `"{owner}.sme"`, and so on for each level, so `wpa_s->sme.ie` resolves
-///   to a shape without the anonymous struct having a name.
+///   member (`struct { u8 ie[1500]; } sme;`) are filed in the SAME owner's
+///   table under the dotted path, `"sme.ie"`, and so on for each level, so
+///   `wpa_s->sme.ie` resolves to a shape without the anonymous struct having
+///   a name. A field name never contains a `.`, so a path cannot collide with
+///   a member; and because the path lives in the owner's own table, whatever
+///   replaces the owner (a later definition, the file's own over the
+///   project's) replaces its nested members with it -- nothing of another
+///   definition's `sme` can survive under a definition that has none.
 ///
 /// A member whose declarations disagree between the arms of a preprocessor
 /// conditional gets the shape `"?"`, which says nothing about the member: the
-/// reader must not pick an arm.
+/// reader must not pick an arm. So does every path under a member declared
+/// more than once, whose arms may not agree on what `sme` is.
 fn file_guarded_and_nested_member_shapes(
     body: &Node,
     source: &str,
     owner: &str,
     shapes: &mut FieldTable,
 ) {
+    let mut table = shapes.remove(owner).unwrap_or_default();
+    file_member_paths(body, source, "", &mut table);
+    if table.is_empty() {
+        return;
+    }
+    shapes.insert(owner.to_string(), table);
+}
+
+fn file_member_paths(body: &Node, source: &str, prefix: &str, table: &mut HashMap<String, String>) {
+    let mut declared_here: HashSet<String> = HashSet::new();
     for decl in member_declarations(body) {
         if let Some((name, _, shape)) = extract_field_decl(&decl, source) {
-            let filed = shapes.entry(owner.to_string()).or_default();
-            match filed.get(&name) {
+            let path = format!("{prefix}{name}");
+            let repeated = !declared_here.insert(path.clone());
+            match table.get(&path) {
                 Some(existing) if *existing != shape => {
-                    filed.insert(name.clone(), "?".to_string());
+                    table.insert(path.clone(), "?".to_string());
                 }
                 Some(_) => {}
                 None => {
-                    filed.insert(name.clone(), shape.clone());
+                    table.insert(path.clone(), shape.clone());
+                }
+            }
+            if repeated {
+                let below = format!("{path}.");
+                for (k, v) in table.iter_mut() {
+                    if k.starts_with(&below) {
+                        *v = "?".to_string();
+                    }
                 }
             }
             if matches!(shape.as_str(), "" | "*") {
                 if let Some(inner) = find_anonymous_inner_body(&decl) {
-                    let nested = format!("{owner}.{name}");
-                    file_guarded_and_nested_member_shapes(&inner, source, &nested, shapes);
+                    file_member_paths(&inner, source, &format!("{path}."), table);
                 }
             }
         } else if let Some(inner) = find_anonymous_inner_body(&decl) {
             // An anonymous member with no name of its own: its members are
-            // the owner's.
-            file_guarded_and_nested_member_shapes(&inner, source, owner, shapes);
+            // the enclosing struct's.
+            file_member_paths(&inner, source, prefix, table);
         }
     }
 }

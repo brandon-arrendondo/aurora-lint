@@ -5534,3 +5534,36 @@ fn crossfile_header_array_plus_integer_is_not_an_unsigned_sum() {
         "an integer member of the anonymous struct is still a sum: {lines:?}"
     );
 }
+
+#[test]
+fn crossfile_struct_redefined_without_the_anonymous_member_keeps_its_own_sum() {
+    // a.c's `struct S` has an anonymous `sme` with an array `ie`; b.c defines
+    // the same tag with a named-type `sme` whose `ie` is a size_t. Scanning
+    // b.c, its own definition wins: the other file's anonymous `sme` must not
+    // turn `s->sme.ie + n` into pointer arithmetic.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let fixture_dir = fixtures().join("crossfile_int30_shape_conflict");
+    let (code, _, _) = run_aurora_lint(&[
+        fixture_dir.join("b.c").to_str().unwrap(),
+        "-m",
+        manifest_int30().to_str().unwrap(),
+        "-d",
+        fixture_dir.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    let lines: Vec<u64> = violations
+        .iter()
+        .filter(|v| v["rule_id"] == "INT30-C")
+        .filter_map(|v| v["line"].as_u64())
+        .collect();
+    assert!(
+        lines.contains(&16),
+        "s->sme.ie is a size_t here, so the sum is still reported: {lines:?}"
+    );
+}

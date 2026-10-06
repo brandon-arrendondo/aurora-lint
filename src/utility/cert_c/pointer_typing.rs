@@ -86,42 +86,28 @@ impl PointerFacts {
         self
     }
 
-    /// The key `struct_field_shapes` files the members `node`'s base holds
-    /// under: the struct its base's type names or, for a member of an
-    /// anonymous struct (`wpa_s->sme.ie`, `sme` declared `struct { ... } sme;`
-    /// inside `struct wpa_supplicant`), `"wpa_supplicant.sme"`.
-    ///
-    /// The nested key is taken only when the enclosing struct's own table
-    /// records the member too, so a project-wide entry for a struct this file
-    /// defines differently cannot answer for it.
-    fn shape_container(
+    /// The owner struct and the dotted member path `node` (a
+    /// `field_expression`) names inside it, for a member of an anonymous
+    /// struct: `wpa_s->sme.ie` is `("wpa_supplicant", "sme.ie")` when `wpa_s`
+    /// is a `struct wpa_supplicant *`. The owner is the struct the innermost
+    /// base's type names; the prescan files the path in that struct's own
+    /// table, so a definition of the owner with no anonymous `sme` has no such
+    /// path to answer with.
+    fn nested_member_path(
         node: &Node,
         source: &str,
         type_map: &HashMap<String, String>,
         struct_field_types: &StructFieldTypes,
-        facts: &PointerFacts,
-    ) -> Option<String> {
-        if let Some(argument) = node
-            .child_by_field_name("argument")
-            .filter(|a| a.kind() == "field_expression")
-        {
-            if let (Some(outer), Some(member)) = (
-                Self::shape_container(&argument, source, type_map, struct_field_types, facts),
-                argument.child_by_field_name("field"),
-            ) {
-                let member = ast_utils::get_node_text(&member, source);
-                let nested = format!("{outer}.{member}");
-                if facts.struct_field_shapes.contains_key(&nested)
-                    && facts
-                        .struct_field_shapes
-                        .get(&outer)
-                        .is_some_and(|fields| fields.contains_key(member))
-                {
-                    return Some(nested);
-                }
-            }
+    ) -> Option<(String, String)> {
+        let field = ast_utils::get_node_text(&node.child_by_field_name("field")?, source);
+        let argument = node.child_by_field_name("argument")?;
+        if argument.kind() == "field_expression" {
+            let (owner, path) =
+                Self::nested_member_path(&argument, source, type_map, struct_field_types)?;
+            return Some((owner, format!("{path}.{field}")));
         }
-        ast_utils::resolve_field_container(node, source, type_map, struct_field_types)
+        let owner = ast_utils::resolve_field_container(node, source, type_map, struct_field_types)?;
+        Some((owner, field.to_string()))
     }
 
     /// Does the member `node` (a `field_expression`) name an array member of
@@ -134,17 +120,24 @@ impl PointerFacts {
         struct_field_types: &StructFieldTypes,
         facts: &PointerFacts,
     ) -> bool {
-        let (Some(container), Some(field)) = (
-            Self::shape_container(node, source, type_map, struct_field_types, facts),
-            node.child_by_field_name("field"),
-        ) else {
-            return false;
+        let shape_of = |owner: &str, path: &str| {
+            facts
+                .struct_field_shapes
+                .get(owner)
+                .and_then(|fields| fields.get(path))
         };
-        facts
-            .struct_field_shapes
-            .get(&container)
-            .and_then(|fields| fields.get(ast_utils::get_node_text(&field, source)))
-            .is_some_and(|shape| shape.ends_with('['))
+        // A member of an anonymous struct answers by its path; any other
+        // member (a named struct's, a plain one) by the struct its base names.
+        let nested = Self::nested_member_path(node, source, type_map, struct_field_types)
+            .filter(|(_, path)| path.contains('.'))
+            .and_then(|(owner, path)| shape_of(&owner, &path));
+        let shape = nested.or_else(|| {
+            let field = ast_utils::get_node_text(&node.child_by_field_name("field")?, source);
+            let owner =
+                ast_utils::resolve_field_container(node, source, type_map, struct_field_types)?;
+            shape_of(&owner, field)
+        });
+        shape.is_some_and(|shape| shape.ends_with('['))
     }
 
     /// Collect the file-scope pointer facts of one parsed translation unit.

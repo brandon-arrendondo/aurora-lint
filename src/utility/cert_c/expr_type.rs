@@ -936,6 +936,10 @@ fn field_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
     }?;
     let spelling = env.fields.get(&record)?.get(field)?;
     let shape = env.shapes.get(&record)?.get(field)?;
+    // `?`: the field is declared differently in the arms of a conditional.
+    if shape == "?" {
+        return None;
+    }
     // The spelling's ` *` stands for the pointer levels the shape states.
     let base = classify_spelling(&spelling.replace('*', " "), env);
     match shape.strip_prefix(':') {

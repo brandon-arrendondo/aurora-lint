@@ -434,10 +434,12 @@ pub struct ProjectContext {
     ///
     /// It also files what `struct_field_types` does not hold, so that table's
     /// readers are unmoved: a member inside a preprocessor block of the body,
-    /// under the struct's own key, and the members of a named member's
-    /// anonymous struct (`struct { u8 ie[1500]; } sme;`) under
-    /// `"Owner.sme"`. A member declared differently in the arms of a
-    /// conditional has the shape `"?"`.
+    /// under its own name, and the members of a named member's anonymous
+    /// struct (`struct { u8 ie[1500]; } sme;`) in the SAME struct's table
+    /// under the dotted path `"sme.ie"` -- so whatever replaces the struct
+    /// replaces its nested members with it. A member (or path) declared
+    /// differently in the arms of a conditional has the shape `"?"`: no shape
+    /// is known, and a reader must not pick an arm.
     #[serde(default)]
     pub struct_field_shapes: Arc<HashMap<String, HashMap<String, String>>>,
     /// Struct/union typedef aliases: `alias name -> the tag name its fields
