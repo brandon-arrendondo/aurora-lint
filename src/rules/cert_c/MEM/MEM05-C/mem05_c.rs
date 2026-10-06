@@ -124,10 +124,14 @@ impl Mem05C {
             }
             // Fallback: extract text between [ and ]
             let text = node.utf8_text(source.as_bytes()).unwrap_or("");
-            if let (Some(start), Some(end)) = (text.find('['), text.find(']')) {
-                let size = text[start + 1..end].trim().to_string();
-                if !size.is_empty() {
-                    return Some(size);
+            if let Some(start) = text.find('[') {
+                // Search for the `]` after the `[`: a `]` earlier in the text
+                // (in a comment, say) must not reverse the range.
+                if let Some(end) = text[start + 1..].find(']') {
+                    let size = text[start + 1..start + 1 + end].trim().to_string();
+                    if !size.is_empty() {
+                        return Some(size);
+                    }
                 }
             }
             return None;

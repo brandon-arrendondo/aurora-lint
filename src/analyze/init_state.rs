@@ -826,7 +826,7 @@ fn extract_allocation_count_from_text(text: &str) -> Option<usize> {
     // Match patterns like ALLOCA(10*sizeof(int)) or malloc(10 * sizeof(int))
     let inner = if let Some(start) = text.find('(') {
         // Find the matching argument
-        &text[start + 1..text.rfind(')')?]
+        text.get(start + 1..text.rfind(')')?)?
     } else {
         return None;
     };

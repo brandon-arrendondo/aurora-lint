@@ -334,8 +334,8 @@ impl Exp47C {
         // Find the parameter list
         // Pattern: func(param1, param2, ...) or func(...)
         if let Some(start) = text.find('(') {
-            if let Some(ellipsis_pos) = text.find("...") {
-                let params_text = &text[start + 1..ellipsis_pos];
+            if let Some(ellipsis_pos) = text[start + 1..].find("...") {
+                let params_text = &text[start + 1..start + 1 + ellipsis_pos];
                 // Remove trailing comma and whitespace
                 let params_text = params_text.trim().trim_end_matches(',').trim();
                 if params_text.is_empty() {
