@@ -10,11 +10,17 @@
 #   - `aurora-lint --list-rules` lists it under the removed rules;
 #   - the real-world manifest check names it as removed rather than unknown.
 #
-# One [[removed]] table per rule:
+# One [[removed]] table per rule, KEPT SORTED BY id (the loader refuses an
+# out-of-order table): parallel removal branches then each add their entry in
+# its own place instead of all conflicting at the end of the file. Every
+# rule a `covered_by` names must be one the tool still ships (a test checks
+# it against the registry). The full removal checklist is in
+# docs/contributing.rst, "Removing a Rule".
 #
 #   [[removed]]
 #   id = "ERR00-C"
-#   removed_in = "0.7.0"              # the release the removal ships in
+#   removed_in = "0.7.0"              # the release the removal ships in:
+#                                     # the target release, set up front
 #   disposition = "covered"           # ADR-0013 Decision 2, one of:
 #                                     #   unenforceable, fails-criterion,
 #                                     #   covered, deprecated

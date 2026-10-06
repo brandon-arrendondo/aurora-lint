@@ -86,6 +86,18 @@ impl RemovedRule {
         )
     }
 
+    /// What the tool says when something other than a configuration block
+    /// names this rule: `place` is what named it (`--rules`, "A
+    /// suppression").
+    pub fn reference_warning(&self, place: &str) -> String {
+        format!(
+            "{place} names {}, which was removed in v{} {}. It matches nothing.",
+            self.id,
+            self.removed_in,
+            self.why()
+        )
+    }
+
     /// This rule's line in `--list-rules`.
     pub fn warning_line(&self) -> String {
         format!(
@@ -104,11 +116,23 @@ struct RemovedTable {
     removed: Vec<RemovedRule>,
 }
 
-/// Parse and check a removed-rules table: every field set, ids unique, and
-/// a `covered` entry naming what covers it.
+/// Parse and check a removed-rules table: every field set, ids unique and
+/// sorted, and a `covered` entry naming what covers it. Sorted, so that
+/// removals on parallel branches each add their entry in its own place
+/// instead of all at the end of the file.
 pub fn parse_removed_rules(content: &str) -> Result<Vec<RemovedRule>, String> {
     let table: RemovedTable = toml::from_str(content).map_err(|e| e.to_string())?;
-    let mut seen = std::collections::HashSet::new();
+    for pair in table.removed.windows(2) {
+        if pair[0].id == pair[1].id {
+            return Err(format!("removed rule {} is listed twice", pair[0].id));
+        }
+        if pair[0].id > pair[1].id {
+            return Err(format!(
+                "removed rules are kept sorted by id: {} comes before {}",
+                pair[1].id, pair[0].id
+            ));
+        }
+    }
     for rule in &table.removed {
         if rule.id.is_empty() || rule.removed_in.is_empty() || rule.reason.trim().is_empty() {
             return Err(format!(
@@ -121,9 +145,6 @@ pub fn parse_removed_rules(content: &str) -> Result<Vec<RemovedRule>, String> {
                 "removed rule {}: write removed_in without the leading 'v'",
                 rule.id
             ));
-        }
-        if !seen.insert(rule.id.as_str()) {
-            return Err(format!("removed rule {} is listed twice", rule.id));
         }
         if rule.disposition == Disposition::Covered && rule.covered_by.is_empty() {
             return Err(format!(
@@ -149,4 +170,111 @@ pub fn removed_rules() -> &'static [RemovedRule] {
 /// The removed rule with this id, if any.
 pub fn find_removed(id: &str) -> Option<&'static RemovedRule> {
     removed_rules().iter().find(|r| r.id == id)
+}
+
+/// Check `removed` against the rules the tool ships: a removed rule is not
+/// also shipped, and every rule a `covered_by` names is shipped, so a typo
+/// or a rule removed in its turn is caught rather than published as the
+/// replacement.
+pub fn check_against_shipped(
+    removed: &[RemovedRule],
+    shipped: &std::collections::HashSet<&str>,
+) -> Result<(), String> {
+    for rule in removed {
+        if shipped.contains(rule.id.as_str()) {
+            return Err(format!(
+                "{} is listed as removed but the tool still ships it",
+                rule.id
+            ));
+        }
+        for cover in &rule.covered_by {
+            if !shipped.contains(cover.as_str()) {
+                let what = if removed.iter().any(|r| &r.id == cover) {
+                    "was removed too"
+                } else {
+                    "is not a rule the tool ships"
+                };
+                return Err(format!(
+                    "removed rule {} is covered by {cover}, which {what}",
+                    rule.id
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Print `warning` on stderr unless this process already has: a run that
+/// loads the same configuration twice, or meets the same removed id in many
+/// suppressions, still says it once.
+pub fn warn_once(warning: &str) {
+    static SEEN: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(Default::default);
+    if seen
+        .lock()
+        .map(|mut s| s.insert(warning.to_string()))
+        .unwrap_or(true)
+    {
+        eprintln!("Warning: {warning}");
+    }
+}
+
+/// Warn once when `id`, named by `place`, is a removed rule.
+pub fn warn_if_removed(id: &str, place: &str) {
+    if let Some(rule) = find_removed(id) {
+        warn_once(&rule.reference_warning(place));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rule(id: &str, disposition: &str, covered_by: &[&str]) -> String {
+        format!(
+            "[[removed]]\nid = \"{id}\"\nremoved_in = \"0.7.0\"\ndisposition = \"{disposition}\"\n\
+             reason = \"r\"\ncovered_by = {covered_by:?}\n"
+        )
+    }
+
+    #[test]
+    fn the_shipped_table_parses_and_names_only_shipped_covering_rules() {
+        let registry = crate::rules::RuleRegistry::new();
+        let shipped: std::collections::HashSet<&str> =
+            registry.all_rules().iter().map(|r| r.rule_id()).collect();
+        check_against_shipped(removed_rules(), &shipped).unwrap();
+    }
+
+    #[test]
+    fn a_reference_outside_the_configuration_says_what_replaced_the_rule() {
+        let removed = parse_removed_rules(&rule("ERR00-C", "covered", &["ERR33-C"])).unwrap();
+        assert_eq!(
+            removed[0].reference_warning("--rules"),
+            "--rules names ERR00-C, which was removed in v0.7.0 (covered by another rule): r; \
+             covered by ERR33-C. It matches nothing."
+        );
+    }
+
+    #[test]
+    fn entries_out_of_order_are_refused() {
+        let toml = rule("MSC00-C", "unenforceable", &[]) + &rule("ERR00-C", "unenforceable", &[]);
+        let err = parse_removed_rules(&toml).unwrap_err();
+        assert!(err.contains("sorted"), "{err}");
+    }
+
+    #[test]
+    fn a_covering_rule_that_is_not_shipped_is_refused() {
+        let shipped: std::collections::HashSet<&str> = ["ERR33-C"].into_iter().collect();
+        let typo = parse_removed_rules(&rule("ERR00-C", "covered", &["ERR33C"])).unwrap();
+        let err = check_against_shipped(&typo, &shipped).unwrap_err();
+        assert!(err.contains("not a rule the tool ships"), "{err}");
+        let chain = parse_removed_rules(
+            &(rule("ERR00-C", "covered", &["MSC00-C"]) + &rule("MSC00-C", "unenforceable", &[])),
+        )
+        .unwrap();
+        let err = check_against_shipped(&chain, &shipped).unwrap_err();
+        assert!(err.contains("was removed too"), "{err}");
+        let fine = parse_removed_rules(&rule("ERR00-C", "covered", &["ERR33-C"])).unwrap();
+        check_against_shipped(&fine, &shipped).unwrap();
+    }
 }

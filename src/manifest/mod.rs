@@ -283,21 +283,6 @@ fn removed_rule_warnings(content: &str, removed: &[RemovedRule]) -> Vec<String> 
         .collect()
 }
 
-/// Print `warning` on stderr unless this process already has: a run that
-/// loads the same configuration twice still says it once.
-fn warn_once(warning: &str) {
-    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-        std::sync::OnceLock::new();
-    let seen = SEEN.get_or_init(Default::default);
-    if seen
-        .lock()
-        .map(|mut s| s.insert(warning.to_string()))
-        .unwrap_or(true)
-    {
-        eprintln!("Warning: {warning}");
-    }
-}
-
 impl RuleManifest {
     /// Read and parse `path` as a TOML rule manifest.
     pub fn load(path: &str) -> Result<Self> {
@@ -322,7 +307,7 @@ impl RuleManifest {
             eprintln!("Warning: {warning}");
         }
         for warning in removed_rule_warnings(content, removed) {
-            warn_once(&warning);
+            removed::warn_once(&warning);
         }
         let mut manifest: RuleManifest = toml::from_str(content)?;
         manifest.drop_removed(removed);

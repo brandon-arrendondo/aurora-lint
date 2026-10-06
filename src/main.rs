@@ -800,6 +800,12 @@ fn run() -> Result<i32> {
 
     let mut manifest = load_manifest(manifest_path)?;
     if let Some(ref rules) = rule_filter {
+        // A removed id would silently cut the scan to nothing.
+        let mut ids: Vec<&String> = rules.iter().collect();
+        ids.sort();
+        for id in ids {
+            manifest::removed::warn_if_removed(id, "--rules");
+        }
         manifest.restrict_to(rules);
     }
     let mut analysis_settings = resolve_settings(
