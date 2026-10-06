@@ -36,6 +36,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use std::rc::Rc;
 use tree_sitter::Node;
 
@@ -219,20 +220,16 @@ impl Pre13C {
                     // Queue children with updated defined_macros set, in
                     // reverse so they're popped in original document order.
                     let new_macros = Rc::new(new_defined_macros);
-                    for i in (0..node.child_count()).rev() {
-                        if let Some(child) = node.child(i) {
-                            stack.push((child, Rc::clone(&new_macros)));
-                        }
+                    for child in node.child_nodes().collect::<Vec<_>>().into_iter().rev() {
+                        stack.push((child, Rc::clone(&new_macros)));
                     }
                     continue;
                 }
             }
 
             // Queue child nodes with the current defined_macros set
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i) {
-                    stack.push((child, Rc::clone(&defined_macros)));
-                }
+            for child in node.child_nodes().collect::<Vec<_>>().into_iter().rev() {
+                stack.push((child, Rc::clone(&defined_macros)));
             }
         }
     }
