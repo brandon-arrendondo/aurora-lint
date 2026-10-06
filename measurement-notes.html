@@ -332,7 +332,11 @@ good functions whose callers pass only safe values. Most of those are the
 hardcoded-value good functions NIST describes as Juliet’s most widespread
 issue. The Juliet runs declare <code class="docutils literal notranslate"><span class="pre">closed_program</span></code>, but in this release that
 option applies only to EXP33-C (<a class="reference internal" href="options.html"><span class="doc">Policy and Environment Options</span></a>). Juliet’s false positives
-rise accordingly. On real-world code the same change is the intended reading,
+rise accordingly. After v0.6.0 the declaration also closes caller sets for
+the proofs about the value a caller passes, which clears part of them. The
+checks that accept a caller because its body reads no untrusted input
+(ENV03-C, ENV33-C, STR02-C and INT30-C to INT32-C) still credit only
+<code class="docutils literal notranslate"><span class="pre">static</span></code> functions, so their share remains. On real-world code the same change is the intended reading,
 because exported and library functions do have callers the scan cannot see.</p></li>
 </ul>
 </section>
