@@ -225,10 +225,14 @@ call.**
   (§3.6), and derives parameters "always dereferenced (or passed to methods
   that, in turn, dereference them)" (§3.3). It reports the null origin plus
   the dereference location (§4.1).
-- [Engler et al., SOSP 2001][engler] §7. A checker that warned whenever a
+- [Engler et al., SOSP 2001][engler] §7.2. For their user-pointer security
+  checker, the authors explain that a naive version warning whenever a
   tainted value "was passed as a function parameter, rather than checking if
-  the call actually dereferenced the value" produced too many false
-  positives. This is direct evidence against flagging bare forwarding
+  the call actually dereferenced the value" would cause too many false
+  positives, because device code uses one value as a pointer on one path and
+  as an integer on another. Their checker instead consults a list of
+  functions that dereference their parameters. This is supporting evidence,
+  from a different kind of checker, against flagging bare forwarding
   *without knowing the callee*.
 - [Infer Pulse docs][pulse] and [Le et al., OOPSLA 2022 §2.3][pulsex]. An
   error that depends on a parameter is "latent" and not reported. On OpenSSL:
