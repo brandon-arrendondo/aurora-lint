@@ -13,6 +13,7 @@ pub mod check_macros;
 pub mod compile_commands;
 pub mod concurrency_roots;
 pub mod const_eval;
+pub mod containment;
 /// Cross-file project context ([`context::ProjectContext`]) gathered by the
 /// pre-scan phase and injected into rules that need whole-project data.
 pub mod context;
@@ -99,6 +100,9 @@ pub struct AnalysisResults {
     /// Where the macro-expansion engine was blind during this scan; built
     /// only when `report_macro_gaps` was requested.
     pub macro_gaps: Option<macro_gaps::MacroGapReport>,
+    /// Panics contained during the scan (`containment`), sorted. Non-empty
+    /// means the findings above are real but incomplete.
+    pub failures: Vec<containment::ScanFailure>,
 }
 
 /// Which files a scan leaves out, as path globs relative to the scanned root
@@ -298,13 +302,13 @@ pub fn analyze_project(
                 .map(|file_path| {
                     if let Some(reporter) = progress {
                         if reporter.is_cancelled() {
-                            return (Vec::new(), Vec::new());
+                            return (Vec::new(), Vec::new(), Vec::new());
                         }
                     }
 
                     let mut parser = match CParser::new() {
                         Ok(p) => p,
-                        Err(_) => return (Vec::new(), Vec::new()),
+                        Err(_) => return (Vec::new(), Vec::new(), Vec::new()),
                     };
                     parser.set_repair_macros(std::sync::Arc::clone(&repair_macros));
                     let file_registry = RuleRegistry::new();
@@ -316,7 +320,7 @@ pub fn analyze_project(
                     set_project_context_for_enabled(&file_registry, manifest, file_context);
                     let mut file_supp = suppression_manager.clone();
 
-                    let result = analyze_one_file(
+                    let result = analyze_one_file_contained(
                         file_path,
                         &mut parser,
                         &file_registry,
@@ -340,12 +344,15 @@ pub fn analyze_project(
                 .collect()
         });
 
-        for (v, s) in results {
+        let mut failures = Vec::new();
+        for (v, s, f) in results {
             violations.extend(v);
             suppressed.extend(s);
+            failures.extend(f);
         }
 
         sort_for_deterministic_output(&mut violations, &mut suppressed);
+        failures.sort();
 
         if let Some(reporter) = progress {
             reporter.report_complete(violations.len());
@@ -355,6 +362,7 @@ pub fn analyze_project(
             violations,
             suppressed,
             macro_gaps,
+            failures,
         });
     }
 
@@ -362,6 +370,7 @@ pub fn analyze_project(
     // Fresh registry per file to prevent cross-file state leakage from RefCell fields
     let mut parser = CParser::new()?;
     parser.set_repair_macros(std::sync::Arc::clone(&repair_macros));
+    let mut failures = Vec::new();
 
     for (file_idx, file_path) in c_files.iter().enumerate() {
         // Check for cancellation before processing each file
@@ -378,7 +387,7 @@ pub fn analyze_project(
         let file_context = local.as_ref().unwrap_or(&context);
         set_project_context_for_enabled(&file_registry, manifest, file_context);
 
-        let (file_violations, file_suppressed) = analyze_one_file(
+        let (file_violations, file_suppressed, file_failures) = analyze_one_file_contained(
             file_path,
             &mut parser,
             &file_registry,
@@ -393,9 +402,19 @@ pub fn analyze_project(
         );
         violations.extend(file_violations);
         suppressed.extend(file_suppressed);
+        if file_failures
+            .iter()
+            .any(|f| f.stage == containment::Stage::File)
+        {
+            // A panic outside any rule may have left the parser mid-file.
+            parser = CParser::new()?;
+            parser.set_repair_macros(std::sync::Arc::clone(&repair_macros));
+        }
+        failures.extend(file_failures);
     }
 
     sort_for_deterministic_output(&mut violations, &mut suppressed);
+    failures.sort();
 
     // Report completion
     if let Some(reporter) = progress {
@@ -406,6 +425,7 @@ pub fn analyze_project(
         violations,
         suppressed,
         macro_gaps,
+        failures,
     })
 }
 
@@ -844,9 +864,14 @@ fn analyze_one_file(
     file_idx: usize,
     total_files: usize,
     per_rule_progress: bool,
-) -> (Vec<RuleViolation>, Vec<SuppressedViolation>) {
+) -> (
+    Vec<RuleViolation>,
+    Vec<SuppressedViolation>,
+    Vec<containment::ScanFailure>,
+) {
     let mut file_violations = Vec::new();
     let mut file_suppressed = Vec::new();
+    let mut file_failures = Vec::new();
 
     let parsed = match parser.parse_file(file_path) {
         Ok(parsed) => Some(parsed),
@@ -872,7 +897,7 @@ fn analyze_one_file(
         // tools_sqc is CERT-C only, so a file that can only be C++ is out
         // of scope, not a source of findings.
         if file_path.ends_with(".h") && lang_parsing_substrate::looks_like_cpp(source.as_bytes()) {
-            return (file_violations, file_suppressed);
+            return (file_violations, file_suppressed, file_failures);
         }
 
         let root_node = tree.root_node();
@@ -911,7 +936,24 @@ fn analyze_one_file(
                 // Provide CFGs for flow-sensitive rules (e.g. EXP34-C) and
                 // VRA results for integer-range-sensitive ones.
                 analysis.apply_to(rule);
-                let mut rule_violations = rule.check(&root_node, &source);
+                // A panic in one rule costs that rule's findings for this
+                // file, not the scan (`containment`).
+                let rollback = deallocator_candidates::pending_len();
+                let mut rule_violations =
+                    match containment::contain(|| rule.check(&root_node, &source)) {
+                        Ok(found) => found,
+                        Err((message, location)) => {
+                            deallocator_candidates::truncate_pending(rollback);
+                            file_failures.push(containment::ScanFailure {
+                                stage: containment::Stage::Rule,
+                                file: file_path.to_string(),
+                                rule_id: Some(rule_id.to_string()),
+                                message,
+                                location,
+                            });
+                            continue;
+                        }
+                    };
 
                 // Set file path and severity on all violations
                 for v in &mut rule_violations {
@@ -940,7 +982,58 @@ fn analyze_one_file(
         deallocator_candidates::flush_file(file_path);
     }
 
-    (file_violations, file_suppressed)
+    (file_violations, file_suppressed, file_failures)
+}
+
+/// [`analyze_one_file`], with a panic outside any one rule's check (reading,
+/// parsing, building the file's CFGs and value ranges) contained to the file:
+/// it then contributes no findings and one [`containment::Stage::File`]
+/// failure.
+#[allow(clippy::too_many_arguments)]
+fn analyze_one_file_contained(
+    file_path: &str,
+    parser: &mut CParser,
+    file_registry: &RuleRegistry,
+    manifest: &RuleManifest,
+    context: &context::ProjectContext,
+    needs_vra: bool,
+    suppression_manager: &mut SuppressionManager,
+    progress: Option<&dyn ProgressReporter>,
+    file_idx: usize,
+    total_files: usize,
+    per_rule_progress: bool,
+) -> (
+    Vec<RuleViolation>,
+    Vec<SuppressedViolation>,
+    Vec<containment::ScanFailure>,
+) {
+    let rollback = deallocator_candidates::pending_len();
+    containment::contain(|| {
+        analyze_one_file(
+            file_path,
+            parser,
+            file_registry,
+            manifest,
+            context,
+            needs_vra,
+            suppression_manager,
+            progress,
+            file_idx,
+            total_files,
+            per_rule_progress,
+        )
+    })
+    .unwrap_or_else(|(message, location)| {
+        deallocator_candidates::truncate_pending(rollback);
+        let failure = containment::ScanFailure {
+            stage: containment::Stage::File,
+            file: file_path.to_string(),
+            rule_id: None,
+            message,
+            location,
+        };
+        (Vec::new(), Vec::new(), vec![failure])
+    })
 }
 
 /// Print a suppression-comment snippet for `spec` (`FILE:LINE:RULE`), for a
@@ -1447,6 +1540,7 @@ mod tests {
             violations: vec![],
             suppressed: vec![],
             macro_gaps: None,
+            failures: vec![],
         };
         assert!(results.violations.is_empty());
         assert!(results.suppressed.is_empty());

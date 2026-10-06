@@ -888,6 +888,7 @@ fn run() -> Result<i32> {
     let mut violations = results.violations;
     let suppressed = results.suppressed;
     let macro_gap_report = results.macro_gaps;
+    let failures = results.failures;
 
     // Post-analysis filtering
     if let Some(ref min_sev) = min_severity {
@@ -967,6 +968,37 @@ fn run() -> Result<i32> {
                 json_path
             );
         }
+    }
+
+    // A contained panic (analyze::containment) leaves every other finding in
+    // place, so the output above stands -- but it is incomplete, and that
+    // outranks any findings-based verdict: a CI gate must not read a scan
+    // with a rule missing as a clean one.
+    if !failures.is_empty() {
+        for f in &failures {
+            eprintln!("Error: {}", f.render());
+        }
+        let rules: std::collections::BTreeSet<_> = failures
+            .iter()
+            .filter_map(|f| f.rule_id.as_deref())
+            .collect();
+        let files: std::collections::BTreeSet<_> = failures.iter().map(|f| &f.file).collect();
+        eprintln!(
+            "Error: scan INCOMPLETE: {} internal failure(s) in {} file(s){}; the findings \
+             above omit what failed. This is an aurora-lint bug; please report it.",
+            failures.len(),
+            files.len(),
+            if rules.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " (rule{} {})",
+                    if rules.len() == 1 { "" } else { "s" },
+                    rules.into_iter().collect::<Vec<_>>().join(", ")
+                )
+            },
+        );
+        return Ok(analyze::containment::EXIT_INCOMPLETE);
     }
 
     // Determine exit code (only unsuppressed violations count)

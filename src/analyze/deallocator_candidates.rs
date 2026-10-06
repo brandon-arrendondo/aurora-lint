@@ -67,6 +67,19 @@ pub fn record(callee: &str, argument: usize, line: usize) {
     PENDING.with(|p| p.borrow_mut().push((callee.to_string(), argument, line)));
 }
 
+/// How many rows this thread has recorded since the last flush: a rollback
+/// point for [`truncate_pending`].
+pub fn pending_len() -> usize {
+    PENDING.with(|p| p.borrow().len())
+}
+
+/// Drop what this thread recorded after the rollback point `len`. A rule
+/// that panicked part-way through a file (`containment`) leaves rows from a
+/// check that never finished; they are not evidence of anything.
+pub fn truncate_pending(len: usize) {
+    PENDING.with(|p| p.borrow_mut().truncate(len));
+}
+
 /// Attach `file` to everything recorded on this thread since the last flush.
 pub fn flush_file(file: &str) {
     if !enabled() {
