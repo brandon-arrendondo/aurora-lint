@@ -1952,6 +1952,48 @@ fn a_project_header_off_the_search_path_does_not_switch_dcl31_off() {
 }
 
 #[test]
+fn dcl31_stands_down_only_in_files_that_reach_a_missing_generated_header() {
+    // One file includes the generated header (through object/structures.h)
+    // and goes quiet; its sibling includes nothing generated and is still
+    // checked. The warning names the quiet files, not the whole project.
+    let base = fixtures().join("dcl31_offswitch");
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        base.join("generated_partial").to_str().unwrap(),
+        "-m",
+        manifest_dcl31().to_str().unwrap(),
+        "-I",
+        base.join("generated_partial/include").to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let flagged: Vec<(String, u64)> = violations
+        .iter()
+        .filter(|v| v["rule_id"] == "DCL31-C")
+        .map(|v| {
+            let file = v["file"].as_str().unwrap();
+            let name = file.rsplit('/').next().unwrap().to_string();
+            (name, v["line"].as_u64().unwrap())
+        })
+        .collect();
+    assert_eq!(flagged, vec![("sibling.c".to_string(), 4)]);
+    let warning = stderr
+        .lines()
+        .find(|l| l.contains("DCL31-C"))
+        .unwrap_or_else(|| panic!("no stand-down warning in: {stderr}"));
+    // Headers are scanned files too: object/structures.h itself includes the
+    // generated header.
+    assert!(warning.contains("2 of 3 files"), "{warning}");
+    assert!(warning.contains("uses_gen.c"), "{warning}");
+    assert!(!warning.contains("sibling.c"), "{warning}");
+    assert!(warning.contains("object/structures_gen.h"), "{warning}");
+}
+
+#[test]
 fn a_missing_generated_project_header_switches_dcl31_off_and_says_so() {
     // seL4's layout: the project has include/object/ but structures_gen.h is
     // emitted at build time, so every declaration in it is invisible and the

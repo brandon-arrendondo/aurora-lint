@@ -74,12 +74,12 @@ pub trait CertRule {
     /// section of `docs/design/internal-capability-catalog.md`.
     fn set_project_context(&self, _context: &ProjectContext) {}
 
-    /// Why this rule, or one of its checks, stands down for the whole
-    /// project under `context`, or `None` when it runs normally. A rule that
-    /// switches itself off project-wide must say so here: the scan reports
-    /// it once on stderr, since a rule going quiet is otherwise
-    /// indistinguishable from a rule finding nothing.
-    fn project_wide_switch_off(&self, _context: &ProjectContext) -> Option<String> {
+    /// Where and why this rule, or one of its checks, stands down under
+    /// `context` among the scanned `files`, or `None` when it runs normally
+    /// everywhere. A rule that switches itself off for some files must say
+    /// so here: the scan reports it once on stderr, since a rule going quiet
+    /// is otherwise indistinguishable from a rule finding nothing.
+    fn stand_down_report(&self, _context: &ProjectContext, _files: &[String]) -> Option<String> {
         None
     }
 

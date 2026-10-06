@@ -51,10 +51,14 @@ pub struct Dcl31C {
     /// Names of typedefs whose declared type is a function pointer, from
     /// prescan. Consulted after the chain walker terminates.
     function_pointer_typedef_names: RefCell<Arc<HashSet<String>>>,
-    // True when the project includes a header it doesn't ship (generated at
-    // build time), so no set of declarations we can collect is complete.
-    // See `declarations_are_incomplete`.
+    // True when the file being scanned may include a project header that
+    // isn't there (generated at build time), so no set of declarations we
+    // can collect for it is complete. Set per file in `set_file_path`.
     incomplete_declarations: RefCell<bool>,
+    // What decides `incomplete_declarations` per file: the include graph and
+    // the project headers that resolve to nothing. Empty when there are none.
+    include_edges: RefCell<Arc<HashMap<String, Vec<String>>>>,
+    unresolved_project_headers: RefCell<HashSet<String>>,
 }
 
 impl Dcl31C {
@@ -69,6 +73,8 @@ impl Dcl31C {
             typedef_types: RefCell::new(Arc::new(HashMap::new())),
             function_pointer_typedef_names: RefCell::default(),
             incomplete_declarations: RefCell::new(false),
+            include_edges: RefCell::default(),
+            unresolved_project_headers: RefCell::default(),
         }
     }
 
@@ -449,29 +455,58 @@ impl CertRule for Dcl31C {
         // `cap_frame_cap_get_capFIsDevice`, ~130 names — into
         // `<object/structures_gen.h>` from an `.bf` spec). Every declaration
         // in it is invisible to us, so the undeclared-call check has no sound
-        // basis anywhere in this project and is switched off; the
-        // missing-type-specifier and implicit-return-type checks, which only
-        // read declarations we *can* see, keep running.
-        *self.incomplete_declarations.borrow_mut() = !context.unresolved_project_headers.is_empty();
+        // basis in a file that may include it, and stands down there
+        // (`set_file_path`); the missing-type-specifier and implicit-return-type
+        // checks, which only read declarations we *can* see, keep running.
+        // Other files keep the check: hostap's Android binder headers are
+        // generated, but only wpa_supplicant/binder/ includes them.
+        *self.include_edges.borrow_mut() = context.include_edges.clone();
+        *self.unresolved_project_headers.borrow_mut() = context.unresolved_project_headers.clone();
+        *self.incomplete_declarations.borrow_mut() = false;
     }
 
-    fn project_wide_switch_off(
+    fn set_file_path(&self, path: &std::path::Path) {
+        *self.incomplete_declarations.borrow_mut() =
+            !crate::analyze::context::unresolved_project_headers_reached(
+                &self.include_edges.borrow(),
+                &self.unresolved_project_headers.borrow(),
+                path,
+            )
+            .is_empty();
+    }
+
+    fn stand_down_report(
         &self,
         context: &crate::analyze::context::ProjectContext,
+        files: &[String],
     ) -> Option<String> {
         if context.unresolved_project_headers.is_empty() {
             return None;
         }
-        let mut headers: Vec<&str> = context
-            .unresolved_project_headers
-            .iter()
-            .map(String::as_str)
-            .collect();
-        headers.sort_unstable();
+        let mut headers = std::collections::BTreeSet::new();
+        let mut quiet = Vec::new();
+        for file in files {
+            let reached = context.unresolved_project_headers_reached(std::path::Path::new(file));
+            if !reached.is_empty() {
+                headers.extend(reached);
+                quiet.push(file.as_str());
+            }
+        }
+        if quiet.is_empty() {
+            return None;
+        }
+        const SHOWN: usize = 3;
+        let mut examples = quiet[..quiet.len().min(SHOWN)].join(", ");
+        if quiet.len() > SHOWN {
+            examples.push_str(", ...");
+        }
         Some(format!(
-            "undeclared-function check off: project header(s) not found, \
-             presumably generated at build time: {}",
-            headers.join(", ")
+            "undeclared-function check off in {} of {} files ({}): they include project \
+             header(s) not found, presumably generated at build time: {}",
+            quiet.len(),
+            files.len(),
+            examples,
+            headers.into_iter().collect::<Vec<_>>().join(", ")
         ))
     }
 

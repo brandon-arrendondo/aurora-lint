@@ -248,15 +248,16 @@ pub fn analyze_project(
     );
 
     warn_unimplemented_rules(manifest, &registry);
-    warn_project_wide_switch_offs(
+
+    let c_files = collect_c_files(project_source, diff_only, &scope.report_globs())?;
+    let total_files = c_files.len();
+    warn_stand_downs(
         &registry,
         manifest,
         &context,
         project_source.get_root_path(),
+        &c_files,
     );
-
-    let c_files = collect_c_files(project_source, diff_only, &scope.report_globs())?;
-    let total_files = c_files.len();
 
     // What did not complete (`containment`, ADR-0017): the prescan's failures
     // first, then the per-file ones. One escalation record per scan, shared
@@ -727,15 +728,16 @@ fn set_project_context_for_enabled(
     }
 }
 
-/// Name each enabled rule that stands down for the whole project, with the
-/// project and the reason. A rule only sees the context when the prescan
+/// Name each enabled rule that stands down in some of the scanned files, with
+/// the project, where and why. A rule only sees the context when the prescan
 /// found cross-file data (`set_project_context_for_enabled`), so only then
 /// can it have switched itself off.
-fn warn_project_wide_switch_offs(
+fn warn_stand_downs(
     registry: &RuleRegistry,
     manifest: &RuleManifest,
     context: &context::ProjectContext,
     project: &str,
+    files: &[String],
 ) {
     if !context.has_cross_file_data() {
         return;
@@ -743,7 +745,7 @@ fn warn_project_wide_switch_offs(
     for (rule_id, _) in manifest.enabled_rules() {
         if let Some(reason) = registry
             .get_rule(rule_id)
-            .and_then(|rule| rule.project_wide_switch_off(context))
+            .and_then(|rule| rule.stand_down_report(context, files))
         {
             eprintln!("Warning: {rule_id} in {project}: {reason}");
         }

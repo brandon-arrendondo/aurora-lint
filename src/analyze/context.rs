@@ -78,6 +78,51 @@ impl IncludeClosure {
     }
 }
 
+impl ProjectContext {
+    /// The [`unresolved_project_headers`](Self::unresolved_project_headers)
+    /// the file at `path` may include, sorted: those its include closure
+    /// ([`IncludeClosure::of`]) names, or all of them when a computed
+    /// `#include` along the way may name any header. Empty when the file's
+    /// closure is unknown (it has no include edge, so it names no header).
+    pub fn unresolved_project_headers_reached(&self, path: &Path) -> Vec<String> {
+        unresolved_project_headers_reached(
+            &self.include_edges,
+            &self.unresolved_project_headers,
+            path,
+        )
+    }
+}
+
+/// [`ProjectContext::unresolved_project_headers_reached`] for a holder of just
+/// the two tables it reads.
+pub fn unresolved_project_headers_reached(
+    include_edges: &HashMap<String, Vec<String>>,
+    unresolved_project_headers: &HashSet<String>,
+    path: &Path,
+) -> Vec<String> {
+    if unresolved_project_headers.is_empty() {
+        return Vec::new();
+    }
+    let Some(closure) = IncludeClosure::of(include_edges, path) else {
+        return Vec::new();
+    };
+    // The closure records spellings with `.` and `..` segments dropped.
+    let normalized = |spelling: &str| {
+        spelling
+            .split(['/', '\\'])
+            .filter(|segment| !matches!(*segment, "" | "." | ".."))
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+    let mut reached: Vec<String> = unresolved_project_headers
+        .iter()
+        .filter(|header| closure.any || closure.unresolved.contains(&normalized(header)))
+        .cloned()
+        .collect();
+    reached.sort_unstable();
+    reached
+}
+
 /// Cross-file context gathered by pre-scanning additional directories.
 ///
 /// Holds function names found in `.c`/`.h` files so that rules like DCL31-C
@@ -385,8 +430,9 @@ pub struct ProjectContext {
     /// produces part of it". Nor does an include written inside a header
     /// outside every project root (a system header's own missing includes),
     /// or one in an arm its file proves is never compiled (ADR-0010 D2).
-    /// A rule that stands down because this set is non-empty reports it
-    /// through `CertRule::project_wide_switch_off`.
+    /// A rule stands down only in the files that may include one of these
+    /// ([`Self::unresolved_project_headers_reached`]), and reports where
+    /// through `CertRule::stand_down_report`.
     #[serde(default)]
     pub unresolved_project_headers: HashSet<String>,
     /// Every place the macro-expansion engine declined or failed to see a
