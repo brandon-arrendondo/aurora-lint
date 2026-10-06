@@ -393,6 +393,8 @@ messages. See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the people involved.
 
 Apache-2.0. Copyright 2025-2026 BISSELL Homecare, Inc.
 
+Brandon Arrendondo is the accountable BISSELL Associate for aurora-lint: he maintains it and writes its documentation.
+
 [LICENSE](LICENSE) is the unmodified Apache-2.0 text; copyright and
 attribution live in [NOTICE](NOTICE), per Apache-2.0 section 4(d).
 

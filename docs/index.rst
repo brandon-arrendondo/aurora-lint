@@ -20,6 +20,8 @@ them. To cite a page, cite the release's copy, whose text and numbers never
 change: ``https://brandon-arrendondo.github.io/aurora-lint/<tag>/<page>.html``,
 for example ``.../aurora-lint/v0.6.0/configuration.html``.
 
+Brandon Arrendondo is the accountable BISSELL Associate for aurora-lint: he maintains it and writes its documentation.
+
 .. toctree::
    :maxdepth: 3
    :caption: Contents
