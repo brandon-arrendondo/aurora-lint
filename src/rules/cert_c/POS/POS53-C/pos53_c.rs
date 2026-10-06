@@ -51,6 +51,7 @@ use crate::manifest::Severity;
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -222,19 +223,17 @@ impl Pos53C {
     /// `&name` form for direct comparison.
     fn collect_global_cond_var_names(&self, node: &Node, source: &str) -> HashSet<String> {
         let mut names = HashSet::new();
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "declaration" {
-                    let has_cond_t = query::find_descendants_of_kind(child, "type_identifier")
-                        .iter()
-                        .any(|t| get_node_text(t, source).trim() == "pthread_cond_t");
-                    if !has_cond_t {
-                        continue;
-                    }
-                    for name in self.collect_declared_names(&child, source) {
-                        names.insert(format!("&{}", name));
-                        names.insert(name);
-                    }
+        for child in node.child_nodes() {
+            if child.kind() == "declaration" {
+                let has_cond_t = query::find_descendants_of_kind(child, "type_identifier")
+                    .iter()
+                    .any(|t| get_node_text(t, source).trim() == "pthread_cond_t");
+                if !has_cond_t {
+                    continue;
+                }
+                for name in self.collect_declared_names(&child, source) {
+                    names.insert(format!("&{}", name));
+                    names.insert(name);
                 }
             }
         }
@@ -245,21 +244,19 @@ impl Pos53C {
     /// (handles plain identifiers and init_declarators).
     fn collect_declared_names(&self, decl: &Node, source: &str) -> Vec<String> {
         let mut names = Vec::new();
-        for i in 0..decl.child_count() {
-            if let Some(child) = decl.child(i) {
-                match child.kind() {
-                    "identifier" => {
-                        names.push(get_node_text(&child, source).trim().to_string());
-                    }
-                    "init_declarator" => {
-                        if let Some(declarator) = child.child_by_field_name("declarator") {
-                            if declarator.kind() == "identifier" {
-                                names.push(get_node_text(&declarator, source).trim().to_string());
-                            }
+        for child in decl.child_nodes() {
+            match child.kind() {
+                "identifier" => {
+                    names.push(get_node_text(&child, source).trim().to_string());
+                }
+                "init_declarator" => {
+                    if let Some(declarator) = child.child_by_field_name("declarator") {
+                        if declarator.kind() == "identifier" {
+                            names.push(get_node_text(&declarator, source).trim().to_string());
                         }
                     }
-                    _ => {}
                 }
+                _ => {}
             }
         }
         names
