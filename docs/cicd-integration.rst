@@ -176,7 +176,8 @@ CI/CD Readiness
      - SARIF 2.1.0, JSON
      - 100%
    * - Exit Codes
-     - ``--fail-on-violation``, ``--fail-on-severity``
+     - ``--fail-on-violation``, ``--fail-on-severity``; ``3`` for an incomplete
+       scan (:doc:`error-handling`)
      - 100%
    * - Severity Filtering
      - ``--min-severity``, ``--fail-on-severity``

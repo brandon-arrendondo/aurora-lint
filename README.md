@@ -366,7 +366,7 @@ generated [option list](docs/options.rst).
 aurora-lint . --diff --min-severity Medium --fail-on-severity High --export results.sarif
 ```
 
-Exit codes: `0` = success, `1` = violations found (with `--fail-on-*`), `2` = error.
+Exit codes: `0` = success, `1` = violations found (with `--fail-on-*`), `2` = the scan could not run, `3` = the scan is incomplete (a rule crashed or ran out of budget; reported on stderr and in SARIF). See [Error handling and exit codes](docs/error-handling.rst).
 
 Ready-to-use workflow examples for [GitHub Actions and Azure DevOps](docs/cicd-integration.rst) are in the Developer Guide.
 

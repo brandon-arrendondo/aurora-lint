@@ -66,3 +66,5 @@ outlive any one task.
 - [0016 — A published artifact cites its sources, ships as a sanitized
   export, names its accountable reviewer, and discloses AI
   use](0016-published-artifacts.md)
+- [0017 — A crash or a runaway costs one rule on one file, is always
+  reported, and never passes as clean](0017-graceful-failure.md)

@@ -225,6 +225,16 @@ Exit with code 1 if any violations are found.
 \fB\-\-fail\-on\-severity\fR \fILEVEL\fR
 Exit with code 1 if any violation meets or exceeds the specified severity.
 \fILEVEL\fR is one of: \fBLow\fR, \fBMedium\fR, \fBHigh\fR, \fBCritical\fR.
+.SS "Failure Handling"
+.TP
+\fB\-\-rule\-step\-limit\fR \fIN\fR
+Steps one rule's check of one file (or one file's analysis) may take before
+it is stopped and reported, exit 3. Deterministic. Default 50000000;
+\fB0\fR removes the limit.
+.TP
+\fB\-\-rule\-time\-limit\fR \fISECS\fR
+Seconds one unit of work may run before it is stopped and reported, exit 3.
+The backstop against a hang. Default 300; \fB0\fR removes the limit.
 .SS "Performance & Parallelism"
 .TP
 \fB\-j\fR, \fB\-\-jobs\fR \fIN\fR
@@ -264,7 +274,14 @@ Violations found and \fB\-\-fail\-on\-violation\fR or \fB\-\-fail\-on\-severity\
 was set.
 .TP
 .B 2
-Analysis error (invalid path, bad manifest, invalid suppression file, parse failure).
+The scan could not run (invalid path, bad manifest, invalid suppression file).
+.TP
+.B 3
+The scan completed but is incomplete: a rule, a file or a file's prescan
+crashed or ran out of its step or time budget. Each failure is reported on
+stderr and, in a SARIF export, as a tool execution notification. The findings
+that were produced are still output. Takes precedence over 1, with or without
+\fB\-\-fail\-on\-*\fR. See docs/error-handling.rst.
 .SH CONFIGURATION
 .SS "Rules Manifest"
 The rules manifest is a TOML file that controls which rules are enabled.

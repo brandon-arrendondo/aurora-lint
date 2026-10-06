@@ -1,7 +1,11 @@
 # Containing a rule's panic to the rule and file it happened in
 
-**Status:** proposal, with a prototype on this branch. Needs Brandon's
-decision; if adopted, the ADR text at the end goes into `docs/adr/`.
+**Status:** adopted and implemented, with two additions from review:
+escalation from file to rule, and hangs (step budget, time limit,
+watchdog, reported analysis caps). The standing policy is
+`docs/adr/0017-graceful-failure.md`; the user-facing account is
+`docs/error-handling.rst`. This document is the design record and is not
+kept current.
 
 ## The problem
 
