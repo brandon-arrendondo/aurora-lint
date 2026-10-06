@@ -1386,6 +1386,19 @@ pub fn analyze_value_ranges(
     macros: &MacroConstantMap,
     summaries: &(impl SummaryLookup + ?Sized),
 ) -> RangeAnalysisResult {
+    let max_iterations = 500 * cfg.blocks.len();
+    analyze_value_ranges_capped(cfg, func_node, source, macros, summaries, max_iterations)
+}
+
+/// [`analyze_value_ranges`] with the worklist's iteration cap given.
+fn analyze_value_ranges_capped(
+    cfg: &FunctionCfg,
+    func_node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    summaries: &(impl SummaryLookup + ?Sized),
+    max_iterations: usize,
+) -> RangeAnalysisResult {
     // Skip VRA for very large functions to bound worst-case runtime.
     if cfg.blocks.len() > VRA_BLOCK_LIMIT {
         return empty_range_result();
@@ -1437,22 +1450,37 @@ pub fn analyze_value_ranges(
 
     // Track iteration counts per block for widening
     let mut block_iterations: HashMap<BlockId, usize> = HashMap::new();
-    // Track which blocks are back-edge targets
+    // Where widening applies: the head of every loop. That is a back-edge
+    // target, and also the target of a backward `goto` -- a label at or
+    // before the jump, `retry: ... goto retry;` -- which closes a loop the
+    // CFG records as a Goto edge, not a BackEdge. Without widening there, a
+    // counter stepped once per trip (`optind++ ... goto start;`) climbs one
+    // value per iteration toward its type bound, which no iteration cap
+    // reaches. The CFG's edge kinds stay as they are: the other analyses and
+    // the rules read BackEdge as a loop the source wrote.
     let back_edge_targets: HashSet<BlockId> = cfg
         .edges
         .iter()
-        .filter(|(_, _, e)| matches!(e, CfgEdge::BackEdge))
+        .filter(|(from, to, e)| match e {
+            CfgEdge::BackEdge => true,
+            CfgEdge::Goto => cfg.blocks[*to].byte_range.0 <= cfg.blocks[*from].byte_range.0,
+            _ => false,
+        })
         .map(|(_, to, _)| *to)
         .collect();
 
     let mut total_iterations = 0;
-    let max_iterations = 500 * cfg.blocks.len();
 
     while let Some(block_id) = worklist.pop_front() {
         in_worklist.remove(&block_id);
         total_iterations += 1;
         if total_iterations > max_iterations {
-            break;
+            // Not converged. The ranges reached so far can be narrower than
+            // the truth, and a range that is too narrow proves things that
+            // are false (a bound check "always passes", a divisor "is never
+            // zero"). No ranges is the sound answer: what the block limit
+            // above gives a function too large to analyse.
+            return empty_range_result();
         }
 
         // Join predecessor exit states with edge refinement
@@ -2342,6 +2370,56 @@ mod tests {
         } else {
             None
         }
+    }
+
+    #[test]
+    fn a_backward_goto_loop_widens_to_the_type_bound() {
+        // `again:` ... `goto again;` closes a loop the CFG records as a Goto
+        // edge, not a BackEdge. Widening at its head takes `i` to INT_MAX;
+        // without it `i` crept one value per trip until the iteration cap,
+        // and the range at the head stopped near the cap.
+        let code = r#"
+void f(int *p) {
+    int i = 0;
+again:
+    p[i] = 0;
+    i++;
+    if (p[i]) goto again;
+}
+"#;
+        // Before `i++`, on each trip round the loop.
+        let r = get_range_at_line(code, "i", 6).expect("a range for i in the loop");
+        assert_eq!(r.min, 0, "{r:?}");
+        assert_eq!(r.max, i64::from(i32::MAX), "{r:?}");
+    }
+
+    #[test]
+    fn a_capped_analysis_keeps_no_ranges() {
+        // Stopped before converging, the ranges reached so far can be too
+        // narrow, which is unsound; the analysis then keeps none at all.
+        let code = r#"
+void f(int *p) {
+    int i = 0;
+again:
+    p[i] = 0;
+    i++;
+    if (p[i]) goto again;
+}
+"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+        let root = tree.root_node();
+        let macros =
+            const_eval::collect_macro_constants(&root, code, crate::settings::IntFacts::LP64);
+        let func = find_first_function(&root).unwrap();
+        let fcfg = cfg::build_function_cfg(&func, code).unwrap();
+        let empty: HashMap<String, crate::analyze::function_summary::FunctionSummary> =
+            HashMap::new();
+        let capped = analyze_value_ranges_capped(&fcfg, &func, code, &macros, &empty, 1);
+        assert!(capped.block_entry_ranges.is_empty() && capped.block_exit_ranges.is_empty());
+        let full = analyze_value_ranges(&fcfg, &func, code, &macros, &empty);
+        assert!(!full.block_entry_ranges.is_empty());
     }
 
     #[test]
