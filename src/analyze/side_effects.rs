@@ -253,6 +253,13 @@ pub struct FileScopeObjects {
     /// The objects another file can read that some declaration here gives
     /// without `volatile`.
     pub non_volatile: std::collections::HashSet<String>,
+    /// The objects another file can read that some declaration here gives an
+    /// array declarator (`extern char cmd[64];`, `char cmd[PATH_MAX + 32U];`).
+    pub array: std::collections::HashSet<String>,
+    /// The objects another file can read that some declaration here gives
+    /// without an array declarator. A name in both sets is not known to be an
+    /// array.
+    pub non_array: std::collections::HashSet<String>,
 }
 
 /// The file-scope objects and enumeration constants `root` declares, and
@@ -274,6 +281,11 @@ pub fn file_scope_objects(root: &Node, source: &str, shared: bool) -> FileScopeO
                 out.volatile.insert(name.clone());
             } else {
                 out.non_volatile.insert(name.clone());
+            }
+            if crate::utility::cert_c::expr_type::declarator_shape(&declarator).ends_with('[') {
+                out.array.insert(name.clone());
+            } else {
+                out.non_array.insert(name.clone());
             }
         }
         out.names.insert(name);

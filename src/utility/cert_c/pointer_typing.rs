@@ -23,7 +23,8 @@ use crate::analyze::argument_objects::declared_pointers;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::float_typing::StructFieldTypes;
 use lang_parsing_substrate::query;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// The pointer-typed names a translation unit puts in scope that a
@@ -44,6 +45,14 @@ pub struct PointerFacts {
     /// pointer, so a call to one can be recognized as a pointer operand
     /// (`wpabuf_head_u8(resp) + start`).
     pointer_returning_functions: HashSet<String>,
+    /// Arrays declared at file scope in another scanned file or a resolved
+    /// header (`extern char cmd[64];`): a name this file's own declarations
+    /// do not resolve. Empty until [`Self::with_project`].
+    project_arrays: Arc<HashSet<String>>,
+    /// `struct tag or typedef name -> field -> declarator shape`, this file's
+    /// definitions winning, so an array member types as the array it is.
+    /// Empty until [`Self::with_project`].
+    struct_field_shapes: Arc<HashMap<String, HashMap<String, String>>>,
 }
 
 impl PointerFacts {
@@ -55,6 +64,48 @@ impl PointerFacts {
     /// resolves against its own type map first never reaches this.
     pub fn is_file_scope_pointer(&self, name: &str) -> bool {
         self.file_scope_pointers.contains(name)
+    }
+
+    /// These facts plus what the project knows that this file cannot see:
+    /// the array objects its headers declare, and the declarator shape of
+    /// every struct member (`shapes`, as the file sees them).
+    ///
+    /// `arrays` is [`ProjectContext::project_array_objects`]. A
+    /// header-declared array is answered only for a name the file's own
+    /// declarations leave unresolved: the identifier case checks the
+    /// occurrence's own declarator first.
+    ///
+    /// [`ProjectContext::project_array_objects`]: crate::analyze::context::ProjectContext::project_array_objects
+    pub fn with_project(
+        mut self,
+        arrays: Arc<HashSet<String>>,
+        shapes: Arc<HashMap<String, HashMap<String, String>>>,
+    ) -> Self {
+        self.project_arrays = arrays;
+        self.struct_field_shapes = shapes;
+        self
+    }
+
+    /// Does the member `node` (a `field_expression`) name an array member of
+    /// the struct its base resolves to? Resolved by the struct's own member
+    /// declaration, not by the member's spelling.
+    fn field_is_array(
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+        struct_field_types: &StructFieldTypes,
+        facts: &PointerFacts,
+    ) -> bool {
+        let Some((owner, field)) =
+            ast_utils::resolve_field_owner(node, source, type_map, struct_field_types)
+        else {
+            return false;
+        };
+        facts
+            .struct_field_shapes
+            .get(&owner)
+            .and_then(|fields| fields.get(&field))
+            .is_some_and(|shape| shape.ends_with('['))
     }
 
     /// Collect the file-scope pointer facts of one parsed translation unit.
@@ -165,7 +216,10 @@ fn pointer_value<'a>(
                 // the collector saw.
                 None => match type_map.get(name) {
                     Some(t) => ast_utils::is_pointer_type(t),
-                    None => facts.file_scope_pointers.contains(name),
+                    None => {
+                        facts.file_scope_pointers.contains(name)
+                            || facts.project_arrays.contains(name)
+                    }
                 },
             }
         }
@@ -173,6 +227,9 @@ fn pointer_value<'a>(
             ast_utils::resolve_field_expression_type(node, source, type_map, struct_field_types)
                 .is_some_and(|t| ast_utils::is_pointer_type(&t))
                 || inline_struct_field_is_pointer(node, source)
+                // An array member decays to a pointer: `s->ie + n`. The
+                // field-type spelling reads it as its element type.
+                || PointerFacts::field_is_array(node, source, type_map, struct_field_types, facts)
         }
         "cast_expression" => match node.child_by_field_name("type") {
             // An explicit cast states the expression's type outright, in

@@ -523,6 +523,17 @@ pub struct ProjectContext {
     /// set holds a source file's `static` objects, which no other file reads.
     #[serde(default)]
     pub non_volatile_globals: Arc<HashSet<String>>,
+    /// The file-scope objects some scanned file or header declares with an
+    /// array declarator (`extern char cmd[64];`, `u8 ie[1500];`): a body in
+    /// another file naming one reads an array, which decays to a pointer
+    /// there. A source file's own `static` objects are not here.
+    #[serde(default)]
+    pub array_globals: Arc<HashSet<String>>,
+    /// The file-scope objects some scanned file or header declares without
+    /// an array declarator: a name in both sets is not known to be an array
+    /// (two unrelated objects share the spelling).
+    #[serde(default)]
+    pub non_array_globals: Arc<HashSet<String>>,
     /// Typedef names some scanned file or header defines with `volatile`
     /// (`typedef volatile uint32_t reg_t;`).
     #[serde(default)]
@@ -537,6 +548,17 @@ pub struct ProjectContext {
 }
 
 impl ProjectContext {
+    /// The file-scope objects declared as arrays somewhere in the project,
+    /// less any name some scanned file or header also declares as something
+    /// else: a name two unrelated objects share is not known to be an array.
+    pub fn project_array_objects(&self) -> HashSet<String> {
+        self.array_globals
+            .iter()
+            .filter(|n| !self.non_array_globals.contains(*n))
+            .cloned()
+            .collect()
+    }
+
     /// What calling each scanned function can change, as this context's
     /// file sees the names ([`crate::analyze::side_effects`]).
     pub fn effects(&self) -> EffectView {

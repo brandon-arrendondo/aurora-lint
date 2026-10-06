@@ -5476,3 +5476,53 @@ fn comment_padding_costs_linear_time() {
         "8x the comment padding took {ratio:.1}x the time ({small_secs:.2} s -> {large_secs:.2} s)"
     );
 }
+
+fn manifest_int30() -> PathBuf {
+    fixtures().join("manifest_int30.toml")
+}
+
+#[test]
+fn crossfile_header_array_plus_integer_is_not_an_unsigned_sum() {
+    // `cmd` is declared `extern char cmd[64]` in globals.h only. `cmd + scanned`
+    // is pointer arithmetic, so INT30-C must not report it; the integer
+    // `total`, a local that shadows the array's name, and a name declared as
+    // an array in one file and an integer in another are all still sums.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let fixture_dir = fixtures().join("crossfile_int30_array");
+    let (code, _, _) = run_aurora_lint(&[
+        fixture_dir.join("parser.c").to_str().unwrap(),
+        "-m",
+        manifest_int30().to_str().unwrap(),
+        "-d",
+        fixture_dir.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    let lines: Vec<u64> = violations
+        .iter()
+        .filter(|v| v["rule_id"] == "INT30-C")
+        .filter_map(|v| v["line"].as_u64())
+        .collect();
+
+    assert!(
+        !lines.contains(&7),
+        "cmd + scanned adds to a header-declared array: {lines:?}"
+    );
+    assert!(
+        lines.contains(&13),
+        "total + n is an unsigned sum: {lines:?}"
+    );
+    assert!(
+        lines.contains(&19),
+        "the local `cmd` is an unsigned int: {lines:?}"
+    );
+    assert!(
+        lines.contains(&25),
+        "`shared` is not known to be an array: {lines:?}"
+    );
+}

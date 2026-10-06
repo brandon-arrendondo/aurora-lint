@@ -53,6 +53,8 @@ pub struct Int30C {
     /// File-scope pointer names and pointer-returning functions, for the
     /// pointer-arithmetic gate. Rebuilt per file.
     pointer_facts: RefCell<PointerFacts>,
+    /// Arrays declared in a header or another file, from `set_project_context`.
+    project_arrays: RefCell<Arc<HashSet<String>>>,
     /// Declared return types of functions this file defines or prototypes
     /// (`overflow_helpers::collect_function_return_types`), so a call
     /// operand can be typed the same way INT32-C types it -- one half of the
@@ -91,6 +93,7 @@ impl Int30C {
             callers: RefCell::default(),
             param_names_cache: RefCell::new(HashMap::new()),
             pointer_facts: RefCell::new(PointerFacts::default()),
+            project_arrays: RefCell::new(Arc::new(HashSet::new())),
             function_return_types: RefCell::new(HashMap::new()),
             typedef_types: RefCell::new(Arc::new(HashMap::new())),
             project_macro_names: RefCell::new(Arc::new(HashSet::new())),
@@ -313,6 +316,7 @@ impl CertRule for Int30C {
     }
 
     fn set_project_context(&self, context: &ProjectContext) {
+        *self.project_arrays.borrow_mut() = Arc::new(context.project_array_objects());
         *self.project_macros.borrow_mut() = context.macro_constants.clone();
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
@@ -366,7 +370,10 @@ impl CertRule for Int30C {
         self.risky_vars_cache.borrow_mut().clear();
         self.param_names_cache.borrow_mut().clear();
 
-        *self.pointer_facts.borrow_mut() = PointerFacts::collect(node, source);
+        *self.pointer_facts.borrow_mut() = PointerFacts::collect(node, source).with_project(
+            self.project_arrays.borrow().clone(),
+            self.visible.borrow().struct_field_shapes.clone(),
+        );
         *self.function_return_types.borrow_mut() =
             overflow_helpers::collect_function_return_types(node, source);
 

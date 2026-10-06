@@ -1,0 +1,8 @@
+[metadata]
+name = "CLI Integration Test - INT30-C only"
+version = "1.0.0"
+description = "Minimal manifest for INT30-C pointer-operand tests"
+cert_version = "2016"
+
+[rules.cert_c.INT30-C]
+enabled = true

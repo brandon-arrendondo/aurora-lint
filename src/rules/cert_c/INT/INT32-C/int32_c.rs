@@ -98,6 +98,8 @@ pub struct Int32C {
     /// File-scope pointer names and pointer-returning functions, for the
     /// pointer-arithmetic gate. Rebuilt per file.
     pointer_facts: RefCell<PointerFacts>,
+    /// Arrays declared in a header or another file, from `set_project_context`.
+    project_arrays: RefCell<Arc<HashSet<String>>>,
     /// Declared return type of every function this file defines or
     /// prototypes (`overflow_helpers::collect_function_return_types`), so a
     /// call operand can be classified instead of falling to "unknown"
@@ -126,6 +128,7 @@ impl Int32C {
             param_names_cache: RefCell::new(HashMap::new()),
             function_text_cache: RefCell::new(HashMap::new()),
             pointer_facts: RefCell::new(PointerFacts::default()),
+            project_arrays: RefCell::new(Arc::new(HashSet::new())),
             function_return_types: RefCell::new(HashMap::new()),
             data_model: Cell::new(IntFacts::default()),
         }
@@ -204,6 +207,7 @@ impl CertRule for Int32C {
     }
 
     fn set_project_context(&self, context: &ProjectContext) {
+        *self.project_arrays.borrow_mut() = Arc::new(context.project_array_objects());
         *self.project_macros.borrow_mut() = context.macro_constants.clone();
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
@@ -250,7 +254,10 @@ impl CertRule for Int32C {
         self.param_names_cache.borrow_mut().clear();
         self.function_text_cache.borrow_mut().clear();
 
-        *self.pointer_facts.borrow_mut() = PointerFacts::collect(node, source);
+        *self.pointer_facts.borrow_mut() = PointerFacts::collect(node, source).with_project(
+            self.project_arrays.borrow().clone(),
+            self.visible.borrow().struct_field_shapes.clone(),
+        );
         *self.function_return_types.borrow_mut() =
             overflow_helpers::collect_function_return_types(node, source);
 
