@@ -1285,8 +1285,8 @@ Competitor Comparison
      - Partial
      - Free
    * - Coverity
-     - Best-in-class
-     - ~15–20%
+     - Not published
+     - Target <20%
      - Inter-procedural, path-sensitive
      - Not public
      - Partial
@@ -1312,6 +1312,11 @@ C/C++ CWEs only. Its row gives the paper's overall recall (59%) and overall
 probability of false alarm (7%) across those CWEs (Table 3); the false-alarm
 figure is the share of good functions flagged, not the share of reports that
 are false.
+
+The Coverity FP entry is a design target, not a measurement: Bessey et
+al. write that Coverity aims "for below 20% for 'stable' checkers"
+(*Communications of the ACM* 53(2), 2010). No published Juliet detection
+rate was found for it.
 
 The two Semgrep rows are not C results. Semgrep's own comparison measured
 them on OWASP WebGoat (Java) and OWASP Juice Shop (Node), and reports one
