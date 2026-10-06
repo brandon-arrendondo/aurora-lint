@@ -1032,8 +1032,9 @@ const TAINT_MACRO_DEPTH: usize = 8;
 /// A callee is the call's `function` identifier, through any parentheses
 /// (`(fscanf)(...)`). It is a source when its name is one
 /// ([`is_taint_source_name`]), or when it names a function-like macro whose
-/// replacement list calls one, under any of the macro's definitions and
-/// through nested macros (`#define READ_INT(p) fscanf(stdin, "%d", p)`).
+/// replacement list calls one, under any of the file's definitions of it
+/// (`#`/`##` and variadic ones included) and through nested macros
+/// (`#define READ_INT(p) fscanf(stdin, "%d", p)`).
 ///
 /// This replaced a text search for `name(` in the body, which missed the
 /// common `fscanf (stdin, ...)` spelling and matched inside longer names
@@ -1045,12 +1046,12 @@ fn calls_taint_source(
     source: &str,
     end: usize,
     aliases: &[String],
-    function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    macro_arms: &HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>,
 ) -> bool {
     calls.iter().filter(|c| c.start_byte() < end).any(|call| {
         callee_identifier(call, source).is_some_and(|name| {
             is_taint_source_name(name, aliases)
-                || macro_calls_taint_source(name, aliases, function_macros, TAINT_MACRO_DEPTH)
+                || macro_calls_taint_source(name, aliases, macro_arms, TAINT_MACRO_DEPTH)
         })
     })
 }
@@ -1068,33 +1069,32 @@ fn callee_identifier<'s>(call: &Node, source: &'s str) -> Option<&'s str> {
 }
 
 /// Whether the function-like macro `name` calls a taint source in its
-/// replacement list, under any of its definitions, following nested
-/// function-like macros up to `depth`.
+/// replacement list, under any of its arms, following nested function-like
+/// macros up to `depth`. Arms rather than the expander's table: a macro that
+/// stringifies (`#_str`) cannot be expanded but still calls what it calls
+/// (hostap's `NAN_PARSE_BAND` wraps `sscanf`).
 fn macro_calls_taint_source(
     name: &str,
     aliases: &[String],
-    function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    macro_arms: &HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>,
     depth: usize,
 ) -> bool {
-    use crate::analyze::macro_expand::{macro_body_calls, MacroArm};
-    let Some(m) = function_macros.get(name) else {
+    let Some(arms) = macro_arms.get(name) else {
         return false;
     };
     if depth == 0 {
         return false;
     }
-    std::iter::once(m)
-        .chain(m.alternatives.iter().flatten())
-        .any(|def| {
-            macro_body_calls(&MacroArm::from(def))
-                .callees
-                .iter()
-                .filter(|callee| callee.as_str() != name)
-                .any(|callee| {
-                    is_taint_source_name(callee, aliases)
-                        || macro_calls_taint_source(callee, aliases, function_macros, depth - 1)
-                })
-        })
+    arms.iter().any(|arm| {
+        crate::analyze::macro_expand::macro_body_calls(arm)
+            .callees
+            .iter()
+            .filter(|callee| callee.as_str() != name)
+            .any(|callee| {
+                is_taint_source_name(callee, aliases)
+                    || macro_calls_taint_source(callee, aliases, macro_arms, depth - 1)
+            })
+    })
 }
 
 /// True if the function body calls strcpy/strcat/wcscpy/wcscat with a second
@@ -1304,6 +1304,7 @@ fn collect_function_summaries(
                     taint_source_aliases,
                     string_macros,
                     function_macros,
+                    &effect_ctx.arms,
                     clearing_names,
                 );
                 summary.effects = crate::analyze::side_effects::collect_direct_effects(
@@ -1435,6 +1436,7 @@ fn analyze_function(
     taint_source_aliases: &[String],
     string_macros: &HashMap<String, String>,
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    macro_arms: &HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>,
     clearing_names: &HashSet<String>,
 ) -> FunctionSummary {
     // Internal linkage: `static` storage class at file scope. A direct-child
@@ -1562,7 +1564,7 @@ fn analyze_function(
             source,
             text_end,
             taint_source_aliases,
-            function_macros,
+            macro_arms,
         );
 
         // Detect CWE-426-style relative-path command writes: strcpy/strcat
