@@ -1144,37 +1144,37 @@ Literature and practice
 - [Tricorder] Sadowski et al., ICSE 2015. https://static.googleusercontent.com/media/research.google.com/en//pubs/archive/43322.pdf (checked)
 - [SWE-Google] Software Engineering at Google, ch. 20. https://abseil.io/resources/swe-book/html/ch20.html
 - [C&B] Christakis & Bird, ASE 2016. https://mariachris.github.io/Pubs/ASE-2016.pdf (checked)
-- [Kang22] Kang, Aw, Lo, ICSE 2022. https://arxiv.org/pdf/2202.05982
-- [SATE-IV] NIST SP 500-297. https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.500-297.pdf (checked)
+- [Kang22] Kang, H. J., Aw, K. L. and Lo, D., "Detecting False Alarms from Automatic Static Analysis Tools: How Far are We?", ICSE 2022, pp. 698-709. https://doi.org/10.1145/3510003.3510214; preprint https://arxiv.org/pdf/2202.05982
+- [SATE-IV] Okun, V., Delaitre, A. and Black, P. E., "Report on the Static Analysis Tool Exposition (SATE) IV", NIST SP 500-297, January 2013, https://doi.org/10.6028/NIST.SP.500-297. https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.500-297.pdf (checked)
 - [SATE-2008] NIST SP 500-279. https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication500-279.pdf
-- [Ockham] NIST IR 8113. https://nvlpubs.nist.gov/nistpubs/ir/2016/NIST.IR.8113.pdf (checked)
-- [Soundiness] Livshits et al., "In Defense of Soundiness". https://yanniss.github.io/Soundiness-CACM.pdf
+- [Ockham] Black, P. E. and Ribeiro, A., "SATE V Ockham Sound Analysis Criteria", NISTIR 8113, March 2016 (updated May 2019), https://doi.org/10.6028/NIST.IR.8113. https://nvlpubs.nist.gov/nistpubs/ir/2016/NIST.IR.8113.pdf (checked)
+- [Soundiness] Livshits, B. et al., "In Defense of Soundiness: A Manifesto", Communications of the ACM 58(2):44-46, 2015, https://doi.org/10.1145/2644805. https://yanniss.github.io/Soundiness-CACM.pdf
 - [SuperC] Gazzillo & Grimm, PLDI 2012. https://paulgazzillo.com/papers/pldi12.pdf
-- [Tartler] Tartler et al., "Configuration coverage in the analysis of large-scale system software", OSR 45(3), 2011 (not checked: cited as SuperC's reference [37], which is the source of the quoted sentence)
+- [Tartler] Tartler, R., Lohmann, D., Dietrich, C., Egger, C. and Sincero, J., "Configuration Coverage in the Analysis of Large-Scale System Software", ACM SIGOPS Operating Systems Review 45(3):10-14 (Crossref date January 2012; first presented at PLOS '11), https://doi.org/10.1145/2094091.2094095 (checked: "allyesconfig reaches a CC of only 78 percent"; SuperC quotes it as its reference [37])
 - [Padioleau] Padioleau, Y., "Parsing C/C++ Code without Pre-processing", Compiler Construction (CC 2009), LNCS 5501, pp. 109-125, 2009. https://doi.org/10.1007/978-3-642-00722-4_9 (not checked: full text unreachable)
 - [TypeChef] Kästner et al., OOPSLA 2011. https://www.cs.cmu.edu/~ckaestne/pdf/oopsla11_typechef.pdf
 - [Engler] Engler et al., SOSP 2001. https://web.stanford.edu/~engler/deviant-sosp-01.pdf
 - [ESP] Das, Lerner, Seigle, PLDI 2002. https://www.cs.cornell.edu/courses/cs711/2005fa/papers/dls-pldi02.pdf
-- [Bodik] Bodik, Gupta, Soffa, FSE 1997. https://www.cs.virginia.edu/~soffa/Soffa_Pubs_all/Conferences/Refining.Bodick.1997.pdf
+- [Bodik] Bodik, R., Gupta, R. and Soffa, M. L., "Refining Data Flow Information Using Infeasible Paths", ESEC/FSE '97, LNCS 1301, pp. 361-377, https://doi.org/10.1007/3-540-63531-9_25. https://www.cs.virginia.edu/~soffa/Soffa_Pubs_all/Conferences/Refining.Bodick.1997.pdf
 - [P0-policy] https://projectzero.google/vulnerability-disclosure-policy.html
 - [P0-transparency] https://projectzero.google/reporting-transparency.html
 - [CERT-CVD] https://certcc.github.io/CERT-Guide-to-CVD/topics/principles/
 - [USENIX26] https://www.usenix.org/conference/usenixsecurity26/call-for-papers (checked)
-- [Juliet-UG] Juliet Test Suite v1.2 for C/C++ User Guide, https://samate.nist.gov/SARD/downloads/documents/Juliet_Test_Suite_v1.2_for_C_Cpp_-_User_Guide.pdf (§1.3.2 checked against the local copy)
-- [Juliet-1.3] NIST TN 1995, https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=925632
+- [Juliet-UG] NSA Center for Assured Software, "Juliet Test Suite v1.2 for C/C++ User Guide", December 2012, https://samate.nist.gov/SARD/downloads/documents/Juliet_Test_Suite_v1.2_for_C_Cpp_-_User_Guide.pdf (§1.3.2 checked against the local copy)
+- [Juliet-1.3] Black, P. E., "Juliet 1.3 Test Suite: Changes From 1.2", NIST TN 1995, June 2018, https://doi.org/10.6028/NIST.TN.1995. https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=925632
 - [OWASP-BM] https://raw.githubusercontent.com/OWASP-Benchmark/BenchmarkJava/master/expectedresults-1.2.csv
-- [H&P] Habib & Pradel, ASE 2018. https://software-lab.org/publications/ase2018_static_bug_detectors_study.pdf (checked)
-- [Lipp22] Lipp et al., ISSTA 2022, abstract: https://portal.fis.tum.de/en/publications/an-empirical-study-on-the-effectiveness-of-static-c-code-analyzer/; preprint: https://mediatum.ub.tum.de/doc/1659728/1659728.pdf (abstract and §5.1 checked)
-- [G-P&P] Goseva-Popstojanova & Perhinschi, IST 2015. https://community.wvu.edu/~kagoseva/Papers/IST-2015.pdf
-- [Lenarduzzi] https://arxiv.org/pdf/2101.08832 (checked)
+- [H&P] Habib, A. and Pradel, M., "How Many of All Bugs Do We Find? A Study of Static Bug Detectors", ASE 2018, pp. 317-328, https://doi.org/10.1145/3238147.3238213. https://software-lab.org/publications/ase2018_static_bug_detectors_study.pdf (checked)
+- [Lipp22] Lipp, S., Banescu, S. and Pretschner, A., "An Empirical Study on the Effectiveness of Static C Code Analyzers for Vulnerability Detection", ISSTA 2022, pp. 544-555, https://doi.org/10.1145/3533767.3534380. Abstract: https://portal.fis.tum.de/en/publications/an-empirical-study-on-the-effectiveness-of-static-c-code-analyzer/; preprint: https://mediatum.ub.tum.de/doc/1659728/1659728.pdf (abstract and §5.1 checked)
+- [G-P&P] Goseva-Popstojanova, K. and Perhinschi, A., "On the capability of static code analysis to detect security vulnerabilities", Information and Software Technology 68:18-33, 2015, https://doi.org/10.1016/j.infsof.2015.08.002. https://community.wvu.edu/~kagoseva/Papers/IST-2015.pdf
+- [Lenarduzzi] Lenarduzzi, V., Lujan, S., Saarimäki, N. and Palomba, F., "A Critical Comparison on Six Static Analysis Tools: Detection, Agreement, and Precision", arXiv:2101.08832v1, 2021, https://arxiv.org/pdf/2101.08832 (checked, against this preprint; the journal version, with Pecorelli added as an author, is Journal of Systems and Software 198:111575, 2023, https://doi.org/10.1016/j.jss.2022.111575, not checked)
 - [scan-build] https://clang.llvm.org/docs/analyzer/user-docs/CommandLineUsage.html
-- [Zheng23] https://arxiv.org/abs/2306.05685
-- [Bavaresco] https://arxiv.org/abs/2406.18403 (checked)
-- [SE-judge] https://arxiv.org/abs/2510.24367
-- [LLift] https://www.cs.ucr.edu/~zhiyunq/pub/oopsla24_llift.pdf
-- [LLM4FPM] https://arxiv.org/abs/2411.03079
-- [Croft23] https://arxiv.org/abs/2301.05456 (checked)
-- [PrimeVul] https://arxiv.org/abs/2403.18624
+- [Zheng23] Zheng, L. et al., "Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena", NeurIPS 2023 Datasets and Benchmarks Track, https://arxiv.org/abs/2306.05685
+- [Bavaresco] Bavaresco, A. et al., "LLMs instead of Human Judges? A Large Scale Empirical Study across 20 NLP Evaluation Tasks", ACL 2025 (Volume 2: Short Papers), pp. 238-255, https://doi.org/10.18653/v1/2025.acl-short.20; https://arxiv.org/abs/2406.18403 (checked)
+- [SE-judge] He, J. et al., "LLM-as-a-Judge for Software Engineering: Literature Review, Vision, and the Road Ahead", arXiv:2510.24367, 2025, https://arxiv.org/abs/2510.24367
+- [LLift] Li, H., Hao, Y., Zhai, Y. and Qian, Z., "Enhancing Static Analysis for Practical Bug Detection: An LLM-Integrated Approach", Proc. ACM Program. Lang. 8(OOPSLA1):474-499, 2024, https://doi.org/10.1145/3649828. https://www.cs.ucr.edu/~zhiyunq/pub/oopsla24_llift.pdf
+- [LLM4FPM] Chen, J. et al., "Utilizing Precise and Complete Code Context to Guide LLM in Automatic False Positive Mitigation", arXiv:2411.03079, 2024, https://arxiv.org/abs/2411.03079
+- [Croft23] Croft, R., Babar, M. A. and Kholoosi, M. M., "Data Quality for Software Vulnerability Datasets", ICSE 2023, pp. 121-133, https://doi.org/10.1109/ICSE48619.2023.00022; https://arxiv.org/abs/2301.05456 (checked)
+- [PrimeVul] Ding, Y. et al., "Vulnerability Detection with Code Language Models: How Far Are We?", ICSE 2025 (per the arXiv record), https://arxiv.org/abs/2403.18624
 - [KaC] https://keepachangelog.com/en/1.1.0/
 - [SemVer] https://semver.org/
 
