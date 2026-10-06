@@ -166,6 +166,38 @@ fn join_states(a: &InitStateMap, b: &InitStateMap) -> InitStateMap {
     result
 }
 
+/// The join of two facts about one variable: the state's lattice join, the
+/// type flags OR'd (a name two declarations give different types keeps
+/// every reading), and an allocation count kept only when both agree.
+fn join_var_info(a: &VarInfo, b: &VarInfo) -> VarInfo {
+    VarInfo {
+        state: a.state.join(b.state),
+        is_unsigned_char: a.is_unsigned_char || b.is_unsigned_char,
+        is_array: a.is_array || b.is_array,
+        is_static: a.is_static || b.is_static,
+        is_char_type: a.is_char_type || b.is_char_type,
+        allocation_count: if a.allocation_count == b.allocation_count {
+            a.allocation_count
+        } else {
+            None
+        },
+    }
+}
+
+/// `old` joined with `new`, variable by variable: a loop head's entry never
+/// moves down from one visit to the next (see `analyze_init_states_with_statics`).
+fn accumulate(old: &InitStateMap, new: &InitStateMap) -> InitStateMap {
+    let mut result = old.clone();
+    for (var, info) in new {
+        let joined = match result.get(var) {
+            Some(prev) => join_var_info(prev, info),
+            None => info.clone(),
+        };
+        result.insert(var.clone(), joined);
+    }
+    result
+}
+
 /// Join with goto-awareness: variables present in `normal_path` but absent
 /// in `goto_path` are treated as Uninitialized on the goto path (the goto
 /// skipped the declaration).
@@ -1956,6 +1988,31 @@ pub fn analyze_init_states_with_statics(
         worklist.push_back(succ);
     }
 
+    // Loop heads: the target of a back edge, or of a backward `goto` (a
+    // label at or before the jump), the same widening points the value-range
+    // analysis uses. Only these: the CFG's synthetic blocks (exit, empty
+    // joins) have no source position, and accumulating at an ordinary join
+    // would lock in a state computed before all of its predecessors were. Their entry states accumulate: each
+    // visit joins the new entry into the old instead of replacing it. The
+    // transfer and the goto-aware join are not monotone (whether a variable
+    // is present in a predecessor's state changes as other blocks do, and a
+    // name declared twice in sibling scopes swaps its type flags), and
+    // without this a loop could alternate between two states forever --
+    // sqlite's json.c and fts5_index.c and valkey's valkey-cli.c did, until
+    // the iteration cap. The state lattice and the flags are finite and the
+    // join only moves up, so accumulating at every loop head terminates;
+    // where the transfer was monotone it changes nothing.
+    let loop_heads: HashSet<BlockId> = cfg
+        .edges
+        .iter()
+        .filter(|(from, to, e)| match e {
+            CfgEdge::BackEdge => true,
+            CfgEdge::Goto => cfg.blocks[*to].byte_range.0 <= cfg.blocks[*from].byte_range.0,
+            _ => false,
+        })
+        .map(|(_, to, _)| *to)
+        .collect();
+
     let mut iterations = 0;
     let max_iterations = 500 * cfg.blocks.len().max(1);
 
@@ -1963,6 +2020,8 @@ pub fn analyze_init_states_with_statics(
         iterations += 1;
         crate::analyze::containment::checkpoint();
         if iterations > max_iterations {
+            #[cfg(test)]
+            tests::CAPPED.with(|c| c.set(true));
             // Known not to converge on some real code (ADR-0017): counted and
             // reported as a warning, results kept as before.
             crate::analyze::containment::not_converged("the initialization-state worklist");
@@ -2016,6 +2075,12 @@ pub fn analyze_init_states_with_statics(
         if first {
             // No predecessors (unreachable block) — skip
             continue;
+        }
+
+        if loop_heads.contains(&block_id) {
+            if let Some(old_entry) = entry_states.get(&block_id) {
+                new_entry = accumulate(old_entry, &new_entry);
+            }
         }
 
         // Compute exit state
@@ -2993,6 +3058,11 @@ mod tests {
     use super::*;
     use crate::analyze::cfg::build_function_cfg;
 
+    thread_local! {
+        /// Set when the worklist stops at its iteration cap.
+        pub(super) static CAPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
     fn analyze_code(code: &str) -> (FunctionCfg, InitAnalysisResult, String) {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&crate::parser::c_language()).unwrap();
@@ -3009,6 +3079,101 @@ mod tests {
         panic!("No function definition found");
     }
 
+    /// Whether analysing the first function in `code` reaches the cap.
+    fn caps(code: &str) -> bool {
+        CAPPED.with(|c| c.set(false));
+        let _ = analyze_code(code);
+        CAPPED.with(|c| c.get())
+    }
+
+    #[test]
+    fn one_name_declared_with_two_types_in_a_loop_converges() {
+        // Reduced from sqlite's json.c (public domain): `char c` in one
+        // case and `u8 c` in another, inside an endless loop left by goto.
+        // The two declarations swapped the variable's type flags on every
+        // trip, so the loop head alternated between two states until the
+        // iteration cap.
+        let code = r#"
+static int json5Whitespace(const char *zIn){
+  int n = 0, j;
+  const unsigned char *z = (const unsigned char*)zIn;
+  while( 1 /*exit by "goto whitespace_done"*/ ){
+    switch( z[n] ){
+      case 0x20: {
+        n++;
+        break;
+      }
+      case '/': {
+        if( z[n+1]=='*' && z[n+2]!=0 ){
+          for(j=n+3; z[j]!='/' || z[j-1]!='*'; j++){
+            if( z[j]==0 ) goto whitespace_done;
+          }
+          n = j+1;
+          break;
+        }else if( z[n+1]=='/' ){
+          char c;
+          for(j=n+2; (c = z[j])!=0; j++){
+            if( c=='\n' ) break;
+          }
+          n = j;
+          break;
+        }
+        goto whitespace_done;
+      }
+      case 0xc2: {
+        if( z[n+1]==0xa0 ){
+          n += 2;
+          break;
+        }
+        goto whitespace_done;
+      }
+      case 0xe1: {
+        if( z[n+1]==0x9a && z[n+2]==0x80 ){
+          n += 3;
+          break;
+        }
+        goto whitespace_done;
+      }
+      default: {
+        u8 c = z[n+2];
+        if( c<0x80 ) goto whitespace_done;
+        n += 3;
+        break;
+      }
+    }
+  }
+whitespace_done:
+  return n;
+}
+"#;
+        assert!(!caps(code));
+    }
+
+    #[test]
+    fn a_goto_into_a_label_after_a_declaring_loop_converges() {
+        // The goto-aware join and the plain join disagree about a variable
+        // one path declares and the other never had (the shape valkey-cli's
+        // cleanup labels take): the state at the label alternated between
+        // Initialized and MaybeUninitialized until the cap.
+        let code = r#"
+int f(struct item *it, char **err) {
+    struct item *n;
+    while ((n = next_item(it)) != NULL) {
+        struct range *r = n->value;
+    }
+    if (fetch_reply(it) != 0) {
+        if (err != NULL) {
+        } else
+            REPORT_ERROR(it);
+        goto cleanup;
+    }
+cleanup:
+    for (int i = 0; i < 4; i++) release(i);
+    return 0;
+}
+"#;
+        assert!(!caps(code));
+    }
     #[test]
     fn test_uninitialized_simple() {
         let code = "void foo() { int x; x = x + 1; }";
