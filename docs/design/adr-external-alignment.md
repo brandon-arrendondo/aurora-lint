@@ -955,8 +955,10 @@ Status of the 16 proposals at the end of this doc, against `72b8f734`:
   - **LLM triage of static-analysis warnings:**
     - LLift's authors built ground truth with "about 50 human hours
       inspecting all results", and measured the LLM *against* it [LLift].
-    - LLM4FPM scores F1 > 99% on Juliet but 86% on D2A [LLM4FPM]. The
-      synthetic/real gap applies to LLM judges too.
+    - LLM4FPM reports F1 > 99% on Juliet. On D2A's libtiff subset it
+      raises label accuracy from 53% to 86%, the latter from 50 cases
+      checked by hand (43 matched) [LLM4FPM]. The two are different
+      metrics, so they do not by themselves measure a synthetic/real gap.
     - LLM4SA's figures are **unverified** (paywalled).
     - None of these papers uses LLM output *as* the oracle.
   - **Label noise in real-world vulnerability data:**
