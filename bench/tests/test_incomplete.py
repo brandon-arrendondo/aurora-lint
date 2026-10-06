@@ -5,7 +5,7 @@ scan_failures."""
 
 import unittest
 
-from bench.incomplete import parse_failures, summary
+from bench.incomplete import merge_not_converged, parse_failures, parse_not_converged, summary
 
 LOG = """\
 src/a.c:2:34: [medium] STR31-C: Potential buffer overflow with strcpy().
@@ -45,6 +45,19 @@ class TestParseFailures(unittest.TestCase):
         self.assertEqual(
             summary(parse_failures(LOG)),
             "INCOMPLETE: 5 failure(s) (rules MEM35-C, STR31-C), abandoned: MEM35-C")
+
+
+class TestNotConverged(unittest.TestCase):
+    def test_counts_are_read_and_merged(self):
+        log = ("Warning: value-range analysis did not converge 2 time(s); results there may be incomplete (a known issue, see docs/error-handling.rst)\n"
+               "Warning: the initialization-state worklist did not converge 1 time(s); results there may be incomplete (a known issue, see docs/error-handling.rst)\n")
+        got = parse_not_converged(log)
+        self.assertEqual(got, {"value-range analysis": 2,
+                               "the initialization-state worklist": 1})
+        self.assertEqual(merge_not_converged(dict(got), {"value-range analysis": 3}),
+                         {"value-range analysis": 5,
+                          "the initialization-state worklist": 1})
+        self.assertEqual(parse_not_converged("Total violations: 1\n"), {})
 
 
 if __name__ == "__main__":

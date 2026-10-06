@@ -5342,15 +5342,20 @@ fn an_incomplete_prescan_is_reported_and_not_cached() {
 
 // ── Input guard: non-source and oversized files (ADR-0017) ─────────────────
 
+/// The first 64 bytes of a 64-bit ELF file: enough for a magic-number match.
+fn elf_header() -> Vec<u8> {
+    let mut h = b"\x7fELF\x02\x01\x01".to_vec();
+    h.resize(64, 0);
+    h
+}
+
 #[test]
 fn a_binary_named_dot_c_is_skipped_and_reported() {
     let dir = copies_of_violation(1);
-    std::fs::write(
-        dir.path().join("blob.c"),
-        b"\x7fELF\x02\x01\x01\x00\x00\x00",
-    )
-    .unwrap();
-    std::fs::write(dir.path().join("nul.c"), b"int x;\0\0garbage").unwrap();
+    std::fs::write(dir.path().join("blob.c"), elf_header()).unwrap();
+    let mut nuls = b"int x;".to_vec();
+    nuls.extend_from_slice(&[0u8; 32]);
+    std::fs::write(dir.path().join("nul.c"), nuls).unwrap();
     let (code, stdout, stderr) = run_aurora_lint(&[
         dir.path().to_str().unwrap(),
         "-m",
@@ -5359,10 +5364,10 @@ fn a_binary_named_dot_c_is_skipped_and_reported() {
     assert_eq!(code, 3, "{stderr}");
     assert!(
         stderr.contains("input skipped (not source text): ")
-            && stderr.contains("blob.c: starts like an ELF binary"),
+            && stderr.contains("blob.c: looks like binary data (Elf"),
         "{stderr}"
     );
-    assert!(stderr.contains("nul.c: NUL byte at offset 6"), "{stderr}");
+    assert!(stderr.contains("nul.c: looks like binary data"), "{stderr}");
     assert!(stderr.contains("--exclude-all"), "{stderr}");
     // The real source in the same scan is still analysed.
     assert!(stdout.contains("MSC04-C"), "{stdout}");
@@ -5416,7 +5421,7 @@ fn utf16_source_with_a_bom_is_not_mistaken_for_binary() {
 #[test]
 fn an_excluded_binary_is_not_reported() {
     let dir = copies_of_violation(1);
-    std::fs::write(dir.path().join("blob.c"), b"\x7fELF\x02\x01\x01").unwrap();
+    std::fs::write(dir.path().join("blob.c"), elf_header()).unwrap();
     let (code, _, stderr) = run_aurora_lint(&[
         dir.path().to_str().unwrap(),
         "-m",

@@ -40,7 +40,7 @@ from bench.config import (
 )
 from bench.config import opam_wrap as _opam_wrap
 from bench.db import BenchDB
-from bench.incomplete import EXIT_INCOMPLETE, parse_failures, summary
+from bench.incomplete import EXIT_INCOMPLETE, parse_failures, parse_not_converged, summary
 
 RESULTS_BASE = PROJECT_DIR / "results" / "realworld"
 SQC_BIN = PROJECT_DIR / "target" / "release" / "aurora-lint"
@@ -1743,6 +1743,14 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
         pct = coverage.get("entries_pct", coverage.get("tus_pct"))
         note = f", PARTIAL {pct}%" if pct is not None else ", PARTIAL"
     status = "ok" if ok else "FAILED"
+    if tool == "sqc":
+        # Analyses known not to converge that stopped short (ADR-0017): the
+        # scan is complete, but results there may be unsound, so the run
+        # carries the trace.
+        not_converged = parse_not_converged(log_path.read_text(errors="replace"))
+        if not_converged:
+            meta["not_converged"] = not_converged
+            (version_dir / f"{run_id}.meta.json").write_text(json.dumps(meta))
     if tool == "sqc" and proc.returncode == EXIT_INCOMPLETE:
         # The scan finished but some unit of work did not (ADR-0017). Still
         # not ok: an incomplete scan is never scored, since a crashed rule

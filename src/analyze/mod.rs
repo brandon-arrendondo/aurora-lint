@@ -376,7 +376,8 @@ pub fn analyze_project(
             failures.extend(f);
         }
 
-        let abandoned_rules = withhold_abandoned(&escalation, &mut violations, &mut suppressed);
+        let abandoned_rules =
+            withhold_abandoned(&escalation, &mut violations, &mut suppressed, &mut failures);
         sort_for_deterministic_output(&mut violations, &mut suppressed);
         failures.sort();
         failures.dedup();
@@ -447,7 +448,8 @@ pub fn analyze_project(
         failures.extend(file_failures);
     }
 
-    let abandoned_rules = withhold_abandoned(&escalation, &mut violations, &mut suppressed);
+    let abandoned_rules =
+        withhold_abandoned(&escalation, &mut violations, &mut suppressed, &mut failures);
     sort_for_deterministic_output(&mut violations, &mut suppressed);
     failures.sort();
     failures.dedup();
@@ -470,15 +472,30 @@ pub fn analyze_project(
 /// Drop every finding of a rule the scan abandoned (`containment`), active
 /// and suppressed alike, and return those rules. All of them, not only the
 /// ones after the decision, so parallel scheduling cannot change the output.
+///
+/// The abandoned rule's per-file failures go too: which of its files were
+/// reached before the decision depends on scheduling, so the one
+/// "abandoned" entry stands for them, and the reported set is the same on
+/// every run. MEM31-C's deallocator-candidate rows are part of its output
+/// and are withheld with it.
 fn withhold_abandoned(
     escalation: &containment::Escalation,
     violations: &mut Vec<RuleViolation>,
     suppressed: &mut Vec<SuppressedViolation>,
+    failures: &mut Vec<containment::ScanFailure>,
 ) -> Vec<String> {
     let abandoned = escalation.abandoned_rules();
     if !abandoned.is_empty() {
         violations.retain(|v| !abandoned.contains(&v.rule_id));
         suppressed.retain(|s| !abandoned.contains(&s.violation.rule_id));
+        failures.retain(|f| {
+            f.rule_id
+                .as_ref()
+                .is_none_or(|rule| !abandoned.contains(rule))
+        });
+        if abandoned.iter().any(|r| r == "MEM31-C") {
+            deallocator_candidates::discard_all();
+        }
     }
     abandoned
 }

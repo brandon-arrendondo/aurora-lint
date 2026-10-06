@@ -124,6 +124,13 @@ pub struct CandidateReport {
     pub candidates: Vec<Candidate>,
 }
 
+/// Drop every row collected so far: the rule that recorded them was
+/// abandoned for the scan (`containment`), so they are withheld with its
+/// findings.
+pub fn discard_all() {
+    ROWS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
 /// Group the rows collected so far into a report and clear them. Most
 /// sightings first, then by name, so the output is deterministic.
 pub fn take_report() -> CandidateReport {

@@ -15,11 +15,13 @@ from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
 
-from bench.incomplete import EXIT_INCOMPLETE, parse_failures, summary
+from bench.incomplete import (
+    EXIT_INCOMPLETE, merge_not_converged, parse_failures, parse_not_converged, summary,
+)
 from bench.analyzer import analyze_shard, merge_shards
 from bench.config import (
     DEFAULT_JOBS, DEFAULT_PROFILE, GENERATE_MAP_SCRIPT, JULIET_BASE,
-    MANIFEST_JULIET_FULL, MANIFEST_CWE_DIR, RULE_CWE_MAP, SQC_BIN,
+    MANIFEST_JULIET_FULL, MANIFEST_CWE_DIR, PROJECT_DIR, RULE_CWE_MAP, SQC_BIN,
     JULIET_COMPILE_DB, JULIET_SETTING_OVERRIDES, juliet_run_id, juliet_settings,
     settings_column,
 )
@@ -205,11 +207,15 @@ def _warm_prescan(cwe_dir_name: str, cwe_dir_str: str, manifest: str,
         proc = subprocess.run(cmd, capture_output=True, timeout=3600)
         duration_s = round(time.monotonic() - start_time, 1)
         if proc.returncode != 0 or not os.path.isfile(cache_path):
+            stderr = proc.stderr.decode(errors="replace")
+            incomplete = proc.returncode == EXIT_INCOMPLETE
+            if incomplete:
+                stderr = summary(parse_failures(stderr)) + "\n" + stderr
             return {
-                "cwe_dir_name": cwe_dir_name, "status": "failed",
+                "cwe_dir_name": cwe_dir_name,
+                "status": "incomplete" if incomplete else "failed",
                 "duration_s": duration_s,
-                "error": proc.stderr.decode(errors="replace")[:500]
-                or "prescan cache was not written",
+                "error": stderr[:500] or "prescan cache was not written",
             }
         return {"cwe_dir_name": cwe_dir_name, "status": "completed",
                 "duration_s": duration_s}
@@ -268,15 +274,17 @@ def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
         proc = subprocess.run(cmd, capture_output=True, timeout=3600)
         duration_s = round(time.monotonic() - start_time, 1)
 
+        stderr_text = proc.stderr.decode(errors="replace")
         if proc.returncode != 0:
-            stderr = proc.stderr.decode(errors="replace")
-            if proc.returncode == EXIT_INCOMPLETE:
+            stderr = stderr_text
+            incomplete = proc.returncode == EXIT_INCOMPLETE
+            if incomplete:
                 # Not scored (ADR-0017), but say what was missing first.
                 stderr = summary(parse_failures(stderr)) + "\n" + stderr
             return {
                 "cwe_dir_name": cwe_dir_name, "shard_name": shard_dir.name,
-                "status": "failed", "duration_s": duration_s,
-                "error": stderr[:500],
+                "status": "incomplete" if incomplete else "failed",
+                "duration_s": duration_s, "error": stderr[:500],
             }
 
         violation_count = 0
@@ -292,6 +300,7 @@ def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
             "cwe_dir_name": cwe_dir_name, "shard_name": shard_dir.name,
             "status": "completed", "duration_s": duration_s,
             "violation_count": violation_count, "partial": partial,
+            "not_converged": parse_not_converged(stderr_text),
         }
     except subprocess.TimeoutExpired:
         return {
@@ -446,18 +455,25 @@ def _run_submissions(db: BenchDB, run_id: str, scan_map: dict, work_items: list[
     # Run in parallel
     completed = 0
     failed = 0
+    # CWEs that failed because aurora-lint exited 3 (incomplete), and the
+    # analyses known not to converge that stopped short (ADR-0017); both go
+    # in the run's sidecar.
+    trace = {"incomplete_cwes": [], "not_converged": {}}
     pending = {}  # cwe_dir_name -> [shard result dict, ...], until all land
     warm_duration = {}  # cwe_dir_name -> the warm step's subprocess seconds
     shard_failed = set()  # cwe_dir_name already marked failed; drop late siblings
 
-    def _fail_cwe(cwe_dir_name: str, detail: str) -> None:
+    def _fail_cwe(cwe_dir_name: str, detail: str, incomplete: bool = False) -> None:
         nonlocal failed
         shard_failed.add(cwe_dir_name)
         pending.pop(cwe_dir_name, None)
         _discard_cache(cwe_dir_name)
         failed += 1
-        db.update_cwe_scan(scan_map[cwe_dir_name], status="failed")
-        print(f"FAIL: {cwe_dir_name} | {detail}")
+        if incomplete:
+            trace["incomplete_cwes"].append(cwe_dir_name)
+        db.update_cwe_scan(scan_map[cwe_dir_name],
+                           status="incomplete" if incomplete else "failed")
+        print(f"{'INCOMPLETE' if incomplete else 'FAIL'}: {cwe_dir_name} | {detail}")
 
     with ProcessPoolExecutor(max_workers=jobs) as executor:
         futures = {}  # future -> ("warm" | "shard", cwe_dir_name)
@@ -498,7 +514,8 @@ def _run_submissions(db: BenchDB, run_id: str, scan_map: dict, work_items: list[
                 if kind == "warm":
                     if result["status"] != "completed":
                         _fail_cwe(cwe_dir_name,
-                                  f"prescan | {result.get('error', 'unknown')}")
+                                  f"prescan | {result.get('error', 'unknown')}",
+                                  incomplete=result["status"] == "incomplete")
                         continue
                     warm_duration[cwe_dir_name] = result["duration_s"]
                     for sub in submissions:
@@ -508,8 +525,10 @@ def _run_submissions(db: BenchDB, run_id: str, scan_map: dict, work_items: list[
 
                 if result["status"] != "completed":
                     _fail_cwe(cwe_dir_name,
-                              f"({result['shard_name']}) {result.get('error', 'unknown')}")
+                              f"({result['shard_name']}) {result.get('error', 'unknown')}",
+                              incomplete=result["status"] == "incomplete")
                     continue
+                merge_not_converged(trace["not_converged"], result.get("not_converged") or {})
 
                 pending.setdefault(cwe_dir_name, []).append(result)
                 if len(pending[cwe_dir_name]) < shard_counts[cwe_dir_name]:
@@ -528,7 +547,7 @@ def _run_submissions(db: BenchDB, run_id: str, scan_map: dict, work_items: list[
     except OSError:
         pass
 
-    return completed, failed
+    return completed, failed, trace
 
 
 # ── Main runner ───────────────────────────────────────────────────────────────
@@ -653,7 +672,7 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     print(f"{'='*70}")
 
     submissions, shard_counts = _build_submissions(work_items)
-    completed, failed = _run_submissions(
+    completed, failed, trace = _run_submissions(
         db, run_id, scan_map, work_items, submissions, shard_counts,
         jobs, keep_reports, compile_db, len(completed_cwes), total_cwes,
         profile,
@@ -661,8 +680,18 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
 
     # Finalize
     finished_at = datetime.now(timezone.utc).isoformat()
-    final_status = "completed" if failed == 0 else "completed"  # still mark complete even with some failures
+    # A CWE aurora-lint left incomplete (exit 3) makes the run incomplete:
+    # never scored (ADR-0017). Other failures keep the old reading, a
+    # completed run with failed CWEs.
+    final_status = "incomplete" if trace["incomplete_cwes"] else "completed"
     db.finish_run(run_id, final_status, finished_at)
+    sidecar = PROJECT_DIR / "results" / "juliet" / f"{run_id}.meta.json"
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    sidecar.write_text(json.dumps({"status": final_status, **trace}, indent=2))
+    if trace["incomplete_cwes"]:
+        print(f"INCOMPLETE: {', '.join(sorted(trace['incomplete_cwes']))} -- run not scored")
+    for what, n in sorted(trace["not_converged"].items()):
+        print(f"Warning: {what} did not converge {n} time(s) across the run")
 
     print(f"\n{'='*70}")
     print(f"BENCHMARK COMPLETE: {run_id}")

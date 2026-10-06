@@ -51,7 +51,8 @@ The analysis runs in units of work, and each is contained on its own:
   why it is reported as its own stage. An incomplete prescan is never saved
   with ``--save-prescan``.
 
-A rule that fails on **three** different files in one scan is **abandoned**:
+A rule that fails on **three** different files in one scan is **abandoned**
+(and reported once, as abandoned, rather than once per file it reached):
 it is skipped for the rest of the scan and *all* of its findings are
 withheld, including those from files where it succeeded. A rule failing that
 often cannot be trusted on this code base, and withholding all of its
@@ -69,16 +70,18 @@ offered to the parser. Before parsing, each file is checked:
   headers of about 10 MiB, so the default refuses only something that is not
   ordinary source.
 - **not source text**: the file starts like a binary or an archive (ELF,
-  Mach-O, zip, gzip, xz, 7z, zstd, tar, ar, PDF, an image), or has a NUL byte
-  in its first 8 KiB. Files with a UTF-16 or UTF-32 byte-order mark are text
-  and are read normally.
+  PE, Mach-O, zip, gzip, xz, 7z, zstd, tar, PDF, an image, and so on), or
+  its first 8 KiB has too many NUL, control or invalid-UTF-8 bytes to be
+  text. This is a heuristic, tuned so that real C source is never refused.
+  Files with a UTF-16 byte-order mark are text and are read normally, and
+  empty files are fine.
 
 A refused file is **skipped and reported**, never parsed, and the scan exits
 ``3``:
 
 .. code-block:: text
 
-    Error: input skipped (not source text): build/blob.c: starts like an ELF binary
+    Error: input skipped (not source text): build/blob.c: looks like binary data (Elf, application/x-executable)
     Error: input skipped (too large): gen/table.c: 80 MiB is over --max-file-size 64 MiB
 
 If the file belongs in the tree but is not source, leave it out of the scan

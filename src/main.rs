@@ -411,7 +411,7 @@ fn run() -> Result<i32> {
                      see docs/error-handling.rst",
                 )
                 .value_name("N")
-                .default_value(&*Box::leak(analyze::containment::DEFAULT_STEP_LIMIT.to_string().into_boxed_str()))
+                .default_value(analyze::containment::DEFAULT_STEP_LIMIT_ARG)
                 .value_parser(clap::value_parser!(u64)),
         )
         .arg(
@@ -423,7 +423,7 @@ fn run() -> Result<i32> {
                      resort against a hang; see docs/error-handling.rst",
                 )
                 .value_name("SECS")
-                .default_value(&*Box::leak(analyze::containment::DEFAULT_TIME_LIMIT_SECS.to_string().into_boxed_str()))
+                .default_value(analyze::containment::DEFAULT_TIME_LIMIT_ARG)
                 .value_parser(clap::value_parser!(u64)),
         )
         .arg(
@@ -434,11 +434,7 @@ fn run() -> Result<i32> {
                      instead of parsing it (0 = no limit). See docs/error-handling.rst",
                 )
                 .value_name("MIB")
-                .default_value(&*Box::leak(
-                    analyze::input_guard::DEFAULT_MAX_FILE_MIB
-                        .to_string()
-                        .into_boxed_str(),
-                ))
+                .default_value(analyze::input_guard::DEFAULT_MAX_FILE_MIB_ARG)
                 .value_parser(clap::value_parser!(u64)),
         )
         .arg(

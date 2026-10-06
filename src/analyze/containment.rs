@@ -72,6 +72,12 @@ pub const DEFAULT_STEP_LIMIT: u64 = 50_000_000;
 /// The default time limit per unit of work, in seconds.
 pub const DEFAULT_TIME_LIMIT_SECS: u64 = 300;
 
+/// [`DEFAULT_STEP_LIMIT`] as the command line's default text.
+pub const DEFAULT_STEP_LIMIT_ARG: &str = "50000000";
+
+/// [`DEFAULT_TIME_LIMIT_SECS`] as the command line's default text.
+pub const DEFAULT_TIME_LIMIT_ARG: &str = "300";
+
 /// Where in the scan a failure happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Stage {
@@ -455,6 +461,14 @@ pub fn contain<R>(label: &str, f: impl FnOnce() -> R) -> Result<R, Failure> {
     let result = panic::catch_unwind(AssertUnwindSafe(f));
     watchdog_leave(token);
     CONTAINING.with(|c| c.set(c.get() - 1));
+    // The enclosing unit's clock stops while this one runs: a file whose
+    // rules each finish in time has not itself run long.
+    let outer = outer.map(|mut o| {
+        if let Some(deadline) = o.deadline.as_mut() {
+            *deadline += started.elapsed();
+        }
+        o
+    });
     if let Some(spent) = BUDGET.with(|b| b.replace(outer)) {
         note_steps(spent.steps, label);
     }
@@ -684,6 +698,32 @@ mod tests {
         })
         .unwrap();
         assert_eq!(steps_after, 1);
+    }
+
+    #[test]
+    fn the_command_line_defaults_match() {
+        assert_eq!(
+            DEFAULT_STEP_LIMIT_ARG.parse::<u64>().unwrap(),
+            DEFAULT_STEP_LIMIT
+        );
+        assert_eq!(
+            DEFAULT_TIME_LIMIT_ARG.parse::<u64>().unwrap(),
+            DEFAULT_TIME_LIMIT_SECS
+        );
+    }
+
+    #[test]
+    fn an_outer_deadline_does_not_count_nested_time() {
+        let outer = contain("outer", || {
+            let before = BUDGET.with(|b| b.get().unwrap().deadline);
+            let _ = contain("inner", || std::thread::sleep(Duration::from_millis(30)));
+            let after = BUDGET.with(|b| b.get().unwrap().deadline);
+            (before, after)
+        })
+        .unwrap();
+        if let (Some(b), Some(a)) = outer {
+            assert!(a >= b + Duration::from_millis(30));
+        }
     }
 
     #[test]

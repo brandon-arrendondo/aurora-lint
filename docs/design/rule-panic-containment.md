@@ -222,7 +222,7 @@ medians of alternating runs): see the table below. These are local
 measurements on one node, not project figures.
 
 Three alternating runs per corpus, `main` 1d8778d5 against the prototype,
-runner flags, no header tree (windev-04, WSL2, 4 cores):
+runner flags, no header tree (one 4-core WSL2 node):
 
 | Corpus | Findings (both) | Identical multiset | Median main | Median prototype | Runs main / prototype (s) |
 |---|---|---|---|---|---|

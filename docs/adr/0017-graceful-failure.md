@@ -60,10 +60,9 @@ Before this decision, a failure anywhere ended the scan.
    default 50 million steps.
    - The budget counts steps, not time, so the same input stops at the same
      step on every machine.
-   - Today the checkpoints are in: the dataflow, null-state, init-state and
-     value-range worklists; CFG construction; macro rescans; and the
-     unknown-identifier repair loop.
-   - New code with an input-dependent loop adds a checkpoint.
+   - New code with an input-dependent loop adds a checkpoint. The
+     [inventory](../design/analysis-bounds-inventory.md) lists where the
+     checkpoints are.
 
 4. **A last resort for what a budget cannot see.**
    - **Wall-clock limit.** `--rule-time-limit` (default 300 s per unit) is
@@ -90,18 +89,21 @@ Before this decision, a failure anywhere ended the scan.
    - **Sound approximations are not incomplete.** A bound whose fallback over-approximates
      is the analysis working as designed: widening to the type's range, or
      "not proven, so report". It is not reported.
-   - **Known non-convergence is a warning, not silence.** Two analyses
-     reach their iteration caps on real code without converging, even with
-     100 times the iterations: the value-range analysis and the
-     initialization-state analysis. Each fails on a handful of files across
-     the corpora, so this is oscillation, not slow convergence. Reporting
-     those caps as incomplete would leave four of the twelve corpora
-     unscorable. So for now they stop and keep what they have, as before:
+   - **Known non-convergence is a warning, not silence.** Some analyses
+     reach their iteration caps on real code without converging, however
+     many iterations they are given: they oscillate. Each one is a named,
+     temporary exception, listed with its evidence in the inventory and
+     tracked by the maintainer until its convergence is fixed. Reporting
+     such a cap as incomplete would leave whole benchmark corpora
+     unscorable. So for now an analysis on the list stops and keeps what it
+     has, as before:
      - findings are unchanged;
      - every occurrence is counted;
      - the count is printed as a warning and written as a SARIF `warning`
        notification;
-     - the run stays successful.
+     - the run stays successful;
+     - a benchmark run records the counts in its sidecar, so a result built
+       on possibly unsound ranges carries the trace.
 
      Each analysis leaves this list when its convergence is fixed. Its cap
      then reports like the others.
@@ -144,9 +146,13 @@ Before this decision, a failure anywhere ended the scan.
      corpora scan is about 4 MiB (raylib's `miniaudio.h`). The largest real
      C inputs a scanner meets are amalgamations and SDK headers of 9-10 MiB.
      64 MiB is several times either.
-   - a non-text sniff of the first 8 KiB: known binary and archive magic
-     numbers (ELF, Mach-O, zip, gzip, xz, 7z, zstd, tar, ar, PDF, images),
-     and NUL bytes. A UTF-16 or UTF-32 byte-order mark is admitted as text.
+   - the shared parsing substrate's file classifier
+     (`lang_parsing_substrate::classify_file`). It checks magic numbers
+     (archives, compressed streams, ELF, PE, Mach-O, images, PDF, office
+     documents, media, fonts), then the ratio of NUL, control and
+     invalid-UTF-8 bytes in the first 8 KiB. It was calibrated so that no
+     C-family file in the benchmark corpora or Juliet is classed binary. A
+     UTF-16 byte-order mark is read as text. Empty files are admitted.
 
    A refused file is skipped and reported like any other failure: stage
    `input`, exit 3, a SARIF notification. Files the user excluded never get
@@ -154,11 +160,10 @@ Before this decision, a failure anywhere ended the scan.
    time, however many `--jobs` there are, so several huge inputs cannot be
    in memory together.
 
-   This is the minimal guard. A fuller content classifier belongs in the
-   shared parsing substrate, so that every tool built on it refuses input
-   the same way. It replaces the body of `admit` without touching a caller.
-   A per-process memory budget is not implemented. The one-at-a-time rule
-   for huge files is the bound until it is.
+   The classifier lives in the substrate so that every tool built on it
+   refuses input the same way; `admit` adds only this tool's policy. A
+   per-process memory budget is not implemented. The one-at-a-time rule for
+   huge files is the bound until it is.
 
 ## Consequences
 
@@ -173,17 +178,15 @@ Before this decision, a failure anywhere ended the scan.
   [Error handling and exit codes](../error-handling.rst).
 - A rule can lose good findings to escalation. That is deliberate:
   findings from a rule that failed three times in one scan are not trusted.
-- The step budget's default is far above anything the measured corpora
-  reach. The busiest unit of work across the twelve corpora took about
-  126,000 steps (EXP34-C on lua's `lvm.c`). With the two non-converging
-  analyses given 100 times their iterations, the busiest took 5.5 million.
-  So 50 million leaves two orders of magnitude of headroom on real code. A unit that hits it is either a runaway or input far beyond
-  anything measured. In both cases the user should hear about it rather
-  than wait for it.
-- Measured while writing this: a comment-heavy file is processed in time
-  quadratic in its length. A 1 MiB file takes about 30 s and a 2 MiB file
-  close to 2 minutes with a single rule enabled. That is within the default
-  limits, but it is the kind of input the step and time bounds exist for.
+- The step budget's default is set orders of magnitude above anything the
+  benchmark corpora reach; the inventory records the measurement. A unit
+  that hits it is either a runaway or input far beyond anything measured.
+  In both cases the user should hear about it rather than wait for it.
+- What is deterministic. The findings, the exit status and the set of
+  reported failures do not depend on how the parallel scan ordered its
+  work. An abandoned rule is reported once, as abandoned, rather than once
+  per file it reached before the decision. Only the time limit and the
+  watchdog are nondeterministic, which is why they are the backstop.
 - This does not make the analyses complete. A bound that degrades to a
   sound approximation stays silent, and the inventory's remaining silent
   truncations are known gaps until each is converted.

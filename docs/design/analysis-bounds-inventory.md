@@ -25,6 +25,33 @@ Kinds:
 - **d** size or count cap;
 - **e** time limit.
 
+## Measurements behind the defaults (one node, not project figures)
+
+- **Step budget.** The busiest unit of work across the twelve corpora took
+  about 126,000 checkpoint steps (EXP34-C on lua's `lvm.c`). With the
+  value-range and init-state iteration caps raised a hundredfold, the
+  busiest took 5.5 million steps. So the 50 million default leaves about
+  two orders of magnitude of headroom on real code.
+- **Non-convergence.** The value-range and init-state caps are reached on
+  seven files across four of the twelve corpora (listed in the rows below).
+  Every one still fails to converge at a hundred times the cap. That is why
+  those two are warnings, not failures, until they are fixed.
+- **Quadratic input.** A comment-heavy file is processed in time quadratic
+  in its length, in a file-level pass rather than a rule. With one rule
+  enabled, 1 MiB takes about 30 s and 2 MiB close to 2 minutes. This is
+  within the default limits, but it is the kind of input the bounds exist
+  for.
+
+## Checkpoint sites
+
+`containment::checkpoint` is called once per iteration in:
+
+- the reaching-definitions, null-state, init-state and value-range
+  worklists;
+- CFG construction (once per statement);
+- macro rescans;
+- the unknown-identifier repair loop.
+
 ## Scan level (ADR-0017)
 
 | Where | Bound | Kind | On hit |
@@ -34,7 +61,7 @@ Kinds:
 | `containment::start_watchdog` | max(2× limit, limit + 60 s) | e | reported; ends the scan with exit 3 |
 | `containment::Escalation` | 3 failing files | d | reported; the rule is abandoned |
 | `analyze::WORKER_STACK_BYTES` | 16 MiB per analysis thread | a/b | a stack overflow aborts the process and cannot be contained |
-| `input_guard::admit` | `--max-file-size` (64 MiB); non-text sniff of the first 8 KiB | d | reported (stage `input`); the file is skipped |
+| `input_guard::admit` | `--max-file-size` (64 MiB); the substrate's `classify_file` on the first 8 KiB | d | reported (stage `input`); the file is skipped |
 | `input_guard::large_file_permit` | files over 8 MiB analysed one at a time | d | none needed: it orders the work, it does not drop any |
 
 ## CFG and dataflow

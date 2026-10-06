@@ -50,6 +50,30 @@ def parse_failures(text: str) -> list[dict]:
     return out
 
 
+_NOT_CONVERGED = re.compile(
+    r"^Warning: (?P<what>.+?) did not converge (?P<n>\d+) time\(s\);")
+
+
+def parse_not_converged(text: str) -> dict:
+    """The analyses known not to converge that stopped short in this scan,
+    with how often: `{"value-range analysis": 2, ...}`. These are warnings,
+    not failures -- the scan is complete -- but results there may be
+    unsound, so a benchmark run records them (ADR-0017)."""
+    out: dict = {}
+    for line in text.splitlines():
+        m = _NOT_CONVERGED.match(line)
+        if m:
+            out[m["what"]] = out.get(m["what"], 0) + int(m["n"])
+    return out
+
+
+def merge_not_converged(into: dict, more: dict) -> dict:
+    """Add `more`'s counts into `into` and return it."""
+    for k, v in more.items():
+        into[k] = into.get(k, 0) + v
+    return into
+
+
 def summary(failures: list[dict]) -> str:
     """One line for a run log: `INCOMPLETE: 3 failure(s) (rules MEM35-C)`."""
     rules = sorted({f["rule"] for f in failures if f["rule"]})
