@@ -206,13 +206,14 @@ Criteria, Black & Ribeiro, 2016):
 - **§2.1, tentative warnings.** "caution: this function does not check for a
   null" reports are "at best ignored".
 
-[SATE IV, SP 500-297][sate4] §2.6 and §2.9.6:
+[SATE IV, SP 500-297][sate4] §2.6, §2.7.1 and §2.9.7:
 
-- It matches Juliet warnings at block level.
-- It accepts "same weakness instance, different perspective", with the
-  example of a tool reporting an unchecked return rather than the null
-  dereference.
-- Tools "usually report locations in the neighborhood of the sink".
+- It matches Juliet warnings at block level (§2.6).
+- When matching warnings to manual findings and CVEs, it accepts "same
+  weakness instance, different perspective", with the example of a tool
+  reporting an unchecked return rather than the null dereference (§2.9.7).
+- Tools "usually report locations in the neighborhood of the sink and
+  sometimes of the source" (§2.7.1).
 
 ### 4. Literature
 
