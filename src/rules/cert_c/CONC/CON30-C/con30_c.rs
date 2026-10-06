@@ -30,6 +30,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -170,24 +171,22 @@ impl Con30C {
     /// with this set.
     fn collect_global_tss_key_names(&self, node: &Node, source: &str) -> HashSet<String> {
         let mut names = HashSet::new();
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() != "declaration" {
-                    continue;
-                }
-                let is_tss_t = child
-                    .child_by_field_name("type")
-                    .map(|t| get_node_text(&t, source).trim() == "tss_t")
-                    .unwrap_or(false);
-                if !is_tss_t {
-                    continue;
-                }
-                for j in 0..child.child_count() {
-                    if child.field_name_for_child(j as u32) == Some("declarator") {
-                        if let Some(declarator) = child.child(j) {
-                            if let Some(name) = self.declarator_identifier(&declarator, source) {
-                                names.insert(name);
-                            }
+        for child in node.child_nodes() {
+            if child.kind() != "declaration" {
+                continue;
+            }
+            let is_tss_t = child
+                .child_by_field_name("type")
+                .map(|t| get_node_text(&t, source).trim() == "tss_t")
+                .unwrap_or(false);
+            if !is_tss_t {
+                continue;
+            }
+            for j in 0..child.child_count() {
+                if child.field_name_for_child(j as u32) == Some("declarator") {
+                    if let Some(declarator) = child.child(j) {
+                        if let Some(name) = self.declarator_identifier(&declarator, source) {
+                            names.insert(name);
                         }
                     }
                 }
@@ -311,11 +310,9 @@ impl Con30C {
     fn check_tss_get_in_free(&self, call_node: &Node, source: &str) -> Option<String> {
         if let Some(args) = call_node.child_by_field_name("arguments") {
             // Look for tss_get call inside free's arguments
-            for i in 0..args.child_count() {
-                if let Some(child) = args.child(i) {
-                    if let Some(key) = self.find_tss_get_key(&child, source) {
-                        return Some(key);
-                    }
+            for child in args.child_nodes() {
+                if let Some(key) = self.find_tss_get_key(&child, source) {
+                    return Some(key);
                 }
             }
         }
@@ -340,13 +337,11 @@ impl Con30C {
     fn get_arguments(&self, args_node: Node, source: &str) -> Vec<String> {
         let mut arguments = Vec::new();
 
-        for i in 0..args_node.child_count() {
-            if let Some(child) = args_node.child(i) {
-                let kind = child.kind();
-                if kind != "," && kind != "(" && kind != ")" {
-                    let arg_text = get_node_text(&child, source).to_string();
-                    arguments.push(arg_text);
-                }
+        for child in args_node.child_nodes() {
+            let kind = child.kind();
+            if kind != "," && kind != "(" && kind != ")" {
+                let arg_text = get_node_text(&child, source).to_string();
+                arguments.push(arg_text);
             }
         }
 

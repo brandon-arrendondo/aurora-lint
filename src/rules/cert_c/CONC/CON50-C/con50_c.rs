@@ -16,6 +16,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use tree_sitter::Node;
 
 pub struct Con50C;
@@ -39,10 +40,8 @@ impl Con50C {
         }
 
         // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for child in node.child_nodes() {
+            self.check_node(&child, source, violations);
         }
     }
 
@@ -117,13 +116,11 @@ impl Con50C {
             let mut is_static_decl = is_static;
 
             // Look for storage class specifier
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "storage_class_specifier" {
-                        let specifier = get_node_text(&child, source);
-                        if specifier == "static" || specifier == "extern" {
-                            is_static_decl = true;
-                        }
+            for child in node.child_nodes() {
+                if child.kind() == "storage_class_specifier" {
+                    let specifier = get_node_text(&child, source);
+                    if specifier == "static" || specifier == "extern" {
+                        is_static_decl = true;
                     }
                 }
             }
@@ -137,11 +134,9 @@ impl Con50C {
                     // Only collect if not static
                     if !is_static_decl {
                         // Find the identifier
-                        for i in 0..node.child_count() {
-                            if let Some(child) = node.child(i) {
-                                if let Some(id) = self.get_declarator_id(&child, source) {
-                                    mutexes.push(id.to_string());
-                                }
+                        for child in node.child_nodes() {
+                            if let Some(id) = self.get_declarator_id(&child, source) {
+                                mutexes.push(id.to_string());
                             }
                         }
                     }
@@ -150,10 +145,8 @@ impl Con50C {
         }
 
         // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_mutex_declarations(&child, source, mutexes, is_static);
-            }
+        for child in node.child_nodes() {
+            self.collect_mutex_declarations(&child, source, mutexes, is_static);
         }
     }
 
@@ -177,11 +170,9 @@ impl Con50C {
             }
             _ => {
                 // Recurse to find identifier
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if let Some(id) = self.get_declarator_id(&child, source) {
-                            return Some(id);
-                        }
+                for child in node.child_nodes() {
+                    if let Some(id) = self.get_declarator_id(&child, source) {
+                        return Some(id);
                     }
                 }
                 None
@@ -273,10 +264,8 @@ impl Con50C {
         }
 
         // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_thread_creations(&child, source, mutex_name, thread_vars);
-            }
+        for child in node.child_nodes() {
+            self.collect_thread_creations(&child, source, mutex_name, thread_vars);
         }
     }
 
@@ -293,11 +282,9 @@ impl Con50C {
             }
             _ => {
                 // Try to find identifier in children
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "identifier" {
-                            return Some(get_node_text(&child, source));
-                        }
+                for child in node.child_nodes() {
+                    if child.kind() == "identifier" {
+                        return Some(get_node_text(&child, source));
                     }
                 }
                 None
@@ -307,19 +294,17 @@ impl Con50C {
 
     /// Get first argument from argument list
     fn get_first_argument<'a>(&self, args_node: &Node<'a>, source: &'a str) -> Option<&'a str> {
-        for i in 0..args_node.child_count() {
-            if let Some(child) = args_node.child(i) {
-                if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
-                    // Found first argument
-                    let arg_text = get_node_text(&child, source);
-                    // Extract variable name (remove & or *)
-                    return Some(
-                        arg_text
-                            .trim_start_matches('&')
-                            .trim_start_matches('*')
-                            .trim(),
-                    );
-                }
+        for child in args_node.child_nodes() {
+            if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
+                // Found first argument
+                let arg_text = get_node_text(&child, source);
+                // Extract variable name (remove & or *)
+                return Some(
+                    arg_text
+                        .trim_start_matches('&')
+                        .trim_start_matches('*')
+                        .trim(),
+                );
             }
         }
         None
@@ -372,10 +357,8 @@ impl Con50C {
         }
 
         // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_joined_threads(&child, source, joined);
-            }
+        for child in node.child_nodes() {
+            self.collect_joined_threads(&child, source, joined);
         }
     }
 
@@ -401,23 +384,19 @@ impl Con50C {
     ) -> Option<Node<'a>> {
         if node.kind() == "declaration" {
             // Check if this declares our variable
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if let Some(id) = self.get_declarator_id(&child, source) {
-                        if id == name {
-                            return Some(*node);
-                        }
+            for child in node.child_nodes() {
+                if let Some(id) = self.get_declarator_id(&child, source) {
+                    if id == name {
+                        return Some(*node);
                     }
                 }
             }
         }
 
         // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(found) = self.find_declaration_by_name(&child, source, name) {
-                    return Some(found);
-                }
+        for child in node.child_nodes() {
+            if let Some(found) = self.find_declaration_by_name(&child, source, name) {
+                return Some(found);
             }
         }
 
