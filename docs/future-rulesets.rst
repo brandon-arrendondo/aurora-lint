@@ -43,7 +43,7 @@ Created by Gerard J. Holzmann at NASA's Jet Propulsion Laboratory, these 10
 rules eliminate C coding practices that make code difficult to review or
 statically analyze. They complement MISRA C guidelines.
 
-1. **Restrict control flow** — avoid complex flow constructs like ``goto`` and recursion.
+1. **Restrict control flow** — no ``goto``, no ``setjmp``/``longjmp``, and no recursion, direct or indirect.
 2. **Fixed loop bounds** — all loops must have fixed upper bounds (prevents runaway code).
 3. **No dynamic memory after init** — do not use dynamic memory allocation after initialization.
 4. **Function size limits** — no function longer than ~60 lines (one printed page).
