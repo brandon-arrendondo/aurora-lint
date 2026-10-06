@@ -27,6 +27,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -185,18 +186,16 @@ impl Err00C {
 
             // Check siblings for if statements
             if parent.kind() == "compound_statement" || parent.kind() == "translation_unit" {
-                for i in 0..parent.child_count() {
-                    if let Some(sibling) = parent.child(i) {
-                        if sibling.kind() == "if_statement" {
-                            let text = get_node_text(&sibling, source);
-                            // Simple heuristic: check for NULL, error, -1, etc.
-                            if text.contains("NULL")
-                                || text.contains("== -1")
-                                || text.contains("!= 0")
-                                || text.contains("error")
-                            {
-                                return true;
-                            }
+                for sibling in parent.child_nodes() {
+                    if sibling.kind() == "if_statement" {
+                        let text = get_node_text(&sibling, source);
+                        // Simple heuristic: check for NULL, error, -1, etc.
+                        if text.contains("NULL")
+                            || text.contains("== -1")
+                            || text.contains("!= 0")
+                            || text.contains("error")
+                        {
+                            return true;
                         }
                     }
                 }
