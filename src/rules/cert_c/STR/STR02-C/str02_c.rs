@@ -106,6 +106,7 @@ use crate::utility::cert_c::ast_utils::{
     declares_static, get_node_text, get_sanitized_node_text, is_function_parameter,
     static_macro_names_in_scope,
 };
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -224,10 +225,8 @@ impl Str02C {
             if node.kind() == "call_expression" && self.find_containing_function(&node).is_none() {
                 self.check_dangerous_function_call_legacy(&node, source, violations);
             }
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i) {
-                    stack.push(child);
-                }
+            for child in node.child_nodes().collect::<Vec<_>>().into_iter().rev() {
+                stack.push(child);
             }
         }
     }
@@ -483,11 +482,9 @@ impl Str02C {
     /// Collect argument text strings from an argument_list node.
     fn collect_arguments(&self, args_node: &Node, source: &str) -> Vec<String> {
         let mut args = Vec::new();
-        for i in 0..args_node.child_count() {
-            if let Some(child) = args_node.child(i) {
-                if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
-                    args.push(get_node_text(&child, source).to_string());
-                }
+        for child in args_node.child_nodes() {
+            if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
+                args.push(get_node_text(&child, source).to_string());
             }
         }
         args
@@ -1066,11 +1063,9 @@ impl Str02C {
     /// Collect the argument nodes (in order) from an argument list node.
     fn collect_argument_nodes<'a>(&self, args_node: &Node<'a>) -> Vec<Node<'a>> {
         let mut args = Vec::new();
-        for i in 0..args_node.child_count() {
-            if let Some(child) = args_node.child(i) {
-                if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
-                    args.push(child);
-                }
+        for child in args_node.child_nodes() {
+            if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
+                args.push(child);
             }
         }
         args
@@ -1078,15 +1073,9 @@ impl Str02C {
 
     /// Get the first argument from an argument list node
     fn get_first_argument<'a>(&self, args_node: &Node<'a>) -> Option<Node<'a>> {
-        for i in 0..args_node.child_count() {
-            if let Some(child) = args_node.child(i) {
-                // Skip '(' and ')' and ',' tokens
-                if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
-                    return Some(child);
-                }
-            }
-        }
-        None
+        args_node
+            .child_nodes()
+            .find(|&child| child.kind() != "(" && child.kind() != ")" && child.kind() != ",")
     }
 
     /// Check if a node represents a string literal

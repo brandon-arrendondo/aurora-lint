@@ -4,6 +4,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{get_node_text, ParentMap};
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -57,11 +58,9 @@ impl Str34C {
         if node.kind() == "translation_unit" {
             let mut file_char_vars: HashMap<String, (usize, bool, usize)> = HashMap::new();
             // Collect only file-scope declarations (not inside functions)
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "declaration" {
-                        self.collect_char_variables(&child, source, &mut file_char_vars);
-                    }
+            for child in node.child_nodes() {
+                if child.kind() == "declaration" {
+                    self.collect_char_variables(&child, source, &mut file_char_vars);
                 }
             }
             // Check file-scope code with file-scope vars
@@ -71,10 +70,8 @@ impl Str34C {
         }
 
         // Recurse to find function_definitions
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_translation_unit(&child, source, parents, violations);
-            }
+        for child in node.child_nodes() {
+            self.check_translation_unit(&child, source, parents, violations);
         }
     }
 
@@ -100,35 +97,30 @@ impl Str34C {
                         // Extract variable names from declarators
                         // Only track signed/plain char pointer variables — unsigned char
                         // doesn't need cast to unsigned char before widening
-                        for i in 0..n.child_count() {
-                            if let Some(child) = n.child(i) {
-                                if child.kind() == "init_declarator" {
-                                    if let Some(declarator) =
-                                        child.child_by_field_name("declarator")
-                                    {
-                                        // Check if it's a pointer declarator
-                                        if declarator.kind() == "pointer_declarator" {
-                                            if let Some(var_name) =
-                                                self.get_declarator_name(&declarator, source)
-                                            {
-                                                let depth = self.declarator_depth(&declarator);
-                                                char_vars.insert(
-                                                    var_name,
-                                                    (n.start_position().row, is_signed_char, depth),
-                                                );
-                                            }
+                        for child in n.child_nodes() {
+                            if child.kind() == "init_declarator" {
+                                if let Some(declarator) = child.child_by_field_name("declarator") {
+                                    // Check if it's a pointer declarator
+                                    if declarator.kind() == "pointer_declarator" {
+                                        if let Some(var_name) =
+                                            self.get_declarator_name(&declarator, source)
+                                        {
+                                            let depth = self.declarator_depth(&declarator);
+                                            char_vars.insert(
+                                                var_name,
+                                                (n.start_position().row, is_signed_char, depth),
+                                            );
                                         }
                                     }
-                                } else if child.kind() == "pointer_declarator" {
-                                    // Plain declarator without initialization
-                                    if let Some(var_name) = self.get_declarator_name(&child, source)
-                                    {
-                                        let depth = self.declarator_depth(&child);
-                                        char_vars.insert(
-                                            var_name,
-                                            (n.start_position().row, is_signed_char, depth),
-                                        );
-                                    }
+                                }
+                            } else if child.kind() == "pointer_declarator" {
+                                // Plain declarator without initialization
+                                if let Some(var_name) = self.get_declarator_name(&child, source) {
+                                    let depth = self.declarator_depth(&child);
+                                    char_vars.insert(
+                                        var_name,
+                                        (n.start_position().row, is_signed_char, depth),
+                                    );
                                 }
                             }
                         }
@@ -219,11 +211,9 @@ impl Str34C {
                 if let Some(declarator) = node.child_by_field_name("declarator") {
                     self.get_declarator_name(&declarator, source)
                 } else {
-                    for i in 0..node.child_count() {
-                        if let Some(child) = node.child(i) {
-                            if child.kind() == "identifier" {
-                                return Some(get_node_text(&child, source).to_string());
-                            }
+                    for child in node.child_nodes() {
+                        if child.kind() == "identifier" {
+                            return Some(get_node_text(&child, source).to_string());
                         }
                     }
                     None
@@ -680,11 +670,9 @@ impl Str34C {
                 }
             }
             "parenthesized_expression" => {
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() != "(" && child.kind() != ")" {
-                            return self.extract_identifier(&child, source);
-                        }
+                for child in node.child_nodes() {
+                    if child.kind() != "(" && child.kind() != ")" {
+                        return self.extract_identifier(&child, source);
                     }
                 }
                 None

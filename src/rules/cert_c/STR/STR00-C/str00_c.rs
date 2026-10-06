@@ -21,6 +21,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -83,18 +84,16 @@ impl CertRule for Str00C {
             self.collect_int_variables(decl, source, &mut global_int_vars);
         }
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() != "function_definition" {
-                    self.check_node(
-                        &child,
-                        source,
-                        &global_char_vars,
-                        &global_wchar_vars,
-                        &global_int_vars,
-                        &mut violations,
-                    );
-                }
+        for child in node.child_nodes() {
+            if child.kind() != "function_definition" {
+                self.check_node(
+                    &child,
+                    source,
+                    &global_char_vars,
+                    &global_wchar_vars,
+                    &global_int_vars,
+                    &mut violations,
+                );
             }
         }
 
@@ -130,10 +129,8 @@ fn collect_outside_functions<'a>(node: Node<'a>, kind: &str, out: &mut Vec<Node<
     if node.kind() == kind {
         out.push(node);
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_outside_functions(child, kind, out);
-        }
+    for child in node.child_nodes() {
+        collect_outside_functions(child, kind, out);
     }
 }
 
@@ -152,15 +149,13 @@ impl Str00C {
                 // Check if it's plain char (not unsigned char, not signed char)
                 if self.is_plain_char_type(&type_text) {
                     // Get the declarator(s)
-                    for i in 0..node.child_count() {
-                        if let Some(child) = node.child(i) {
-                            if child.kind() == "init_declarator" {
-                                if let Some(declarator) = child.child_by_field_name("declarator") {
-                                    if let Some(var_name) =
-                                        self.get_declarator_name(&declarator, source)
-                                    {
-                                        char_vars.insert(var_name, node.start_position().row);
-                                    }
+                    for child in node.child_nodes() {
+                        if child.kind() == "init_declarator" {
+                            if let Some(declarator) = child.child_by_field_name("declarator") {
+                                if let Some(var_name) =
+                                    self.get_declarator_name(&declarator, source)
+                                {
+                                    char_vars.insert(var_name, node.start_position().row);
                                 }
                             }
                         }
@@ -182,25 +177,23 @@ impl Str00C {
                 let type_text = get_node_text(&type_node, source);
 
                 if type_text.contains("wchar_t") {
-                    for i in 0..node.child_count() {
-                        if let Some(child) = node.child(i) {
-                            // Handle both init_declarator (with initialization) and plain declarator (without)
-                            if child.kind() == "init_declarator" {
-                                if let Some(declarator) = child.child_by_field_name("declarator") {
-                                    if let Some(var_name) =
-                                        self.get_declarator_name(&declarator, source)
-                                    {
-                                        wchar_vars.insert(var_name, node.start_position().row);
-                                    }
-                                }
-                            } else if child.kind() == "array_declarator"
-                                || child.kind() == "pointer_declarator"
-                                || child.kind() == "identifier"
-                            {
-                                // Plain declarator without initialization
-                                if let Some(var_name) = self.get_declarator_name(&child, source) {
+                    for child in node.child_nodes() {
+                        // Handle both init_declarator (with initialization) and plain declarator (without)
+                        if child.kind() == "init_declarator" {
+                            if let Some(declarator) = child.child_by_field_name("declarator") {
+                                if let Some(var_name) =
+                                    self.get_declarator_name(&declarator, source)
+                                {
                                     wchar_vars.insert(var_name, node.start_position().row);
                                 }
+                            }
+                        } else if child.kind() == "array_declarator"
+                            || child.kind() == "pointer_declarator"
+                            || child.kind() == "identifier"
+                        {
+                            // Plain declarator without initialization
+                            if let Some(var_name) = self.get_declarator_name(&child, source) {
+                                wchar_vars.insert(var_name, node.start_position().row);
                             }
                         }
                     }
@@ -223,17 +216,15 @@ impl Str00C {
                 // Check for plain int arrays (not single int variables - those are OK for arithmetic)
                 let trimmed = type_text.trim();
                 if trimmed == "int" {
-                    for i in 0..node.child_count() {
-                        if let Some(child) = node.child(i) {
-                            if child.kind() == "init_declarator" {
-                                if let Some(declarator) = child.child_by_field_name("declarator") {
-                                    // Only track int arrays, not single int variables
-                                    if declarator.kind() == "array_declarator" {
-                                        if let Some(var_name) =
-                                            self.get_declarator_name(&declarator, source)
-                                        {
-                                            int_vars.insert(var_name, node.start_position().row);
-                                        }
+                    for child in node.child_nodes() {
+                        if child.kind() == "init_declarator" {
+                            if let Some(declarator) = child.child_by_field_name("declarator") {
+                                // Only track int arrays, not single int variables
+                                if declarator.kind() == "array_declarator" {
+                                    if let Some(var_name) =
+                                        self.get_declarator_name(&declarator, source)
+                                    {
+                                        int_vars.insert(var_name, node.start_position().row);
                                     }
                                 }
                             }
@@ -450,30 +441,28 @@ impl Str00C {
             let func_name = get_node_text(&function, source);
 
             // Get first argument
-            for i in 0..args.child_count() {
-                if let Some(arg) = args.child(i) {
-                    if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
-                        // Check if argument is plain char without unsigned cast
-                        if self.is_plain_char_arg(&arg, source, char_vars) {
-                            violations.push(RuleViolation {
-                                rule_id: self.rule_id().to_string(),
-                                severity: Severity::Medium,
-                                message: format!(
-                                    "Plain 'char' passed to '{}()' without cast to 'unsigned char'",
-                                    func_name
-                                ),
-                                file_path: String::new(),
-                                line: node.start_position().row + 1,
-                                column: node.start_position().column + 1,
-                                suggestion: Some(format!(
-                                    "Cast to '(unsigned char)' before passing to '{}()': {}((unsigned char){})",
-                                    func_name, func_name, get_node_text(&arg, source)
-                                )),
-                                ..Default::default()
-                            });
-                        }
-                        break; // Only check first arg
+            for arg in args.child_nodes() {
+                if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
+                    // Check if argument is plain char without unsigned cast
+                    if self.is_plain_char_arg(&arg, source, char_vars) {
+                        violations.push(RuleViolation {
+                            rule_id: self.rule_id().to_string(),
+                            severity: Severity::Medium,
+                            message: format!(
+                                "Plain 'char' passed to '{}()' without cast to 'unsigned char'",
+                                func_name
+                            ),
+                            file_path: String::new(),
+                            line: node.start_position().row + 1,
+                            column: node.start_position().column + 1,
+                            suggestion: Some(format!(
+                                "Cast to '(unsigned char)' before passing to '{}()': {}((unsigned char){})",
+                                func_name, func_name, get_node_text(&arg, source)
+                            )),
+                            ..Default::default()
+                        });
                     }
+                    break; // Only check first arg
                 }
             }
         }
@@ -740,90 +729,86 @@ impl Str00C {
                 && !type_text.contains("*")
             {
                 // Look for initializers with character constants
-                for i in 0..node.child_count() {
-                    if let Some(declarator) = node.child(i) {
-                        if declarator.kind() == "init_declarator" {
-                            if let Some(value) = declarator.child_by_field_name("value") {
-                                let value_text = get_node_text(&value, source);
+                for declarator in node.child_nodes() {
+                    if declarator.kind() == "init_declarator" {
+                        if let Some(value) = declarator.child_by_field_name("value") {
+                            let value_text = get_node_text(&value, source);
 
-                                // Check for character constant (e.g., 'A', '\n', L'W') or string literal
-                                let is_string_literal = value_text.trim().starts_with("\"");
-                                let is_char_constant = value_text.trim().starts_with("'")
-                                    || value_text.trim().starts_with("L'");
+                            // Check for character constant (e.g., 'A', '\n', L'W') or string literal
+                            let is_string_literal = value_text.trim().starts_with("\"");
+                            let is_char_constant = value_text.trim().starts_with("'")
+                                || value_text.trim().starts_with("L'");
 
-                                // Flag signed char with character constants or string literals
-                                // Flag unsigned char with character constants only (unsigned char is OK for byte strings)
-                                let is_unsigned = type_text.contains("unsigned");
-                                let should_flag = if is_unsigned {
-                                    is_char_constant // Only flag character constants, not string literals for unsigned char
+                            // Flag signed char with character constants or string literals
+                            // Flag unsigned char with character constants only (unsigned char is OK for byte strings)
+                            let is_unsigned = type_text.contains("unsigned");
+                            let should_flag = if is_unsigned {
+                                is_char_constant // Only flag character constants, not string literals for unsigned char
+                            } else {
+                                is_char_constant || is_string_literal // Flag both for signed char
+                            };
+
+                            if should_flag {
+                                let char_type = if is_unsigned {
+                                    "unsigned char"
                                 } else {
-                                    is_char_constant || is_string_literal // Flag both for signed char
+                                    "signed char"
                                 };
 
-                                if should_flag {
-                                    let char_type = if is_unsigned {
-                                        "unsigned char"
-                                    } else {
-                                        "signed char"
-                                    };
+                                let literal_type = if is_string_literal {
+                                    "string literal"
+                                } else {
+                                    "character constant"
+                                };
 
-                                    let literal_type = if is_string_literal {
-                                        "string literal"
-                                    } else {
-                                        "character constant"
-                                    };
+                                violations.push(RuleViolation {
+                                    rule_id: self.rule_id().to_string(),
+                                    severity: Severity::Medium,
+                                    message: format!(
+                                        "{} assigned to '{}' (should use plain 'char')",
+                                        literal_type, char_type
+                                    ),
+                                    file_path: String::new(),
+                                    line: declarator.start_position().row + 1,
+                                    column: declarator.start_position().column + 1,
+                                    suggestion: Some(format!(
+                                        "Use plain 'char' instead of '{}' for {}",
+                                        char_type, literal_type
+                                    )),
+                                    ..Default::default()
+                                });
+                            }
 
-                                    violations.push(RuleViolation {
-                                        rule_id: self.rule_id().to_string(),
-                                        severity: Severity::Medium,
-                                        message: format!(
-                                            "{} assigned to '{}' (should use plain 'char')",
-                                            literal_type, char_type
-                                        ),
-                                        file_path: String::new(),
-                                        line: declarator.start_position().row + 1,
-                                        column: declarator.start_position().column + 1,
-                                        suggestion: Some(format!(
-                                            "Use plain 'char' instead of '{}' for {}",
-                                            char_type, literal_type
-                                        )),
-                                        ..Default::default()
-                                    });
-                                }
+                            // Check for array initializer with character constants
+                            if value.kind() == "initializer_list" {
+                                for element in value.child_nodes() {
+                                    let elem_text = get_node_text(&element, source);
+                                    if elem_text.trim().starts_with("'")
+                                        || elem_text.trim().starts_with("L'")
+                                    {
+                                        let char_type = if type_text.contains("unsigned") {
+                                            "unsigned char"
+                                        } else {
+                                            "signed char"
+                                        };
 
-                                // Check for array initializer with character constants
-                                if value.kind() == "initializer_list" {
-                                    for j in 0..value.child_count() {
-                                        if let Some(element) = value.child(j) {
-                                            let elem_text = get_node_text(&element, source);
-                                            if elem_text.trim().starts_with("'")
-                                                || elem_text.trim().starts_with("L'")
-                                            {
-                                                let char_type = if type_text.contains("unsigned") {
-                                                    "unsigned char"
-                                                } else {
-                                                    "signed char"
-                                                };
-
-                                                violations.push(RuleViolation {
-                                                    rule_id: self.rule_id().to_string(),
-                                                    severity: Severity::Medium,
-                                                    message: format!(
-                                                        "Character constant in '{}' array initializer (should use plain 'char')",
-                                                        char_type
-                                                    ),
-                                                    file_path: String::new(),
-                                                    line: element.start_position().row + 1,
-                                                    column: element.start_position().column + 1,
-                                                    suggestion: Some(format!(
-                                                        "Use plain 'char' instead of '{}' for character arrays",
-                                                        char_type
-                                                    )),
-                                                    ..Default::default()
-                                                });
-                                                break; // One violation per array is enough
-                                            }
-                                        }
+                                        violations.push(RuleViolation {
+                                            rule_id: self.rule_id().to_string(),
+                                            severity: Severity::Medium,
+                                            message: format!(
+                                                "Character constant in '{}' array initializer (should use plain 'char')",
+                                                char_type
+                                            ),
+                                            file_path: String::new(),
+                                            line: element.start_position().row + 1,
+                                            column: element.start_position().column + 1,
+                                            suggestion: Some(format!(
+                                                "Use plain 'char' instead of '{}' for character arrays",
+                                                char_type
+                                            )),
+                                            ..Default::default()
+                                        });
+                                        break; // One violation per array is enough
                                     }
                                 }
                             }
@@ -1027,12 +1012,10 @@ impl Str00C {
 
     /// Check if initializer list contains character constants
     fn contains_char_constants(&self, node: &Node, source: &str) -> bool {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                let text = get_node_text(&child, source).trim();
-                if text.starts_with("'") && !text.starts_with("L'") {
-                    return true;
-                }
+        for child in node.child_nodes() {
+            let text = get_node_text(&child, source).trim();
+            if text.starts_with("'") && !text.starts_with("L'") {
+                return true;
             }
         }
         false
