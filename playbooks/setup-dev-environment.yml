@@ -52,7 +52,7 @@
 #     --ask-become-pass
 #   # Or into an existing/shared venv instead of a new dedicated one:
 #   ansible-playbook playbooks/setup-dev-environment.yml -i "localhost," -c local \
-#     --ask-become-pass -e dev_venv=~/data-enterprise/venv
+#     --ask-become-pass -e dev_venv=~/venvs/shared
 #   # Skip the disk-guard cron on a node with plenty of headroom:
 #   ansible-playbook playbooks/setup-dev-environment.yml -i "localhost," -c local \
 #     --ask-become-pass -e install_disk_guard=false
@@ -70,10 +70,13 @@
     # clones aurora-lint is a supported setup, and most are.
     benchmarking_db_dir: "{{ src_root }}/benchmarking_db"
     # Override with -e dev_venv=... (e.g. an existing venv shared across
-    # repos, like ~/data-enterprise/venv) to install into it instead of
+    # repos, like ~/venvs/shared) to install into it instead of
     # creating a new dedicated one.
     dev_venv: "{{ ansible_env.HOME }}/.venvs/aurora-lint-dev"
     install_disk_guard: true
+    # The clones the disk-guard cron keeps in check. Add sibling Rust clones
+    # with -e '{"gc_repos": ["/path/to/aurora-lint", "/path/to/other"]}'.
+    gc_repos: ["{{ project_dir | realpath }}"]
 
   tasks:
     # ── Native build deps (cargo build itself) ───────────────────────────
@@ -262,6 +265,7 @@
         minute: "17"
         job: >-
           PATH=$HOME/.cargo/bin:/usr/bin:/bin $HOME/bin/cargo-target-gc.sh
+          {{ gc_repos | map('quote') | join(' ') }}
           >> $HOME/.local/state/cargo-target-gc.log 2>&1
       when: install_disk_guard | bool
 

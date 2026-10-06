@@ -20,19 +20,15 @@
 # tell which repo a running cargo is building, and a repo's lock file says
 # nothing about a build that has not taken it yet.
 #
-# Usage: cargo-target-gc.sh [repo ...]   (default: the repos listed below)
+# Usage: cargo-target-gc.sh [repo ...]
+#   (default: the aurora-lint clone under $AURORA_LINT_SRC_ROOT, or ~/data)
 set -uo pipefail
 
 SWEEP_DAYS="${SWEEP_DAYS:-7}"
 MAX_TARGET_GB="${MAX_TARGET_GB:-6}"
 REPOS=("$@")
 if [ ${#REPOS[@]} -eq 0 ]; then
-  REPOS=(
-    "$HOME/data-enterprise/aurora-lint"
-    "$HOME/data-enterprise/todo-sqlite-cli"
-    "$HOME/data-enterprise/knots"
-    "$HOME/data-enterprise/lang_parsing_substrate"
-  )
+  REPOS=("${AURORA_LINT_SRC_ROOT:-$HOME/data}/aurora-lint")
 fi
 
 if pgrep -x cargo >/dev/null || pgrep -x rustc >/dev/null; then

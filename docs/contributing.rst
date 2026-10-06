@@ -152,7 +152,7 @@ checkout's git hook -- see CLAUDE.md's "Git Commit Rules"), and
 points at -- see CLAUDE.md's "Code Navigation (clew)" for registering the
 MCP server itself with ``clew init``, a separate, per-machine step this
 playbook does not run for you). Point the venv at an existing/shared one
-instead with ``-e dev_venv=<path>``, e.g. ``-e dev_venv=~/data-enterprise/venv``.
+instead with ``-e dev_venv=<path>``, e.g. ``-e dev_venv=~/venvs/shared``.
 
 It also installs and schedules a disk-guard cron (``cargo-sweep`` +
 ``scripts/cargo-target-gc.sh``, nightly at 03:30) that caps ``target/``
