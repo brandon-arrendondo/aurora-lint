@@ -19,6 +19,7 @@ use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::call_roles;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -149,10 +150,8 @@ impl Mem01C {
             self.check_function(node, source, violations);
             return; // don't recurse into function — already handled
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for child in node.child_nodes() {
+            self.check_node(&child, source, violations);
         }
     }
 
@@ -577,12 +576,10 @@ fn call_address_of_action(
 
 /// Check if ptr_name appears as an argument in an argument_list.
 fn arg_list_contains_identifier(args: &Node, source: &str, name: &str) -> bool {
-    for i in 0..args.child_count() {
-        if let Some(arg) = args.child(i) {
-            if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
-                if subtree_contains_identifier(&arg, source, name) {
-                    return true;
-                }
+    for arg in args.child_nodes() {
+        if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
+            if subtree_contains_identifier(&arg, source, name) {
+                return true;
             }
         }
     }
@@ -595,8 +592,7 @@ fn arg_list_contains_identifier(args: &Node, source: &str, name: &str) -> bool {
 /// the count), so callers can look it up against a callee's `FunctionSummary`.
 fn address_of_arg_index(args: &Node, source: &str, name: &str) -> Option<usize> {
     let mut idx = 0;
-    for i in 0..args.child_count() {
-        let Some(arg) = args.child(i) else { continue };
+    for arg in args.child_nodes() {
         if matches!(arg.kind(), "(" | ")" | ",") {
             continue;
         }
@@ -621,20 +617,18 @@ fn address_of_arg_index(args: &Node, source: &str, name: &str) -> Option<usize> 
 /// Extract the declared variable name from a declaration node.
 /// Handles: `int x`, `char *p`, `int *p = malloc(...)`, etc.
 fn find_declarator_name(decl: &Node, source: &str) -> Option<String> {
-    for i in 0..decl.child_count() {
-        if let Some(child) = decl.child(i) {
-            match child.kind() {
-                "init_declarator" => {
-                    // init_declarator has declarator as first field
-                    if let Some(d) = child.child_by_field_name("declarator") {
-                        return extract_identifier_from_declarator(&d, source);
-                    }
+    for child in decl.child_nodes() {
+        match child.kind() {
+            "init_declarator" => {
+                // init_declarator has declarator as first field
+                if let Some(d) = child.child_by_field_name("declarator") {
+                    return extract_identifier_from_declarator(&d, source);
                 }
-                "pointer_declarator" | "array_declarator" | "identifier" => {
-                    return extract_identifier_from_declarator(&child, source);
-                }
-                _ => {}
             }
+            "pointer_declarator" | "array_declarator" | "identifier" => {
+                return extract_identifier_from_declarator(&child, source);
+            }
+            _ => {}
         }
     }
     None

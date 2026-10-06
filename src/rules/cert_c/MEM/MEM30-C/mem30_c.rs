@@ -15,6 +15,7 @@ use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::clearing_extent::cleared_extent;
+use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -281,12 +282,10 @@ fn type_identifier_name(node: &Node, source: &str) -> String {
     match node.kind() {
         "type_identifier" => get_node_text(node, source).to_string(),
         _ => {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    let name = type_identifier_name(&child, source);
-                    if !name.is_empty() {
-                        return name;
-                    }
+            for child in node.child_nodes() {
+                let name = type_identifier_name(&child, source);
+                if !name.is_empty() {
+                    return name;
                 }
             }
             String::new()
@@ -425,11 +424,7 @@ fn path_has_subscript(node: &Node) -> bool {
                 let next = cur
                     .child_by_field_name("argument")
                     .or_else(|| cur.child_by_field_name("value"))
-                    .or_else(|| {
-                        (0..cur.child_count())
-                            .filter_map(|i| cur.child(i))
-                            .find(|c| c.is_named())
-                    });
+                    .or_else(|| cur.child_nodes().find(|c| c.is_named()));
                 match next {
                     Some(n) => cur = n,
                     None => return false,
@@ -519,34 +514,32 @@ impl GlobalTracker {
     }
 
     fn extract_global_declarations(&mut self, node: &Node, source: &str) {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "pointer_declarator" {
-                    let name = self.extract_declarator_name(&child, source);
-                    if !name.is_empty() {
-                        self.global_vars.insert(name.clone());
-                        self.global_pointer_vars.insert(name);
-                    }
-                } else if child.kind() == "init_declarator" {
-                    let name = self.extract_declarator_name(&child, source);
-                    if !name.is_empty() {
-                        self.global_vars.insert(name.clone());
-                        // init_declarator contains a pointer_declarator if declared as pointer
-                        if declarator_contains_pointer_or_array(&child) {
-                            self.global_pointer_vars.insert(name);
-                        }
-                    }
-                } else if child.kind() == "array_declarator" {
-                    let name = self.extract_declarator_name(&child, source);
-                    if !name.is_empty() {
-                        self.global_vars.insert(name.clone());
-                        self.global_pointer_vars.insert(name);
-                    }
-                } else if child.kind() == "identifier" {
-                    let name = get_node_text(&child, source).to_string();
-                    self.global_vars.insert(name);
-                    // plain identifier declarator → scalar, not a pointer
+        for child in node.child_nodes() {
+            if child.kind() == "pointer_declarator" {
+                let name = self.extract_declarator_name(&child, source);
+                if !name.is_empty() {
+                    self.global_vars.insert(name.clone());
+                    self.global_pointer_vars.insert(name);
                 }
+            } else if child.kind() == "init_declarator" {
+                let name = self.extract_declarator_name(&child, source);
+                if !name.is_empty() {
+                    self.global_vars.insert(name.clone());
+                    // init_declarator contains a pointer_declarator if declared as pointer
+                    if declarator_contains_pointer_or_array(&child) {
+                        self.global_pointer_vars.insert(name);
+                    }
+                }
+            } else if child.kind() == "array_declarator" {
+                let name = self.extract_declarator_name(&child, source);
+                if !name.is_empty() {
+                    self.global_vars.insert(name.clone());
+                    self.global_pointer_vars.insert(name);
+                }
+            } else if child.kind() == "identifier" {
+                let name = get_node_text(&child, source).to_string();
+                self.global_vars.insert(name);
+                // plain identifier declarator → scalar, not a pointer
             }
         }
     }
@@ -619,9 +612,7 @@ impl GlobalTracker {
             let Some(args) = realloc_call.child_by_field_name("arguments") else {
                 continue;
             };
-            let named_args: Vec<Node> = (0..args.named_child_count())
-                .filter_map(|i| args.named_child(i))
-                .collect();
+            let named_args: Vec<Node> = args.named_child_nodes().collect();
             let [ptr_arg, size_arg] = named_args.as_slice() else {
                 continue;
             };
@@ -841,13 +832,11 @@ impl GlobalTracker {
     fn nth_arg_text(&self, node: &Node, n: usize, source: &str) -> Option<String> {
         let args = node.child_by_field_name("arguments")?;
         let mut arg_count = 0;
-        for i in 0..args.child_count() {
-            if let Some(arg) = args.child(i) {
-                if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
-                    arg_count += 1;
-                    if arg_count == n {
-                        return Some(get_node_text(&arg, source).to_string());
-                    }
+        for arg in args.child_nodes() {
+            if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
+                arg_count += 1;
+                if arg_count == n {
+                    return Some(get_node_text(&arg, source).to_string());
                 }
             }
         }
@@ -876,8 +865,8 @@ impl GlobalTracker {
         // Check for free() calls, and a declared deallocator's own argument
         if let Some(position) = call_roles::frees_argument(called_func) {
             if let Some(args) = node.child_by_field_name("arguments") {
-                let freed = (0..args.child_count())
-                    .filter_map(|i| args.child(i))
+                let freed = args
+                    .child_nodes()
                     .filter(|a| a.kind() != "(" && a.kind() != ")" && a.kind() != ",")
                     .nth(position);
                 if let Some(arg) = freed {
@@ -1026,9 +1015,7 @@ impl GlobalTracker {
                 let is_address_of = expr
                     .child_by_field_name("operator")
                     .is_some_and(|op| op.kind() == "&")
-                    || (0..expr.child_count())
-                        .filter_map(|i| expr.child(i))
-                        .any(|c| c.kind() == "&");
+                    || expr.child_nodes().any(|c| c.kind() == "&");
                 if !is_address_of {
                     return false;
                 }
@@ -1047,9 +1034,7 @@ impl GlobalTracker {
         match lv.kind() {
             "identifier" => Self::automatic_declarator(lv, source).is_some(),
             "field_expression" => {
-                let through_pointer = (0..lv.child_count())
-                    .filter_map(|i| lv.child(i))
-                    .any(|c| c.kind() == "->");
+                let through_pointer = lv.child_nodes().any(|c| c.kind() == "->");
                 !through_pointer
                     && lv
                         .child_by_field_name("argument")
@@ -1078,13 +1063,10 @@ impl GlobalTracker {
         match decl.kind() {
             "parameter_declaration" => Some(declarator),
             _ => {
-                let static_or_extern =
-                    (0..decl.child_count())
-                        .filter_map(|i| decl.child(i))
-                        .any(|c| {
-                            c.kind() == "storage_class_specifier"
-                                && matches!(get_node_text(&c, source), "static" | "extern")
-                        });
+                let static_or_extern = decl.child_nodes().any(|c| {
+                    c.kind() == "storage_class_specifier"
+                        && matches!(get_node_text(&c, source), "static" | "extern")
+                });
                 // A file-scope declaration is never automatic; the binding
                 // fallback reaches one only when no local or parameter binds
                 // the name.
@@ -1109,15 +1091,13 @@ impl GlobalTracker {
             let mut size_param = String::new();
             let mut arg_count = 0;
 
-            for i in 0..args.child_count() {
-                if let Some(arg) = args.child(i) {
-                    if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
-                        arg_count += 1;
-                        if arg_count == 1 {
-                            old_ptr = self.extract_base_variable(&arg, source);
-                        } else if arg_count == 2 {
-                            size_param = get_node_text(&arg, source).to_string();
-                        }
+            for arg in args.child_nodes() {
+                if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
+                    arg_count += 1;
+                    if arg_count == 1 {
+                        old_ptr = self.extract_base_variable(&arg, source);
+                    } else if arg_count == 2 {
+                        size_param = get_node_text(&arg, source).to_string();
                     }
                 }
             }
@@ -1163,15 +1143,13 @@ impl GlobalTracker {
                 if let Some(stmt_parent) = parent.parent() {
                     if let Some(container) = stmt_parent.parent() {
                         // Look for if-statement siblings
-                        for i in 0..container.child_count() {
-                            if let Some(sibling) = container.child(i) {
-                                if sibling.kind() == "if_statement" {
-                                    // Check if this if-statement has a free(old_ptr) call
-                                    let if_text = get_node_text(&sibling, source);
-                                    let free_pattern = format!("free({})", old_ptr);
-                                    if if_text.contains(&free_pattern) {
-                                        return true;
-                                    }
+                        for sibling in container.child_nodes() {
+                            if sibling.kind() == "if_statement" {
+                                // Check if this if-statement has a free(old_ptr) call
+                                let if_text = get_node_text(&sibling, source);
+                                let free_pattern = format!("free({})", old_ptr);
+                                if if_text.contains(&free_pattern) {
+                                    return true;
                                 }
                             }
                         }
@@ -1554,14 +1532,12 @@ impl GlobalTracker {
         match node.kind() {
             "function_declarator" => {
                 if let Some(parameters) = node.child_by_field_name("parameters") {
-                    for i in 0..parameters.child_count() {
-                        if let Some(param) = parameters.child(i) {
-                            if param.kind() == "parameter_declaration" {
-                                if let Some(declarator) = param.child_by_field_name("declarator") {
-                                    let name = self.extract_declarator_name(&declarator, source);
-                                    if !name.is_empty() {
-                                        params.insert(name);
-                                    }
+                    for param in parameters.child_nodes() {
+                        if param.kind() == "parameter_declaration" {
+                            if let Some(declarator) = param.child_by_field_name("declarator") {
+                                let name = self.extract_declarator_name(&declarator, source);
+                                if !name.is_empty() {
+                                    params.insert(name);
                                 }
                             }
                         }
@@ -1585,11 +1561,9 @@ impl GlobalTracker {
                     self.extract_declarator_name(&declarator, source)
                 } else {
                     // Try to find identifier child
-                    for i in 0..node.child_count() {
-                        if let Some(child) = node.child(i) {
-                            if child.kind() == "identifier" {
-                                return get_node_text(&child, source).to_string();
-                            }
+                    for child in node.child_nodes() {
+                        if child.kind() == "identifier" {
+                            return get_node_text(&child, source).to_string();
                         }
                     }
                     String::new()
@@ -1597,11 +1571,9 @@ impl GlobalTracker {
             }
             "array_declarator" => {
                 // int arr[10] - get the identifier
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "identifier" {
-                            return get_node_text(&child, source).to_string();
-                        }
+                for child in node.child_nodes() {
+                    if child.kind() == "identifier" {
+                        return get_node_text(&child, source).to_string();
                     }
                 }
                 String::new()
@@ -1621,11 +1593,9 @@ impl GlobalTracker {
                 }
             }
             "parenthesized_expression" => {
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() != "(" && child.kind() != ")" {
-                            return self.extract_base_variable(&child, source);
-                        }
+                for child in node.child_nodes() {
+                    if child.kind() != "(" && child.kind() != ")" {
+                        return self.extract_base_variable(&child, source);
                     }
                 }
                 String::new()
@@ -1908,10 +1878,8 @@ impl MemoryAnalyzer {
         }
 
         // Recursively process child nodes (top-level traversal)
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.analyze_node(&child, source, violations);
-            }
+        for child in node.child_nodes() {
+            self.analyze_node(&child, source, violations);
         }
     }
 
@@ -2188,8 +2156,8 @@ impl MemoryAnalyzer {
                 exit_states,
             });
             let value_id = case_node.child_by_field_name("value").map(|v| v.id());
-            let stmts: Vec<Node<'a>> = (0..case_node.child_count())
-                .filter_map(|i| case_node.child(i))
+            let stmts: Vec<Node<'a>> = case_node
+                .child_nodes()
                 .filter(|c| {
                     !matches!(c.kind(), "case" | "default" | ":") && Some(c.id()) != value_id
                 })
@@ -3061,14 +3029,12 @@ impl MemoryAnalyzer {
                 match node.kind() {
                     "compound_statement" => {
                         let mut last_child = None;
-                        for i in 0..node.child_count() {
-                            if let Some(child) = node.child(i) {
-                                if child.kind() != "{"
-                                    && child.kind() != "}"
-                                    && child.kind() != "comment"
-                                {
-                                    last_child = Some(child);
-                                }
+                        for child in node.child_nodes() {
+                            if child.kind() != "{"
+                                && child.kind() != "}"
+                                && child.kind() != "comment"
+                            {
+                                last_child = Some(child);
                             }
                         }
                         match last_child {
@@ -3078,11 +3044,9 @@ impl MemoryAnalyzer {
                     }
                     "else_clause" => {
                         let mut inner = None;
-                        for i in 0..node.child_count() {
-                            if let Some(child) = node.child(i) {
-                                if child.kind() != "else" && child.kind() != "comment" {
-                                    inner = Some(child);
-                                }
+                        for child in node.child_nodes() {
+                            if child.kind() != "else" && child.kind() != "comment" {
+                                inner = Some(child);
                             }
                         }
                         match inner {
@@ -3612,11 +3576,9 @@ impl MemoryAnalyzer {
 
         // Collect the real (non-punctuation) argument nodes.
         let mut arg_nodes = Vec::new();
-        for i in 0..arguments.child_count() {
-            if let Some(arg) = arguments.child(i) {
-                if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
-                    arg_nodes.push(arg);
-                }
+        for arg in arguments.child_nodes() {
+            if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
+                arg_nodes.push(arg);
             }
         }
 
@@ -3721,11 +3683,9 @@ impl MemoryAnalyzer {
             return HashSet::new();
         };
         let mut arg_nodes = Vec::new();
-        for i in 0..arguments.child_count() {
-            if let Some(arg) = arguments.child(i) {
-                if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
-                    arg_nodes.push(arg);
-                }
+        for arg in arguments.child_nodes() {
+            if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
+                arg_nodes.push(arg);
             }
         }
         let mut freed_arg_ids = HashSet::new();
@@ -4306,8 +4266,8 @@ impl MemoryAnalyzer {
         let Some(arguments) = call.child_by_field_name("arguments") else {
             return;
         };
-        let overwritten = (0..arguments.named_child_count())
-            .filter_map(|i| arguments.named_child(i))
+        let overwritten = arguments
+            .named_child_nodes()
             .filter(|arg| freed_arg_ids.contains(&arg.id()))
             .map(|arg| match arg.kind() {
                 "cast_expression" => arg.child_by_field_name("value").unwrap_or(arg),
@@ -4528,8 +4488,7 @@ impl MemoryAnalyzer {
     /// their own handler; only bare `identifier`/`pointer_declarator`
     /// declarators are cleared here.
     fn process_plain_declarators(&mut self, node: &Node, source: &str) {
-        for i in 0..node.child_count() {
-            let Some(child) = node.child(i) else { continue };
+        for child in node.child_nodes() {
             if !matches!(child.kind(), "identifier" | "pointer_declarator") {
                 continue;
             }
@@ -4793,44 +4752,42 @@ impl MemoryAnalyzer {
         violations: &mut Vec<RuleViolation>,
     ) {
         if let Some(arguments) = node.child_by_field_name("arguments") {
-            for i in 0..arguments.child_count() {
-                if let Some(arg) = arguments.child(i) {
-                    if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
-                        continue;
-                    }
+            for arg in arguments.child_nodes() {
+                if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
+                    continue;
+                }
 
-                    // `f(&p)` passes the ADDRESS of the variable, not the
-                    // freed pointer it holds; the callee receiving a slot is
-                    // the out-parameter idiom that refills it
-                    // (`process_address_of_args`), not a use (
-                    // 1234).
-                    if is_address_of(&arg, source) {
-                        continue;
-                    }
+                // `f(&p)` passes the ADDRESS of the variable, not the
+                // freed pointer it holds; the callee receiving a slot is
+                // the out-parameter idiom that refills it
+                // (`process_address_of_args`), not a use (
+                // 1234).
+                if is_address_of(&arg, source) {
+                    continue;
+                }
 
-                    if let Some(lv) = lvalue_of(&arg, source) {
-                        let var_name = LValue::Var(lv.root_var().to_string());
-                        if self.is_freed(&var_name) {
-                            violations.extend(self.uaf(
-                                RuleViolation {
-                                    rule_id: "MEM30-C".to_string(),
-                                    severity: Severity::Critical,
-                                    message: format!(
-                                        "Use-after-free: passing freed pointer '{}' to function",
-                                        var_name.root_var()
-                                    ),
-                                    file_path: String::new(),
-                                    line: node.start_position().row + 1,
-                                    column: node.start_position().column + 1,
-                                    suggestion: Some(
-                                        "Do not pass freed memory to functions.".to_string(),
-                                    ),
-                                    ..Default::default()
-                                },
-                                &var_name,
-                                source,
-                            ));
-                        }
+                if let Some(lv) = lvalue_of(&arg, source) {
+                    let var_name = LValue::Var(lv.root_var().to_string());
+                    if self.is_freed(&var_name) {
+                        violations.extend(self.uaf(
+                            RuleViolation {
+                                rule_id: "MEM30-C".to_string(),
+                                severity: Severity::Critical,
+                                message: format!(
+                                    "Use-after-free: passing freed pointer '{}' to function",
+                                    var_name.root_var()
+                                ),
+                                file_path: String::new(),
+                                line: node.start_position().row + 1,
+                                column: node.start_position().column + 1,
+                                suggestion: Some(
+                                    "Do not pass freed memory to functions.".to_string(),
+                                ),
+                                ..Default::default()
+                            },
+                            &var_name,
+                            source,
+                        ));
                     }
                 }
             }
@@ -4845,34 +4802,32 @@ impl MemoryAnalyzer {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Check if the return value is a freed pointer
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "return" {
-                    continue;
-                }
-                if let Some(lv) = lvalue_of(&child, source) {
-                    let var_name = LValue::Var(lv.root_var().to_string());
-                    if self.is_freed(&var_name) {
-                        violations.extend(self.uaf(
-                            RuleViolation {
-                                rule_id: "MEM30-C".to_string(),
-                                severity: Severity::Critical,
-                                message: format!(
-                                    "Use-after-free: returning freed pointer '{}'",
-                                    var_name.root_var()
-                                ),
-                                file_path: String::new(),
-                                line: node.start_position().row + 1,
-                                column: node.start_position().column + 1,
-                                suggestion: Some(
-                                    "Do not return freed memory from functions.".to_string(),
-                                ),
-                                ..Default::default()
-                            },
-                            &var_name,
-                            source,
-                        ));
-                    }
+        for child in node.child_nodes() {
+            if child.kind() == "return" {
+                continue;
+            }
+            if let Some(lv) = lvalue_of(&child, source) {
+                let var_name = LValue::Var(lv.root_var().to_string());
+                if self.is_freed(&var_name) {
+                    violations.extend(self.uaf(
+                        RuleViolation {
+                            rule_id: "MEM30-C".to_string(),
+                            severity: Severity::Critical,
+                            message: format!(
+                                "Use-after-free: returning freed pointer '{}'",
+                                var_name.root_var()
+                            ),
+                            file_path: String::new(),
+                            line: node.start_position().row + 1,
+                            column: node.start_position().column + 1,
+                            suggestion: Some(
+                                "Do not return freed memory from functions.".to_string(),
+                            ),
+                            ..Default::default()
+                        },
+                        &var_name,
+                        source,
+                    ));
                 }
             }
         }
@@ -5134,70 +5089,68 @@ impl MemoryAnalyzer {
         let mut invalidated = Vec::new();
         if let Some(args) = call_node.child_by_field_name("arguments") {
             // First argument to realloc is the old pointer
-            for i in 0..args.child_count() {
-                if let Some(arg) = args.child(i) {
-                    if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
-                        // For an out-param idiom like `realloc(*out, n)` or
-                        // `realloc(out[i], n)` — the double/triple-pointer
-                        // shape used by e.g. `get_if_names(char ***out)` —
-                        // the argument is the *pointee* `*out`/`out[i]`, not
-                        // `out` itself. `lvalue_of` unwraps derefs/subscripts
-                        // down to the base identifier (by design, for
-                        // field-sensitivity elsewhere — see points_to.rs), so
-                        // without this guard the base variable `out` would
-                        // be recorded as invalidated even though `out` the
-                        // pointer variable was never freed; only the buffer
-                        // it pointed to was. That false invalidation then
-                        // self-triggers on this very same argument node when
-                        // the generic traversal re-visits it as a plain
-                        // dereference (`*out` is a `pointer_expression`,
-                        // independently checked by `check_pointer_dereference`),
-                        // reporting a UAF on the realloc call's own old-pointer
-                        // read. `mark_arg_freed` already declines to track a
-                        // `free(*ptr)`/`free(arr[i])` argument for the same
-                        // reason (task: MEM30-C false UAF on triple-pointer
-                        // out-params) — mirror that here for realloc.
-                        if matches!(arg.kind(), "pointer_expression" | "subscript_expression") {
+            for arg in args.child_nodes() {
+                if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
+                    // For an out-param idiom like `realloc(*out, n)` or
+                    // `realloc(out[i], n)` — the double/triple-pointer
+                    // shape used by e.g. `get_if_names(char ***out)` —
+                    // the argument is the *pointee* `*out`/`out[i]`, not
+                    // `out` itself. `lvalue_of` unwraps derefs/subscripts
+                    // down to the base identifier (by design, for
+                    // field-sensitivity elsewhere — see points_to.rs), so
+                    // without this guard the base variable `out` would
+                    // be recorded as invalidated even though `out` the
+                    // pointer variable was never freed; only the buffer
+                    // it pointed to was. That false invalidation then
+                    // self-triggers on this very same argument node when
+                    // the generic traversal re-visits it as a plain
+                    // dereference (`*out` is a `pointer_expression`,
+                    // independently checked by `check_pointer_dereference`),
+                    // reporting a UAF on the realloc call's own old-pointer
+                    // read. `mark_arg_freed` already declines to track a
+                    // `free(*ptr)`/`free(arr[i])` argument for the same
+                    // reason (task: MEM30-C false UAF on triple-pointer
+                    // out-params) — mirror that here for realloc.
+                    if matches!(arg.kind(), "pointer_expression" | "subscript_expression") {
+                        break;
+                    }
+                    // For field expressions (like im->clip->list), track the full
+                    // field path since only that specific field becomes invalid;
+                    // `lvalue_of` already gives exactly that for a top-level
+                    // field_expression, and collapses to the base identifier for
+                    // every other node kind — matching the old
+                    // extract_base_variable fallback in one call.
+                    let old_ptr = lvalue_of(&arg, source);
+
+                    if let Some(old_ptr) = old_ptr {
+                        // Self-realloc guard: if the old pointer already holds a
+                        // realloc result (`X = realloc(X, n)`), the result is
+                        // stored straight back into X, so X is not dangling. The
+                        // assignment handler clears X within the statement, but
+                        // the post-assignment recursion re-enters this realloc
+                        // call; without this guard it would re-invalidate the
+                        // just-cleared self-assigned pointer (a false UAF on the
+                        // subsequent `X[i]` read). A genuine `new = realloc(old, n)`
+                        // is unaffected: `old` is not in realloc_updated.
+                        if self.realloc_updated.contains(&old_ptr) {
                             break;
                         }
-                        // For field expressions (like im->clip->list), track the full
-                        // field path since only that specific field becomes invalid;
-                        // `lvalue_of` already gives exactly that for a top-level
-                        // field_expression, and collapses to the base identifier for
-                        // every other node kind — matching the old
-                        // extract_base_variable fallback in one call.
-                        let old_ptr = lvalue_of(&arg, source);
-
-                        if let Some(old_ptr) = old_ptr {
-                            // Self-realloc guard: if the old pointer already holds a
-                            // realloc result (`X = realloc(X, n)`), the result is
-                            // stored straight back into X, so X is not dangling. The
-                            // assignment handler clears X within the statement, but
-                            // the post-assignment recursion re-enters this realloc
-                            // call; without this guard it would re-invalidate the
-                            // just-cleared self-assigned pointer (a false UAF on the
-                            // subsequent `X[i]` read). A genuine `new = realloc(old, n)`
-                            // is unaffected: `old` is not in realloc_updated.
-                            if self.realloc_updated.contains(&old_ptr) {
-                                break;
-                            }
-                            // The old pointer is now potentially invalid
-                            self.realloc_invalidated.insert(old_ptr.clone());
-                            invalidated.push(old_ptr.clone());
-                            // Also invalidate any aliases pointing to the old pointer
-                            let aliases_to_invalidate: Vec<LValue> = self
-                                .aliases
-                                .iter()
-                                .filter(|(_, v)| **v == old_ptr)
-                                .map(|(k, _)| k.clone())
-                                .collect();
-                            for alias in aliases_to_invalidate {
-                                self.realloc_invalidated.insert(alias.clone());
-                                invalidated.push(alias);
-                            }
+                        // The old pointer is now potentially invalid
+                        self.realloc_invalidated.insert(old_ptr.clone());
+                        invalidated.push(old_ptr.clone());
+                        // Also invalidate any aliases pointing to the old pointer
+                        let aliases_to_invalidate: Vec<LValue> = self
+                            .aliases
+                            .iter()
+                            .filter(|(_, v)| **v == old_ptr)
+                            .map(|(k, _)| k.clone())
+                            .collect();
+                        for alias in aliases_to_invalidate {
+                            self.realloc_invalidated.insert(alias.clone());
+                            invalidated.push(alias);
                         }
-                        break; // Only need the first argument
                     }
+                    break; // Only need the first argument
                 }
             }
         }
@@ -5217,11 +5170,9 @@ impl MemoryAnalyzer {
             }
             _ => {
                 // Try to find an identifier child
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "identifier" {
-                            return get_node_text(&child, source).to_string();
-                        }
+                for child in node.child_nodes() {
+                    if child.kind() == "identifier" {
+                        return get_node_text(&child, source).to_string();
                     }
                 }
                 String::new()

@@ -18,6 +18,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::call_roles;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -88,11 +89,9 @@ impl Mem02C {
         source: &str,
         var_types: &mut HashMap<String, String>,
     ) {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "declaration" {
-                    self.record_declaration_types(&child, source, var_types);
-                }
+        for child in node.child_nodes() {
+            if child.kind() == "declaration" {
+                self.record_declaration_types(&child, source, var_types);
             }
         }
     }
@@ -117,11 +116,9 @@ impl Mem02C {
     ) {
         if let Some(decl_type) = self.extract_declaration_type(node, source) {
             // Get declarators
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if let Some(var_name) = self.extract_var_name_from_declarator(&child, source) {
-                        var_types.insert(var_name, decl_type.clone());
-                    }
+            for child in node.child_nodes() {
+                if let Some(var_name) = self.extract_var_name_from_declarator(&child, source) {
+                    var_types.insert(var_name, decl_type.clone());
                 }
             }
         }
@@ -129,16 +126,14 @@ impl Mem02C {
 
     fn extract_declaration_type(&self, node: &Node, source: &str) -> Option<String> {
         // Get the type specifier from a declaration
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                let kind = child.kind();
-                if kind == "type_identifier"
-                    || kind == "primitive_type"
-                    || kind == "struct_specifier"
-                    || kind == "sized_type_specifier"
-                {
-                    return Some(get_node_text(&child, source).to_string());
-                }
+        for child in node.child_nodes() {
+            let kind = child.kind();
+            if kind == "type_identifier"
+                || kind == "primitive_type"
+                || kind == "struct_specifier"
+                || kind == "sized_type_specifier"
+            {
+                return Some(get_node_text(&child, source).to_string());
             }
         }
         None
@@ -150,11 +145,9 @@ impl Mem02C {
             return Some(get_node_text(node, source).to_string());
         }
         if kind == "pointer_declarator" || kind == "init_declarator" {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if let Some(name) = self.extract_var_name_from_declarator(&child, source) {
-                        return Some(name);
-                    }
+            for child in node.child_nodes() {
+                if let Some(name) = self.extract_var_name_from_declarator(&child, source) {
+                    return Some(name);
                 }
             }
         }
@@ -272,14 +265,12 @@ impl Mem02C {
         let mut var_name = None;
         let mut initializer = None;
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "pointer_declarator" || child.kind() == "identifier" {
-                    var_name = self.extract_var_name_from_declarator(&child, source);
-                }
-                if child.kind() == "call_expression" || child.kind() == "cast_expression" {
-                    initializer = Some(child);
-                }
+        for child in node.child_nodes() {
+            if child.kind() == "pointer_declarator" || child.kind() == "identifier" {
+                var_name = self.extract_var_name_from_declarator(&child, source);
+            }
+            if child.kind() == "call_expression" || child.kind() == "cast_expression" {
+                initializer = Some(child);
             }
         }
 
@@ -325,11 +316,9 @@ impl Mem02C {
 
     fn get_cast_type(&self, node: &Node, source: &str) -> Option<String> {
         // Cast expression has a type_descriptor child
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "type_descriptor" {
-                    return Some(get_node_text(&child, source).to_string());
-                }
+        for child in node.child_nodes() {
+            if child.kind() == "type_descriptor" {
+                return Some(get_node_text(&child, source).to_string());
             }
         }
         None

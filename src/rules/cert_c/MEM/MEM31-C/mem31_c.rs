@@ -24,6 +24,7 @@ fn site_of<'s>(node: &Node, source: &'s str) -> Site<'s> {
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::declarator_utils;
+use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -757,13 +758,11 @@ fn push_arm_children<'a>(stack: &mut Vec<Frame<'a>>, arm: &Node<'a>) {
         arm.child_by_field_name("name"),
         arm.child_by_field_name("alternative"),
     ];
-    for i in (0..arm.child_count()).rev() {
-        if let Some(child) = arm.child(i) {
-            if skip.iter().flatten().any(|s| s.id() == child.id()) {
-                continue;
-            }
-            stack.push(Frame::Visit(child));
+    for child in arm.child_nodes().collect::<Vec<_>>().into_iter().rev() {
+        if skip.iter().flatten().any(|s| s.id() == child.id()) {
+            continue;
         }
+        stack.push(Frame::Visit(child));
     }
 }
 
@@ -811,8 +810,7 @@ fn next_statement_sibling<'n>(node: &Node<'n>) -> Option<Node<'n>> {
 
 /// The label a `goto_statement` jumps to.
 fn goto_target(goto: &Node, source: &str) -> Option<String> {
-    (0..goto.child_count())
-        .filter_map(|i| goto.child(i))
+    goto.child_nodes()
         .find(|child| child.kind() == "statement_identifier")
         .map(|label| ast_utils::get_node_text_owned(&label, source))
 }
@@ -1138,9 +1136,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 "identifier" => break,
                 "subscript_expression" => n = n.child_by_field_name("argument")?,
                 "field_expression" => {
-                    let through_pointer = (0..n.child_count())
-                        .filter_map(|i| n.child(i))
-                        .any(|c| c.kind() == "->");
+                    let through_pointer = n.child_nodes().any(|c| c.kind() == "->");
                     if through_pointer {
                         return None;
                     }
@@ -1299,63 +1295,61 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// Check for macro calls that might hide early returns (e.g., CHECK_AND_RETURN, ASSERT_RETURN)
     fn check_for_return_macro(&mut self, node: &Node, source: &str) {
         // Find call_expression children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "call_expression" {
-                    if let Some(function) = child.child_by_field_name("function") {
-                        let func_name = ast_utils::get_node_text_owned(&function, source);
-                        let upper_name = func_name.to_uppercase();
+        for child in node.child_nodes() {
+            if child.kind() == "call_expression" {
+                if let Some(function) = child.child_by_field_name("function") {
+                    let func_name = ast_utils::get_node_text_owned(&function, source);
+                    let upper_name = func_name.to_uppercase();
 
-                        // A call that ends the process is not an early
-                        // return out of a function that leaks -- the OS
-                        // reclaims everything still held. Reporting it named
-                        // every live allocation at each `exit()`/`abort()`/
-                        // noreturn-helper call site, which is exactly the
-                        // shape of the ftpd.c `fortunes_file` findings this
-                        // heuristic produced. Checked before the
-                        // name test because the terminating callee usually
-                        // matches it too.
-                        if crate::analyze::noreturn::is_process_terminating_name(
-                            &func_name,
-                            self.noreturn_names,
-                        ) {
-                            continue;
-                        }
+                    // A call that ends the process is not an early
+                    // return out of a function that leaks -- the OS
+                    // reclaims everything still held. Reporting it named
+                    // every live allocation at each `exit()`/`abort()`/
+                    // noreturn-helper call site, which is exactly the
+                    // shape of the ftpd.c `fortunes_file` findings this
+                    // heuristic produced. Checked before the
+                    // name test because the terminating callee usually
+                    // matches it too.
+                    if crate::analyze::noreturn::is_process_terminating_name(
+                        &func_name,
+                        self.noreturn_names,
+                    ) {
+                        continue;
+                    }
 
-                        // Heuristic: macro names containing RETURN, EXIT, or similar might hide early returns
-                        if upper_name.contains("RETURN")
-                            || upper_name.contains("EXIT")
-                            || upper_name.contains("ABORT")
-                        {
-                            // Check if there's allocated memory that would be leaked
-                            let call_pos = child.start_position();
-                            for (var_name, alloc_info) in &self.allocated_memory {
-                                if self.escaped_memory.contains(var_name)
-                                    || self.freed_memory.contains_key(var_name)
-                                    || self.null_variables.contains(var_name)
-                                    || self.static_variables.contains(var_name)
-                                    || var_name.contains('@')
-                                {
-                                    continue;
-                                }
-
-                                self.leak_violations.push(RuleViolation {
-                                    rule_id: "MEM31-C".to_string(),
-                                    severity: Severity::High,
-                                    message: format!(
-                                        "Potential memory leak: '{}' allocated with '{}' may not be freed if {} causes early return",
-                                        var_name, alloc_info.alloc_type, func_name
-                                    ),
-                                    file_path: String::new(),
-                                    line: call_pos.row + 1,
-                                    column: call_pos.column + 1,
-                                    suggestion: Some(format!(
-                                        "Free '{}' before {} or restructure to avoid potential leak",
-                                        var_name, func_name
-                                    )),
-                                    ..Default::default()
-                                });
+                    // Heuristic: macro names containing RETURN, EXIT, or similar might hide early returns
+                    if upper_name.contains("RETURN")
+                        || upper_name.contains("EXIT")
+                        || upper_name.contains("ABORT")
+                    {
+                        // Check if there's allocated memory that would be leaked
+                        let call_pos = child.start_position();
+                        for (var_name, alloc_info) in &self.allocated_memory {
+                            if self.escaped_memory.contains(var_name)
+                                || self.freed_memory.contains_key(var_name)
+                                || self.null_variables.contains(var_name)
+                                || self.static_variables.contains(var_name)
+                                || var_name.contains('@')
+                            {
+                                continue;
                             }
+
+                            self.leak_violations.push(RuleViolation {
+                                rule_id: "MEM31-C".to_string(),
+                                severity: Severity::High,
+                                message: format!(
+                                    "Potential memory leak: '{}' allocated with '{}' may not be freed if {} causes early return",
+                                    var_name, alloc_info.alloc_type, func_name
+                                ),
+                                file_path: String::new(),
+                                line: call_pos.row + 1,
+                                column: call_pos.column + 1,
+                                suggestion: Some(format!(
+                                    "Free '{}' before {} or restructure to avoid potential leak",
+                                    var_name, func_name
+                                )),
+                                ..Default::default()
+                            });
                         }
                     }
                 }
@@ -1779,8 +1773,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 let macro_frees = self.macro_freed_param_indices(&func_name, site);
                 if !macro_frees.is_empty() {
                     if let Some(arguments) = call.child_by_field_name("arguments") {
-                        let args: Vec<Node> = (0..arguments.child_count())
-                            .filter_map(|i| arguments.child(i))
+                        let args: Vec<Node> = arguments
+                            .child_nodes()
                             .filter(|a| !matches!(a.kind(), "," | "(" | ")"))
                             .collect();
                         for idx in macro_frees {
@@ -1823,52 +1817,49 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 if declared.is_some() || self.summary_frees_some_param(&func_name, site) {
                     if let Some(arguments) = call.child_by_field_name("arguments") {
                         let mut param_idx = 0usize;
-                        for i in 0..arguments.child_count() {
-                            if let Some(arg) = arguments.child(i) {
-                                if matches!(arg.kind(), "," | "(" | ")") {
-                                    continue;
-                                }
-                                let this_param_idx = param_idx;
-                                param_idx += 1;
-                                // Casts and parentheses are as transparent
-                                // here as in the walk's `strip_call_argument`:
-                                // hostap's `fail:` hands `pkey` to
-                                // `crypto_ec_key_deinit` as `(struct
-                                // crypto_ec_key *) pkey`.
-                                let arg = peel_casts_and_parens(arg);
-                                let through_address_of = arg.kind() == "pointer_expression";
-                                if declared
-                                    .is_some_and(|k| func_name != "free" && k != this_param_idx)
-                                {
-                                    continue;
-                                }
-                                if declared.is_none()
-                                    && !self.callee_releases_arg(
-                                        &func_name,
-                                        this_param_idx,
-                                        through_address_of,
-                                        site,
-                                    )
-                                {
-                                    continue;
-                                }
-                                // `&var` reaches a deallocator that nulls its
-                                // out-parameter -- same spelling the walk
-                                // accepts.
-                                let inner = if through_address_of {
-                                    arg.child_by_field_name("argument")
-                                        .map(peel_casts_and_parens)
-                                } else {
-                                    Some(arg)
-                                };
-                                let Some(inner) = inner else { continue };
-                                if matches!(
-                                    inner.kind(),
-                                    "identifier" | "field_expression" | "subscript_expression"
-                                ) {
-                                    let var_name = ast_utils::get_node_text_owned(&inner, source);
-                                    freed_vars.insert(var_name);
-                                }
+                        for arg in arguments.child_nodes() {
+                            if matches!(arg.kind(), "," | "(" | ")") {
+                                continue;
+                            }
+                            let this_param_idx = param_idx;
+                            param_idx += 1;
+                            // Casts and parentheses are as transparent
+                            // here as in the walk's `strip_call_argument`:
+                            // hostap's `fail:` hands `pkey` to
+                            // `crypto_ec_key_deinit` as `(struct
+                            // crypto_ec_key *) pkey`.
+                            let arg = peel_casts_and_parens(arg);
+                            let through_address_of = arg.kind() == "pointer_expression";
+                            if declared.is_some_and(|k| func_name != "free" && k != this_param_idx)
+                            {
+                                continue;
+                            }
+                            if declared.is_none()
+                                && !self.callee_releases_arg(
+                                    &func_name,
+                                    this_param_idx,
+                                    through_address_of,
+                                    site,
+                                )
+                            {
+                                continue;
+                            }
+                            // `&var` reaches a deallocator that nulls its
+                            // out-parameter -- same spelling the walk
+                            // accepts.
+                            let inner = if through_address_of {
+                                arg.child_by_field_name("argument")
+                                    .map(peel_casts_and_parens)
+                            } else {
+                                Some(arg)
+                            };
+                            let Some(inner) = inner else { continue };
+                            if matches!(
+                                inner.kind(),
+                                "identifier" | "field_expression" | "subscript_expression"
+                            ) {
+                                let var_name = ast_utils::get_node_text_owned(&inner, source);
+                                freed_vars.insert(var_name);
                             }
                         }
                     }
@@ -2077,17 +2068,15 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         // Check for macro calls that might hide early returns
         self.check_for_return_macro(&n, source);
         let mut pending: Vec<Node> = Vec::new();
-        for i in 0..n.child_count() {
-            if let Some(child) = n.child(i) {
-                if child.kind() == "init_declarator" {
-                    // Same evaluation order as the assignment arm above.
-                    if let Some(value) = child.child_by_field_name("value") {
-                        self.process_nested_calls(&value, source);
-                    }
-                    self.process_init_declarator_child(&child, source);
-                } else {
-                    pending.push(child);
+        for child in n.child_nodes() {
+            if child.kind() == "init_declarator" {
+                // Same evaluation order as the assignment arm above.
+                if let Some(value) = child.child_by_field_name("value") {
+                    self.process_nested_calls(&value, source);
                 }
+                self.process_init_declarator_child(&child, source);
+            } else {
+                pending.push(child);
             }
         }
         for child in pending.into_iter().rev() {
@@ -2340,9 +2329,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         // idiom -- neither counted as a free for the leak sweep nor as one for
         // double-free detection, while `if (p) { free(p); }` did both.
         let true_branch: Option<Node> = n.child_by_field_name("consequence");
-        let else_clause: Option<Node> = (0..n.child_count())
-            .filter_map(|i| n.child(i))
-            .find(|child| child.kind() == "else_clause");
+        let else_clause: Option<Node> = n.child_nodes().find(|child| child.kind() == "else_clause");
 
         let true_leaves = true_branch
             .as_ref()
@@ -2468,11 +2455,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
         let mut cases: Vec<Node> = Vec::new();
         if let Some(body) = n.child_by_field_name("body") {
-            for i in 0..body.child_count() {
-                if let Some(child) = body.child(i) {
-                    if child.kind() == "case_statement" {
-                        cases.push(child);
-                    }
+            for child in body.child_nodes() {
+                if child.kind() == "case_statement" {
+                    cases.push(child);
                 }
             }
         }
@@ -3117,18 +3102,16 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         if let Some(call) = actual_call {
             if call.kind() == "call_expression" {
                 if let Some(arguments) = call.child_by_field_name("arguments") {
-                    for i in 0..arguments.child_count() {
-                        if let Some(arg) = arguments.child(i) {
-                            if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
-                                // First argument to realloc is the old pointer
-                                if arg.kind() == "identifier" {
-                                    let old_ptr = ast_utils::get_node_text_owned(&arg, source);
-                                    // Track: result_var was assigned from realloc(old_ptr)
-                                    self.realloc_relations
-                                        .insert(result_var.to_string(), old_ptr);
-                                }
-                                break; // Only process first argument
+                    for arg in arguments.child_nodes() {
+                        if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
+                            // First argument to realloc is the old pointer
+                            if arg.kind() == "identifier" {
+                                let old_ptr = ast_utils::get_node_text_owned(&arg, source);
+                                // Track: result_var was assigned from realloc(old_ptr)
+                                self.realloc_relations
+                                    .insert(result_var.to_string(), old_ptr);
                             }
+                            break; // Only process first argument
                         }
                     }
                 }
@@ -3626,10 +3609,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         let summary = self.summary_at(func_name, site_of(node, source));
 
         let mut param_idx = 0usize;
-        for i in 0..arguments.child_count() {
-            let Some(arg) = arguments.child(i) else {
-                continue;
-            };
+        for arg in arguments.child_nodes() {
             if matches!(arg.kind(), "," | "(" | ")") {
                 continue;
             }
@@ -3740,10 +3720,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
         let mut escaped = Vec::new();
         let mut param_idx = 0usize;
-        for i in 0..arguments.child_count() {
-            let Some(arg) = arguments.child(i) else {
-                continue;
-            };
+        for arg in arguments.child_nodes() {
             if matches!(arg.kind(), "," | "(" | ")") {
                 continue;
             }
@@ -3827,8 +3804,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         let Some(arguments) = node.child_by_field_name("arguments") else {
             return true;
         };
-        let args: Vec<Node> = (0..arguments.child_count())
-            .filter_map(|i| arguments.child(i))
+        let args: Vec<Node> = arguments
+            .child_nodes()
             .filter(|a| !matches!(a.kind(), "," | "(" | ")"))
             .collect();
         let free_pos = node.start_position();
@@ -3928,10 +3905,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         };
 
         let mut param_idx = 0usize;
-        for i in 0..arguments.child_count() {
-            let Some(arg) = arguments.child(i) else {
-                continue;
-            };
+        for arg in arguments.child_nodes() {
             if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
                 continue;
             }
@@ -4167,14 +4141,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         let mut first_arg = String::new();
         let free_pos = node.start_position();
 
-        for i in 0..arguments.child_count() {
-            if let Some(arg) = arguments.child(i) {
-                if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
-                    if arg_count == 0 && arg.kind() == "identifier" {
-                        first_arg = ast_utils::get_node_text_owned(&arg, source);
-                    }
-                    arg_count += 1;
+        for arg in arguments.child_nodes() {
+            if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
+                if arg_count == 0 && arg.kind() == "identifier" {
+                    first_arg = ast_utils::get_node_text_owned(&arg, source);
                 }
+                arg_count += 1;
             }
         }
 
@@ -4219,75 +4191,73 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         };
 
         let mut param_idx = 0usize;
-        for i in 0..arguments.child_count() {
-            if let Some(arg) = arguments.child(i) {
-                if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
-                    continue;
-                }
-                if let Some((var_name, through_address_of)) = released_argument_name(arg, source) {
-                    let frees = if through_address_of {
-                        summary.frees_param_pointees.contains(&param_idx)
-                    } else {
-                        frees_here.contains(&param_idx)
-                    };
-                    let frees_in_some = if through_address_of {
-                        some.frees_param_pointees.contains(&param_idx)
-                    } else {
-                        some.frees_params.contains(&param_idx)
-                    };
-                    if !frees && frees_in_some && self.allocated_memory.contains_key(&var_name) {
-                        let free_pos = node.start_position();
-                        let pos = (free_pos.row + 1, free_pos.column + 1);
-                        self.released_by_some_definition
-                            .insert(var_name.clone(), pos);
-                        self.maybe_freed.insert(var_name.clone(), pos);
-                        // Realloc-shaped in those builds: the caller's
-                        // `if (!result)` branch still holds the old block.
-                        if some.returns_allocation && !through_address_of {
-                            if let Some(result) = Self::assigned_result_var(node, source) {
-                                self.realloc_relations
-                                    .insert(result.clone(), var_name.clone());
-                                self.realloc_in_some_builds.insert(result);
-                            }
-                        }
-                    }
-                    if frees && self.allocated_memory.contains_key(&var_name) {
-                        let free_pos = node.start_position();
-                        self.mark_freed_with_aliases(
-                            &var_name,
-                            (free_pos.row + 1, free_pos.column + 1),
-                        );
-                        // `frees_params` is a MAY fact: sqlite's
-                        // `sqlite3_result_error(ctx, zMsg, -1)` releases
-                        // `zMsg` only when handed SQLITE_DYNAMIC, so the
-                        // caller's own `sqlite3_free(zMsg)` that follows is
-                        // no double free. Only an unconditional release may
-                        // back that accusation.
-                        let must_free = if through_address_of {
-                            summary
-                                .unconditional_frees_param_pointees
-                                .contains(&param_idx)
-                        } else {
-                            summary.unconditional_frees_params.contains(&param_idx)
-                        };
-                        if !must_free {
-                            self.unaccusable_frees.insert(var_name.clone());
-                        }
-                        // A callee that frees a pointer argument AND hands
-                        // back a fresh block is realloc-shaped, and it can
-                        // only have taken the old block if it succeeded.
-                        // Recording the pair lets the caller's `if (!result)`
-                        // branch undo the mark.
-                        if summary.returns_allocation && !through_address_of {
-                            if let Some(result) = Self::assigned_result_var(node, source) {
-                                self.realloc_in_some_builds.remove(&result);
-                                self.realloc_relations.insert(result, var_name.clone());
-                            }
-                        }
-                    }
-                }
-                param_idx += 1;
+        for arg in arguments.child_nodes() {
+            if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
+                continue;
             }
+            if let Some((var_name, through_address_of)) = released_argument_name(arg, source) {
+                let frees = if through_address_of {
+                    summary.frees_param_pointees.contains(&param_idx)
+                } else {
+                    frees_here.contains(&param_idx)
+                };
+                let frees_in_some = if through_address_of {
+                    some.frees_param_pointees.contains(&param_idx)
+                } else {
+                    some.frees_params.contains(&param_idx)
+                };
+                if !frees && frees_in_some && self.allocated_memory.contains_key(&var_name) {
+                    let free_pos = node.start_position();
+                    let pos = (free_pos.row + 1, free_pos.column + 1);
+                    self.released_by_some_definition
+                        .insert(var_name.clone(), pos);
+                    self.maybe_freed.insert(var_name.clone(), pos);
+                    // Realloc-shaped in those builds: the caller's
+                    // `if (!result)` branch still holds the old block.
+                    if some.returns_allocation && !through_address_of {
+                        if let Some(result) = Self::assigned_result_var(node, source) {
+                            self.realloc_relations
+                                .insert(result.clone(), var_name.clone());
+                            self.realloc_in_some_builds.insert(result);
+                        }
+                    }
+                }
+                if frees && self.allocated_memory.contains_key(&var_name) {
+                    let free_pos = node.start_position();
+                    self.mark_freed_with_aliases(
+                        &var_name,
+                        (free_pos.row + 1, free_pos.column + 1),
+                    );
+                    // `frees_params` is a MAY fact: sqlite's
+                    // `sqlite3_result_error(ctx, zMsg, -1)` releases
+                    // `zMsg` only when handed SQLITE_DYNAMIC, so the
+                    // caller's own `sqlite3_free(zMsg)` that follows is
+                    // no double free. Only an unconditional release may
+                    // back that accusation.
+                    let must_free = if through_address_of {
+                        summary
+                            .unconditional_frees_param_pointees
+                            .contains(&param_idx)
+                    } else {
+                        summary.unconditional_frees_params.contains(&param_idx)
+                    };
+                    if !must_free {
+                        self.unaccusable_frees.insert(var_name.clone());
+                    }
+                    // A callee that frees a pointer argument AND hands
+                    // back a fresh block is realloc-shaped, and it can
+                    // only have taken the old block if it succeeded.
+                    // Recording the pair lets the caller's `if (!result)`
+                    // branch undo the mark.
+                    if summary.returns_allocation && !through_address_of {
+                        if let Some(result) = Self::assigned_result_var(node, source) {
+                            self.realloc_in_some_builds.remove(&result);
+                            self.realloc_relations.insert(result, var_name.clone());
+                        }
+                    }
+                }
+            }
+            param_idx += 1;
         }
     }
 
@@ -4327,10 +4297,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         };
         let summary = self.summary_at(&func_name, site_of(&call, source));
         let mut param_idx = 0usize;
-        for i in 0..arguments.child_count() {
-            let Some(arg) = arguments.child(i) else {
-                continue;
-            };
+        for arg in arguments.child_nodes() {
             if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
                 continue;
             }
@@ -4357,10 +4324,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         let return_pos = node.start_position();
 
         // If returning allocated memory, it escapes and shouldn't be considered a leak
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.escape_returned_block(&child, source);
-            }
+        for child in node.child_nodes() {
+            self.escape_returned_block(&child, source);
         }
 
         self.process_nested_calls(node, source);
@@ -4893,8 +4858,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
             "compound_statement" | "else_clause" => self.branch_cannot_fall_through(stmt, source),
             "if_statement" => {
-                let else_clause = (0..stmt.child_count())
-                    .filter_map(|i| stmt.child(i))
+                let else_clause = stmt
+                    .child_nodes()
                     .find(|child| child.kind() == "else_clause");
                 match (stmt.child_by_field_name("consequence"), else_clause) {
                     (Some(consequence), Some(else_clause)) => {
@@ -5048,8 +5013,8 @@ fn macro_cast_pointer_type(
     }
     let name = ast_utils::get_node_text_owned(&function, source);
     let arguments = base.child_by_field_name("arguments")?;
-    let args: Vec<String> = (0..arguments.named_child_count())
-        .filter_map(|i| arguments.named_child(i))
+    let args: Vec<String> = arguments
+        .named_child_nodes()
         .map(|a| ast_utils::get_node_text_owned(&a, source))
         .collect();
     let expanded = macro_expand::expand_invocation(function_macros, &name, &args)?;
