@@ -4500,6 +4500,7 @@ fn collect_callsite_args_with_param_states(
                             &body,
                             source,
                             &local_states,
+                            &guard_dominance::WriteIndex::new(&body, source),
                             callsite_args,
                             callsite_field_args,
                             callsite_pointee_args,
@@ -4613,6 +4614,7 @@ fn collect_callsite_args_from_tree(
                             &body,
                             source,
                             &local_states,
+                            &guard_dominance::WriteIndex::new(&body, source),
                             callsite_args,
                             callsite_field_args,
                             callsite_pointee_args,
@@ -5197,6 +5199,7 @@ fn collect_calls_with_locals(
     node: &Node,
     source: &str,
     local_states: &HashMap<String, NullState>,
+    writes: &guard_dominance::WriteIndex,
     callsite_args: &mut HashMap<String, Vec<Vec<NullState>>>,
     callsite_field_args: &mut HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
     callsite_pointee_args: &mut HashMap<String, Vec<Vec<NullState>>>,
@@ -5206,6 +5209,7 @@ fn collect_calls_with_locals(
             node,
             source,
             local_states,
+            writes,
             callsite_args,
             callsite_field_args,
             callsite_pointee_args,
@@ -5218,6 +5222,7 @@ fn collect_calls_with_locals(
                 &child,
                 source,
                 local_states,
+                writes,
                 callsite_args,
                 callsite_field_args,
                 callsite_pointee_args,
@@ -5232,6 +5237,7 @@ fn collect_call_expression_locals(
     call: &Node,
     source: &str,
     local_states: &HashMap<String, NullState>,
+    writes: &guard_dominance::WriteIndex,
     callsite_args: &mut HashMap<String, Vec<Vec<NullState>>>,
     callsite_field_args: &mut HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
     callsite_pointee_args: &mut HashMap<String, Vec<Vec<NullState>>>,
@@ -5272,6 +5278,7 @@ fn collect_call_expression_locals(
             source,
             local_states,
             &mut dominators,
+            writes,
         ));
 
         // Collect struct field null states for this argument
@@ -5312,6 +5319,7 @@ fn infer_call_arg_state<'a>(
     source: &str,
     local_states: &HashMap<String, NullState>,
     dominators: &mut Option<Vec<(Node<'a>, Option<bool>)>>,
+    writes: &guard_dominance::WriteIndex,
 ) -> NullState {
     let state = function_summary::infer_arg_null_state(arg, source);
     if state != NullState::Unknown {
@@ -5324,7 +5332,7 @@ fn infer_call_arg_state<'a>(
         // `it = NULL; ... it = iter_init(); release(it);` reads NULL there.
         // The assignment dominating this argument, when there is one, is the
         // value actually passed -- Unknown included.
-        let reaching = guard_dominance::dominating_assignment(name, arg, source);
+        let reaching = guard_dominance::dominating_assignment(name, arg, source, writes);
         let tabled = match reaching {
             Some(write) => dominating_assignment_state(&write, name, source),
             None => local_states

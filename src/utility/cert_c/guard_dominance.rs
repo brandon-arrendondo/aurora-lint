@@ -609,6 +609,7 @@ pub fn dominating_assignment<'a>(
     var: &str,
     site: &Node<'a>,
     source: &str,
+    index: &WriteIndex,
 ) -> Option<DominatingAssignment<'a>> {
     let mut loops: Vec<Node<'a>> = Vec::new();
     let mut current = *site;
@@ -634,9 +635,7 @@ pub fn dominating_assignment<'a>(
             preceding.push(child);
         }
         for stmt in preceding.into_iter().rev() {
-            if !query::find_descendants_of_kind(stmt, "labeled_statement").is_empty()
-                || stmt.kind() == "labeled_statement"
-            {
+            if index.label_within(&stmt) {
                 return None;
             }
             if straight_line {
@@ -644,20 +643,101 @@ pub fn dominating_assignment<'a>(
                     Some(Some(found)) => {
                         return loops
                             .iter()
-                            .all(|l| !var_written_within(l, var, source))
+                            .all(|l| !index.written_within(l, var))
                             .then_some(found);
                     }
                     Some(None) => return None,
                     None => {}
                 }
             }
-            if var_written_within(&stmt, var, source) {
+            if index.written_within(&stmt, var) {
                 return None;
             }
         }
         current = parent;
     }
     None
+}
+
+/// Every label and every write to a variable in one function, found in a
+/// single walk so `dominating_assignment` can ask "does this statement write
+/// `var`" or "does it hold a label" of each preceding statement without
+/// re-walking its subtree. Without it the cost per query grows with the code
+/// before the site, which made a function's total quadratic in its size.
+///
+/// A write is what `var_written_within` counts: an assignment to the bare
+/// identifier, `++`/`--` on it, or `&var`.
+#[derive(Debug, Default)]
+pub struct WriteIndex {
+    /// Start byte of each `labeled_statement`, ascending.
+    labels: Vec<usize>,
+    /// Per variable, the byte range of each write, ascending by start.
+    writes: std::collections::HashMap<String, Vec<(usize, usize)>>,
+}
+
+impl WriteIndex {
+    /// Index `root` (a function body) and everything under it.
+    pub fn new(root: &Node, source: &str) -> Self {
+        let mut index = Self::default();
+        let mut cursor = root.walk();
+        'walk: loop {
+            let node = cursor.node();
+            index.record(&node, source);
+            if cursor.goto_first_child() {
+                continue;
+            }
+            while !cursor.goto_next_sibling() {
+                if !cursor.goto_parent() || cursor.node().id() == root.id() {
+                    break 'walk;
+                }
+            }
+        }
+        index
+    }
+
+    fn record(&mut self, node: &Node, source: &str) {
+        let bare = |n: Option<Node>| {
+            n.filter(|n| n.kind() == "identifier")
+                .map(|n| get_node_text(&n, source).to_string())
+        };
+        let var = match node.kind() {
+            "labeled_statement" => {
+                self.labels.push(node.start_byte());
+                return;
+            }
+            "assignment_expression" => bare(node.child_by_field_name("left")),
+            "update_expression" => bare(node.child_by_field_name("argument")),
+            "pointer_expression"
+                if node.child(0).map(|c| get_node_text(&c, source)) == Some("&") =>
+            {
+                bare(node.child_by_field_name("argument"))
+            }
+            _ => None,
+        };
+        if let Some(var) = var {
+            self.writes
+                .entry(var)
+                .or_default()
+                .push((node.start_byte(), node.end_byte()));
+        }
+    }
+
+    /// Whether `node` is, or contains, a labeled statement.
+    fn label_within(&self, node: &Node) -> bool {
+        let first = self.labels.partition_point(|&l| l < node.start_byte());
+        self.labels.get(first).is_some_and(|&l| l < node.end_byte())
+    }
+
+    /// `var_written_within`, answered from the index.
+    fn written_within(&self, node: &Node, var: &str) -> bool {
+        let Some(writes) = self.writes.get(var) else {
+            return false;
+        };
+        let first = writes.partition_point(|&(start, _)| start < node.start_byte());
+        writes
+            .get(first)
+            .is_some_and(|&(start, end)| start < node.end_byte() && end <= node.end_byte())
+    }
 }
 
 /// How one block-level statement bears on `var`: `Some(Some(_))` when it is a
