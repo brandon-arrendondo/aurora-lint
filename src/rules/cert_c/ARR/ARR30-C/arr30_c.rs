@@ -312,7 +312,7 @@ impl CertRule for Arr30C {
             // was, until now, checked against the placeholder size and
             // flagged regardless of how the real (structurally correlated)
             // count was proven safe elsewhere -- 0% TP across 4 real-world
-            // oracles (data/precision_audit/DELTA_ARR30_TASK537.md).
+            // oracles (measured in a delta-adjudication of ARR30-C).
             let variable_sized_flexible_members = self.find_variable_sized_flexible_members(
                 source,
                 &flexible_array_structs,

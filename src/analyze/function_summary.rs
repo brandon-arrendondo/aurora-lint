@@ -2785,8 +2785,8 @@ fn has_genuine_arrow_read(body_text: &str, param_name: &str) -> bool {
 /// cast dereferenced in place; before it was narrowed to that, the bare
 /// substring `*)param` covered the aliased reads by accident (and nothing
 /// covered the writes), and narrowing it silently dropped every such callee
-/// out of `dereferences_params` (task 1502: MEM01-C's double free and
-/// EXP33-C's uninitialised read through a `_64` sink both went dark).
+/// out of `dereferences_params` (MEM01-C's double free and EXP33-C's
+/// uninitialised read through a `_64` sink both went dark).
 ///
 /// A plain `T *p = param;` alias is deliberately not collected: it was never
 /// credited, and widening to it is a separate measurement.

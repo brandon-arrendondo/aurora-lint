@@ -615,7 +615,7 @@ picohttpparser), `test/`, `client/`, `apps/`, `plugins/` (example plugins),
 `common/`/`libcommon/` (small shared helpers, pulled in only as cross-file
 context).
 
-Widened per the benchmarking_db 737 audit: `make install` also installs the
+Widened after a later scope audit: `make install` also installs the
 public API headers under `include/`, and both `lib/` and `src/` `#include`
 them, so they belong in scope too. `config.h` (generated build config,
 `#include`d throughout) is in scope for the same reason. The C++ wrapper

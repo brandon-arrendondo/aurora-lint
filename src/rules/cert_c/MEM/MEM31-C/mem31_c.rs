@@ -277,7 +277,7 @@ impl CertRule for Mem31C {
         // Without filtering, find_descendants_of_kind returns the real
         // enclosing function AND every one of these nested pseudo-functions,
         // and each is analyzed as its own independent top-level unit --
-        // producing the exact-duplicate MEM31-C findings task 1394 named
+        // producing exact-duplicate MEM31-C findings
         // (lua 35 rows -> 25 unique; hostap 1245 -> 1234). Keeping only
         // outermost function_definitions (no function_definition ancestor)
         // is a no-op on every normal file and fixes this at the source
