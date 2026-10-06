@@ -165,9 +165,10 @@ registration in <code class="docutils literal notranslate"><span class="pre">src
 <li><p>Add a <code class="docutils literal notranslate"><span class="pre">[[removed]]</span></code> entry to <code class="docutils literal notranslate"><span class="pre">rules_templates/removed-rules.toml</span></code>, in
 id order (the loader refuses an unsorted table, so parallel removals don’t
 all conflict at the end of the file). <code class="docutils literal notranslate"><span class="pre">removed_in</span></code> is the release the
-removal ships in, set up front; <code class="docutils literal notranslate"><span class="pre">disposition</span></code> and <code class="docutils literal notranslate"><span class="pre">covered_by</span></code> must
-agree with the rule’s disposition row, and every <code class="docutils literal notranslate"><span class="pre">covered_by</span></code> rule must
-still ship (a test checks it against the registry).</p></li>
+removal ships in, set up front; <code class="docutils literal notranslate"><span class="pre">disposition</span></code>, <code class="docutils literal notranslate"><span class="pre">covered_by</span></code> and (for
+a check moved to the CWE ruleset) <code class="docutils literal notranslate"><span class="pre">moved_to</span></code> must agree with the rule’s
+disposition row, and every <code class="docutils literal notranslate"><span class="pre">covered_by</span></code> rule must still ship (a test
+checks it against the registry).</p></li>
 <li><p>Regenerate what is derived from the rule set:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">python3</span> <span class="n">scripts</span><span class="o">/</span><span class="n">generate_rule_cwe_map</span><span class="o">.</span><span class="n">py</span>   <span class="c1"># data/rule_cwe_map.json</span>
 <span class="n">python3</span> <span class="n">scripts</span><span class="o">/</span><span class="n">render_removed_rules</span><span class="o">.</span><span class="n">py</span>    <span class="c1"># README.md and docs/configuration.rst</span>
@@ -182,8 +183,8 @@ stale (README.md and docs/ claim the shipped and enabled totals).</p>
 <code class="docutils literal notranslate"><span class="pre">docs/design/rule-disposition.md</span></code>: note it, with the release, in the
 <em>Reason / notes</em> column. Leave the <em>Disposition</em> column as the
 not-shipped disposition the removal rests on; the <code class="docutils literal notranslate"><span class="pre">check-removed-rules</span></code>
-hook requires it to start with that label (and, for a covered rule, to
-name every <code class="docutils literal notranslate"><span class="pre">covered_by</span></code> rule). Also update any design doc or ADR that
+hook requires it to start with that label (and to name every
+<code class="docutils literal notranslate"><span class="pre">covered_by</span></code> rule, and the <code class="docutils literal notranslate"><span class="pre">moved_to</span></code> CWE). Also update any design doc or ADR that
 cites the rule as live (for example <code class="docutils literal notranslate"><span class="pre">docs/design/cross-rule-overlap.md</span></code>).</p></li>
 <li><p>Say in the change’s description what users lose and which rules report
 the construct instead. The maintainer records it as the release note,
