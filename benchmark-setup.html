@@ -367,11 +367,18 @@ catch this either: it checks corpus pin drift and untracked/gitignored
 <p>Install the full one-liner below rather than reasoning about which
 per-project subset your codebase needs:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>libssl-dev<span class="w"> </span>libcjson-dev<span class="w"> </span>zlib1g-dev<span class="w"> </span>libcunit1-dev<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>libsqlite3-dev<span class="w"> </span>libmbedtls-dev<span class="w"> </span>libgnutls28-dev<span class="w"> </span>libgsasl-dev<span class="w"> </span>tcl-dev<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>libsqlite3-dev<span class="w"> </span>libmbedtls-dev<span class="w"> </span>libgnutls28-dev<span class="w"> </span>libc-ares-dev<span class="w"> </span>tcl-dev<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>libnl-3-dev<span class="w"> </span>libnl-genl-3-dev<span class="w"> </span>libdbus-1-dev<span class="w"> </span>libgcrypt20-dev<span class="w"> </span>libpcap-dev<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>libwolfssl-dev
+<span class="w">  </span>libwolfssl-dev<span class="w"> </span>libtomcrypt-dev
+<span class="c1"># x86_64 hosts only: the package exists only on amd64</span>
+sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>libc6-dev-i386
 </pre></div>
 </div>
+<p>The benchmark node carries every one of these except <code class="docutils literal notranslate"><span class="pre">libnl-genl-3-dev</span></code>;
+scanning against the node’s headers plus that package reproduced its hostap
+findings key for key, so the extra package moves nothing. Which of the
+others are present, not only their versions, changes findings: see <em>What
+another machine reproduces</em> in <a class="reference internal" href="reproducing-published-numbers.html"><span class="doc">Reproducing the Published Numbers</span></a>.</p>
 <p>Per-project breakdown, for reference (installing the one-liner above already
 covers all of these):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Core dependencies (covers most projects)</span>
@@ -381,9 +388,10 @@ sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w
 <span class="c1"># mosquitto</span>
 sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>libcunit1-dev<span class="w"> </span>libsqlite3-dev
 
-<span class="c1"># curl TLS and SASL backends (without libgsasl-dev, lib/vauth/gsasl.c</span>
-<span class="c1"># reports every gsasl_* call as DCL31-C &quot;called without prior declaration&quot;)</span>
-sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>libmbedtls-dev<span class="w"> </span>libgnutls28-dev<span class="w"> </span>libgsasl-dev
+<span class="c1"># curl TLS backends and the c-ares resolver (curl&#39;s DCL31-C results also</span>
+<span class="c1"># depend on whether /usr/include/sys exists; see</span>
+<span class="c1"># reproducing-published-numbers)</span>
+sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>libmbedtls-dev<span class="w"> </span>libgnutls28-dev<span class="w"> </span>libc-ares-dev
 
 <span class="c1"># sqlite test infrastructure</span>
 sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>tcl-dev
@@ -391,7 +399,12 @@ sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w
 <span class="c1"># hostap</span>
 sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>libnl-3-dev<span class="w"> </span>libnl-genl-3-dev<span class="w"> </span>libdbus-1-dev<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>libgcrypt20-dev<span class="w"> </span>libpcap-dev<span class="w"> </span>libwolfssl-dev
+<span class="w">  </span>libgcrypt20-dev<span class="w"> </span>libpcap-dev<span class="w"> </span>libwolfssl-dev<span class="w"> </span>libtomcrypt-dev
+
+<span class="c1"># the benchmark node&#39;s multilib layout: puts sys/, bits/ and asm/ directly</span>
+<span class="c1"># under /usr/include, which -I /usr/include then reaches (curl, hostap,</span>
+<span class="c1"># mosquitto, sqlite, valkey). amd64 only; an arm64 host has no equivalent</span>
+sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>libc6-dev-i386
 </pre></div>
 </div>
 <section id="per-project-include-paths">

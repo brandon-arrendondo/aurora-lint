@@ -322,6 +322,13 @@ across copies of the checkout as well.</p>
 <td><p>per checkout content, on one machine; cross-machine, 16 labeled
 keys of 118,837 differ (see below)</p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">v0.6.0</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">b13bc40c</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">b13bc40c</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.6.0</span></code></p></td>
+<td><p>per checkout content, on one machine; cross-machine, 41 labeled
+keys of 122,452 differ (see below)</p></td>
+</tr>
 </tbody>
 </table>
 </section>
@@ -508,16 +515,32 @@ of some 151,000 in scope, spread over the other seven projects. Of the
 reproducer will not guess:</p>
 <ol class="arabic">
 <li><p><strong>The host’s installed headers</strong>, which the scan reads through
-<code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include</span></code> and the per-project include paths. A missing
-third-party header produces DCL31-C <em>called without prior declaration</em>
-findings (curl’s <code class="docutils literal notranslate"><span class="pre">lib/vauth/gsasl.c</span></code> without <code class="docutils literal notranslate"><span class="pre">libgsasl</span></code>; mosquitto’s
-MySQL example plugin without <code class="docutils literal notranslate"><span class="pre">libmysqlclient</span></code>; curl’s mbedTLS backend
-against an older <code class="docutils literal notranslate"><span class="pre">libmbedtls</span></code>), and a different glibc declares
-<code class="docutils literal notranslate"><span class="pre">gettimeofday</span></code>, <code class="docutils literal notranslate"><span class="pre">waitpid</span></code>, <code class="docutils literal notranslate"><span class="pre">asprintf</span></code> and <code class="docutils literal notranslate"><span class="pre">fileno</span></code> behind
-different feature macros, which moved 52 valkey DCL31-C keys in
-opposite directions. A different glibc, OpenSSL or <code class="docutils literal notranslate"><span class="pre">sqlite3.h</span></code> also
-moves a handful of cross-file EXP34-C / EXP36-C / API00-C / DCL15-C
-decisions that depend on how a system typedef or prototype resolved.</p></li>
+<code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include</span></code> and the per-project include paths. Which <code class="docutils literal notranslate"><span class="pre">-dev</span></code>
+packages are installed matters, not only their versions, and the
+effects are not always local to the library a header belongs to. When
+the prescan meets an <code class="docutils literal notranslate"><span class="pre">#include</span> <span class="pre">&quot;dir/file.h&quot;</span></code> it cannot resolve but
+<code class="docutils literal notranslate"><span class="pre">dir</span></code> exists, DCL31-C takes the file to be generated at build time and
+stops reporting undeclared calls for the whole project. Up to and
+including <code class="docutils literal notranslate"><span class="pre">v0.6.0</span></code>, a system header can trip that switch (from
+<code class="docutils literal notranslate"><span class="pre">39f11c47</span></code> on, an include written in a system header or in a dead
+<code class="docutils literal notranslate"><span class="pre">#if</span></code> branch no longer does): c-ares’s <code class="docutils literal notranslate"><span class="pre">ares.h</span></code> includes <code class="docutils literal notranslate"><span class="pre">sys/bsdskt.h</span></code> in a
+NetWare-only branch, and on a host whose <code class="docutils literal notranslate"><span class="pre">/usr/include/sys</span></code> exists
+(the <code class="docutils literal notranslate"><span class="pre">libc6-dev-i386</span></code> / <code class="docutils literal notranslate"><span class="pre">gcc-multilib</span></code> packages create it), curl and
+mosquitto report no DCL31-C at all; on a host with neither, they report
+every undeclared call (curl’s <code class="docutils literal notranslate"><span class="pre">lib/vauth/gsasl.c</span></code>, mosquitto’s MySQL
+example plugin). The multilib packages also put
+<code class="docutils literal notranslate"><span class="pre">sys/</span></code>, <code class="docutils literal notranslate"><span class="pre">bits/</span></code> and <code class="docutils literal notranslate"><span class="pre">asm/</span></code> directly under <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code>, so
+<code class="docutils literal notranslate"><span class="pre">&lt;sys/wait.h&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;sys/time.h&gt;</span></code> and their neighbours resolve through
+<code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include</span></code> on such a host and do not on one without them; that
+decides DCL31-C on valkey’s <code class="docutils literal notranslate"><span class="pre">waitpid</span></code> / <code class="docutils literal notranslate"><span class="pre">gettimeofday</span></code> /
+<code class="docutils literal notranslate"><span class="pre">getrlimit</span></code> calls and a few API00-C / PRE31-C / EXP10-C decisions
+that depend on a libc prototype. A different glibc declares <code class="docutils literal notranslate"><span class="pre">fileno</span></code>
+differently, and a different <code class="docutils literal notranslate"><span class="pre">sqlite3.h</span></code> declares a different API
+(DCL15-C). Finally, a macro defined by one library’s header can stand in
+for a same-named macro of another’s: libtomcrypt’s <code class="docutils literal notranslate"><span class="pre">tomcrypt_custom.h</span></code>
+defines <code class="docutils literal notranslate"><span class="pre">XMALLOC</span></code> as <code class="docutils literal notranslate"><span class="pre">malloc</span></code>, and with it installed MEM31-C / MEM30-C
+read hostap’s wolfSSL backend’s <code class="docutils literal notranslate"><span class="pre">XMALLOC</span></code> / <code class="docutils literal notranslate"><span class="pre">XFREE</span></code> as <code class="docutils literal notranslate"><span class="pre">malloc</span></code> /
+<code class="docutils literal notranslate"><span class="pre">free</span></code>.</p></li>
 <li><p><strong>Directory iteration order.</strong> The cross-file prescan walks the tree in
 the order the filesystem returns entries, and when a name is defined in
 more than one file – hostap defines <code class="docutils literal notranslate"><span class="pre">crypto_bignum_deinit</span></code> once per
@@ -553,10 +576,13 @@ reproducing machine, compared over the labeled keys (118,837 on the
 benchmark node, labels at <code class="docutils literal notranslate"><span class="pre">benchmark_adjudication</span></code> <code class="docutils literal notranslate"><span class="pre">e7d70148</span></code>).
 16 keys differ – 11 only on the reproducing machine, 5 only on the
 benchmark node – against 83 labeled keys at <code class="docutils literal notranslate"><span class="pre">e405089a</span></code>, and every
-one of them is cause 1: curl DCL31-C for <code class="docutils literal notranslate"><span class="pre">gsasl_init</span></code> (no
-<code class="docutils literal notranslate"><span class="pre">libgsasl-dev</span></code>), <code class="docutils literal notranslate"><span class="pre">mbedtls_ssl_conf_{min,max}_tls_version</span></code> (an older
-<code class="docutils literal notranslate"><span class="pre">libmbedtls-dev</span></code>), <code class="docutils literal notranslate"><span class="pre">WSAWaitForMultipleEvents</span></code> and a callback under a
-Windows-only branch; sqlite DCL15-C on <code class="docutils literal notranslate"><span class="pre">sqlite3_is_interrupted</span></code> /
+one of them is cause 1: curl DCL31-C for <code class="docutils literal notranslate"><span class="pre">gsasl_init</span></code>,
+<code class="docutils literal notranslate"><span class="pre">mbedtls_ssl_conf_{min,max}_tls_version</span></code>, <code class="docutils literal notranslate"><span class="pre">WSAWaitForMultipleEvents</span></code>
+and a callback under a Windows-only branch (first attributed to a missing
+<code class="docutils literal notranslate"><span class="pre">libgsasl-dev</span></code> and an older <code class="docutils literal notranslate"><span class="pre">libmbedtls-dev</span></code>; the same keys recur at
+<code class="docutils literal notranslate"><span class="pre">v0.6.0</span></code>, where rebuilding the benchmark node’s headers traces them to
+DCL31-C switching itself off on that node – see below – and neither
+machine has <code class="docutils literal notranslate"><span class="pre">libgsasl-dev</span></code> or mbed TLS 3); sqlite DCL15-C on <code class="docutils literal notranslate"><span class="pre">sqlite3_is_interrupted</span></code> /
 <code class="docutils literal notranslate"><span class="pre">get_clientdata</span></code> / <code class="docutils literal notranslate"><span class="pre">set_clientdata</span></code> (the benchmark node’s system
 <code class="docutils literal notranslate"><span class="pre">sqlite3.h</span></code> predates them); one API00-C decision each in hostap and
 sqlite and two EXP34-C in hostap’s nl80211 driver, all hinging on how a
@@ -564,6 +590,81 @@ libc or libnl prototype resolved. Nine of twelve projects are now
 key-identical over the labeled set (libcrc, lua, mbedtls, mosquitto,
 pure-ftpd, raylib, seL4, valkey, Ventoy); not one differing key names a
 multiply-defined function, macro, typedef or struct. Cause 2 is gone.</p>
+<p>Both re-measurements, <code class="docutils literal notranslate"><span class="pre">v0.5.2</span></code> above and <code class="docutils literal notranslate"><span class="pre">v0.6.0</span></code> here, concern
+cause 1: from <code class="docutils literal notranslate"><span class="pre">4ac5710f</span></code> on, cause 2 no longer applies.</p>
+<p><strong>Re-measured at</strong> <code class="docutils literal notranslate"><span class="pre">v0.6.0</span></code> (<code class="docutils literal notranslate"><span class="pre">b13bc40c</span></code>), default profile, no
+Windows headers on either machine: the benchmark node’s run against a
+run of the tagged commit on the reproducing machine (Ubuntu 24.04:
+glibc 2.39, <code class="docutils literal notranslate"><span class="pre">sqlite3.h</span></code> 3.45.1, mbed TLS 2.28.8, wolfSSL 5.6.6; the
+benchmark node is Debian 12: glibc 2.36, <code class="docutils literal notranslate"><span class="pre">sqlite3.h</span></code> 3.40.1, mbed TLS
+2.28.3, wolfSSL 5.5.4, and neither has libgsasl, MySQL or libwebsockets
+headers). Of 150,452 keys on the benchmark node, 150,412 reproduce; 40
+are found only there and 68 only on the reproducing machine. Over the
+labeled set (122,452 keys, labels at <code class="docutils literal notranslate"><span class="pre">benchmark_adjudication</span></code>
+<code class="docutils literal notranslate"><span class="pre">5811c46</span></code>) 41 differ, 30 only on the benchmark node and 11 only on the
+reproducing machine, 38 of them FP and 3 TP. Seven projects are
+key-identical over the whole set, labeled or not (libcrc, lua, mbedtls,
+pure-ftpd, raylib, seL4, Ventoy). Every differing key is in one of the
+five projects the runner scans with <code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include</span></code> (curl, hostap,
+mosquitto, sqlite, valkey), and every one is cause 1. Rebuilding the
+benchmark node’s header packages, at its exact versions, over the
+reproducing machine’s <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> and scanning again with the same
+binary makes all five projects match the benchmark node key for key,
+with no key gained or lost elsewhere. Adding the packages a few at a
+time attributes each key:</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 12.0%" />
+<col style="width: 58.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Benchmark-node package(s)</p></th>
+<th class="head"><p>Keys</p></th>
+<th class="head"><p>What moves</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">libc-ares-dev</span></code> 1.18.1 with <code class="docutils literal notranslate"><span class="pre">libc6-dev-i386</span></code> 2.36</p></td>
+<td><p>68</p></td>
+<td><p>curl DCL31-C ×10 and mosquitto DCL31-C ×14 disappear (the
+project-wide switch above); valkey DCL31-C ×27, API00-C ×6 and
+PRE31-C ×5, hostap API00-C ×2 and EXP10-C ×2, and one API00-C
+each in mosquitto and sqlite also disappear, once <code class="docutils literal notranslate"><span class="pre">sys/*.h</span></code>
+resolves</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">libc6-dev</span></code> 2.36</p></td>
+<td><p>26</p></td>
+<td><p>valkey DCL31-C on 25 <code class="docutils literal notranslate"><span class="pre">fileno</span></code> calls and one PRE31-C decision
+appear</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">libtomcrypt-dev</span></code> 1.18.2</p></td>
+<td><p>11</p></td>
+<td><p>hostap’s wolfSSL crypto backend: MEM31-C ×10 and MEM30-C ×1
+appear (<code class="docutils literal notranslate"><span class="pre">XMALLOC</span></code> read as <code class="docutils literal notranslate"><span class="pre">malloc</span></code>)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">libsqlite3-dev</span></code> 3.40.1</p></td>
+<td><p>3</p></td>
+<td><p>sqlite DCL15-C on <code class="docutils literal notranslate"><span class="pre">sqlite3_is_interrupted</span></code> /
+<code class="docutils literal notranslate"><span class="pre">get_clientdata</span></code> / <code class="docutils literal notranslate"><span class="pre">set_clientdata</span></code> appear</p></td>
+</tr>
+</tbody>
+</table>
+<p>The <code class="docutils literal notranslate"><span class="pre">libc6-dev</span></code> and <code class="docutils literal notranslate"><span class="pre">libsqlite3-dev</span></code> rows were added in one step,
+together with mbed TLS 2.28.3 and wolfSSL 5.5.4, and that step moved
+exactly those 29 keys; they are split by what the keys name (<code class="docutils literal notranslate"><span class="pre">fileno</span></code>
+is declared in <code class="docutils literal notranslate"><span class="pre">&lt;stdio.h&gt;</span></code>, the three functions in <code class="docutils literal notranslate"><span class="pre">sqlite3.h</span></code>). The
+c-ares and multilib packages were added as a second step, and
+libtomcrypt was confirmed both ways: added alone, it supplies all 11
+keys, and the other benchmark-node library headers without it supply
+none. So seven of twelve projects reproduced key for key on both
+machines as they stood, and the other five do once the scan sees the
+same header packages. c-ares, multilib and libtomcrypt, which account for
+105 of the 108 keys, were not then among the packages
+<a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a> installs; that page now installs them. The
+versions still matter – <code class="docutils literal notranslate"><span class="pre">libc6-dev</span></code> and <code class="docutils literal notranslate"><span class="pre">libsqlite3-dev</span></code> above – so
+a host on another release of its distribution reproduces the presence of
+each package, not every key.</p>
 </li>
 </ol>
 <p>The same binary on the same checkout, run twice, gives byte-identical
@@ -576,8 +677,10 @@ roughly a third of runs of one binary on one checkout, even single-file at
 walk-order effect, fixed in the first commit after the <code class="docutils literal notranslate"><span class="pre">v0.5.2</span></code>
 baseline and worth one key. Otherwise the variation is
 between checkouts, not between runs. So the inputs a SHA does not name are
-the header environment – <a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a> lists the packages the
-benchmark node carries – and, before <code class="docutils literal notranslate"><span class="pre">4ac5710f</span></code>, for codebases with
+the header environment – <a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a> lists the header
+packages the benchmark node carries (plus one that moves nothing), but not
+their versions (see the
+<code class="docutils literal notranslate"><span class="pre">v0.6.0</span></code> re-measurement above) – and, before <code class="docutils literal notranslate"><span class="pre">4ac5710f</span></code>, for codebases with
 multiply-defined names, the checkout’s directory order. A published
 figure’s precision and recall do not hinge on either; a claim about an
 exact finding count does, and a key-level diff against a maintainer run at
