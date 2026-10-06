@@ -1362,10 +1362,13 @@ pub(crate) fn compute_vra_if_needed(
             }
         }
         let mut callsite_int_args = std::collections::HashMap::new();
+        // The file's own every-configuration constants, as the prescan
+        // folds them: not the project-wide map, where another file's macro
+        // of the same name could stand in for this file's.
         prescan::collect_callsite_int_args_from_tree(
             root_node,
             source,
-            &macros,
+            &const_eval::cfg_prunable_constants(root_node, source, data_model),
             &mut callsite_int_args,
         );
         prescan::aggregate_callsite_int_args(

@@ -425,10 +425,15 @@ fn process_file(
                 &mut result.callsite_field_args,
                 &mut result.callsite_pointee_args,
             );
+            // Only the constants this file fixes in every configuration fold
+            // into a call-site value: a value is a proof about the parameter,
+            // and a macro defined differently across #if arms, or only as an
+            // #ifndef default a -D overrides, has no one value (ADR-0010,
+            // ADR-0011). Another file's macros never reach this file's calls.
             collect_callsite_int_args_from_tree(
                 &root,
                 &source,
-                &result.macro_constants,
+                &const_eval::cfg_prunable_constants(&root, &source, model),
                 &mut result.callsite_int_args,
             );
             collect_callsite_buf_args_from_tree(
@@ -2954,9 +2959,11 @@ fn invalidate_address_taken_vars(node: &Node, source: &str, vals: &mut HashMap<S
     }
 }
 
-/// An integer constant `node` folds to: a literal, or an expression over the
-/// macro constants in force (a project `#define`, or a limit macro such as
-/// `UINT_MAX` that the declared data model gives a value).
+/// An integer constant `node` folds to: a literal, or an expression over
+/// `macros`, which callers give as the file's own constants that hold in
+/// every configuration (`const_eval::cfg_prunable_constants`): a `#define`
+/// with one value, or a limit macro such as `UINT_MAX` that the declared data
+/// model gives a value.
 fn constant_int(node: &Node, source: &str, macros: &const_eval::MacroConstantMap) -> Option<i64> {
     parse_int_literal(node, source).or_else(|| const_eval::try_evaluate_expr(node, source, macros))
 }
