@@ -2187,6 +2187,61 @@ fn enclosing_function<'a>(node: &Node<'a>) -> Option<Node<'a>> {
     lang_parsing_substrate::query::find_ancestor(*node, |a| a.kind() == "function_definition")
 }
 
+/// What [`always_executes`] asks of the whole function around a site,
+/// computed once per function instead of once per site: asking it per call
+/// rescans the function for jumps each time, so a function's total grows with
+/// calls x size.
+#[derive(Debug, Clone, Copy)]
+pub struct FunctionJumpFacts {
+    has_goto: bool,
+    /// End byte of the earliest `return` in the function.
+    first_return_end: Option<usize>,
+}
+
+impl FunctionJumpFacts {
+    /// The facts of `func`, a `function_definition`.
+    pub fn new(func: &Node) -> Self {
+        let has_goto = lang_parsing_substrate::query::find_first_descendant(*func, |n| {
+            matches!(n.kind(), "goto_statement" | "labeled_statement")
+        })
+        .is_some();
+        let first_return_end =
+            lang_parsing_substrate::query::find_descendants_of_kind(*func, "return_statement")
+                .into_iter()
+                .map(|r| r.end_byte())
+                .min();
+        Self {
+            has_goto,
+            first_return_end,
+        }
+    }
+}
+
+/// [`always_executes`] for a `node` inside `func`, with `facts` =
+/// [`FunctionJumpFacts::new`]`(func)`. The same answer as `always_executes`
+/// when `func` is `node`'s innermost enclosing function; the ancestors come
+/// from one descent of `func` rather than a `parent()` climb per level.
+pub fn always_executes_in(func: &Node, facts: &FunctionJumpFacts, node: &Node) -> bool {
+    if facts.has_goto
+        || facts
+            .first_return_end
+            .is_some_and(|end| end <= node.start_byte())
+    {
+        return false;
+    }
+    let Some(path) = crate::utility::cert_c::ast_utils::ancestors_from_root(func, node) else {
+        return always_executes(node);
+    };
+    // Each node's parent, from `node` out to `func`.
+    let mut parents = std::collections::HashMap::with_capacity(path.len() + 1);
+    let mut child = *node;
+    for ancestor in path.iter().rev().chain(std::iter::once(func)) {
+        parents.insert(child.id(), *ancestor);
+        child = *ancestor;
+    }
+    escapes_no_conditional_part_via(node, |n| parents.get(&n.id()).copied(), |_| false)
+}
+
 fn function_has_goto(node: &Node) -> bool {
     enclosing_function(node).is_some_and(|f| {
         lang_parsing_substrate::query::find_first_descendant(f, |n| {
@@ -2393,8 +2448,17 @@ fn preproc_chain(root: &Node, source: &str) -> PreprocChoice {
 /// Walk from `node` to its function, and whenever it sits in a conditional
 /// part of an ancestor, require `allowed(part)`.
 fn escapes_no_conditional_part(node: &Node, allowed: impl Fn(&Node) -> bool) -> bool {
+    escapes_no_conditional_part_via(node, |n| n.parent(), allowed)
+}
+
+/// [`escapes_no_conditional_part`] with the way to a node's parent supplied.
+fn escapes_no_conditional_part_via<'a>(
+    node: &Node<'a>,
+    parent_of: impl Fn(&Node<'a>) -> Option<Node<'a>>,
+    allowed: impl Fn(&Node) -> bool,
+) -> bool {
     let mut cur = *node;
-    while let Some(parent) = cur.parent() {
+    while let Some(parent) = parent_of(&cur) {
         if parent.kind() == "function_definition" || parent.kind() == "translation_unit" {
             return true;
         }
@@ -3154,5 +3218,82 @@ mod tests {
             choices("void f(void) {\n#ifdef X\n    step();\n    target();\n#endif\n}\n").is_empty()
         );
         assert!(choices("void f(void) { step(); target(); }").is_empty());
+    }
+
+    /// Sources covering every relation the `_in` variants reproduce: `&&` and
+    /// `||` operands, else-if chains, loops, `?:`, `switch`, preprocessor
+    /// arms, `goto`, an early `return`, a `do`-`while`, and a function nested
+    /// in a block.
+    const EQUIVALENCE_SOURCES: &[&str] = &[
+        "int f(int *p, int *q, int n) {\n\
+             int x = 0;\n\
+             if (p && *p > 0 && q) { x = g(p, q); }\n\
+             else if (n > 3 || !q) { x = h(n); }\n\
+             else if (p != 0) { p = q; x = g(p, n ? q : p); }\n\
+             while (n-- > 0 && p) { x += *p; sink(p, x); }\n\
+             for (int i = 0; i < n; i++) { if (i > 2) break; sink(q, i); }\n\
+             do { x--; sink(p, x); } while (x > 0 && q);\n\
+             switch (n) { case 1: sink(p, n); break; default: x = q ? *q : 0; }\n\
+             return x > 0 ? g(p, q) : h(x);\n\
+         }\n",
+        "int f(int *p, int n) {\n\
+             int *q = p;\n\
+             if (!p) goto out;\n\
+             q = p + 1;\n\
+             sink(q, *p);\n\
+         out:\n\
+             sink(p, n);\n\
+             return n;\n\
+         }\n",
+        "void f(char *p, int n) {\n\
+             if (n < 0) return;\n\
+             p[0] = 1;\n\
+         #ifdef X\n\
+             if (p) sink(p, n);\n\
+         #else\n\
+             sink(p, n + 1);\n\
+         #endif\n\
+             if (n > 4 && p[1]) { char *r = p; r = r + n; sink(r, n); }\n\
+         }\n",
+        "void outer(int *p) {\n\
+             int x = 1;\n\
+             if (p) {\n\
+                 void inner(int *q) { if (q && x) sink(q, x); }\n\
+                 inner(p);\n\
+             }\n\
+         }\n",
+    ];
+
+    /// `always_executes_in` answers as `always_executes` for every node whose
+    /// innermost function is the one its facts were taken from -- across a
+    /// `goto`, an early `return` and a `do`-`while`.
+    #[test]
+    fn always_executes_in_answers_as_always_executes() {
+        let mut seen = std::collections::HashSet::new();
+        for src in EQUIVALENCE_SOURCES {
+            let tree = parse_c_code(src);
+            for func in query::find_descendants_of_kind(tree.root_node(), "function_definition") {
+                let facts = FunctionJumpFacts::new(&func);
+                for node in query::find_descendants(func, |_| true) {
+                    if find_containing_function_for_test(&node).map(|f| f.id()) != Some(func.id()) {
+                        continue;
+                    }
+                    let climbed = always_executes(&node);
+                    seen.insert(climbed);
+                    assert_eq!(
+                        climbed,
+                        always_executes_in(&func, &facts, &node),
+                        "{} at {} in {src}",
+                        node.kind(),
+                        node.start_byte()
+                    );
+                }
+            }
+        }
+        assert_eq!(seen.len(), 2, "both answers occur");
+    }
+
+    fn find_containing_function_for_test<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+        query::find_ancestor(*node, |a| a.kind() == "function_definition")
     }
 }

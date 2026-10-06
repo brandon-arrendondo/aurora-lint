@@ -301,6 +301,7 @@ pub fn collect_direct_effects(
     let mut collector = Collector {
         source,
         func: *func,
+        root: crate::utility::cert_c::ast_utils::tree_root(func),
         params: crate::analyze::function_summary::collect_param_names(func, source),
         declared: declared_names(func, source),
         typed: typedef_declarations(func, source),
@@ -450,6 +451,8 @@ enum Bound<'t> {
 struct Collector<'s, 't> {
     source: &'s str,
     func: Node<'t>,
+    /// The root of `func`'s tree, which identifier lookups descend from.
+    root: Node<'t>,
     params: Vec<String>,
     /// Every name the function declares: its parameters and every
     /// declarator in its body.
@@ -851,9 +854,17 @@ impl<'t> Collector<'_, 't> {
     /// file scope read from the index.
     fn bound(&self, ident: &Node<'t>) -> Option<Bound<'t>> {
         let name = get_node_text(ident, self.source);
-        if let Some(decl) =
-            ast_utils::find_enclosing_declaration_for_identifier(ident, name, self.source)
-        {
+        // The scope chain from one descent of the tree, not a `parent()`
+        // climb per scope: a function with a long else-if chain is as deep
+        // as it is long. From the root, not the function, so a function
+        // nested in a block still sees that block's earlier declarations,
+        // as the climb does.
+        if let Some(decl) = ast_utils::find_enclosing_declaration_for_identifier_in(
+            &self.root,
+            ident,
+            name,
+            self.source,
+        ) {
             return Some(Bound::Local(decl));
         }
         // `collect_param_names` leaves a function-pointer parameter

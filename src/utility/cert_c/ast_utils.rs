@@ -221,6 +221,19 @@ pub fn find_enclosing_declaration_for_identifier<'a>(
     find_declaration_in_scope_chain(&scopes, ident_node.start_byte(), name, source)
 }
 
+/// The root of the tree holding `node`, by climbing.
+///
+/// Each step is a `Node::parent` call, which costs O(depth), so climb from a
+/// shallow node -- a `function_definition` -- once, and hand the root to the
+/// `_in` resolvers rather than calling this per identifier.
+pub fn tree_root<'a>(node: &Node<'a>) -> Node<'a> {
+    let mut top = *node;
+    while let Some(p) = top.parent() {
+        top = p;
+    }
+    top
+}
+
 /// The nodes strictly between `root` and `node` on the way down, outermost
 /// first, found by descending from `root` with `child_with_descendant`.
 /// `None` when `node` is not under `root`.
@@ -363,10 +376,11 @@ pub fn find_declaration_in_scope_chain<'a>(
 fn collect_declarations_transparent_to_preproc<'a>(scope: &Node<'a>, out: &mut Vec<Node<'a>>) {
     let condition_id = scope.child_by_field_name("condition").map(|n| n.id());
     let name_id = scope.child_by_field_name("name").map(|n| n.id());
-    for i in 0..scope.child_count() {
-        let Some(child) = scope.child(i) else {
-            continue;
-        };
+    // A cursor, not `scope.child(i)`: tree-sitter finds the i-th child by
+    // walking from the first, so indexing every child of a block with
+    // hundreds of statements is quadratic in its length, once per lookup.
+    let mut cursor = scope.walk();
+    for child in scope.children(&mut cursor) {
         if Some(child.id()) == condition_id || Some(child.id()) == name_id {
             continue;
         }
@@ -2514,6 +2528,51 @@ mod tests {
         parser.set_language(&language).unwrap();
         let tree = parser.parse(code, None).unwrap();
         (tree, code.to_string())
+    }
+
+    /// A function nested in a block (GNU C, or a parse a macro confused)
+    /// sees the block's earlier declarations. The climbing lookup goes past
+    /// the inner function to find them, so a descent must start at the tree's
+    /// root to give the same answer; one rooted at the inner function does
+    /// not.
+    #[test]
+    fn descent_from_the_tree_root_resolves_as_the_climb_through_a_nested_function() {
+        let (tree, source) = parse_c_code(
+            "void outer(void) {\n    int x = 1;\n    void inner(void) { int y = x; use(y); }\n    inner();\n}\n",
+        );
+        let root = tree.root_node();
+        let inner = query::find_descendants_of_kind(root, "function_definition")
+            .into_iter()
+            .find(|f| f.parent().is_some_and(|p| p.kind() == "compound_statement"))
+            .expect("inner is parsed as a nested function_definition");
+        assert_eq!(tree_root(&inner).id(), root.id());
+        let idents = query::find_descendants_of_kind(root, "identifier");
+        for ident in &idents {
+            let name = get_node_text(ident, &source);
+            let ids = |d: Option<Node>| d.map(|d| d.id());
+            assert_eq!(
+                ids(find_enclosing_declaration_for_identifier(
+                    ident, name, &source
+                )),
+                ids(find_enclosing_declaration_for_identifier_in(
+                    &root, ident, name, &source
+                )),
+                "{name} at {}",
+                ident.start_byte()
+            );
+        }
+        let x_in_inner = idents
+            .iter()
+            .find(|i| {
+                get_node_text(i, &source) == "x" && inner.byte_range().contains(&i.start_byte())
+            })
+            .expect("inner reads x");
+        assert!(find_enclosing_declaration_for_identifier(x_in_inner, "x", &source).is_some());
+        assert!(
+            find_enclosing_declaration_for_identifier_in(&inner, x_in_inner, "x", &source)
+                .is_none(),
+            "rooted at the inner function, the outer block is out of reach"
+        );
     }
 
     #[test]

@@ -5461,6 +5461,7 @@ fn credit_credential_facts(
     summary: &mut FunctionSummary,
 ) {
     use crate::utility::cert_c::credential_sinks;
+    use lang_parsing_substrate::query;
 
     let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
     let is_main = extract_function_name(func_node, source).as_deref() == Some("main");
@@ -5476,6 +5477,14 @@ fn credit_credential_facts(
         .iter()
         .map(|id| id.map(|id| object_key(&id, source)))
         .collect();
+    // Jump facts once per function. A function the parser nested inside this
+    // one would make a call's innermost function another node, so that case
+    // keeps the per-call answer.
+    let jumps = if query::find_descendants_of_kind(*body, "function_definition").is_empty() {
+        Some(guard_dominance::FunctionJumpFacts::new(func_node))
+    } else {
+        None
+    };
     for &call in calls {
         let Some(function) = call.child_by_field_name("function") else {
             continue;
@@ -5484,7 +5493,10 @@ fn credit_credential_facts(
             continue;
         }
         let name = text(&function);
-        let unconditional = guard_dominance::always_executes(&call);
+        let unconditional = match &jumps {
+            Some(facts) => guard_dominance::always_executes_in(func_node, facts, &call),
+            None => guard_dominance::always_executes(&call),
+        };
         let Some(arguments) = call.child_by_field_name("arguments") else {
             continue;
         };
@@ -5976,9 +5988,11 @@ fn credit_param_free(
 /// storage (`memset(p + 4, ...)` clears part of the object), so forwards ask
 /// for exact copies.
 ///
-/// Occurrences are matched by binding ([`ast_utils::resolve_identifier_binding`]),
-/// never by spelling alone, so a shadowing local of the same name in an inner
-/// block is another object (ADR-0006).
+/// Occurrences are matched by the local declaration that binds them
+/// ([`ast_utils::find_enclosing_declaration_for_identifier_in`], the
+/// local-declaration branch of `resolve_identifier_binding`), never by
+/// spelling alone, so a shadowing local of the same name in an inner block is
+/// another object (ADR-0006).
 fn param_behind_local(
     use_site: &Node,
     local: Node,
@@ -5991,16 +6005,16 @@ fn param_behind_local(
     use lang_parsing_substrate::query;
     let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
     let name = text(&local);
-    let ast_utils::IdentifierBinding::Local(decl) =
-        ast_utils::resolve_identifier_binding(&local, &name, source)?
-    else {
-        return None;
-    };
+    // Only the local-declaration branch of the binding matters here. The
+    // tree's root, not `body`, roots the descent that finds it, so a function
+    // nested in a block still sees that block's earlier declarations, as the
+    // climbing lookup does.
+    let root = ast_utils::tree_root(body);
+    let decl =
+        ast_utils::find_enclosing_declaration_for_identifier_in(&root, &local, &name, source)?;
     let binds_to_decl = |n: &Node| {
-        matches!(
-            ast_utils::resolve_identifier_binding(n, &name, source),
-            Some(ast_utils::IdentifierBinding::Local(d)) if d.id() == decl.id()
-        )
+        ast_utils::find_enclosing_declaration_for_identifier_in(&root, n, &name, source)
+            .is_some_and(|d| d.id() == decl.id())
     };
 
     // The value the local is set to: its initializer, or its one assignment.
