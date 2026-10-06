@@ -24,8 +24,10 @@ Project Structure
     +-- parser/              # C code parsing
     |   +-- mod.rs           # Tree-sitter C parser integration
     +-- progress.rs          # CLI progress reporting
-    +-- rules/               # CERT C rule implementations
+    +-- rules/               # Rule implementations
     |   +-- mod.rs           # Rule trait and registry
+    |   +-- brules/          # JPL-derived BRULE-### rules (opt-in)
+    |   +-- cwe/             # CWE ruleset: CWE-327, CWE-428, CWE-666 (on by default)
     |   +-- cert_c/          # Individual CERT C rule modules (17 categories)
     |       +-- API/         # API rules (9 rules)
     |       +-- ARR/         # Array rules (9 rules)
@@ -55,7 +57,7 @@ Project Structure
     +-- __main__.py          # Benchmark CLI (python -m bench)
 
     rules_templates/         # Rule manifests
-    +-- rules-all.toml       # 304 of 308 rules enabled
+    +-- rules-all.toml       # 304 of 308 CERT C rules enabled, and the 3 CWE-ruleset rules
     +-- cwe/                 # Per-CWE manifests for Juliet benchmarking
 
     docs/                    # Documentation and CI examples

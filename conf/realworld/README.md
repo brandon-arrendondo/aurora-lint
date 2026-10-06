@@ -19,7 +19,7 @@ wrote for it.
    `enabled = false` line:
 
    1. **Categorically inapplicable** to the codebase — Windows-only rules on a
-      POSIX target, `POS55-C` (socket operation ordering) on code that makes no socket
+      POSIX target, `CWE-666` (socket operation ordering) on code that makes no socket
       call, the `FIO*` family on code with no file I/O. The defect the rule describes cannot occur here.
    2. **Dead config** — the rule has no implementation yet, so the line records
       a decision rather than suppressing anything. Cite the implementation task
@@ -160,7 +160,7 @@ false — libcrc builds on Windows (`Windows_NT` in its Makefile, `_MSC_VER`
 paths in `precalc/` and `examples/`) and does file I/O in those same files —
 so the `WIN*`, `FIO*`, `DCL18-C`, `MEM10-C`, `MSC04-C` and `MSC07-C` disables
 were re-enabled. What remains names a construct that is absent from the
-scanned tree: no socket call (`POS55-C`), no heap allocation (`MEM00/01/03/06-C`),
+scanned tree: no socket call (`CWE-666`), no heap allocation (`MEM00/01/03/06-C`),
 no privileged process (`POS05-C`). **State the absent construct, check it
 against the tree, and check that the rule does not already fire on that
 construct.** "The rule finds nothing here" is a result, not a scope. pureftpd is

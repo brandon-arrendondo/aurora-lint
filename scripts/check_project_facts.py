@@ -42,8 +42,11 @@ WHAT IT CHECKS (hard-fail lint, unchanged behavior from check_rule_counts.py)
 
 Two numbers, derived from the manifest itself:
 
-    implemented  every [rules.cert_c.<ID>] block          (311)
-    enabled      those blocks with `enabled = true`        (307)
+    implemented  every [rules.cert_c.<ID>] block          (308)
+    enabled      those blocks with `enabled = true`        (304)
+
+and, counted on its own because its rules are not CERT C rules, the CWE
+ruleset: every [rules.cwe.<ID>] block with `enabled = true` (3).
 
 Then every phrasing in the docs that claims one of them. A claim of some
 OTHER number fails, naming the file and line. Counts that are legitimately
@@ -122,9 +125,9 @@ TARGETS = [
 # because it still expected "implemented" text to equal 311):
 #
 #   tracked      every [rules.cert_c.<ID>] block, regardless of whether it
-#                has code                                        (311)
-#   enabled      manifest says `enabled = true`                  (307)
-#   implemented  has a real .rs file under src/rules/cert_c/      (307)
+#                has code                                        (308)
+#   enabled      manifest says `enabled = true`                  (304)
+#   implemented  has a real .rs file under src/rules/cert_c/      (304)
 #
 # `enabled` and `implemented` coincide today (every enabled rule has code,
 # and this project's workflow never enables a rule before writing one --

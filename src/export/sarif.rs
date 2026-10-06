@@ -53,6 +53,18 @@ fn collect_artifacts<'a>(
     (infos, artifacts)
 }
 
+/// Where a viewer links a rule's documentation: the CWE entry for a rule in
+/// the CWE ruleset, CERT's page for the rest. A CWE id has no page on
+/// CERT's wiki.
+fn help_uri(rule_id: &str) -> String {
+    match rule_id.strip_prefix("CWE-") {
+        Some(number) if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) => {
+            format!("https://cwe.mitre.org/data/definitions/{number}.html")
+        }
+        _ => format!("https://wiki.sei.cmu.edu/confluence/display/c/{rule_id}"),
+    }
+}
+
 fn severity_to_sarif_level(severity: &Severity) -> &'static str {
     match severity {
         Severity::Critical | Severity::High => "error",
@@ -160,7 +172,7 @@ pub fn export_all_violations_to_sarif(
                 "defaultConfiguration": {
                     "level": severity_to_sarif_level(&v.severity)
                 },
-                "helpUri": format!("https://wiki.sei.cmu.edu/confluence/display/c/{}", rule_id)
+                "helpUri": help_uri(rule_id)
             })
         })
         .collect();
@@ -214,4 +226,21 @@ pub fn export_all_violations_to_sarif(
     serde_json::to_writer_pretty(writer, &sarif)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::help_uri;
+
+    #[test]
+    fn a_cwe_rule_links_to_its_cwe_entry_and_a_cert_rule_to_cert() {
+        assert_eq!(
+            help_uri("CWE-327"),
+            "https://cwe.mitre.org/data/definitions/327.html"
+        );
+        assert_eq!(
+            help_uri("ARR30-C"),
+            "https://wiki.sei.cmu.edu/confluence/display/c/ARR30-C"
+        );
+    }
 }
