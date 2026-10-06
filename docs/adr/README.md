@@ -66,3 +66,5 @@ outlive any one task.
 - [0016 — A published artifact cites its sources, ships as a sanitized
   export, names its accountable reviewer, and discloses AI
   use](0016-published-artifacts.md)
+- [0017 — Every numeric gate default has a recorded source, calibration, or
+  proposed change](0017-gate-defaults-have-a-recorded-basis.md)

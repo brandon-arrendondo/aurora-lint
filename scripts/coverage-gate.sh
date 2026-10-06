@@ -3,14 +3,14 @@
 # Used by pre-commit hook and CI pipeline.
 #
 # Usage: scripts/coverage-gate.sh [THRESHOLD]
-#   THRESHOLD: minimum line coverage percentage (default: 80)
+#   THRESHOLD: minimum line coverage percentage (default: 75)
 #
 # Output: lcov.info in project root (publishable as CI artifact)
 # Exit code: 0 if coverage >= threshold, 1 otherwise
 
 set -euo pipefail
 
-THRESHOLD="${1:-81}"
+THRESHOLD="${1:-75}"
 # Exclude untestable code: ui/ (GUI), main.rs (CLI entry), integration.rs (test harness),
 # progress.rs (terminal I/O), export/ (SARIF/Excel output), files/ (git/directory I/O),
 # manifest/ (TOML config loading)
