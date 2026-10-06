@@ -2144,16 +2144,16 @@ impl Str31C {
                 // Find the first string literal, not the last quote on the line
                 if let Some(start_quote) = line.find('"') {
                     // Find the closing quote for this string literal, accounting for escape sequences
-                    let mut end_quote = start_quote + 1;
-                    while end_quote < line.len() {
-                        if line.chars().nth(end_quote) == Some('"') {
-                            let literal = &line[start_quote + 1..end_quote];
-                            return literal.len();
+                    // `off` is a byte offset into `body` (a character boundary),
+                    // so a multibyte character in the literal cannot split it.
+                    let body = &line[start_quote + 1..];
+                    let mut chars = body.char_indices();
+                    while let Some((off, ch)) = chars.next() {
+                        if ch == '"' {
+                            return off;
                         }
-                        if line.chars().nth(end_quote) == Some('\\') {
-                            end_quote += 2; // Skip escape sequence
-                        } else {
-                            end_quote += 1;
+                        if ch == '\\' {
+                            chars.next(); // Skip escape sequence
                         }
                     }
                 }

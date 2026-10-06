@@ -67,10 +67,10 @@ impl Dcl23C {
             let text = get_node_text(&n, source);
             if text.starts_with("extern") {
                 if let Some((name, line, col)) = self.find_identifier_info(&n, source) {
-                    let base = if name.len() > 1 {
-                        name[..name.len() - 1].to_string()
-                    } else {
-                        name.clone()
+                    // Drop the last character (not byte): the name may be UTF-8.
+                    let base = match name.char_indices().next_back() {
+                        Some((last, _)) if last > 0 => name[..last].to_string(),
+                        _ => name.clone(),
                     };
                     ids.entry(base).or_default().push((name, line, col));
                 }
@@ -90,14 +90,20 @@ impl Dcl23C {
             return false;
         }
         let first = &variants[0].0;
-        let min_len = variants.iter().map(|(n, _, _)| n.len()).min().unwrap_or(0);
+        let min_len = variants
+            .iter()
+            .map(|(n, _, _)| n.chars().count())
+            .min()
+            .unwrap_or(0);
         if min_len < 2 {
             return false;
         }
 
         let mut prefix_len = 0;
         for i in 0..min_len {
-            let ch = first.chars().nth(i).unwrap();
+            let Some(ch) = first.chars().nth(i) else {
+                break;
+            };
             if variants
                 .iter()
                 .all(|(n, _, _)| n.chars().nth(i) == Some(ch))
