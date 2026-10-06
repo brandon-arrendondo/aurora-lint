@@ -56,8 +56,9 @@ impl Mem01C {
     /// The same three-state test as EXP33-C's `build_read_only_deref_fns`,
     /// and deliberately the same code shape so the two cannot drift again.
     /// `dereferences_params - modifies_params` alone was this rule's test
-    /// until an earlier fix, which is what EXP33-C's was before 1437 and
-    /// 1442 fixed it; MEM01-C inherited 1444's population-side fix for free
+    /// until an earlier fix, which is what EXP33-C's was before its
+    /// MUST-write and three-state fixes; MEM01-C inherited EXP33-C's
+    /// population-side fix for free
     /// (`dereferences_params` is a shared `FunctionSummary` field) and none
     /// of the consumption-side ones.
     ///

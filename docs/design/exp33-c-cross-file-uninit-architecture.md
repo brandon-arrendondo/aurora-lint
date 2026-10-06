@@ -19,12 +19,12 @@ whether `check_cross_file_uninit_calls` (`exp33_c.rs:710`) — EXP33-C's
 cross-file counterpart, which flags `&uninit_var` passed to a project function
 classified as "read-only" on that parameter — should get the same treatment.
 
-Measured (r720, 2026-09-21): 277 findings across 11 real-world corpora, 0 TP /
-59 FP against the labeled oracle keys. A closer sample (this task) found the
+Measured (2026-09-21): 277 findings across 11 real-world corpora, 0 TP /
+59 FP against the labeled oracle keys. A closer sample found the
 FP pattern holds well past the labeled subset, via at least three distinct
-mechanisms, only one of which the "relocate the check" framing from 1418
+mechanisms, only one of which the "relocate the check" framing used for EXP34-C
 actually addresses. Brandon's ruling: dropping a CERT-C rule is not a call one
-node's sample settles, and the check needs a design proposal, not an
+sample settles, and the check needs a design proposal, not an
 incremental patch. This doc is that proposal.
 
 ## 2. What the check does today
@@ -53,7 +53,7 @@ and `modifies_params` are each populated by "did this callee's own body,
 scanned as text/AST, dereference/write through this parameter", full stop.
 
 This is architecturally the same shape EXP34-C's caller-side check had before
-1418 — a coarse, syntactic proxy standing in for real per-callee analysis —
+its report site moved — a coarse, syntactic proxy standing in for real per-callee analysis —
 but relocating the *report site* doesn't fix it, because the false positives
 here aren't about *where* the check fires. They're about the callee-side
 "read-only" classification itself being wrong on grounds unrelated to caller
@@ -204,15 +204,15 @@ verified by revert-confirmation (stash the fix, rebuild, confirm the fixture
 WOULD have been flagged; restore) and a local finding-count A/B against this
 checkout's own `data/benchmarks.db` (never cited as an official measurement
 — see CLAUDE.md's benchmark-workflow section; official A/B +
-delta-adjudication is still owed to a VLAN30-capable node):
+delta-adjudication is still owed):
 
-| Piece | Task | Commit | Local EXP33-C delta |
-|---|---|---|---|
-| (a) MUST-write propagation, not the MAY set | 1437 | `50fb0681` | 1489 → 1473 (-16) |
-| (b) honest three-state (indirect-call) classification | 1442 | `9ed4c319` | 1473 → 1468 (-5) |
-| (d) out-param/init-function convention gaps (mbedtls `_init` family) | 1444 | `1e180eb0` | 1468 → 1446 (-22) |
-| (d)'s lua half, split off as its own InitState gap | 1450 | `c9da0945` | -2 (lua only, direct real-world confirmation) |
-| **Total** | | | **1489 → 1444 (-45, -3.0%)** |
+| Piece | Commit | Local EXP33-C delta |
+|---|---|---|
+| (a) MUST-write propagation, not the MAY set | `50fb0681` | 1489 → 1473 (-16) |
+| (b) honest three-state (indirect-call) classification | `9ed4c319` | 1473 → 1468 (-5) |
+| (d) out-param/init-function convention gaps (mbedtls `_init` family) | `1e180eb0` | 1468 → 1446 (-22) |
+| (d)'s lua half, split off as its own InitState gap | `c9da0945` | -2 (lua only, direct real-world confirmation) |
+| **Total** | | **1489 → 1444 (-45, -3.0%)** |
 
 (c) was declined as recommended, no rearchitecture attempted.
 

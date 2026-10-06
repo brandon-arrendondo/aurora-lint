@@ -96,7 +96,7 @@ figures and not a measurement of anything: they say nothing about findings.
 
 Two things this table decides:
 
-- The undecidable row is the **largest** one. Whatever 1385 does, most
+- The undecidable row is the **largest** one. Whatever increment 3 does, most
   multiply-defined names stay a configuration question.
 - "Files holding them" is what bounds §5's cost: a per-file view is needed
   for at most 164 files in the largest corpus, not for every file scanned.
@@ -254,7 +254,7 @@ The intended effect does show where propagation is not involved: mbedtls
 gains API00-C at `psa_crypto_aead.c:318` and `:339` (`mbedtls_psa_aead_*_setup`
 does not validate `attributes`), because that file's own `psa_aead_setup`
 finally answers for it instead of `psa_crypto.c`'s. That is the acceptance-set
-name, behaving as 1385 asks.
+name, behaving as increment 3 asks.
 
 Totals across all twelve corpora for attempt 2, one arm at a time, local
 numbers and not project figures: 33 keys removed, 46 added. Mixed cause, so

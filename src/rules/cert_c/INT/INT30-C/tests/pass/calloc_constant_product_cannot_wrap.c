@@ -1,6 +1,6 @@
 /*
  * Rule: INT30-C
- * Source: real-world (dev-180's repro; mosquitto fuzzing/ calloc sites)
+ * Source: real-world (a maintainer's repro; mosquitto fuzzing/ calloc sites)
  * Status: PASS - Should NOT trigger INT30-C violation
  * Settings: data_model=lp64
  *

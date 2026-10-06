@@ -123,9 +123,7 @@ structural problem that has nothing to do with rule quality:
    templates actually construct a genuine multi-thread/signal/ISR
    execution context, or merely demonstrate the API-misuse *pattern* in a
    single execution path. Answer is **mixed, not uniform** — direct
-   inspection of the corpus at `~/toolchain/benchmarks/juliet-test-suite-c`
-   (present on the dev-149 node; earlier assumed absent from every non-home
-   node, corrected here):
+   inspection of a Juliet C/C++ 1.3 checkout:
    - **CWE-362** has no test-case directory in this corpus at all — not a
      testable CWE for Juliet purposes, full stop.
    - **CWE-364** (Signal Handler Race Condition, 18 files, all one "basic"

@@ -355,7 +355,7 @@ and a second line-scan of every prescanned file, for a delta measured at 3
 findings in 60,401 on hostap — which is why it is written down here rather than
 built on the strength of that number alone.
 
-What shipped for 1432 instead is the part that is right regardless: the scan now
+What shipped instead is the part that is right regardless: the scan now
 **warns** when a declaration is in force and names how many scanned `.c` files
 the database does not compile, so the incoherence is visible at the point it
 starts mattering instead of looking like ordinary imprecision. Headers are
@@ -412,7 +412,7 @@ resolution and nothing else").
    object-like or typedef consumer should arrive the same way, with its own
    rule-level gate.
 4. **Align with the per-corpus primary-configuration declaration.** This
-   landed while 1430 was in flight: `primary_build_config` is now on all twelve
+   landed while this research was in flight: `primary_build_config` is now on all twelve
    entries of `data/benchmark_repos.json` (`cf98ae7e`), with a per-project
    rationale in `realworld-corpus-scope.md`. It declares platform, arch,
    endianness, toolchain and the in-scope paths that configuration never

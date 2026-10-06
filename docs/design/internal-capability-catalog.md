@@ -1016,7 +1016,7 @@ to CFG dominance when the walk says no).
 | `ComparisonKind` | `Any` \| `OrderingOrExtremeEquality` | Which comparisons count. Ordering operators always do; the split is about equality, which is not one thing. For a **bounds** question `len == 5` pins `len` as well as `len < 6` does (`Any`). For an **overflow** question it usually does not — `idx == BTREE_DATA_VERSION` leaves `36 + idx*4` exactly as unbounded as before, while `n == INT_MIN` before `-n` excludes precisely the value that overflows (`OrderingOrExtremeEquality`). |
 
 **Two overlapping pairs, deliberately both present for now** (landed
-concurrently by two nodes, aurora_lint `eb02611d` and `80b2168e`/`f69ea2a0`):
+concurrently from two branches, `eb02611d` and `80b2168e`/`f69ea2a0`):
 `always_diverges` and `always_leaves` answer the same question — control
 cannot fall out of the bottom of this statement — under two names, and
 `conditions_known_true_at` is the `Some(true)` half of what
