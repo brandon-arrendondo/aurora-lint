@@ -47,10 +47,10 @@ or more; the JPL standard below later combined them with MISRA-C:2004.
 
 1. **Restrict control flow** — no ``goto``, no ``setjmp``/``longjmp``, and no recursion, direct or indirect.
 2. **Fixed loop bounds** — all loops must have fixed upper bounds (prevents runaway code).
-3. **No dynamic memory after init** — do not use dynamic memory allocation after initialization.
+3. **No dynamic memory after init** — all allocation happens during initialization, none after it.
 4. **Function size limits** — no function longer than ~60 lines (one printed page).
 5. **Assertion density** — average at least two assertions per function.
-6. **Limited scope** — declare all data objects at the smallest possible scope.
+6. **Limited scope** — each data object lives in the innermost scope that can hold it.
 7. **Check return values** — check the return value of all non-void functions.
 8. **Limited preprocessor use** — limit to file inclusion and simple macros.
 9. **Limited pointer use** — at most one level of dereferencing, no dereference hidden in a macro or typedef, and no function pointers.
@@ -80,22 +80,24 @@ addresses multi-threaded software risks that neither of those covered.
 Multi-threading / Concurrency
 -----------------------------
 
-- Use IPC messages for task communication; avoid callbacks.
-- Task synchronization shall not be performed through task delays.
-- Data objects in shared memory should have a single owning task with explicit ownership transfer.
-- Avoid semaphores/locks; if used, avoid nested use.
-- Use memory protection, safety margins, and barrier patterns.
+Paraphrased; the rule numbers are D-60411's.
+
+- Tasks talk to each other through IPC messages, not callbacks (Rule 6).
+- No task waits out a delay as a way to synchronize with another (Rule 7).
+- Each shared data object has one owning task, and ownership is handed over explicitly (Rule 8).
+- Semaphores and locks are best avoided; where they are used, not nested, or else always taken in one documented order (Rule 9).
+- Memory protection where the operating system offers it; otherwise safety margins and barrier patterns that expose access violations (Rule 10).
 
 Other Key Rules
 ---------------
 
-- No selective value assignments to elements of an enum list (except first or all).
-- Use typedefs that indicate size and signedness (``I32``, ``U16``, etc.) instead of basic types.
-- Make order of evaluation in compound expressions explicit with parentheses.
-- Boolean expressions shall have no side effects.
-- No more than two levels of indirection per declaration.
-- Do not hide dereference operations in macros or typedefs.
-- Non-constant function pointers should not be used.
+- An enumerator list sets explicit values on its first member only, or on every member (Rule 12).
+- Fixed-width typedefs that name their signedness, such as ``I32`` and ``U16``, stand in for the basic types (Rule 17).
+- Parentheses spell out the intended evaluation order in compound expressions (Rule 18).
+- Evaluating a Boolean expression changes no state (Rule 19).
+- A declaration carries at most two levels of pointer indirection (Rule 26).
+- Macros and typedefs never conceal a pointer dereference (Rule 28).
+- Any function pointer is constant (Rule 29).
 
 Earlier Standards Referenced by JPL
 -----------------------------------
@@ -112,8 +114,10 @@ The JPL standard consulted numerous earlier standards including:
 BARR-C Embedded C Coding Standard
 ===================================
 
-Barr Group's standard minimizes bugs in firmware by focusing on practical rules.
-BARR-C:2018 has been fully harmonized with MISRA C:2012 in its stylistic rules.
+Barr Group says its standard "was developed to minimize bugs in firmware by
+focusing on practical rules that keep bugs out", and that in BARR-C:2018 "the
+stylistic coding rules have been fully harmonized with MISRA C: 2012"
+(barrgroup.com, *Embedded C Coding Standard*).
 Key embedded-specific areas:
 
 - Proper use of the ``volatile`` keyword for hardware registers and ISR-accessed variables.
