@@ -58,6 +58,7 @@ pub struct Dcl31C {
     // What decides `incomplete_declarations` per file: the include graph and
     // the project headers that resolve to nothing. Empty when there are none.
     include_edges: RefCell<Arc<HashMap<String, Vec<String>>>>,
+    include_edges_beyond_search_path: RefCell<Arc<HashMap<String, Vec<String>>>>,
     unresolved_project_headers: RefCell<HashSet<String>>,
 }
 
@@ -74,6 +75,7 @@ impl Dcl31C {
             function_pointer_typedef_names: RefCell::default(),
             incomplete_declarations: RefCell::new(false),
             include_edges: RefCell::default(),
+            include_edges_beyond_search_path: RefCell::default(),
             unresolved_project_headers: RefCell::default(),
         }
     }
@@ -461,6 +463,8 @@ impl CertRule for Dcl31C {
         // Other files keep the check: hostap's Android binder headers are
         // generated, but only wpa_supplicant/binder/ includes them.
         *self.include_edges.borrow_mut() = context.include_edges.clone();
+        *self.include_edges_beyond_search_path.borrow_mut() =
+            context.include_edges_beyond_search_path.clone();
         *self.unresolved_project_headers.borrow_mut() = context.unresolved_project_headers.clone();
         *self.incomplete_declarations.borrow_mut() = false;
     }
@@ -469,6 +473,7 @@ impl CertRule for Dcl31C {
         *self.incomplete_declarations.borrow_mut() =
             !crate::analyze::context::unresolved_project_headers_reached(
                 &self.include_edges.borrow(),
+                &self.include_edges_beyond_search_path.borrow(),
                 &self.unresolved_project_headers.borrow(),
                 path,
             )

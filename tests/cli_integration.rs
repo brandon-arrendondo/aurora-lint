@@ -1994,6 +1994,52 @@ fn dcl31_stands_down_only_in_files_that_reach_a_missing_generated_header() {
 }
 
 #[test]
+fn dcl31_follows_includes_beyond_the_search_path_to_a_generated_header() {
+    // seL4, reduced: src/apic.c includes <arch/machine.h>, which only the
+    // per-architecture -I include/arch/x86 would find. The scan is given -I
+    // include, follows the project files whose path ends in arch/machine.h
+    // (x86 and arm variants), and through the x86 one reaches the generated
+    // arch/object/structures_gen.h, so apic.c stands down. other.c includes
+    // nothing and is still checked.
+    let base = fixtures().join("dcl31_offswitch");
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        base.join("generated_beyond_search_path").to_str().unwrap(),
+        "-m",
+        manifest_dcl31().to_str().unwrap(),
+        "-I",
+        base.join("generated_beyond_search_path/include")
+            .to_str()
+            .unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let flagged: Vec<(String, u64)> = violations
+        .iter()
+        .filter(|v| v["rule_id"] == "DCL31-C")
+        .map(|v| {
+            let file = v["file"].as_str().unwrap();
+            let name = file.rsplit('/').next().unwrap().to_string();
+            (name, v["line"].as_u64().unwrap())
+        })
+        .collect();
+    assert_eq!(flagged, vec![("other.c".to_string(), 3)]);
+    let warning = stderr
+        .lines()
+        .find(|l| l.contains("DCL31-C"))
+        .unwrap_or_else(|| panic!("no stand-down warning in: {stderr}"));
+    assert!(warning.contains("apic.c"), "{warning}");
+    assert!(
+        warning.contains("arch/object/structures_gen.h"),
+        "{warning}"
+    );
+}
+
+#[test]
 fn a_missing_generated_project_header_switches_dcl31_off_and_says_so() {
     // seL4's layout: the project has include/object/ but structures_gen.h is
     // emitted at build time, so every declaration in it is invisible and the

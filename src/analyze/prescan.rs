@@ -1643,6 +1643,7 @@ fn prescan_file_list(
         macro_operand_params: Arc::new(macro_operand_params),
         function_macro_arms: Arc::new(function_macro_arms),
         include_edges: Arc::new(HashMap::new()),
+        include_edges_beyond_search_path: Arc::new(HashMap::new()),
         unused_attribute_macros: Arc::new(unused_attribute_macros),
         global_constants,
         closure_dependent_constants: Arc::new(closure_dependent_constants),
@@ -7271,8 +7272,10 @@ pub fn resolve_includes(
     // Only search roots inside the project can make an unresolvable include a
     // *project* header. Computed once: the check is filesystem-
     // touching and the answer is the same for every include.
-    let project_search_paths = project_local_search_paths(include_paths, project_roots);
-    let mut project_files = ProjectFiles::default();
+    let mut unresolved = UnresolvedIncludes {
+        project_search_paths: project_local_search_paths(include_paths, project_roots),
+        ..UnresolvedIncludes::default()
+    };
     let mut origins = MacroOrigins::new(project_roots, context);
 
     let mut parser = CParser::new()?;
@@ -7324,13 +7327,6 @@ pub fn resolve_includes(
 
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
     let mut packed_macro_names: HashSet<String> = HashSet::new();
-    // Includes that failed to resolve, so the (filesystem-touching)
-    // missing-project-header classification runs once per distinct path
-    // rather than once per occurrence — `<stdio.h>` alone recurs in every
-    // file of a large tree.
-    // The dead-arm flag is part of the key: an include met first in a dead
-    // arm must not hide a live occurrence of the same spelling.
-    let mut unresolved_seen: HashSet<(String, Option<PathBuf>, bool)> = HashSet::new();
     // (spelling, includer) pairs already recorded as matched only by case.
     let mut case_seen: HashSet<(String, Option<Arc<str>>)> = HashSet::new();
 
@@ -7470,45 +7466,31 @@ pub fn resolve_includes(
                 includer.as_ref(),
                 format!("{}{include_path}", super::context::UNRESOLVED_INCLUDE),
             );
-            if !unresolved_seen.insert((include_path.clone(), source_dir.clone(), in_dead_arm)) {
-                continue;
-            }
-            // Only an include the project itself makes can name a header the
-            // project is missing. One written inside a header outside every
-            // project root is the system's: `/usr/include/ares.h` includes
-            // `<sys/bsdskt.h>` for NetWare, and its own directory has a
-            // `sys/`, which says nothing about the project. Nor does an
-            // include in an arm its file proves is never compiled.
-            let includer_outside = source_dir.as_deref().is_some_and(|dir| {
-                origins.is_outside(&dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()))
-            });
-            // A header the project does have, just not on this run's search
-            // path, isn't generated either: wpa_supplicant/*.c includes
-            // "utils/common.h", which the real build finds through -I src.
-            let project_header = !in_dead_arm
-                && !includer_outside
-                && is_missing_project_header(
-                    &include_path,
-                    source_dir.as_deref(),
-                    &project_search_paths,
-                    lookup,
-                )
-                && !project_files.has_file_ending_in(&include_path, project_roots, lookup);
-            context
-                .macro_gaps
-                .push(crate::analyze::macro_gaps::unresolved_include(
-                    &include_path,
-                    None,
-                    source_dir.as_deref(),
-                    project_header,
-                ));
-            if project_header {
-                context.unresolved_project_headers.insert(include_path);
-            }
+            unresolved.record(
+                context,
+                &origins,
+                include_path,
+                source_dir,
+                includer.as_ref(),
+                in_dead_arm,
+                project_roots,
+                lookup,
+            );
         }
     }
 
     origins.finish(context);
+
+    walk_beyond_search_path(
+        context,
+        &mut parser,
+        unresolved.beyond,
+        include_paths,
+        &unresolved.project_search_paths,
+        project_roots,
+        &mut unresolved.project_files,
+        lookup,
+    );
 
     // Resolve trailing-macro packed-struct candidates against the
     // macro names seen across ALL resolved headers (the macro's #define and
@@ -7748,36 +7730,243 @@ pub(crate) fn find_header(
 /// scans never walk the tree.
 #[derive(Default)]
 struct ProjectFiles {
-    keys: Option<Vec<String>>,
+    /// (root-relative path key, path on disk), sorted by path.
+    files: Option<Vec<(String, PathBuf)>>,
 }
 
 impl ProjectFiles {
-    /// Whether some file under `project_roots` has a relative path ending in
-    /// `include_path`, whole components only: `utils/common.h` matches
-    /// `src/utils/common.h` but not `src/myutils/common.h`.
-    fn has_file_ending_in(
+    /// The project files whose root-relative path ends in `include_path`,
+    /// whole components only (`utils/common.h` matches `src/utils/common.h`
+    /// but not `src/myutils/common.h`), in path order.
+    fn files_ending_in(
         &mut self,
         include_path: &str,
         project_roots: &[String],
         lookup: &HeaderLookup,
-    ) -> bool {
-        let keys = self.keys.get_or_insert_with(|| {
-            let mut keys = Vec::new();
+    ) -> Vec<PathBuf> {
+        let files = self.files.get_or_insert_with(|| {
+            let mut files = Vec::new();
             for root in project_roots {
-                for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+                for entry in WalkDir::new(root)
+                    .sort_by_file_name()
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                {
                     if !entry.file_type().is_file() {
                         continue;
                     }
                     if let Ok(rel) = entry.path().strip_prefix(root) {
-                        keys.push(lookup.key(&rel.to_string_lossy().replace('\\', "/")));
+                        let key = lookup.key(&rel.to_string_lossy().replace('\\', "/"));
+                        files.push((key, entry.path().to_path_buf()));
                     }
                 }
             }
-            keys
+            files
         });
         let wanted = lookup.key(include_path);
         let suffix = format!("/{wanted}");
-        keys.iter().any(|k| *k == wanted || k.ends_with(&suffix))
+        files
+            .iter()
+            .filter(|(k, _)| *k == wanted || k.ends_with(&suffix))
+            .map(|(_, path)| path.clone())
+            .collect()
+    }
+}
+
+/// What `resolve_includes` keeps about the includes it can't resolve.
+#[derive(Default)]
+struct UnresolvedIncludes {
+    /// Only search roots inside the project can make an unresolvable include
+    /// a *project* header ([`project_local_search_paths`]).
+    project_search_paths: Vec<String>,
+    project_files: ProjectFiles,
+    /// The project files whose path ends in an include's spelling.
+    elsewhere_by_spelling: HashMap<String, Vec<PathBuf>>,
+    /// (includer's real path, the include's spelling, a project file whose
+    /// path ends in it): where the walk beyond the search path starts.
+    beyond: Vec<(String, String, PathBuf)>,
+    /// Includes already classified, so the (filesystem-touching)
+    /// missing-project-header test runs once per distinct path rather than
+    /// once per occurrence (`<stdio.h>` alone recurs in every file of a large
+    /// tree). The dead-arm flag is part of the key: an include met first in a
+    /// dead arm must not hide a live occurrence of the same spelling.
+    seen: HashSet<(String, Option<PathBuf>, bool)>,
+}
+
+impl UnresolvedIncludes {
+    /// Note an include that resolved to no file: queue the project files it
+    /// may name for the walk beyond the search path, and record it as a
+    /// missing (generated) project header if it is one.
+    #[allow(clippy::too_many_arguments)]
+    fn record(
+        &mut self,
+        context: &mut super::context::ProjectContext,
+        origins: &MacroOrigins,
+        include_path: String,
+        source_dir: Option<PathBuf>,
+        includer: Option<&Arc<str>>,
+        in_dead_arm: bool,
+        project_roots: &[String],
+        lookup: &HeaderLookup,
+    ) {
+        // Only an include the project itself makes can name a header the
+        // project is missing. One written inside a header outside every
+        // project root is the system's: `/usr/include/ares.h` includes
+        // `<sys/bsdskt.h>` for NetWare, and its own directory has a `sys/`,
+        // which says nothing about the project. Nor does an include in an arm
+        // its file proves is never compiled.
+        let includer_outside = source_dir.as_deref().is_some_and(|dir| {
+            origins.is_outside(&dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()))
+        });
+        // Any include from inside the project that names a project file:
+        // seL4's <arch/kernel/apic.h> lives at
+        // include/arch/x86/arch/kernel/apic.h. The walk beyond the search
+        // path follows it from every includer (not just the first in a
+        // directory), since each file's own closure is what decides.
+        let project_files = &mut self.project_files;
+        let elsewhere: &[PathBuf] = if !in_dead_arm && !includer_outside {
+            self.elsewhere_by_spelling
+                .entry(include_path.clone())
+                .or_insert_with(|| {
+                    project_files.files_ending_in(&include_path, project_roots, lookup)
+                })
+        } else {
+            &[]
+        };
+        if let Some(includer) = includer {
+            let from = crate::analyze::compile_commands::real_path(Path::new(&**includer));
+            for file in elsewhere {
+                self.beyond
+                    .push((from.clone(), include_path.clone(), file.clone()));
+            }
+        }
+        let named_elsewhere = !elsewhere.is_empty();
+        if !self
+            .seen
+            .insert((include_path.clone(), source_dir.clone(), in_dead_arm))
+        {
+            return;
+        }
+        // A header the project does have, just not on this run's search path,
+        // isn't generated either: wpa_supplicant/*.c includes
+        // "utils/common.h", which the real build finds through -I src.
+        let looks_missing = !in_dead_arm
+            && !includer_outside
+            && is_missing_project_header(
+                &include_path,
+                source_dir.as_deref(),
+                &self.project_search_paths,
+                lookup,
+            );
+        let project_header = looks_missing && !named_elsewhere;
+        context
+            .macro_gaps
+            .push(crate::analyze::macro_gaps::unresolved_include(
+                &include_path,
+                None,
+                source_dir.as_deref(),
+                project_header,
+            ));
+        if project_header {
+            context.unresolved_project_headers.insert(include_path);
+        }
+    }
+}
+
+/// Follow the project files an unresolvable include names (`beyond`) through
+/// their own `#include` lines, recording the edges in
+/// `include_edges_beyond_search_path` and any missing generated header found
+/// on the way in `unresolved_project_headers`. Reads include lines only:
+/// nothing is harvested, so what other rules see is unchanged. Each file is
+/// read once.
+#[allow(clippy::too_many_arguments)]
+fn walk_beyond_search_path(
+    context: &mut super::context::ProjectContext,
+    parser: &mut CParser,
+    beyond: Vec<(String, String, PathBuf)>,
+    include_paths: &[String],
+    project_search_paths: &[String],
+    project_roots: &[String],
+    project_files: &mut ProjectFiles,
+    lookup: &HeaderLookup,
+) {
+    let mut edges: HashMap<String, Vec<String>> = HashMap::new();
+    let mut add = |from: &str, to: String| {
+        let list = edges.entry(from.to_string()).or_default();
+        if !list.contains(&to) {
+            list.push(to);
+        }
+    };
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut queue: Vec<PathBuf> = Vec::new();
+    // The search roots the matches imply: include/arch/x86 when
+    // <arch/machine.h> matched include/arch/x86/arch/machine.h. A header
+    // missing under one of them is missing from the project, as
+    // <arch/object/structures_gen.h> is under include/arch/x86.
+    let mut implied_roots: Vec<String> = project_search_paths.to_vec();
+    let imply = |spelling: &str, file: &Path, roots: &mut Vec<String>| {
+        let depth = spelling
+            .split(['/', '\\'])
+            .filter(|c| !c.is_empty())
+            .count();
+        if let Some(root) = file.ancestors().nth(depth) {
+            let root = root.to_string_lossy().to_string();
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+    };
+    for (from, spelling, file) in beyond {
+        imply(&spelling, &file, &mut implied_roots);
+        let real = crate::analyze::compile_commands::real_path(&file);
+        add(&from, real.clone());
+        if seen.insert(real) {
+            queue.push(file);
+        }
+    }
+    while let Some(file) = queue.pop() {
+        let from = crate::analyze::compile_commands::real_path(&file);
+        let Ok((tree, source)) = parser.parse_file(&file.to_string_lossy()) else {
+            continue;
+        };
+        let dir = file.parent().map(Path::to_path_buf);
+        for (include, in_dead_arm) in
+            extract_include_directives_with_liveness(&tree.root_node(), &source)
+        {
+            if in_dead_arm {
+                continue;
+            }
+            if let Some(found) = find_header(&include, dir.as_deref(), include_paths, lookup) {
+                let real = crate::analyze::compile_commands::real_path(&found.path);
+                add(&from, real.clone());
+                // A header the main pass resolved has its own edges there.
+                if !context.include_edges.contains_key(&real) && seen.insert(real) {
+                    queue.push(found.path);
+                }
+                continue;
+            }
+            let looks_missing =
+                is_missing_project_header(&include, dir.as_deref(), &implied_roots, lookup);
+            let elsewhere = project_files.files_ending_in(&include, project_roots, lookup);
+            if looks_missing && elsewhere.is_empty() {
+                context.unresolved_project_headers.insert(include.clone());
+            }
+            add(
+                &from,
+                format!("{}{include}", super::context::UNRESOLVED_INCLUDE),
+            );
+            for other in elsewhere {
+                imply(&include, &other, &mut implied_roots);
+                let real = crate::analyze::compile_commands::real_path(&other);
+                add(&from, real.clone());
+                if seen.insert(real) {
+                    queue.push(other);
+                }
+            }
+        }
+    }
+    if !edges.is_empty() {
+        context.include_edges_beyond_search_path = Arc::new(edges);
     }
 }
 
@@ -9798,11 +9987,21 @@ void caller(char *other) {
         let roots = [tmp.path().to_string_lossy().to_string()];
         let lookup = HeaderLookup::default();
         let mut files = ProjectFiles::default();
-        assert!(files.has_file_ending_in("utils/common.h", &roots, &lookup));
-        assert!(files.has_file_ending_in("src/utils/common.h", &roots, &lookup));
-        assert!(!files.has_file_ending_in("tils/common.h", &roots, &lookup));
-        assert!(!files.has_file_ending_in("utils/other.h", &roots, &lookup));
-        assert!(!files.has_file_ending_in("object/structures_gen.h", &roots, &lookup));
+        assert!(!files
+            .files_ending_in("utils/common.h", &roots, &lookup)
+            .is_empty());
+        assert!(!files
+            .files_ending_in("src/utils/common.h", &roots, &lookup)
+            .is_empty());
+        assert!(files
+            .files_ending_in("tils/common.h", &roots, &lookup)
+            .is_empty());
+        assert!(files
+            .files_ending_in("utils/other.h", &roots, &lookup)
+            .is_empty());
+        assert!(files
+            .files_ending_in("object/structures_gen.h", &roots, &lookup)
+            .is_empty());
     }
 
     #[test]

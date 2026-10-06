@@ -36,13 +36,21 @@ impl IncludeClosure {
     /// `None` when the graph has no edge out of the file, so which files it
     /// sees is unknown.
     pub fn of(edges: &HashMap<String, Vec<String>>, path: &Path) -> Option<Self> {
+        Self::of_layers(&[edges], path)
+    }
+
+    /// [`IncludeClosure::of`] over the union of several edge maps: an edge in
+    /// any layer counts. `None` when no layer has an edge out of the file.
+    pub fn of_layers(layers: &[&HashMap<String, Vec<String>>], path: &Path) -> Option<Self> {
         let file = crate::analyze::compile_commands::real_path(path);
-        edges.get(&file)?;
+        if !layers.iter().any(|edges| edges.contains_key(&file)) {
+            return None;
+        }
         let mut closure = Self::default();
         closure.files.insert(file.clone());
         let mut stack = vec![file, String::new()];
         while let Some(f) = stack.pop() {
-            for next in edges.get(&f).into_iter().flatten() {
+            for next in layers.iter().filter_map(|edges| edges.get(&f)).flatten() {
                 if next == ANY_INCLUDE {
                     closure.any = true;
                 } else if let Some(spelling) = next.strip_prefix(UNRESOLVED_INCLUDE) {
@@ -87,6 +95,7 @@ impl ProjectContext {
     pub fn unresolved_project_headers_reached(&self, path: &Path) -> Vec<String> {
         unresolved_project_headers_reached(
             &self.include_edges,
+            &self.include_edges_beyond_search_path,
             &self.unresolved_project_headers,
             path,
         )
@@ -94,16 +103,19 @@ impl ProjectContext {
 }
 
 /// [`ProjectContext::unresolved_project_headers_reached`] for a holder of just
-/// the two tables it reads.
+/// the tables it reads.
 pub fn unresolved_project_headers_reached(
     include_edges: &HashMap<String, Vec<String>>,
+    include_edges_beyond_search_path: &HashMap<String, Vec<String>>,
     unresolved_project_headers: &HashSet<String>,
     path: &Path,
 ) -> Vec<String> {
     if unresolved_project_headers.is_empty() {
         return Vec::new();
     }
-    let Some(closure) = IncludeClosure::of(include_edges, path) else {
+    let Some(closure) =
+        IncludeClosure::of_layers(&[include_edges, include_edges_beyond_search_path], path)
+    else {
         return Vec::new();
     };
     // The closure records spellings with `.` and `..` segments dropped.
@@ -389,6 +401,17 @@ pub struct ProjectContext {
     /// behind [`UNRESOLVED_INCLUDE`]. [`IncludeClosure::of`] walks it.
     #[serde(default)]
     pub include_edges: Arc<HashMap<String, Vec<String>>>,
+    /// Edges `include_edges` leaves out: an include this run's search path
+    /// can't resolve, to the project files whose path ends in its spelling
+    /// (seL4's `<arch/machine.h>` without `-I include/arch/x86`), and onward
+    /// through those files' own `#include` lines. Only the include lines are
+    /// read, nothing is harvested, and only
+    /// [`Self::unresolved_project_headers_reached`] walks it, so no rule sees
+    /// a declaration or a closure it didn't before. Several matches (one per
+    /// architecture) are all recorded, so a file counts as reaching a
+    /// generated header if any of them does.
+    #[serde(default)]
+    pub include_edges_beyond_search_path: Arc<HashMap<String, Vec<String>>>,
     /// Names of every object-like `#define` whose replacement text is an
     /// unused-attribute annotation — `__attribute__((unused))`,
     /// `[[maybe_unused]]`, and the reserved spellings — collected across all
