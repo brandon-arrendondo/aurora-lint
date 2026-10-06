@@ -168,37 +168,46 @@ impl Mem35C {
         }
 
         let target_type = target_type.unwrap();
-        let call_text = get_node_text(call_node, source);
 
-        // Look for sizeof(type) in the call arguments
-        if let Some(sizeof_start) = call_text.find("sizeof") {
-            let sizeof_part = &call_text[sizeof_start..];
+        // Look at the first sizeof in the call arguments, read from the AST
+        // (sizeof(type), sizeof(expr) and sizeof expr all parse as one node)
+        let Some(sizeof_node) =
+            query::find_descendants(*call_node, |c| c.kind() == "sizeof_expression")
+                .into_iter()
+                .next()
+        else {
+            return false;
+        };
+        let Some(operand) = sizeof_node
+            .child_by_field_name("type")
+            .or_else(|| sizeof_node.child_by_field_name("value"))
+        else {
+            return false;
+        };
+        let operand_text = get_node_text(&operand, source).trim();
+        let sizeof_arg = if operand.kind() == "parenthesized_expression" {
+            operand_text
+                .strip_prefix('(')
+                .and_then(|t| t.strip_suffix(')'))
+                .unwrap_or(operand_text)
+                .trim()
+        } else {
+            operand_text
+        };
 
-            // Extract what's inside sizeof(...)
-            if let Some(open_paren) = sizeof_part.find('(') {
-                if let Some(close_paren) = sizeof_part.find(')') {
-                    let sizeof_arg = &sizeof_part[open_paren + 1..close_paren];
-                    let sizeof_arg = sizeof_arg.trim();
+        // If sizeof uses dereference (sizeof(*ptr)), that's CORRECT - don't flag it
+        if sizeof_arg.starts_with('*') {
+            return false;
+        }
 
-                    // If sizeof uses dereference (sizeof(*ptr)), that's CORRECT - don't flag it
-                    if sizeof_arg.starts_with('*') {
-                        return false;
-                    }
-
-                    if !sizeof_arg.is_empty() && !target_type.is_empty() {
-                        let target_normalized = target_type.trim();
-                        let sizeof_normalized = sizeof_arg.trim();
-
-                        if target_normalized != sizeof_normalized {
-                            // Allow some compatible types
-                            if !(target_normalized == "char" && sizeof_normalized == "1"
-                                || target_normalized.contains("struct")
-                                    && sizeof_normalized.contains("struct"))
-                            {
-                                return true;
-                            }
-                        }
-                    }
+        if !sizeof_arg.is_empty() && !target_type.is_empty() {
+            let target_normalized = target_type.trim();
+            if target_normalized != sizeof_arg {
+                // Allow some compatible types
+                if !(target_normalized == "char" && sizeof_arg == "1"
+                    || target_normalized.contains("struct") && sizeof_arg.contains("struct"))
+                {
+                    return true;
                 }
             }
         }
