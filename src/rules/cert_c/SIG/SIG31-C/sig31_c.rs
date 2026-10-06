@@ -28,6 +28,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::signal_handlers::RegisteredHandlers;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
@@ -79,13 +80,11 @@ impl CertRule for Sig31C {
 impl Sig31C {
     /// Recursively collect file-scope declarations, including inside preprocessor blocks.
     fn collect_file_scope_declarations<'a>(node: &Node<'a>, decls: &mut Vec<Node<'a>>) {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "declaration" {
-                    decls.push(child);
-                } else if child.kind().starts_with("preproc_") {
-                    Self::collect_file_scope_declarations(&child, decls);
-                }
+        for child in node.child_nodes() {
+            if child.kind() == "declaration" {
+                decls.push(child);
+            } else if child.kind().starts_with("preproc_") {
+                Self::collect_file_scope_declarations(&child, decls);
             }
         }
     }
@@ -115,16 +114,14 @@ impl Sig31C {
                     || decl_text.contains("atomic_");
 
                 // Extract ALL declarators (handles init_declarator, pointer_declarator, etc.)
-                for j in 0..child.child_count() {
-                    if let Some(decl_child) = child.child(j) {
-                        let kind = decl_child.kind();
-                        if kind == "init_declarator"
-                            || kind == "pointer_declarator"
-                            || kind == "array_declarator"
-                            || kind == "identifier"
-                        {
-                            self.extract_var_names(&decl_child, source, &mut vars, is_safe);
-                        }
+                for decl_child in child.child_nodes() {
+                    let kind = decl_child.kind();
+                    if kind == "init_declarator"
+                        || kind == "pointer_declarator"
+                        || kind == "array_declarator"
+                        || kind == "identifier"
+                    {
+                        self.extract_var_names(&decl_child, source, &mut vars, is_safe);
                     }
                 }
             }
@@ -157,14 +154,12 @@ impl Sig31C {
             }
             _ => {
                 // Try to find identifier child
-                for i in 0..declarator.child_count() {
-                    if let Some(child) = declarator.child(i) {
-                        if child.kind() == "identifier" {
-                            let var_name = get_node_text(&child, source);
-                            vars.insert(var_name.to_string(), is_safe);
-                        } else if child.kind() != "," {
-                            self.extract_var_names(&child, source, vars, is_safe);
-                        }
+                for child in declarator.child_nodes() {
+                    if child.kind() == "identifier" {
+                        let var_name = get_node_text(&child, source);
+                        vars.insert(var_name.to_string(), is_safe);
+                    } else if child.kind() != "," {
+                        self.extract_var_names(&child, source, vars, is_safe);
                     }
                 }
             }
@@ -272,14 +267,12 @@ impl Sig31C {
                 }
             }
             _ => {
-                for i in 0..declarator.child_count() {
-                    if let Some(child) = declarator.child(i) {
-                        if child.kind() == "identifier" {
-                            let var_name = get_node_text(&child, source);
-                            locals.insert(var_name.to_string());
-                        } else if child.kind() != "," {
-                            self.extract_local_var_names(&child, source, locals);
-                        }
+                for child in declarator.child_nodes() {
+                    if child.kind() == "identifier" {
+                        let var_name = get_node_text(&child, source);
+                        locals.insert(var_name.to_string());
+                    } else if child.kind() != "," {
+                        self.extract_local_var_names(&child, source, locals);
                     }
                 }
             }

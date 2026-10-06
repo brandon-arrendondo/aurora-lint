@@ -29,6 +29,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::signal_handlers::RegisteredHandlers;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
@@ -234,12 +235,10 @@ impl Sig35C {
         if node.kind() == "compound_statement" {
             // Check if the last meaningful statement is a termination call
             let mut last_stmt = None;
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    // Skip braces and whitespace
-                    if child.kind() != "{" && child.kind() != "}" && child.kind() != "comment" {
-                        last_stmt = Some(child);
-                    }
+            for child in node.child_nodes() {
+                // Skip braces and whitespace
+                if child.kind() != "{" && child.kind() != "}" && child.kind() != "comment" {
+                    last_stmt = Some(child);
                 }
             }
 
@@ -293,38 +292,34 @@ impl Sig35C {
         let mut cases = Vec::new();
         let mut current_case_stmts = Vec::new();
 
-        for i in 0..body.child_count() {
-            if let Some(child) = body.child(i) {
-                match child.kind() {
-                    "case_statement" | "default_statement" => {
-                        // Start a new case, save previous one if any
-                        if !current_case_stmts.is_empty() {
-                            // We'll return the statements as a group
-                            // For simplicity, we'll just check the last one
-                        }
-                        current_case_stmts.clear();
+        for child in body.child_nodes() {
+            match child.kind() {
+                "case_statement" | "default_statement" => {
+                    // Start a new case, save previous one if any
+                    if !current_case_stmts.is_empty() {
+                        // We'll return the statements as a group
+                        // For simplicity, we'll just check the last one
                     }
-                    _ => {
-                        // Accumulate statements for current case
-                        if child.kind() != "{" && child.kind() != "}" {
-                            current_case_stmts.push(child);
-                        }
+                    current_case_stmts.clear();
+                }
+                _ => {
+                    // Accumulate statements for current case
+                    if child.kind() != "{" && child.kind() != "}" {
+                        current_case_stmts.push(child);
                     }
                 }
             }
         }
 
         // Simplified: just collect all non-label statements in switch
-        for i in 0..body.child_count() {
-            if let Some(child) = body.child(i) {
-                if child.kind() != "{"
-                    && child.kind() != "}"
-                    && child.kind() != "case_statement"
-                    && child.kind() != "default_statement"
-                    && child.kind() != "break_statement"
-                {
-                    cases.push(child);
-                }
+        for child in body.child_nodes() {
+            if child.kind() != "{"
+                && child.kind() != "}"
+                && child.kind() != "case_statement"
+                && child.kind() != "default_statement"
+                && child.kind() != "break_statement"
+            {
+                cases.push(child);
             }
         }
 
@@ -370,17 +365,13 @@ impl Sig35C {
     fn is_termination_statement(&self, node: &Node, source: &str) -> bool {
         // Check if node is a call to abort, _Exit, or quick_exit
         if node.kind() == "expression_statement" {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "call_expression" {
-                        if let Some(function) = child.child_by_field_name("function") {
-                            let func_name = get_node_text(&function, source);
-                            if func_name == "abort"
-                                || func_name == "_Exit"
-                                || func_name == "quick_exit"
-                            {
-                                return true;
-                            }
+            for child in node.child_nodes() {
+                if child.kind() == "call_expression" {
+                    if let Some(function) = child.child_by_field_name("function") {
+                        let func_name = get_node_text(&function, source);
+                        if func_name == "abort" || func_name == "_Exit" || func_name == "quick_exit"
+                        {
+                            return true;
                         }
                     }
                 }
