@@ -64,9 +64,10 @@ If you write C for automotive, medical or aerospace, these rules apply to your
 code exactly as they do to anyone else's, and aurora-lint is usable alongside whatever
 MISRA tooling your certification process requires.
 
-Two rules from NASA JPL's Power of Ten are also implemented alongside CERT C
-(`BRULE-060` no dynamic allocation after initialization, `BRULE-065` no
-excessive pointer indirection). See
+Two rules from NASA JPL's coding rules are also implemented alongside CERT C:
+`BRULE-060` (no dynamic allocation after initialization, Power of Ten rule 3)
+and `BRULE-065` (no more than two levels of pointer indirection in a
+declaration, JPL D-60411 Rule 26). See
 [`docs/future-rulesets.rst`](docs/future-rulesets.rst) for other open
 standards that could be added and why they were not needed first.
 

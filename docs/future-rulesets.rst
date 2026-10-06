@@ -33,8 +33,8 @@ not a fallback:
 
 So the question this page answers is not "what would we add if we could afford
 MISRA" but "which open standards add coverage CERT C does not already give
-us". Two rules on that list are already implemented — see the note under
-The Power of 10 Rules below.
+us". Two rules from the JPL lists below are already implemented — see the
+note under The Power of 10 Rules below.
 
 The Power of 10 Rules (NASA JPL, 2006)
 =======================================
@@ -51,14 +51,17 @@ statically analyze. They complement MISRA C guidelines.
 6. **Limited scope** — declare all data objects at the smallest possible scope.
 7. **Check return values** — check the return value of all non-void functions.
 8. **Limited preprocessor use** — limit to file inclusion and simple macros.
-9. **Limited pointer complexity** — max 2 levels of dereferencing.
+9. **Limited pointer use** — at most one level of dereferencing, no dereference hidden in a macro or typedef, and no function pointers.
 10. **Compiler warnings + static analysis** — compile with all warnings enabled; use static analysis tools.
 
 .. note::
 
-   **Rules 3 and 9 are already implemented**, as ``BRULE-060`` (no dynamic
-   memory allocation after initialization) and ``BRULE-065`` (no excessive
-   pointer indirection) in ``src/rules/brules/``. They are the only non-CERT-C
+   **Rule 3 is already implemented**, as ``BRULE-060`` (no dynamic memory
+   allocation after initialization) in ``src/rules/brules/``. Next to it,
+   ``BRULE-065`` (no excessive pointer indirection) flags a declaration with
+   more than two levels of pointer indirection. That is the JPL standard's
+   threshold (D-60411 Rule 26, from MISRA-C:2004 Rule 17.5), not rule 9's
+   stricter one level. They are the only non-CERT-C
    rules aurora-lint ships, and they are enabled through
    ``src/rules/brules/rules-all.toml`` rather than the CERT C manifests. The
    rest of the Power of Ten remains a candidate: rules 1, 2, 4, 6 and 8 are
