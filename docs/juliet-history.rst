@@ -1341,7 +1341,7 @@ See :doc:`bibliography` for full references.
 Sources: `ISSTA 2022 <https://dl.acm.org/doi/10.1145/3533767.3534380>`_ |
 `Goseva 2015 <https://community.wvu.edu/~kagoseva/Papers/IST-2015.pdf>`_ |
 `ASE 2016 <https://doi.org/10.1145/2970276.2970347>`_ |
-`JKU 2014 <https://www.se.jku.at/wp-content/uploads/2014/08/2014.Using-the-Juliet-Test-Suite.pdf>`_ |
+`Wagner & Sametinger, "Using the Juliet Test Suite to compare Static Security Scanners", SECRYPT 2014 <https://www.se.jku.at/wp-content/uploads/2014/08/2014.Using-the-Juliet-Test-Suite.pdf>`_ |
 `DeLancey, Semgrep blog, 2025 <https://semgrep.dev/blog/2025/security-research-comparing-semgrep-community-edition-and-semgrep-code-for-static-analysis/>`_
 
 Version History (v0.2.1 – v0.3.17)
