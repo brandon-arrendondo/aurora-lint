@@ -1,10 +1,10 @@
 Measurement Notes
 =================
 
-Three things a reader needs to compare real-world figures across
-releases: why the v0.5.0 baseline is a trend break rather than a gain, how the
-ERR33-C labels moved between oracle snapshots, and how the precision intervals
-are computed. The paper states the finding and cites this page at a pinned
+What a reader needs to compare figures across releases: why the v0.5.0
+baseline is a trend break rather than a gain, how the ERR33-C labels moved
+between oracle snapshots, what changed in how v0.6.0 is measured, and how the
+precision intervals are computed. The paper states the finding and cites this page at a pinned
 version for the detail.
 
 .. contents::
@@ -192,6 +192,58 @@ Reading an ERR33-C figure
   labels, relabeled labels and withdrawn findings. Read it through the
   like-for-like view that excludes the rule, or through a per-rule delta that
   separates the three, not as a single number.
+
+What changed in how v0.6.0 is measured
+--------------------------------------
+
+Between v0.5.3 and v0.6.0 every movement in the benchmark figures was traced
+to the commit that caused it, before the release was cut. Most are changes in
+what the rules detect, and the changelog lists them. The ones below change
+*how* a figure is measured, so they are trend breaks: compare a v0.6.0 figure
+with a v0.5.x one only after accounting for them. The figures themselves come
+from the release's citation runs, not from this page.
+
+Juliet
+~~~~~~
+
+- **Which rules run on each CWE.** Fast mode runs, for each Juliet CWE, the
+  rules that map to it. Since this release a rule's mapping holds only the
+  CWEs its own Juliet cases verify; the rest moved to a list of related CWEs.
+  Whole blocks of a rule's findings on a CWE therefore appear or vanish, and
+  the per-file denominator changes with them. Some true positives that
+  disappeared from a CWE (for example STR31-C on CWE-124 and CWE-127) are
+  mapping removals, not detection losses.
+- **What a flaw line is.** A flaw line is now the code a ``FLAW`` comment
+  annotates, counted once. This changes the flaw-line figures and nothing else.
+- **Caller sets.** Under ADR-0011 a check made by every visible caller proves
+  a parameter only when the caller set is closed: the function is ``static``
+  and its address stays inside the scanned source. Juliet's functions have
+  external linkage, so they count as open, and the rules now report inside
+  good functions whose callers pass only safe values. Most of those are the
+  hardcoded-value good functions NIST describes as Juliet's most widespread
+  issue. The Juliet runs declare ``closed_program``, but in this release that
+  option applies only to EXP33-C (:doc:`options`). Juliet's false positives
+  rise accordingly. On real-world code the same change is the intended reading,
+  because exported and library functions do have callers the scan cannot see.
+
+Real-world
+~~~~~~~~~~
+
+- **What counts as the corpus.** The benchmark runner now excludes each
+  project's test, demo and tooling trees from the scan entirely, including
+  from the cross-file facts other files are checked against, as declared in
+  ``docs/design/realworld-corpus-scope.md``. Findings in those trees leave the
+  figures.
+- **Declared facts.** Each real-world manifest now declares its data model and,
+  where the project frees memory through its own functions, its deallocators
+  (``conf/realworld/``). Since frees count only by proof, a declaration can
+  remove leak reports a project's wrapper used to cause, or let a rule see a
+  free it missed and report where it was silent.
+- **Analysis time.** Real-world analysis is markedly slower than in v0.5.3,
+  mostly because of one new null-state proof whose cost grows with the square
+  of a function's length, and partly because previously unparsable code now
+  parses. Juliet's short functions show little of it. Compare analysis times
+  only between runs of the same release on the same node.
 
 Precision intervals
 -------------------
