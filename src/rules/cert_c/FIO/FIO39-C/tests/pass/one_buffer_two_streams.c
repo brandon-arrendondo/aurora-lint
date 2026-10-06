@@ -1,7 +1,7 @@
 /*
- * Rule: FIO50-C
+ * Rule: FIO39-C
  * Source: testcases
- * Status: PASS - Should NOT trigger FIO50-C violation
+ * Status: PASS - Should NOT trigger FIO39-C violation
  *
  * fread and fwrite take the stream as their LAST argument. Copying through
  * one buffer from one stream to another reads one stream and writes a

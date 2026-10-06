@@ -1,7 +1,7 @@
 /*
- * Rule: FIO50-C
+ * Rule: FIO39-C
  * Source: testcases
- * Status: PASS - Should NOT trigger FIO50-C violation
+ * Status: PASS - Should NOT trigger FIO39-C violation
  *
  * All operations in same direction (output only)
  */

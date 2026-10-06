@@ -1,7 +1,6 @@
 /*
- * Rule: FIO50-C
- * Task: 409
- * Status: FAIL - Should trigger FIO50-C violation
+ * Rule: FIO39-C
+ * Status: FAIL - Should trigger FIO39-C violation
  *
  * Two different functions each use a same-named FILE* parameter ("fp").
  * The first function is fully compliant. The second function has a genuine

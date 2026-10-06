@@ -1,7 +1,7 @@
 /*
- * Rule: FIO50-C
+ * Rule: FIO39-C
  * Source: testcases
- * Status: FAIL - Should trigger FIO50-C violation
+ * Status: FAIL - Should trigger FIO39-C violation
  *
  * fputs and fgets take the stream as their LAST argument. Output to fp
  * followed by input from fp, through different buffers, is still an

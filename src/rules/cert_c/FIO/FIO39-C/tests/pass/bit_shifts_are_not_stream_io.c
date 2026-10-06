@@ -1,7 +1,7 @@
 /*
- * Rule: FIO50-C
+ * Rule: FIO39-C
  * Source: testcases
- * Status: PASS - Should NOT trigger FIO50-C violation
+ * Status: PASS - Should NOT trigger FIO39-C violation
  *
  * In C, << and >> are shifts, not stream insertion/extraction. An integer
  * shifted both ways, or a byte array unpacked with shifts, is not a file
