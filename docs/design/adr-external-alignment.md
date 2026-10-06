@@ -165,10 +165,15 @@ costs much less than answering them in review.
   - Its true detections there cannot count as TPs.
   - Its recall is measured against violations aurora-lint found.
 
-  This is the classic pooling bias from IR evaluation: judgments built only
-  from some systems' outputs favor those systems (Zobel, SIGIR 1998; Buckley
-  et al., Information Retrieval 2007; **unverified** here, full texts not
-  fetched). A referee of the tool-comparison paper will raise it.
+  IR evaluation knows this risk from pooled relevance judgments. Zobel
+  (SIGIR 1998) notes that a pool "may misjudge the performance of novel
+  retrieval techniques" that did not contribute to it, and may overestimate
+  techniques built from contributors; at TREC's pool depth he found relative
+  rankings reliable but recall overestimated. Buckley et al. (Information
+  Retrieval 10(6), 2007) show that pools too small for their collection
+  produce a biased judgment set. A pool drawn from one tool's output alone
+  is the extreme case of Zobel's first effect. A referee of the
+  tool-comparison paper will raise it.
   - **Shore-up:** before cross-tool figures, adjudicate a random sample of
     each competitor's *unlabeled* findings (the pool-deepening remedy).
     Report the labeled fraction of each tool's output next to its precision.
