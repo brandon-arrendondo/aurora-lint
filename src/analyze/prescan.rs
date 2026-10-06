@@ -7089,6 +7089,20 @@ fn fold_header_summaries(
     );
 }
 
+/// One `#include` waiting in `resolve_includes`' queue.
+struct PendingInclude {
+    /// The spelling, delimiters stripped.
+    path: String,
+    /// The directory of the file that names it, searched first.
+    source_dir: Option<PathBuf>,
+    /// The file whose `#include` this is; `None` for a forced include,
+    /// which no file names.
+    includer: Option<Arc<str>>,
+    /// The `#include` sits in an arm its own file proves is never compiled
+    /// (see `extract_include_directives_with_liveness`).
+    in_dead_arm: bool,
+}
+
 /// Resolve `#include` directives from source files against the given include
 /// search paths, parse found headers, and merge declarations into `context`.
 ///
@@ -7123,16 +7137,14 @@ pub fn resolve_includes(
     let mut parser = CParser::new()?;
     let mut resolved_set: HashSet<PathBuf> = HashSet::new();
 
-    // Queue of (include_path, source_dir, includer) to resolve — supports
-    // transitive includes. The includer is the file whose `#include` this is,
-    // `None` for a forced include, which no file names.
-    let mut queue: Vec<(String, Option<PathBuf>, Option<Arc<str>>)> = Vec::new();
+    // Queue of includes to resolve — supports transitive includes.
+    let mut queue: Vec<PendingInclude> = Vec::new();
 
     let mut includer_real_paths: HashMap<Arc<str>, String> = HashMap::new();
     // Seed the queue with #include directives from source files
     for file_path in source_files {
         if let Ok((tree, source)) = parser.parse_file(file_path) {
-            let directives = extract_include_directives(&tree.root_node(), &source);
+            let directives = extract_include_directives_with_liveness(&tree.root_node(), &source);
             let source_dir = Path::new(file_path).parent().map(|p| p.to_path_buf());
             let includer: Arc<str> = Arc::from(file_path.as_str());
             if has_computed_include(&tree.root_node()) {
@@ -7143,8 +7155,13 @@ pub fn resolve_includes(
                     super::context::ANY_INCLUDE.to_string(),
                 );
             }
-            for inc in directives {
-                queue.push((inc, source_dir.clone(), Some(Arc::clone(&includer))));
+            for (path, in_dead_arm) in directives {
+                queue.push(PendingInclude {
+                    path,
+                    source_dir: source_dir.clone(),
+                    includer: Some(Arc::clone(&includer)),
+                    in_dead_arm,
+                });
             }
         }
     }
@@ -7156,7 +7173,12 @@ pub fn resolve_includes(
     // Like any other header it is looked up on the search paths, unless it is
     // already an absolute path (see `find_header`).
     for header in forced_includes.iter().rev() {
-        queue.push((header.clone(), None, None));
+        queue.push(PendingInclude {
+            path: header.clone(),
+            source_dir: None,
+            includer: None,
+            in_dead_arm: false,
+        });
     }
 
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
@@ -7165,12 +7187,20 @@ pub fn resolve_includes(
     // missing-project-header classification runs once per distinct path
     // rather than once per occurrence — `<stdio.h>` alone recurs in every
     // file of a large tree.
-    let mut unresolved_seen: HashSet<(String, Option<PathBuf>)> = HashSet::new();
+    // The dead-arm flag is part of the key: an include met first in a dead
+    // arm must not hide a live occurrence of the same spelling.
+    let mut unresolved_seen: HashSet<(String, Option<PathBuf>, bool)> = HashSet::new();
     // (spelling, includer) pairs already recorded as matched only by case.
     let mut case_seen: HashSet<(String, Option<Arc<str>>)> = HashSet::new();
 
     // Process queue: resolve each header, parse it, and enqueue its transitive includes
-    while let Some((include_path, source_dir, includer)) = queue.pop() {
+    while let Some(PendingInclude {
+        path: include_path,
+        source_dir,
+        includer,
+        in_dead_arm,
+    }) = queue.pop()
+    {
         if let Some(found) =
             find_header(&include_path, source_dir.as_deref(), include_paths, lookup)
         {
@@ -7279,8 +7309,14 @@ pub fn resolve_includes(
                         super::context::ANY_INCLUDE.to_string(),
                     );
                 }
-                for inc in extract_include_directives(&root, &hsource) {
-                    queue.push((inc, header_dir.clone(), Some(Arc::clone(&includer))));
+                for (path, in_dead_arm) in extract_include_directives_with_liveness(&root, &hsource)
+                {
+                    queue.push(PendingInclude {
+                        path,
+                        source_dir: header_dir.clone(),
+                        includer: Some(Arc::clone(&includer)),
+                        in_dead_arm,
+                    });
                 }
             }
         } else {
@@ -7293,15 +7329,26 @@ pub fn resolve_includes(
                 includer.as_ref(),
                 format!("{}{include_path}", super::context::UNRESOLVED_INCLUDE),
             );
-            if !unresolved_seen.insert((include_path.clone(), source_dir.clone())) {
+            if !unresolved_seen.insert((include_path.clone(), source_dir.clone(), in_dead_arm)) {
                 continue;
             }
-            let project_header = is_missing_project_header(
-                &include_path,
-                source_dir.as_deref(),
-                &project_search_paths,
-                lookup,
-            );
+            // Only an include the project itself makes can name a header the
+            // project is missing. One written inside a header outside every
+            // project root is the system's: `/usr/include/ares.h` includes
+            // `<sys/bsdskt.h>` for NetWare, and its own directory has a
+            // `sys/`, which says nothing about the project. Nor does an
+            // include in an arm its file proves is never compiled.
+            let includer_outside = source_dir.as_deref().is_some_and(|dir| {
+                origins.is_outside(&dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()))
+            });
+            let project_header = !in_dead_arm
+                && !includer_outside
+                && is_missing_project_header(
+                    &include_path,
+                    source_dir.as_deref(),
+                    &project_search_paths,
+                    lookup,
+                );
             context
                 .macro_gaps
                 .push(crate::analyze::macro_gaps::unresolved_include(
@@ -7450,10 +7497,33 @@ fn has_computed_include(root: &Node) -> bool {
 pub(crate) fn extract_include_directives(node: &Node, source: &str) -> Vec<String> {
     let mut directives = Vec::new();
     extract_includes_recursive(node, source, &mut directives);
-    directives
+    directives.into_iter().map(|(path, _)| path).collect()
 }
 
-fn extract_includes_recursive(node: &Node, source: &str, directives: &mut Vec<String>) {
+/// [`extract_include_directives`], each path paired with whether its
+/// `#include` sits in an arm the file itself proves is never compiled
+/// ([`file_proven_dead_lines`](crate::analyze::init_state::file_proven_dead_lines):
+/// `#if 0`, `__cplusplus` as C, locally-constant `#define`/`#undef`
+/// evidence). A platform-gated arm (`#ifdef NETWARE`) is not dead by that
+/// test (ADR-0010 D2) and is reported live.
+fn extract_include_directives_with_liveness(node: &Node, source: &str) -> Vec<(String, bool)> {
+    let mut directives = Vec::new();
+    extract_includes_recursive(node, source, &mut directives);
+    if directives.is_empty() {
+        return Vec::new();
+    }
+    let dead = crate::analyze::init_state::file_proven_dead_lines(source);
+    directives
+        .into_iter()
+        .map(|(path, line)| {
+            let in_dead_arm = dead.iter().any(|&(s, e)| line >= s && line <= e);
+            (path, in_dead_arm)
+        })
+        .collect()
+}
+
+/// Collects each `#include` path with its 1-based line.
+fn extract_includes_recursive(node: &Node, source: &str, directives: &mut Vec<(String, usize)>) {
     match node.kind() {
         "preproc_include" => {
             // The path child contains the include path (e.g. "foo.h" or <foo.h>)
@@ -7469,7 +7539,7 @@ fn extract_includes_recursive(node: &Node, source: &str, directives: &mut Vec<St
                         text
                     };
                     if !path.is_empty() {
-                        directives.push(path.to_string());
+                        directives.push((path.to_string(), node.start_position().row + 1));
                     }
                 }
             }
@@ -9466,6 +9536,48 @@ void caller(char *other) {
             is_missing_project_header("sys/_types.h", None, &all_paths, &HeaderLookup::default()),
             "guard removed: the system root answers, reproducing the bug"
         );
+    }
+
+    #[test]
+    fn a_dead_arm_include_does_not_hide_a_live_one_of_the_same_header() {
+        // Both files sit in one directory, so the two occurrences share a
+        // (spelling, directory) key; the one in the `#if 0` arm must not
+        // stand for the live one, whichever the queue reaches first.
+        for live_first in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let src = tmp.path().join("src");
+            let include = tmp.path().join("include");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::create_dir_all(include.join("object")).unwrap();
+            let dead = "#if 0\n#include <object/gen.h>\n#endif\n";
+            let live = "#include <object/gen.h>\n";
+            let (a, b) = if live_first {
+                (live, dead)
+            } else {
+                (dead, live)
+            };
+            std::fs::write(src.join("a.c"), a).unwrap();
+            std::fs::write(src.join("b.c"), b).unwrap();
+            let sources = ["a.c", "b.c"].map(|f| src.join(f).to_string_lossy().to_string());
+            let mut ctx = ProjectContext::new();
+            resolve_includes(
+                &sources,
+                &[],
+                &[include.to_string_lossy().to_string()],
+                &[tmp.path().to_string_lossy().to_string()],
+                &mut ctx,
+                None,
+                false,
+                Default::default(),
+                &HeaderLookup::default(),
+            )
+            .unwrap();
+            assert!(
+                ctx.unresolved_project_headers.contains("object/gen.h"),
+                "live_first={live_first}: {:?}",
+                ctx.unresolved_project_headers
+            );
+        }
     }
 
     #[test]

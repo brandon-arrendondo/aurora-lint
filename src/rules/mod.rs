@@ -68,6 +68,15 @@ pub trait CertRule {
     /// section of `docs/design/internal-capability-catalog.md`.
     fn set_project_context(&self, _context: &ProjectContext) {}
 
+    /// Why this rule, or one of its checks, stands down for the whole
+    /// project under `context`, or `None` when it runs normally. A rule that
+    /// switches itself off project-wide must say so here: the scan reports
+    /// it once on stderr, since a rule going quiet is otherwise
+    /// indistinguishable from a rule finding nothing.
+    fn project_wide_switch_off(&self, _context: &ProjectContext) -> Option<String> {
+        None
+    }
+
     /// Inject the policy and environment settings (ADR-0015) this run
     /// analyzes under. Called for every enabled rule on every file, whether
     /// or not cross-file context exists. Default is a no-op; a rule that

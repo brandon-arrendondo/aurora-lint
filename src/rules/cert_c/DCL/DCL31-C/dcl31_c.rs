@@ -446,6 +446,26 @@ impl CertRule for Dcl31C {
         *self.incomplete_declarations.borrow_mut() = !context.unresolved_project_headers.is_empty();
     }
 
+    fn project_wide_switch_off(
+        &self,
+        context: &crate::analyze::context::ProjectContext,
+    ) -> Option<String> {
+        if context.unresolved_project_headers.is_empty() {
+            return None;
+        }
+        let mut headers: Vec<&str> = context
+            .unresolved_project_headers
+            .iter()
+            .map(String::as_str)
+            .collect();
+        headers.sort_unstable();
+        Some(format!(
+            "undeclared-function check off: project header(s) not found, \
+             presumably generated at build time: {}",
+            headers.join(", ")
+        ))
+    }
+
     fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
         *self.typedef_types.borrow_mut() = types.typedef_types.clone();
     }

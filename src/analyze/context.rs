@@ -359,7 +359,11 @@ pub struct ProjectContext {
     /// does *not* land here — its directory prefix doesn't exist under the
     /// project either — so this set means specifically "this project's
     /// declaration set is incomplete because a build step we can't run
-    /// produces part of it".
+    /// produces part of it". Nor does an include written inside a header
+    /// outside every project root (a system header's own missing includes),
+    /// or one in an arm its file proves is never compiled (ADR-0010 D2).
+    /// A rule that stands down because this set is non-empty reports it
+    /// through `CertRule::project_wide_switch_off`.
     #[serde(default)]
     pub unresolved_project_headers: HashSet<String>,
     /// Every place the macro-expansion engine declined or failed to see a

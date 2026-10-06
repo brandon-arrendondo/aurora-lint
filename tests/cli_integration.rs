@@ -1879,6 +1879,71 @@ fn crossfile_header_constructor_returns_allocation_flags_leak() {
     );
 }
 
+// ─── DCL31-C's project-wide switch-off for missing generated headers ─────────
+
+/// Scan `dcl31_offswitch/<project>` with `-I <include>` under DCL31-C and
+/// return (lines DCL31-C flagged, stderr).
+fn dcl31_offswitch_scan(project: &str, include: &str) -> (Vec<u64>, String) {
+    let base = fixtures().join("dcl31_offswitch");
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        base.join(project).to_str().unwrap(),
+        "-m",
+        manifest_dcl31().to_str().unwrap(),
+        "-I",
+        base.join(include).to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let lines = violations
+        .iter()
+        .filter(|v| v["rule_id"] == "DCL31-C")
+        .map(|v| v["line"].as_u64().unwrap())
+        .collect();
+    (lines, stderr)
+}
+
+#[test]
+fn an_include_inside_a_system_header_does_not_switch_dcl31_off() {
+    // c-ares' ares.h, reduced: a header off the project, on the search path,
+    // includes headers that don't exist on this host while a `sys/` directory
+    // sits beside it. Those are the system's missing headers, not the
+    // project's, so the undeclared-call check keeps running.
+    let (lines, stderr) = dcl31_offswitch_scan("system_includer", "sysinc");
+    assert_eq!(lines, vec![6], "never_declared() should be flagged");
+    assert!(!stderr.contains("DCL31-C"), "{stderr}");
+}
+
+#[test]
+fn an_include_in_a_file_proven_dead_arm_does_not_switch_dcl31_off() {
+    let (lines, stderr) = dcl31_offswitch_scan("dead_arm", "dead_arm/include");
+    assert_eq!(lines, vec![5], "never_declared() should be flagged");
+    assert!(!stderr.contains("DCL31-C"), "{stderr}");
+}
+
+#[test]
+fn a_missing_generated_project_header_switches_dcl31_off_and_says_so() {
+    // seL4's layout: the project has include/object/ but structures_gen.h is
+    // emitted at build time, so every declaration in it is invisible and the
+    // undeclared-call check stands down -- naming the rule, the project and
+    // the header rather than going quiet.
+    let (lines, stderr) = dcl31_offswitch_scan("generated", "generated/include");
+    assert!(
+        lines.is_empty(),
+        "pte_new() is declared in the missing header"
+    );
+    let warning = stderr
+        .lines()
+        .find(|l| l.contains("DCL31-C"))
+        .unwrap_or_else(|| panic!("no switch-off warning in: {stderr}"));
+    assert!(warning.contains("dcl31_offswitch/generated"), "{warning}");
+    assert!(warning.contains("object/structures_gen.h"), "{warning}");
+}
+
 // ─── Cross-file header-declared functions (DCL15-C) ─────────────────────────
 
 fn manifest_dcl15() -> PathBuf {
