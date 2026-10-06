@@ -255,9 +255,11 @@ playbook does not run for you). Point the venv at an existing/shared one
 instead with ``-e dev_venv=<path>``, e.g. ``-e dev_venv=~/venvs/shared``.
 
 It also installs and schedules a disk-guard cron (``cargo-sweep`` +
-``scripts/cargo-target-gc.sh``, nightly at 03:30) that caps ``target/``
+``scripts/cargo-target-gc.sh``, hourly) that caps ``target/``
 growth -- skip it on a node with plenty of headroom with
-``-e install_disk_guard=false``. This exists because two otherwise
+``-e install_disk_guard=false``. The script runs on macOS too (no
+``flock`` there; it skips that one check), so a Mac node can take the same
+``crontab`` line by hand, listing each worktree it builds in. This exists because two otherwise
 identically-provisioned dev nodes were found to have diverged on exactly
 this (2026-08-31): one had the cron, one didn't, and the one without it had
 an unbounded ``target/`` and a manually-patched ``Cargo.toml`` disabling

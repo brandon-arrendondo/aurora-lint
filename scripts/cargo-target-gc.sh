@@ -22,7 +22,13 @@
 #
 # Usage: cargo-target-gc.sh [repo ...]
 #   (default: the aurora-lint clone under $AURORA_LINT_SRC_ROOT, or ~/data)
+#
+# Portable to macOS: BSD date has no -I, and macOS ships no flock, so the
+# per-repo lock check runs only where flock exists. The process check above
+# it still keeps a run from racing any build.
 set -uo pipefail
+
+stamp() { date +%Y-%m-%dT%H:%M:%S%z; }
 
 SWEEP_DAYS="${SWEEP_DAYS:-7}"
 MAX_TARGET_GB="${MAX_TARGET_GB:-6}"
@@ -32,7 +38,7 @@ if [ ${#REPOS[@]} -eq 0 ]; then
 fi
 
 if pgrep -x cargo >/dev/null || pgrep -x rustc >/dev/null; then
-  echo "$(date -Is) skip: a cargo/rustc build is running"
+  echo "$(stamp) skip: a cargo/rustc build is running"
   exit 0
 fi
 
@@ -42,8 +48,8 @@ for repo in "${REPOS[@]}"; do
   # Cargo holds an exclusive flock on target/<profile>/.cargo-lock for the
   # duration of a build. Skip just this repo rather than race it.
   lock="$repo/target/debug/.cargo-lock"
-  if [ -f "$lock" ] && ! flock -n "$lock" true; then
-    echo "$(date -Is) skip $repo: a build holds $lock"
+  if [ -f "$lock" ] && command -v flock >/dev/null && ! flock -n "$lock" true; then
+    echo "$(stamp) skip $repo: a build holds $lock"
     continue
   fi
 
@@ -64,5 +70,5 @@ for repo in "${REPOS[@]}"; do
     now=$(du -sm "$repo/target" | cut -f1)
   fi
 
-  echo "$(date -Is) $repo: ${before}M -> ${now}M"
+  echo "$(stamp) $repo: ${before}M -> ${now}M"
 done
