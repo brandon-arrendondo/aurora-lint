@@ -1670,7 +1670,8 @@ fn is_inside_ast_null_guard(var_name: &str, node: &Node, source: &str) -> bool {
 /// the result of the call that produced it. Every guard, exiting test,
 /// abort macro and closed caller set that would clear the dereference is
 /// still credited. Two starts are left alone because the source proves
-/// them: a parameter every call site proves non-null, and a callee whose
+/// them: a parameter every call site proves non-null, over a closed caller
+/// set (`FunctionSummary::caller_set_is_closed`), and a callee whose
 /// own body never returns NULL. So is any other start (a copy of another
 /// pointer, a field read), where there is no single value to re-seed.
 #[allow(clippy::too_many_arguments)]
@@ -1707,7 +1708,10 @@ fn check_dereferences_before_null_tests(
                     continue;
                 };
                 let mut own = summaries.get(name).cloned().unwrap_or_default();
-                if own.callsite_param_proven_nonnull.contains(&idx) {
+                // Every call site proving it non-null is a proof only over a
+                // closed caller set (ADR-0011): an exported function has
+                // callers the scan never saw.
+                if own.caller_set_is_closed() && own.callsite_param_proven_nonnull.contains(&idx) {
                     continue;
                 }
                 own.callsite_param_null_states

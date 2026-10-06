@@ -2503,6 +2503,25 @@ fn a_closed_program_does_not_turn_a_clean_bodied_caller_into_a_proof() {
     }
 }
 
+/// EXP34-C's dereference before a later NULL test: the one call site of
+/// `get` passes the address of an object, which proves `q` non-null only
+/// over a closed caller set. Undeclared, `get`'s external linkage leaves it
+/// open and `q->a` is reported; declared a closed program, the scanned call
+/// site is all of them and the later test is redundant.
+#[test]
+fn exp34_an_exported_functions_nonnull_callers_prove_it_only_in_a_closed_program() {
+    let lines = |closed| {
+        closed_program_lines(
+            "exp34_exported_nonnull_callers",
+            "manifest_exp34.toml",
+            "EXP34-C",
+            closed,
+        )
+    };
+    assert_eq!(lines(false), vec![8]);
+    assert_eq!(lines(true), Vec::<u64>::new());
+}
+
 /// The caller-set proofs aggregated into a prescan cache depend on the
 /// declaration, so a cache built under one is refused under the other.
 #[test]
