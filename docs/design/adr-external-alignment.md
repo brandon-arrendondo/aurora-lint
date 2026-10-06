@@ -387,7 +387,8 @@ Status of the 16 proposals at the end of this doc, against `72b8f734`:
     does simple text pattern matching" [Flawfinder]. Semgrep, which parses
     without preprocessing, says typedefs "are not known to Semgrep when
     parsing a file" [Semgrep-C].
-  - SATE's "false" examples include spelling confusion [SATE-IV].
+  - SATE's "false" examples include a tool that "confuses a function call
+    with a variable name" [SATE-IV], a misreading of what a name denotes.
   - Silence-when-unresolved is a *soundy* choice, "mostly sound, with
     specific, well-identified unsound choices". The manifesto asks papers to
     "evaluate the implications for the benchmarks" [Soundiness].
