@@ -78,35 +78,37 @@ ADR-0015, `docs/design/finding-location.md` (FL) and
 `docs/design/adr-external-alignment.md` (AEA); the man page, README and the
 other docs cite none. Keys into `bibliography.rst` (Lipp2022, Goseva2015,
 Christakis2016) resolve, and the claims made about them hold. Only the
-departures are listed. None was fixed on this branch: each changes a claim,
-so each needs its own re-check at the source before the edit.
+departures are listed. Each fix changed a claim, so each was re-checked at
+the source before its edit and landed as its own commit.
 
 | where | departure | cond | fix |
 |---|---|---|---|
-| `docs/juliet-history.rst` ~1315 | "Commercial Tool C ~73% detection" is its G-score; Goseva-Popstojanova & Perhinschi 2015, Table 3, give overall recall 59% (mean per-CWE 39%), false-alarm 7%. | 1 | follow-up |
-| `docs/juliet-history.rst` ~1266–1279 | Semgrep CE/Pro figures were measured on WebGoat (Java) and Juice Shop (Node), not C or Juliet, yet sit in a Juliet C table. | 1 | follow-up |
-| `docs/juliet-history.rst` ~1280–1300 | Infer, Flawfinder and CodeQL figures: no listed source contains them. | 1 | follow-up: cite or remove |
-| `docs/juliet-history.rst` ~1308 | Coverity "~15–20% FP" is Bessey et al.'s target ("below 20%"), not a measured rate. | 1 | follow-up |
-| `docs/juliet-history.rst` ~1352 | "JKU 2014" lacks authors and title (Wagner & Sametinger, 2014). | 1 | follow-up |
-| `docs/future-rulesets.rst` ~46, ~54 | Power of Ten rule 1 omits setjmp/longjmp and indirect recursion; rule 9 allows one level of dereferencing, not two (two is D-60411's). Check what the implemented rule enforces. | 1 | follow-up |
-| `docs/future-rulesets.rst` ~44 | "They complement MISRA C guidelines" is not in Holzmann's paper (the link is D-60411's). | 1 | follow-up |
-| `docs/future-rulesets.rst` ~48, 51, 79–93, 111 | Rule text from Power of Ten, D-60411 and Barr Group's own description copied near-verbatim without quotation marks. | 1 | follow-up: quote and cite, or rephrase |
-| `docs/testing-methodology.rst` ~519 | "SEI SCALe 2015 report" lacks author and title (Svoboda, *SCALe Analysis of JasPer Codebase*, SEI, 2015). | 1 | follow-up |
+| ~~`docs/juliet-history.rst` ~1315~~ | "Commercial Tool C ~73% detection" is its G-score; Goseva-Popstojanova & Perhinschi 2015, Table 3, give overall recall 59% (mean per-CWE 39%), false-alarm 7%. **Fixed:** `639ef449`. | 1 | done |
+| ~~`docs/juliet-history.rst` ~1266–1279~~ | Semgrep CE/Pro figures were measured on WebGoat (Java) and Juice Shop (Node), not C or Juliet, yet sit in a Juliet C table. **Fixed:** `de2f747f`. | 1 | done |
+| ~~`docs/juliet-history.rst` ~1280–1300~~ | Infer, Flawfinder and CodeQL figures: no listed source contains them. **Fixed:** `991bcf03` (rows removed). | 1 | done |
+| ~~`docs/juliet-history.rst` ~1308~~ | Coverity "~15–20% FP" is Bessey et al.'s target ("below 20%"), not a measured rate. **Fixed:** `060df6bd`. | 1 | done |
+| ~~`docs/juliet-history.rst` ~1352~~ | "JKU 2014" lacks authors and title (Wagner & Sametinger, 2014). **Fixed:** `b3f07602`. | 1 | done |
+| ~~`docs/future-rulesets.rst` ~46, ~54~~ | Power of Ten rule 1 omits setjmp/longjmp and indirect recursion; rule 9 allows one level of dereferencing, not two (two is D-60411's). Check what the implemented rule enforces. **Fixed:** `85d41d53` (rule 1), `4f0d1ca3` (rule 9; BRULE-065 enforces D-60411 Rule 26's two levels per declaration, and the docs now say so). | 1 | done |
+| ~~`docs/future-rulesets.rst` ~44~~ | "They complement MISRA C guidelines" is not in Holzmann's paper (the link is D-60411's). **Fixed:** `507c4113`. | 1 | done |
+| ~~`docs/future-rulesets.rst` ~48, 51, 79–93, 111~~ | Rule text from Power of Ten, D-60411 and Barr Group's own description copied near-verbatim without quotation marks. **Fixed:** `acf8c4e9` (P10 and D-60411 paraphrased with rule numbers; Barr Group quoted). | 1 | done |
+| ~~`docs/testing-methodology.rst` ~519~~ | "SEI SCALe 2015 report" lacks author and title (Svoboda, *SCALe Analysis of JasPer Codebase*, SEI, 2015). **Fixed:** `7b3e7adc` ("only" softened to the only one we found). | 1 | done |
 | ~~ADR-0010 ~110, ADR-0015 ~213~~ | "JPL D-60411, Rules 15–16" for explicit recovery: only Rule 16 says it; Rule 15 is parameter validity. **Fixed:** `cc6fff6d`. | 1 | done |
-| FL ~209–215 | SATE IV sections: §2.6, §2.7.1 and §2.9.7, not "§2.6 and §2.9.6". | 1 | follow-up |
-| FL ~222–226 | Hovemeyer & Pugh: the non-null-parameter point is §3.6. | 1 | follow-up |
-| FL ~227–231 | Engler et al. §7.2 is hypothetical ("would cause"), blames type coercion, and concerns a user-pointer checker; "direct evidence" overstates it. | 1 | follow-up |
-| FL ~173 | The Juliet User Guide is v1.2 (there is no 1.3 guide). | 1 | follow-up |
-| FL ~332 | Tricorder makes no prediction about developers; only Bessey supports the sentence. | 1 | follow-up |
-| AEA ~168–170 | Zobel 1998 and Buckley et al. 2007 do not show pools favour contributing systems. | 1 | follow-up |
-| AEA ~358 | The "did not want to see" phrase is Tricorder quoting Ayewah et al.; Tricorder's own definition differs. | 1 | follow-up |
-| AEA ~491 | "Effective-FP rates of tens of percent are normal" is contradicted by Tricorder (<10%) and Christakis & Bird. | 1 | follow-up |
-| AEA ~383 | SATE's example is a construct confusion (call taken for a variable), not a spelling confusion. | 1 | follow-up |
-| AEA ~393 | Ockham §2.3 uses CERT's sense of "sound", not the PL sense. | 1 | follow-up |
-| AEA ~779 | The Bodik "9 to 40%" figure is the FSE'97 paper quoting their PLDI'97 measurement. | 1 | follow-up |
-| AEA ~947 | LLM4FPM's 86% on D2A is label accuracy, not F1. | 1 | follow-up |
-| AEA ~417 | Padioleau's ~96% has no reference, and is a parse-success rate, not an error rate. | 1 | follow-up |
-| AEA reference list (~1133–1161) | Many entries are bare URLs or partial (no authors, title, venue or DOI); Soundiness lacks its venue; Bodik's venue is ESEC/FSE '97; Tartler can now be marked checked. | 1 | follow-up |
+| ~~FL ~209–215~~ | SATE IV sections: §2.6, §2.7.1 and §2.9.7, not "§2.6 and §2.9.6". **Fixed:** `013c7b6c`. | 1 | done |
+| ~~FL ~222–226~~ | Hovemeyer & Pugh: the non-null-parameter point is §3.6. **Fixed:** `777ac85a`. | 1 | done |
+| ~~FL ~227–231~~ | Engler et al. §7.2 is hypothetical ("would cause"), blames type coercion, and concerns a user-pointer checker; "direct evidence" overstates it. **Fixed:** `45d7bf75`. | 1 | done |
+| ~~FL ~173~~ | The Juliet User Guide is v1.2 (there is no 1.3 guide). **Fixed:** `a659c8fc`. | 1 | done |
+| ~~FL ~332~~ | Tricorder makes no prediction about developers; only Bessey supports the sentence. **Fixed:** `a3d63251`. | 1 | done |
+| ~~AEA ~168–170~~ | Zobel 1998 and Buckley et al. 2007 do not show pools favour contributing systems. **Fixed:** `6e819d40`. | 1 | done |
+| ~~AEA ~358~~ | The "did not want to see" phrase is Tricorder quoting Ayewah et al.; Tricorder's own definition differs. **Fixed:** `90a0b2a1`. | 1 | done |
+| ~~AEA ~491~~ | "Effective-FP rates of tens of percent are normal" is contradicted by Tricorder (<10%) and Christakis & Bird. **Fixed:** `5f27736d`. | 1 | done |
+| ~~AEA ~383~~ | SATE's example is a construct confusion (call taken for a variable), not a spelling confusion. **Fixed:** `27af5e76`. | 1 | done |
+| ~~AEA ~393~~ | Ockham §2.3 uses CERT's sense of "sound", not the PL sense. **Fixed:** `10e2af3d`. | 1 | done |
+| ~~AEA ~779~~ | The Bodik "9 to 40%" figure is the FSE'97 paper quoting their PLDI'97 measurement. **Fixed:** `e27ea46c`. | 1 | done |
+| ~~AEA ~947~~ | LLM4FPM's 86% on D2A is label accuracy, not F1. **Fixed:** `1a0a0001`. | 1 | done |
+| ~~AEA ~417~~ | Padioleau's ~96% has no reference, and is a parse-success rate, not an error rate. **Fixed:** `022295eb` (reference added; the figure stays flagged unverified, full text unreachable). | 1 | done |
+| ~~AEA reference list (~1133–1161)~~ | Many entries are bare URLs or partial (no authors, title, venue or DOI); Soundiness lacks its venue; Bodik's venue is ESEC/FSE '97; Tartler can now be marked checked. **Fixed:** `da3fd5c2`. | 1 | done |
+| AEA ~996, ~515 | Lipp et al. §5.1 (the four-scenario reading of the 47–80% range; the abstract, which was read, gives the range) and the ACM badging page could not be reached in this pass (bot wall, paywall, 403). The ACM claim already carries an "unverified" note; the Lipp §5.1 reading is recorded as checked in an earlier pass and matches `docs/bibliography.rst`. No text changed. | 1 | open: re-check when reachable |
+| `docs/future-rulesets.rst` BARR-C "Key embedded-specific areas" | The four bullets (volatile, file naming, comments, braces) are not on Barr Group's page that the rest of the paragraph now quotes; they would need the standard's own text. | 1 | open: check against BARR-C:2018 or remove |
 
 | where | what | cond | fix |
 |---|---|---|---|
