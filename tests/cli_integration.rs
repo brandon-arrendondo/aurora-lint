@@ -2412,14 +2412,19 @@ fn callers_walk_reads_the_static_caller_it_reached() {
     );
 }
 
-/// ENV33-C lines reported in `closed_program_callers/sink.c`, the project
-/// prescanned whole, optionally declared a closed program.
-fn env33_closed_program_lines(closed_program: bool) -> Vec<u64> {
+/// `rule` lines reported in `project/sink.c`, the project prescanned whole
+/// under `manifest`, optionally declared a closed program.
+fn closed_program_lines(
+    project: &str,
+    manifest: &str,
+    rule: &str,
+    closed_program: bool,
+) -> Vec<u64> {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
-    let project = fixtures().join("closed_program_callers");
+    let project = fixtures().join(project);
     let sink = project.join("sink.c");
-    let manifest = manifest_env33();
+    let manifest = fixtures().join(manifest);
     let setting = format!("closed_program={closed_program}");
     let (code, _, _) = run_aurora_lint(&[
         sink.to_str().unwrap(),
@@ -2437,7 +2442,7 @@ fn env33_closed_program_lines(closed_program: bool) -> Vec<u64> {
     let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
     let mut lines: Vec<u64> = violations
         .iter()
-        .filter(|v| v["rule_id"] == "ENV33-C")
+        .filter(|v| v["rule_id"] == rule)
         .map(|v| v["line"].as_u64().unwrap())
         .collect();
     lines.sort_unstable();
@@ -2445,21 +2450,57 @@ fn env33_closed_program_lines(closed_program: bool) -> Vec<u64> {
 }
 
 /// Undeclared, a non-static sink's in-tree callers are not all of its
-/// callers (ADR-0011), so a clean one proves nothing and every sink is
-/// reported.
+/// callers (ADR-0011), so the literal its one caller passes proves nothing
+/// and every format-string sink is reported.
 #[test]
-fn an_exported_sinks_clean_caller_proves_nothing_unless_the_program_is_closed() {
-    assert_eq!(env33_closed_program_lines(false), vec![9, 14, 19]);
+fn an_exported_sinks_literal_caller_proves_nothing_unless_the_program_is_closed() {
+    assert_eq!(
+        closed_program_lines(
+            "closed_program_callers",
+            "manifest_fio30.toml",
+            "FIO30-C",
+            false
+        ),
+        vec![9, 14, 19]
+    );
 }
 
-/// Declared a closed program, the in-tree callers are all of them, so
-/// run_fixed's clean caller proves its command safe. run_by_pointer's
-/// address is stored, so a call through the pointer is one no scan
-/// collects; run_arg is reached from main, which the environment calls.
-/// Both stay reported.
+/// Declared a closed program, the in-tree callers are all of them, so the
+/// literal show_fixed's caller passes proves its format string safe.
+/// show_by_pointer's address is stored, so a call through the pointer is
+/// one no scan collects; show_arg is reached from main, which the
+/// environment calls. Both stay reported.
 #[test]
 fn a_closed_program_closes_an_exported_sinks_caller_set() {
-    assert_eq!(env33_closed_program_lines(true), vec![14, 19]);
+    assert_eq!(
+        closed_program_lines(
+            "closed_program_callers",
+            "manifest_fio30.toml",
+            "FIO30-C",
+            true
+        ),
+        vec![14, 19]
+    );
+}
+
+/// A caller whose body reads no untrusted input can still pass the defect:
+/// here a relative command. ENV33-C's clean-caller walk judges the caller,
+/// not the value, so a declared closed program does not make it a proof and
+/// the exported sink is reported either way.
+#[test]
+fn a_closed_program_does_not_turn_a_clean_bodied_caller_into_a_proof() {
+    for closed_program in [false, true] {
+        assert_eq!(
+            closed_program_lines(
+                "closed_program_clean_caller",
+                "manifest_env33.toml",
+                "ENV33-C",
+                closed_program
+            ),
+            vec![9],
+            "closed_program = {closed_program}"
+        );
+    }
 }
 
 /// The caller-set proofs aggregated into a prescan cache depend on the
@@ -2471,7 +2512,7 @@ fn a_prescan_cache_is_refused_under_the_other_closed_program_declaration() {
     let out = dir.path().join("out.json");
     let project = fixtures().join("closed_program_callers");
     let sink = project.join("sink.c");
-    let manifest = manifest_env33();
+    let manifest = fixtures().join("manifest_fio30.toml");
     let run = |extra: &[&str]| {
         let mut args = vec![
             sink.to_str().unwrap(),

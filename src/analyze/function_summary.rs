@@ -945,13 +945,24 @@ impl FunctionSummary {
     /// (`address_taken` is false), so no call is made through a stored
     /// pointer by code that never names it.
     ///
-    /// This is the gate every caller-set proof goes through: a constant every
-    /// caller passes, a minimum buffer size, "no caller passes taint", "every
-    /// caller range-checks the index", reachability from a thread root. It
+    /// This is the gate every caller-set proof about the value passed goes
+    /// through: a constant every caller passes, a minimum buffer size, "no
+    /// caller passes taint", "every caller range-checks the index",
+    /// reachability from a thread root. The clean-caller walk
+    /// ([`every_caller_is_clean`]) judges callers by their bodies instead and
+    /// uses [`Self::caller_set_is_closed_by_linkage`]. It
     /// says nothing about how many call sites there are; a proof also needs
     /// at least one, which each aggregation checks for itself.
     pub fn caller_set_is_closed(&self) -> bool {
         (self.has_internal_linkage || self.caller_set_closed_by_declaration) && !self.address_taken
+    }
+
+    /// [`Self::caller_set_is_closed`] without what a declared closed program
+    /// adds: internal linkage and no address escape. For a proof that judges
+    /// a caller by something other than the value it passes, which the
+    /// declaration does not turn into a proof ([`every_caller_is_clean`]).
+    pub fn caller_set_is_closed_by_linkage(&self) -> bool {
+        self.has_internal_linkage && !self.address_taken
     }
 }
 
@@ -1756,8 +1767,14 @@ pub fn close_declared_caller_sets(summaries: &mut HashMap<String, FunctionSummar
 /// callers `is_clean` accepts -- the caller-side proof of ADR-0011, walked up
 /// the reverse call graph (`callers`, as `ProjectContext::callers` holds it).
 ///
-/// `name` itself needs a closed caller set
-/// ([`FunctionSummary::caller_set_is_closed`]) and at least one caller. Each
+/// `name` itself needs a caller set closed by linkage
+/// ([`FunctionSummary::caller_set_is_closed_by_linkage`]) and at least one
+/// caller. A declared closed program does not widen it: `is_clean` judges a
+/// caller by its body (no taint source in it), not by the value it passes, and
+/// a clean-bodied caller can still pass the defect -- a literal `CHAR_MAX` into
+/// an add, a relative command into `system`. That is not a proof about the
+/// value (ADR-0011), so the declaration, which only says the call sites are
+/// all of them, does not make it one. Each
 /// caller on the way up must pass `is_clean`. A caller that declares no
 /// parameters ends its branch: nothing its own callers pass can reach it. Any
 /// other caller forwards whatever reached it, so the proof needs the same of
@@ -1775,7 +1792,7 @@ pub fn every_caller_is_clean(
 ) -> bool {
     let closed_with_callers = |fname: &str| -> Option<Vec<String>> {
         let own = summaries.get(fname)?;
-        if !own.caller_set_is_closed() {
+        if !own.caller_set_is_closed_by_linkage() {
             return None;
         }
         let cs = callers.get(fname).filter(|cs| !cs.is_empty())?;

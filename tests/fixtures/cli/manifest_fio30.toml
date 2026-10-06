@@ -1,0 +1,8 @@
+[metadata]
+name = "CLI Integration Test - FIO30-C only"
+version = "1.0.0"
+description = "Minimal manifest for FIO30-C cross-file caller tests"
+cert_version = "2016"
+
+[rules.cert_c.FIO30-C]
+enabled = true
