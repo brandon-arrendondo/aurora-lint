@@ -232,7 +232,7 @@ impl Default for CParser {
 /// `get_node_text`, position reporting -- works from the returned
 /// string, so consistency is what matters, not exact file-offset
 /// correspondence.
-fn read_source_or_transcode(file_path: &str) -> Result<String> {
+pub(crate) fn read_source_or_transcode(file_path: &str) -> Result<String> {
     let bytes =
         fs::read(file_path).with_context(|| format!("Failed to read file: {}", file_path))?;
     Ok(decode_source_bytes(bytes)?)

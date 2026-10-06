@@ -412,7 +412,14 @@ fn process_file(
             &mut result.value_only_global_candidates,
             &mut result.pointer_named_globals,
         );
-        let objects = crate::analyze::side_effects::file_scope_objects(&root, &source, is_header);
+        let original = original_for_wrapper_macros(&result.function_macros, file_path);
+        let objects = crate::analyze::side_effects::file_scope_objects(
+            &root,
+            &source,
+            is_header,
+            &result.function_macros,
+            original.as_deref(),
+        );
         result.file_scope_names = objects.names;
         result.volatile_globals = objects.volatile;
         result.non_volatile_globals = objects.non_volatile;
@@ -6978,6 +6985,21 @@ fn extract_field_id_from_declarator(node: &Node, source: &str) -> Option<String>
 // Include path resolution (-I flag)
 // ---------------------------------------------------------------------------
 
+/// The file as written, when `macros` holds a declaration-wrapper macro. The
+/// parser's repair pass blanks the declared name beside such an invocation
+/// (`GLOBAL0(char cmd[N]);` is not a declaration to it), and reading the
+/// declaration back needs the name. Only a file with a wrapper pays the
+/// second read.
+fn original_for_wrapper_macros(
+    macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    path: &Path,
+) -> Option<String> {
+    if !crate::analyze::macro_expand::has_declaration_wrapper(macros) {
+        return None;
+    }
+    crate::parser::read_source_or_transcode(&path.to_string_lossy()).ok()
+}
+
 /// One resolved header's macros, aliases, function summaries and macro
 /// definitions, merged into `context` (the macro half of `resolve_includes`'
 /// per-header harvest). `outside_project` says whether the header lies outside
@@ -7018,7 +7040,16 @@ fn harvest_header_macros(
         &header_string_macros,
         &header_function_macros,
     );
-    fold_header_summaries(context, file_summaries, root, hsource);
+    let header_original =
+        original_for_wrapper_macros(&header_function_macros, Path::new(header_path));
+    fold_header_summaries(
+        context,
+        file_summaries,
+        root,
+        hsource,
+        &header_function_macros,
+        header_original.as_deref(),
+    );
     let names: Vec<String> = header_alias_alternatives.keys().cloned().collect();
     const_eval::merge_macro_alias_alternatives(
         Arc::make_mut(&mut context.macro_alias_alternatives),
@@ -7141,6 +7172,8 @@ fn fold_header_summaries(
     file_summaries: HashMap<String, FunctionSummary>,
     root: &Node,
     source: &str,
+    function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    original: Option<&str>,
 ) {
     let summaries = context.function_summaries.make_mut();
     for (name, mut summary) in file_summaries {
@@ -7149,7 +7182,13 @@ fn fold_header_summaries(
         }
         summaries.insert(name, summary);
     }
-    let objects = crate::analyze::side_effects::file_scope_objects(root, source, true);
+    let objects = crate::analyze::side_effects::file_scope_objects(
+        root,
+        source,
+        true,
+        function_macros,
+        original,
+    );
     Arc::make_mut(&mut context.global_object_names).extend(objects.names);
     Arc::make_mut(&mut context.volatile_globals).extend(objects.volatile);
     Arc::make_mut(&mut context.non_volatile_globals).extend(objects.non_volatile);

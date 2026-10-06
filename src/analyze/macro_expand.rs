@@ -5279,3 +5279,234 @@ mod macro_write_tests {
         assert!(calls(&["p"], "f(p->n)").forwarded.is_empty());
     }
 }
+
+/// Storage-class specifiers and qualifiers a declaration-wrapper macro may put
+/// in front of the declaration it is handed.
+const DECLARATION_PREFIXES: &[&str] = &[
+    "extern",
+    "static",
+    "const",
+    "volatile",
+    "register",
+    "_Thread_local",
+    "thread_local",
+    "__thread",
+];
+
+/// The index of the parameter `m` declares, when `m` is a declaration wrapper:
+/// a body of nothing but storage-class specifiers and qualifiers, one
+/// parameter, and at most an initializer (`extern A`, `A`, `static const A`,
+/// `A = B`). pure-ftpd's `GLOBAL0(char cmd[N]);` is `extern A` in a header
+/// and `A` where the globals are defined. Name-independent: the body decides.
+pub fn declaration_wrapper_param(m: &FunctionMacro) -> Option<usize> {
+    let mut rest = m.body.trim();
+    loop {
+        let word_end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let word = rest.get(..word_end)?;
+        if DECLARATION_PREFIXES.contains(&word) {
+            rest = rest.get(word_end..)?.trim_start();
+            continue;
+        }
+        let index = m.params.iter().position(|p| p == word)?;
+        let after = rest.get(word_end..)?.trim_start();
+        let initialized = after.starts_with('=') && !after.starts_with("==");
+        return (after.is_empty() || initialized).then_some(index);
+    }
+}
+
+/// Whether any definition in `macros` is a declaration wrapper
+/// ([`declaration_wrapper_param`]): the cheap test that decides whether a file
+/// needs its invocations looked for at all.
+pub fn has_declaration_wrapper(macros: &HashMap<String, FunctionMacro>) -> bool {
+    macros.values().any(|m| {
+        declaration_wrapper_param(m).is_some()
+            || m.alternatives
+                .iter()
+                .flatten()
+                .any(|a| declaration_wrapper_param(a).is_some())
+    })
+}
+
+/// The declarations the file-scope invocations of declaration-wrapper macros
+/// stand for, each expanded to the text of one declaration
+/// (`extern char cmd[PATH_MAX + 32U];`), one per live definition of the macro:
+/// a macro defined `A` in one arm and `extern A` in another declares the same
+/// object either way.
+///
+/// `macros` is the table of the file the invocations are in, so a name is
+/// read through the definitions that file itself holds. An invocation whose
+/// argument list never closes, or whose argument count does not match, is
+/// skipped. The caller parses each text and keeps one that is a single
+/// well-formed declaration: what the tool cannot read as a declaration it
+/// does not declare (ADR-0006).
+pub fn declaration_macro_expansions(
+    root: &Node,
+    source: &str,
+    macros: &HashMap<String, FunctionMacro>,
+) -> Vec<String> {
+    let wrappers: HashMap<&str, Vec<(&FunctionMacro, usize)>> = macros
+        .iter()
+        .filter_map(|(name, m)| {
+            let defs: Vec<&FunctionMacro> = if m.alternatives.is_empty() {
+                vec![m]
+            } else {
+                m.alternatives.iter().flatten().collect()
+            };
+            let wrapping: Vec<(&FunctionMacro, usize)> = defs
+                .into_iter()
+                .filter_map(|d| declaration_wrapper_param(d).map(|k| (d, k)))
+                .collect();
+            (!wrapping.is_empty()).then_some((name.as_str(), wrapping))
+        })
+        .collect();
+    if wrappers.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    let mut stack = vec![*root];
+    while let Some(scope) = stack.pop() {
+        let mut cursor = scope.walk();
+        let children: Vec<Node> = scope.children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            match child.kind() {
+                "function_definition"
+                | "type_definition"
+                | "preproc_function_def"
+                | "preproc_def"
+                | "preproc_include"
+                | "preproc_call" => {}
+                k if k.starts_with("preproc_")
+                    || matches!(k, "ERROR" | "linkage_specification" | "declaration_list") =>
+                {
+                    stack.push(child);
+                    // A directive or an `ERROR` is no invocation itself, but
+                    // an invocation can begin an `ERROR` that holds it whole.
+                    if k == "ERROR" {
+                        out.extend(wrapper_invocation(&child, source, &wrappers));
+                    }
+                }
+                _ => out.extend(wrapper_invocation(&child, source, &wrappers)),
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The wrapper-macro invocation `node` begins, expanded once per definition.
+/// Looks at no more than the next `INVOCATION_WINDOW` characters, so an
+/// argument list longer than that is not read.
+fn wrapper_invocation(
+    node: &Node,
+    source: &str,
+    wrappers: &HashMap<&str, Vec<(&FunctionMacro, usize)>>,
+) -> Vec<String> {
+    const INVOCATION_WINDOW: usize = 4096;
+    let Some(text) = source.get(node.start_byte()..) else {
+        return Vec::new();
+    };
+    let chars: Vec<char> = text.chars().take(INVOCATION_WINDOW).collect();
+    let name_len = chars
+        .iter()
+        .take_while(|c| c.is_ascii_alphanumeric() || **c == '_')
+        .count();
+    let name: String = chars.iter().take(name_len).collect();
+    let Some(defs) = wrappers.get(name.as_str()) else {
+        return Vec::new();
+    };
+    let Some(open) = chars
+        .iter()
+        .skip(name_len)
+        .position(|c| !c.is_whitespace())
+        .map(|p| p + name_len)
+        .filter(|&i| chars.get(i) == Some(&'('))
+    else {
+        return Vec::new();
+    };
+    let Some((args, _)) = parse_call_args(&chars, open) else {
+        return Vec::new();
+    };
+    defs.iter()
+        .filter_map(|(def, _)| {
+            let table = HashMap::from([(name.clone(), (*def).clone())]);
+            expand_invocation(&table, &name, &args).map(|text| format!("{text};"))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod declaration_wrapper_tests {
+    use super::*;
+
+    fn wrapper(params: &[&str], body: &str) -> Option<usize> {
+        declaration_wrapper_param(&FunctionMacro {
+            params: params.iter().map(|p| p.to_string()).collect(),
+            body: body.to_string(),
+            alternatives: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn a_body_of_qualifiers_and_the_parameter_is_a_wrapper() {
+        assert_eq!(wrapper(&["A"], "extern A"), Some(0));
+        assert_eq!(wrapper(&["A"], "A"), Some(0));
+        assert_eq!(wrapper(&["A"], "static const A"), Some(0));
+        assert_eq!(wrapper(&["T", "A"], "extern A"), Some(1));
+    }
+
+    #[test]
+    fn an_initializer_after_the_parameter_is_allowed() {
+        assert_eq!(wrapper(&["A", "B"], "A = B"), Some(0));
+        assert_eq!(wrapper(&["A", "B"], "A=B"), Some(0));
+    }
+
+    #[test]
+    fn anything_else_in_the_body_is_not_a_wrapper() {
+        assert_eq!(wrapper(&["A"], "register_object(A)"), None);
+        assert_eq!(wrapper(&["A"], "A + 1"), None);
+        assert_eq!(wrapper(&["A"], "A == 1"), None);
+        assert_eq!(wrapper(&["A"], "extern B"), None);
+        assert_eq!(wrapper(&["A"], "extern"), None);
+        assert_eq!(wrapper(&["A"], ""), None);
+        assert_eq!(wrapper(&["A"], "do { A } while (0)"), None);
+    }
+
+    fn expansions(source: &str) -> Vec<String> {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&crate::parser::c_language())
+            .expect("the C grammar loads");
+        let tree = parser.parse(source, None).expect("source parses");
+        let root = tree.root_node();
+        let macros = collect_function_macros(&root, source);
+        declaration_macro_expansions(&root, source, &macros)
+    }
+
+    #[test]
+    fn an_invocation_expands_once_per_definition() {
+        let source = "#ifdef DEFINE\n#define G(A) A\n#else\n#define G(A) extern A\n#endif\n\
+                      G(char cmd[8]);\n";
+        let found = expansions(source);
+        assert!(found.contains(&"char cmd[8];".to_string()), "{found:?}");
+        assert!(
+            found.contains(&"extern char cmd[8];".to_string()),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn an_unterminated_or_misnumbered_invocation_expands_to_nothing() {
+        assert!(expansions("#define G(A) extern A\nG(char junk[8]\n").is_empty());
+        assert!(expansions("#define G(A) extern A\nG(char a, char b);\n").is_empty());
+    }
+
+    #[test]
+    fn a_call_inside_a_function_is_not_a_declaration() {
+        let source = "#define G(A) extern A\nvoid f(void) { G(int x); }\n";
+        assert!(expansions(source).is_empty());
+    }
+}

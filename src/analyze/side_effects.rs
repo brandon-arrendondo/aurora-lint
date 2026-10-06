@@ -262,13 +262,8 @@ pub struct FileScopeObjects {
     pub non_array: std::collections::HashSet<String>,
 }
 
-/// The file-scope objects and enumeration constants `root` declares, and
-/// which of the objects another file can read are `volatile`. A `static`
-/// object has internal linkage, so another translation unit reading the
-/// spelling reads a different object; it counts only when `shared` (a
-/// header, whose statics every includer declares).
-pub fn file_scope_objects(root: &Node, source: &str, shared: bool) -> FileScopeObjects {
-    let mut out = FileScopeObjects::default();
+/// What the declarations `root` makes at file scope add to `out`.
+fn record_file_scope_objects(root: &Node, source: &str, shared: bool, out: &mut FileScopeObjects) {
     for (name, decl) in file_scope_declarators(root, source) {
         let Some(declarator) = ast_utils::declaration_declarator_for(&decl, &name, source) else {
             continue;
@@ -290,6 +285,51 @@ pub fn file_scope_objects(root: &Node, source: &str, shared: bool) -> FileScopeO
         }
         out.names.insert(name);
     }
+}
+
+/// The file-scope objects and enumeration constants `root` declares, and
+/// which of the objects another file can read are `volatile`. A `static`
+/// object has internal linkage, so another translation unit reading the
+/// spelling reads a different object; it counts only when `shared` (a
+/// header, whose statics every includer declares).
+pub fn file_scope_objects(
+    root: &Node,
+    source: &str,
+    shared: bool,
+    macros: &HashMap<String, macro_expand::FunctionMacro>,
+    original: Option<&str>,
+) -> FileScopeObjects {
+    let mut out = FileScopeObjects::default();
+    record_file_scope_objects(root, source, shared, &mut out);
+    // An object a declaration-wrapper macro declares (`GLOBAL0(char cmd[N]);`)
+    // is not a declaration to the parser: the invocation is read as a call or
+    // lands in `ERROR` recovery. Each live definition's expansion is parsed
+    // as the declaration it stands for, and kept only when it is exactly one.
+    // The parser's repair pass blanks the declared name it finds stranded
+    // beside such an invocation, so the invocations are read from the file as
+    // written when `original` is the same length (the repairs preserve it,
+    // and so every node's byte range).
+    let invocations = original
+        .filter(|o| o.len() == source.len())
+        .unwrap_or(source);
+    for text in macro_expand::declaration_macro_expansions(root, invocations, macros) {
+        let mut parser = tree_sitter::Parser::new();
+        if parser.set_language(&crate::parser::c_language()).is_err() {
+            continue;
+        }
+        let Some(tree) = parser.parse(&text, None) else {
+            continue;
+        };
+        let expanded = tree.root_node();
+        if expanded.has_error()
+            || expanded.named_child_count() != 1
+            || expanded.named_child(0).map(|d| d.kind()) != Some("declaration")
+        {
+            continue;
+        }
+        record_file_scope_objects(&expanded, &text, shared, &mut out);
+    }
+    // Enumeration constants are declared names too, whatever block their
     // Enumeration constants are declared names too, whatever block their
     // `enum` is in, and whether or not a value is written.
     for e in lang_parsing_substrate::query::find_descendants_of_kind(*root, "enumerator") {

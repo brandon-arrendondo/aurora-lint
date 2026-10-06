@@ -5567,3 +5567,52 @@ fn crossfile_struct_redefined_without_the_anonymous_member_keeps_its_own_sum() {
         "s->sme.ie is a size_t here, so the sum is still reported: {lines:?}"
     );
 }
+
+#[test]
+fn crossfile_wrapper_macro_declared_array_plus_integer_is_not_an_unsigned_sum() {
+    // globals.h declares `cmd` only as `GLOBAL0(char cmd[N]);` with
+    // `#define GLOBAL0(A) extern A` (and `A` under DEFINE_GLOBALS), and
+    // defining.h declares `wd` through a macro whose body is the parameter.
+    // Neither is a declaration to the parser, but each expands to one, so
+    // `cmd + n` and `wd + n` are pointer arithmetic. A macro-declared integer,
+    // an invocation that never closes and a macro that is no wrapper declare
+    // nothing an array, so their sums are still reported.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let fixture_dir = fixtures().join("crossfile_int30_macro_declared");
+    let (code, _, _) = run_aurora_lint(&[
+        fixture_dir.join("parser.c").to_str().unwrap(),
+        "-m",
+        manifest_int30().to_str().unwrap(),
+        "-d",
+        fixture_dir.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    let lines: Vec<u64> = violations
+        .iter()
+        .filter(|v| v["rule_id"] == "INT30-C")
+        .filter_map(|v| v["line"].as_u64())
+        .collect();
+    assert!(
+        !lines.contains(&10),
+        "cmd is an array declared through GLOBAL0: {lines:?}"
+    );
+    assert!(lines.contains(&16), "total is an integer: {lines:?}");
+    assert!(
+        !lines.contains(&22),
+        "wd is an array declared through DEFINE: {lines:?}"
+    );
+    assert!(
+        lines.contains(&28),
+        "a malformed invocation declares nothing: {lines:?}"
+    );
+    assert!(
+        lines.contains(&34),
+        "a macro that is no wrapper declares nothing: {lines:?}"
+    );
+}
