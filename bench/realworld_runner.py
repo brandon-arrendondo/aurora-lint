@@ -760,13 +760,22 @@ def _sqc_manifest(cfg: dict) -> Path:
 def _build_sqc_cmd(cfg: dict, results_dir: Path, run_id: str,
                    compile_db: str | None = None,
                    profile: str = DEFAULT_PROFILE,
-                   header_includes: list[str] | None = None) -> list[str]:
+                   header_includes: list[str] | None = None,
+                   header_spec: dict | None = None) -> list[str]:
+    """The aurora-lint command line for one corpus. `header_includes` are
+    appended -I flags (a tree that adds headers the host lacks, ventoy's
+    Windows SDK); `header_spec` is a tree that 'replaces' a host prefix, and
+    rewrites the corpus's own -I /usr/include... flags to point into it
+    (bench/header_tree.py: substitute_includes)."""
     path = str(cfg["path"])
     scan_path = cfg["sqc"].get("scan_path")
     scan_path = _expand([scan_path], path)[0] if scan_path else path
     output_file = results_dir / f"{run_id}.json"
     extra = _expand(cfg["sqc"].get("extra_args", []), path)
     includes = _expand(cfg["sqc"].get("includes", []), path)
+    if header_spec and header_spec.get("replaces"):
+        from bench.header_tree import substitute_includes
+        includes = substitute_includes(header_spec, includes)
 
     manifest = _sqc_manifest(cfg)
 
@@ -1615,6 +1624,14 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
             extra_args=_expand(cfg["sqc"].get("extra_args", []), str(cfg["path"])))
         suffix = settings_run_suffix(settings).lstrip("-")
         variant = f"{variant}-{suffix}" if variant else suffix
+        # A scan against a header tree other than the corpus's declared one
+        # (`--header-tree`) is a different environment: give it its own run
+        # identity, so its findings never land under the default run's id.
+        if header_spec:
+            from bench.header_tree import spec_for
+            declared = spec_for(codebase, override="")
+            if declared and declared["id"] != header_spec["id"]:
+                variant = f"{variant}-hdr-{header_spec['id']}"
 
     version = _get_tool_version(tool)
     sha = _get_git_sha()
@@ -1640,8 +1657,11 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
     with log_path.open("w") as log_fh:
         if tool == "sqc":
             from bench.header_tree import include_args
-            cmd = _build_sqc_cmd(cfg, version_dir, run_id, compile_db, profile,
-                                 include_args(header_spec) if header_spec else None)
+            replaces = bool(header_spec and header_spec.get("replaces"))
+            cmd = _build_sqc_cmd(
+                cfg, version_dir, run_id, compile_db, profile,
+                include_args(header_spec) if header_spec and not replaces else None,
+                header_spec if replaces else None)
             result_file = version_dir / f"{run_id}.json"
             proc = subprocess.run(cmd, stdout=log_fh, stderr=subprocess.STDOUT)
         elif tool == "cppcheck":

@@ -1,6 +1,23 @@
 """Pinned system-header trees: a real-world corpus's platform headers, pinned
 and verified the way its source checkout is.
 
+There are two kinds, sharing the hash, the verification and the provenance
+below. ventoy's Windows SDK/CRT tree (this docstring's first half) supplies
+headers a Linux node does not have at all. The Debian tree (the 'debs'
+section further down) stands in for the host's own /usr/include on the
+corpora whose runner config passes -I /usr/include (curl, hostap,
+mosquitto, sqlite, valkey): which -dev packages a host happens to have
+installed, not only their versions, moves those corpora's findings, so an
+official or A/B scan reads one pinned set instead. A tree that 'replaces'
+a prefix rewrites the corpus's own -I flags into the tree
+(substitute_includes); a tree without one appends its include_dirs.
+
+Trees can be declared inline on a corpus (ventoy) or once in the top-level
+'header_trees' map and named by id from each corpus that uses them.
+`realworld-run --header-tree ID` scans the host-header corpora against
+another named tree that replaces the same prefix; such a run gets its own
+run id, so an environment comparison never overwrites the default run.
+
 Why this exists: ventoy is the suite's Win32 corpus, and a Linux node has no
 <windows.h>. Scanned without one, aurora-lint still parses Ventoy2Disk, but
 every Win32 API call is an undeclared identifier, which DCL31-C reports by the
@@ -65,12 +82,55 @@ def trees_root(bench_root=None) -> Path:
     return (Path(bench_root) if bench_root else BENCH_ROOT) / "header-trees"
 
 
-def spec_for(project: str):
-    """The 'header_tree' declaration of `project`, or None if it scans
-    against the host's own headers (every corpus but ventoy)."""
-    for entry in json.loads(REPOS_JSON.read_text())["repos"]:
+# Names a tree in the top-level 'header_trees' map to scan the host-header
+# corpora against instead of their declared one (`realworld-run
+# --header-tree`). Only a tree that replaces the same -I prefix may stand in.
+HOST_TREE_ENV = "SQC_BENCH_HEADER_TREE"
+
+
+def _repos() -> dict:
+    return json.loads(REPOS_JSON.read_text())
+
+
+def tree_spec(tree_id: str, data=None) -> dict:
+    """The entry `tree_id` of the top-level 'header_trees' map."""
+    trees = (data or _repos()).get("header_trees", {})
+    if tree_id not in trees:
+        raise KeyError(f"no header tree '{tree_id}' in {REPOS_JSON} "
+                       f"(declared: {', '.join(sorted(trees)) or 'none'})")
+    return trees[tree_id]
+
+
+def resolve(decl, data=None, override=None):
+    """A corpus's 'header_tree' declaration as a spec dict, or None.
+
+    A dict is the spec itself (ventoy's Windows tree). A string names an
+    entry of the top-level 'header_trees' map, which several corpora can
+    share (the Debian tree the -I /usr/include corpora scan against).
+    `override` swaps a string reference for another named tree that
+    replaces the same -I prefix; an inline spec is never overridden."""
+    if decl is None or isinstance(decl, dict):
+        return decl
+    data = data or _repos()
+    spec = tree_spec(decl, data)
+    if override and override != decl:
+        alt = tree_spec(override, data)
+        if alt.get("replaces") != spec.get("replaces"):
+            raise ValueError(f"header tree '{override}' cannot stand in for "
+                             f"'{decl}': they replace different -I prefixes")
+        return alt
+    return spec
+
+
+def spec_for(project: str, override=None):
+    """The header tree `project` scans against, or None if it scans against
+    the host's own headers. `override` defaults to $SQC_BENCH_HEADER_TREE."""
+    if override is None:
+        override = os.environ.get(HOST_TREE_ENV) or None
+    data = _repos()
+    for entry in data["repos"]:
         if entry["name"] == project:
-            return entry.get("header_tree")
+            return resolve(entry.get("header_tree"), data, override)
     return None
 
 
@@ -127,34 +187,268 @@ def include_args(spec: dict, bench_root=None) -> list[str]:
     return args
 
 
+def substitute_includes(spec: dict, includes: list[str], bench_root=None) -> list[str]:
+    """Rewrite a corpus's -I list for a tree that 'replaces' a host prefix.
+
+    Every `-I <prefix>[/sub]` becomes `-I <tree>/<prefix>[/sub]`, so the scan
+    reads the pinned copy of exactly the directories it used to read on the
+    host. The tree's own 'include_dirs' (the multiarch directory, which a
+    compiler searches before /usr/include) go in just before the first
+    rewritten path. A list with nothing under the prefix comes back as is."""
+    prefix = spec["replaces"].rstrip("/")
+    root = tree_path(spec, bench_root)
+    out, extra_done = [], False
+    i = 0
+    while i < len(includes):
+        flag = includes[i]
+        val = includes[i + 1] if flag == "-I" and i + 1 < len(includes) else None
+        if val is not None and (val == prefix or val.startswith(prefix + "/")):
+            if not extra_done:
+                for d in spec.get("include_dirs", []):
+                    out.extend(["-I", str(root / d)])
+                extra_done = True
+            out.extend(["-I", str(root / val.lstrip("/"))])
+            i += 2
+            continue
+        out.append(flag)
+        i += 1
+    return out
+
+
 def provenance(spec: dict) -> dict:
     """What a scan records about the tree it ran against: the declaration
     minus the -I plumbing. The hash is the one the scan verified."""
-    return {"id": spec["id"], "fetch": spec["fetch"],
-            "hashed_dirs": spec["hashed_dirs"],
-            "manifest_sha256": spec["manifest_sha256"]}
+    out = {"id": spec["id"], "fetch": spec["fetch"],
+           "hashed_dirs": spec["hashed_dirs"],
+           "manifest_sha256": spec["manifest_sha256"]}
+    if "replaces" in spec:
+        out["replaces"] = spec["replaces"]
+    return out
+
+
+# -- 'debs' trees: Debian packages, fetched and unpacked without dpkg --------
+#
+# A tree whose fetch kind is "debs" is the usr/include/ of a fixed list of
+# Debian binary packages, each named by package, version and architecture
+# and pinned by the sha256 of its .deb. The URLs are snapshot.debian.org
+# file URLs, which do not expire the way a mirror's pool does when a
+# security update supersedes a version. Fetching needs only the standard
+# library (an ar reader and tarfile), so a macOS, Fedora or FreeBSD node
+# provisions the same tree a Debian one does.
+
+SNAPSHOT = "https://snapshot.debian.org"
+
+
+def _sha256_file(path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def ar_members(data: bytes):
+    """(name, bytes) for each member of a Unix ar archive (a .deb)."""
+    if not data.startswith(b"!<arch>\n"):
+        raise ValueError("not an ar archive")
+    pos = 8
+    while pos + 60 <= len(data):
+        hdr = data[pos:pos + 60]
+        name = hdr[:16].decode("ascii").strip().rstrip("/")
+        size = int(hdr[48:58].decode("ascii").strip())
+        pos += 60
+        yield name, data[pos:pos + size]
+        pos += size + (size % 2)
+
+
+def _within(rel: str) -> bool:
+    norm = os.path.normpath(rel)
+    return not (norm.startswith("..") or os.path.isabs(norm))
+
+
+def extract_headers(deb_bytes: bytes, dest, prefix: str = "usr/include") -> int:
+    """Unpack the members of a .deb's data tarball that lie under `prefix`
+    into `dest`. Returns the number of files and links written. Refuses a
+    member that would land outside `dest`, an absolute or escaping symlink,
+    and a file another package already wrote with different bytes (dpkg
+    would refuse that overlap too)."""
+    import io
+    import tarfile
+    payload = None
+    for name, body in ar_members(deb_bytes):
+        if name.startswith("data.tar"):
+            if name.endswith(".zst"):
+                raise ValueError("zstd-compressed .deb: not readable with the "
+                                 "standard library; pin an xz-compressed build")
+            payload = body
+            break
+    if payload is None:
+        raise ValueError("no data.tar member in .deb")
+    dest = Path(dest)
+    written = 0
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as tar:
+        for m in tar.getmembers():
+            rel = m.name[2:] if m.name.startswith("./") else m.name
+            rel = rel.rstrip("/")
+            if not (rel == prefix or rel.startswith(prefix + "/")):
+                continue
+            if not _within(rel):
+                raise ValueError(f"member escapes the tree: {m.name}")
+            out = dest / rel
+            if m.isdir():
+                out.mkdir(parents=True, exist_ok=True)
+            elif m.issym():
+                target = os.path.join(os.path.dirname(rel), m.linkname)
+                if os.path.isabs(m.linkname) or not _within(target):
+                    raise ValueError(f"symlink leaves the tree: {m.name} -> {m.linkname}")
+                out.parent.mkdir(parents=True, exist_ok=True)
+                if out.is_symlink() or out.exists():
+                    if out.is_symlink() and os.readlink(out) == m.linkname:
+                        continue
+                    raise ValueError(f"two packages provide {rel} differently")
+                os.symlink(m.linkname, out)
+                written += 1
+            elif m.isfile() or m.islnk():
+                src = tar.extractfile(m) if m.isfile() else tar.extractfile(tar.getmember(m.linkname))
+                body = src.read()
+                out.parent.mkdir(parents=True, exist_ok=True)
+                if out.exists() or out.is_symlink():
+                    if out.is_file() and not out.is_symlink() and out.read_bytes() == body:
+                        continue
+                    raise ValueError(f"two packages provide {rel} differently")
+                out.write_bytes(body)
+                written += 1
+    return written
+
+
+def _download(url: str, dest: Path) -> None:
+    import urllib.request
+    tmp = dest.with_name(dest.name + ".part")
+    with urllib.request.urlopen(url, timeout=120) as resp, open(tmp, "wb") as fh:
+        while True:
+            chunk = resp.read(1 << 20)
+            if not chunk:
+                break
+            fh.write(chunk)
+    tmp.replace(dest)
+
+
+def fetch(spec: dict, bench_root=None, log=print) -> dict:
+    """Provision a 'debs' tree: download every pinned .deb (reusing a cached
+    copy whose sha256 matches), check each hash, unpack usr/include into a
+    staging directory, verify the manifest hash and move the tree into
+    place. Raises on any hash mismatch and leaves no partial tree behind."""
+    import shutil
+    if spec["fetch"].get("kind") != "debs":
+        raise ValueError(f"{spec['id']}: only 'debs' trees are fetched here")
+    root = trees_root(bench_root)
+    dest = tree_path(spec, bench_root)
+    stage = root / f".{spec['id']}.partial"
+    cache = root / ".deb-cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    if stage.exists():
+        shutil.rmtree(stage)
+    stage.mkdir(parents=True)
+    try:
+        for deb in spec["fetch"]["debs"]:
+            f = cache / deb["file"]
+            if not (f.is_file() and _sha256_file(f) == deb["sha256"]):
+                log(f"  fetch {deb['file']}")
+                _download(deb["url"], f)
+            got = _sha256_file(f)
+            if got != deb["sha256"]:
+                raise ValueError(f"{deb['file']}: sha256 {got}, pinned {deb['sha256']}")
+            extract_headers(f.read_bytes(), stage)
+        actual = manifest_sha256(stage, spec["hashed_dirs"])
+        if actual != spec["manifest_sha256"]:
+            raise ValueError(f"{spec['id']}: unpacked tree has manifest hash "
+                             f"{actual}, pinned {spec['manifest_sha256']}")
+        if dest.exists():
+            shutil.rmtree(dest)
+        stage.rename(dest)
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage)
+    return check(spec, bench_root)
+
+
+def pin_debs(specs: list[str], arch: str = "amd64", log=print) -> list[dict]:
+    """Resolve PACKAGE=VERSION strings against snapshot.debian.org into the
+    'debs' entries a tree declares: the .deb's file name, its stable
+    snapshot URL and its sha256 (computed from the download, since the
+    archive itself publishes sha1). For writing a new pin, not for scans."""
+    import tempfile
+    import urllib.request
+    out = []
+    for s in specs:
+        pkg, ver = s.split("=", 1)
+        with urllib.request.urlopen(
+                f"{SNAPSHOT}/mr/binary/{pkg}/{ver}/binfiles?fileinfo=1", timeout=60) as r:
+            info = json.load(r)["fileinfo"]
+        hit = None
+        for sha1, entries in sorted(info.items()):
+            for e in entries:
+                if e["archive_name"] in ("debian", "debian-security") and (
+                        e["name"].endswith(f"_{arch}.deb") or e["name"].endswith("_all.deb")):
+                    hit = (sha1, e["name"])
+                    break
+            if hit:
+                break
+        if hit is None:
+            raise LookupError(f"{s}: no {arch} or all .deb on {SNAPSHOT}")
+        url = f"{SNAPSHOT}/file/{hit[0]}"
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / hit[1]
+            _download(url, f)
+            sha = _sha256_file(f)
+        log(f"  {hit[1]} {sha}")
+        out.append({"package": pkg, "version": ver, "file": hit[1],
+                    "url": url, "sha256": sha})
+    return out
 
 
 def fix_hint(project: str) -> str:
+    spec = spec_for(project)
+    if spec and spec["fetch"].get("kind") == "debs":
+        return (f"provision it with: python -m bench.header_tree fetch {spec['id']}   "
+                f"(or the playbook's --tags header-trees; corpus '{project}', "
+                f"see docs/benchmark-setup.rst)")
     return (f"provision it with: ansible-playbook playbooks/setup-benchmark-repos.yml "
             f"-i 'localhost,' -c local -e accept_microsoft_license=true "
             f"--tags header-trees   (corpus '{project}'; see docs/benchmark-setup.rst)")
 
 
+def _spec_arg(name: str):
+    """A CLI argument naming either a corpus or a tree in 'header_trees'."""
+    data = _repos()
+    if name in data.get("header_trees", {}):
+        return tree_spec(name, data)
+    return spec_for(name)
+
+
 def main(argv=None) -> int:
-    """`python -m bench.header_tree verify PROJECT` exits 0 if PROJECT's
-    declared tree is present with the declared hash (1 otherwise);
-    `python -m bench.header_tree hash PROJECT DIR` prints the manifest hash
-    of the tree at DIR over PROJECT's declared hashed_dirs -- the value to
-    declare when re-pinning."""
+    """`python -m bench.header_tree verify NAME` exits 0 if the tree NAME
+    names (a corpus's declared tree, or a tree id) is present with the
+    declared hash, 1 otherwise;
+    `python -m bench.header_tree hash NAME DIR` prints the manifest hash of
+    the tree at DIR over NAME's hashed_dirs -- the value to declare when
+    re-pinning;
+    `python -m bench.header_tree fetch NAME` provisions a 'debs' tree
+    (download, sha256 check, unpack, verify);
+    `python -m bench.header_tree pin PKG=VER ...` prints the 'debs' entries
+    for a new pin, resolved against snapshot.debian.org (amd64)."""
     import sys
     args = sys.argv[1:] if argv is None else argv
-    if len(args) < 2 or args[0] not in ("verify", "hash"):
+    if len(args) < 2 or args[0] not in ("verify", "hash", "fetch", "pin"):
         print(main.__doc__)
         return 2
-    spec = spec_for(args[1])
+    if args[0] == "pin":
+        print(json.dumps(pin_debs(args[1:], log=lambda m: print(m, file=sys.stderr)),
+                         indent=2))
+        return 0
+    spec = _spec_arg(args[1])
     if spec is None:
-        print(f"{args[1]}: no header_tree declared in {REPOS_JSON}")
+        print(f"{args[1]}: no header tree declared in {REPOS_JSON}")
         return 2
     if args[0] == "hash":
         if len(args) != 3:
@@ -162,7 +456,12 @@ def main(argv=None) -> int:
             return 2
         print(manifest_sha256(args[2], spec["hashed_dirs"]))
         return 0
-    res = check(spec)
+    if args[0] == "fetch":
+        res = check(spec)
+        if res["status"] != OK:
+            res = fetch(spec)
+    else:
+        res = check(spec)
     print(f"{args[1]}: {res['status']} {res['path']}"
           + (f" (manifest {res['actual']}, expected {res['expected']})"
              if res["status"] == MISMATCH else ""))

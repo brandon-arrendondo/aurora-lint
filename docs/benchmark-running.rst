@@ -211,7 +211,7 @@ own terminal, against their own SQLite DB. See ``bench/realworld_runner.py``.
 
 .. code-block:: bash
 
-    python -m bench realworld-run [--tool sqc,cppcheck,clang-tidy] [--codebase C,C] [--compile-commands] [--profile P] [--dirs-out PATH]
+    python -m bench realworld-run [--tool sqc,cppcheck,clang-tidy] [--codebase C,C] [--compile-commands] [--profile P] [--dirs-out PATH] [--header-tree ID]
     python -m bench realworld [RUN] [--compare BASE]   # FP dashboard
     python -m bench realworld-runs                     # list runs
     python -m bench realworld-score [RUN]               # measured precision/recall
@@ -232,7 +232,9 @@ cppcheck/clang-tidy baseline yet; ``ventoy`` is the Win32 oracle,
 ``Ventoy2Disk/Ventoy2Disk/`` only; aurora-lint scans it against the pinned
 Windows SDK/CRT header tree, which must be provisioned first -- see
 :doc:`benchmark-setup` -- while cppcheck and clang-tidy still run without
-``<windows.h>``)
+``<windows.h>``; aurora-lint likewise scans ``curl``, ``hostap``,
+``mosquitto``, ``sqlite`` and ``valkey`` against a pinned Debian 12
+``/usr/include`` instead of the host's, also provisioned first)
 
 .. note::
 
@@ -373,6 +375,14 @@ settings and settings hash, and the codebases scanned into it -- before the
 ingest starts, so a caller that ingests the exports somewhere else reads the
 names instead of predicting them. Write it outside ``results/realworld/``: an
 export directory's ``*.json`` files are read as scan results.
+
+``--header-tree ID`` scans the corpora that read system headers (curl,
+hostap, mosquitto, sqlite, valkey) against another tree from
+``header_trees`` in ``data/benchmark_repos.json`` instead of their declared
+one, for measuring what a change of header environment alone moves. The
+tree must be provisioned (``python3 -m bench.header_tree fetch ID``), and the
+scans land under a run id of their own (``...-hdr-ID``), never under the
+default run's.
 
 Typical real-world workflow:
 

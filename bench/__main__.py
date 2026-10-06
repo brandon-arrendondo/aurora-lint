@@ -9,7 +9,7 @@ Commands:
   runs                                     List all runs
   realworld [RUN] [--compare BASE]         Real-world FP dashboard
   realworld-run [--tool T,T] [--codebase C,C] [--compile-commands] [--profile P]
-                [--dirs-out PATH]
+                [--dirs-out PATH] [--header-tree ID]
                                             Run sqc/cppcheck/clang-tidy/infer/
                                             frama-c against real codebases
                                             (local, sequential), ingest + score
@@ -72,6 +72,23 @@ def cmd_realworld_run(args):
         if cb not in CODEBASES:
             print(f"Unknown codebase '{cb}'. Must be one of: {', '.join(sorted(CODEBASES))}")
             return
+
+    # A named header tree stands in for the declared one on every corpus that
+    # scans against host headers; it must exist and replace the same prefix.
+    # The runner gives such a scan its own run identity.
+    if args.header_tree:
+        import os
+        from bench.header_tree import HOST_TREE_ENV, tree_spec
+        try:
+            alt = tree_spec(args.header_tree)
+        except KeyError as e:
+            print(f"--header-tree: {e.args[0]}")
+            raise SystemExit(2)
+        if not alt.get("replaces"):
+            print(f"--header-tree: '{args.header_tree}' does not replace host "
+                  "headers, so it cannot stand in for a corpus's declared tree")
+            raise SystemExit(2)
+        os.environ[HOST_TREE_ENV] = args.header_tree
 
     # Checked before the scans, not found out after them: a listing that
     # cannot be written would otherwise stop the run between its scans and
@@ -1213,6 +1230,11 @@ def main():
                           help="Write a JSON list of the export directories the sqc "
                                "scans produced (one per set of settings: name, path, "
                                "settings and hash, codebases) to PATH before ingesting")
+    p_rw_run.add_argument("--header-tree", default=None, metavar="ID",
+                          help="sqc only: scan the corpora that read host headers "
+                               "against this tree from data/benchmark_repos.json's "
+                               "header_trees instead of their declared one; the run "
+                               "gets its own id (-hdr-ID)")
     p_rw_run.set_defaults(func=cmd_realworld_run)
 
     # competitor-export

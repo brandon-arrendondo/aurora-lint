@@ -351,6 +351,59 @@ fetch the tree, print its hash with
 ``python3 -m bench.header_tree hash ventoy <tree-dir>``, confirm the findings
 match a native-header scan, and only then declare the new hash.
 
+Debian System Headers (curl, hostap, mosquitto, sqlite, valkey)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+These five corpora pass ``-I /usr/include`` (and a few of its
+subdirectories), so their findings depend on the host: on which ``-dev``
+packages it has installed, not only on their versions. A second machine's
+run of one release differed from the benchmark node's by about a hundred
+keys, every one traced to a header package (see *What another machine
+reproduces* in :doc:`reproducing-published-numbers`). So the benchmark
+runner scans them against a pinned Debian 12 ``/usr/include`` instead of the
+host's.
+
+The tree is declared once in ``data/benchmark_repos.json`` under
+``header_trees`` and named by id from each of the five corpora. Its
+packages are each corpus's declared dependencies (OpenSSL, zlib, SQLite, Tcl
+and ICU for sqlite; CUnit and cJSON for mosquitto; mbed TLS, GnuTLS and c-ares
+for curl; libgcrypt, libpcap, libnl, D-Bus, wolfSSL and libtomcrypt for
+hostap) plus the C library and kernel headers, each pinned by version and by
+the sha256 of its ``.deb`` at ``snapshot.debian.org``. The runner rewrites
+every ``-I /usr/include...`` into the tree, and puts the tree's multiarch
+directory (``usr/include/x86_64-linux-gnu``) first, in a compiler's search
+order. Fetching needs Python 3 and the network, not ``dpkg``, so a macOS,
+Fedora or FreeBSD node unpacks the same tree a Debian one does:
+
+.. code-block:: bash
+
+    python3 -m bench.header_tree fetch curl     # any of the five; one shared tree
+
+or the playbook's ``--tags header-trees`` step, which fetches it with no
+license flag. It keeps about 30 MB under ``$SQC_BENCH_ROOT/header-trees/<id>/``
+and a cache of the ``.deb`` files beside it. As with ventoy, ``corpus-check``
+reports a missing or mismatched tree, ``realworld-run`` refuses to scan
+without it, and each scan records the tree in its ``.meta.json`` sidecar.
+
+The host packages listed above still matter for everything else: cppcheck
+and clang-tidy read the host's ``/usr/include``, and so does a scan you run
+outside the benchmark runner.
+
+A second tree, ``debian12-benchmark-node-*``, holds the header packages the
+benchmark node had when the ``v0.6.0`` figures were measured. It is not used
+by default. ``python -m bench realworld-run --header-tree <id>`` scans the
+five corpora against it (fetch it first with
+``python3 -m bench.header_tree fetch <id>``), under a run id of its own, to
+measure how much of a change between releases is the change of environment
+rather than of code.
+
+To re-pin, list the packages as ``PACKAGE=VERSION`` and run
+``python3 -m bench.header_tree pin PKG=VER ...``, which prints the ``debs``
+entries (file, snapshot URL, sha256). Unpack them, print the tree's hash with
+``python3 -m bench.header_tree hash <corpus> <tree-dir>``, and declare a new
+``id`` and hash; a changed tree changes findings, so re-pin at a release
+boundary and measure the change.
+
 Per-Project Include Paths
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 

@@ -169,5 +169,218 @@ class TestVentoyDeclaration(unittest.TestCase):
                 self.assertIn(key, fetch)
 
 
+
+def _ar_member(name: str, body: bytes) -> bytes:
+    hdr = f"{name:<16}{0:<12}{0:<6}{0:<6}{'100644':<8}{len(body):<10}`\n".encode()
+    return hdr + body + (b"\n" if len(body) % 2 else b"")
+
+
+def _deb(files: dict, links: dict | None = None, compression: str = "xz") -> bytes:
+    """A minimal .deb: an ar archive whose data.tar.<compression> holds
+    `files` ({path: bytes}) and `links` ({path: target}) as ./-prefixed
+    members, the way dpkg-deb writes them."""
+    import io
+    import tarfile
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode=f"w:{compression}") as tar:
+        for name, body in files.items():
+            ti = tarfile.TarInfo("./" + name)
+            ti.size = len(body)
+            tar.addfile(ti, io.BytesIO(body))
+        for name, target in (links or {}).items():
+            ti = tarfile.TarInfo("./" + name)
+            ti.type = tarfile.SYMTYPE
+            ti.linkname = target
+            tar.addfile(ti)
+    return (b"!<arch>\n" + _ar_member("debian-binary", b"2.0\n")
+            + _ar_member("control.tar.xz", b"")
+            + _ar_member(f"data.tar.{compression}", buf.getvalue()))
+
+
+class TestExtractHeaders(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dest = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_only_usr_include_is_unpacked(self):
+        n = header_tree.extract_headers(_deb({
+            "usr/include/a.h": b"a\n",
+            "usr/include/x86_64-linux-gnu/sys/wait.h": b"w\n",
+            "usr/lib/x86_64-linux-gnu/liba.so": b"elf\n",
+            "usr/share/doc/a/copyright": b"c\n"}), self.dest)
+        self.assertEqual(n, 2)
+        self.assertEqual((self.dest / "usr/include/a.h").read_bytes(), b"a\n")
+        self.assertFalse((self.dest / "usr/lib").exists())
+        self.assertFalse((self.dest / "usr/share").exists())
+
+    def test_relative_symlinks_are_kept_as_links(self):
+        header_tree.extract_headers(_deb(
+            {"usr/include/x86_64-linux-gnu/bits/t.h": b"t\n"},
+            {"usr/include/bits": "x86_64-linux-gnu/bits"}), self.dest)
+        link = self.dest / "usr/include/bits"
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(os.readlink(link), "x86_64-linux-gnu/bits")
+
+    def test_an_absolute_or_escaping_symlink_is_refused(self):
+        for target in ("/etc/passwd", "../../../../etc/passwd"):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as d:
+                with self.assertRaises(ValueError):
+                    header_tree.extract_headers(
+                        _deb({}, {"usr/include/evil.h": target}), d)
+
+    def test_identical_overlap_is_fine_and_a_differing_one_is_refused(self):
+        header_tree.extract_headers(_deb({"usr/include/a.h": b"a\n"}), self.dest)
+        header_tree.extract_headers(_deb({"usr/include/a.h": b"a\n"}), self.dest)
+        with self.assertRaises(ValueError):
+            header_tree.extract_headers(_deb({"usr/include/a.h": b"b\n"}), self.dest)
+
+    def test_gzip_payload_reads_too(self):
+        header_tree.extract_headers(_deb({"usr/include/g.h": b"g\n"}, compression="gz"),
+                                    self.dest)
+        self.assertTrue((self.dest / "usr/include/g.h").is_file())
+
+    def test_not_a_deb_is_refused(self):
+        with self.assertRaises(ValueError):
+            header_tree.extract_headers(b"PK\x03\x04 a zip", self.dest)
+
+
+class TestFetchDebs(unittest.TestCase):
+    """End to end against file:// URLs: the same code path a node runs
+    against snapshot.debian.org, without the network."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.bench = self.tmp / "bench"
+        debs = []
+        for i, files in enumerate([{"usr/include/a.h": b"a\n"},
+                                   {"usr/include/x86_64-linux-gnu/sys/w.h": b"w\n"}]):
+            f = self.tmp / f"p{i}_1.0_amd64.deb"
+            f.write_bytes(_deb(files))
+            debs.append({"package": f"p{i}", "version": "1.0", "file": f.name,
+                         "url": f.as_uri(), "sha256": header_tree._sha256_file(f)})
+        ref = self.tmp / "ref"
+        for d in debs:
+            header_tree.extract_headers((self.tmp / d["file"]).read_bytes(), ref)
+        self.spec = {"id": "deb-test", "fetch": {"kind": "debs", "debs": debs},
+                     "replaces": "/usr/include", "hashed_dirs": ["usr/include"],
+                     "manifest_sha256": header_tree.manifest_sha256(ref, ["usr/include"]),
+                     "include_dirs": ["usr/include/x86_64-linux-gnu"]}
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_fetch_provisions_a_verified_tree(self):
+        res = header_tree.fetch(self.spec, self.bench, log=lambda m: None)
+        self.assertEqual(res["status"], header_tree.OK)
+        self.assertTrue((self.bench / "header-trees/deb-test/usr/include/a.h").is_file())
+        # A second fetch reuses the cache and lands on the same tree.
+        res = header_tree.fetch(self.spec, self.bench, log=lambda m: None)
+        self.assertEqual(res["status"], header_tree.OK)
+
+    def test_a_deb_whose_hash_differs_leaves_no_tree(self):
+        self.spec["fetch"]["debs"][1]["sha256"] = "0" * 64
+        with self.assertRaises(ValueError):
+            header_tree.fetch(self.spec, self.bench, log=lambda m: None)
+        trees = self.bench / "header-trees"
+        self.assertFalse((trees / "deb-test").exists())
+        self.assertFalse((trees / ".deb-test.partial").exists())
+
+    def test_a_tree_whose_manifest_differs_leaves_no_tree(self):
+        self.spec["manifest_sha256"] = "0" * 64
+        with self.assertRaises(ValueError):
+            header_tree.fetch(self.spec, self.bench, log=lambda m: None)
+        self.assertFalse((self.bench / "header-trees/deb-test").exists())
+
+    def test_only_debs_trees_are_fetched(self):
+        with self.assertRaises(ValueError):
+            header_tree.fetch(_spec("x", "0" * 64), self.bench, log=lambda m: None)
+
+
+class TestSharedTrees(unittest.TestCase):
+    DATA = {"header_trees": {
+        "host-a": {"id": "host-a", "replaces": "/usr/include"},
+        "host-b": {"id": "host-b", "replaces": "/usr/include"},
+        "other": {"id": "other", "replaces": "/opt/include"}}}
+
+    def test_a_string_names_a_shared_tree(self):
+        self.assertEqual(header_tree.resolve("host-a", self.DATA)["id"], "host-a")
+
+    def test_an_override_replacing_the_same_prefix_stands_in(self):
+        self.assertEqual(header_tree.resolve("host-a", self.DATA, "host-b")["id"], "host-b")
+
+    def test_an_override_for_another_prefix_is_refused(self):
+        with self.assertRaises(ValueError):
+            header_tree.resolve("host-a", self.DATA, "other")
+
+    def test_an_unknown_tree_is_refused(self):
+        with self.assertRaises(KeyError):
+            header_tree.resolve("nope", self.DATA)
+
+    def test_an_inline_spec_is_never_overridden(self):
+        inline = _spec("ventoy-tree", "0" * 64)
+        self.assertIs(header_tree.resolve(inline, self.DATA, "host-b"), inline)
+
+
+class TestSubstituteIncludes(unittest.TestCase):
+    SPEC = {"id": "deb", "replaces": "/usr/include",
+            "include_dirs": ["usr/include/x86_64-linux-gnu"]}
+
+    def test_rewrites_under_the_tree_with_multiarch_first(self):
+        root = Path("/b/header-trees/deb")
+        out = header_tree.substitute_includes(
+            self.SPEC, ["-I", "/cb/lib", "-I", "/usr/include", "-I", "/usr/include/libnl3"],
+            Path("/b"))
+        self.assertEqual(out, ["-I", "/cb/lib",
+                               "-I", str(root / "usr/include/x86_64-linux-gnu"),
+                               "-I", str(root / "usr/include"),
+                               "-I", str(root / "usr/include/libnl3")])
+
+    def test_a_path_that_only_shares_the_prefix_text_is_left_alone(self):
+        includes = ["-I", "/usr/includes", "-I", "/usr/include-old"]
+        self.assertEqual(header_tree.substitute_includes(self.SPEC, includes, Path("/b")),
+                         includes)
+
+    def test_build_sqc_cmd_substitutes_for_a_replacing_tree(self):
+        cfg = {"path": Path("/cb"), "sqc": {"manifest": rr.CODEBASES["lua"]["sqc"]["manifest"],
+                                            "includes": ["-I", "/usr/include"]}}
+        with mock.patch.object(header_tree, "BENCH_ROOT", Path("/b")):
+            cmd = rr._build_sqc_cmd(cfg, Path("/out"), "rid", header_spec=self.SPEC)
+        self.assertNotIn("/usr/include", cmd)
+        self.assertIn(str(Path("/b/header-trees/deb/usr/include")), cmd)
+
+
+class TestHostHeaderDeclaration(unittest.TestCase):
+    """Every corpus that scans with -I /usr/include names a declared Debian
+    tree that replaces it, and every declared 'debs' tree pins each package
+    by version, file, snapshot URL and sha256."""
+
+    def test_corpora_reading_host_headers_name_a_replacing_tree(self):
+        for name, cfg in rr.CODEBASES.items():
+            incs = cfg["sqc"].get("includes", [])
+            if any(v == "/usr/include" or str(v).startswith("/usr/include/") for v in incs):
+                with self.subTest(corpus=name):
+                    spec = header_tree.spec_for(name, override="")
+                    self.assertIsNotNone(spec)
+                    self.assertEqual(spec.get("replaces"), "/usr/include")
+
+    def test_debs_trees_pin_every_package(self):
+        trees = header_tree._repos().get("header_trees", {})
+        self.assertTrue(trees)
+        for tid, spec in trees.items():
+            self.assertEqual(spec["id"], tid)
+            for d in spec["fetch"]["debs"]:
+                with self.subTest(tree=tid, package=d["package"]):
+                    self.assertTrue(d["url"].startswith(header_tree.SNAPSHOT + "/file/"))
+                    self.assertRegex(d["sha256"], r"^[0-9a-f]{64}$")
+                    self.assertIn(f"_{d['version'].split(':')[-1]}_", d["file"])
+            for inc in spec["include_dirs"]:
+                self.assertTrue(any(inc == h or inc.startswith(h + "/")
+                                    for h in spec["hashed_dirs"]))
+
+
 if __name__ == "__main__":
     unittest.main()

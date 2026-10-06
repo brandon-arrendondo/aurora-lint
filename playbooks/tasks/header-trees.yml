@@ -19,9 +19,27 @@
 # Without the flag nothing is downloaded; corpus-check then reports the tree
 # MISSING and `bench realworld-run` refuses to scan that corpus.
 
-- name: Corpora that declare a pinned header tree
+# Two kinds of declaration. A corpus whose 'header_tree' is a mapping
+# declares its own tree inline (ventoy's Windows SDK/CRT, fetched by xwin
+# under Microsoft's license). A corpus whose 'header_tree' is a string names
+# a shared tree in the file's top-level 'header_trees' (the Debian
+# /usr/include the -I /usr/include corpora scan against); those are Debian
+# packages pinned by sha256, fetched with python -m bench.header_tree fetch,
+# and need no license step.
+- name: Corpora that declare a pinned header tree inline
   set_fact:
-    header_tree_repos: "{{ repos | selectattr('header_tree', 'defined') | list }}"
+    header_tree_repos: "{{ repos | selectattr('header_tree', 'defined') | selectattr('header_tree', 'mapping') | list }}"
+    shared_header_trees: "{{ repos | selectattr('header_tree', 'defined') | rejectattr('header_tree', 'mapping') | map(attribute='header_tree') | unique | list }}"
+
+- name: Fetch and verify each shared Debian header tree
+  command: python3 -m bench.header_tree fetch {{ item }}
+  args:
+    chdir: "{{ playbook_dir }}/.."
+  environment:
+    SQC_BENCH_ROOT: "{{ bench_root }}"
+  loop: "{{ shared_header_trees }}"
+  register: shared_tree_fetch
+  changed_when: "' fetch ' in shared_tree_fetch.stdout"
 
 - name: Header trees need the Microsoft license accepted
   debug:
