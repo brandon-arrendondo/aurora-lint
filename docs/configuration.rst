@@ -469,6 +469,14 @@ that removed the rule, why, and which rules cover it, and ignores the block.
 rule with its reason (``--list-rules json`` for tooling). The list is kept in
 ``rules_templates/removed-rules.toml``.
 
+The rules removed so far:
+
+.. REMOVED-RULES:START
+
+No rule has been removed yet.
+
+.. REMOVED-RULES:END
+
 Tracked but not implemented
 ----------------------------
 

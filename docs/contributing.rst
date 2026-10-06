@@ -53,6 +53,58 @@ Adding a New CERT C Rule
        cargo test --package aurora-lint --lib -- rules::cert_c::RULE_ID::tests
        cargo fmt
 
+Removing a Rule
+---------------
+
+A rule is removed only on its row in ``docs/design/rule-disposition.md``
+(ADR-0013): a not-shipped disposition, ruled. Each removal is its own change
+(Decision 5), and "not shipped" means gone from the tool, not disabled
+(Decision 4). In that one change:
+
+1. Check that the covering rule already reports the construct (Decision 5):
+   run it on the removed rule's ``fail`` fixtures and CERT's noncompliant
+   examples. If it doesn't, the removal waits for that coverage to land.
+
+2. Delete the rule directory ``src/rules/cert_c/CATEGORY/RULE-ID/`` (the
+   implementation, its ``.toml`` and its ``tests/`` fixtures) and its
+   registration in ``src/rules/cert_c/mod.rs``.
+
+3. Delete its block from ``rules_templates/rules-all.toml`` and from every
+   ``conf/realworld/*-rules.toml``.
+
+4. Add a ``[[removed]]`` entry to ``rules_templates/removed-rules.toml``, in
+   id order (the loader refuses an unsorted table, so parallel removals don't
+   all conflict at the end of the file). ``removed_in`` is the release the
+   removal ships in, set up front; ``disposition`` and ``covered_by`` must
+   agree with the rule's disposition row, and every ``covered_by`` rule must
+   still ship (a test checks it against the registry).
+
+5. Regenerate what is derived from the rule set:
+
+   ::
+
+       python3 scripts/generate_rule_cwe_map.py   # data/rule_cwe_map.json
+       python3 scripts/render_removed_rules.py    # README.md and docs/configuration.rst
+
+   Delete the rule's key from ``data/wiki_fixture_staleness.json`` (its
+   fixtures are gone; don't rerun that audit, which fetches CERT's wiki),
+   and fix every rule count the ``check-project-facts`` hook reports as
+   stale (README.md and docs/ claim the shipped and enabled totals).
+
+6. Update the rule's row in ``docs/design/rule-disposition.md`` to say it is
+   removed, and any design doc or ADR that cites the rule as live (for
+   example ``docs/design/cross-rule-overlap.md``).
+
+7. Tag the task ``release-note`` with a ``release-note:`` line saying what
+   users lose and what reports it instead, and ``category: removed``
+   (ADR-0009).
+
+8. Build and run the full test suite. The pre-commit hooks check that every
+   real-world manifest still decides every rule (``check-realworld-manifests``),
+   that the not-shipped list is current and agrees with the disposition
+   table (``check-removed-rules``), and that the rule counts hold
+   (``check-project-facts``).
+
 Build Requirements
 ------------------
 

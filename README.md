@@ -125,6 +125,22 @@ aurora-lint tracks every CERT C rule and recommendation, but being tracked, enab
 
 This table is expected to grow: it is the landing place for any rule where careful measurement across Juliet and the real-world corpus — not just a low score so far — establishes that no codebase shape lets this class of tool resolve it reliably. See [`docs/configuration.rst`](docs/configuration.rst#enabled-but-out-of-scope) for the fuller reasoning kept in sync with this table.
 
+## Rules Not Shipped
+
+A rule aurora-lint no longer ships is removed from the tool, not disabled
+(ADR-0013): CERT says it can't be checked automatically, any checkable form
+of it only approximates a judgment about intent, another shipped rule
+already reports its construct, or CERT deprecated it. Each one, and why, is
+listed here, generated from `rules_templates/removed-rules.toml`. A
+configuration that still names one loads with a warning, and
+`aurora-lint --list-rules` prints the same list.
+
+<!-- REMOVED-RULES:START -->
+
+No rule has been removed yet.
+
+<!-- REMOVED-RULES:END -->
+
 ## How Well Does It Work?
 
 Measured, not asserted. Two benchmarks, both with published methodology.

@@ -80,6 +80,22 @@ repos:
         files: '(rules_templates/(rules-all|removed-rules)\.toml|README\.md|docs/.*\.(rst|md)|src/rules/cert_c/integration\.rs)$'
         verbose: true
 
+      - id: check-removed-rules
+        name: the not-shipped list is published and agrees with the table
+        description: >-
+          ADR-0013 Decision 6 requires README.md and docs/ to list every rule
+          the tool no longer ships, with its reason. Both lists are rendered
+          from rules_templates/removed-rules.toml between REMOVED-RULES
+          markers by scripts/render_removed_rules.py; this fails when either
+          is stale, or when a removed rule's row in
+          docs/design/rule-disposition.md gives a different disposition or
+          does not name its covering rules.
+        entry: python3 scripts/render_removed_rules.py --check
+        language: system
+        pass_filenames: false
+        files: '(rules_templates/removed-rules\.toml|README\.md|docs/configuration\.rst|docs/design/rule-disposition\.md|scripts/render_removed_rules\.py)$'
+        verbose: true
+
       - id: check-realworld-manifests
         name: real-world manifests decide every rule
         description: >-
