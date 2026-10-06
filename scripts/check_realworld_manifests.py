@@ -68,9 +68,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BASE = ROOT / "rules_templates" / "rules-all.toml"
 REALWORLD_DIR = ROOT / "conf" / "realworld"
+REMOVED = ROOT / "rules_templates" / "removed-rules.toml"
 
 BLOCK_RE = re.compile(r"^\[rules\.cert_c\.([A-Z]+[0-9]+-C)\]\s*$")
 DISABLED_RE = re.compile(r"^\s*enabled\s*=\s*false")
+
+
+def removed_rules() -> dict[str, dict]:
+    """Rules the tool no longer ships (ADR-0013 Decision 4), by id."""
+    if not REMOVED.is_file():
+        return {}
+    with REMOVED.open("rb") as fh:
+        return {r["id"]: r for r in tomllib.load(fh).get("removed", [])}
 
 
 def rule_ids(path: Path) -> set[str]:
@@ -152,6 +161,7 @@ def main() -> int:
         return 1
 
     base_ids = rule_ids(BASE)
+    removed = removed_rules()
     if not base_ids:
         print(f"no [rules.cert_c.*] blocks in {BASE}", file=sys.stderr)
         return 1
@@ -178,7 +188,8 @@ def main() -> int:
         rel = path.relative_to(ROOT)
         ids = rule_ids(path)
         missing = sorted(base_ids - ids)
-        stale = sorted(ids - base_ids)
+        named_removed = sorted((ids - base_ids) & removed.keys())
+        stale = sorted(ids - base_ids - removed.keys())
         bare = undocumented_disables(path)
         no_model = declared_data_model(path) is None
 
@@ -186,6 +197,14 @@ def main() -> int:
             failures += 1
             print(f"\n{rel}: MISSING {len(missing)} rule(s) -- these never run "
                   f"and nothing reports it:\n  {', '.join(missing)}",
+                  file=sys.stderr)
+        if named_removed:
+            failures += 1
+            print(f"\n{rel}: {len(named_removed)} block(s) for rule(s) the tool "
+                  f"no longer ships -- delete them (a scan ignores them with a "
+                  f"warning):\n  " + "\n  ".join(
+                      f"{r} (removed in v{removed[r]['removed_in']}: "
+                      f"{removed[r]['reason']})" for r in named_removed),
                   file=sys.stderr)
         if stale:
             failures += 1

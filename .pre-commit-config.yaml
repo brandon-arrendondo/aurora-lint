@@ -77,7 +77,7 @@ repos:
         entry: python3 scripts/check_project_facts.py
         language: system
         pass_filenames: false
-        files: '(rules_templates/rules-all\.toml|README\.md|docs/.*\.(rst|md)|src/rules/cert_c/integration\.rs)$'
+        files: '(rules_templates/(rules-all|removed-rules)\.toml|README\.md|docs/.*\.(rst|md)|src/rules/cert_c/integration\.rs)$'
         verbose: true
 
       - id: check-realworld-manifests
@@ -98,7 +98,7 @@ repos:
         entry: python3 scripts/check_realworld_manifests.py
         language: system
         pass_filenames: false
-        files: '(rules_templates/rules-all\.toml|conf/realworld/.*\.toml|src/rules/cert_c/.*\.toml)$'
+        files: '(rules_templates/(rules-all|removed-rules)\.toml|conf/realworld/.*\.toml|src/rules/cert_c/.*\.toml)$'
         verbose: true
 
       - id: check-changelog-safety

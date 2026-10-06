@@ -83,10 +83,12 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "rules_templates" / "rules-all.toml"
+REMOVED = ROOT / "rules_templates" / "removed-rules.toml"
 BENCHMARK_REPOS = ROOT / "data" / "benchmark_repos.json"
 README = ROOT / "README.md"
 
@@ -181,6 +183,16 @@ def manifest_counts(text: str) -> tuple[int, int]:
     return len(blocks), enabled
 
 
+def removed_rule_ids() -> list[str]:
+    """Ids in rules_templates/removed-rules.toml: rules the tool no longer
+    ships (ADR-0013 Decision 4). They have no manifest block, so they are in
+    neither count above; they are reported as their own fact."""
+    if not REMOVED.is_file():
+        return []
+    with REMOVED.open("rb") as fh:
+        return sorted(r["id"] for r in tomllib.load(fh).get("removed", []))
+
+
 def macro_expand_consumers() -> list[str]:
     """Rule IDs of every src/rules/ file that calls macro_expand::*.
 
@@ -230,6 +242,8 @@ def export_facts() -> dict:
         "rules_total": tracked,
         "rules_enabled": enabled,
         "rules_disabled": tracked - enabled,
+        "rules_removed": len(removed_rule_ids()),
+        "rules_removed_ids": removed_rule_ids(),
         "macro_expand_rule_count": len(macro_rules),
         "macro_expand_rules": macro_rules,
         "realworld_project_count": len(realworld_projects()),
@@ -243,6 +257,18 @@ def lint() -> int:
     print(f"{MANIFEST.relative_to(ROOT)}: "
           f"{tracked} tracked, {enabled} enabled by default (== implemented, "
           f"per this project's convention -- see the module docstring)")
+
+    # A removed rule is gone from the tool, so a block for it here would put
+    # it back in both counts while the loader drops it with a warning.
+    removed = removed_rule_ids()
+    blocks = set(re.findall(r"^\[rules\.cert_c\.([A-Z]+[0-9]+-C)\]", MANIFEST.read_text(), re.M))
+    revived = sorted(set(removed) & blocks)
+    if revived:
+        print(f"\n{MANIFEST.relative_to(ROOT)} still has a block for removed rule(s) "
+              f"{', '.join(revived)} (see {REMOVED.relative_to(ROOT)}): delete the rule's "
+              f"src/rules/ directory and rebuild.")
+        return 1
+    print(f"{REMOVED.relative_to(ROOT)}: {len(removed)} removed rule(s), counted in neither total")
 
     bad = []
     checked = 0
