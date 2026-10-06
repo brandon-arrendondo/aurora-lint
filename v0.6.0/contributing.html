@@ -1,0 +1,293 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Contributing &mdash; aurora-lint  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Licensing and content provenance" href="licensing.html" />
+    <link rel="prev" title="Future Rulesets Beyond CERT C" href="future-rulesets.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            aurora-lint
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="options.html">Policy and Environment Options</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tool-comparison.html">Comparison To Other Tools</a></li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Contributing</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#adding-a-new-cert-c-rule">Adding a New CERT C Rule</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#build-requirements">Build Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#invoke-tasks">Invoke Tasks</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#publishing-a-release-s-documentation">Publishing a Release’s Documentation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#development-node-setup">Development Node Setup</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="licensing.html">Licensing and content provenance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">aurora-lint</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Contributing</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/contributing.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="contributing">
+<h1>Contributing<a class="headerlink" href="#contributing" title="Link to this heading"></a></h1>
+<section id="adding-a-new-cert-c-rule">
+<h2>Adding a New CERT C Rule<a class="headerlink" href="#adding-a-new-cert-c-rule" title="Link to this heading"></a></h2>
+<ol class="arabic">
+<li><p>Create the rule directory and implementation file:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">src</span><span class="o">/</span><span class="n">rules</span><span class="o">/</span><span class="n">cert_c</span><span class="o">/</span><span class="n">CATEGORY</span><span class="o">/</span><span class="n">RULE</span><span class="o">-</span><span class="n">ID</span><span class="o">/</span><span class="n">rule_id_c</span><span class="o">.</span><span class="n">rs</span>
+</pre></div>
+</div>
+</li>
+<li><p>Implement the <code class="docutils literal notranslate"><span class="pre">CertRule</span></code> trait:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="k">crate</span>::<span class="n">prelude</span>::<span class="o">*</span><span class="p">;</span>
+
+<span class="k">pub</span><span class="w"> </span><span class="k">struct</span> <span class="nc">Mem30C</span><span class="p">;</span>
+
+<span class="k">impl</span><span class="w"> </span><span class="n">CertRule</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">Mem30C</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">fn</span> <span class="nf">rule_id</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span>-&gt; <span class="kp">&amp;</span><span class="o">&#39;</span><span class="nb">static</span> <span class="kt">str</span> <span class="p">{</span>
+<span class="w">        </span><span class="s">&quot;MEM30-C&quot;</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="k">fn</span> <span class="nf">description</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span>-&gt; <span class="kp">&amp;</span><span class="o">&#39;</span><span class="nb">static</span> <span class="kt">str</span> <span class="p">{</span>
+<span class="w">        </span><span class="s">&quot;Do not access freed memory&quot;</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="k">fn</span> <span class="nf">check</span><span class="p">(</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span>
+<span class="w">        </span><span class="n">node</span>: <span class="kp">&amp;</span><span class="nc">Node</span><span class="p">,</span>
+<span class="w">        </span><span class="n">source</span>: <span class="kp">&amp;</span><span class="kt">str</span><span class="p">,</span>
+<span class="w">        </span><span class="n">_context</span>: <span class="kp">&amp;</span><span class="nc">ProjectContext</span><span class="p">,</span>
+<span class="w">    </span><span class="p">)</span><span class="w"> </span>-&gt; <span class="nb">Vec</span><span class="o">&lt;</span><span class="n">RuleViolation</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="c1">// Implementation here</span>
+<span class="w">        </span><span class="nb">Vec</span>::<span class="n">new</span><span class="p">()</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</li>
+<li><p>Register the rule in <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/mod.rs</span></code>.</p></li>
+<li><p>Add test cases as <code class="docutils literal notranslate"><span class="pre">.c</span></code> files in <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/CATEGORY/RULE-ID/tests/fail/</span></code>
+and <code class="docutils literal notranslate"><span class="pre">tests/pass/</span></code>.</p></li>
+<li><p>Add the rule entry to <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code>.</p></li>
+<li><p>Build and test:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">cargo</span> <span class="n">build</span>
+<span class="n">cargo</span> <span class="n">test</span> <span class="o">--</span><span class="n">package</span> <span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">--</span><span class="n">lib</span> <span class="o">--</span> <span class="n">rules</span><span class="p">::</span><span class="n">cert_c</span><span class="p">::</span><span class="n">RULE_ID</span><span class="p">::</span><span class="n">tests</span>
+<span class="n">cargo</span> <span class="n">fmt</span>
+</pre></div>
+</div>
+</li>
+</ol>
+</section>
+<section id="build-requirements">
+<h2>Build Requirements<a class="headerlink" href="#build-requirements" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><strong>Rust</strong>: 2021 edition (stable toolchain)</p></li>
+<li><p><strong>C toolchain</strong>: a C compiler and linker for dependencies with native code
+(e.g. <code class="docutils literal notranslate"><span class="pre">libgit2-sys</span></code>); <code class="docutils literal notranslate"><span class="pre">build-essential</span></code> on Debian/Ubuntu</p></li>
+<li><p><strong>Platform</strong>: Linux, macOS, Windows (cross-platform via crossterm)</p></li>
+<li><p><strong>Dependencies</strong>: See <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code> for the full list</p></li>
+</ul>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">cargo</span> <span class="n">build</span>             <span class="c1"># Debug build</span>
+<span class="n">cargo</span> <span class="n">build</span> <span class="o">--</span><span class="n">release</span>   <span class="c1"># Release build (optimized)</span>
+<span class="n">cargo</span> <span class="n">test</span>              <span class="c1"># Run all tests</span>
+<span class="n">cargo</span> <span class="n">fmt</span>               <span class="c1"># Format code</span>
+</pre></div>
+</div>
+</section>
+<section id="invoke-tasks">
+<h2>Invoke Tasks<a class="headerlink" href="#invoke-tasks" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">tasks.py</span></code> holds a few developer tasks, run with
+<a class="reference external" href="https://www.pyinvoke.org/">invoke</a> (<code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">invoke</span></code>):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">invoke</span> <span class="n">check</span>            <span class="c1"># Run pre-commit hooks on all files</span>
+<span class="n">invoke</span> <span class="n">build</span>            <span class="c1"># Build (add --release for release mode)</span>
+<span class="n">invoke</span> <span class="n">test</span>             <span class="c1"># Run all tests</span>
+<span class="n">invoke</span> <span class="n">bump</span><span class="o">-</span><span class="n">version</span>     <span class="c1"># Bump version across all files (reads Cargo.toml)</span>
+<span class="n">invoke</span> <span class="n">lint</span><span class="o">-</span><span class="n">docs</span>        <span class="c1"># Advisory prose lint of README.md, docs/*.rst, man page</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">invoke</span> <span class="pre">lint-docs</span></code> runs <a class="reference external" href="https://vale.sh">Vale</a> with the Aurora house
+style (American spelling, settled terms such as “pre-scan”, no contractions,
+and a flag on patterns typical of machine-written prose). The style is a
+Vale package in a sibling <code class="docutils literal notranslate"><span class="pre">../style_package</span></code> checkout, named in
+<code class="docutils literal notranslate"><span class="pre">.vale.ini</span></code>; the task builds its zip there when missing and reruns
+<code class="docutils literal notranslate"><span class="pre">vale</span> <span class="pre">sync</span></code> when <code class="docutils literal notranslate"><span class="pre">.vale.ini</span></code> or the zip changes. A checkout without
+<code class="docutils literal notranslate"><span class="pre">../style_package</span></code> cannot run it, and nothing else depends on it.</p>
+<p>By default it lints the user-facing docs: <code class="docutils literal notranslate"><span class="pre">README.md</span></code>, this guide
+(<code class="docutils literal notranslate"><span class="pre">docs/*.rst</span></code>) and the man page, which pandoc first converts to Markdown
+under <code class="docutils literal notranslate"><span class="pre">target/vale/</span></code> (findings name that file). Pass <code class="docutils literal notranslate"><span class="pre">--path</span></code> for any
+other tracked <code class="docutils literal notranslate"><span class="pre">.md</span></code> or <code class="docutils literal notranslate"><span class="pre">.rst</span></code> file or directory, such as the internal
+design docs, and <code class="docutils literal notranslate"><span class="pre">--level</span> <span class="pre">suggestion</span></code> to see suggestion-level rules too:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">invoke</span> <span class="n">lint</span><span class="o">-</span><span class="n">docs</span> <span class="o">--</span><span class="n">path</span> <span class="n">docs</span><span class="o">/</span><span class="n">cli</span><span class="o">-</span><span class="n">usage</span><span class="o">.</span><span class="n">rst</span>
+<span class="n">invoke</span> <span class="n">lint</span><span class="o">-</span><span class="n">docs</span> <span class="o">--</span><span class="n">path</span> <span class="n">docs</span><span class="o">/</span><span class="n">design</span>
+</pre></div>
+</div>
+<p>The lint is advisory: findings never fail the task, and it is not part of
+pre-commit or CI. Reading <code class="docutils literal notranslate"><span class="pre">.rst</span></code> needs docutils’ <code class="docutils literal notranslate"><span class="pre">rst2html</span></code> on
+<code class="docutils literal notranslate"><span class="pre">PATH</span></code>; the development venv below has it (Sphinx depends on docutils).
+Without it the task skips <code class="docutils literal notranslate"><span class="pre">.rst</span></code> files and says so. Rule changes belong in
+<code class="docutils literal notranslate"><span class="pre">style_package</span></code>, not in a local override here.</p>
+</section>
+<section id="publishing-a-release-s-documentation">
+<h2>Publishing a Release’s Documentation<a class="headerlink" href="#publishing-a-release-s-documentation" title="Link to this heading"></a></h2>
+<p>Pushing a <code class="docutils literal notranslate"><span class="pre">v*</span></code> tag runs <code class="docutils literal notranslate"><span class="pre">.github/workflows/release.yml</span></code>, whose <code class="docutils literal notranslate"><span class="pre">docs</span></code>
+job publishes that commit’s rendered documentation under <code class="docutils literal notranslate"><span class="pre">/&lt;tag&gt;/</span></code> on the
+GitHub Pages site. The directory is never replaced: a later deploy of the
+same tag is refused, and every deploy from main copies each release
+directory forward unchanged. After tagging a release:</p>
+<ol class="arabic simple">
+<li><p>Confirm <code class="docutils literal notranslate"><span class="pre">https://brandon-arrendondo.github.io/aurora-lint/&lt;tag&gt;/index.html</span></code>
+is live and listed on <code class="docutils literal notranslate"><span class="pre">versions.html</span></code>. The tag’s docs job waits in the
+same queue as main’s, and a newer push to main can cancel it while it
+waits. If it did, re-run that job from the tag’s release run. Main’s docs
+job also warns about any release whose directory is missing.</p></li>
+<li><p>Never re-run a docs job from a run made before per-tag publishing
+existed, and never push to the <code class="docutils literal notranslate"><span class="pre">gh-pages</span></code> branch by hand. Either one
+publishes a site without the release directories. If that happens,
+restore them from an earlier <code class="docutils literal notranslate"><span class="pre">gh-pages</span></code> commit.</p></li>
+</ol>
+</section>
+<section id="development-node-setup">
+<h2>Development Node Setup<a class="headerlink" href="#development-node-setup" title="Link to this heading"></a></h2>
+<p>To provision a fresh Ubuntu 24.04 node for working on aurora-lint (as opposed
+to just running benchmarks – see <a class="reference external" href="benchmark-setup.html">Benchmark Setup</a>
+for that), install Ansible first (<code class="docutils literal notranslate"><span class="pre">sudo</span> <span class="pre">apt</span> <span class="pre">install</span> <span class="pre">-y</span> <span class="pre">ansible</span></code> or
+<code class="docutils literal notranslate"><span class="pre">pipx</span> <span class="pre">install</span> <span class="pre">ansible-core</span></code> – a playbook can’t provision the tool it
+runs under), then run:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ansible-playbook<span class="w"> </span>playbooks/setup-dev-environment.yml<span class="w"> </span>-i<span class="w"> </span><span class="s2">&quot;localhost,&quot;</span><span class="w"> </span>-c<span class="w"> </span><span class="nb">local</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--ask-become-pass
+</pre></div>
+</div>
+<p>This installs the Rust toolchain (rustup, picking up the channel and
+components pinned in <code class="docutils literal notranslate"><span class="pre">rust-toolchain.toml</span></code>), the native build dependencies
+<code class="docutils literal notranslate"><span class="pre">git2</span></code>’s vendored libgit2 build needs (a C toolchain, cmake, pkg-config),
+and – into a venv at <code class="docutils literal notranslate"><span class="pre">~/.venvs/aurora-lint-dev</span></code> by default – the Sphinx + LaTeX
+toolchain this guide itself is built with, <code class="docutils literal notranslate"><span class="pre">invoke</span></code> (for the
+<code class="docutils literal notranslate"><span class="pre">invoke</span> <span class="pre">bump-version</span></code> workflow), <code class="docutils literal notranslate"><span class="pre">pre-commit</span></code> (installed as this
+checkout’s git hook – see CLAUDE.md’s “Git Commit Rules”), and
+<code class="docutils literal notranslate"><span class="pre">clew-trace</span></code> (the package behind the <code class="docutils literal notranslate"><span class="pre">clew-mcp</span></code> command <code class="docutils literal notranslate"><span class="pre">.mcp.json</span></code>
+points at – see CLAUDE.md’s “Code Navigation (clew)” for registering the
+MCP server itself with <code class="docutils literal notranslate"><span class="pre">clew</span> <span class="pre">init</span></code>, a separate, per-machine step this
+playbook does not run for you). Point the venv at an existing/shared one
+instead with <code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">dev_venv=&lt;path&gt;</span></code>, e.g. <code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">dev_venv=~/data-enterprise/venv</span></code>.</p>
+<p>It also installs and schedules a disk-guard cron (<code class="docutils literal notranslate"><span class="pre">cargo-sweep</span></code> +
+<code class="docutils literal notranslate"><span class="pre">scripts/cargo-target-gc.sh</span></code>, nightly at 03:30) that caps <code class="docutils literal notranslate"><span class="pre">target/</span></code>
+growth – skip it on a node with plenty of headroom with
+<code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">install_disk_guard=false</span></code>. This exists because two otherwise
+identically-provisioned dev nodes were found to have diverged on exactly
+this (2026-08-31): one had the cron, one didn’t, and the one without it had
+an unbounded <code class="docutils literal notranslate"><span class="pre">target/</span></code> and a manually-patched <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code> disabling
+dependency debug info as an ad hoc workaround.</p>
+<p>It does not install comparison tools – cppcheck and clang-tidy (apt
+packages, see <a class="reference external" href="benchmark-setup.html">Benchmark Setup</a>) or Infer/Frama-C
+(<code class="docutils literal notranslate"><span class="pre">playbooks/install-static-analyzers.yml</span></code>) – clone the real-world
+benchmark checkouts or the Juliet test suite (also <a class="reference external" href="benchmark-setup.html">Benchmark Setup</a> – a node that only needs the benchmark code as
+reference, not to run benchmarks, can skip both and just copy an existing
+node’s <code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT</span></code> directory over), or install editor/terminal
+conveniences (vim, htop, tmux). A node doing rule-development work that
+compares aurora-lint’s output against these tools’ still needs
+<code class="docutils literal notranslate"><span class="pre">install-static-analyzers.yml</span></code> run separately – none of that is a
+dependency of building or testing aurora-lint <em>itself</em>, which is this playbook’s
+only scope.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="future-rulesets.html" class="btn btn-neutral float-left" title="Future Rulesets Beyond CERT C" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="licensing.html" class="btn btn-neutral float-right" title="Licensing and content provenance" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025-2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

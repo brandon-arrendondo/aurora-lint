@@ -1,0 +1,1073 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Benchmark Setup &mdash; aurora-lint  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Running Benchmarks (MCP Server)" href="benchmark-running.html" />
+    <link rel="prev" title="Analysis Architecture" href="architecture.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            aurora-lint
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="options.html">Policy and Environment Options</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tool-comparison.html">Comparison To Other Tools</a></li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Benchmark Setup</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#benchmark-host-layout">Benchmark Host Layout</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#installing-comparison-tools">Installing Comparison Tools</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#cppcheck">cppcheck</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#clang-tidy">clang-tidy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#bear-for-compile-commands-json">bear (for compile_commands.json)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#facebook-infer">Facebook Infer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#frama-c">Frama-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#build-based-tools-need-a-compile-database">Build-based tools need a compile database</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#juliet-test-suite-setup">Juliet Test Suite Setup</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#third-party-library-headers">Third-Party Library Headers</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#per-project-include-paths">Per-Project Include Paths</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#real-world-project-setup">Real-World Project Setup</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#pinned-source-commits">Pinned Source Commits</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#verifying-the-pins">Verifying the Pins</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#clone-and-pin">Clone and Pin</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#running-each-tool-manually">Running Each Tool Manually</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#id1">cppcheck</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#id2">clang-tidy</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#per-project-commands">Per-Project Commands</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#libcrc">libcrc</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#sqlite">sqlite</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#mosquitto">mosquitto</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#curl">curl</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#hostap">hostap</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#verifying-results">Verifying Results</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#known-pitfalls">Known Pitfalls</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#output-format-reference">Output Format Reference</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#distributed-benchmarking-with-gnu-parallel">Distributed Benchmarking with GNU Parallel</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#exporting-competitor-results-for-ingest">Exporting competitor results for ingest</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="licensing.html">Licensing and content provenance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">aurora-lint</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Benchmark Setup</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/benchmark-setup.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="benchmark-setup">
+<h1>Benchmark Setup<a class="headerlink" href="#benchmark-setup" title="Link to this heading"></a></h1>
+<p>This section covers installing comparison tools, setting up the Juliet test suite,
+and configuring real-world codebases for benchmarking.</p>
+<section id="benchmark-host-layout">
+<h2>Benchmark Host Layout<a class="headerlink" href="#benchmark-host-layout" title="Link to this heading"></a></h2>
+<p>Every benchmark node needs one directory – <code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT</span></code> (default
+<code class="docutils literal notranslate"><span class="pre">~/toolchain</span></code>) – holding the Juliet suite and every real-world codebase
+checkout. <code class="docutils literal notranslate"><span class="pre">bench/config.py</span></code> and <code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code> both
+read this from the <code class="docutils literal notranslate"><span class="pre">SQC_BENCH_ROOT</span></code> environment variable, or from a
+<code class="docutils literal notranslate"><span class="pre">.env</span></code> file at the repo root (copy <code class="docutils literal notranslate"><span class="pre">.env.example</span></code> – it’s gitignored, so
+each machine sets its own).</p>
+<p>To provision a fresh node, run the Ansible playbook (clones and pins every
+real-world codebases; does not fetch Juliet – see below):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ansible-playbook<span class="w"> </span>playbooks/setup-benchmark-repos.yml<span class="w"> </span>-i<span class="w"> </span><span class="s2">&quot;localhost,&quot;</span><span class="w"> </span>-c<span class="w"> </span><span class="nb">local</span>
+<span class="c1"># Or a different root:</span>
+ansible-playbook<span class="w"> </span>playbooks/setup-benchmark-repos.yml<span class="w"> </span>-i<span class="w"> </span><span class="s2">&quot;localhost,&quot;</span><span class="w"> </span>-c<span class="w"> </span><span class="nb">local</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">bench_root</span><span class="o">=</span>/data/toolchain
+</pre></div>
+</div>
+<p>Keep <code class="docutils literal notranslate"><span class="pre">bench_root</span></code> and <code class="docutils literal notranslate"><span class="pre">SQC_BENCH_ROOT</span></code>/<code class="docutils literal notranslate"><span class="pre">.env</span></code> pointed at the same
+directory – the playbook provisions the checkouts the code actually reads.
+A mismatch is easy to miss: if <code class="docutils literal notranslate"><span class="pre">SQC_BENCH_ROOT</span></code> is unset and the corpora
+do not live in <code class="docutils literal notranslate"><span class="pre">~/toolchain</span></code>, <code class="docutils literal notranslate"><span class="pre">BENCH_ROOT</span></code> silently resolves to a
+directory that does not exist. <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">corpus-check</span></code> reports the
+resolved root and says so outright.</p>
+<p>A second, separate root names where the <em>source</em> clones are:
+<code class="docutils literal notranslate"><span class="pre">$AURORA_LINT_SRC_ROOT</span></code> is the parent directory of this checkout
+(<code class="docutils literal notranslate"><span class="pre">$AURORA_LINT_SRC_ROOT/aurora-lint</span></code>), and on a maintainer node of the
+sibling <code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code> and <code class="docutils literal notranslate"><span class="pre">sqc_paper</span></code> clones too. It defaults to the
+checkout’s own parent, so nothing here requires it; the copy-pasteable
+commands below use it so they hold on every node regardless of where the
+clone lives (<code class="docutils literal notranslate"><span class="pre">~/data</span></code> is the conventional value, and the <code class="docutils literal notranslate"><span class="pre">.env.example</span></code>
+default):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">AURORA_LINT_SRC_ROOT</span><span class="o">=</span>~/data<span class="w">   </span><span class="c1"># parent of your aurora-lint clone</span>
+</pre></div>
+</div>
+</section>
+<section id="installing-comparison-tools">
+<h2>Installing Comparison Tools<a class="headerlink" href="#installing-comparison-tools" title="Link to this heading"></a></h2>
+<section id="cppcheck">
+<h3>cppcheck<a class="headerlink" href="#cppcheck" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>apt<span class="w"> </span>update
+sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>cppcheck
+
+<span class="c1"># Verify</span>
+cppcheck<span class="w"> </span>--version
+<span class="c1"># Expected: Cppcheck 2.x.x</span>
+</pre></div>
+</div>
+<p>For the latest release, build from source:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>cmake<span class="w"> </span>libpcre3-dev
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/danmar/cppcheck.git
+<span class="nb">cd</span><span class="w"> </span>cppcheck
+cmake<span class="w"> </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Release<span class="w"> </span>-DUSE_MATCHCOMPILER<span class="o">=</span>ON<span class="w"> </span>.
+make<span class="w"> </span>-j<span class="k">$(</span>nproc<span class="k">)</span>
+sudo<span class="w"> </span>make<span class="w"> </span>install
+</pre></div>
+</div>
+</section>
+<section id="clang-tidy">
+<h3>clang-tidy<a class="headerlink" href="#clang-tidy" title="Link to this heading"></a></h3>
+<p><strong>Pin LLVM 21 — do not take the distro default.</strong>  Ubuntu 24.04 ships
+clang-tidy 18.1.3 and tops out at 20, while the published comparison in
+<code class="docutils literal notranslate"><span class="pre">docs/tool-comparison.rst</span></code> is LLVM 21.1.  Taking the distro package makes a
+freshly-provisioned node measure an <em>older</em> competitor than the table it will
+be compared against, and clang-tidy is the tool currently beating aurora-lint on the
+Juliet overlap (99.2% vs 81.7%) — so that regression would flatter aurora-lint by
+understating a rival.  <code class="docutils literal notranslate"><span class="pre">playbooks/install-static-analyzers.yml</span></code> does this
+automatically; by hand:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>install<span class="w"> </span>-d<span class="w"> </span>-m<span class="w"> </span><span class="m">0755</span><span class="w"> </span>/etc/apt/keyrings
+wget<span class="w"> </span>-qO-<span class="w"> </span>https://apt.llvm.org/llvm-snapshot.gpg.key<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="p">|</span><span class="w"> </span>sudo<span class="w"> </span>tee<span class="w"> </span>/etc/apt/keyrings/apt.llvm.org.asc<span class="w"> </span>&gt;<span class="w"> </span>/dev/null
+<span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;deb [signed-by=/etc/apt/keyrings/apt.llvm.org.asc] \</span>
+<span class="s2">  http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="p">|</span><span class="w"> </span>sudo<span class="w"> </span>tee<span class="w"> </span>/etc/apt/sources.list.d/llvm-21.list
+sudo<span class="w"> </span>apt<span class="w"> </span>update<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>clang-tidy-21
+sudo<span class="w"> </span>update-alternatives<span class="w"> </span>--install<span class="w"> </span>/usr/bin/clang-tidy<span class="w"> </span>clang-tidy<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>/usr/bin/clang-tidy-21<span class="w"> </span><span class="m">100</span>
+
+<span class="c1"># Verify</span>
+clang-tidy<span class="w"> </span>--version
+<span class="c1"># Expected: Ubuntu LLVM version 21.1.x</span>
+</pre></div>
+</div>
+<p>The distro package is fine for anything that is not a published comparison:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>clang<span class="w"> </span>clang-tidy
+</pre></div>
+</div>
+</section>
+<section id="bear-for-compile-commands-json">
+<h3>bear (for compile_commands.json)<a class="headerlink" href="#bear-for-compile-commands-json" title="Link to this heading"></a></h3>
+<p>Required for clang-tidy on projects with build systems:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>bear
+</pre></div>
+</div>
+</section>
+<section id="facebook-infer">
+<h3>Facebook Infer<a class="headerlink" href="#facebook-infer" title="Link to this heading"></a></h3>
+<p>Infer v1.2.0 is installed from prebuilt Linux binaries.  The playbook at
+<code class="docutils literal notranslate"><span class="pre">playbooks/install-static-analyzers.yml</span></code> automates this:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ansible-playbook<span class="w"> </span>playbooks/install-static-analyzers.yml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-i<span class="w"> </span><span class="s2">&quot;localhost,&quot;</span><span class="w"> </span>-c<span class="w"> </span><span class="nb">local</span><span class="w"> </span>--ask-become-pass
+</pre></div>
+</div>
+<p>Manual install:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># libtinfo5 required (Infer links against libtinfo.so.5)</span>
+sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>libtinfo5<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>sudo<span class="w"> </span>ln<span class="w"> </span>-s<span class="w"> </span>/usr/lib/x86_64-linux-gnu/libtinfo.so.6<span class="w"> </span><span class="se">\</span>
+<span class="w">              </span>/usr/lib/x86_64-linux-gnu/libtinfo.so.5
+
+<span class="nv">VERSION</span><span class="o">=</span><span class="m">1</span>.2.0
+curl<span class="w"> </span>-sSL<span class="w"> </span><span class="s2">&quot;https://github.com/facebook/infer/releases/download/v</span><span class="nv">$VERSION</span><span class="s2">/infer-linux-x86_64-v</span><span class="nv">$VERSION</span><span class="s2">.tar.xz&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="p">|</span><span class="w"> </span>sudo<span class="w"> </span>tar<span class="w"> </span>-C<span class="w"> </span>/opt<span class="w"> </span>-xJ
+sudo<span class="w"> </span>ln<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;/opt/infer-linux-x86_64-v</span><span class="nv">$VERSION</span><span class="s2">/bin/infer&quot;</span><span class="w"> </span>/usr/local/bin/infer
+
+<span class="c1"># Verify</span>
+infer<span class="w"> </span>--version
+<span class="c1"># Expected: Infer version v1.2.0</span>
+</pre></div>
+</div>
+</section>
+<section id="frama-c">
+<h3>Frama-C<a class="headerlink" href="#frama-c" title="Link to this heading"></a></h3>
+<p>Frama-C is installed via opam (the Debian 12 apt package is version 25/Manganese,
+too old for benchmarking).  The playbook handles this automatically.</p>
+<p>Manual install:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>opam<span class="w"> </span>gcc<span class="w"> </span>g++<span class="w"> </span>make<span class="w"> </span>m4<span class="w"> </span>pkg-config<span class="w"> </span>autoconf<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>libgmp-dev<span class="w"> </span>zlib1g-dev<span class="w"> </span>libgtk-3-dev<span class="w"> </span>libgtksourceview-3.0-dev<span class="w"> </span>graphviz
+
+opam<span class="w"> </span>init<span class="w"> </span>--bare<span class="w"> </span>--no-setup<span class="w"> </span>--disable-sandboxing
+opam<span class="w"> </span>switch<span class="w"> </span>create<span class="w"> </span>default<span class="w"> </span><span class="m">4</span>.14.2
+<span class="nb">eval</span><span class="w"> </span><span class="k">$(</span>opam<span class="w"> </span>env<span class="k">)</span>
+opam<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>frama-c
+
+<span class="c1"># Verify (requires eval $(opam env) in each shell session)</span>
+frama-c<span class="w"> </span>-version
+<span class="c1"># Expected: 33.0 (Arsenic) as of 2026-09-04; 32.0 (Germanium) is what the</span>
+<span class="c1"># competitor Juliet runs in data/competitor_results/ were taken with</span>
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Add <code class="docutils literal notranslate"><span class="pre">eval</span> <span class="pre">$(opam</span> <span class="pre">env)</span></code> to your shell profile (<code class="docutils literal notranslate"><span class="pre">~/.bashrc</span></code>) to make
+<code class="docutils literal notranslate"><span class="pre">frama-c</span></code> available without manual activation.  The benchmark runner
+does not need it: <code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code> wraps every Frama-C
+invocation in <code class="docutils literal notranslate"><span class="pre">eval</span> <span class="pre">$(opam</span> <span class="pre">env)</span></code> itself, because it is not a login
+shell.</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>Frama-C renamed the compile-database option between the two versions
+above — <code class="docutils literal notranslate"><span class="pre">-json-compilation-database</span></code> through 32.0, <code class="docutils literal notranslate"><span class="pre">-compilation-db</span></code>
+from 33.0.  The runner probes <code class="docutils literal notranslate"><span class="pre">frama-c</span> <span class="pre">-kernel-h</span></code> and picks whichever
+the installed binary accepts, so both work; a hand-written command line
+copied from an older doc will abort with “option is unknown”.</p>
+</div>
+</section>
+<section id="build-based-tools-need-a-compile-database">
+<h3>Build-based tools need a compile database<a class="headerlink" href="#build-based-tools-need-a-compile-database" title="Link to this heading"></a></h3>
+<p>Infer and Frama-C cannot be pointed at a source tree the way aurora-lint and cppcheck
+can — both need a real preprocess.  On the real-world suite they are driven
+from each checkout’s <code class="docutils literal notranslate"><span class="pre">compile_commands.json</span></code>, so
+<code class="docutils literal notranslate"><span class="pre">playbooks/setup-compile-commands.yml</span></code> must have run for a codebase before
+either tool can scan it.  <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">realworld-run</span> <span class="pre">--tool</span> <span class="pre">infer</span></code> fails
+fast with the exact command to fix it if the database is missing.</p>
+<p>Expect a <em>partial</em> result from both, and check the <code class="docutils literal notranslate"><span class="pre">coverage</span></code> block each run
+writes:</p>
+<ul class="simple">
+<li><p><strong>Infer</strong> captures whatever preprocesses.  <code class="docutils literal notranslate"><span class="pre">setup-compile-commands.yml</span></code>
+restores each checkout to pristine after building it, which deletes the
+build’s generated headers; the playbook now stashes the ones the compile
+database still references (pure-ftpd’s <code class="docutils literal notranslate"><span class="pre">config.h</span></code>, sqlite’s
+<code class="docutils literal notranslate"><span class="pre">sqlite_cfg.h</span></code>, valkey’s <code class="docutils literal notranslate"><span class="pre">jemalloc/jemalloc.h</span></code>, libcrc’s
+<code class="docutils literal notranslate"><span class="pre">tab/gentab*.inc</span></code>) under <code class="docutils literal notranslate"><span class="pre">&lt;bench_root&gt;/.cc_build/generated/</span></code> and points
+the database there, so every in-scope translation unit preprocesses.  A
+<code class="docutils literal notranslate"><span class="pre">capture_failures</span></code> list that is not empty means a database written
+before that existed — re-run the playbook, which detects and rebuilds it.</p></li>
+<li><p><strong>Frama-C</strong> is partial by construction, because EVA analyzes one entry
+point at a time and a real codebase has no single one.  Read
+<code class="docutils literal notranslate"><span class="pre">docs/design/framac-realworld.md</span></code> before quoting any Frama-C real-world
+number: a finding count from it is a floor, and recall is not expressible
+from it at all.</p></li>
+</ul>
+</section>
+</section>
+<section id="juliet-test-suite-setup">
+<h2>Juliet Test Suite Setup<a class="headerlink" href="#juliet-test-suite-setup" title="Link to this heading"></a></h2>
+<p>The setup playbook does not fetch Juliet; it only creates the parent
+directory and reports whether the suite is already in place. The <a class="reference external" href="https://samate.nist.gov/SARD/test-suites/112">NIST
+Juliet Test Suite v1.3</a>
+page links a single zip that downloads directly, with no click-through.
+NIST does not promise that URL stays put, so if the <code class="docutils literal notranslate"><span class="pre">curl</span></code> below fails,
+start from that page. The archive extracts to <code class="docutils literal notranslate"><span class="pre">C/</span></code>, which is renamed to
+the directory name <code class="docutils literal notranslate"><span class="pre">bench/config.py</span></code> expects:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>curl<span class="w"> </span>unzip
+mkdir<span class="w"> </span>-p<span class="w"> </span><span class="nv">$SQC_BENCH_ROOT</span>/benchmarks<span class="w">   </span><span class="c1"># default: ~/toolchain/benchmarks</span>
+<span class="nb">cd</span><span class="w"> </span><span class="nv">$SQC_BENCH_ROOT</span>/benchmarks
+curl<span class="w"> </span>-LO<span class="w"> </span>https://samate.nist.gov/SARD/downloads/test-suites/2017-10-01-juliet-test-suite-for-c-cplusplus-v1-3.zip
+unzip<span class="w"> </span>-q<span class="w"> </span><span class="m">2017</span>-10-01-juliet-test-suite-for-c-cplusplus-v1-3.zip
+mv<span class="w"> </span>C<span class="w"> </span>juliet-test-suite-c
+<span class="c1"># Expected structure:</span>
+<span class="c1">#   juliet-test-suite-c/testcases/CWE*/     (118 CWE directories)</span>
+<span class="c1">#   juliet-test-suite-c/testcasesupport/    (shared helper functions)</span>
+</pre></div>
+</div>
+<p>The per-CWE manifests that fast mode runs (<code class="docutils literal notranslate"><span class="pre">rules_templates/cwe/*.toml</span></code>)
+are generated by <code class="docutils literal notranslate"><span class="pre">scripts/generate_rule_cwe_map.py</span></code> and are not
+committed, so that directory is nearly empty in a fresh clone.
+<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">juliet</span></code> runs the script for you before every run, which
+also refreshes <code class="docutils literal notranslate"><span class="pre">data/rule_cwe_map.json</span></code>.</p>
+</section>
+<section id="third-party-library-headers">
+<h2>Third-Party Library Headers<a class="headerlink" href="#third-party-library-headers" title="Link to this heading"></a></h2>
+<p>aurora-lint uses <code class="docutils literal notranslate"><span class="pre">-I</span></code> include paths to resolve <code class="docutils literal notranslate"><span class="pre">#include</span></code> directives from third-party
+libraries. Without these, functions declared in external headers produce
+DCL31-C/DCL07-C false positives. The installed headers are therefore part
+of what a run measures – once the full list below is installed, the same
+binary on two machines differs by only a small number of keys (see
+<a class="reference internal" href="reproducing-published-numbers.html"><span class="doc">Reproducing the Published Numbers</span></a>).</p>
+<p><strong>That “small number of keys” figure describes drift after the full list is
+installed.</strong> Installing only part of it is a different, much larger failure
+mode, and an easy one to fall into since the per-project breakdown below is
+split into several blocks: a scan missing even one project’s packages
+(easy to do working through them top-to-bottom rather than installing the
+one-liner) has measurably produced several hundred extra
+findings on a several-thousand-finding run (a high-single-digit percentage
+of the total), and a project’s precision can sit measurably off a published
+number until every package for it is installed – with nothing in the tool’s
+own output signaling that more packages apply. <code class="docutils literal notranslate"><span class="pre">corpus-check</span></code> does not
+catch this either: it checks corpus pin drift and untracked/gitignored
+<code class="docutils literal notranslate"><span class="pre">.c</span></code>/<code class="docutils literal notranslate"><span class="pre">.h</span></code> files, not installed packages.</p>
+<p>Install the full one-liner below rather than reasoning about which
+per-project subset your codebase needs:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>libssl-dev<span class="w"> </span>libcjson-dev<span class="w"> </span>zlib1g-dev<span class="w"> </span>libcunit1-dev<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>libsqlite3-dev<span class="w"> </span>libmbedtls-dev<span class="w"> </span>libgnutls28-dev<span class="w"> </span>libgsasl-dev<span class="w"> </span>tcl-dev<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>libnl-3-dev<span class="w"> </span>libnl-genl-3-dev<span class="w"> </span>libdbus-1-dev<span class="w"> </span>libgcrypt20-dev<span class="w"> </span>libpcap-dev<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>libwolfssl-dev
+</pre></div>
+</div>
+<p>Per-project breakdown, for reference (installing the one-liner above already
+covers all of these):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Core dependencies (covers most projects)</span>
+sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>libssl-dev<span class="w"> </span>libcjson-dev<span class="w"> </span>zlib1g-dev
+
+<span class="c1"># mosquitto</span>
+sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>libcunit1-dev<span class="w"> </span>libsqlite3-dev
+
+<span class="c1"># curl TLS and SASL backends (without libgsasl-dev, lib/vauth/gsasl.c</span>
+<span class="c1"># reports every gsasl_* call as DCL31-C &quot;called without prior declaration&quot;)</span>
+sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>libmbedtls-dev<span class="w"> </span>libgnutls28-dev<span class="w"> </span>libgsasl-dev
+
+<span class="c1"># sqlite test infrastructure</span>
+sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>tcl-dev
+
+<span class="c1"># hostap</span>
+sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>libnl-3-dev<span class="w"> </span>libnl-genl-3-dev<span class="w"> </span>libdbus-1-dev<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>libgcrypt20-dev<span class="w"> </span>libpcap-dev<span class="w"> </span>libwolfssl-dev
+</pre></div>
+</div>
+<section id="per-project-include-paths">
+<h3>Per-Project Include Paths<a class="headerlink" href="#per-project-include-paths" title="Link to this heading"></a></h3>
+<p>The real-world runner passes these automatically via the <code class="docutils literal notranslate"><span class="pre">includes</span></code> field in
+each codebase’s config:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Project</p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">-I</span></code> Paths</p></th>
+<th class="head"><p>Resolves</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>libcrc</p></td>
+<td><p><em>(none)</em></p></td>
+<td><p>Pure C, no external deps</p></td>
+</tr>
+<tr class="row-odd"><td><p>sqlite</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/usr/include</span></code></p></td>
+<td><p>OpenSSL, zlib, Tcl</p></td>
+</tr>
+<tr class="row-even"><td><p>mosquitto</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/usr/include</span></code>, <code class="docutils literal notranslate"><span class="pre">/usr/include/cjson</span></code></p></td>
+<td><p>OpenSSL, cJSON, CUnit, sqlite3</p></td>
+</tr>
+<tr class="row-odd"><td><p>curl</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/usr/include</span></code>, <code class="docutils literal notranslate"><span class="pre">{path}/lib</span></code></p></td>
+<td><p>OpenSSL, mbedTLS, GnuTLS</p></td>
+</tr>
+<tr class="row-even"><td><p>hostap</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/usr/include</span></code>, <code class="docutils literal notranslate"><span class="pre">/usr/include/libnl3</span></code>,
+<code class="docutils literal notranslate"><span class="pre">/usr/include/dbus-1.0</span></code></p></td>
+<td><p>OpenSSL, wolfSSL, libnl,
+D-Bus, libgcrypt, libpcap</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+<section id="real-world-project-setup">
+<h2>Real-World Project Setup<a class="headerlink" href="#real-world-project-setup" title="Link to this heading"></a></h2>
+<section id="pinned-source-commits">
+<h3>Pinned Source Commits<a class="headerlink" href="#pinned-source-commits" title="Link to this heading"></a></h3>
+<p>All benchmark results are run against these exact commits – the full set of
+projects in <code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code>’s <code class="docutils literal notranslate"><span class="pre">CODEBASES</span></code> registry
+(which stores paths and per-tool flags, not the pins).</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The <strong>single source of truth for the pins is</strong>
+<code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code>. Both
+<code class="docutils literal notranslate"><span class="pre">playbooks/setup-benchmark-repos.yml</span></code> (provisioning) and <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span>
+<span class="pre">bench</span> <span class="pre">corpus-check</span></code> (verification) read it. The table below is a
+human-readable mirror – if the two disagree, the JSON wins. Do not add
+a third copy.</p>
+</div>
+<p>Each checkout must sit at a <strong>detached HEAD</strong> on its pinned commit. A
+checkout left on a tracking branch is not pinned even while it happens to
+match: the next <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">pull</span></code> moves it silently, and every finding then lands
+at <code class="docutils literal notranslate"><span class="pre">(file,</span> <span class="pre">line)</span></code> pairs the <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> oracle – keyed on
+project+commit+file+line+rule – was never adjudicated against, so it drops
+out of the precision/recall denominator without any error. This is not
+hypothetical; see <a class="reference internal" href="#verifying-the-pins">Verifying the Pins</a> below.</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 12.0%" />
+<col style="width: 40.0%" />
+<col style="width: 38.0%" />
+<col style="width: 10.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Project</p></th>
+<th class="head"><p>Repository</p></th>
+<th class="head"><p>Commit SHA</p></th>
+<th class="head"><p>Checkout state</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>libcrc</p></td>
+<td><p><a class="reference external" href="https://github.com/lammertb/libcrc">https://github.com/lammertb/libcrc</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">7719e2112a9a960b1bba130d02bebdf58e8701f1</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
+<tr class="row-odd"><td><p>sqlite</p></td>
+<td><p><a class="reference external" href="https://github.com/sqlite/sqlite.git">https://github.com/sqlite/sqlite.git</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">b1a73ba34d05b32007315e4065c6468cc638e3af</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
+<tr class="row-even"><td><p>mosquitto</p></td>
+<td><p><a class="reference external" href="https://github.com/eclipse-mosquitto/mosquitto">https://github.com/eclipse-mosquitto/mosquitto</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">d3ee5c5ca62c0fa4983308c6fff558ee978e878c</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
+<tr class="row-odd"><td><p>curl</p></td>
+<td><p><a class="reference external" href="https://github.com/curl/curl.git">https://github.com/curl/curl.git</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">3e198f75861cc2e12daf299689e145949dddd19b</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
+<tr class="row-even"><td><p>hostap</p></td>
+<td><p><a class="reference external" href="https://git.w1.fi/hostap.git">https://git.w1.fi/hostap.git</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">dcee60436390dd34731560657c4257c3b4c839a6</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
+<tr class="row-odd"><td><p>lua</p></td>
+<td><p><a class="reference external" href="https://github.com/lua/lua.git">https://github.com/lua/lua.git</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">40b76de2d77e66b70a9d4bf989c3f5340919973f</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
+<tr class="row-even"><td><p>raylib</p></td>
+<td><p><a class="reference external" href="https://github.com/raysan5/raylib.git">https://github.com/raysan5/raylib.git</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">962bbfc6bfbd7a5acd08e21314fcfa161003a589</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
+<tr class="row-odd"><td><p>pureftpd</p></td>
+<td><p><a class="reference external" href="https://github.com/jedisct1/pure-ftpd.git">https://github.com/jedisct1/pure-ftpd.git</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">cc28bff52ca28e1d122a2142bf37f2dc578f4d3e</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
+<tr class="row-even"><td><p>sel4</p></td>
+<td><p><a class="reference external" href="https://github.com/seL4/seL4.git">https://github.com/seL4/seL4.git</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1326364bc9135d9445d936ebc01e38a402c1f4c6</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
+<tr class="row-odd"><td><p>mbedtls</p></td>
+<td><p><a class="reference external" href="https://github.com/Mbed-TLS/mbedtls.git">https://github.com/Mbed-TLS/mbedtls.git</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">068ff080b369adfac81509f9b57b2afabaf82dc5</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
+<tr class="row-even"><td><p>valkey</p></td>
+<td><p><a class="reference external" href="https://github.com/valkey-io/valkey.git">https://github.com/valkey-io/valkey.git</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">7f1dffedff6de73058b2c2a389422b6ecd56c8fb</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
+<tr class="row-odd"><td><p>ventoy</p></td>
+<td><p><a class="reference external" href="https://github.com/ventoy/Ventoy.git">https://github.com/ventoy/Ventoy.git</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">7cbdc5cf69935bcf1f085ae67f40e70ea7e74bae</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
+</tbody>
+</table>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p><code class="docutils literal notranslate"><span class="pre">pureftpd</span></code>’s checkout directory must be named <code class="docutils literal notranslate"><span class="pre">pureftpd</span></code> (no
+hyphen), not the upstream <code class="docutils literal notranslate"><span class="pre">pure-ftpd</span></code> – two path-parsing spots in
+<code class="docutils literal notranslate"><span class="pre">bench/db.py</span></code> (result-filename parsing, ground-truth path
+normalization) require the checkout dir basename to match the registry
+key exactly. The playbook already clones it to the right name.</p>
+</div>
+</section>
+<section id="verifying-the-pins">
+<h3>Verifying the Pins<a class="headerlink" href="#verifying-the-pins" title="Link to this heading"></a></h3>
+<p>Provisioning pins the checkouts once; nothing kept them pinned. Run this
+before any real-world benchmark or precision claim:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>corpus-check<span class="w">          </span><span class="c1"># exits 1 if anything is off</span>
+python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>corpus-check<span class="w"> </span>--json<span class="w">   </span><span class="c1"># machine-readable</span>
+</pre></div>
+</div>
+<p>It reports one row per project, worst first:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Status</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>MISSING</p></td>
+<td><p>Checkout directory absent</p></td>
+</tr>
+<tr class="row-odd"><td><p>NOT_GIT</p></td>
+<td><p>Directory exists but is not a git checkout</p></td>
+</tr>
+<tr class="row-even"><td><p>PIN_ABSENT</p></td>
+<td><p>Pinned commit not present locally (needs a fetch)</p></td>
+</tr>
+<tr class="row-odd"><td><p>DRIFTED</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">HEAD</span></code> is not the pinned commit</p></td>
+</tr>
+<tr class="row-even"><td><p>UNPINNED</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">HEAD</span></code> matches the pin but sits on a branch, so the next
+<code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">pull</span></code> silently drifts it</p></td>
+</tr>
+<tr class="row-odd"><td><p>OK</p></td>
+<td><p>Detached at the pinned commit</p></td>
+</tr>
+</tbody>
+</table>
+<p>It also flags three contamination cases independent of status:</p>
+<ul class="simple">
+<li><p>tracked files modified, so the scanned source is not the pin;</p></li>
+<li><p><strong>untracked ``*.c``/``*.h`` files, which aurora-lint will scan</strong> and attribute to
+the pinned commit (untracked files aurora-lint ignores are counted separately and
+are harmless);</p></li>
+<li><p><strong>gitignored ``*.c``/``*.h`` files</strong>, which are invisible to <code class="docutils literal notranslate"><span class="pre">git</span>
+<span class="pre">status</span></code> but which aurora-lint scans anyway – it dispatches on file extension and
+never consults git. The case to watch is a build run inside a checkout:
+sqlite’s build generates a gitignored <code class="docutils literal notranslate"><span class="pre">sqlite3.c</span></code> amalgamation, which
+would silently add ~250k lines to every sqlite scan.</p></li>
+</ul>
+<div class="admonition tip">
+<p class="admonition-title">Tip</p>
+<p>Keep the checkouts pristine. Build artifacts belong in a separate tree,
+not inside <code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT</span></code>.</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>This check exists because the failure is silent and did happen. On the
+work node curl, hostap and sqlite had all drifted, while libcrc and lua
+sat on tracking branches matching their pins only by coincidence. A gate
+run against the drifted trees reported hostap 452 / sqlite 516 findings
+where the pinned snapshots give 447 / 506 – close enough to look
+plausible, and not comparable to <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> at all. Fix drift with
+the <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">checkout</span> <span class="pre">--detach</span></code> command the check prints for each row.</p>
+</div>
+</section>
+<section id="clone-and-pin">
+<h3>Clone and Pin<a class="headerlink" href="#clone-and-pin" title="Link to this heading"></a></h3>
+<p>Preferred: run <code class="docutils literal notranslate"><span class="pre">playbooks/setup-benchmark-repos.yml</span></code> (see <a class="reference internal" href="#benchmark-host-layout">Benchmark Host
+Layout</a> above) – it clones, pins, and verifies every pinned checkout in one pass,
+reading the pins from <code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code>.</p>
+<p>Manual fallback:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mkdir<span class="w"> </span>-p<span class="w"> </span><span class="nv">$SQC_BENCH_ROOT</span><span class="w">   </span><span class="c1"># default: ~/toolchain</span>
+<span class="nb">cd</span><span class="w"> </span><span class="nv">$SQC_BENCH_ROOT</span>
+
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/lammertb/libcrc.git
+<span class="nb">cd</span><span class="w"> </span>libcrc<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>7719e2112a9a960b1bba130d02bebdf58e8701f1<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/sqlite/sqlite.git
+<span class="nb">cd</span><span class="w"> </span>sqlite<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>b1a73ba34d05b32007315e4065c6468cc638e3af<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/eclipse-mosquitto/mosquitto.git
+<span class="nb">cd</span><span class="w"> </span>mosquitto<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>d3ee5c5ca62c0fa4983308c6fff558ee978e878c<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/curl/curl.git
+<span class="nb">cd</span><span class="w"> </span>curl<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>3e198f75861cc2e12daf299689e145949dddd19b<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+git<span class="w"> </span>clone<span class="w"> </span>https://git.w1.fi/hostap.git
+<span class="nb">cd</span><span class="w"> </span>hostap<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>dcee60436390dd34731560657c4257c3b4c839a6<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/lua/lua.git
+<span class="nb">cd</span><span class="w"> </span>lua<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>40b76de2d77e66b70a9d4bf989c3f5340919973f<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/raysan5/raylib.git
+<span class="nb">cd</span><span class="w"> </span>raylib<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>962bbfc6bfbd7a5acd08e21314fcfa161003a589<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+<span class="c1"># NOTE: checkout dir must be &quot;pureftpd&quot; (no hyphen) -- see the warning above</span>
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/jedisct1/pure-ftpd.git<span class="w"> </span>pureftpd
+<span class="nb">cd</span><span class="w"> </span>pureftpd<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>cc28bff52ca28e1d122a2142bf37f2dc578f4d3e<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+<span class="c1"># NOTE: checkout dir must be lowercase &quot;sel4&quot; to match the registry key</span>
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/seL4/seL4.git<span class="w"> </span>sel4
+<span class="nb">cd</span><span class="w"> </span>sel4<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>1326364bc9135d9445d936ebc01e38a402c1f4c6<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+<span class="c1"># The framework submodule is only needed for the compile_commands.json</span>
+<span class="c1"># capture (playbooks/setup-compile-commands.yml); the aurora-lint scan</span>
+<span class="c1"># of library/ does not need it.</span>
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Mbed-TLS/mbedtls.git
+<span class="nb">cd</span><span class="w"> </span>mbedtls<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>068ff080b369adfac81509f9b57b2afabaf82dc5<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+<span class="c1"># Do not build inside this checkout: `make` leaves a gitignored</span>
+<span class="c1"># src/release.h that corpus-check will (correctly) refuse.</span>
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/valkey-io/valkey.git
+<span class="nb">cd</span><span class="w"> </span>valkey<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>7f1dffedff6de73058b2c2a389422b6ecd56c8fb<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+<span class="c1"># NOTE: checkout dir must be lowercase &quot;ventoy&quot; to match the registry key.</span>
+<span class="c1"># Only Ventoy2Disk/Ventoy2Disk/ is scanned; the rest of the repo is</span>
+<span class="c1"># Linux/GRUB/firmware code outside a CERT-C scan&#39;s interest.</span>
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/ventoy/Ventoy.git<span class="w"> </span>ventoy
+<span class="nb">cd</span><span class="w"> </span>ventoy<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>7cbdc5cf69935bcf1f085ae67f40e70ea7e74bae<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+</pre></div>
+</div>
+</section>
+</section>
+<section id="running-each-tool-manually">
+<h2>Running Each Tool Manually<a class="headerlink" href="#running-each-tool-manually" title="Link to this heading"></a></h2>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The examples below use an illustrative <code class="docutils literal notranslate"><span class="pre">~/data/comparisons/&lt;project&gt;</span></code>
+checkout path for ad hoc manual runs. If you provisioned codebases via
+<code class="docutils literal notranslate"><span class="pre">playbooks/setup-benchmark-repos.yml</span></code>, substitute
+<code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT/&lt;project&gt;</span></code> (default <code class="docutils literal notranslate"><span class="pre">~/toolchain/&lt;project&gt;</span></code>) instead
+– that’s the path <code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code> itself reads.</p>
+</div>
+<p>aurora-lint
+~~~</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Build</span>
+<span class="nb">cd</span><span class="w"> </span><span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint
+cargo<span class="w"> </span>build<span class="w"> </span>--release
+
+<span class="c1"># Basic run</span>
+./target/release/aurora-lint<span class="w"> </span>/path/to/source/<span class="w"> </span>--export<span class="w"> </span>results.json
+
+<span class="c1"># With cross-file context</span>
+./target/release/aurora-lint<span class="w"> </span>/path/to/source/<span class="w"> </span>-d<span class="w"> </span>/path/to/source/<span class="w"> </span>--export<span class="w"> </span>results.json
+
+<span class="c1"># When running from outside the aurora-lint repo, pass --manifest explicitly</span>
+./target/release/aurora-lint<span class="w"> </span>/path/to/source/<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--manifest<span class="w"> </span><span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint/rules_templates/rules-all.toml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--export<span class="w"> </span>results.json
+</pre></div>
+</div>
+<section id="id1">
+<h3>cppcheck<a class="headerlink" href="#id1" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cppcheck<span class="w"> </span>--enable<span class="o">=</span>all<span class="w"> </span>--std<span class="o">=</span>c11<span class="w"> </span>--xml<span class="w"> </span>--xml-version<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--suppress<span class="o">=</span>missingIncludeSystem<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-I<span class="w"> </span>/path/to/include<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>/path/to/source/<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="m">2</span>&gt;<span class="w"> </span>results.xml
+</pre></div>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<ul class="simple">
+<li><p>cppcheck writes XML to <strong>stderr</strong>, not stdout</p></li>
+<li><p>Never pass <code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include</span></code> – causes parse errors in system headers</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--addon=cert</span></code> is not available on Ubuntu 24.04; <code class="docutils literal notranslate"><span class="pre">--enable=all</span></code> includes CERT checks</p></li>
+</ul>
+</div>
+</section>
+<section id="id2">
+<h3>clang-tidy<a class="headerlink" href="#id2" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Option A: With compile_commands.json (recommended)</span>
+<span class="nb">cd</span><span class="w"> </span>/path/to/project
+make<span class="w"> </span>clean<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>bear<span class="w"> </span>--<span class="w"> </span>make<span class="w"> </span>-j<span class="k">$(</span>nproc<span class="k">)</span>
+run-clang-tidy<span class="w"> </span>-checks<span class="o">=</span><span class="s1">&#39;-*,cert-*,clang-analyzer-*&#39;</span><span class="w"> </span>-p<span class="w"> </span>.
+
+<span class="c1"># Option B: Direct file scan (no build required)</span>
+find<span class="w"> </span>/path/to/source/<span class="w"> </span>-name<span class="w"> </span><span class="s1">&#39;*.c&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>xargs<span class="w"> </span>-P<span class="w"> </span><span class="k">$(</span>nproc<span class="k">)</span><span class="w"> </span>-I<span class="o">{}</span><span class="w"> </span>clang-tidy<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-checks<span class="o">=</span><span class="s1">&#39;-*,cert-*,clang-analyzer-*&#39;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span><span class="o">{}</span><span class="w"> </span>--<span class="w"> </span>-std<span class="o">=</span>c11<span class="w"> </span>-I<span class="w"> </span>/path/to/include
+</pre></div>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">bear</span></code> requires <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">clean</span></code> first – it only captures invocations during an actual build</p></li>
+<li><p>Verify <code class="docutils literal notranslate"><span class="pre">compile_commands.json</span></code> is non-empty before running clang-tidy</p></li>
+</ul>
+</div>
+</section>
+</section>
+<section id="per-project-commands">
+<h2>Per-Project Commands<a class="headerlink" href="#per-project-commands" title="Link to this heading"></a></h2>
+<section id="libcrc">
+<h3>libcrc<a class="headerlink" href="#libcrc" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># aurora-lint</span>
+<span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint/target/release/aurora-lint<span class="w"> </span>~/data/comparisons/libcrc<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/libcrc<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--manifest<span class="w"> </span><span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint/rules_templates/rules-all.toml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/aurora-lint/libcrc/results.json
+
+<span class="c1"># cppcheck</span>
+cppcheck<span class="w"> </span>--enable<span class="o">=</span>all<span class="w"> </span>--std<span class="o">=</span>c11<span class="w"> </span>--xml<span class="w"> </span>--xml-version<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--suppress<span class="o">=</span>missingIncludeSystem<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-I<span class="w"> </span>~/data/comparisons/libcrc/include<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>~/data/comparisons/libcrc/src/<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="m">2</span>&gt;<span class="w"> </span>~/data/comparisons/results/cppcheck/libcrc/results.xml
+
+<span class="c1"># clang-tidy</span>
+<span class="nb">cd</span><span class="w"> </span>~/data/comparisons/libcrc<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>make<span class="w"> </span>clean<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>bear<span class="w"> </span>--<span class="w"> </span>make
+run-clang-tidy<span class="w"> </span>-checks<span class="o">=</span><span class="s1">&#39;-*,cert-*,clang-analyzer-*&#39;</span><span class="w"> </span>-p<span class="w"> </span>.<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>tee<span class="w"> </span>~/data/comparisons/results/clang-tidy/libcrc/results.txt
+</pre></div>
+</div>
+</section>
+<section id="sqlite">
+<h3>sqlite<a class="headerlink" href="#sqlite" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># aurora-lint</span>
+<span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint/target/release/aurora-lint<span class="w"> </span>~/data/comparisons/sqlite<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/sqlite<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--manifest<span class="w"> </span><span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint/rules_templates/rules-all.toml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/aurora-lint/sqlite/results.json
+
+<span class="c1"># cppcheck</span>
+cppcheck<span class="w"> </span>--enable<span class="o">=</span>all<span class="w"> </span>--std<span class="o">=</span>c11<span class="w"> </span>--xml<span class="w"> </span>--xml-version<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--suppress<span class="o">=</span>missingIncludeSystem<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-I<span class="w"> </span>~/data/comparisons/sqlite/src<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>~/data/comparisons/sqlite/src/<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="m">2</span>&gt;<span class="w"> </span>~/data/comparisons/results/cppcheck/sqlite/results.xml
+
+<span class="c1"># clang-tidy</span>
+<span class="nb">cd</span><span class="w"> </span>~/data/comparisons/sqlite<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>./configure<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>make<span class="w"> </span>clean<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>bear<span class="w"> </span>--<span class="w"> </span>make<span class="w"> </span>-j<span class="k">$(</span>nproc<span class="k">)</span>
+run-clang-tidy<span class="w"> </span>-checks<span class="o">=</span><span class="s1">&#39;-*,cert-*,clang-analyzer-*&#39;</span><span class="w"> </span>-p<span class="w"> </span>.<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>tee<span class="w"> </span>~/data/comparisons/results/clang-tidy/sqlite/results.txt
+</pre></div>
+</div>
+</section>
+<section id="mosquitto">
+<h3>mosquitto<a class="headerlink" href="#mosquitto" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># aurora-lint</span>
+<span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint/target/release/aurora-lint<span class="w"> </span>~/data/comparisons/mosquitto<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/mosquitto<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--manifest<span class="w"> </span><span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint/rules_templates/rules-all.toml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/aurora-lint/mosquitto/results.json
+
+<span class="c1"># cppcheck</span>
+cppcheck<span class="w"> </span>--enable<span class="o">=</span>all<span class="w"> </span>--std<span class="o">=</span>c11<span class="w"> </span>--xml<span class="w"> </span>--xml-version<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--suppress<span class="o">=</span>missingIncludeSystem<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-I<span class="w"> </span>~/data/comparisons/mosquitto/include<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-I<span class="w"> </span>~/data/comparisons/mosquitto/common<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-i<span class="w"> </span>~/data/comparisons/mosquitto/deps<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>~/data/comparisons/mosquitto/lib/<span class="w"> </span>~/data/comparisons/mosquitto/src/<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="m">2</span>&gt;<span class="w"> </span>~/data/comparisons/results/cppcheck/mosquitto/results.xml
+
+<span class="c1"># clang-tidy</span>
+cmake<span class="w"> </span>-S<span class="w"> </span>~/data/comparisons/mosquitto<span class="w"> </span>-B<span class="w"> </span>~/data/comparisons/mosquitto/build<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DCMAKE_EXPORT_COMPILE_COMMANDS<span class="o">=</span>ON<span class="w"> </span>-DWITH_TLS<span class="o">=</span>OFF<span class="w"> </span>-DWITH_WEBSOCKETS<span class="o">=</span>OFF<span class="w"> </span>-DWITH_TESTS<span class="o">=</span>OFF
+cmake<span class="w"> </span>--build<span class="w"> </span>~/data/comparisons/mosquitto/build<span class="w"> </span>--clean-first<span class="w"> </span>-j<span class="k">$(</span>nproc<span class="k">)</span>
+run-clang-tidy<span class="w"> </span>-checks<span class="o">=</span><span class="s1">&#39;-*,cert-*,clang-analyzer-*&#39;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-p<span class="w"> </span>~/data/comparisons/mosquitto/build<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>tee<span class="w"> </span>~/data/comparisons/results/clang-tidy/mosquitto/results.txt
+</pre></div>
+</div>
+</section>
+<section id="curl">
+<h3>curl<a class="headerlink" href="#curl" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># aurora-lint</span>
+<span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint/target/release/aurora-lint<span class="w"> </span>~/data/comparisons/curl<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/curl<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--manifest<span class="w"> </span><span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint/rules_templates/rules-all.toml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/aurora-lint/curl/results.json
+
+<span class="c1"># cppcheck</span>
+cppcheck<span class="w"> </span>--enable<span class="o">=</span>all<span class="w"> </span>--std<span class="o">=</span>c11<span class="w"> </span>--xml<span class="w"> </span>--xml-version<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--suppress<span class="o">=</span>missingIncludeSystem<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-I<span class="w"> </span>~/data/comparisons/curl/include<span class="w"> </span>-I<span class="w"> </span>~/data/comparisons/curl/lib<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>~/data/comparisons/curl/lib/<span class="w"> </span>~/data/comparisons/curl/src/<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="m">2</span>&gt;<span class="w"> </span>~/data/comparisons/results/cppcheck/curl/results.xml
+
+<span class="c1"># clang-tidy</span>
+cmake<span class="w"> </span>-S<span class="w"> </span>~/data/comparisons/curl<span class="w"> </span>-B<span class="w"> </span>~/data/comparisons/curl/build<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DCMAKE_EXPORT_COMPILE_COMMANDS<span class="o">=</span>ON<span class="w"> </span>-DBUILD_SHARED_LIBS<span class="o">=</span>OFF<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DCURL_USE_OPENSSL<span class="o">=</span>OFF<span class="w"> </span>-DCURL_DISABLE_LDAP<span class="o">=</span>ON<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DUSE_LIBIDN2<span class="o">=</span>OFF<span class="w"> </span>-DUSE_NGHTTP2<span class="o">=</span>OFF<span class="w"> </span>-DCURL_ZSTD<span class="o">=</span>OFF
+cmake<span class="w"> </span>--build<span class="w"> </span>~/data/comparisons/curl/build<span class="w"> </span>--clean-first<span class="w"> </span>-j<span class="k">$(</span>nproc<span class="k">)</span>
+run-clang-tidy<span class="w"> </span>-checks<span class="o">=</span><span class="s1">&#39;-*,cert-*,clang-analyzer-*&#39;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-p<span class="w"> </span>~/data/comparisons/curl/build<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>tee<span class="w"> </span>~/data/comparisons/results/clang-tidy/curl/results.txt
+</pre></div>
+</div>
+</section>
+<section id="hostap">
+<h3>hostap<a class="headerlink" href="#hostap" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># aurora-lint</span>
+<span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint/target/release/aurora-lint<span class="w"> </span>~/data/comparisons/hostap<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/hostap/src<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/hostap/wpa_supplicant<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--manifest<span class="w"> </span><span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint/rules_templates/rules-all.toml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/aurora-lint/hostap/results.json
+
+<span class="c1"># cppcheck</span>
+cppcheck<span class="w"> </span>--enable<span class="o">=</span>all<span class="w"> </span>--std<span class="o">=</span>c11<span class="w"> </span>--xml<span class="w"> </span>--xml-version<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--suppress<span class="o">=</span>missingIncludeSystem<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-I<span class="w"> </span>~/data/comparisons/hostap/src<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-I<span class="w"> </span>~/data/comparisons/hostap/src/utils<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-I<span class="w"> </span>~/data/comparisons/hostap/src/common<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>~/data/comparisons/hostap/src/<span class="w"> </span>~/data/comparisons/hostap/wpa_supplicant/<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="m">2</span>&gt;<span class="w"> </span>~/data/comparisons/results/cppcheck/hostap/results.xml
+
+<span class="c1"># clang-tidy (requires .config for wpa_supplicant)</span>
+<span class="nb">cd</span><span class="w"> </span>~/data/comparisons/hostap/wpa_supplicant
+cat<span class="w"> </span>&gt;<span class="w"> </span>.config<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+<span class="s">CONFIG_DRIVER_NL80211=y</span>
+<span class="s">CONFIG_LIBNL32=y</span>
+<span class="s">CONFIG_IEEE8021X_EAPOL=y</span>
+<span class="s">CONFIG_EAP_MD5=y</span>
+<span class="s">EOF</span>
+make<span class="w"> </span>clean<span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="p">;</span><span class="w"> </span>bear<span class="w"> </span>--<span class="w"> </span>make<span class="w"> </span>-j<span class="k">$(</span>nproc<span class="k">)</span><span class="w"> </span>wpa_supplicant<span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">true</span>
+<span class="nb">cd</span><span class="w"> </span>~/data/comparisons/hostap
+python3<span class="w"> </span>gen_compile_commands.py<span class="w"> </span>-o<span class="w"> </span>compile_commands.json<span class="w"> </span>wpa_supplicant/
+run-clang-tidy<span class="w"> </span>-checks<span class="o">=</span><span class="s1">&#39;-*,cert-*,clang-analyzer-*&#39;</span><span class="w"> </span>-p<span class="w"> </span>.<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>tee<span class="w"> </span>~/data/comparisons/results/clang-tidy/hostap/results.txt
+</pre></div>
+</div>
+</section>
+</section>
+<section id="verifying-results">
+<h2>Verifying Results<a class="headerlink" href="#verifying-results" title="Link to this heading"></a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">PROJECT</span><span class="o">=</span>libcrc
+<span class="nv">RESULTS</span><span class="o">=</span>~/data/comparisons/results
+
+<span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;=== aurora-lint ===&quot;</span>
+python3<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span>
+<span class="s2">import json, collections</span>
+<span class="s2">data = json.load(open(&#39;</span><span class="nv">$RESULTS</span><span class="s2">/aurora-lint/</span><span class="nv">$PROJECT</span><span class="s2">/results.json&#39;))</span>
+<span class="s2">rules = collections.Counter(v[&#39;rule_id&#39;] for v in data)</span>
+<span class="s2">print(f&#39;Total: {len(data)} findings, {len(rules)} rules&#39;)</span>
+<span class="s2">for r, c in rules.most_common(10): print(f&#39;  {r}: {c}&#39;)</span>
+<span class="s2">&quot;</span>
+
+<span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;=== cppcheck ===&quot;</span>
+python3<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span>
+<span class="s2">import xml.etree.ElementTree as ET, collections</span>
+<span class="s2">errors = ET.parse(&#39;</span><span class="nv">$RESULTS</span><span class="s2">/cppcheck/</span><span class="nv">$PROJECT</span><span class="s2">/results.xml&#39;).getroot().findall(&#39;.//error&#39;)</span>
+<span class="s2">ids = collections.Counter(e.get(&#39;id&#39;) for e in errors)</span>
+<span class="s2">print(f&#39;Total: {len(errors)} findings&#39;)</span>
+<span class="s2">for i, c in ids.most_common(10): print(f&#39;  {i}: {c}&#39;)</span>
+<span class="s2">&quot;</span>
+
+<span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;=== clang-tidy ===&quot;</span>
+grep<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;warning:\|error:&quot;</span><span class="w"> </span><span class="nv">$RESULTS</span>/clang-tidy/<span class="nv">$PROJECT</span>/results.txt
+</pre></div>
+</div>
+<section id="known-pitfalls">
+<h3>Known Pitfalls<a class="headerlink" href="#known-pitfalls" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 35.0%" />
+<col style="width: 35.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Pitfall</p></th>
+<th class="head"><p>Symptom</p></th>
+<th class="head"><p>Fix</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>aurora-lint manifest not found</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Failed</span> <span class="pre">to</span> <span class="pre">read</span> <span class="pre">manifest</span> <span class="pre">file</span></code></p></td>
+<td><p>Pass <code class="docutils literal notranslate"><span class="pre">--manifest</span></code> with absolute path</p></td>
+</tr>
+<tr class="row-odd"><td><p>cppcheck <code class="docutils literal notranslate"><span class="pre">--addon=cert</span></code> missing</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Did</span> <span class="pre">not</span> <span class="pre">find</span> <span class="pre">addon</span> <span class="pre">cert.py</span></code></p></td>
+<td><p>Remove it; <code class="docutils literal notranslate"><span class="pre">--enable=all</span></code> includes CERT</p></td>
+</tr>
+<tr class="row-even"><td><p>cppcheck <code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">syntaxError</span></code> in stdlib.h</p></td>
+<td><p>Never pass system include paths to cppcheck</p></td>
+</tr>
+<tr class="row-odd"><td><p>Empty compile_commands.json</p></td>
+<td><p>clang-tidy shows no diagnostics</p></td>
+<td><p>Run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">clean</span></code> before <code class="docutils literal notranslate"><span class="pre">bear</span> <span class="pre">--</span> <span class="pre">make</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+<section id="output-format-reference">
+<h2>Output Format Reference<a class="headerlink" href="#output-format-reference" title="Link to this heading"></a></h2>
+<p><strong>cppcheck XML (v2)</strong>:</p>
+<div class="highlight-xml notranslate"><div class="highlight"><pre><span></span><span class="nt">&lt;error</span><span class="w"> </span><span class="na">id=</span><span class="s">&quot;bufferAccessOutOfBounds&quot;</span><span class="w"> </span><span class="na">severity=</span><span class="s">&quot;error&quot;</span>
+<span class="w">       </span><span class="na">msg=</span><span class="s">&quot;Array &#39;arr[10]&#39; accessed at index 10...&quot;</span><span class="w"> </span><span class="na">cwe=</span><span class="s">&quot;788&quot;</span><span class="nt">&gt;</span>
+<span class="w">  </span><span class="nt">&lt;location</span><span class="w"> </span><span class="na">file=</span><span class="s">&quot;example.c&quot;</span><span class="w"> </span><span class="na">line=</span><span class="s">&quot;5&quot;</span><span class="w"> </span><span class="na">column=</span><span class="s">&quot;5&quot;</span><span class="nt">/&gt;</span>
+<span class="nt">&lt;/error&gt;</span>
+</pre></div>
+</div>
+<p><strong>clang-tidy text</strong>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">example</span><span class="o">.</span><span class="n">c</span><span class="p">:</span><span class="mi">5</span><span class="p">:</span><span class="mi">5</span><span class="p">:</span> <span class="n">warning</span><span class="p">:</span> <span class="o">...</span> <span class="p">[</span><span class="n">cert</span><span class="o">-</span><span class="n">arr30</span><span class="o">-</span><span class="n">c</span><span class="p">]</span>
+</pre></div>
+</div>
+<p><strong>aurora-lint JSON</strong>:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">[{</span><span class="nt">&quot;rule_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ARR30-C&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;severity&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;High&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;example.c&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;line&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;message&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">}]</span>
+</pre></div>
+</div>
+<p><strong>aurora-lint SARIF</strong>: SARIF 2.1.0 compatible output with <code class="docutils literal notranslate"><span class="pre">ruleId</span></code> matching CERT C rule IDs.</p>
+<p><strong>Infer JSON</strong> (<code class="docutils literal notranslate"><span class="pre">infer-out/report.json</span></code>):</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">[{</span><span class="nt">&quot;bug_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;NULLPTR_DEREFERENCE&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;procedure&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;func_bad&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;test.c&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;line&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">26</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;severity&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ERROR&quot;</span><span class="p">}]</span>
+</pre></div>
+</div>
+<p><strong>Frama-C EVA</strong> (stderr, no structured output):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">[</span><span class="n">eva</span><span class="p">:</span><span class="n">alarm</span><span class="p">]</span> <span class="n">test</span><span class="o">.</span><span class="n">c</span><span class="p">:</span><span class="mi">26</span><span class="p">:</span> <span class="ne">Warning</span><span class="p">:</span>
+  <span class="n">out</span> <span class="n">of</span> <span class="n">bounds</span> <span class="n">read</span><span class="o">.</span> <span class="k">assert</span> \<span class="n">valid_read</span><span class="p">(</span><span class="o">&amp;</span><span class="n">ptr</span><span class="o">-&gt;</span><span class="n">field</span><span class="p">);</span>
+<span class="n">assertion</span> <span class="s1">&#39;Eva,mem_access&#39;</span> <span class="n">got</span> <span class="n">final</span> <span class="n">status</span> <span class="n">invalid</span><span class="o">.</span>
+</pre></div>
+</div>
+</section>
+<section id="distributed-benchmarking-with-gnu-parallel">
+<h2>Distributed Benchmarking with GNU Parallel<a class="headerlink" href="#distributed-benchmarking-with-gnu-parallel" title="Link to this heading"></a></h2>
+<p>For fast re-benchmarking across multiple machines after rule changes. Cppcheck and
+clang-tidy results are stable across aurora-lint changes – run them once and cache. Only
+aurora-lint needs re-running.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Prerequisites</span>
+sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>parallel
+parallel<span class="w"> </span>--citation<span class="w"> </span><span class="o">&lt;&lt;&lt;</span><span class="w"> </span><span class="s2">&quot;will cite&quot;</span><span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">true</span>
+
+<span class="c1"># SSH key setup</span>
+ssh-keygen<span class="w"> </span>-t<span class="w"> </span>ed25519<span class="w"> </span>-f<span class="w"> </span>~/.ssh/id_benchmark<span class="w"> </span>-N<span class="w"> </span><span class="s2">&quot;&quot;</span>
+<span class="k">for</span><span class="w"> </span>node<span class="w"> </span><span class="k">in</span><span class="w"> </span>node1<span class="w"> </span>node2<span class="w"> </span>node3<span class="w"> </span>node4<span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">  </span>ssh-copy-id<span class="w"> </span>-i<span class="w"> </span>~/.ssh/id_benchmark.pub<span class="w"> </span><span class="nv">$node</span>
+<span class="k">done</span>
+</pre></div>
+</div>
+<p>Node file (<code class="docutils literal notranslate"><span class="pre">~/.benchmark_nodes</span></code>):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">user</span><span class="nd">@node1</span><span class="o">/</span><span class="mi">8</span>
+<span class="n">user</span><span class="nd">@node2</span><span class="o">/</span><span class="mi">8</span>
+<span class="n">user</span><span class="nd">@node3</span><span class="o">/</span><span class="mi">8</span>
+<span class="n">user</span><span class="nd">@node4</span><span class="o">/</span><span class="mi">8</span>
+</pre></div>
+</div>
+<p>Fast re-benchmark workflow:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># 1. Rebuild aurora-lint</span>
+<span class="nb">cd</span><span class="w"> </span><span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>cargo<span class="w"> </span>build<span class="w"> </span>--release
+
+<span class="c1"># 2. Push binary to nodes (if no shared FS)</span>
+parallel<span class="w"> </span>--sshloginfile<span class="w"> </span><span class="nv">$NODES_FILE</span><span class="w"> </span>--nonall<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="s2">&quot;rsync -az </span><span class="nv">$SQC_BIN</span><span class="s2"> {}/sqc_bin&quot;</span>
+
+<span class="c1"># 3. Generate CWE list</span>
+find<span class="w"> </span><span class="nv">$JULIET_DIR</span><span class="w"> </span>-maxdepth<span class="w"> </span><span class="m">1</span><span class="w"> </span>-type<span class="w"> </span>d<span class="w"> </span>-name<span class="w"> </span><span class="s1">&#39;CWE*&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>sort<span class="w"> </span>&gt;<span class="w"> </span>/tmp/cwe_dirs.txt
+
+<span class="c1"># 4. Run in parallel across nodes</span>
+parallel<span class="w"> </span>--sshloginfile<span class="w"> </span><span class="nv">$NODES_FILE</span><span class="w"> </span>-a<span class="w"> </span>/tmp/cwe_dirs.txt<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="s2">&quot;</span><span class="nv">$SQC_BIN</span><span class="s2"> {} -d </span><span class="nv">$JULIET_DIR</span><span class="s2"> -d </span><span class="nv">$JULIET_SUPPORT</span><span class="s2"> \</span>
+<span class="s2">    --export </span><span class="nv">$RESULTS_DIR</span><span class="s2">/aurora-lint/juliet/{/.}.json&quot;</span>
+</pre></div>
+</div>
+</section>
+<section id="exporting-competitor-results-for-ingest">
+<h2>Exporting competitor results for ingest<a class="headerlink" href="#exporting-competitor-results-for-ingest" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">bench/competitors.py</span></code> writes one JSON blob per run into
+<code class="docutils literal notranslate"><span class="pre">data/competitor_results/</span></code>, and those blobs are committed — they are the
+archival form and should not be edited or deleted.  They are not, however,
+ingestible: the shape is nested and the per-CWE map is keyed by CWE id, so a
+loader would have to know that module’s internal layout to read it.</p>
+<p><code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">competitor-export</span></code> flattens every run JSON in that
+directory into three CSVs beside them:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>competitor_runs.csv         one row per run       (tool, version, totals)
+competitor_cwe_results.csv  one row per run × CWE (the measurements)
+competitor_cwe_errors.csv   one row per error     (usually empty)
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">run_key</span></code> joins them and is the JSON’s own basename (e.g.
+<code class="docutils literal notranslate"><span class="pre">framac_20260403_222053</span></code>), so it is unique, stable across re-exports, and
+traceable back to the file it came from.</p>
+<p><strong>Run the export after every competitor benchmark and commit the result.</strong>
+The benchmark host ingests these CSVs into <code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code>; a table missing its
+newest run looks exactly like a run that never happened.
+<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">competitor-export</span> <span class="pre">--check</span></code> exits nonzero if the CSVs are
+stale, and writes nothing.</p>
+<p>This repo stays Postgres-blind — no DSN, no connection code (see
+<code class="docutils literal notranslate"><span class="pre">CLAUDE.md</span></code>).  It <em>emits</em> a flat, diffable table; <code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code> owns
+the ingest, so nothing here changes when the target schema does.  The CSVs
+are a transport, not a source of truth: Postgres remains the only place an
+official number comes from, and re-exporting is idempotent and lossless with
+respect to the JSON.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">hostname</span></code> column is blank for every run recorded before
+2026-09-04, which is all four April runs.  Wall clock is
+hardware-dependent, so a blank means “do not compare this run’s duration
+against another host’s”, not “same host”.</p>
+</div>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="architecture.html" class="btn btn-neutral float-left" title="Analysis Architecture" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="benchmark-running.html" class="btn btn-neutral float-right" title="Running Benchmarks (MCP Server)" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025-2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

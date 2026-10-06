@@ -1,0 +1,1082 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Testing Methodology &mdash; aurora-lint  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Comparison To Other Tools" href="tool-comparison.html" />
+    <link rel="prev" title="Interactive Console UI" href="interactive-ui.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            aurora-lint
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="options.html">Policy and Environment Options</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Testing Methodology</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#benchmark-strategy">Benchmark Strategy</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#unit-tests">Unit Tests</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#the-benchmark-harness-python">The Benchmark Harness (Python)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#fixture-provenance">Fixture Provenance</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#what-the-fixture-corpus-does-and-does-not-measure">What the Fixture Corpus Does and Does Not Measure</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#nist-juliet-test-suite-benchmarking">NIST Juliet Test Suite Benchmarking</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#how-juliet-benchmarking-works">How Juliet Benchmarking Works</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#results-at-v0-4-116-historical">Results at v0.4.116 (historical)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#fp-reduction-history">FP Reduction History</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#real-world-code-analysis">Real-World Code Analysis</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#known-per-rule-corpus-caveats">Known Per-Rule Corpus Caveats</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#cross-tool-comparison-methodology">Cross-Tool Comparison Methodology</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#apples-to-apples-concerns">Apples-to-Apples Concerns</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#recommended-comparison-workflow">Recommended Comparison Workflow</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#published-cert-c-results">Published CERT-C Results</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#test-infrastructure-details">Test Infrastructure Details</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#build-time-test-generation">Build-Time Test Generation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#test-file-naming-conventions">Test File Naming Conventions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#test-distribution-by-rule-size">Test Distribution by Rule Size</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#what-tests-do-not-cover">What Tests Do NOT Cover</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#coverage-gate">Coverage Gate</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#embedded-rust-unit-tests">Embedded Rust Unit Tests</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#known-rule-implementation-gaps">Known Rule Implementation Gaps</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#benchmark-caveats-and-rule-suite-coverage">Benchmark Caveats And Rule-Suite Coverage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#juliet-tp-rate-is-not-the-ceiling-signal-the-flaw-hit-rate-is">Juliet TP rate is not the ceiling signal — the flaw-hit rate is</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#rule-suite-coverage">Rule-suite coverage</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="tool-comparison.html">Comparison To Other Tools</a></li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="licensing.html">Licensing and content provenance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">aurora-lint</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Testing Methodology</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/testing-methodology.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="testing-methodology">
+<h1>Testing Methodology<a class="headerlink" href="#testing-methodology" title="Link to this heading"></a></h1>
+<p>aurora-lint employs a three-tier testing strategy: unit tests for individual rule logic,
+the NIST Juliet Test Suite for precision/recall measurement, and real-world
+open-source codebases for scalability and noise validation.</p>
+<section id="benchmark-strategy">
+<h2>Benchmark Strategy<a class="headerlink" href="#benchmark-strategy" title="Link to this heading"></a></h2>
+<p>aurora-lint is benchmarked on two axes:</p>
+<ol class="arabic simple">
+<li><p><strong>Juliet Test Suite</strong> (NIST) — 54,484 C (<code class="docutils literal notranslate"><span class="pre">.c</span></code>) test files across 118 CWE
+directories, with ground truth (OMITBAD/OMITGOOD sections). Measures TP
+rate, FP rate, and per-CWE coverage.</p></li>
+<li><p><strong>Real-World Open-Source Projects</strong> — the codebases pinned in
+<code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code> (README.md’s Benchmark Highlights table names
+the current set), analyzed by aurora-lint and, for comparison, by cppcheck
+and clang-tidy. The tools’ own output carries no ground truth — it measures
+violation counts, rule distribution, and cross-tool agreement; a separate
+adjudicated ground-truth oracle covers precision/recall (see below).</p></li>
+</ol>
+<p><strong>Why both</strong>:</p>
+<ul class="simple">
+<li><p><strong>Juliet</strong> provides precision metrics (TP/FP) but is synthetic single-file code</p></li>
+<li><p><strong>Real-world</strong> tests scalability, noise levels, and cross-file analysis on production code</p></li>
+<li><p>Rule improvements are validated on Juliet for TP/FP impact, then verified on
+real-world for noise reduction</p></li>
+</ul>
+<p><strong>Benchmark cadence</strong>:</p>
+<ul class="simple">
+<li><p><strong>After every significant rule change</strong>: Juliet benchmark (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">juliet</span></code>, ~10 min)</p></li>
+<li><p><strong>After version milestones</strong>: Full real-world benchmark (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span>
+<span class="pre">realworld-run</span></code>, every pinned codebase; <code class="docutils literal notranslate"><span class="pre">--tool</span></code> adds cppcheck/clang-tidy)</p></li>
+<li><p><strong>cppcheck/clang-tidy results are stable</strong> across aurora-lint changes — run once and cache</p></li>
+</ul>
+</section>
+<section id="unit-tests">
+<h2>Unit Tests<a class="headerlink" href="#unit-tests" title="Link to this heading"></a></h2>
+<p>Each CERT C rule has dedicated test cases written as C source files organized
+under <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/&lt;CATEGORY&gt;/&lt;RULE-ID&gt;/tests/</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">src</span><span class="o">/</span><span class="n">rules</span><span class="o">/</span><span class="n">cert_c</span><span class="o">/</span><span class="n">SIG</span><span class="o">/</span><span class="n">SIG01</span><span class="o">-</span><span class="n">C</span><span class="o">/</span><span class="n">tests</span><span class="o">/</span>
+  <span class="n">fail</span><span class="o">/</span>                          <span class="c1"># C files that SHOULD trigger violations</span>
+    <span class="n">testcases_signal_restart_assumption</span><span class="o">.</span><span class="n">c</span>
+    <span class="n">testcases_concurrent_signals</span><span class="o">.</span><span class="n">c</span>
+    <span class="o">...</span>
+  <span class="k">pass</span><span class="o">/</span>                          <span class="c1"># C files that should NOT trigger violations</span>
+    <span class="n">testcases_proper_signal_handling</span><span class="o">.</span><span class="n">c</span>
+    <span class="o">...</span>
+</pre></div>
+</div>
+<p><strong>Coverage</strong>: every rule with fixtures has three tiers — <code class="docutils literal notranslate"><span class="pre">fail/</span></code>
+(must-detect), <code class="docutils literal notranslate"><span class="pre">pass/</span></code> (must-not-detect) and <code class="docutils literal notranslate"><span class="pre">expected_fail/</span></code> (known
+limitations). Each fixture generates one Rust test per preset (see below);
+all pass, and the <code class="docutils literal notranslate"><span class="pre">expected_fail</span></code> tier plus fixtures for rules that are
+tracked but not implemented are <code class="docutils literal notranslate"><span class="pre">#[ignore]</span></code>d. The counts change with
+nearly every rule fix, so they are not typed here:
+<code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">scripts/fixture_provenance.py</span></code> prints them per tier for the
+checkout you have.</p>
+<p><strong>Settings</strong>: every policy and environment option (<a class="reference internal" href="options.html"><span class="doc">Policy and Environment Options</span></a>) is
+validated like rule behavior. Every fixture runs under both the <code class="docutils literal notranslate"><span class="pre">default</span></code>
+and the <code class="docutils literal notranslate"><span class="pre">strict</span></code> preset; the <code class="docutils literal notranslate"><span class="pre">strict</span></code> run’s test name ends in
+<code class="docutils literal notranslate"><span class="pre">__strict</span></code>, and <code class="docutils literal notranslate"><span class="pre">docs/test-summary.md</span></code> tabulates the <code class="docutils literal notranslate"><span class="pre">default</span></code> run.
+The directory’s expectation holds under both presets unless the fixture’s
+leading comment overrides it per preset, and a <code class="docutils literal notranslate"><span class="pre">Settings:</span></code> line applies
+option overrides on top of each preset:</p>
+<div class="highlight-c notranslate"><div class="highlight"><pre><span></span><span class="cm">/*</span>
+<span class="cm"> * Expect: default=clean strict=violation</span>
+<span class="cm"> * Settings: free_null_is_noop=false</span>
+<span class="cm"> */</span>
+</pre></div>
+</div>
+<p>A rule that honors an option carries at least one fixture whose outcome
+depends on it, so each setting is exercised in both directions. CI runs the
+whole suite, so both presets are covered there.</p>
+<p>Tests are auto-generated into Rust test functions from <code class="docutils literal notranslate"><span class="pre">.c</span></code> files — no embedded
+<code class="docutils literal notranslate"><span class="pre">#[cfg(test)]</span></code> modules in rule implementation files. Run tests with:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># All tests</span>
+<span class="n">cargo</span> <span class="n">test</span>
+
+<span class="c1"># Tests for a specific rule</span>
+<span class="n">cargo</span> <span class="n">test</span> <span class="o">--</span><span class="n">package</span> <span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">--</span><span class="n">lib</span> <span class="o">--</span> <span class="n">rules</span><span class="p">::</span><span class="n">cert_c</span><span class="p">::</span><span class="n">sig01_c</span><span class="p">::</span><span class="n">tests</span>
+
+<span class="c1"># Tests for a category</span>
+<span class="n">cargo</span> <span class="n">test</span> <span class="o">--</span><span class="n">package</span> <span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">--</span><span class="n">lib</span> <span class="o">--</span> <span class="n">rules</span><span class="p">::</span><span class="n">cert_c</span><span class="p">::</span><span class="n">mem</span>
+</pre></div>
+</div>
+<section id="the-benchmark-harness-python">
+<h3>The Benchmark Harness (Python)<a class="headerlink" href="#the-benchmark-harness-python" title="Link to this heading"></a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">bench/</span></code> has its own tests, under <code class="docutils literal notranslate"><span class="pre">bench/tests/</span></code>, run with the standard
+library’s <code class="docutils literal notranslate"><span class="pre">unittest</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># All bench tests</span>
+<span class="n">python3</span> <span class="o">-</span><span class="n">m</span> <span class="n">unittest</span> <span class="n">discover</span> <span class="o">-</span><span class="n">s</span> <span class="o">.</span> <span class="o">-</span><span class="n">t</span> <span class="o">.</span>
+
+<span class="c1"># One module</span>
+<span class="n">python3</span> <span class="o">-</span><span class="n">m</span> <span class="n">unittest</span> <span class="n">bench</span><span class="o">.</span><span class="n">tests</span><span class="o">.</span><span class="n">test_project_relpath</span> <span class="o">-</span><span class="n">v</span>
+
+<span class="c1"># Strict: fail on a leaked file handle (what CI runs)</span>
+<span class="n">python3</span> <span class="o">-</span><span class="n">W</span> <span class="n">error</span><span class="p">::</span><span class="ne">ResourceWarning</span> <span class="o">-</span><span class="n">m</span> <span class="n">unittest</span> <span class="n">discover</span> <span class="o">-</span><span class="n">s</span> <span class="o">.</span> <span class="o">-</span><span class="n">t</span> <span class="o">.</span>
+</pre></div>
+</div>
+<p><strong>No test dependency, deliberately.</strong> Every module under <code class="docutils literal notranslate"><span class="pre">bench/</span></code> imports
+only the standard library, so the benchmark harness runs on a bare Python.
+Adding <code class="docutils literal notranslate"><span class="pre">pytest</span></code> would make it the repo’s first Python dependency and put
+<code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span></code> in front of running the tests, which is the same fresh-clone
+promise <code class="docutils literal notranslate"><span class="pre">bench/</span></code> exists to keep. The cost is <code class="docutils literal notranslate"><span class="pre">unittest</span></code>’s ergonomics: no
+bare <code class="docutils literal notranslate"><span class="pre">assert</span></code> and no <code class="docutils literal notranslate"><span class="pre">parametrize</span></code> decorator, so table-driven cases use a
+<code class="docutils literal notranslate"><span class="pre">CASES</span></code> list with <code class="docutils literal notranslate"><span class="pre">subTest</span></code>.</p>
+<p>What is covered is the subset a stranger needs in order to trust
+<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span></code> against their own codebase — the pure, silent-by-
+construction pieces where running the tool proves nothing:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">BenchDB.project_relpath</span></code> — absolute scan path to the portable form
+<code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> is keyed on. Its defect was invisible to every metric,
+because findings and labels normalize through the same function.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">corpus.in_scope</span></code> and its glob translation — <code class="docutils literal notranslate"><span class="pre">*</span></code> must not cross <code class="docutils literal notranslate"><span class="pre">/</span></code>
+and <code class="docutils literal notranslate"><span class="pre">**</span></code> must. This predicate has a second copy in <code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code>
+that the two must agree on, and the shared one had a real denominator bug
+from inheriting <code class="docutils literal notranslate"><span class="pre">fnmatch</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">render_docs.replace_between</span></code> — the marker-bounded rewrite that edits
+<code class="docutils literal notranslate"><span class="pre">README.md</span></code> in place. The boundary is the contract.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ingest_realworld_run</span></code>’s project scoping — that a run records only the
+projects its invocation scanned, and not a leftover export from an earlier
+one at the same commit.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code> has a much larger suite over some of the same shapes. It
+is the right model but is not importable from here and must not become a
+dependency.</p>
+<p>Test cases are derived from patterns documented in the
+<a class="reference external" href="https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard">SEI CERT C Coding Standard</a>
+(formerly hosted on a Confluence wiki at wiki.sei.cmu.edu; the standard
+migrated to a static site in 2026 – <code class="docutils literal notranslate"><span class="pre">scripts/scrape_cert_wiki.py</span></code> reads
+its page-data JSON API directly rather than scraping rendered HTML).
+Each rule’s page provides:</p>
+<ul class="simple">
+<li><p><strong>Non-compliant code examples</strong>: patterns that violate the rule</p></li>
+<li><p><strong>Compliant solutions</strong>: corrected versions of the same patterns</p></li>
+<li><p><strong>Risk assessment</strong>: severity, likelihood, and remediation cost</p></li>
+</ul>
+<p>Test cases map these directly:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">fail/</span></code> cases encode non-compliant patterns (expected violations)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">pass/</span></code> cases encode compliant solutions (expected clean)</p></li>
+</ul>
+</section>
+<section id="fixture-provenance">
+<h3>Fixture Provenance<a class="headerlink" href="#fixture-provenance" title="Link to this heading"></a></h3>
+<p>Not every fixture carries the same evidentiary weight, and a raw pass/fail
+count hides the difference. Each fixture declares its origin on a <code class="docutils literal notranslate"><span class="pre">Source:</span></code>
+line in its header comment, and <code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">scripts/fixture_provenance.py</span></code>
+tabulates the declarations by tier (<code class="docutils literal notranslate"><span class="pre">fail/</span></code>, <code class="docutils literal notranslate"><span class="pre">pass/</span></code>,
+<code class="docutils literal notranslate"><span class="pre">expected_fail/</span></code>) into three columns — wiki-derived, locally authored and
+undeclared — and names how many rules have no wiki-derived fixture at all.
+Run it rather than trusting a copy of its output: the split moves every time
+a fixture lands.</p>
+<p><strong>Wiki-derived</strong> fixtures come from the CERT C standard’s own compliant and
+non-compliant code examples. They are third-party evidence: SEI wrote them
+against the rule text with no knowledge of aurora-lint, so a rule agreeing with them
+is a conformance result rather than a self-consistency check. Almost every
+rule with fixtures has at least one; the few without are regression-tested
+only.</p>
+<p><strong>Locally authored</strong> fixtures were written in this repo, almost all of them
+to pin a specific defect found in real code or to lock in a false-positive
+fix. They are regression evidence and nothing more — we chose both the input
+and the expected answer, so they cannot corroborate that aurora-lint reads the
+standard correctly.</p>
+<p><strong>Undeclared</strong> fixtures simply predate the header convention. Every one
+inspected is locally authored (the <code class="docutils literal notranslate"><span class="pre">BRULE-*</span></code> JPL rules, which have no CERT
+wiki page at all, and several <code class="docutils literal notranslate"><span class="pre">WIN*</span></code> rules), but they are counted
+separately rather than assumed.</p>
+<p>Regenerate with <code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">scripts/fixture_provenance.py</span> <span class="pre">--containment</span></code>.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>The split above is what each fixture <em>declares</em>. A wiki example lightly
+edited to compile is still wiki-derived; one rewritten until it matched
+what the checker happens to look for is not, and no header can tell those
+apart. <code class="docutils literal notranslate"><span class="pre">scripts/audit_wiki_fixture_staleness.py</span></code> is the independent
+check: it re-fetches each rule’s current page and measures what fraction
+of a wiki code block’s lines still appear in the fixture claiming to
+derive from it, and <code class="docutils literal notranslate"><span class="pre">scripts/fixture_provenance.py</span> <span class="pre">--containment</span></code>
+reports the distribution from its last run
+(<code class="docutils literal notranslate"><span class="pre">data/wiki_fixture_staleness.json</span></code>). The large majority reproduce the
+current wiki block line-for-line, so the tier is overwhelmingly genuine
+extraction, not paraphrase. The low-containment remainder — substantially
+edited, mostly rewritten, or with no overlap against the current page —
+are the ones where only a human can say whether the fixture drifted, the
+wiki page changed under it, or it was never a faithful extraction.</p>
+</div>
+</section>
+<section id="what-the-fixture-corpus-does-and-does-not-measure">
+<h3>What the Fixture Corpus Does and Does Not Measure<a class="headerlink" href="#what-the-fixture-corpus-does-and-does-not-measure" title="Link to this heading"></a></h3>
+<p>The corpus is a <strong>conformance and regression gate, not a benchmark.</strong> It is
+never reported alongside Juliet or the real-world oracle: those measure
+precision against labels aurora-lint did not choose, while most of this corpus is
+labeled by the same people who wrote the analyzer.</p>
+<p>Scoring the corpus settles how much drift that gate has actually absorbed.
+<code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">test</span></code> runs on every push (<code class="docutils literal notranslate"><span class="pre">.github/workflows/ci.yml</span></code>), so a rule
+change that breaks any fixture — its own or another rule’s — cannot merge:
+<strong>no rule fails its own fixtures</strong>, and that is a property of
+the gate, not evidence about the rules.</p>
+<p><strong>Every fixture is tested under the context the analyzer really builds.</strong>
+Each test calls <code class="docutils literal notranslate"><span class="pre">rule.check()</span></code> directly, but first it builds that call’s
+context the way a scan does: <code class="docutils literal notranslate"><span class="pre">prescan::prescan_single_file</span></code> (the file-list
+prescan behind <code class="docutils literal notranslate"><span class="pre">-d</span></code>, applied to that fixture alone), then
+<code class="docutils literal notranslate"><span class="pre">analyze::build_file_analysis</span></code> for CFGs and value ranges, which is the call
+<code class="docutils literal notranslate"><span class="pre">analyze_one_file</span></code> makes. Neither is a test-only reimplementation; both are
+the scan’s own code.</p>
+<p>This was not always so. The context used to be opt-in behind a
+<code class="docutils literal notranslate"><span class="pre">//</span> <span class="pre">sqc-test:</span> <span class="pre">prescan</span></code> marker that 86 of 3,584 fixtures carried, and every
+other fixture was checked with no project context, no CFGs and no value
+ranges at all — an analysis strictly weaker than any invocation of the
+shipped tool, so a green result under it said nothing about what a real scan
+does. Removing the gate cost 62 fixtures their green, each one confirmed
+against the release binary, which agreed with the context-built result every
+time: the harness was right and the old pass was the artifact.</p>
+<p>Those 62 are now in <code class="docutils literal notranslate"><span class="pre">expected_fail/</span></code>, and each header records which
+limitation it sits behind. 56 were a single cause — the provenance gate
+INT30-C, INT31-C and INT32-C share returned “risky” whenever
+<code class="docutils literal notranslate"><span class="pre">function_summaries</span></code> was empty, so those fixtures were reported without the
+provenance analysis ever running. That fail-open is gone and the gate runs in
+every configuration; of the 56, 46 are the gate treating a function parameter
+as bounded local state and 10 are a definite overflow no value-based channel
+currently proves. Of the remaining six, one (MEM31-C’s
+<code class="docutils literal notranslate"><span class="pre">safe_wrapper_functions</span></code>) was a real false positive and is fixed rather than
+reclassified: the rule now understands a free through a <code class="docutils literal notranslate"><span class="pre">void</span> <span class="pre">**</span></code> wrapper’s
+pointee. Five are genuine false negatives that the weaker analysis papered
+over — ARR30-C ×2 and INT33-C, where the out-of-bounds index or zero divisor
+is a property of a loop rather than of the expression, and EXP33-C and
+MEM30-C, where a callee’s summary reports a conditional write or a
+conditional free with no MAY/MUST distinction to say so.</p>
+<p>Restoring detection for any of these groups changes what a shipped rule
+reports, so each is tracked as its own benchmarked work rather than folded
+into a harness change.</p>
+<p>One consequence worth knowing about: with real value ranges in play, a
+fixture that nests 2,000 <code class="docutils literal notranslate"><span class="pre">if</span></code> statements (MEM30-C’s stack-safety case)
+recurses deep enough to overflow a default test thread in an unoptimized
+build. <code class="docutils literal notranslate"><span class="pre">.cargo/config.toml</span></code> raises <code class="docutils literal notranslate"><span class="pre">RUST_MIN_STACK</span></code> repo-wide so the
+fixture keeps testing the depth it was written for.</p>
+<p>A separate and earlier claim on this page — that scanning the corpus with
+the shipped binary finds 17 violations on 11 must-not-detect fixtures — was
+an artifact of invoking <code class="docutils literal notranslate"><span class="pre">aurora-lint</span></code> with no <code class="docutils literal notranslate"><span class="pre">-d</span></code>. A scan with no <code class="docutils literal notranslate"><span class="pre">-d</span></code> builds
+no context for its own target: a single-file target sees sibling <code class="docutils literal notranslate"><span class="pre">.h</span></code>
+declarations only, a directory target sees nothing. Pass <code class="docutils literal notranslate"><span class="pre">-d</span></code>, even a
+directory holding just that one fixture, and all 17 go to zero. Every
+benchmark invocation passes <code class="docutils literal notranslate"><span class="pre">-d</span></code>, so no reported number was affected; the
+exposure is a first-touch <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">foo.c</span></code> run, tracked separately.</p>
+<p>One limit of the harness does remain, and the green result does not cover it.</p>
+<p><strong>Cross-rule interference is untested.</strong> A fixture is only ever checked
+against its owning rule, so a <code class="docutils literal notranslate"><span class="pre">pass/</span></code> fixture for one rule is never
+evidence about any other. Running the full rule set over the <code class="docutils literal notranslate"><span class="pre">pass/</span></code> tier
+produced thousands of findings from other rules, on most of the fixtures,
+when last measured, concentrated in broad recommendations (EXP12-C, DCL15-C,
+ERR33-C). <strong>That volume is not a false-positive count</strong>: a fixture written to be compliant
+with EXP34-C has no obligation to be clean under DCL15-C, and most of these
+are legitimate. It is reported only to show the tier’s blind spot has real
+volume behind it.</p>
+<p>Scoring the <code class="docutils literal notranslate"><span class="pre">pass/</span></code> tier with the full rule set also surfaced a
+performance defect the per-rule harness cannot see, since a fixture is only
+ever run against its owning rule. MEM30-C’s own 2,000-level <code class="docutils literal notranslate"><span class="pre">pass/</span></code>
+fixture finishes its MEM30-C unit test in milliseconds, but CON40-C,
+EXP33-C and MSC13-C each cost cubic time in its block-nesting depth, and a
+parallel full-rule-set scan of the directory holding it aborted outright on
+a worker thread’s stack. The cause of the cubic term is that
+<code class="docutils literal notranslate"><span class="pre">Node::parent()</span></code> recovers a parent by descending from the tree root, so an
+ancestor query per node costs O(depth²); the three rules now prune, carry a
+scope chain, or precompute byte ranges instead, and worker threads get an
+explicit stack. That file went from 120 s+, 120 s+ and 93 s to 40 ms, 1.8 s
+and 1.2 s, and the directory scan completes. Roughly twenty other rules
+still sit in the 0.3–3 s band on it for the same reason, which is tracked
+separately.</p>
+</section>
+</section>
+<section id="nist-juliet-test-suite-benchmarking">
+<h2>NIST Juliet Test Suite Benchmarking<a class="headerlink" href="#nist-juliet-test-suite-benchmarking" title="Link to this heading"></a></h2>
+<p>The <a class="reference external" href="https://samate.nist.gov/SARD/test-suites/112">NIST Juliet Test Suite v1.3</a> is a collection of C and C++
+test files covering 118 CWE categories — 54,484 of them C (<code class="docutils literal notranslate"><span class="pre">.c</span></code>), the only
+ones aurora-lint scans — each containing known-bad (<code class="docutils literal notranslate"><span class="pre">OMITGOOD</span></code>) and
+known-good (<code class="docutils literal notranslate"><span class="pre">OMITBAD</span></code>) code sections. This provides ground truth for measuring
+true positive and false positive rates.</p>
+<section id="how-juliet-benchmarking-works">
+<h3>How Juliet Benchmarking Works<a class="headerlink" href="#how-juliet-benchmarking-works" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p><strong>CWE-matched manifests</strong>: For each CWE, a TOML manifest enables only the
+CERT C rules that map to that CWE (e.g., CWE-476 enables EXP34-C). This
+eliminates noise from unrelated rules.</p></li>
+<li><p><strong>Per-CWE analysis</strong>: aurora-lint scans each CWE’s test cases with its matched manifest.
+Violations in <code class="docutils literal notranslate"><span class="pre">bad</span></code> functions are true positives; violations in <code class="docutils literal notranslate"><span class="pre">good</span></code>
+functions are false positives.</p></li>
+<li><p><strong>Parallel execution</strong>: CWEs are processed in parallel via Python’s
+<code class="docutils literal notranslate"><span class="pre">ProcessPoolExecutor</span></code> for fast turnaround (~8-10 min on 4-core, ~3-5 min
+on 24-core).</p></li>
+<li><p><strong>Results stored in SQLite</strong>: All results go to <code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code> with
+per-CWE metrics, per-rule breakdowns, and cross-version comparison support.</p></li>
+</ol>
+<p>Running the benchmark:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Via CLI</span>
+<span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">juliet</span>          <span class="c1"># Fast mode (CWE-matched rules only)</span>
+<span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">juliet</span> <span class="o">--</span><span class="n">full</span>   <span class="c1"># Full suite (all rules on all CWEs)</span>
+
+<span class="c1"># Query results</span>
+<span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">runs</span>            <span class="c1"># List all benchmark runs</span>
+<span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">status</span> <span class="n">RUN_ID</span>   <span class="c1"># Check a running benchmark</span>
+<span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">compare</span> <span class="n">v1</span> <span class="n">v2</span>   <span class="c1"># Compare two runs</span>
+</pre></div>
+</div>
+</section>
+<section id="results-at-v0-4-116-historical">
+<h3>Results at v0.4.116 (historical)<a class="headerlink" href="#results-at-v0-4-116-historical" title="Link to this heading"></a></h3>
+<p>This is a dated snapshot kept for the FP-reduction history below, not the
+current figure. Current Juliet figures are in README.md’s Benchmark
+Highlights table, and <a class="reference internal" href="reproducing-published-numbers.html"><span class="doc">Reproducing the Published Numbers</span></a> names the run and
+commit each published figure comes from. The fast-mode scanned set has grown
+since this snapshot, so its CWE counts are not comparable with today’s.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric</p></th>
+<th class="head"><p>Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>CWEs Scanned</strong></p></td>
+<td><p>74</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>True Positives</strong></p></td>
+<td><p>21,770</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>False Positives</strong></p></td>
+<td><p>4,220</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>TP Rate (Precision)</strong></p></td>
+<td><p>83.8%</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Per-file Detection Rate</strong></p></td>
+<td><p>38.2%</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>100% Precision CWEs</strong></p></td>
+<td><p>48</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>FP Reduction from Baseline</strong></p></td>
+<td><p>-99.5%</p></td>
+</tr>
+</tbody>
+</table>
+<p>At v0.4.116, aurora-lint had 100% precision (zero false positives) on 48 CWEs including:</p>
+<ul class="simple">
+<li><p>CWE-78 (OS command injection)</p></li>
+<li><p>CWE-190 (Integer overflow)</p></li>
+<li><p>CWE-481 (Assigning instead of comparing)</p></li>
+<li><p>CWE-467 (sizeof on pointer type)</p></li>
+<li><p>CWE-252 (Unchecked return value)</p></li>
+<li><p>CWE-338 (Weak PRNG)</p></li>
+<li><p>CWE-590 (Free memory not on heap)</p></li>
+<li><p>CWE-761 (Free not at start of buffer)</p></li>
+<li><p>CWE-690 (NULL dereference from return)</p></li>
+<li><p>CWE-789 (Uncontrolled memory allocation)</p></li>
+</ul>
+<p>High-precision (&gt;80% TP rate) on several additional CWEs including CWE-191
+(98.5%), CWE-127 (81.5%), and CWE-675 (93.0%).</p>
+<p>See <a class="reference internal" href="juliet-history.html"><span class="doc">Juliet Benchmark History</span></a> for per-CWE tier breakdowns, or query
+<code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code>/<code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres (<code class="docutils literal notranslate"><span class="pre">get_cwe_detail</span></code>) for the
+full current per-CWE data.</p>
+</section>
+<section id="fp-reduction-history">
+<h3>FP Reduction History<a class="headerlink" href="#fp-reduction-history" title="Link to this heading"></a></h3>
+<p>Over 30+ rounds of targeted optimization, aurora-lint has reduced false positives by
+99.5% from baseline while improving the TP rate from 41.1% to 83.8%:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Round</p></th>
+<th class="head"><p>Key Changes</p></th>
+<th class="head"><p>FP</p></th>
+<th class="head"><p>TP Rate</p></th>
+<th class="head"><p>FP Delta</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Baseline</p></td>
+<td><p>Initial implementation</p></td>
+<td><p>839,341</p></td>
+<td><p>41.1%</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>Round 3</p></td>
+<td><p>Standard function database</p></td>
+<td><p>537,589</p></td>
+<td><p>42.8%</p></td>
+<td><p>-198,974</p></td>
+</tr>
+<tr class="row-even"><td><p>Round 6</p></td>
+<td><p>Cross-file analysis (<code class="docutils literal notranslate"><span class="pre">-d</span></code>)</p></td>
+<td><p>327,191</p></td>
+<td><p>43.1%</p></td>
+<td><p>-148,622</p></td>
+</tr>
+<tr class="row-odd"><td><p>Round 9</p></td>
+<td><p>Windows API whitelist</p></td>
+<td><p>243,849</p></td>
+<td><p>43.8%</p></td>
+<td><p>-52,566</p></td>
+</tr>
+<tr class="row-even"><td><p>Round 12</p></td>
+<td><p>CFG + inter-procedural analysis</p></td>
+<td><p>215,671</p></td>
+<td><p>44.5%</p></td>
+<td><p>-28,178</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.2.23</p></td>
+<td><p>Built-in C limit macros + const_eval</p></td>
+<td><p>163,585</p></td>
+<td><p>44.6%</p></td>
+<td><p>-12,088</p></td>
+</tr>
+<tr class="row-even"><td><p>v0.3.37</p></td>
+<td><p>Fast mode, taint tracking</p></td>
+<td><p>9,067</p></td>
+<td><p>48.4%</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.3.119</p></td>
+<td><p>74 CWEs (6 new), precision improvements</p></td>
+<td><p>11,702</p></td>
+<td><p>67.5%</p></td>
+<td><p>+2,635</p></td>
+</tr>
+<tr class="row-even"><td><p>v0.4.116</p></td>
+<td><p>VRA, macro expansion, field-sensitive
+alias tracking, per-rule tuning</p></td>
+<td><p>4,220</p></td>
+<td><p>83.8%</p></td>
+<td><p>-7,482</p></td>
+</tr>
+</tbody>
+</table>
+<p><em>Note: fast mode (CWE-matched rules only) became the benchmark default at
+v0.3.20, after being introduced as an opt-in flag at v0.3.19; v0.3.37 is simply
+the first fast-mode row in this table. Earlier rounds used full-suite scoring, so absolute FP counts are not directly comparable across
+the two methodologies. TP rate is the consistent metric. The FP increase from
+v0.3.37 to v0.3.119 reflects expanded CWE scope (68 → 74 CWEs) and more test files,
+not regression — TP rate improved 19.1 percentage points over the same span. The
+v0.3.119 → v0.4.116 span (dozens of intermediate releases; see
+``docs/juliet-history.rst``) cut FP by more than half again while gaining a
+further 16.3 points of TP rate.</em></p>
+</section>
+</section>
+<section id="real-world-code-analysis">
+<h2>Real-World Code Analysis<a class="headerlink" href="#real-world-code-analysis" title="Link to this heading"></a></h2>
+<p>aurora-lint is benchmarked on the real-world open-source C codebases pinned in
+<code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code>, alongside cppcheck and clang-tidy. The table
+below is a historical snapshot from when the corpus was seven codebases (run
+#118); the corpus has grown since, and README.md’s Benchmark Highlights table
+names the current set and its figures:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Project</p></th>
+<th class="head"><p>C Files</p></th>
+<th class="head"><p>LOC</p></th>
+<th class="head"><p>aurora-lint</p></th>
+<th class="head"><p>cppcheck</p></th>
+<th class="head"><p>clang-tidy</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>libcrc</p></td>
+<td><p>9</p></td>
+<td><p>1,034</p></td>
+<td><p>391</p></td>
+<td><p>40</p></td>
+<td><p>2</p></td>
+</tr>
+<tr class="row-odd"><td><p>lua</p></td>
+<td><p>33</p></td>
+<td><p>31,637</p></td>
+<td><p>3,068</p></td>
+<td><p>49</p></td>
+<td><p>107</p></td>
+</tr>
+<tr class="row-even"><td><p>raylib</p></td>
+<td><p>17</p></td>
+<td><p>56,107</p></td>
+<td><p>5,213</p></td>
+<td><p>1,060</p></td>
+<td><p>469</p></td>
+</tr>
+<tr class="row-odd"><td><p>mosquitto</p></td>
+<td><p>120</p></td>
+<td><p>39,368</p></td>
+<td><p>11,225</p></td>
+<td><p>277</p></td>
+<td><p>44</p></td>
+</tr>
+<tr class="row-even"><td><p>curl</p></td>
+<td><p>222</p></td>
+<td><p>186,220</p></td>
+<td><p>16,085</p></td>
+<td><p>556</p></td>
+<td><p>116</p></td>
+</tr>
+<tr class="row-odd"><td><p>sqlite</p></td>
+<td><p>125</p></td>
+<td><p>218,733</p></td>
+<td><p>31,319</p></td>
+<td><p>503</p></td>
+<td><p>137</p></td>
+</tr>
+<tr class="row-even"><td><p>hostap</p></td>
+<td><p>430</p></td>
+<td><p>589,724</p></td>
+<td><p>37,432</p></td>
+<td><p>1,761</p></td>
+<td><p>1,710</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Total</strong></p></td>
+<td><p><strong>956</strong></p></td>
+<td><p><strong>1,122,823</strong></p></td>
+<td><p><strong>104,733</strong></p></td>
+<td><p><strong>4,246</strong></p></td>
+<td><p><strong>2,585</strong></p></td>
+</tr>
+</tbody>
+</table>
+<p><em>Data from aurora-lint v0.4.120, cppcheck 2.10, clang-tidy 21.1.6 (run #118).</em></p>
+<p><strong>Why aurora-lint reports more violations</strong>: aurora-lint tracks 311 CERT C rules, 307 enabled by default (both
+advisory and mandatory) while cppcheck and clang-tidy implement ~20 checks each.
+The difference reflects rule coverage breadth, not false positive rate.</p>
+<p><strong>Measured precision/recall</strong>: 6.2% precision / 91.7% recall against the
+adjudicated ground-truth oracle (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">realworld-score</span> <span class="pre">118</span></code>) —
+the empirical floor across those 7 projects at the time, not a raw violation-count
+comparison, from a run superseded many times since. Current figures are in
+README.md’s Benchmark Highlights table; the full version history and
+per-rule breakdowns live in <code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres, queryable via
+<code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code>’s MCP servers or, on the benchmark host, its CLI (see
+that repo’s README) – not in a hand-maintained file here
+(<code class="docutils literal notranslate"><span class="pre">REALWORLD_RESULTS.md</span></code>, which carried this role until it was retired
+2026-09-03). Oracle methodology, including the DCL31-C worked example of
+why a per-rule 0.0% can be a corpus artifact rather than a rule defect, is
+in <a class="reference internal" href="#rule-suite-coverage">Rule-suite coverage</a> below.</p>
+<section id="known-per-rule-corpus-caveats">
+<h3>Known Per-Rule Corpus Caveats<a class="headerlink" href="#known-per-rule-corpus-caveats" title="Link to this heading"></a></h3>
+<p><strong>sqlite / DCL41-C.</strong> Every historical DCL41-C label on sqlite sat in
+<code class="docutils literal notranslate"><span class="pre">ext/fts5/fts5_tcl.c</span></code> (Tcl test-binding glue, not shipped library code) and
+all were adjudicated false positive: sqc’s pre-fix switch-statement scan
+didn’t expand the file’s <code class="docutils literal notranslate"><span class="pre">CASE(i,str)</span></code> macro, so it never saw the real
+<code class="docutils literal notranslate"><span class="pre">case</span></code> label hidden inside and misread every invocation as a declaration
+before the first visible case. The parser bug itself was
+fixed in <code class="docutils literal notranslate"><span class="pre">fea7a1a1</span></code> — confirmed there to take that file’s DCL41-C findings
+from 21 to 0 — so a current scan produces none of these findings at all,
+right or wrong; the only live question is what a <em>pre-fix</em> published DCL41-C
+figure for sqlite means. Since the file is test-only glue and every label on
+it was a parser artifact rather than a real declaration-placement violation,
+excluding it (as sqlite’s corpus scope does — see <code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code>’s
+<code class="docutils literal notranslate"><span class="pre">docs/corpus-scope.md</span></code>) discards zero true-positive evidence: sqlite’s
+DCL41-C denominator is properly reported as N/A (“no in-scope labels”), not
+0%, for any run predating the fix.</p>
+<p>This is the general shape to watch for: a per-rule 0% (or N/A) on one corpus
+can be an artifact of one file, one macro, or one parser gap rather than a
+statement about the rule’s real-world precision — check the file-level
+adjudication reasons in <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> before citing a rule’s corpus figure
+as representative.</p>
+</section>
+</section>
+<section id="cross-tool-comparison-methodology">
+<h2>Cross-Tool Comparison Methodology<a class="headerlink" href="#cross-tool-comparison-methodology" title="Link to this heading"></a></h2>
+<section id="apples-to-apples-concerns">
+<h3>Apples-to-Apples Concerns<a class="headerlink" href="#apples-to-apples-concerns" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p><strong>Rule coverage</strong>: cppcheck/clang-tidy implement ~20 checks each vs. aurora-lint’s
+307 enabled rules. Raw violation counts are not directly comparable.</p></li>
+<li><p><strong>Translation unit scope</strong>: Use consistent scope (cross-file <code class="docutils literal notranslate"><span class="pre">-d</span></code> flag or
+single-file) when comparing.</p></li>
+<li><p><strong>Preprocessor handling</strong>: cppcheck evaluates all <code class="docutils literal notranslate"><span class="pre">#ifdef</span></code> configs;
+clang-tidy sees one; aurora-lint analyzes all visible branches. For Juliet, compile
+with <code class="docutils literal notranslate"><span class="pre">-DOMITBAD</span></code>/<code class="docutils literal notranslate"><span class="pre">-DOMITGOOD</span></code> when needed.</p></li>
+<li><p><strong>Standard library awareness</strong>: cppcheck/clang-tidy have built-in stdlib
+knowledge. aurora-lint uses <code class="docutils literal notranslate"><span class="pre">std_functions.rs</span></code> database.</p></li>
+<li><p><strong>Severity mapping</strong>: cppcheck <code class="docutils literal notranslate"><span class="pre">error/warning/style</span></code>, clang-tidy
+<code class="docutils literal notranslate"><span class="pre">error/warning</span></code>, aurora-lint <code class="docutils literal notranslate"><span class="pre">Low/Medium/High/Critical</span></code>. Map conservatively.</p></li>
+</ol>
+</section>
+<section id="recommended-comparison-workflow">
+<h3>Recommended Comparison Workflow<a class="headerlink" href="#recommended-comparison-workflow" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p>Pick a representative codebase or CWE subset</p></li>
+<li><p>Run all tools with consistent flags</p></li>
+<li><p>Normalize to <code class="docutils literal notranslate"><span class="pre">(file,</span> <span class="pre">line,</span> <span class="pre">rule/check-id)</span></code> tuples</p></li>
+<li><p>Classify as TP/FP using Juliet ground truth</p></li>
+<li><p>Compute precision, recall, F1 per tool</p></li>
+<li><p>Restrict to overlapping rules for fair comparison</p></li>
+</ol>
+</section>
+<section id="published-cert-c-results">
+<h3>Published CERT-C Results<a class="headerlink" href="#published-cert-c-results" title="Link to this heading"></a></h3>
+<p>We did not find any published CERT-C violation rates per KLOC on production
+open-source code. Valid comparison strategies:</p>
+<ol class="arabic simple">
+<li><p>aurora-lint vs. cppcheck vs. clang-tidy on same codebase (done for 5 projects)</p></li>
+<li><p>aurora-lint on JasPer with reference to SEI SCALe 2015 report (only named CERT-C audit)</p></li>
+<li><p>aurora-lint TP rate vs. TrustInSoft’s synthetic CERT-C benchmark as upper bound</p></li>
+</ol>
+<p>For academic context on tool effectiveness, FP rates, and the Juliet benchmark
+methodology, see <a class="reference internal" href="bibliography.html"><span class="doc">Bibliography</span></a>.</p>
+</section>
+</section>
+<section id="test-infrastructure-details">
+<h2>Test Infrastructure Details<a class="headerlink" href="#test-infrastructure-details" title="Link to this heading"></a></h2>
+<section id="build-time-test-generation">
+<h3>Build-Time Test Generation<a class="headerlink" href="#build-time-test-generation" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p><strong>Test files</strong>: <code class="docutils literal notranslate"><span class="pre">.c</span></code> files in <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/CATEGORY/RULE-ID/tests/{fail,pass}/</span></code></p></li>
+<li><p><strong>Build-time generation</strong>: <code class="docutils literal notranslate"><span class="pre">build.rs</span></code> walks the test directories and generates
+Rust test functions in <code class="docutils literal notranslate"><span class="pre">$OUT_DIR/integration_tests.rs</span></code></p></li>
+<li><p><strong>Test harness</strong>: <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/integration.rs</span></code> includes the generated
+tests, records results, and produces <code class="docutils literal notranslate"><span class="pre">docs/test-summary.md</span></code></p></li>
+<li><p><strong>Test logic</strong>:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">fail/</span></code> tests: parse the C file, run the rule, assert violations &gt; 0</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">pass/</span></code> tests: parse the C file, run the rule, assert violations == 0</p></li>
+</ul>
+</li>
+<li><p><strong>Disabled rules</strong>: if <code class="docutils literal notranslate"><span class="pre">RULE-ID.toml</span></code> has <code class="docutils literal notranslate"><span class="pre">enabled</span> <span class="pre">=</span> <span class="pre">false</span></code>, tests are
+generated with <code class="docutils literal notranslate"><span class="pre">#[ignore]</span></code></p></li>
+</ol>
+</section>
+<section id="test-file-naming-conventions">
+<h3>Test File Naming Conventions<a class="headerlink" href="#test-file-naming-conventions" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Prefix</p></th>
+<th class="head"><p>Origin</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">wiki_*</span></code></p></td>
+<td><p>CERT wiki examples</p></td>
+<td><p>Directly from CERT C Coding Standard</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">testcases_*</span></code></p></td>
+<td><p>AI-generated</p></td>
+<td><p>Broader pattern coverage</p></td>
+</tr>
+<tr class="row-even"><td><p>Other</p></td>
+<td><p>Mixed</p></td>
+<td><p>Mostly regression fixtures named for
+the defect they pin</p></td>
+</tr>
+</tbody>
+</table>
+<p>The filename prefix is a naming habit, not the provenance record: the
+<code class="docutils literal notranslate"><span class="pre">Source:</span></code> header line is, and <code class="docutils literal notranslate"><span class="pre">scripts/fixture_provenance.py</span></code> reads that
+(see Fixture Provenance above).</p>
+</section>
+<section id="test-distribution-by-rule-size">
+<h3>Test Distribution by Rule Size<a class="headerlink" href="#test-distribution-by-rule-size" title="Link to this heading"></a></h3>
+<p>Fixture counts per rule are uneven. Most wiki-sourced rules carry a handful
+of fixtures, one or two per compliant and non-compliant example on the
+rule’s page; the rules with the largest suites (MEM31-C, ARR30-C, MEM30-C,
+EXP33-C and the like) carry around a hundred or more, nearly all of them
+locally authored regression fixtures pinning defects found in real code.
+For the per-rule counts in the current checkout:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ls</span> <span class="n">src</span><span class="o">/</span><span class="n">rules</span><span class="o">/</span><span class="n">cert_c</span><span class="o">/*/*/</span><span class="n">tests</span><span class="o">/*/*.</span><span class="n">c</span> <span class="o">|</span> <span class="n">awk</span> <span class="o">-</span><span class="n">F</span><span class="o">/</span> <span class="s1">&#39;{print $5}&#39;</span> <span class="o">|</span> <span class="n">sort</span> <span class="o">|</span> <span class="n">uniq</span> <span class="o">-</span><span class="n">c</span> <span class="o">|</span> <span class="n">sort</span> <span class="o">-</span><span class="n">rn</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">scripts/fixture_provenance.py</span> <span class="pre">--by-rule</span> <span class="pre">--json</span></code> gives each rule’s
+wiki / local / undeclared split, and without <code class="docutils literal notranslate"><span class="pre">--json</span></code> lists the rules with
+no wiki-derived fixture at all.</p>
+</section>
+<section id="what-tests-do-not-cover">
+<h3>What Tests Do NOT Cover<a class="headerlink" href="#what-tests-do-not-cover" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>Resolution across files</strong>: every fixture is a single file, and its test
+builds prescan context, CFGs and value ranges from that file alone (see
+“Every fixture is tested under the context the analyzer really builds”
+above), so a callee, macro or type defined in <em>another</em> file is never
+exercised by the fixture corpus</p></li>
+<li><p><strong>CLI flags</strong>: No tests for <code class="docutils literal notranslate"><span class="pre">--diff</span></code>, <code class="docutils literal notranslate"><span class="pre">--export</span></code>, <code class="docutils literal notranslate"><span class="pre">--format</span></code>, <code class="docutils literal notranslate"><span class="pre">--include-path</span></code>,
+<code class="docutils literal notranslate"><span class="pre">--save-prescan</span></code>, <code class="docutils literal notranslate"><span class="pre">--load-prescan</span></code>, <code class="docutils literal notranslate"><span class="pre">--jobs</span></code></p></li>
+<li><p><strong>Suppression</strong>: No tests for <code class="docutils literal notranslate"><span class="pre">.aurora-lint-suppress.toml</span></code> hash-based suppression</p></li>
+</ul>
+</section>
+<section id="coverage-gate">
+<h3>Coverage Gate<a class="headerlink" href="#coverage-gate" title="Link to this heading"></a></h3>
+<p>Line coverage is enforced at <strong>75%</strong> via <code class="docutils literal notranslate"><span class="pre">scripts/coverage-gate.sh</span></code>, shared by
+the pre-commit hook and GitHub Actions CI pipeline. The script:</p>
+<ul class="simple">
+<li><p>Runs tests via <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">llvm-cov</span></code></p></li>
+<li><p>Produces <code class="docutils literal notranslate"><span class="pre">lcov.info</span></code> (publishable as CI artifact)</p></li>
+<li><p>Excludes from threshold: <code class="docutils literal notranslate"><span class="pre">ui/</span></code> (GUI), <code class="docutils literal notranslate"><span class="pre">main.rs</span></code> (CLI entry),
+<code class="docutils literal notranslate"><span class="pre">integration.rs</span></code> (test harness), <code class="docutils literal notranslate"><span class="pre">progress.rs</span></code> (terminal I/O),
+<code class="docutils literal notranslate"><span class="pre">export/</span></code> (SARIF/Excel output), <code class="docutils literal notranslate"><span class="pre">files/</span></code> (git/directory I/O),
+<code class="docutils literal notranslate"><span class="pre">manifest/</span></code> (TOML config loading)</p></li>
+<li><p>Fails with clear output showing current coverage and largest uncovered files</p></li>
+</ul>
+</section>
+<section id="embedded-rust-unit-tests">
+<h3>Embedded Rust Unit Tests<a class="headerlink" href="#embedded-rust-unit-tests" title="Link to this heading"></a></h3>
+<p>Files in <code class="docutils literal notranslate"><span class="pre">src/analyze/</span></code> with <code class="docutils literal notranslate"><span class="pre">#[cfg(test)]</span></code> modules:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>File</p></th>
+<th class="head"><p>Lines</p></th>
+<th class="head"><p>Tests</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>prescan.rs</p></td>
+<td><p>2,741</p></td>
+<td><p>31</p></td>
+</tr>
+<tr class="row-odd"><td><p>const_eval.rs</p></td>
+<td><p>2,071</p></td>
+<td><p>43</p></td>
+</tr>
+<tr class="row-even"><td><p>value_range.rs</p></td>
+<td><p>1,778</p></td>
+<td><p>13</p></td>
+</tr>
+<tr class="row-odd"><td><p>init_state.rs</p></td>
+<td><p>1,729</p></td>
+<td><p>6</p></td>
+</tr>
+<tr class="row-even"><td><p>null_state.rs</p></td>
+<td><p>1,720</p></td>
+<td><p>9</p></td>
+</tr>
+<tr class="row-odd"><td><p>function_summary.rs</p></td>
+<td><p>1,175</p></td>
+<td><p>14</p></td>
+</tr>
+<tr class="row-even"><td><p>suppression.rs</p></td>
+<td><p>1,070</p></td>
+<td><p>34</p></td>
+</tr>
+<tr class="row-odd"><td><p>dataflow.rs</p></td>
+<td><p>988</p></td>
+<td><p>19</p></td>
+</tr>
+<tr class="row-even"><td><p>cfg.rs</p></td>
+<td><p>761</p></td>
+<td><p>7</p></td>
+</tr>
+<tr class="row-odd"><td><p>mod.rs</p></td>
+<td><p>705</p></td>
+<td><p>10</p></td>
+</tr>
+<tr class="row-even"><td><p>context.rs</p></td>
+<td><p>93</p></td>
+<td><p>0</p></td>
+</tr>
+</tbody>
+</table>
+<p>Rule implementation files with embedded tests (against project convention):
+INT34-C, INT33-C, CON31-C, FIO01-C, EXP32-C, EXP30-C, EXP33-C, EXP08-C,
+EXP42-C, DCL08-C, STR10-C.</p>
+</section>
+<section id="known-rule-implementation-gaps">
+<h3>Known Rule Implementation Gaps<a class="headerlink" href="#known-rule-implementation-gaps" title="Link to this heading"></a></h3>
+<p>The following rule-level analysis limitations were discovered during test coverage
+work. These are cases where valid C patterns should pass/fail but the rule
+implementation cannot detect them correctly.</p>
+<ul class="simple">
+<li><p><strong>INT00-C</strong>: <code class="docutils literal notranslate"><span class="pre">find_type_in_source()</span></code> only matches <code class="docutils literal notranslate"><span class="pre">TYPE</span> <span class="pre">VAR;</span></code> or
+<code class="docutils literal notranslate"><span class="pre">TYPE</span> <span class="pre">VAR,</span></code>, not <code class="docutils literal notranslate"><span class="pre">TYPE</span> <span class="pre">VAR</span> <span class="pre">=</span> <span class="pre">expr;</span></code>. Variables with initializers get type
+“unknown”, so format specifier checks cannot validate <code class="docutils literal notranslate"><span class="pre">%ld</span></code> with
+<code class="docutils literal notranslate"><span class="pre">long</span> <span class="pre">x</span> <span class="pre">=</span> <span class="pre">42;</span></code>.</p></li>
+<li><p><strong>INT08-C</strong>: Positive-only. A violation is reported only where <code class="docutils literal notranslate"><span class="pre">const_eval</span></code>
+can bound every operand and prove the promoted result leaves <code class="docutils literal notranslate"><span class="pre">int</span></code>; an
+operand it cannot resolve (a struct field, a subscript, a call result) yields
+no finding rather than an unproven one. Genuine narrow-type overflow behind
+an unresolvable operand is therefore missed.</p></li>
+<li><p><strong>INT34-C</strong>: <code class="docutils literal notranslate"><span class="pre">is_likely_unsigned()</span></code> parameter declaration check doesn’t
+traverse tree-sitter’s function parameter hierarchy. Also,
+<code class="docutils literal notranslate"><span class="pre">checks_shift_bounds()</span></code> doesn’t handle reversed comparison form
+<code class="docutils literal notranslate"><span class="pre">N</span> <span class="pre">&lt;=</span> <span class="pre">var</span></code> (only <code class="docutils literal notranslate"><span class="pre">var</span> <span class="pre">&gt;=</span> <span class="pre">N</span></code>).</p></li>
+<li><p><strong>POS50-C</strong>: <code class="docutils literal notranslate"><span class="pre">is_declared_in_function()</span></code> doesn’t distinguish <code class="docutils literal notranslate"><span class="pre">static</span></code> from
+automatic storage. Static locals passed to <code class="docutils literal notranslate"><span class="pre">pthread_create()</span></code> produce FPs.</p></li>
+<li><p><strong>FLP00-C</strong>: Only detects float equality in <code class="docutils literal notranslate"><span class="pre">if</span></code>-conditions, not in return
+statements or assignments.</p></li>
+<li><p><strong>EXP40-C</strong>: <code class="docutils literal notranslate"><span class="pre">is_const_qualified()</span></code> returns false for identifiers — cannot
+determine if a variable was declared <code class="docutils literal notranslate"><span class="pre">const</span></code> without a symbol table.</p></li>
+<li><p><strong>STR03-C</strong>: <code class="docutils literal notranslate"><span class="pre">strncpy()</span></code> and <code class="docutils literal notranslate"><span class="pre">snprintf()</span></code> always trigger violations
+regardless of whether null-termination is manually added afterward.</p></li>
+</ul>
+</section>
+</section>
+<section id="benchmark-caveats-and-rule-suite-coverage">
+<h2>Benchmark Caveats And Rule-Suite Coverage<a class="headerlink" href="#benchmark-caveats-and-rule-suite-coverage" title="Link to this heading"></a></h2>
+<p>Moved out of <code class="docutils literal notranslate"><span class="pre">README.md</span></code> (2026-09-03), which should say how well aurora-lint works
+rather than how the measurement is constructed. These are the caveats a
+maintainer or a reviewer needs; see <a class="reference internal" href="tool-comparison.html"><span class="doc">Comparison To Other Tools</span></a> for how aurora-lint scores
+against other analysers.</p>
+<p>Numbers below are <strong>not</strong> auto-refreshed with README’s highlights table, and
+that is deliberate: a caveat whose job is to say what a figure does not cover
+can do that without restating the figure. An earlier version of these notes
+carried the run’s version, its unlabeled percentage and the recall figure, and
+when the table was refreshed onto the canonical basis those three did not move
+with it — the table said 93.9% recall and 89.8% coverage while the prose eight
+lines below still said 93.7% and 11.8%. Treat any number here as illustrative
+of a <em>gap</em>, and <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">compare</span></code> or <code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres as the
+current measurement.</p>
+<p>Published figures are pinned to the last validly-adjudicated run. Rule-logic
+commits landed since that run are not reflected, and a current figure requires
+delta-adjudicating the newer unlabeled findings first — the protocol for that
+lives in the repository’s agent instructions, not here, because it is a
+maintainer workflow rather than a user-facing one.</p>
+</section>
+<section id="juliet-tp-rate-is-not-the-ceiling-signal-the-flaw-hit-rate-is">
+<h2>Juliet TP rate is not the ceiling signal — the flaw-hit rate is<a class="headerlink" href="#juliet-tp-rate-is-not-the-ceiling-signal-the-flaw-hit-rate-is" title="Link to this heading"></a></h2>
+<p><strong>Juliet TP Rate</strong> above is the share of aurora-lint’s Juliet findings that are true
+positives. It says how clean the output is, not how much of the suite’s
+planted defect set aurora-lint actually locates. That second question is the
+<strong>flaw-hit rate</strong> — the fraction of Juliet’s known flaw lines aurora-lint lands a
+finding on — and it moves independently: as of v0.4.321 it was 12.9%
+(17,100 of 132,406 flaw lines), essentially flat for weeks while the TP
+rate above was moving. Quoting only the TP rate overstates the tool; this
+paragraph is not auto-refreshed with the table above (deliberately, per the
+lesson in the note above this section — see <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">compare</span></code> or
+<code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres for the current figure), so treat the number here as
+illustrative of the <em>gap</em>, not as a current measurement.</p>
+<p>Per-file detection rate (in the table above) sits between the two: aurora-lint
+flags something in over a third of flawed files, but lands on the specific
+planted flaw line in roughly an eighth of cases. When judging headroom, the
+flaw-hit rate is the honest signal to watch for movement, not the TP rate.</p>
+<p>Juliet also exercises only part of the rule suite — 127 rules have any
+Juliet true positive, out of 311 implemented. See “Rule-suite coverage”
+below for what that leaves unmeasured, and
+[<code class="docutils literal notranslate"><span class="pre">docs/juliet-history.rst</span></code>](docs/juliet-history.rst) for the full
+round-by-round version history behind the table above.</p>
+</section>
+<section id="rule-suite-coverage">
+<h2>Rule-suite coverage<a class="headerlink" href="#rule-suite-coverage" title="Link to this heading"></a></h2>
+<p>Precision and recall above are aggregates over the rules that actually fire
+on the benchmark corpora. They say nothing about the rest of the suite, and
+the rest of the suite is substantial (measured 2026-09-02, run #226):</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 62.0%" />
+<col style="width: 38.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"></th>
+<th class="head"><p>Rules</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Implemented</p></td>
+<td><p>311 (307 enabled by default)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Have true-positive evidence somewhere</p></td>
+<td><p><strong>186</strong> — 127 from Juliet, 144 from real-world TP/FN labels</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>No true-positive evidence anywhere</strong></p></td>
+<td><p><strong>125 (40%)</strong></p></td>
+</tr>
+<tr class="row-odd"><td><p>· fire on the corpus, but have only ever produced FPs</p></td>
+<td><p>65</p></td>
+</tr>
+<tr class="row-even"><td><p>· never fire on the nine projects at all</p></td>
+<td><p>60</p></td>
+</tr>
+</tbody>
+</table>
+<p>A rule in that last group has never been shown to detect anything real —
+but that is usually a statement about the corpora, not about the rule. The
+nine real-world projects are mature, warning-clean C, which is the opposite
+population from aurora-lint’s nominal use case (newer, in-progress, possibly
+non-compiling code wired into CI/CD early — aurora-lint needs no build system, which
+is the whole point). A rule whose defect cannot survive review in released
+software is structurally incapable of scoring a true positive there. The 60
+never-firing rules include <code class="docutils literal notranslate"><span class="pre">WIN02-C</span></code> and <code class="docutils literal notranslate"><span class="pre">WIN30-C</span></code> — Windows rules against
+Linux-only corpora, categorically inapplicable rather than broken (rule
+applicability is the user’s lever, by design: manifest scoping and
+suppression exist so the user decides which rules apply to their code,
+rather than detection logic silently deciding for them).</p>
+<p><strong>Worked example of why a per-rule 0.0% is sometimes a corpus artifact, not
+a rule defect</strong> : <code class="docutils literal notranslate"><span class="pre">DCL31-C</span></code> shows 364 findings, 324 labeled, 0
+TP — 0.0% precision. That figure measures aurora-lint’s header reachability, not
+the rule’s quality. <code class="docutils literal notranslate"><span class="pre">mosquitto</span></code> alone goes from 1,365 <code class="docutils literal notranslate"><span class="pre">DCL31-C</span></code> findings
+with no <code class="docutils literal notranslate"><span class="pre">-I</span></code> to 0 with <code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include</span></code>. The rule guards a genuine defect —
+under C89 an implicit declaration makes the compiler assume <code class="docutils literal notranslate"><span class="pre">int</span> <span class="pre">f()</span></code>, so
+the return type is misread, no argument checking happens, and a returned
+pointer is truncated on LP64; C99 removed implicit declarations and C23
+makes them an error — on code this corpus does not contain. Quoting that
+number as a rule-quality measure is a category error.</p>
+<p>Do not read “header reachability” as “one more <code class="docutils literal notranslate"><span class="pre">-I</span></code> away”, though. Bucketing
+that rule’s labeled false positives by root cause found the <code class="docutils literal notranslate"><span class="pre">mosquitto</span></code> case
+to be the easy end of the range, not the typical one. The bulk of what
+survives is <code class="docutils literal notranslate"><span class="pre">raylib</span></code>’s platform backends, which include their own headers
+correctly and need an SDK the benchmark node does not have and in the Win32
+case cannot have; adding <code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include</span></code> moves them barely at all. The
+rest is a short tail of genuine analyzer defects, each filed as its own task
+— JavaScript inside <code class="docutils literal notranslate"><span class="pre">EM_ASM</span></code>/<code class="docutils literal notranslate"><span class="pre">EM_JS</span></code> macro bodies parsed as C, a <code class="docutils literal notranslate"><span class="pre">.c</span></code>
+file <code class="docutils literal notranslate"><span class="pre">#include</span></code>d by another <code class="docutils literal notranslate"><span class="pre">.c</span></code> file not inheriting the includer’s
+declarations, glibc prototypes guarded by <code class="docutils literal notranslate"><span class="pre">__USE_POSIX</span></code> and friends, and
+three declarator shapes we fail to read. So the figure is uninformative about
+the rule for two different reasons at once, and only the second is ours to
+fix.</p>
+<p>The material to close this gap already exists in the repo: <strong>1,975
+must-detect</strong> fixtures (<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/fail/*.c</span></code>) and <strong>1,594
+must-not-detect</strong> fixtures (<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/pass/*.c</span></code>), labeled
+by construction — 309 distinct rules carry at least one. 121 of the 125
+unvalidated rules already have a must-detect fixture — only <code class="docutils literal notranslate"><span class="pre">FLP01-C</span></code>,
+<code class="docutils literal notranslate"><span class="pre">MSC18-C</span></code>, <code class="docutils literal notranslate"><span class="pre">MSC25-C</span></code> and <code class="docutils literal notranslate"><span class="pre">ENV04-C</span></code> have none, and a fail fixture
+cannot pass for any of the four, for one of two reasons. <code class="docutils literal notranslate"><span class="pre">MSC18-C</span></code>,
+<code class="docutils literal notranslate"><span class="pre">MSC25-C</span></code> and <code class="docutils literal notranslate"><span class="pre">ENV04-C</span></code> have no detection logic at all — no <code class="docutils literal notranslate"><span class="pre">.rs</span></code>
+file exists; see the “Tracked but not implemented” section of
+<a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a> for why they are unimplemented. <code class="docutils literal notranslate"><span class="pre">FLP01-C</span></code> does have
+one (<code class="docutils literal notranslate"><span class="pre">flp01_c.rs</span></code>), but CERT itself marks the rule “unenforceable”
+through automated analysis, and the implementation is a deliberate
+conservative stub whose <code class="docutils literal notranslate"><span class="pre">check()</span></code> unconditionally returns no violations
+— so it is not merely missing a fixture, it has nothing a fixture could
+trigger. A fixture is not the missing piece for any of the four.
+Today those fixtures run only as pass/fail unit tests and feed no measured
+metric, so a rule can be fully exercised by tests and still read as having
+no detection evidence.</p>
+<p>Note what that does <em>not</em> license. The corpus is a conformance and
+regression gate and is never reported alongside Juliet or the real-world
+oracle — see <a class="reference internal" href="#what-the-fixture-corpus-does-and-does-not-measure">What the Fixture Corpus Does and Does Not Measure</a> for the
+scoring result and for the two blind spots (harness context divergence and
+cross-rule interference) that the green suite does not cover. Only the
+wiki-derived tier is third-party evidence, and <a class="reference internal" href="#fixture-provenance">Fixture Provenance</a> gives
+that split.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="interactive-ui.html" class="btn btn-neutral float-left" title="Interactive Console UI" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="tool-comparison.html" class="btn btn-neutral float-right" title="Comparison To Other Tools" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025-2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

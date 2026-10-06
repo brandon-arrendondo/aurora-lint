@@ -1,0 +1,313 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Policy and Environment Options &mdash; aurora-lint  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="CI/CD Integration" href="cicd-integration.html" />
+    <link rel="prev" title="Configuration" href="configuration.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            aurora-lint
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Policy and Environment Options</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#policy-options">Policy options</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#environment-contracts">Environment contracts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#toolchain">Toolchain</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#declared-memory-functions">Declared memory functions</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tool-comparison.html">Comparison To Other Tools</a></li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="licensing.html">Licensing and content provenance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">aurora-lint</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Policy and Environment Options</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/options.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="policy-and-environment-options">
+<h1>Policy and Environment Options<a class="headerlink" href="#policy-and-environment-options" title="Link to this heading"></a></h1>
+<p>Every assumption the analyzer can be told to make or drop is a named option
+below, with its value under each preset. This list is the complete record of
+what the default preset relaxes. See <a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a> for how to set
+them.</p>
+<ul class="simple">
+<li><p>The <strong>default</strong> preset is <code class="docutils literal notranslate"><span class="pre">policy</span> <span class="pre">=</span> <span class="pre">default</span></code> with a <code class="docutils literal notranslate"><span class="pre">hosted</span></code>
+environment and the ISO C + POSIX library model.</p></li>
+<li><p>The <strong>strict</strong> preset is <code class="docutils literal notranslate"><span class="pre">policy</span> <span class="pre">=</span> <span class="pre">strict</span></code> with a <code class="docutils literal notranslate"><span class="pre">freestanding</span></code>
+environment and no library model.</p></li>
+</ul>
+<section id="policy-options">
+<h2>Policy options<a class="headerlink" href="#policy-options" title="Link to this heading"></a></h2>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">assert_is_guard</span></code></dt><dd><p>A dominating assert whose condition establishes the property is a guard, even if NDEBUG can strip it.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: cross-cutting</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">assert-dominated</span></code></p></li>
+<li><p>Basis: The Clang Static Analyzer, Polyspace and Coverity’s models treat a live assert as an assumption; CERT’s EXP34-C compliant solution uses one.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">first_site_only</span></code></dt><dd><p>In a proof chain, only the first failing site is reported, not the sites that depend on the same missing check.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: cross-cutting</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">dependent-site</span></code></p></li>
+<li><p>Basis: Mainstream path-sensitive analyzers report one missing check once.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">trust_noreturn_keyword</span></code></dt><dd><p>A function declared _Noreturn (or &lt;stdnoreturn.h&gt; noreturn, or C23 [[noreturn]]) is trusted not to return; otherwise only a body verified never to return proves it.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: cross-cutting</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">noreturn-trusted</span></code></p></li>
+<li><p>Basis: C11 6.7.4p8, 7.23; C23 6.7.13.7. A GNU noreturn attribute, [[gnu::noreturn]] included, is proof under neither policy.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">pre31_unknown_call_pure</span></code></dt><dd><p>PRE31-C: an unproven call, in an argument an unsafe macro may evaluate other than once, is not treated as a side effect: a call to a function with no definition in the scanned files and no library contract, a call through a pointer, strerror, inet_ntoa, strsignal, gai_strerror, getenv, gmtime and asctime (whose only effect is the static buffer they return), or a call to a scanned function that reaches one of these and nothing shown to have a side effect. A callee shown to have a side effect, in whichever scanned file it is defined, is reported either way.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: PRE31-C</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">call-side-effect-unproven</span></code></p></li>
+<li><p>Basis: C11 5.1.2.3p2 (which CERT quotes) makes a call a side effect only when the function does one. cppcheck’s assertWithSideEffect and Polyspace’s MISRA C:2012 Rule 13.5 flag only callees they can show are impure. clang-tidy’s bugprone-assert-side-effect ignores calls by default. PC-lint and Parasoft’s CERT_C-PRE31-c count every call, as the strict policy does.</p></li>
+</ul>
+</dd>
+</dl>
+</section>
+<section id="environment-contracts">
+<h2>Environment contracts<a class="headerlink" href="#environment-contracts" title="Link to this heading"></a></h2>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">closed_program</span></code></dt><dd><p>The scanned files are the whole program: nothing outside them links against it, dlopens it, or loads into it. Then a non-static, non-const global that no scanned file writes, and a non-static function that only returns a literal, are constants EXP33-C may fold to prune a branch. Undeclared, another translation unit may write the global or interpose the function, so neither is folded.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">false</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: EXP33-C</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">contract:closed_program</span></code></p></li>
+<li><p>Basis: ADR-0011: libraries count as external, and an executable that exports its symbols (-rdynamic, dlopen’ed plugins) is a library too, so in-tree writes prove nothing about a global with external linkage. C11 6.2.2p2: every declaration of an identifier with external linkage, in any translation unit, denotes the same object. Declared by the user, never assumed: a Juliet testcase set is a closed program; a library is not.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">free_null_is_noop</span></code></dt><dd><p>free(NULL) does nothing.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: contract</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">contract:free_null_is_noop</span></code></p></li>
+<li><p>Basis: C11 7.22.3.3p2.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">realloc_null_is_malloc</span></code></dt><dd><p>realloc(NULL, size) behaves like malloc(size).</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: contract</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">contract:realloc_null_is_malloc</span></code></p></li>
+<li><p>Basis: C11 7.22.3.5p3.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">stdlib_noreturn</span></code></dt><dd><p>abort, exit, _Exit, quick_exit, longjmp, thrd_exit and POSIX _exit never return to their caller.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: contract</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">contract:stdlib_noreturn</span></code></p></li>
+<li><p>Basis: C11 7.22.4.1, 7.22.4.4, 7.22.4.5, 7.22.4.7, 7.13.2.1 and 7.26.5.5; POSIX.1-2024 _exit(). A freestanding implementation need not provide &lt;stdlib.h&gt;, &lt;setjmp.h&gt; or &lt;threads.h&gt; at all. Known limitation: two cross-file summaries built by the prescan (a parameter’s null state after <cite>if (!p) exit(1);</cite>, and whether a function never returns) still credit these calls whatever this option says.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">stdlib_call_effects</span></code></dt><dd><p>The ISO C and POSIX functions the tool lists as free of side effects (strlen, memcmp, isdigit, fabs, ntohs, …) have none, and every other ISO C or POSIX function it knows has one (it sets errno, touches a stream, allocates, or keeps hidden state). Withdrawn, a library call is a call to an unknown function.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: contract</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">contract:stdlib_call_effects</span></code></p></li>
+<li><p>Basis: C11 7.24 and 7.4: memcmp, strcmp, strncmp, memchr, strchr, strcspn, strpbrk, strrchr, strspn, strstr, strlen and the character classification and case mapping functions modify no object; 7.22.1.4p8 and 7.12.1 (strtol and math functions report errors through errno); CERT PRE31-C-EX1: “even changing errno is a side effect”.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">library_macros_evaluate_once</span></code></dt><dd><p>A C library function the implementation’s headers define as a macro (glibc’s tolower) evaluates each argument exactly once, whatever its replacement list looks like, including when a project macro hands it an argument. “The implementation’s headers” are any defining the name outside the scanned project, so a third-party library on the search path that redefines a standard name is trusted too (a redefinition C11 7.1.3 already makes undefined). Withdrawn, such a macro is judged by its definition like any other.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: contract</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">contract:library_macros_evaluate_once</span></code></p></li>
+<li><p>Basis: C11 7.1.4p1: “Any invocation of a library function that is implemented as a macro shall expand to code that evaluates each of its arguments exactly once”. The standard’s own exceptions (the stream argument of getc, putc, getwc and putwc, and assert) stay unsafe.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">main_argv_guarantees</span></code></dt><dd><p>main’s argc is nonnegative, argv[argc] is a null pointer, and argv[0..argc) point to strings.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: contract</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">contract:main_argv_guarantees</span></code></p></li>
+<li><p>Basis: C11 5.1.2.2.1p2, which binds hosted environments only.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">static_zero_init</span></code></dt><dd><p>Objects with static storage duration and no initializer are zeroed before main runs.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">true</span></code></p></li>
+<li><p>Scope: contract</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">contract:static_zero_init</span></code></p></li>
+<li><p>Basis: C11 6.7.9p10. Startup code that skips clearing .bss breaks it. Withdrawn, a block-scope static read before its function writes it is indeterminate; file-scope objects, which any function may write first, are not tracked.</p></li>
+</ul>
+</dd>
+</dl>
+</section>
+<section id="toolchain">
+<h2>Toolchain<a class="headerlink" href="#toolchain" title="Link to this heading"></a></h2>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">include_names</span></code></dt><dd><p>How an <code class="docutils literal notranslate"><span class="pre">#include</span></code> name is matched against the files on disk: <code class="docutils literal notranslate"><span class="pre">exact</span></code>, or
+<code class="docutils literal notranslate"><span class="pre">case-insensitive</span></code> as cl does on Windows, where an exact-case entry still
+wins. It is a fact about the toolchain rather than an assumption the rules
+trust, so neither preset sets it and it carries no oracle tag. Unset, it is
+<code class="docutils literal notranslate"><span class="pre">case-insensitive</span></code> when <code class="docutils literal notranslate"><span class="pre">--compile-commands</span></code> names a cl or clang-cl build
+and <code class="docutils literal notranslate"><span class="pre">exact</span></code> otherwise; the scanning host’s own file system never decides it.</p>
+<ul class="simple">
+<li><p>Set with <code class="docutils literal notranslate"><span class="pre">[environment]</span> <span class="pre">include_names</span></code> or <code class="docutils literal notranslate"><span class="pre">--include-names</span></code></p></li>
+<li><p>Part of the settings hash only when <code class="docutils literal notranslate"><span class="pre">case-insensitive</span></code></p></li>
+<li><p>Basis: Windows looks file names up case-insensitively unless a directory
+is marked case-sensitive (Microsoft Learn, “Case sensitivity”).</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">data_model</span></code></dt><dd><p>How wide the integer types are: <code class="docutils literal notranslate"><span class="pre">iso</span></code>, the default, credits only what ISO C
+guarantees (<code class="docutils literal notranslate"><span class="pre">CHAR_BIT</span></code> at least 8, <code class="docutils literal notranslate"><span class="pre">short</span></code> and <code class="docutils literal notranslate"><span class="pre">int</span></code> at least 16 bits,
+<code class="docutils literal notranslate"><span class="pre">long</span></code> at least 32, <code class="docutils literal notranslate"><span class="pre">long</span> <span class="pre">long</span></code> at least 64, and the exact width of
+<code class="docutils literal notranslate"><span class="pre">int32_t</span></code> and its kind); <code class="docutils literal notranslate"><span class="pre">ilp32</span></code>, <code class="docutils literal notranslate"><span class="pre">lp64</span></code> or <code class="docutils literal notranslate"><span class="pre">llp64</span></code> declares the
+target’s model, so <code class="docutils literal notranslate"><span class="pre">INT_MAX</span></code>, <code class="docutils literal notranslate"><span class="pre">sizeof(long)</span></code> and the like have their
+values there. Under <code class="docutils literal notranslate"><span class="pre">iso</span></code> a limit such as <code class="docutils literal notranslate"><span class="pre">INT_MAX</span></code> is unknown, a value is
+proven to fit a type only within the guaranteed range, and a defect that
+occurs on some conforming width is reported. Neither preset sets it.</p>
+<ul class="simple">
+<li><p>Set with <code class="docutils literal notranslate"><span class="pre">[environment]</span> <span class="pre">data_model</span></code> or <code class="docutils literal notranslate"><span class="pre">--data-model</span></code></p></li>
+<li><p>Part of the settings hash only when not <code class="docutils literal notranslate"><span class="pre">iso</span></code></p></li>
+<li><p>Basis: C11 5.2.4.2.1 (minimum magnitudes), 6.3.1.1 (rank order) and
+7.20.1.1 (exact-width types); integer widths are otherwise
+implementation-defined.</p></li>
+</ul>
+</dd>
+</dl>
+</section>
+<section id="declared-memory-functions">
+<h2>Declared memory functions<a class="headerlink" href="#declared-memory-functions" title="Link to this heading"></a></h2>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">allocators</span></code> and <code class="docutils literal notranslate"><span class="pre">deallocators</span></code></dt><dd><p>A function the scan has no body for (a platform hook supplied at build time,
+or a library outside the scanned tree) cannot be proven to allocate or to
+free. A project declares what such a function does: a deallocator frees
+the argument its position names (counting from 1), and an allocator
+returns fresh memory under the contract of the standard
+allocator it names (<code class="docutils literal notranslate"><span class="pre">malloc</span></code>, <code class="docutils literal notranslate"><span class="pre">calloc</span></code>, <code class="docutils literal notranslate"><span class="pre">realloc</span></code>, <code class="docutils literal notranslate"><span class="pre">aligned_alloc</span></code>,
+<code class="docutils literal notranslate"><span class="pre">strdup</span></code> or <code class="docutils literal notranslate"><span class="pre">strndup</span></code>). A <code class="docutils literal notranslate"><span class="pre">realloc</span></code>-like allocator also releases the
+block its first argument points at. The memory-lifetime rules (MEM00-C,
+MEM01-C, MEM03-C, MEM30-C, MEM31-C, MEM34-C) and the function summaries
+that credit a wrapper with what it frees read the declarations, whichever
+way they cut: a free through a declared hook excuses a leak and makes a
+second free a double free. A rule that only asks whether a call allocates
+at all counts a declared allocator too. Null-state, unchecked-result and
+allocation-size checks still recognize the standard names only. A function
+whose body the scan reads needs no declaration, and a C library function
+cannot be declared, since its contract is the library’s.</p>
+<ul class="simple">
+<li><p>Set with <code class="docutils literal notranslate"><span class="pre">[environment.allocators]</span></code> <code class="docutils literal notranslate"><span class="pre">NAME</span> <span class="pre">=</span> <span class="pre">&quot;CONTRACT&quot;</span></code> and
+<code class="docutils literal notranslate"><span class="pre">[environment.deallocators]</span></code> <code class="docutils literal notranslate"><span class="pre">NAME</span> <span class="pre">=</span> <span class="pre">ARG</span></code>, or <code class="docutils literal notranslate"><span class="pre">--allocator</span>
+<span class="pre">NAME[=CONTRACT]</span></code> (default <code class="docutils literal notranslate"><span class="pre">malloc</span></code>) and <code class="docutils literal notranslate"><span class="pre">--deallocator</span> <span class="pre">NAME[=ARG]</span></code>
+(default 1)</p></li>
+<li><p>Part of the settings hash only when something is declared</p></li>
+<li><p>Basis: the project’s own statement of its environment (ADR-0001, ADR-0015)</p></li>
+</ul>
+</dd>
+</dl>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="configuration.html" class="btn btn-neutral float-left" title="Configuration" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="cicd-integration.html" class="btn btn-neutral float-right" title="CI/CD Integration" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025-2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

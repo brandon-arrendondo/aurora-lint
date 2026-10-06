@@ -1,0 +1,498 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>aurora-lint Developer Guide &mdash; aurora-lint  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Advanced CLI Usage" href="cli-usage.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="#" class="icon icon-home">
+            aurora-lint
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="options.html">Policy and Environment Options</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tool-comparison.html">Comparison To Other Tools</a></li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="licensing.html">Licensing and content provenance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="#">aurora-lint</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="#" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">aurora-lint Developer Guide</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/index.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="aurora-lint-developer-guide">
+<h1>aurora-lint Developer Guide<a class="headerlink" href="#aurora-lint-developer-guide" title="Link to this heading"></a></h1>
+<p>aurora-lint is a terminal-based static analysis tool that validates
+C code compliance with <a class="reference external" href="https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard">SEI CERT C Coding Standards</a>.
+It tracks 311 rules (307 implemented and enabled by default) across 17 CERT C categories, using tree-sitter for fast
+AST-based analysis with cross-file context, control-flow graphs, and
+inter-procedural reasoning.</p>
+<p>This guide covers advanced usage, CI/CD integration, the interactive console UI,
+testing methodology, project internals, and contributing.</p>
+<p>These pages describe the main branch and change with it. Each release’s
+documentation stays published under its tag, as it read when the release was
+made, and the <a class="reference external" href="https://brandon-arrendondo.github.io/aurora-lint/versions.html">documentation versions</a> page lists
+them. To cite a page, cite the release’s copy, whose text and numbers never
+change: <code class="docutils literal notranslate"><span class="pre">https://brandon-arrendondo.github.io/aurora-lint/&lt;tag&gt;/&lt;page&gt;.html</span></code>,
+for example <code class="docutils literal notranslate"><span class="pre">.../aurora-lint/v0.6.0/configuration.html</span></code>.</p>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="cli-usage.html#full-command-reference">Full Command Reference</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cli-usage.html#cross-file-analysis">Cross-File Analysis</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cli-usage.html#using-a-compile-database">Using a Compile Database</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cli-usage.html#reaching-the-compiler-s-own-headers">Reaching the Compiler’s Own Headers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cli-usage.html#seeing-where-the-engine-is-blind">Seeing Where the Engine Is Blind</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cli-usage.html#deallocators-the-scan-cannot-see">Deallocators the Scan Cannot See</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cli-usage.html#file-exclusion">File Exclusion</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cli-usage.html#export-formats">Export Formats</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cli-usage.html#severity-filtering">Severity Filtering</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cli-usage.html#rule-filtering">Rule Filtering</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cli-usage.html#diff-mode">Diff Mode</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cli-usage.html#project-relevance-detection">Project-Relevance Detection</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cli-usage.html#exit-codes">Exit Codes</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="suppression.html#design-intent-surface-don-t-silence">Design intent: surface, don’t silence</a></li>
+<li class="toctree-l2"><a class="reference internal" href="suppression.html#scoping-and-suppressing-findings-the-four-project-controls">Scoping and suppressing findings: the four project controls</a></li>
+<li class="toctree-l2"><a class="reference internal" href="suppression.html#inline-comment-suppression">Inline Comment Suppression</a></li>
+<li class="toctree-l2"><a class="reference internal" href="suppression.html#pre-rename-spellings-still-accepted">Pre-rename spellings (still accepted)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="suppression.html#external-suppression-file">External Suppression File</a></li>
+<li class="toctree-l2"><a class="reference internal" href="suppression.html#wildcard-suppression">Wildcard Suppression</a></li>
+<li class="toctree-l2"><a class="reference internal" href="suppression.html#hash-details">Hash Details</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html#manifest-file">Manifest File</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html#custom-manifest-format">Custom Manifest Format</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html#policy-and-environment-settings">Policy and Environment Settings</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html#scope">Scope</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html#supported-cert-c-rules">Supported CERT C Rules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html#strict-vs-relaxed-onboarding">Strict vs. Relaxed Onboarding</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html#tracked-but-not-implemented">Tracked but not implemented</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html#enabled-but-out-of-scope">Enabled but out of scope</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="options.html">Policy and Environment Options</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="options.html#policy-options">Policy options</a></li>
+<li class="toctree-l2"><a class="reference internal" href="options.html#environment-contracts">Environment contracts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="options.html#toolchain">Toolchain</a></li>
+<li class="toctree-l2"><a class="reference internal" href="options.html#declared-memory-functions">Declared memory functions</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="cicd-integration.html#general-strategy">General Strategy</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cicd-integration.html#github-actions">GitHub Actions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cicd-integration.html#azure-devops">Azure DevOps</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cicd-integration.html#knowing-what-the-scan-could-not-see">Knowing What the Scan Could Not See</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cicd-integration.html#sarif-integration-tips">SARIF Integration Tips</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cicd-integration.html#ci-cd-readiness">CI/CD Readiness</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="interactive-ui.html#violations-tab">Violations Tab</a></li>
+<li class="toctree-l2"><a class="reference internal" href="interactive-ui.html#configuration-tab">Configuration Tab</a></li>
+<li class="toctree-l2"><a class="reference internal" href="interactive-ui.html#keyboard-reference">Keyboard Reference</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="interactive-ui.html#navigation-both-tabs">Navigation (both tabs)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="interactive-ui.html#tab-switching">Tab Switching</a></li>
+<li class="toctree-l3"><a class="reference internal" href="interactive-ui.html#violations-tab-selection">Violations Tab – Selection</a></li>
+<li class="toctree-l3"><a class="reference internal" href="interactive-ui.html#violations-tab-actions">Violations Tab – Actions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="interactive-ui.html#violations-tab-sorting-grouping">Violations Tab – Sorting / Grouping</a></li>
+<li class="toctree-l3"><a class="reference internal" href="interactive-ui.html#id1">Configuration Tab</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="testing-methodology.html#benchmark-strategy">Benchmark Strategy</a></li>
+<li class="toctree-l2"><a class="reference internal" href="testing-methodology.html#unit-tests">Unit Tests</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#the-benchmark-harness-python">The Benchmark Harness (Python)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#fixture-provenance">Fixture Provenance</a></li>
+<li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#what-the-fixture-corpus-does-and-does-not-measure">What the Fixture Corpus Does and Does Not Measure</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="testing-methodology.html#nist-juliet-test-suite-benchmarking">NIST Juliet Test Suite Benchmarking</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#how-juliet-benchmarking-works">How Juliet Benchmarking Works</a></li>
+<li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#results-at-v0-4-116-historical">Results at v0.4.116 (historical)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#fp-reduction-history">FP Reduction History</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="testing-methodology.html#real-world-code-analysis">Real-World Code Analysis</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#known-per-rule-corpus-caveats">Known Per-Rule Corpus Caveats</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="testing-methodology.html#cross-tool-comparison-methodology">Cross-Tool Comparison Methodology</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#apples-to-apples-concerns">Apples-to-Apples Concerns</a></li>
+<li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#recommended-comparison-workflow">Recommended Comparison Workflow</a></li>
+<li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#published-cert-c-results">Published CERT-C Results</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="testing-methodology.html#test-infrastructure-details">Test Infrastructure Details</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#build-time-test-generation">Build-Time Test Generation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#test-file-naming-conventions">Test File Naming Conventions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#test-distribution-by-rule-size">Test Distribution by Rule Size</a></li>
+<li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#what-tests-do-not-cover">What Tests Do NOT Cover</a></li>
+<li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#coverage-gate">Coverage Gate</a></li>
+<li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#embedded-rust-unit-tests">Embedded Rust Unit Tests</a></li>
+<li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#known-rule-implementation-gaps">Known Rule Implementation Gaps</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="testing-methodology.html#benchmark-caveats-and-rule-suite-coverage">Benchmark Caveats And Rule-Suite Coverage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="testing-methodology.html#juliet-tp-rate-is-not-the-ceiling-signal-the-flaw-hit-rate-is">Juliet TP rate is not the ceiling signal — the flaw-hit rate is</a></li>
+<li class="toctree-l2"><a class="reference internal" href="testing-methodology.html#rule-suite-coverage">Rule-suite coverage</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="tool-comparison.html">Comparison To Other Tools</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="tool-comparison.html#the-tools">The Tools</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tool-comparison.html#coverage-is-the-difference">Coverage Is The Difference</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tool-comparison.html#juliet-on-the-overlap">Juliet, On The Overlap</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tool-comparison.html#speed">Speed</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tool-comparison.html#real-world-precision-per-rule">Real-World Precision, Per Rule</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tool-comparison.html#what-the-trade-actually-is">What The Trade Actually Is</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#benchmark-environment">Benchmark Environment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#fp-reduction-history-full-round-list">FP Reduction History (Full Round List)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#per-round-fix-details">Per-Round Fix Details</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-19-fast-benchmark-mode-cwe-78-taint-tracking">v0.3.19 — Fast Benchmark Mode + CWE-78 Taint Tracking</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-17-cwe-78-macro-alias-resolution-cwe-253-incorrect-return-check">v0.3.17 — CWE-78 Macro Alias Resolution + CWE-253 Incorrect Return Check</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-14-exp33-c-int30-c-exp34-c-fp-fixes-full-suite">v0.3.14 — EXP33-C, INT30-C, EXP34-C FP Fixes (Full Suite)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-9-p3214-real-world-fp-fixes-12-cwe-subset">v0.3.9 — P3214 Real-World FP Fixes (12-CWE Subset)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-8-str31-c-api00-c-exp34-c-exp33-c-fp-fixes-12-cwe-subset">v0.3.8 — STR31-C, API00-C, EXP34-C, EXP33-C FP Fixes (12-CWE Subset)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-5-struct-field-type-resolution-real-world-fp-fixes">v0.3.5 — Struct Field Type Resolution, Real-World FP Fixes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-25-arr32-c-tightening-rule-removals-value-range-fp-fixes">v0.2.25 — ARR32-C Tightening, Rule Removals, Value-Range FP Fixes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-23-int32-c-const-eval-for-allocation-memory-abs-int30-c-built-in-macros">v0.2.23 — INT32-C Const-Eval for Allocation/Memory/Abs + INT30-C Built-in Macros</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-16-exp34-c-call-site-null-propagation-phase-2">v0.2.16 — EXP34-C: Call-Site Null Propagation (Phase 2)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-21-const-eval-value-range-analysis-real-world-round-6-fp-fixes">v0.2.21 — Const-Eval Value-Range Analysis + Real-World Round 6 FP Fixes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-20-real-world-fp-fixes-api00-c-int01-c-exp37-c-exp34-c">v0.2.20 — Real-World FP Fixes (API00-C, INT01-C, EXP37-C, EXP34-C)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-19-real-world-fp-reduction-int30-c-loop-guards-prescan-null-guards-arr00-c-fix">v0.2.19 — Real-World FP Reduction (INT30-C Loop Guards, Prescan Null Guards, ARR00-C Fix)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-18-quick-wins-fp-reduction-int31-c-arr36-c-api00-c-int30-c">v0.2.18 — Quick Wins FP Reduction (INT31-C, ARR36-C, API00-C, INT30-C)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-17-phase-3-cwe-476-fp-reduction-mem10-c-api00-c-api02-c-prescan">v0.2.17 — Phase 3: CWE-476 FP Reduction (MEM10-C, API00-C, API02-C, Prescan)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-15-real-world-fp-cleanup-17-patterns">v0.2.15 — Real-World FP Cleanup (17 Patterns)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-13-int31-c-implicit-narrowing-real-world-fp-fixes">v0.2.13 — INT31-C Implicit Narrowing + Real-World FP Fixes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-12-dcl13-c-pointer-modification-int01-c-sizeof-skip">v0.2.12 — DCL13-C Pointer Modification + INT01-C sizeof Skip</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-7-int36-c-tp-restore-int31-c-fp-fix">v0.2.7 — INT36-C TP Restore + INT31-C FP Fix</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-16-dcl13-c-main-exemption-mem10-c-parameter-only-null-check">Round 16 — DCL13-C main() Exemption + MEM10-C Parameter-Only Null Check</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-15-exp34-c-if-else-branch-merge">Round 15 — EXP34-C: if/else Branch Merge</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-14-exp34-c-deref-after-check-pattern">Round 14 — EXP34-C: deref_after_check Pattern</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-13-str31-c-l-prefix-and-literal-source-fixes">Round 13 — STR31-C: L-prefix and Literal-Source Fixes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-12-int07-c-int32-c-exp10-c-exp34-c-int30-c-mem10-c-str31-c-windows-api">Round 12 — INT07-C, INT32-C, EXP10-C, EXP34-C, INT30-C, MEM10-C, STR31-C, Windows API</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-9-cfg-data-flow-inter-procedural-analysis">Round 9 — CFG, Data-Flow, Inter-Procedural Analysis</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-8-dcl40-c-flp32-c-err33-c">Round 8 — DCL40-C, FLP32-C, ERR33-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-7-exp36-c-exp34-c-arr37-c">Round 7 — EXP36-C, EXP34-C, ARR37-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-6-cross-file-analysis-d">Round 6 — Cross-File Analysis (<code class="docutils literal notranslate"><span class="pre">-d</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-5-flp02-c-dcl06-c-int30-c">Round 5 — FLP02-C, DCL06-C, INT30-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-4-exp12-c-flp03-c-int32-c">Round 4 — EXP12-C, FLP03-C, INT32-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-3-dcl31-c-dcl07-c-flp34-c">Round 3 — DCL31-C, DCL07-C, FLP34-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-2-exp33-c-sig31-c-arr01-c-dcl30-c-dcl02-c">Round 2 — EXP33-C, SIG31-C, ARR01-C, DCL30-C, DCL02-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-1-int08-c-con08-c-dcl20-c-arr38-c">Round 1 — INT08-C, CON08-C, DCL20-C, ARR38-C</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#performance-by-cwe-category-historical-snapshot">Performance by CWE Category (Historical Snapshot)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#tier-1-strong-detection-tp-50-18-categories">Tier 1: Strong Detection (TP &gt; 50%) — 18 categories</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#tier-2-moderate-detection-3550-68-categories">Tier 2: Moderate Detection (35–50%) — 68 categories</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#tier-3-below-average-2535-16-categories">Tier 3: Below Average (25–35%) — 16 categories</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#tier-4-weak-detection-25-4-categories">Tier 4: Weak Detection (&lt;25%) — 4 categories</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#full-per-cwe-results-round-1-baseline">Full Per-CWE Results (Round 1 Baseline)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#per-rule-data-accuracy-note-2026-03-03">Per-Rule Data Accuracy Note (2026-03-03)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#competitor-comparison">Competitor Comparison</a></li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#version-history-v0-2-1-v0-3-17">Version History (v0.2.1 – v0.3.17)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#version-history-v0-3-20-present-fast-mode">Version History (v0.3.20 – present, fast mode)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#scripts-and-data-locations">Scripts and Data Locations</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#analysis-modules">Analysis Modules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#current-capabilities">Current Capabilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#known-limitations">Known Limitations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#architectural-ceiling">Architectural Ceiling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#competitor-landscape">Competitor Landscape</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-setup.html#benchmark-host-layout">Benchmark Host Layout</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-setup.html#installing-comparison-tools">Installing Comparison Tools</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#cppcheck">cppcheck</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#clang-tidy">clang-tidy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#bear-for-compile-commands-json">bear (for compile_commands.json)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#facebook-infer">Facebook Infer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#frama-c">Frama-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#build-based-tools-need-a-compile-database">Build-based tools need a compile database</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-setup.html#juliet-test-suite-setup">Juliet Test Suite Setup</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-setup.html#third-party-library-headers">Third-Party Library Headers</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#per-project-include-paths">Per-Project Include Paths</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-setup.html#real-world-project-setup">Real-World Project Setup</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#pinned-source-commits">Pinned Source Commits</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#verifying-the-pins">Verifying the Pins</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#clone-and-pin">Clone and Pin</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-setup.html#running-each-tool-manually">Running Each Tool Manually</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#id1">cppcheck</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#id2">clang-tidy</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-setup.html#per-project-commands">Per-Project Commands</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#libcrc">libcrc</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#sqlite">sqlite</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#mosquitto">mosquitto</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#curl">curl</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#hostap">hostap</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-setup.html#verifying-results">Verifying Results</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#known-pitfalls">Known Pitfalls</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-setup.html#output-format-reference">Output Format Reference</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-setup.html#distributed-benchmarking-with-gnu-parallel">Distributed Benchmarking with GNU Parallel</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-setup.html#exporting-competitor-results-for-ingest">Exporting competitor results for ingest</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-running.html#benchmark-infrastructure">Benchmark Infrastructure</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#sqlite-schema">SQLite Schema</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-running.html#benchmark-workflow-protocol">Benchmark Workflow Protocol</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#pre-benchmark-checklist">Pre-Benchmark Checklist</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-running.html#juliet-benchmark">Juliet Benchmark</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#policy-and-environment-settings">Policy and Environment Settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#compile-database-runs">Compile-Database Runs</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-running.html#real-world-benchmark">Real-World Benchmark</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#per-codebase-rule-configs">Per-Codebase Rule Configs</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#per-codebase-scan-scope">Per-Codebase Scan Scope</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#auto-scoring">Auto-Scoring</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-running.html#real-world-ground-truth-oracle-measured-precision-recall">Real-World Ground-Truth Oracle (measured precision/recall)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#delta-adjudication-gate">Delta-Adjudication Gate</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-running.html#comparing-across-runs">Comparing Across Runs</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#juliet">Juliet</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#real-world">Real-World</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-running.html#competitor-benchmarks-infer-frama-c">Competitor Benchmarks (Infer / Frama-C)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#infrastructure">Infrastructure</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#running">Running</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#timing-estimates">Timing Estimates</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#classification-logic">Classification Logic</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-running.html#troubleshooting">Troubleshooting</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#resolved-issues">Resolved Issues</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="reproducing-published-numbers.html#what-reproduces-means">What “reproduces” means</a></li>
+<li class="toctree-l2"><a class="reference internal" href="reproducing-published-numbers.html#input-1-the-analyzer-tag-sha-and-version-string">Input 1: the analyzer – tag, SHA and version string</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="reproducing-published-numbers.html#determinism-boundary">Determinism boundary</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="reproducing-published-numbers.html#input-2-the-labels-benchmark-adjudication-at-a-sha">Input 2: the labels – <code class="docutils literal notranslate"><span class="pre">benchmark_adjudication</span></code> at a SHA</a></li>
+<li class="toctree-l2"><a class="reference internal" href="reproducing-published-numbers.html#input-3-the-corpus-pinned-checkouts-and-juliet">Input 3: the corpus – pinned checkouts and Juliet</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="reproducing-published-numbers.html#real-world-codebases">Real-world codebases</a></li>
+<li class="toctree-l3"><a class="reference internal" href="reproducing-published-numbers.html#juliet">Juliet</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="reproducing-published-numbers.html#procedure">Procedure</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="reproducing-published-numbers.html#real-world-half">Real-world half</a></li>
+<li class="toctree-l3"><a class="reference internal" href="reproducing-published-numbers.html#juliet-half">Juliet half</a></li>
+<li class="toctree-l3"><a class="reference internal" href="reproducing-published-numbers.html#hardware-time-and-memory">Hardware, time and memory</a></li>
+<li class="toctree-l3"><a class="reference internal" href="reproducing-published-numbers.html#what-another-machine-reproduces-measured">What another machine reproduces, measured</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="reproducing-published-numbers.html#reading-a-mismatch">Reading a mismatch</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="measurement-notes.html#a-precision-figure-is-a-property-of-a-triple">A precision figure is a property of a triple</a></li>
+<li class="toctree-l2"><a class="reference internal" href="measurement-notes.html#the-v0-5-0-trend-break">The v0.5.0 trend break</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="measurement-notes.html#what-changed">What changed</a></li>
+<li class="toctree-l3"><a class="reference internal" href="measurement-notes.html#the-like-for-like-view">The like-for-like view</a></li>
+<li class="toctree-l3"><a class="reference internal" href="measurement-notes.html#reading-a-figure-across-the-break">Reading a figure across the break</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="measurement-notes.html#err33-c-relabeled-to-the-rule-as-written">ERR33-C relabeled to the rule as written</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="measurement-notes.html#reading-an-err33-c-figure">Reading an ERR33-C figure</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="measurement-notes.html#what-changed-in-how-v0-6-0-is-measured">What changed in how v0.6.0 is measured</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="measurement-notes.html#juliet">Juliet</a></li>
+<li class="toctree-l3"><a class="reference internal" href="measurement-notes.html#real-world">Real-world</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="measurement-notes.html#precision-intervals">Precision intervals</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="measurement-notes.html#the-views">The views</a></li>
+<li class="toctree-l3"><a class="reference internal" href="measurement-notes.html#regenerating-an-interval-exactly">Regenerating an interval exactly</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="future-rulesets.html#why-cert-c-is-the-base-standard">Why CERT C Is The Base Standard</a></li>
+<li class="toctree-l2"><a class="reference internal" href="future-rulesets.html#the-power-of-10-rules-nasa-jpl-2006">The Power of 10 Rules (NASA JPL, 2006)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="future-rulesets.html#jpl-institutional-coding-standard-2009">JPL Institutional Coding Standard (2009)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="future-rulesets.html#multi-threading-concurrency">Multi-threading / Concurrency</a></li>
+<li class="toctree-l3"><a class="reference internal" href="future-rulesets.html#other-key-rules">Other Key Rules</a></li>
+<li class="toctree-l3"><a class="reference internal" href="future-rulesets.html#earlier-standards-referenced-by-jpl">Earlier Standards Referenced by JPL</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="future-rulesets.html#barr-c-embedded-c-coding-standard">BARR-C Embedded C Coding Standard</a></li>
+<li class="toctree-l2"><a class="reference internal" href="future-rulesets.html#candidate-rules-for-implementation">Candidate Rules for Implementation</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="future-rulesets.html#core-safety-rules-pre-misra">Core Safety Rules (Pre-MISRA)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="future-rulesets.html#embedded-specific-rules">Embedded-Specific Rules</a></li>
+<li class="toctree-l3"><a class="reference internal" href="future-rulesets.html#multi-threading-safety-jpl-specific">Multi-threading Safety (JPL-specific)</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="contributing.html#adding-a-new-cert-c-rule">Adding a New CERT C Rule</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributing.html#build-requirements">Build Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributing.html#invoke-tasks">Invoke Tasks</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributing.html#publishing-a-release-s-documentation">Publishing a Release’s Documentation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="contributing.html#development-node-setup">Development Node Setup</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="licensing.html">Licensing and content provenance</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="licensing.html#summary">Summary</a></li>
+<li class="toctree-l2"><a class="reference internal" href="licensing.html#the-cert-terms">The CERT terms</a></li>
+<li class="toctree-l2"><a class="reference internal" href="licensing.html#trademark-which-is-separate-from-copyright">Trademark, which is separate from copyright</a></li>
+<li class="toctree-l2"><a class="reference internal" href="licensing.html#what-a-packager-needs-to-write">What a packager needs to write</a></li>
+<li class="toctree-l2"><a class="reference internal" href="licensing.html#re-deriving-the-counts">Re-deriving the counts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="licensing.html#third-party-rust-dependencies">Third-party Rust dependencies</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="bibliography.html#juliet-vulnerability-detection-studies">Juliet &amp; Vulnerability Detection Studies</a></li>
+<li class="toctree-l2"><a class="reference internal" href="bibliography.html#nist-sate-reports">NIST SATE Reports</a></li>
+<li class="toctree-l2"><a class="reference internal" href="bibliography.html#tool-comparison-industry-studies">Tool Comparison &amp; Industry Studies</a></li>
+<li class="toctree-l2"><a class="reference internal" href="bibliography.html#false-positive-rate-benchmarks">False Positive Rate Benchmarks</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="bibliography.html#industry-fp-rate-context">Industry FP Rate Context</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="bibliography.html#standards-specifications">Standards &amp; Specifications</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="cli-usage.html" class="btn btn-neutral float-right" title="Advanced CLI Usage" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025-2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

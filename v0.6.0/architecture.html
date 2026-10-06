@@ -1,0 +1,496 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Analysis Architecture &mdash; aurora-lint  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Benchmark Setup" href="benchmark-setup.html" />
+    <link rel="prev" title="Juliet Benchmark History" href="juliet-history.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            aurora-lint
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="options.html">Policy and Environment Options</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tool-comparison.html">Comparison To Other Tools</a></li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Analysis Architecture</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#analysis-modules">Analysis Modules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#current-capabilities">Current Capabilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#known-limitations">Known Limitations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#architectural-ceiling">Architectural Ceiling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#competitor-landscape">Competitor Landscape</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="licensing.html">Licensing and content provenance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">aurora-lint</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Analysis Architecture</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/architecture.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="analysis-architecture">
+<h1>Analysis Architecture<a class="headerlink" href="#analysis-architecture" title="Link to this heading"></a></h1>
+<p>aurora-lint uses a multi-pass analysis architecture:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Source</span> <span class="n">Files</span>
+    <span class="o">|</span>
+    <span class="n">v</span>
+<span class="p">[</span><span class="n">Tree</span><span class="o">-</span><span class="n">sitter</span> <span class="n">Parser</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="n">AST</span> <span class="p">(</span><span class="n">per</span><span class="o">-</span><span class="n">file</span><span class="p">)</span>
+    <span class="o">|</span>
+    <span class="n">v</span>
+<span class="p">[</span><span class="n">Pre</span><span class="o">-</span><span class="n">scan</span> <span class="n">Pass</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="n">Cross</span><span class="o">-</span><span class="n">file</span> <span class="n">context</span> <span class="p">(</span><span class="n">function</span> <span class="n">defs</span><span class="p">,</span> <span class="n">summaries</span><span class="p">,</span> <span class="n">macros</span><span class="p">,</span>
+    <span class="o">|</span>                 <span class="n">struct</span> <span class="n">types</span><span class="p">,</span> <span class="k">global</span> <span class="n">states</span><span class="p">,</span> <span class="n">call</span> <span class="n">graph</span><span class="p">,</span> <span class="n">call</span><span class="o">-</span><span class="n">site</span> <span class="n">args</span><span class="p">)</span>
+    <span class="n">v</span>
+<span class="p">[</span><span class="n">CFG</span> <span class="n">Construction</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="n">Per</span><span class="o">-</span><span class="n">function</span> <span class="n">control</span><span class="o">-</span><span class="n">flow</span> <span class="n">graphs</span>
+    <span class="o">|</span>
+    <span class="n">v</span>
+<span class="p">[</span><span class="n">Dataflow</span> <span class="n">Analysis</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="n">Null</span> <span class="n">state</span><span class="p">,</span> <span class="n">value</span> <span class="nb">range</span><span class="p">,</span> <span class="n">reaching</span> <span class="n">defs</span><span class="p">,</span> <span class="n">init</span> <span class="n">state</span>
+    <span class="o">|</span>
+    <span class="n">v</span>
+<span class="p">[</span><span class="n">Rule</span> <span class="n">Evaluation</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="mi">307</span> <span class="n">CERT</span> <span class="n">C</span> <span class="n">rules</span> <span class="n">applied</span> <span class="n">to</span> <span class="n">AST</span> <span class="o">+</span> <span class="n">CFG</span> <span class="o">+</span> <span class="n">context</span>
+    <span class="o">|</span>
+    <span class="n">v</span>
+<span class="p">[</span><span class="n">Suppression</span> <span class="n">Filter</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="n">Hash</span><span class="o">-</span><span class="n">based</span> <span class="o">+</span> <span class="n">wildcard</span> <span class="p">(</span><span class="n">glob</span><span class="o">/</span><span class="n">prefix</span><span class="p">)</span> <span class="n">suppression</span>
+    <span class="o">|</span>
+    <span class="n">v</span>
+<span class="p">[</span><span class="n">Export</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="n">SARIF</span><span class="p">,</span> <span class="n">JSON</span>
+</pre></div>
+</div>
+<section id="analysis-modules">
+<h2>Analysis Modules<a class="headerlink" href="#analysis-modules" title="Link to this heading"></a></h2>
+<dl class="simple">
+<dt><strong>Tree-sitter parsing</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/mod.rs</span></code>).</dt><dd><p>Fast, incremental, error-tolerant C parsing.  Each <code class="docutils literal notranslate"><span class="pre">.c</span></code> file is parsed into
+an AST; the orchestrator coordinates prescan, CFG construction, dataflow, and
+per-rule evaluation with optional Rayon parallelism.</p>
+</dd>
+<dt><strong>Cross-file pre-scan</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/prescan.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">context.rs</span></code>).</dt><dd><p>Walks the <code class="docutils literal notranslate"><span class="pre">-d</span></code> directories (or, with no <code class="docutils literal notranslate"><span class="pre">-d</span></code>, the scan target itself)
+collecting function definitions, header prototypes,
+function summaries, call graphs, macro constants/aliases, struct field types,
+global constants, and global pointer null states.  Second pass aggregates
+call-site argument null states and propagates transitive frees through
+parameter pass-through chains (max 8 iterations).  Results stored in
+<code class="docutils literal notranslate"><span class="pre">ProjectContext</span></code>, optionally cached to binary (<code class="docutils literal notranslate"><span class="pre">--save-prescan</span></code> /
+<code class="docutils literal notranslate"><span class="pre">--load-prescan</span></code>).  Consumed by 15+ rules.</p>
+</dd>
+<dt><strong>Function summaries</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/function_summary.rs</span></code>).</dt><dd><p>Lightweight inter-procedural summaries computed during prescan:
+<code class="docutils literal notranslate"><span class="pre">frees_params</span></code>, <code class="docutils literal notranslate"><span class="pre">can_return_null</span></code>, <code class="docutils literal notranslate"><span class="pre">returns_allocation</span></code>,
+<code class="docutils literal notranslate"><span class="pre">checks_null_params</span></code>, <code class="docutils literal notranslate"><span class="pre">modifies_params</span></code>, <code class="docutils literal notranslate"><span class="pre">dereferences_params</span></code>,
+<code class="docutils literal notranslate"><span class="pre">never_returns</span></code>, <code class="docutils literal notranslate"><span class="pre">callsite_param_null_states</span></code> (aggregated from all call
+sites), <code class="docutils literal notranslate"><span class="pre">callsite_param_field_null_states</span></code> (struct field propagation),
+<code class="docutils literal notranslate"><span class="pre">callsite_param_pointee_null_states</span></code> (pointer-to-pointer propagation),
+<code class="docutils literal notranslate"><span class="pre">return_range</span></code> (VRA inter-procedural), <code class="docutils literal notranslate"><span class="pre">param_passthroughs</span></code> (transitive
+free tracking).  Consumed by 7 rules.</p>
+</dd>
+<dt><strong>Control-flow graphs</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/cfg.rs</span></code>).</dt><dd><p>Per-function CFG with basic blocks, typed edges (Fallthrough, TrueBranch,
+FalseBranch, BackEdge, Return, Break, Continue, Goto), and
+<code class="docutils literal notranslate"><span class="pre">condition_range</span></code> metadata for path-sensitive edge refinement.  Optional
+macro-constant-aware construction for dead-branch elimination.  Consumed by
+8 rules (INT30/31/32/33/34-C, EXP33/34-C, MEM01-C).</p>
+</dd>
+<dt><strong>Null state dataflow</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/null_state.rs</span></code>).</dt><dd><p>Forward dataflow on CFG with NullState lattice (Unknown → DefinitelyNull /
+PossiblyNull / NotNull).  Edge refinement on branch conditions supports
+compound <code class="docutils literal notranslate"><span class="pre">||</span></code> / <code class="docutils literal notranslate"><span class="pre">&amp;&amp;</span></code> expressions.  Seeded from global pointer states,
+call-site parameter states, and function summaries.  Primary consumer:
+EXP34-C; also used by API00-C.</p>
+</dd>
+<dt><strong>Value range analysis</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/value_range.rs</span></code>).</dt><dd><p>CFG-based forward value-range dataflow for integer variables.  Tracks
+<code class="docutils literal notranslate"><span class="pre">TypedRange</span></code> (interval + signedness/bit-width) per variable.  Handles
+sequential assignments, conditional narrowing, loop bounds, and early-return
+guards.  Inter-procedural return ranges from function summaries.  Consumed
+by INT30/31/32/33/34-C.</p>
+</dd>
+<dt><strong>Constant evaluation</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/const_eval.rs</span></code>).</dt><dd><p>Syntactic constant folding of <code class="docutils literal notranslate"><span class="pre">#define</span></code> macro constants and arithmetic
+expressions.  Includes built-in C99 <code class="docutils literal notranslate"><span class="pre">&lt;limits.h&gt;</span></code>/<code class="docutils literal notranslate"><span class="pre">&lt;stdint.h&gt;</span></code> macros
+(LP64 model).  <code class="docutils literal notranslate"><span class="pre">try_evaluate_range()</span></code> computes value ranges from
+constants + variables + loop bounds via ancestor walks.  Consumed by 11
+rules (INT, ENV, ERR, FIO, FLP, STR families).</p>
+</dd>
+<dt><strong>Reaching definitions</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/dataflow.rs</span></code>).</dt><dd><p>Standard iterative worklist algorithm computing which definitions
+(Declaration, Assignment, Parameter, NullAssignment, FreeCall, NullableCall)
+reach each program point.  Supports use-after-free and null dereference
+queries.  Primary consumer: MEM01-C.</p>
+</dd>
+<dt><strong>Initialization state</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/init_state.rs</span></code>).</dt><dd><p>Forward dataflow tracking initialization status with malloc-aware semantics
+(Uninitialized, MaybeUninitialized, Initialized, MallocUninitialized,
+MallocInitialized).  Detects partial-init patterns in loops.  Primary
+consumer: EXP33-C.</p>
+</dd>
+<dt><strong>Macro-expansion engine</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/macro_expand.rs</span></code>).</dt><dd><p>Registry-based, name-independent modeling of function-like macro bodies —
+not a per-macro name allowlist.  <code class="docutils literal notranslate"><span class="pre">collect_function_macros</span></code> +
+<code class="docutils literal notranslate"><span class="pre">FunctionMacro</span></code> back a growing set of shape predicates regardless of the
+macro’s name (as of this writing: output-param writes, the “safe free”
+free+null idiom, generic writes, forwarding to another macro, plain frees,
+clears, and callee-released-parameter detection — see the file’s own
+<code class="docutils literal notranslate"><span class="pre">pub</span> <span class="pre">fn</span></code> list for the current, authoritative set rather than trusting a
+count here). Consumed by 24 rules: ARR30-C, DCL13-C, DCL16-C, DCL18-C, DCL31-C, DCL41-C, EXP10-C, EXP33-C, EXP34-C, EXP36-C, INT32-C, INT34-C, MEM03-C, MEM12-C, MEM30-C, MEM31-C, MSC13-C, MSC37-C, PRE05-C, PRE30-C, PRE31-C, PRE32-C, SIG30-C, and WIN05-C.
+Before adding a name-heuristic workaround for a macro-opacity false
+positive, check whether this engine already covers it — see
+<code class="docutils literal notranslate"><span class="pre">docs/design/macro-expansion.md</span></code> for the full design rationale and a
+per-rule disposition table.</p>
+</dd>
+<dt><strong>Standard function database</strong> (<code class="docutils literal notranslate"><span class="pre">src/utility/cert_c/std_functions.rs</span></code>).</dt><dd><p>~370 C11, POSIX, and Windows API functions recognized to suppress false
+positives on standard library calls (DCL31-C, DCL07-C).</p>
+</dd>
+<dt><strong>Call-role classification</strong> (<code class="docutils literal notranslate"><span class="pre">src/utility/cert_c/call_roles.rs</span></code>).</dt><dd><p>Single-source-of-truth predicates layered on top of the standard function
+database for “what role does this call play” (<code class="docutils literal notranslate"><span class="pre">is_allocator_call</span></code>,
+<code class="docutils literal notranslate"><span class="pre">is_heap_allocator</span></code>, <code class="docutils literal notranslate"><span class="pre">is_printf_family</span></code>, <code class="docutils literal notranslate"><span class="pre">is_scanf_family</span></code>,
+<code class="docutils literal notranslate"><span class="pre">is_sizeof_text</span></code>), replacing 7+ independently reinvented, disagreeing
+per-rule lists found by a ruleset-wide duplication sweep.</p>
+</dd>
+<dt><strong>Arithmetic-overflow-detection helpers</strong> (<code class="docutils literal notranslate"><span class="pre">src/utility/cert_c/overflow_helpers.rs</span></code>).</dt><dd><p>Shared type-map-building and identifier/operand-extraction primitives for
+<code class="docutils literal notranslate"><span class="pre">INT30-C</span></code>/<code class="docutils literal notranslate"><span class="pre">INT32-C</span></code> (and one primitive each for <code class="docutils literal notranslate"><span class="pre">INT10-C</span></code>),
+replacing ~20 identically-named private helpers duplicated across those
+two ~2800-line files — the largest duplicated surface found by that same
+sweep. The overflow-<em>guard-detection</em> logic itself
+(<code class="docutils literal notranslate"><span class="pre">has_overflow_check_*</span></code>) stays rule-local: it only looks duplicated:
+<code class="docutils literal notranslate"><span class="pre">INT30-C</span></code>’s is unsigned-wraparound-focused and <code class="docutils literal notranslate"><span class="pre">INT32-C</span></code>’s is
+signed-overflow-focused.</p>
+</dd>
+<dt><strong>Floating-point type inference</strong> (<code class="docutils literal notranslate"><span class="pre">src/utility/cert_c/float_typing.rs</span></code>).</dt><dd><p>Word-boundary-aware float classification of type spellings and literals
+(<code class="docutils literal notranslate"><span class="pre">is_float_type</span></code>, <code class="docutils literal notranslate"><span class="pre">is_float_literal</span></code>) and the <code class="docutils literal notranslate"><span class="pre">collect_variable_types</span></code>
+name map, shared by the FLP rule family; and <code class="docutils literal notranslate"><span class="pre">expr_is_float</span></code>, which types
+an expression by declaration through <code class="docutils literal notranslate"><span class="pre">expr_type</span></code> and is the floating
+test of <code class="docutils literal notranslate"><span class="pre">INT30-C</span></code>, <code class="docutils literal notranslate"><span class="pre">INT32-C</span></code> and <code class="docutils literal notranslate"><span class="pre">INT33-C</span></code>. A follow-up
+migrated 3 of the 9 flagged rules (FLP02-C, FLP34-C, FLP37-C); the other
+6 turned out to check genuinely different concepts (format specifiers,
+<code class="docutils literal notranslate"><span class="pre">long</span> <span class="pre">double</span></code> specifically, a more comprehensive extended-float set)
+and correctly stay rule-local.</p>
+</dd>
+<dt><strong>Internal capability catalog</strong> (<code class="docutils literal notranslate"><span class="pre">docs/design/internal-capability-catalog.md</span></code>).</dt><dd><p>A browsable-by-concept catalog of every reusable primitive in
+<code class="docutils literal notranslate"><span class="pre">src/utility/cert_c/*.rs</span></code> and <code class="docutils literal notranslate"><span class="pre">src/analyze/*.rs</span></code> (macro detection,
+declarator resolution, lvalue/aliasing, constant folding/VRA, CFG,
+function summaries, suppression, cross-file <code class="docutils literal notranslate"><span class="pre">ProjectContext</span></code>). Skim it
+before writing any new AST/text heuristic in a rule file – filed after
+a near-duplication of DCL40-C’s macro-detection helpers in MSC12-C.</p>
+</dd>
+<dt><strong>Suppression system</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/suppression.rs</span></code>).</dt><dd><p>Inline <code class="docutils literal notranslate"><span class="pre">//</span> <span class="pre">AURORA-SUPPRESS</span></code> comments and <code class="docutils literal notranslate"><span class="pre">suppress.toml</span></code> files (the
+pre-rename <code class="docutils literal notranslate"><span class="pre">SQC-SUPPRESS</span></code> / <code class="docutils literal notranslate"><span class="pre">.sqc-suppress.toml</span></code> spellings still parse).
+SHA-256 hash-based point suppressions and glob/prefix wildcard suppressions.</p>
+</dd>
+</dl>
+</section>
+<section id="current-capabilities">
+<h2>Current Capabilities<a class="headerlink" href="#current-capabilities" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Capability</p></th>
+<th class="head"><p>Implementation</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Local variable/type inference</p></td>
+<td><p>Per-function <code class="docutils literal notranslate"><span class="pre">collect_variable_types</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Preprocessor block traversal</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">preproc_*</span></code> node recursion</p></td>
+</tr>
+<tr class="row-even"><td><p>Standard function database</p></td>
+<td><p>~370 C11/POSIX/Windows functions</p></td>
+</tr>
+<tr class="row-odd"><td><p>Cross-file function scanning</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-d</span></code> flag pre-scan with binary cache</p></td>
+</tr>
+<tr class="row-even"><td><p>CFG construction</p></td>
+<td><p>Per-function with <code class="docutils literal notranslate"><span class="pre">condition_range</span></code> metadata</p></td>
+</tr>
+<tr class="row-odd"><td><p>Reaching definitions</p></td>
+<td><p>Iterative worklist dataflow (MEM01-C)</p></td>
+</tr>
+<tr class="row-even"><td><p>Inter-procedural summaries</p></td>
+<td><p>Null returns, freed params, no-return, return
+ranges, dereferences, pass-throughs</p></td>
+</tr>
+<tr class="row-odd"><td><p>CFG-based null state dataflow</p></td>
+<td><p>Forward dataflow with NullState lattice, compound
+condition support, global/call-site seeding</p></td>
+</tr>
+<tr class="row-even"><td><p>Value range analysis</p></td>
+<td><p>CFG-based forward dataflow, inter-procedural
+return ranges, type-aware intervals</p></td>
+</tr>
+<tr class="row-odd"><td><p>Initialization state analysis</p></td>
+<td><p>Forward dataflow with malloc-aware semantics</p></td>
+</tr>
+<tr class="row-even"><td><p>Constant evaluation</p></td>
+<td><p>Macro resolution, built-in limits, sizeof types</p></td>
+</tr>
+<tr class="row-odd"><td><p>Macro-expansion engine (registry)</p></td>
+<td><p>Name-independent free+null and output-param macro
+body modeling (MEM30/31-C, EXP33-C, DCL31-C)</p></td>
+</tr>
+<tr class="row-even"><td><p>Call-site null propagation</p></td>
+<td><p>Aggregated argument states across all callers</p></td>
+</tr>
+<tr class="row-odd"><td><p>Transitive free propagation</p></td>
+<td><p>Parameter pass-through chains + field-sensitive
+custom-deallocator credit (MEM31-C)</p></td>
+</tr>
+<tr class="row-even"><td><p>Global pointer null state</p></td>
+<td><p>Cross-file extern pointer tracking (EXP34-C)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Struct field type resolution</p></td>
+<td><p>Prescan-collected struct definitions</p></td>
+</tr>
+<tr class="row-even"><td><p>Taint tracking</p></td>
+<td><p>Intra-function (FIO30-C, STR02-C)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Dead-branch elimination</p></td>
+<td><p>Macro-constant-aware CFG construction</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="known-limitations">
+<h2>Known Limitations<a class="headerlink" href="#known-limitations" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Gap</p></th>
+<th class="head"><p>Impact</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>No general macro expansion</p></td>
+<td><p>Arbitrary macro bodies are not expanded.  A
+registry-based engine (<code class="docutils literal notranslate"><span class="pre">macro_expand.rs</span></code>,
+see above) name-independently recognizes a
+growing set of shapes for 24
+rules; outside those shapes macros are still
+opaque function
+calls, partially mitigated by
+<code class="docutils literal notranslate"><span class="pre">collect_macro_aliases</span></code> for constant-valued
+macros</p></td>
+</tr>
+<tr class="row-odd"><td><p>No alias analysis</p></td>
+<td><p>Pointer aliasing unresolved; field-scoped alias
+collection causes cross-function issues</p></td>
+</tr>
+<tr class="row-even"><td><p>No symbolic execution</p></td>
+<td><p>Complex path conditions not evaluated</p></td>
+</tr>
+<tr class="row-odd"><td><p>No SSA form</p></td>
+<td><p>No use-def chains beyond reaching definitions</p></td>
+</tr>
+<tr class="row-even"><td><p>VRA intra-procedural only</p></td>
+<td><p>Inter-procedural argument ranges and field-sensitive
+VRA not implemented; return ranges available</p></td>
+</tr>
+<tr class="row-odd"><td><p>Limited taint tracking</p></td>
+<td><p>Intra-function only (STR02-C, FIO30-C);
+cross-function taint for injection CWEs planned</p></td>
+</tr>
+<tr class="row-even"><td><p>Struct field tracking limited</p></td>
+<td><p>Prescan-visible structs only (INT32-C/INT30-C);
+no field-level free or null tracking</p></td>
+</tr>
+<tr class="row-odd"><td><p>No ownership model</p></td>
+<td><p>Same-function ownership transfer (allocate + custom
+deallocator) is credited, but parameter-owned vs.
+locally-owned struct lifetimes are not distinguished;
+dominant remaining MEM31-C real-world FP source</p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Known departures from the labeling ADRs.</strong> Where detection still
+contradicts ADR-0005 (misfires), ADR-0006 (resolve identifiers, not
+spelling), ADR-0010 (every compilable configuration counts) or ADR-0011
+(what counts as proof), the place is listed in
+<code class="docutils literal notranslate"><span class="pre">docs/design/adr-conformance.md</span></code>: the code, the shortcut, and whether a
+fix adds or removes findings. A published per-rule figure for a rule with
+an open row there carries that caveat.</p>
+<p><strong>No build input is required.</strong> The gaps above are what analyzing source
+alone costs, and the tool accepts that cost rather than depending on a
+build. A compile database, <code class="docutils literal notranslate"><span class="pre">-I</span></code>/<code class="docutils literal notranslate"><span class="pre">-D</span></code> flags and declared environment
+facts only refine results. With none of them, each rule takes its strict
+reading of the source as found, and gives no credit the source alone can’t
+prove. ADR-0015 Decision 3
+(<code class="docutils literal notranslate"><span class="pre">docs/adr/0015-default-and-strict-profiles.md</span></code>) states the principle and
+the tests that keep it true.</p>
+</section>
+<section id="architectural-ceiling">
+<h2>Architectural Ceiling<a class="headerlink" href="#architectural-ceiling" title="Link to this heading"></a></h2>
+<p>Current TP rate: <strong>83.8%</strong> (Juliet, v0.4.116, 74 CWEs; up from 67.5% at
+v0.3.119).  CWE-190/191 (integer overflow) and CWE-476 (null dereference)
+have since moved substantially with VRA and null-state work; the remaining
+gaps are concentrated in a smaller set of CWEs still requiring deeper
+analysis:</p>
+<ul class="simple">
+<li><p><strong>CWE-190</strong> (integer overflow): 100.0% — resolved via value-range analysis.</p></li>
+<li><p><strong>CWE-191</strong> (integer underflow): 98.5% (was 55.3%) — same VRA work.</p></li>
+<li><p><strong>CWE-476</strong> (null dereference): 67.9% (was 61.9%) vs clang-tidy 94.3%.
+Requires deeper inter-procedural null propagation and alias analysis.</p></li>
+<li><p><strong>CWE-121</strong> (stack buffer overflow): 71.0% (was 57.5%) vs clang-tidy 86.6%.
+Requires symbolic buffer size tracking across assignments.</p></li>
+<li><p><strong>CWE-369</strong> (divide by zero): 57.8% (was 56.0%) vs clang-tidy 94.7%.
+Requires stronger zero-value tracking through assignments; largely
+unmoved despite the VRA/alias investment that lifted 190/191/476/121.</p></li>
+</ul>
+<p>Alias analysis and field-sensitive value tracking remain the two
+capabilities most likely to close the remaining gap, particularly for
+CWE-369 and the residual CWE-121/476 share tied to pointer aliasing.</p>
+</section>
+<section id="competitor-landscape">
+<h2>Competitor Landscape<a class="headerlink" href="#competitor-landscape" title="Link to this heading"></a></h2>
+<p>5-tool comparison on 15 overlapping Juliet CWEs (28,488 files):</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Tool</p></th>
+<th class="head"><p>Detection Rate</p></th>
+<th class="head"><p>FP Rate</p></th>
+<th class="head"><p>Analysis Depth</p></th>
+<th class="head"><p>Price</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>clang-tidy</p></td>
+<td><p>91.6%</p></td>
+<td><p>0.8%</p></td>
+<td><p>AST + path-sensitive</p></td>
+<td><p>Free</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>aurora-lint</strong></p></td>
+<td><p>67.5%</p></td>
+<td><p>32.5%</p></td>
+<td><p>AST + CFG + inter-procedural</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-even"><td><p>Frama-C</p></td>
+<td><p>61.0%</p></td>
+<td><p>39.0%</p></td>
+<td><p>Abstract interpretation</p></td>
+<td><p>Free</p></td>
+</tr>
+<tr class="row-odd"><td><p>Infer</p></td>
+<td><p>43.6%</p></td>
+<td><p>56.4%</p></td>
+<td><p>Separation logic</p></td>
+<td><p>Free</p></td>
+</tr>
+<tr class="row-even"><td><p>cppcheck</p></td>
+<td><p>36.4%</p></td>
+<td><p>63.6%</p></td>
+<td><p>Data-flow</p></td>
+<td><p>Free</p></td>
+</tr>
+</tbody>
+</table>
+<p><em>aurora-lint row is from the v0.3.119 Juliet benchmark, held fixed here because the
+other four tools were not re-run at v0.4.116 — this table is a frozen
+snapshot of a one-time comparative study, not a continuously re-measured
+figure. aurora-lint’s own overall TP rate has since risen to 83.8% (see above); it
+is not directly comparable to the 67.5% row without re-running the other
+four tools on the same 15-CWE, 28,488-file slice.</em></p>
+<p>aurora-lint achieved 100% precision (zero FP) on 48 of 74 benchmarked CWEs as of
+v0.4.116 (a frozen figure from this study, not re-measured since; see
+README.md’s Benchmark Highlights for the current 100%-precision-CWE count),
+including CWE-690, CWE-761, CWE-78, and CWE-190. Broadest CWE coverage
+(74+ CWEs benchmarked vs clang-tidy’s 15
+in the frozen study above).</p>
+<p><strong>Key context</strong>: on real-world vulnerabilities, even the best single C
+analyzer studied misses between 47% and 80%, depending on the evaluation
+scenario (Lipp2022); in another study, 27% of C/C++ vulnerabilities were
+missed by all three commercial tools tested (Goseva2015). From a developer
+survey, Christakis and Bird recommend that analysis designers aim for a
+false-positive rate no higher than 15–20%; only 24% of respondents accepted
+20% (Christakis2016). See <a class="reference internal" href="bibliography.html"><span class="doc">Bibliography</span></a> for full references.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="juliet-history.html" class="btn btn-neutral float-left" title="Juliet Benchmark History" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="benchmark-setup.html" class="btn btn-neutral float-right" title="Benchmark Setup" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025-2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

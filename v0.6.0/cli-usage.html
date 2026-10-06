@@ -1,0 +1,744 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Advanced CLI Usage &mdash; aurora-lint  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Suppression System" href="suppression.html" />
+    <link rel="prev" title="aurora-lint Developer Guide" href="index.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            aurora-lint
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Advanced CLI Usage</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#full-command-reference">Full Command Reference</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#cross-file-analysis">Cross-File Analysis</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#using-a-compile-database">Using a Compile Database</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#reaching-the-compiler-s-own-headers">Reaching the Compiler’s Own Headers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#seeing-where-the-engine-is-blind">Seeing Where the Engine Is Blind</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#deallocators-the-scan-cannot-see">Deallocators the Scan Cannot See</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#file-exclusion">File Exclusion</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#export-formats">Export Formats</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#severity-filtering">Severity Filtering</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#rule-filtering">Rule Filtering</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#diff-mode">Diff Mode</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#project-relevance-detection">Project-Relevance Detection</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#exit-codes">Exit Codes</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="options.html">Policy and Environment Options</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tool-comparison.html">Comparison To Other Tools</a></li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="licensing.html">Licensing and content provenance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">aurora-lint</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Advanced CLI Usage</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/cli-usage.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="advanced-cli-usage">
+<h1>Advanced CLI Usage<a class="headerlink" href="#advanced-cli-usage" title="Link to this heading"></a></h1>
+<section id="full-command-reference">
+<h2>Full Command Reference<a class="headerlink" href="#full-command-reference" title="Link to this heading"></a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>aurora-lint [OPTIONS] [PATH]
+
+Arguments:
+  [PATH]  Path to the file, directory, or git repository to analyze [default: .]
+
+Options:
+  -m, --manifest &lt;FILE&gt;            Path to the rules manifest file
+                                   [default: rules_templates/rules-all.toml]
+  -i, --interactive                Run in interactive terminal UI mode
+                                   (requires building with `--features tui`)
+  -e, --export &lt;FILE&gt;              Export violations to file (format by extension:
+                                   .sarif, .sarif.json, .json)
+      --generate-suppression &lt;FILE:LINE:RULE&gt;
+                                   Generate suppression entry for a specific violation
+  -d, --directories &lt;DIR&gt;          Additional directories to pre-scan for function
+                                   definitions (repeatable; enables cross-file context)
+      --fail-on-violation          Exit with code 1 if any violations are found
+      --fail-on-severity &lt;LEVEL&gt;   Exit with code 1 if any violation meets or exceeds
+                                   this severity [Low, Medium, High, Critical]
+      --min-severity &lt;LEVEL&gt;       Only report violations at or above this severity
+                                   [Low, Medium, High, Critical]
+      --rules &lt;RULE1,RULE2,...&gt;    Only report violations from these rules (comma-separated)
+      --exclude-all &lt;GLOB&gt;         Leave files matching this path glob out of
+                                   everything: not scanned, not reported, and not
+                                   read for cross-file facts (repeatable, e.g.
+                                   --exclude-all &#39;**/onelua.c&#39; --exclude-all &#39;testes/**&#39;)
+      --exclude &lt;GLOB&gt;             Deprecated: same as --report-exclude
+      --report-exclude &lt;GLOB&gt;      Report nothing in matching files, but still read
+                                   them for cross-file facts (repeatable)
+      --prescan-exclude &lt;GLOB&gt;     Scan and report matching files, but do not read
+                                   them for cross-file facts (repeatable)
+      --diff                       Only analyze modified/new C files (requires git repo)
+      --suppress-file &lt;FILE&gt;       Path to suppress.toml file
+                                   (auto-detected in project root if not specified;
+                                   [[suppress]] entries, matched by hash or by
+                                   glob/prefix)
+  -I, --include-path &lt;DIR&gt;         Include search paths for resolving #include directives
+                                   (repeatable; like compiler -I flag)
+      --compile-commands &lt;FILE&gt;    Read include search paths and -D macros from a
+                                   compile_commands.json (optional; improves cross-file
+                                   macro/header coverage for projects that already have
+                                   a compile database)
+      --system-includes            Also search the compiler&#39;s own built-in system header
+                                   directories, found by asking it (cc -E -Wp,-v -).
+                                   Off by default: it spawns a compiler. Usable with or
+                                   without --compile-commands, which can never contain
+                                   these paths
+      --report-macro-gaps[=FILE]   After the scan, report where the macro-expansion
+                                   engine was blind: definitions it skipped, #includes
+                                   it could not resolve, calls it could not attribute.
+                                   Summary on stdout; =FILE also writes every row as
+                                   JSON. Never changes a finding
+      --report-deallocator-candidates[=FILE]
+                                   After the scan, list callees shaped like
+                                   deallocators by name that nothing shows freeing,
+                                   where an allocation handed to one was reported
+                                   leaked. Summary on stdout; =FILE also writes every
+                                   row as JSON. Never changes a finding
+  -v, --verbose                    Increase output verbosity (repeat for more detail;
+                                   -v shows per-rule scanning progress)
+      --save-prescan &lt;FILE&gt;        Save prescan context to a binary cache file
+                                   (speeds up repeated scans of the same project)
+      --load-prescan &lt;FILE&gt;        Load prescan context from cache instead of
+                                   re-scanning -d directories
+  -j, --jobs &lt;N&gt;                   Number of parallel analysis threads
+                                   (0 = auto-detect, 1 = sequential; default: 0)
+      --profile &lt;PRESET&gt;           Preset for both settings axes: default (default
+                                   policy, hosted) or strict (strict policy,
+                                   freestanding). Overrides the manifest&#39;s `profile`
+      --policy &lt;POLICY&gt;            Policy axis: which findings are reported
+                                   [default, strict] (overrides the preset)
+      --environment &lt;KIND&gt;         Environment axis [hosted, freestanding] (overrides
+                                   the preset). Declared, never inferred from the
+                                   scanning host
+      --libc &lt;MODEL&gt;               C library model whose documented contracts are
+                                   trusted [iso-posix, glibc, musl, newlib,
+                                   picolibc, custom]
+      --data-model &lt;MODEL&gt;         Data model: the bundle of integer facts the code is built for
+                                   [iso, ilp32, lp64, llp64]. The default, iso,
+                                   loads nothing, so only the widths ISO C
+                                   guarantees are credited and limit macros such as
+                                   INT_MAX are unknown. Same as
+                                   ``[environment] data_model``, which a
+                                   ``--profile`` keeps. Override one fact with
+                                   ``--set int_bits=16`` (also char_bits,
+                                   short_bits, long_bits, long_long_bits,
+                                   pointer_bits, wchar_t_bits, char_signed,
+                                   float_bytes, double_bytes, long_double_bytes,
+                                   time_t_bytes, off_t_bytes). See
+                                   :doc:`configuration`
+      --allocator &lt;NAME[=CONTRACT]&gt;
+                                   Declare a function the scan cannot see into as an
+                                   allocator following the named standard allocator&#39;s
+                                   contract [malloc, calloc, realloc, aligned_alloc,
+                                   strdup, strndup; default malloc]. Repeatable; same
+                                   as [environment.allocators] in the manifest
+      --deallocator &lt;NAME[=ARG]&gt;   Declare a function the scan cannot see into as
+                                   freeing its ARG-th argument (default 1).
+                                   Repeatable; same as [environment.deallocators] in
+                                   the manifest
+      --set &lt;NAME=VALUE&gt;           Override one named option (repeatable); see
+                                   --list-options
+      --list-options [&lt;FORMAT&gt;]    List every policy and environment option with its
+                                   value under each preset and the current settings,
+                                   and every integer fact with its source (cli,
+                                   config, data-model:NAME, iso-floor, unknown), then
+                                   exit [text, json, rst]
+      --check-config               Resolve the settings from the manifest and the
+                                   command line exactly as a scan would, validate
+                                   them, and exit without scanning: &quot;configuration
+                                   ok&quot; and status 0, or status 1 and one error per
+                                   problem
+      --write-config &lt;FILE&gt;        Write a complete, commented configuration for the
+                                   current settings (the manifest, --data-model and
+                                   --set applied) and exit; a key at its default is
+                                   commented out. Refuses to replace an existing FILE
+                                   unless --overwrite is given; &quot;-&quot; writes to stdout
+      --overwrite                  With --write-config: replace FILE if it exists
+      --detect-relevance           Detect categorically-inapplicable rule classes
+                                   (CON*/WIN*) in PATH and -d directories, then write
+                                   a relevance-gated manifest with --write-manifest.
+                                   Does not run an analysis.
+      --write-manifest &lt;FILE&gt;      With --detect-relevance: write the generated
+                                   manifest here (requires --detect-relevance)
+  -h, --help                       Print help
+  -V, --version                    Print version
+</pre></div>
+</div>
+</section>
+<section id="cross-file-analysis">
+<h2>Cross-File Analysis<a class="headerlink" href="#cross-file-analysis" title="Link to this heading"></a></h2>
+<p>Cross-file context comes from a pre-scan that collects function definitions,
+type declarations, and macro aliases before analysis begins. This
+significantly reduces false positives from rules like DCL31-C (unused identifiers)
+and DCL07-C (type mismatches) that would otherwise flag externally-defined symbols.</p>
+<p>With no <code class="docutils literal notranslate"><span class="pre">-d</span></code>, the target is pre-scanned itself: every <code class="docutils literal notranslate"><span class="pre">.c</span></code>/<code class="docutils literal notranslate"><span class="pre">.h</span></code> file under
+a directory target, or the file plus the headers beside it for a single-file
+target. So <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">foo.c</span></code> already knows the definitions in <code class="docutils literal notranslate"><span class="pre">foo.c</span></code>,
+and <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">src/</span></code> knows everything under <code class="docutils literal notranslate"><span class="pre">src/</span></code>, without naming the
+target a second time.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">-d</span></code> / <code class="docutils literal notranslate"><span class="pre">--directories</span></code> flag adds context from <em>outside</em> the target.
+Once any <code class="docutils literal notranslate"><span class="pre">-d</span></code> is given, the pre-scan covers exactly the <code class="docutils literal notranslate"><span class="pre">-d</span></code> directories:
+name the target too if its own definitions should stay in scope.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># The target is its own context; nothing more needed</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span>
+
+<span class="c1"># Include additional directories (e.g., shared headers, sibling modules)</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">-</span><span class="n">d</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">-</span><span class="n">d</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">shared</span><span class="o">/</span><span class="n">headers</span>
+
+<span class="c1"># Multiple -d flags stack — all are pre-scanned before analysis begins</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">vendor</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">third_party</span><span class="o">/</span>
+</pre></div>
+</div>
+<p>The pre-scan collects:</p>
+<ul class="simple">
+<li><p><strong>Function definitions</strong>: names, parameter counts, return types across all <code class="docutils literal notranslate"><span class="pre">.c</span></code>/<code class="docutils literal notranslate"><span class="pre">.h</span></code> files</p></li>
+<li><p><strong>Header prototypes</strong>: functions declared in <code class="docutils literal notranslate"><span class="pre">.h</span></code> files (public API detection for DCL15-C)</p></li>
+<li><p><strong>Function summaries</strong>: null return behavior, freed parameters, no-return annotations,
+parameter dereferences, return value ranges, parameter pass-through chains</p></li>
+<li><p><strong>Call graph</strong>: caller → callee relationships for transitive analysis</p></li>
+<li><p><strong>Call-site argument states</strong>: null state of arguments at each call site, aggregated
+per parameter for inter-procedural null propagation</p></li>
+<li><p><strong>Macro constants and aliases</strong>: <code class="docutils literal notranslate"><span class="pre">#define</span></code> values for constant evaluation and
+<code class="docutils literal notranslate"><span class="pre">#define</span> <span class="pre">SYSTEM</span> <span class="pre">system</span></code> patterns for taint tracking</p></li>
+<li><p><strong>Struct field types</strong>: struct definitions for type resolution (INT32-C, INT30-C)</p></li>
+<li><p><strong>Global constants</strong>: file-scope <code class="docutils literal notranslate"><span class="pre">const</span></code> variables for dead-branch elimination</p></li>
+<li><p><strong>Global pointer null states</strong>: cross-file <code class="docutils literal notranslate"><span class="pre">extern</span></code> pointer tracking (EXP34-C)</p></li>
+</ul>
+</section>
+<section id="using-a-compile-database">
+<h2>Using a Compile Database<a class="headerlink" href="#using-a-compile-database" title="Link to this heading"></a></h2>
+<p>aurora-lint needs no build system: point it at any tree and it works. <code class="docutils literal notranslate"><span class="pre">--compile-commands</span></code>
+is a purely optional upgrade for projects that <em>already</em> produce a
+<code class="docutils literal notranslate"><span class="pre">compile_commands.json</span></code> (CMake’s <code class="docutils literal notranslate"><span class="pre">CMAKE_EXPORT_COMPILE_COMMANDS</span></code>, <code class="docutils literal notranslate"><span class="pre">bear</span></code>,
+<code class="docutils literal notranslate"><span class="pre">compiledb</span></code>). Without the flag, nothing changes.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">--</span><span class="nb">compile</span><span class="o">-</span><span class="n">commands</span> <span class="n">build</span><span class="o">/</span><span class="n">compile_commands</span><span class="o">.</span><span class="n">json</span>
+</pre></div>
+</div>
+<p>aurora-lint does <strong>not</strong> run a preprocessor. It reads three things out of the database
+and feeds them to the pre-scan that already exists:</p>
+<ul class="simple">
+<li><p><strong>Include search paths</strong> (<code class="docutils literal notranslate"><span class="pre">-I</span></code>, <code class="docutils literal notranslate"><span class="pre">-isystem</span></code>, <code class="docutils literal notranslate"><span class="pre">-iquote</span></code>, <code class="docutils literal notranslate"><span class="pre">-idirafter</span></code>,
+resolved against each entry’s <code class="docutils literal notranslate"><span class="pre">directory</span></code>) are appended to any explicit
+<code class="docutils literal notranslate"><span class="pre">-I</span></code> you passed. This lets <code class="docutils literal notranslate"><span class="pre">#include</span></code> resolution reach headers the
+sibling-header scan would never find — notably angle-bracket includes of
+vendored or out-of-tree headers — so their macros, prototypes and struct
+types join the cross-file context.</p></li>
+<li><p><strong>Command-line macros</strong> (<code class="docutils literal notranslate"><span class="pre">-D</span></code>, minus anything <code class="docutils literal notranslate"><span class="pre">-U</span></code>’d) are parsed as real
+<code class="docutils literal notranslate"><span class="pre">#define</span></code> directives, so command-line constants fold and function-like
+<code class="docutils literal notranslate"><span class="pre">-D</span></code> macros become expandable exactly like ones written in a header.</p></li>
+<li><p><strong>The build’s macro state</strong> (the same <code class="docutils literal notranslate"><span class="pre">-D</span></code>/<code class="docutils literal notranslate"><span class="pre">-U</span></code> flags, read for
+definedness rather than for value) tells aurora-lint which <code class="docutils literal notranslate"><span class="pre">#if</span></code> arms that
+build compiles. Without a database, a file that defines one name under
+several mutually exclusive conditions is arbitrated by a POSIX platform guess
+plus first-wins; with one, the arms your build cannot compile are skipped, so
+the definition kept is the one you actually build. A <code class="docutils literal notranslate"><span class="pre">#define</span></code> in real
+source still overrides the flag, as it does for macro values.</p></li>
+</ul>
+<p>This last one only affects <strong>which definition a name resolves to</strong>. It never
+decides whether a finding is reported: a violation inside an <code class="docutils literal notranslate"><span class="pre">#ifdef</span></code> arm your
+build does not select is still reported, because some other build selects it
+(see <code class="docutils literal notranslate"><span class="pre">docs/adr/0010</span></code>). There is deliberately no flag that suppresses findings
+by configuration.</p>
+<p>One consequence worth knowing, which aurora-lint warns about: the declaration
+applies to the whole scan, while a database describes the translation units the
+build compiles. If you scan sources that build does <em>not</em> compile — another
+platform’s backend, a feature the configuration disables — they are still
+analysed, but their macros resolve under a configuration that excludes them, so
+a name defined only in an arm that configuration rules out may not resolve at
+all. The warning names how many scanned <code class="docutils literal notranslate"><span class="pre">.c</span></code> files the database does not
+cover. Scanning the sources your database compiles avoids it.</p>
+<p>Because the parse tree is untouched, every finding keeps the source location it
+always had, and the <code class="docutils literal notranslate"><span class="pre">PRE*</span></code> rules still audit macros as written.</p>
+<p><strong>Databases from an MSVC build.</strong> An entry compiled by <code class="docutils literal notranslate"><span class="pre">cl</span></code>, <code class="docutils literal notranslate"><span class="pre">clang-cl</span></code> or
+a driver given <code class="docutils literal notranslate"><span class="pre">--driver-mode=cl</span></code> is read with cl’s own syntax. Options may be
+spelled with <code class="docutils literal notranslate"><span class="pre">/</span></code> or <code class="docutils literal notranslate"><span class="pre">-</span></code>: <code class="docutils literal notranslate"><span class="pre">/D</span></code> (including cl’s <code class="docutils literal notranslate"><span class="pre">NAME#VALUE</span></code> form),
+<code class="docutils literal notranslate"><span class="pre">/U</span></code>, <code class="docutils literal notranslate"><span class="pre">/I</span></code>, <code class="docutils literal notranslate"><span class="pre">/imsvc</span></code> and <code class="docutils literal notranslate"><span class="pre">/external:I</span></code>, each attached or as a separate
+argument. <code class="docutils literal notranslate"><span class="pre">/FI</span></code> forced includes are resolved before any header the sources
+include, in command-line order. Arguments after <code class="docutils literal notranslate"><span class="pre">/link</span></code> or clang-cl’s <code class="docutils literal notranslate"><span class="pre">--</span></code>
+are ignored, as are cl options that do not affect headers or macros. The driver
+is recognised behind a compiler launcher (<code class="docutils literal notranslate"><span class="pre">sccache</span></code>, <code class="docutils literal notranslate"><span class="pre">ccache</span></code>, …). A
+<code class="docutils literal notranslate"><span class="pre">command</span></code> string written on Windows is split with the MSVC C runtime’s
+quoting rules, and <code class="docutils literal notranslate"><span class="pre">&#64;file</span></code> response files (UTF-8 or UTF-16) are expanded for
+any driver. For every other driver the <code class="docutils literal notranslate"><span class="pre">/</span></code> spellings are not
+read, so a POSIX path such as <code class="docutils literal notranslate"><span class="pre">/Users/me/a.c</span></code> is never taken for <code class="docutils literal notranslate"><span class="pre">/U</span></code>.</p>
+<p>cl finds the Windows SDK and CRT headers through the <code class="docutils literal notranslate"><span class="pre">INCLUDE</span></code> environment
+variable, not through flags, so a cl database lists none of them. Pass those
+directories with <code class="docutils literal notranslate"><span class="pre">-I</span></code>. The database also keeps the Windows paths it was
+written with: scanning from WSL or another host needs them remapped, and
+aurora-lint warns when its include paths do not exist.</p>
+<p>Windows looks file names up ignoring case, so a Windows project can spell a
+header <code class="docutils literal notranslate"><span class="pre">&lt;Shlobj.h&gt;</span></code> or <code class="docutils literal notranslate"><span class="pre">COMMCTRL.H</span></code> when the file on disk is <code class="docutils literal notranslate"><span class="pre">ShlObj.h</span></code> or
+<code class="docutils literal notranslate"><span class="pre">CommCtrl.h</span></code>. A cl database therefore makes <code class="docutils literal notranslate"><span class="pre">#include</span></code> matching
+case-insensitive, one path component at a time; <code class="docutils literal notranslate"><span class="pre">--include-names</span> <span class="pre">exact</span></code> (or
+<code class="docutils literal notranslate"><span class="pre">include_names</span></code> in the manifest, see <a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a>) turns that off, and
+<code class="docutils literal notranslate"><span class="pre">--include-names</span> <span class="pre">case-insensitive</span></code> turns it on without a database. An entry
+whose name matches exactly still wins. When a directory holds several different
+files that differ only in case, the first in byte order is read. Each header
+found only by ignoring case, and each such ambiguity, is listed by
+<code class="docutils literal notranslate"><span class="pre">--report-macro-gaps</span></code>, so a spelling that only a Windows build tolerates is
+visible. Two things are still matched exactly: a <code class="docutils literal notranslate"><span class="pre">/FI</span></code> name, which is looked
+up beside the database entry only when it is spelled as on disk, and the file
+names in <code class="docutils literal notranslate"><span class="pre">#include</span> <span class="pre">&quot;x.c&quot;</span></code> that decide which <code class="docutils literal notranslate"><span class="pre">.c</span></code> files are compiled into
+another. A <code class="docutils literal notranslate"><span class="pre">--save-prescan</span></code> cache records the rule it was built under, and
+<code class="docutils literal notranslate"><span class="pre">--load-prescan</span></code> refuses it under the other one.</p>
+</section>
+<section id="reaching-the-compiler-s-own-headers">
+<h2>Reaching the Compiler’s Own Headers<a class="headerlink" href="#reaching-the-compiler-s-own-headers" title="Link to this heading"></a></h2>
+<p>A compile database lists the flags a build <em>passes</em>, so it can never contain the
+compiler’s built-in search directories — the compiler already knows them.
+<code class="docutils literal notranslate"><span class="pre">--system-includes</span></code> recovers them by asking the compiler itself
+(<code class="docutils literal notranslate"><span class="pre">cc</span> <span class="pre">-E</span> <span class="pre">-Wp,-v</span> <span class="pre">-</span></code>) and appending what it reports, lowest priority, after
+everything you or the database named:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">--</span><span class="n">system</span><span class="o">-</span><span class="n">includes</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">--</span><span class="nb">compile</span><span class="o">-</span><span class="n">commands</span> <span class="n">build</span><span class="o">/</span><span class="n">compile_commands</span><span class="o">.</span><span class="n">json</span> <span class="o">--</span><span class="n">system</span><span class="o">-</span><span class="n">includes</span>
+</pre></div>
+</div>
+<p>With a compile database, each distinct compiler the database names is asked (so
+a cross-compiled project gets <em>its</em> toolchain’s directories); without one, the
+platform default <code class="docutils literal notranslate"><span class="pre">cc</span></code> is asked. A compiler that cannot be run — a
+cross-compiler absent from the analysis host, say — produces a warning and is
+skipped, never an error.</p>
+<p>It is off by default for two reasons: it spawns a compiler, which the rest of
+the analysis pipeline never does, and it is worth being able to measure its
+effect separately from the database’s.</p>
+<p>What it actually reaches, on a typical Linux host, is the two directories
+nothing else does. <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> is commonly passed by hand already, but the
+multiarch directory (<code class="docutils literal notranslate"><span class="pre">/usr/include/x86_64-linux-gnu</span></code>) holds glibc’s
+<code class="docutils literal notranslate"><span class="pre">bits/*.h</span></code>, so a <code class="docutils literal notranslate"><span class="pre">&lt;bits/...&gt;</span></code> include from an otherwise-reachable header
+dead-ends without it; and the gcc internal directory is where <code class="docutils literal notranslate"><span class="pre">stdarg.h</span></code>,
+<code class="docutils literal notranslate"><span class="pre">stddef.h</span></code> and <code class="docutils literal notranslate"><span class="pre">stdbool.h</span></code> <em>actually</em> live, since glibc does not ship them.
+Without the flag, <code class="docutils literal notranslate"><span class="pre">NULL</span></code>, <code class="docutils literal notranslate"><span class="pre">offsetof</span></code>, <code class="docutils literal notranslate"><span class="pre">va_list</span></code> and <code class="docutils literal notranslate"><span class="pre">bool</span></code>/<code class="docutils literal notranslate"><span class="pre">true</span></code>/
+<code class="docutils literal notranslate"><span class="pre">false</span></code> are never harvested from their real definitions.</p>
+<p>One caveat worth knowing: <code class="docutils literal notranslate"><span class="pre">#include</span></code> resolution lets a later header’s macro
+override an earlier one of the same name, so pointing it at the whole system
+header tree allows a libc macro to win over a project macro that shares its
+name. That is how any <code class="docutils literal notranslate"><span class="pre">-I</span></code> path has always behaved; this flag is simply the
+first thing to aim it at all of <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code>.</p>
+<p>Two properties worth knowing:</p>
+<ul class="simple">
+<li><p><strong>Build flags never override real source.</strong> A <code class="docutils literal notranslate"><span class="pre">-D</span></code> only supplies a macro
+name the scanned tree never defined; a real <code class="docutils literal notranslate"><span class="pre">#define</span></code> always wins.</p></li>
+<li><p><strong>Paths are absolute and host-specific.</strong> A database generated on another
+machine or inside a container names directories that may not exist locally.
+aurora-lint warns when compile-database include paths are missing rather than
+silently resolving nothing.</p></li>
+</ul>
+<p>The compiler’s own built-in system header directories are <em>not</em> in a compile
+database (they are implicit), so headers found only in <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> remain
+out of reach.</p>
+</section>
+<section id="seeing-where-the-engine-is-blind">
+<h2>Seeing Where the Engine Is Blind<a class="headerlink" href="#seeing-where-the-engine-is-blind" title="Link to this heading"></a></h2>
+<p>Everything above widens what the macro-expansion engine can see; nothing above
+tells you what it still cannot. Because aurora-lint runs without a preprocessor,
+the engine makes a handful of silent decisions on every scan — a variadic or
+<code class="docutils literal notranslate"><span class="pre">#</span></code>/<code class="docutils literal notranslate"><span class="pre">##</span></code> macro is skipped, a definition under <code class="docutils literal notranslate"><span class="pre">#ifdef</span> <span class="pre">_WIN32</span></code> is dropped
+under the POSIX profile, the first of two <code class="docutils literal notranslate"><span class="pre">#ifdef</span></code>-selected definitions wins,
+a header on no search path is never opened, a call to a name nothing defines
+stays opaque. Each is the right default; each is also a place a defect can
+hide with no finding saying so. <code class="docutils literal notranslate"><span class="pre">--report-macro-gaps</span></code> prints them:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">I</span> <span class="n">include</span><span class="o">/</span> <span class="o">--</span><span class="n">report</span><span class="o">-</span><span class="n">macro</span><span class="o">-</span><span class="n">gaps</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">I</span> <span class="n">include</span><span class="o">/</span> <span class="o">--</span><span class="n">report</span><span class="o">-</span><span class="n">macro</span><span class="o">-</span><span class="n">gaps</span><span class="o">=</span><span class="n">macro</span><span class="o">-</span><span class="n">gaps</span><span class="o">.</span><span class="n">json</span>
+</pre></div>
+</div>
+<p>The summary comes after the findings, as a per-kind count and up to 25 rows
+per kind; <code class="docutils literal notranslate"><span class="pre">=FILE</span></code> (the <code class="docutils literal notranslate"><span class="pre">=</span></code> is required, so the path is never mistaken for
+the scan target) writes every row as JSON with a <code class="docutils literal notranslate"><span class="pre">kind</span></code> from this list:</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 28.0%" />
+<col style="width: 72.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><code class="docutils literal notranslate"><span class="pre">kind</span></code></p></th>
+<th class="head"><p>What it says</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">variadic-definition</span></code>, <code class="docutils literal notranslate"><span class="pre">paste-definition</span></code>, <code class="docutils literal notranslate"><span class="pre">malformed-definition</span></code></p></td>
+<td><p>A function-like <code class="docutils literal notranslate"><span class="pre">#define</span></code> the collector will never expand, and why.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">assumed-dead-definition</span></code></p></td>
+<td><p>Dropped because its branch never compiles under the configuration the
+scan assumed — the POSIX profile (<code class="docutils literal notranslate"><span class="pre">_MSC_VER</span></code>, <code class="docutils literal notranslate"><span class="pre">_WIN32</span></code>,
+<code class="docutils literal notranslate"><span class="pre">__vxworks</span></code>, …) or a <code class="docutils literal notranslate"><span class="pre">--compile-commands</span></code> declaration. Noise on that
+configuration; the whole story on any other. This is the kind that
+measures how much the one profile decides.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">locally-dead-definition</span></code></p></td>
+<td><p>Dropped because the <em>file itself</em> proves the branch dead: <code class="docutils literal notranslate"><span class="pre">#if</span> <span class="pre">0</span></code>, a
+<code class="docutils literal notranslate"><span class="pre">__cplusplus</span></code> arm built as C, or a macro the file unconditionally
+<code class="docutils literal notranslate"><span class="pre">#define</span></code>s or <code class="docutils literal notranslate"><span class="pre">#undef</span></code>s above the test. No configuration would
+revive it, so this is correct behaviour rather than a blind spot.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ambiguous-definition</span></code></p></td>
+<td><p>The same name is defined more than once in one file under conditions
+the profile cannot settle (<code class="docutils literal notranslate"><span class="pre">#ifdef</span> <span class="pre">WITH_TLS</span></code>). The first is used; the
+row names the others.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">conflicting-definition</span></code></p></td>
+<td><p>Defined differently in two scanned files — a project <code class="docutils literal notranslate"><span class="pre">config.h</span></code>
+overriding a vendored library’s default, say. Scan order decides which
+one every invocation gets.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unresolved-include</span></code></p></td>
+<td><p>An <code class="docutils literal notranslate"><span class="pre">#include</span></code> that resolved to no file. One row per header
+project-wide; a header the <code class="docutils literal notranslate"><span class="pre">-d</span></code> pre-scan already walked is not
+reported even when no <code class="docutils literal notranslate"><span class="pre">-I</span></code> places it.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unexpandable-invocation</span></code></p></td>
+<td><p>A call to one of the skipped definitions above: known to be a macro,
+known to be opaque.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">arity-mismatch</span></code></p></td>
+<td><p>The call’s argument count differs from the definition held — usually
+the sign that a different <code class="docutils literal notranslate"><span class="pre">#ifdef</span></code> branch is live at this site.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unknown-callee</span></code></p></td>
+<td><p>A call to a name no scanned file defines or declares and that is not a
+C standard-library function. <code class="docutils literal notranslate"><span class="pre">ALL_CAPS</span></code> names are almost certainly
+macros from an unscanned header; the rest are prototypes it never saw.</p></td>
+</tr>
+</tbody>
+</table>
+<p>The rows are the engine’s own decisions, not a second opinion, so the report
+cannot disagree with the analysis it describes; and it is built from a
+parse-only pass, so it adds no findings and removes none. In CI the useful
+habit is to keep the JSON as a build artifact and watch the per-kind totals:
+a jump in <code class="docutils literal notranslate"><span class="pre">unknown-callee</span></code> after a dependency bump means a header stopped
+resolving, and <code class="docutils literal notranslate"><span class="pre">conflicting-definition</span></code> rows are worth reading once, since
+each one is a name whose meaning depends on scan order.</p>
+</section>
+<section id="deallocators-the-scan-cannot-see">
+<h2>Deallocators the Scan Cannot See<a class="headerlink" href="#deallocators-the-scan-cannot-see" title="Link to this heading"></a></h2>
+<p>A call frees its argument only where the scan can show it: <code class="docutils literal notranslate"><span class="pre">free</span></code>, a function
+whose body frees the argument (through any chain of wrappers the scan also
+reads), a macro that expands to such a call, or a deallocator declared with
+<code class="docutils literal notranslate"><span class="pre">--deallocator</span></code> or <code class="docutils literal notranslate"><span class="pre">[environment.deallocators]</span></code> (see <a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a>).
+A callee’s name is never evidence: a library’s <code class="docutils literal notranslate"><span class="pre">SSL_free</span></code> or
+<code class="docutils literal notranslate"><span class="pre">curl_easy_cleanup</span></code> has no body in the scan, so an allocation handed to it is
+reported leaked by MEM31-C, and a use of it afterwards is not a use-after-free.
+<code class="docutils literal notranslate"><span class="pre">--report-deallocator-candidates</span></code> lists the callees worth declaring:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">--</span><span class="n">report</span><span class="o">-</span><span class="n">deallocator</span><span class="o">-</span><span class="n">candidates</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">--</span><span class="n">report</span><span class="o">-</span><span class="n">deallocator</span><span class="o">-</span><span class="n">candidates</span><span class="o">=</span><span class="n">candidates</span><span class="o">.</span><span class="n">json</span>
+</pre></div>
+</div>
+<p>A callee is listed when it is shaped like a deallocator by name (<code class="docutils literal notranslate"><span class="pre">*_free</span></code>,
+<code class="docutils literal notranslate"><span class="pre">destroy_*</span></code>, <code class="docutils literal notranslate"><span class="pre">*_cleanup</span></code>, <code class="docutils literal notranslate"><span class="pre">*_release</span></code>, …), nothing in the scan shows it
+freeing anything, and an allocation handed to it was reported leaked, so that
+declaring it would change that finding. Each row gives the name and the
+1-based argument to declare it with, how many such calls there were, and the
+first one’s file and line. Declare only the ones that really are deallocators:
+the name is why a callee is listed, not proof of what it does. The report never
+changes a finding, and it is not part of the settings, so it does not change
+the settings hash either.</p>
+</section>
+<section id="file-exclusion">
+<h2>File Exclusion<a class="headerlink" href="#file-exclusion" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code> leaves files matching a path glob out of everything: they
+are not scanned, nothing is reported in them, and the cross-file pre-scan does
+not read them, so their definitions (function summaries, macro and alias
+definitions, never-returning functions) do not stand for the ones the rest of
+the code calls. Use it for test harnesses, example programs, checked-in
+amalgamations and build tooling that aren’t part of the shipped product.
+Repeatable; each occurrence adds one more glob:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Drop a single generated/amalgamated file</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">--</span><span class="n">exclude</span><span class="o">-</span><span class="nb">all</span> <span class="s1">&#39;**/onelua.c&#39;</span>
+
+<span class="c1"># Drop a whole subtree</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">--</span><span class="n">exclude</span><span class="o">-</span><span class="nb">all</span> <span class="s1">&#39;tests/**&#39;</span> <span class="o">--</span><span class="n">exclude</span><span class="o">-</span><span class="nb">all</span> <span class="s1">&#39;examples/**&#39;</span>
+
+<span class="c1"># Combine multiple globs to scope down to just the shipped product</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> \
+    <span class="o">--</span><span class="n">exclude</span><span class="o">-</span><span class="nb">all</span> <span class="s1">&#39;tests/**&#39;</span> <span class="o">--</span><span class="n">exclude</span><span class="o">-</span><span class="nb">all</span> <span class="s1">&#39;docs/**&#39;</span> <span class="o">--</span><span class="n">exclude</span><span class="o">-</span><span class="nb">all</span> <span class="s1">&#39;scripts/**&#39;</span>
+</pre></div>
+</div>
+<p>Globs are matched against each file’s path relative to the scan root (same
+semantics as a project’s own <code class="docutils literal notranslate"><span class="pre">toolchain.toml</span></code> <code class="docutils literal notranslate"><span class="pre">[ignore].paths</span></code>, which are
+merged in automatically if present, as <code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> globs: nothing is
+reported in them, but they are still read for cross-file facts, as they always
+were). A pattern like <code class="docutils literal notranslate"><span class="pre">tests/**</span></code>
+matches anywhere a <code class="docutils literal notranslate"><span class="pre">tests</span></code> directory sits at that depth; use a leading
+<code class="docutils literal notranslate"><span class="pre">**/</span></code> (e.g. <code class="docutils literal notranslate"><span class="pre">**/ltests.c</span></code>) to match a filename regardless of its
+directory.</p>
+<p>Two options leave a file out of only one half:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> reports nothing in matching files but still reads them
+for cross-file facts. Use it for vendored code the product links and ships:
+its definitions are the ones your calls reach, but its findings are not
+yours to fix.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--prescan-exclude</span></code> scans and reports matching files but does not read
+them for cross-file facts. Use it for stubs, fuzz harnesses and
+alternate-platform files that do not link into the product under analysis,
+whose definitions would otherwise count as another build of the functions
+the product calls.</p></li>
+</ul>
+<p>A header in an excluded tree that a scanned file <code class="docutils literal notranslate"><span class="pre">#include</span></code>s is still read
+through <code class="docutils literal notranslate"><span class="pre">-I</span></code> include resolution: it is part of that file’s translation unit.
+A manifest’s <code class="docutils literal notranslate"><span class="pre">[scope]</span></code> table takes the same three lists
+(<code class="docutils literal notranslate"><span class="pre">exclude_all</span></code>, <code class="docutils literal notranslate"><span class="pre">report_exclude</span></code>, <code class="docutils literal notranslate"><span class="pre">prescan_exclude</span></code>) and adds to the
+command line’s. A prescan cache (<code class="docutils literal notranslate"><span class="pre">--save-prescan</span></code>) records which files it
+was built without, and <code class="docutils literal notranslate"><span class="pre">--load-prescan</span></code> refuses it under a different
+<code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code> or <code class="docutils literal notranslate"><span class="pre">--prescan-exclude</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--exclude</span></code> is deprecated. It keeps the meaning it has always had, which is
+<code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code>’s: nothing is reported in matching files, but they are
+still read for cross-file facts. So an existing command line gives the same
+findings as before; it also prints a one-line warning. Replace it with
+<code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> to keep that behaviour, or with <code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code> to
+leave the files out of the cross-file facts too.</p>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p><code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code> and <code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> (and the deprecated
+<code class="docutils literal notranslate"><span class="pre">--exclude</span></code>) are the only flags that remove files from the scan; a
+manifest’s <code class="docutils literal notranslate"><span class="pre">[scope]</span></code> table and <code class="docutils literal notranslate"><span class="pre">toolchain.toml</span></code>’s <code class="docutils literal notranslate"><span class="pre">[ignore].paths</span></code>
+do the same from a file.
+<code class="docutils literal notranslate"><span class="pre">-d</span></code>/<code class="docutils literal notranslate"><span class="pre">--directories</span></code> does the opposite: it <em>adds</em> directories to
+pre-scan for cross-file context (function summaries, macro aliases, …)
+and has no effect on which files are actually analyzed and reported on.
+Passing <code class="docutils literal notranslate"><span class="pre">-d</span> <span class="pre">some/dir</span></code> does <strong>not</strong> restrict analysis to <code class="docutils literal notranslate"><span class="pre">some/dir</span></code> —
+if you want a scan restricted to a subset of a larger tree, either point
+the <code class="docutils literal notranslate"><span class="pre">PATH</span></code> argument at that subdirectory or exclude everything else
+with <code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code>.</p>
+</div>
+</section>
+<section id="export-formats">
+<h2>Export Formats<a class="headerlink" href="#export-formats" title="Link to this heading"></a></h2>
+<p>aurora-lint determines the export format from the file extension:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Extension</p></th>
+<th class="head"><p>Format</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">.json</span></code></p></td>
+<td><p>JSON array of violation objects</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">.sarif</span></code></p></td>
+<td><p><a class="reference external" href="https://sarifweb.azurewebsites.net/">SARIF 2.1.0</a> for IDE and CI integration</p></td>
+</tr>
+</tbody>
+</table>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">json</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span>
+</pre></div>
+</div>
+<p>SARIF is the full report. Each result carries its source line
+(<code class="docutils literal notranslate"><span class="pre">region.snippet</span></code>), each rule its CERT description, and each scanned file its
+SHA-256 (<code class="docutils literal notranslate"><span class="pre">artifacts[].hashes</span></code>), so the report stands on its own without the
+scanned tree. Both formats name aurora-lint as their producer: SARIF in
+<code class="docutils literal notranslate"><span class="pre">tool.driver</span></code>, JSON in a <code class="docutils literal notranslate"><span class="pre">tool</span></code> key on each object.</p>
+<p>For a spreadsheet, convert the SARIF report (<code class="docutils literal notranslate"><span class="pre">.xlsx</span></code> needs <code class="docutils literal notranslate"><span class="pre">openpyxl</span></code>):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">python</span> <span class="n">scripts</span><span class="o">/</span><span class="n">sarif_convert</span><span class="o">.</span><span class="n">py</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span> <span class="n">findings</span><span class="o">.</span><span class="n">csv</span>
+<span class="n">python</span> <span class="n">scripts</span><span class="o">/</span><span class="n">sarif_convert</span><span class="o">.</span><span class="n">py</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span> <span class="n">findings</span><span class="o">.</span><span class="n">xlsx</span>
+</pre></div>
+</div>
+<p>Each row is one active finding (add <code class="docutils literal notranslate"><span class="pre">--include-suppressed</span></code> for the rest),
+laid out as Title, Description, Work Item Type, State, Severity, Priority and
+Tags, the layout aurora-lint’s built-in CSV/XLSX export used before it was
+removed.</p>
+<p>JSON export produces an array of violation objects, each containing:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;tool&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aurora-lint&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;src/main.c&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;line&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">42</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;column&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;rule_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ARR30-C&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;severity&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;High&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;message&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Do not form or use out-of-bounds pointers or array subscripts&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;suggestion&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Validate array index before use&quot;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="severity-filtering">
+<h2>Severity Filtering<a class="headerlink" href="#severity-filtering" title="Link to this heading"></a></h2>
+<p>Control which violations are reported and which trigger failure:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Only report Medium and above (suppress Low-severity noise)</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="nb">min</span><span class="o">-</span><span class="n">severity</span> <span class="n">Medium</span>
+
+<span class="c1"># Fail only on High or Critical (gate CI but still report Medium)</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="nb">min</span><span class="o">-</span><span class="n">severity</span> <span class="n">Medium</span> <span class="o">--</span><span class="n">fail</span><span class="o">-</span><span class="n">on</span><span class="o">-</span><span class="n">severity</span> <span class="n">High</span>
+
+<span class="c1"># Strict mode: fail on any violation</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="n">fail</span><span class="o">-</span><span class="n">on</span><span class="o">-</span><span class="n">violation</span>
+</pre></div>
+</div>
+</section>
+<section id="rule-filtering">
+<h2>Rule Filtering<a class="headerlink" href="#rule-filtering" title="Link to this heading"></a></h2>
+<p>Restrict analysis to specific rules:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Only check memory and array rules</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="n">rules</span> <span class="n">MEM30</span><span class="o">-</span><span class="n">C</span><span class="p">,</span><span class="n">MEM31</span><span class="o">-</span><span class="n">C</span><span class="p">,</span><span class="n">ARR30</span><span class="o">-</span><span class="n">C</span><span class="p">,</span><span class="n">ARR32</span><span class="o">-</span><span class="n">C</span>
+
+<span class="c1"># Combine with severity and export</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="n">rules</span> <span class="n">STR31</span><span class="o">-</span><span class="n">C</span><span class="p">,</span><span class="n">STR32</span><span class="o">-</span><span class="n">C</span> <span class="o">--</span><span class="nb">min</span><span class="o">-</span><span class="n">severity</span> <span class="n">High</span> <span class="o">--</span><span class="n">export</span> <span class="nb">str</span><span class="o">-</span><span class="n">results</span><span class="o">.</span><span class="n">sarif</span>
+</pre></div>
+</div>
+</section>
+<section id="diff-mode">
+<h2>Diff Mode<a class="headerlink" href="#diff-mode" title="Link to this heading"></a></h2>
+<p>Analyze only files modified in the current git working tree (staged + unstaged
+changes vs HEAD):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Only analyze changed C files</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="n">diff</span>
+</pre></div>
+</div>
+<p>This is particularly useful in CI pipelines to provide fast feedback on pull
+requests without scanning the entire codebase.</p>
+</section>
+<section id="project-relevance-detection">
+<h2>Project-Relevance Detection<a class="headerlink" href="#project-relevance-detection" title="Link to this heading"></a></h2>
+<p>For a codebase with no tailored manifest, <code class="docutils literal notranslate"><span class="pre">--detect-relevance</span></code> scans PATH
+(and any <code class="docutils literal notranslate"><span class="pre">-d</span></code> directories) for evidence of threading (<code class="docutils literal notranslate"><span class="pre">pthread</span></code>,
+<code class="docutils literal notranslate"><span class="pre">&lt;threads.h&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">_Atomic</span></code>) and Windows API usage, then generates a
+manifest with the categorically-inapplicable rule classes disabled
+(<code class="docutils literal notranslate"><span class="pre">CON*</span></code> if no threading evidence, <code class="docutils literal notranslate"><span class="pre">WIN*</span></code> if no Windows API evidence).
+It never runs an analysis itself — pair it with <code class="docutils literal notranslate"><span class="pre">--write-manifest</span></code> to
+save the generated manifest, then pass that manifest to a normal scan via
+<code class="docutils literal notranslate"><span class="pre">-m</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Generate a relevance-gated manifest for a POSIX-only codebase</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="n">detect</span><span class="o">-</span><span class="n">relevance</span> <span class="o">--</span><span class="n">write</span><span class="o">-</span><span class="n">manifest</span> <span class="n">gated</span><span class="o">-</span><span class="n">rules</span><span class="o">.</span><span class="n">toml</span>
+
+<span class="c1"># Use it for the actual scan</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">-</span><span class="n">m</span> <span class="n">gated</span><span class="o">-</span><span class="n">rules</span><span class="o">.</span><span class="n">toml</span>
+</pre></div>
+</div>
+<p>Detection is conservative by design: a rule class is disabled only when no
+evidence of it was found anywhere in the scanned corpus (including
+resolved <code class="docutils literal notranslate"><span class="pre">-I</span></code>/<code class="docutils literal notranslate"><span class="pre">-d</span></code> includes); an unresolved include path leaves the
+affected rules enabled with an <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">unresolved:</span> <span class="pre">...</span></code> comment rather than
+guessing. C11/Annex-K-specific rules are detected and annotated but not
+yet auto-gated (v2 work); see
+<code class="docutils literal notranslate"><span class="pre">docs/design/project-relevance-gating.md</span></code> for the full design and
+current scope. This is unrelated to the <code class="docutils literal notranslate"><span class="pre">conf/realworld/*-rules.toml</span></code>
+manifests used by the benchmark suite, which remain hand-curated and are
+never overwritten by this flag.</p>
+</section>
+<section id="exit-codes">
+<h2>Exit Codes<a class="headerlink" href="#exit-codes" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Code</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
+<td><p>Success (no violations, or none meeting the failure threshold)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
+<td><p>Violations found (when <code class="docutils literal notranslate"><span class="pre">--fail-on-violation</span></code> or <code class="docutils literal notranslate"><span class="pre">--fail-on-severity</span></code> is set)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">2</span></code></p></td>
+<td><p>Analysis error (invalid path, bad manifest, invalid suppression file, parse failure)</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="index.html" class="btn btn-neutral float-left" title="aurora-lint Developer Guide" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="suppression.html" class="btn btn-neutral float-right" title="Suppression System" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025-2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
