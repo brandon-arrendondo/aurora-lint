@@ -183,7 +183,10 @@ pub fn find_allocation_size(ptr_name: &str, preceding_text: &str) -> Option<usiz
     // For realloc: realloc(ptr, N * sizeof(...))
     let after_call = &preceding_text[pos..];
     if let Some(paren_start) = after_call.find('(') {
-        if let Some(paren_end) = after_call.find(')') {
+        // Search from the '(' so a ')' before it (one inside `ptr_name`) cannot
+        // make the slice start past its end.
+        if let Some(close) = after_call[paren_start + 1..].find(')') {
+            let paren_end = paren_start + 1 + close;
             let mut args = &after_call[paren_start + 1..paren_end];
 
             // For realloc, skip the first argument (the pointer)
@@ -213,6 +216,14 @@ pub fn find_allocation_size(ptr_name: &str, preceding_text: &str) -> Option<usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_find_allocation_size_close_paren_in_name() {
+        // A ')' before the call's '(' used to make the argument slice's start
+        // exceed its end and panic.
+        let code = "p) = malloc(10 * sizeof(int));";
+        assert_eq!(find_allocation_size("p)", code), Some(10));
+    }
 
     #[test]
     fn test_find_element_size() {

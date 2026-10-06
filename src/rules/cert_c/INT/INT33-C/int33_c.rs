@@ -170,8 +170,10 @@ impl Int33C {
 
                             // Find which parameter is the divisor
                             // Look for pattern like (a) / (b) - divisor is typically the second
-                            if let Some(params_end) = name_part.find(')') {
-                                let params = &name_part[paren_pos + 1..params_end];
+                            // Search from the '(' so a ')' before it (a malformed
+                            // `#define`) cannot make the slice start past its end.
+                            if let Some(params_len) = name_part[paren_pos + 1..].find(')') {
+                                let params = &name_part[paren_pos + 1..paren_pos + 1 + params_len];
                                 let param_list: Vec<&str> =
                                     params.split(',').map(|s| s.trim()).collect();
 
