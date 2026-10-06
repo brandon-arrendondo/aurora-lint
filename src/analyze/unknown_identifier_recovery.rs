@@ -412,6 +412,7 @@ pub fn parse_with_recovery(
     let mut tree = parser.parse(&text, None)?;
 
     for _ in 0..MAX_ITERATIONS {
+        crate::analyze::containment::checkpoint();
         if !tree.root_node().has_error() {
             break;
         }

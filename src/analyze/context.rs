@@ -89,6 +89,14 @@ impl IncludeClosure {
 /// context (`resolve_includes`, the compile-database merge).
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProjectContext {
+    /// Files whose prescan crashed or ran out of budget
+    /// (`containment::Stage::Prescan`): their cross-file facts are missing,
+    /// so findings anywhere may differ from a complete scan's. Never
+    /// serialized -- a context with failures is not saved as a cache at
+    /// all (`analyze::load_project_context`), so no later scan can inherit
+    /// the gap silently.
+    #[serde(skip)]
+    pub prescan_failures: Vec<crate::analyze::containment::ScanFailure>,
     /// The policy and environment settings this run analyzes under.
     ///
     /// Never serialized: a prescan records facts about the code (which

@@ -40,6 +40,7 @@ from bench.config import (
 )
 from bench.config import opam_wrap as _opam_wrap
 from bench.db import BenchDB
+from bench.incomplete import EXIT_INCOMPLETE, parse_failures, summary
 
 RESULTS_BASE = PROJECT_DIR / "results" / "realworld"
 SQC_BIN = PROJECT_DIR / "target" / "release" / "aurora-lint"
@@ -1741,7 +1742,18 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
         # finding count is a floor, and the number is about to be quoted.
         pct = coverage.get("entries_pct", coverage.get("tus_pct"))
         note = f", PARTIAL {pct}%" if pct is not None else ", PARTIAL"
-    print(f"{'ok' if ok else 'FAILED'} ({duration}s, {parsed.get('total', 0)} findings{note})"
+    status = "ok" if ok else "FAILED"
+    if tool == "sqc" and proc.returncode == EXIT_INCOMPLETE:
+        # The scan finished but some unit of work did not (ADR-0017). Still
+        # not ok: an incomplete scan is never scored, since a crashed rule
+        # would read as a rule that chose not to report. But the export
+        # exists, and what was missing goes in the sidecar so a queued run
+        # carries it to benchmarking_db without anyone reading the log.
+        failures = parse_failures(log_path.read_text(errors="replace"))
+        meta["scan_failures"] = failures
+        (version_dir / f"{run_id}.meta.json").write_text(json.dumps(meta))
+        status = summary(failures)
+    print(f"{status} ({duration}s, {parsed.get('total', 0)} findings{note})"
           + (f" -- {parsed['error']}" if parsed.get("error") else ""))
 
     return {

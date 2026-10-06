@@ -1708,7 +1708,9 @@ fn run_null_state_worklist(
     while let Some(block_id) = worklist.pop_front() {
         in_worklist.remove(&block_id);
         iterations += 1;
+        crate::analyze::containment::checkpoint();
         if iterations > MAX_ITERATIONS * cfg.blocks.len() {
+            crate::analyze::containment::cap_reached("the null-state worklist");
             break;
         }
 

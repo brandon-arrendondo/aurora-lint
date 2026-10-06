@@ -100,9 +100,13 @@ pub struct AnalysisResults {
     /// Where the macro-expansion engine was blind during this scan; built
     /// only when `report_macro_gaps` was requested.
     pub macro_gaps: Option<macro_gaps::MacroGapReport>,
-    /// Panics contained during the scan (`containment`), sorted. Non-empty
-    /// means the findings above are real but incomplete.
+    /// Units of work that crashed or ran out of budget (`containment`),
+    /// sorted. Non-empty means the findings above are real but incomplete.
     pub failures: Vec<containment::ScanFailure>,
+    /// Rules abandoned for the scan after failing on
+    /// [`containment::ABANDON_AFTER_FILES`] files; none of their findings are
+    /// in `violations` or `suppressed`.
+    pub abandoned_rules: Vec<String>,
 }
 
 /// Which files a scan leaves out, as path globs relative to the scanned root
@@ -244,6 +248,12 @@ pub fn analyze_project(
     let c_files = collect_c_files(project_source, diff_only, &scope.report_globs())?;
     let total_files = c_files.len();
 
+    // What did not complete (`containment`, ADR-0017): the prescan's failures
+    // first, then the per-file ones. One escalation record per scan, shared
+    // by every worker.
+    let mut failures = context.prescan_failures.clone();
+    let escalation = containment::Escalation::new();
+
     // A declaration is per scan; a database is per translation unit. Sources
     // the build does not compile are still scanned (ADR-0010 Decision 1) but
     // get their names resolved under a configuration that excludes them, which
@@ -328,6 +338,7 @@ pub fn analyze_project(
                         file_context,
                         needs_vra,
                         &mut file_supp,
+                        &escalation,
                         None,
                         0,
                         total_files,
@@ -344,13 +355,13 @@ pub fn analyze_project(
                 .collect()
         });
 
-        let mut failures = Vec::new();
         for (v, s, f) in results {
             violations.extend(v);
             suppressed.extend(s);
             failures.extend(f);
         }
 
+        let abandoned_rules = withhold_abandoned(&escalation, &mut violations, &mut suppressed);
         sort_for_deterministic_output(&mut violations, &mut suppressed);
         failures.sort();
 
@@ -363,6 +374,7 @@ pub fn analyze_project(
             suppressed,
             macro_gaps,
             failures,
+            abandoned_rules,
         });
     }
 
@@ -370,7 +382,6 @@ pub fn analyze_project(
     // Fresh registry per file to prevent cross-file state leakage from RefCell fields
     let mut parser = CParser::new()?;
     parser.set_repair_macros(std::sync::Arc::clone(&repair_macros));
-    let mut failures = Vec::new();
 
     for (file_idx, file_path) in c_files.iter().enumerate() {
         // Check for cancellation before processing each file
@@ -395,6 +406,7 @@ pub fn analyze_project(
             file_context,
             needs_vra,
             &mut suppression_manager,
+            &escalation,
             progress,
             file_idx,
             total_files,
@@ -413,6 +425,7 @@ pub fn analyze_project(
         failures.extend(file_failures);
     }
 
+    let abandoned_rules = withhold_abandoned(&escalation, &mut violations, &mut suppressed);
     sort_for_deterministic_output(&mut violations, &mut suppressed);
     failures.sort();
 
@@ -426,7 +439,24 @@ pub fn analyze_project(
         suppressed,
         macro_gaps,
         failures,
+        abandoned_rules,
     })
+}
+
+/// Drop every finding of a rule the scan abandoned (`containment`), active
+/// and suppressed alike, and return those rules. All of them, not only the
+/// ones after the decision, so parallel scheduling cannot change the output.
+fn withhold_abandoned(
+    escalation: &containment::Escalation,
+    violations: &mut Vec<RuleViolation>,
+    suppressed: &mut Vec<SuppressedViolation>,
+) -> Vec<String> {
+    let abandoned = escalation.abandoned_rules();
+    if !abandoned.is_empty() {
+        violations.retain(|v| !abandoned.contains(&v.rule_id));
+        suppressed.retain(|s| !abandoned.contains(&s.violation.rule_id));
+    }
+    abandoned
 }
 
 /// Load or compute the cross-file project context: prescan cache, directory
@@ -596,8 +626,17 @@ fn load_project_context(
         db.merge_defines_into(&mut context, data_model)?;
     }
 
-    // Save prescan cache if requested (after prescan + include resolution)
-    if let Some(cache_path) = save_prescan {
+    // Save prescan cache if requested (after prescan + include resolution).
+    // Not when the prescan is incomplete: a later scan loading the cache
+    // would inherit the missing facts without knowing (ADR-0017). This scan
+    // reports the failures and exits 3; the cache simply does not exist.
+    if let Some(cache_path) = save_prescan.filter(|_| !context.prescan_failures.is_empty()) {
+        eprintln!(
+            "Warning: not saving the prescan cache to {cache_path}: the prescan of {} file(s) \
+             did not complete",
+            context.prescan_failures.len()
+        );
+    } else if let Some(cache_path) = save_prescan {
         context.save_to_file(std::path::Path::new(cache_path))?;
         eprintln!(
             "Saved prescan cache ({} functions, {} summaries) to: {}",
@@ -860,6 +899,7 @@ fn analyze_one_file(
     context: &context::ProjectContext,
     needs_vra: bool,
     suppression_manager: &mut SuppressionManager,
+    escalation: &containment::Escalation,
     progress: Option<&dyn ProgressReporter>,
     file_idx: usize,
     total_files: usize,
@@ -935,25 +975,33 @@ fn analyze_one_file(
                 }
                 // Provide CFGs for flow-sensitive rules (e.g. EXP34-C) and
                 // VRA results for integer-range-sensitive ones.
+                // A rule that has failed on enough files is abandoned for
+                // the scan (`containment::Escalation`).
+                if escalation.abandoned(rule_id) {
+                    continue;
+                }
                 analysis.apply_to(rule);
-                // A panic in one rule costs that rule's findings for this
-                // file, not the scan (`containment`).
+                // A crash or a runaway in one rule costs that rule's findings
+                // for this file, not the scan (`containment`, ADR-0017).
                 let rollback = deallocator_candidates::pending_len();
-                let mut rule_violations =
-                    match containment::contain(|| rule.check(&root_node, &source)) {
-                        Ok(found) => found,
-                        Err((message, location)) => {
-                            deallocator_candidates::truncate_pending(rollback);
-                            file_failures.push(containment::ScanFailure {
-                                stage: containment::Stage::Rule,
-                                file: file_path.to_string(),
-                                rule_id: Some(rule_id.to_string()),
-                                message,
-                                location,
-                            });
-                            continue;
-                        }
-                    };
+                let label = format!("{rule_id} on {file_path}");
+                let mut rule_violations = match containment::contain(&label, || {
+                    test_failure_hook(rule_id);
+                    rule.check(&root_node, &source)
+                }) {
+                    Ok(found) => found,
+                    Err(failure) => {
+                        deallocator_candidates::truncate_pending(rollback);
+                        escalation.record(rule_id, file_path);
+                        file_failures.push(containment::ScanFailure::new(
+                            containment::Stage::Rule,
+                            file_path,
+                            Some(rule_id),
+                            failure,
+                        ));
+                        continue;
+                    }
+                };
 
                 // Set file path and severity on all violations
                 for v in &mut rule_violations {
@@ -998,6 +1046,7 @@ fn analyze_one_file_contained(
     context: &context::ProjectContext,
     needs_vra: bool,
     suppression_manager: &mut SuppressionManager,
+    escalation: &containment::Escalation,
     progress: Option<&dyn ProgressReporter>,
     file_idx: usize,
     total_files: usize,
@@ -1008,7 +1057,7 @@ fn analyze_one_file_contained(
     Vec<containment::ScanFailure>,
 ) {
     let rollback = deallocator_candidates::pending_len();
-    containment::contain(|| {
+    containment::contain(file_path, || {
         analyze_one_file(
             file_path,
             parser,
@@ -1017,24 +1066,47 @@ fn analyze_one_file_contained(
             context,
             needs_vra,
             suppression_manager,
+            escalation,
             progress,
             file_idx,
             total_files,
             per_rule_progress,
         )
     })
-    .unwrap_or_else(|(message, location)| {
+    .unwrap_or_else(|failure| {
         deallocator_candidates::truncate_pending(rollback);
-        let failure = containment::ScanFailure {
-            stage: containment::Stage::File,
-            file: file_path.to_string(),
-            rule_id: None,
-            message,
-            location,
-        };
+        let failure =
+            containment::ScanFailure::new(containment::Stage::File, file_path, None, failure);
         (Vec::new(), Vec::new(), vec![failure])
     })
 }
+
+/// Test hook, debug builds only: `AURORA_LINT_TEST_FAIL=RULE:panic` makes
+/// RULE's check panic, and `RULE:spin` makes it loop through checkpoints
+/// until its step budget stops it; `prescan:panic` does the same to each
+/// file's prescan. How the CLI tests exercise containment without a buggy
+/// rule to hand.
+#[cfg(debug_assertions)]
+pub(crate) fn test_failure_hook(rule_id: &str) {
+    let Ok(spec) = std::env::var("AURORA_LINT_TEST_FAIL") else {
+        return;
+    };
+    for item in spec.split(',') {
+        match item.split_once(':') {
+            Some((rule, "panic")) if rule == rule_id => {
+                panic!("AURORA_LINT_TEST_FAIL panic in {rule_id}")
+            }
+            Some((rule, "spin")) if rule == rule_id => loop {
+                containment::checkpoint();
+            },
+            _ => {}
+        }
+    }
+}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+pub(crate) fn test_failure_hook(_rule_id: &str) {}
 
 /// Print a suppression-comment snippet for `spec` (`FILE:LINE:RULE`), for a
 /// user to paste inline rather than hand-writing the comment syntax.
@@ -1541,6 +1613,7 @@ mod tests {
             suppressed: vec![],
             macro_gaps: None,
             failures: vec![],
+            abandoned_rules: vec![],
         };
         assert!(results.violations.is_empty());
         assert!(results.suppressed.is_empty());

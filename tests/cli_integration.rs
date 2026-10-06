@@ -5135,3 +5135,207 @@ fn int08_c_a_32_bit_unsigned_top_is_the_true_upper_bound() {
         messages[0]
     );
 }
+
+// ── Graceful failure: crashes and bounds (ADR-0017) ─────────────────────────
+//
+// `AURORA_LINT_TEST_FAIL` is a debug-build hook (src/analyze/mod.rs): it
+// makes a named rule's check panic or spin, so these tests exercise
+// containment without a buggy rule to hand. The test binary is a debug
+// build.
+
+/// Run aurora-lint with `AURORA_LINT_TEST_FAIL=spec`.
+fn run_failing(spec: &str, args: &[&str]) -> (i32, String, String) {
+    let output = Command::new(aurora_lint_bin())
+        .env("AURORA_LINT_TEST_FAIL", spec)
+        .args(args)
+        .output()
+        .expect("failed to execute aurora-lint");
+    (
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    )
+}
+
+/// A directory holding `n` copies of the MSC04-C violation fixture.
+fn copies_of_violation(n: usize) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let src = std::fs::read_to_string(fixtures().join("violation.c")).unwrap();
+    for i in 0..n {
+        std::fs::write(dir.path().join(format!("v{i}.c")), &src).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn a_crashing_rule_exits_three_ahead_of_fail_on_violation() {
+    let (code, _, stderr) = run_failing(
+        "MSC04-C:panic",
+        &[
+            fixtures().join("violation.c").to_str().unwrap(),
+            "-m",
+            manifest_msc04().to_str().unwrap(),
+            "--fail-on-violation",
+        ],
+    );
+    assert_eq!(code, 3, "{stderr}");
+    assert!(
+        stderr.contains("Error: rule failure (crashed): MSC04-C: "),
+        "{stderr}"
+    );
+    assert!(stderr.contains("scan INCOMPLETE"), "{stderr}");
+    assert!(
+        !stderr.contains("panicked at"),
+        "contained panics are quiet: {stderr}"
+    );
+}
+
+#[test]
+fn a_crash_costs_only_that_rule_and_file() {
+    // MSC04-C crashes; DCL31-C on the same file still reports.
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("m.toml");
+    std::fs::write(
+        &manifest,
+        "[metadata]\nname = \"t\"\nversion = \"1\"\ncert_version = \"2016\"\n\n\
+         [rules.cert_c.MSC04-C]\nenabled = true\n\n[rules.cert_c.DCL31-C]\nenabled = true\n",
+    )
+    .unwrap();
+    let src = dir.path().join("a.c");
+    std::fs::write(&src, "void f(void) { g(); }\n").unwrap();
+    let (code, stdout, stderr) = run_failing(
+        "MSC04-C:panic",
+        &[src.to_str().unwrap(), "-m", manifest.to_str().unwrap()],
+    );
+    assert_eq!(code, 3, "{stderr}");
+    assert!(stdout.contains("DCL31-C"), "{stdout}");
+}
+
+#[test]
+fn a_runaway_rule_stops_at_its_step_limit() {
+    let (code, _, stderr) = run_failing(
+        "MSC04-C:spin",
+        &[
+            fixtures().join("violation.c").to_str().unwrap(),
+            "-m",
+            manifest_msc04().to_str().unwrap(),
+            "--rule-step-limit",
+            "1000",
+        ],
+    );
+    assert_eq!(code, 3, "{stderr}");
+    assert!(
+        stderr.contains("rule failure (step limit): MSC04-C: ")
+            && stderr.contains("stopped after 1000 steps"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("--rule-step-limit / --rule-time-limit"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_rule_failing_on_three_files_is_abandoned_and_withheld() {
+    let dir = copies_of_violation(4);
+    for jobs in ["1", "4"] {
+        let (code, stdout, stderr) = run_failing(
+            "MSC04-C:panic",
+            &[
+                dir.path().to_str().unwrap(),
+                "-m",
+                manifest_msc04().to_str().unwrap(),
+                "-j",
+                jobs,
+            ],
+        );
+        assert_eq!(code, 3, "{stderr}");
+        assert!(
+            stderr.contains("Error: rule abandoned: MSC04-C: failed on 3 or more files"),
+            "jobs {jobs}: {stderr}"
+        );
+        assert!(!stdout.contains("MSC04-C:"), "jobs {jobs}: {stdout}");
+    }
+}
+
+#[test]
+fn two_failures_do_not_abandon_a_rule() {
+    let dir = copies_of_violation(2);
+    let (code, _, stderr) = run_failing(
+        "MSC04-C:panic",
+        &[
+            dir.path().to_str().unwrap(),
+            "-m",
+            manifest_msc04().to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 3, "{stderr}");
+    assert!(!stderr.contains("rule abandoned"), "{stderr}");
+}
+
+#[test]
+fn sarif_records_an_incomplete_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    let sarif = dir.path().join("out.sarif");
+    let (code, _, stderr) = run_failing(
+        "MSC04-C:panic",
+        &[
+            fixtures().join("violation.c").to_str().unwrap(),
+            "-m",
+            manifest_msc04().to_str().unwrap(),
+            "-e",
+            sarif.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 3, "{stderr}");
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&sarif).unwrap()).unwrap();
+    let inv = &doc["runs"][0]["invocations"][0];
+    assert_eq!(inv["executionSuccessful"], false);
+    let n = &inv["toolExecutionNotifications"][0];
+    assert_eq!(n["level"], "error");
+    assert_eq!(n["associatedRule"]["id"], "MSC04-C");
+    assert_eq!(n["descriptor"]["id"], "aurora-lint/incomplete/rule");
+    assert_eq!(n["properties"]["cause"], "crash");
+}
+
+#[test]
+fn sarif_records_a_complete_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    let sarif = dir.path().join("out.sarif");
+    let (code, _, _) = run_aurora_lint(&[
+        fixtures().join("violation.c").to_str().unwrap(),
+        "-m",
+        manifest_msc04().to_str().unwrap(),
+        "-e",
+        sarif.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&sarif).unwrap()).unwrap();
+    let inv = &doc["runs"][0]["invocations"][0];
+    assert_eq!(inv["executionSuccessful"], true);
+    assert_eq!(inv["toolExecutionNotifications"], serde_json::json!([]));
+}
+
+#[test]
+fn an_incomplete_prescan_is_reported_and_not_cached() {
+    let dir = copies_of_violation(2);
+    let cache = dir.path().join("ctx.prescan");
+    let (code, _, stderr) = run_failing(
+        "prescan:panic",
+        &[
+            dir.path().to_str().unwrap(),
+            "-m",
+            manifest_msc04().to_str().unwrap(),
+            "-d",
+            dir.path().to_str().unwrap(),
+            "--save-prescan",
+            cache.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 3, "{stderr}");
+    assert!(stderr.contains("prescan failure (crashed): "), "{stderr}");
+    assert!(stderr.contains("not saving the prescan cache"), "{stderr}");
+    assert!(!cache.exists());
+}

@@ -1474,12 +1474,14 @@ fn analyze_value_ranges_capped(
     while let Some(block_id) = worklist.pop_front() {
         in_worklist.remove(&block_id);
         total_iterations += 1;
+        crate::analyze::containment::checkpoint();
         if total_iterations > max_iterations {
             // Not converged. The ranges reached so far can be narrower than
             // the truth, and a range that is too narrow proves things that
             // are false (a bound check "always passes", a divisor "is never
             // zero"). No ranges is the sound answer: what the block limit
             // above gives a function too large to analyse.
+            crate::analyze::containment::cap_reached("value-range analysis");
             return empty_range_result();
         }
 

@@ -209,7 +209,9 @@ pub fn compute_reaching_definitions(
     while let Some(block_id) = worklist.pop_front() {
         queued.remove(&block_id);
         iterations += 1;
+        crate::analyze::containment::checkpoint();
         if iterations > max_iterations {
+            crate::analyze::containment::cap_reached("reaching definitions");
             break; // Safety limit
         }
 

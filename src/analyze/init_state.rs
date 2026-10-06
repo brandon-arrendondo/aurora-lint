@@ -1990,7 +1990,9 @@ pub fn analyze_init_states_with_statics(
 
     while let Some(block_id) = worklist.pop_front() {
         iterations += 1;
+        crate::analyze::containment::checkpoint();
         if iterations > max_iterations {
+            crate::analyze::containment::cap_reached("the initialization-state worklist");
             break;
         }
 

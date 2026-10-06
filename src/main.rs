@@ -403,6 +403,30 @@ fn run() -> Result<i32> {
                 .value_name("FILE"),
         )
         .arg(
+            Arg::new("rule_step_limit")
+                .long("rule-step-limit")
+                .help(
+                    "Steps one rule's check of one file (or one file's analysis) may take \
+                     before it is stopped and reported, exit 3 (0 = no limit). Deterministic; \
+                     see docs/error-handling.rst",
+                )
+                .value_name("N")
+                .default_value(&*Box::leak(analyze::containment::DEFAULT_STEP_LIMIT.to_string().into_boxed_str()))
+                .value_parser(clap::value_parser!(u64)),
+        )
+        .arg(
+            Arg::new("rule_time_limit")
+                .long("rule-time-limit")
+                .help(
+                    "Seconds one rule's check of one file (or one file's analysis) may run \
+                     before it is stopped and reported, exit 3 (0 = no limit). The last \
+                     resort against a hang; see docs/error-handling.rst",
+                )
+                .value_name("SECS")
+                .default_value(&*Box::leak(analyze::containment::DEFAULT_TIME_LIMIT_SECS.to_string().into_boxed_str()))
+                .value_parser(clap::value_parser!(u64)),
+        )
+        .arg(
             Arg::new("jobs")
                 .long("jobs")
                 .short('j')
@@ -662,6 +686,13 @@ fn run() -> Result<i32> {
     let save_prescan = matches.get_one::<String>("save_prescan");
     let load_prescan = matches.get_one::<String>("load_prescan");
     let jobs = *matches.get_one::<usize>("jobs").unwrap();
+    // The bounds every unit of work runs under (ADR-0017).
+    let nonzero = |v: u64| (v > 0).then_some(v);
+    analyze::containment::set_limits(analyze::containment::Limits {
+        steps: nonzero(*matches.get_one::<u64>("rule_step_limit").unwrap()),
+        time: nonzero(*matches.get_one::<u64>("rule_time_limit").unwrap())
+            .map(std::time::Duration::from_secs),
+    });
     let detect_relevance = matches.get_flag("detect_relevance");
     let write_manifest = matches.get_one::<String>("write_manifest");
 
@@ -868,6 +899,8 @@ fn run() -> Result<i32> {
     let progress_reporter = CLIProgressReporter::new(verbosity);
 
     // Perform analysis with progress reporting
+    // The last resort against a hang no checkpoint sees (ADR-0017).
+    analyze::containment::start_watchdog();
     let results = analyze_project(
         &project_source,
         &manifest,
@@ -885,10 +918,17 @@ fn run() -> Result<i32> {
         &analysis_settings,
     )?;
 
+    if std::env::var_os("AURORA_LINT_STEP_STATS").is_some() {
+        // How far the busiest unit of work is from the step budget
+        // (ADR-0017 records the measurement behind the default).
+        let (steps, label) = analyze::containment::max_steps_seen();
+        eprintln!("step stats: busiest unit of work took {steps} steps: {label}");
+    }
     let mut violations = results.violations;
     let suppressed = results.suppressed;
     let macro_gap_report = results.macro_gaps;
     let failures = results.failures;
+    let abandoned_rules = results.abandoned_rules;
 
     // Post-analysis filtering
     if let Some(ref min_sev) = min_severity {
@@ -918,7 +958,16 @@ fn run() -> Result<i32> {
 
     // Export to file if requested (includes both active and suppressed violations)
     if let Some(export_path) = export_file {
-        export_all_violations(&violations, &suppressed, export_path, &analysis_settings)?;
+        export_all_violations(
+            &violations,
+            &suppressed,
+            export_path,
+            &analysis_settings,
+            export::Incomplete {
+                failures: &failures,
+                abandoned_rules: &abandoned_rules,
+            },
+        )?;
         println!(
             "Exported {} violations ({} suppressed) to: {}",
             violations.len(),
@@ -970,13 +1019,20 @@ fn run() -> Result<i32> {
         }
     }
 
-    // A contained panic (analyze::containment) leaves every other finding in
-    // place, so the output above stands -- but it is incomplete, and that
-    // outranks any findings-based verdict: a CI gate must not read a scan
-    // with a rule missing as a clean one.
-    if !failures.is_empty() {
+    // A crash or a bound (analyze::containment, ADR-0017) leaves every other
+    // finding in place, so the output above stands -- but it is incomplete,
+    // and that outranks any findings-based verdict: a CI gate must not read a
+    // scan with a rule missing as a clean one.
+    if !failures.is_empty() || !abandoned_rules.is_empty() {
         for f in &failures {
             eprintln!("Error: {}", f.render());
+        }
+        for rule in &abandoned_rules {
+            eprintln!(
+                "Error: rule abandoned: {rule}: failed on {} or more files; none of its \
+                 findings are reported",
+                analyze::containment::ABANDON_AFTER_FILES
+            );
         }
         let rules: std::collections::BTreeSet<_> = failures
             .iter()
@@ -984,8 +1040,9 @@ fn run() -> Result<i32> {
             .collect();
         let files: std::collections::BTreeSet<_> = failures.iter().map(|f| &f.file).collect();
         eprintln!(
-            "Error: scan INCOMPLETE: {} internal failure(s) in {} file(s){}; the findings \
-             above omit what failed. This is an aurora-lint bug; please report it.",
+            "Error: scan INCOMPLETE: {} unit(s) of work did not finish in {} file(s){}; the \
+             findings above omit what they would have found. A crash is an aurora-lint \
+             bug; please report it.",
             failures.len(),
             files.len(),
             if rules.is_empty() {
@@ -998,6 +1055,16 @@ fn run() -> Result<i32> {
                 )
             },
         );
+        if failures
+            .iter()
+            .any(|f| f.cause != analyze::containment::Cause::Panic)
+        {
+            eprintln!(
+                "  note: a step or time limit stops work that may only be unusually large; \
+                 --rule-step-limit / --rule-time-limit raise them (0 = no limit). See \
+                 docs/error-handling.rst."
+            );
+        }
         return Ok(analyze::containment::EXIT_INCOMPLETE);
     }
 

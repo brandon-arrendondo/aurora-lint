@@ -2549,6 +2549,7 @@ fn rescan(
     active: &mut HashSet<String>,
     depth: usize,
 ) -> String {
+    crate::analyze::containment::checkpoint();
     if depth >= MAX_EXPAND_DEPTH {
         return text.to_string();
     }

@@ -127,6 +127,65 @@ fn violation_to_sarif_result(
     result
 }
 
+/// The run's one `invocation`: `executionSuccessful` is false when anything
+/// did not complete (ADR-0017), and each failure or abandoned rule is a
+/// `toolExecutionNotifications` entry at level `error` -- where SARIF 2.1.0
+/// puts "the tool hit a problem", and where code-scanning viewers show tool
+/// errors.
+fn invocation(incomplete: super::Incomplete<'_>) -> serde_json::Value {
+    use crate::analyze::containment::{Cause, Stage};
+    let mut notifications: Vec<serde_json::Value> = incomplete
+        .failures
+        .iter()
+        .map(|f| {
+            let stage = match f.stage {
+                Stage::Prescan => "prescan",
+                Stage::File => "file",
+                Stage::Rule => "rule",
+            };
+            let cause = match f.cause {
+                Cause::Panic => "crash",
+                Cause::StepLimit => "step-limit",
+                Cause::TimeLimit => "time-limit",
+                Cause::Cap => "analysis-cap",
+            };
+            let mut n = serde_json::json!({
+                "level": "error",
+                "descriptor": { "id": format!("aurora-lint/incomplete/{stage}") },
+                "message": { "text": f.render() },
+                "locations": [{
+                    "physicalLocation": { "artifactLocation": { "uri": f.file } }
+                }],
+                "properties": {
+                    "stage": stage,
+                    "cause": cause,
+                    "sourceLocation": f.location,
+                }
+            });
+            if let Some(rule) = &f.rule_id {
+                n["associatedRule"] = serde_json::json!({ "id": rule });
+            }
+            n
+        })
+        .collect();
+    notifications.extend(incomplete.abandoned_rules.iter().map(|rule| {
+        serde_json::json!({
+            "level": "error",
+            "descriptor": { "id": "aurora-lint/rule-abandoned" },
+            "message": { "text": format!(
+                "rule {rule} abandoned for the scan after failing on {} or more files; \
+                 all of its findings are withheld",
+                crate::analyze::containment::ABANDON_AFTER_FILES
+            ) },
+            "associatedRule": { "id": rule },
+        })
+    }));
+    serde_json::json!({
+        "executionSuccessful": notifications.is_empty(),
+        "toolExecutionNotifications": notifications,
+    })
+}
+
 /// Write a SARIF 2.1.0 report: active `violations` as plain results and
 /// `suppressed` ones carrying an in-source `suppressions` entry. Each result
 /// holds its source line as `region.snippet`, and each file its SHA-256 in
@@ -139,6 +198,7 @@ pub fn export_all_violations_to_sarif(
     suppressed: &[SuppressedViolation],
     sarif_path: &str,
     settings: &AnalysisSettings,
+    incomplete: super::Incomplete<'_>,
 ) -> Result<()> {
     // Collect unique rules from both active and suppressed violations
     let mut rules_map: BTreeMap<String, &RuleViolation> = BTreeMap::new();
@@ -215,6 +275,7 @@ pub fn export_all_violations_to_sarif(
             },
             "artifacts": artifacts_array,
             "results": results_array,
+            "invocations": [invocation(incomplete)],
             "properties": {
                 "aurora-lint/settings": settings.to_json()
             }

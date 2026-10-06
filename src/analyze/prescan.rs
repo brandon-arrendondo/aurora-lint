@@ -1,5 +1,6 @@
 use super::argument_objects::{self, ObjectFrame};
 use super::const_eval;
+use super::containment::{self, ScanFailure};
 use super::context::ProjectContext;
 use super::dead_regions::DeadRegions;
 use super::function_summary::{self, FunctionSummary};
@@ -624,10 +625,33 @@ fn prescan_file_list(
     }
 
     // Phase 2: parse and collect per-file data in parallel
-    let file_results: Vec<FilePrescanResult> = all_files
-        .par_iter()
-        .map(|(path, is_header)| process_file(path, *is_header, needs_vra, model))
-        .collect();
+    // A file whose prescan crashes or runs out of budget contributes no
+    // facts and one reported failure, instead of ending the scan
+    // (`containment`, ADR-0017).
+    let (file_results, prescan_failures): (Vec<FilePrescanResult>, Vec<Option<ScanFailure>>) =
+        all_files
+            .par_iter()
+            .map(|(path, is_header)| {
+                let label = format!("prescan of {}", path.display());
+                match containment::contain(&label, || {
+                    super::test_failure_hook("prescan");
+                    process_file(path, *is_header, needs_vra, model)
+                }) {
+                    Ok(result) => (result, None),
+                    Err(failure) => (
+                        FilePrescanResult::empty(),
+                        Some(ScanFailure::new(
+                            containment::Stage::Prescan,
+                            &path.to_string_lossy(),
+                            None,
+                            failure,
+                        )),
+                    ),
+                }
+            })
+            .unzip();
+    let mut prescan_failures: Vec<ScanFailure> = prescan_failures.into_iter().flatten().collect();
+    prescan_failures.sort();
 
     // Which names are defined `static` in more than one file, known before
     // the fold because the fold needs it: two internal-linkage definitions of
@@ -1468,6 +1492,7 @@ fn prescan_file_list(
     signal_handlers_registered_elsewhere.retain(|name| known_functions.contains(name));
 
     Ok(ProjectContext {
+        prescan_failures,
         // Set by the caller, which knows the scope.
         settings: Default::default(),
         built_under: Default::default(),

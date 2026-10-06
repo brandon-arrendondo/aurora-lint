@@ -15,6 +15,7 @@ from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
 
+from bench.incomplete import EXIT_INCOMPLETE, parse_failures, summary
 from bench.analyzer import analyze_shard, merge_shards
 from bench.config import (
     DEFAULT_JOBS, DEFAULT_PROFILE, GENERATE_MAP_SCRIPT, JULIET_BASE,
@@ -268,10 +269,14 @@ def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
         duration_s = round(time.monotonic() - start_time, 1)
 
         if proc.returncode != 0:
+            stderr = proc.stderr.decode(errors="replace")
+            if proc.returncode == EXIT_INCOMPLETE:
+                # Not scored (ADR-0017), but say what was missing first.
+                stderr = summary(parse_failures(stderr)) + "\n" + stderr
             return {
                 "cwe_dir_name": cwe_dir_name, "shard_name": shard_dir.name,
                 "status": "failed", "duration_s": duration_s,
-                "error": proc.stderr.decode(errors="replace")[:500],
+                "error": stderr[:500],
             }
 
         violation_count = 0

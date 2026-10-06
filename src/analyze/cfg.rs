@@ -249,6 +249,7 @@ impl CfgBuilder {
     }
 
     fn process_statement<'a>(&mut self, node: &Node<'a>, source: &str) {
+        crate::analyze::containment::checkpoint();
         match node.kind() {
             "if_statement" => self.process_if(node, source),
             "while_statement" => self.process_while(node, source),
