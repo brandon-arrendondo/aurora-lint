@@ -51,7 +51,7 @@ is empty rather than an error: `--release` still emits a valid section, and
 the release workflow does not hard-fail on infrastructure it never had.
 
 Usage:
-    AURORA_LINT_TASK_DB=~/data/fleet-tasks.db python3 scripts/generate_changelog.py
+    AURORA_LINT_TASK_DB=/path/to/tasks.db python3 scripts/generate_changelog.py
     python3 scripts/generate_changelog.py --check            # exit 1 if [Unreleased] is stale
     python3 scripts/generate_changelog.py --release 0.5.2    # one release's notes, to stdout
 """

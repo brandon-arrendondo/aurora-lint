@@ -46,7 +46,7 @@ RELEASES = [
 
 
 def seed_db(path, tasks):
-    """Write the fleet task schema (the columns the generator reads) and `tasks`.
+    """Write the task schema (the columns the generator reads) and `tasks`.
 
     Each task is (id, title, tags, details, project_name, status, completed_at).
     """
