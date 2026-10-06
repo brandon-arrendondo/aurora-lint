@@ -14,6 +14,7 @@ use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::expr_type::TypeEnv;
 use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::guard_dominance;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -214,22 +215,16 @@ impl Int33C {
     }
 
     fn extract_declared_var_name(&self, node: &Node, source: &str) -> Option<String> {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "init_declarator" {
-                    // Look for identifier in init_declarator
-                    for j in 0..child.child_count() {
-                        if let Some(grandchild) = child.child(j) {
-                            if grandchild.kind() == "identifier" {
-                                return Some(
-                                    ast_utils::get_node_text(&grandchild, source).to_string(),
-                                );
-                            }
-                        }
+        for child in node.child_nodes() {
+            if child.kind() == "init_declarator" {
+                // Look for identifier in init_declarator
+                for grandchild in child.child_nodes() {
+                    if grandchild.kind() == "identifier" {
+                        return Some(ast_utils::get_node_text(&grandchild, source).to_string());
                     }
-                } else if child.kind() == "identifier" {
-                    return Some(ast_utils::get_node_text(&child, source).to_string());
                 }
+            } else if child.kind() == "identifier" {
+                return Some(ast_utils::get_node_text(&child, source).to_string());
             }
         }
         None
@@ -261,21 +256,15 @@ impl Int33C {
                 // Check for /= or %=
                 if !right_text.starts_with("=") {
                     // Check the operator itself
-                    for i in 0..node.child_count() {
-                        if let Some(child) = node.child(i) {
-                            if child.kind() == "/=" || child.kind() == "%=" {
-                                self.check_compound_assignment_safety(
-                                    node, source, violations, env,
-                                );
-                                break;
-                            }
-                            let text = ast_utils::get_node_text(&child, source);
-                            if text == "/=" || text == "%=" {
-                                self.check_compound_assignment_safety(
-                                    node, source, violations, env,
-                                );
-                                break;
-                            }
+                    for child in node.child_nodes() {
+                        if child.kind() == "/=" || child.kind() == "%=" {
+                            self.check_compound_assignment_safety(node, source, violations, env);
+                            break;
+                        }
+                        let text = ast_utils::get_node_text(&child, source);
+                        if text == "/=" || text == "%=" {
+                            self.check_compound_assignment_safety(node, source, violations, env);
+                            break;
                         }
                     }
                 }
@@ -288,10 +277,8 @@ impl Int33C {
         }
 
         // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations, division_macros, zero_vars, env);
-            }
+        for child in node.child_nodes() {
+            self.check_node(&child, source, violations, division_macros, zero_vars, env);
         }
     }
 
@@ -313,39 +300,37 @@ impl Int33C {
                 // Get the arguments
                 if let Some(args) = node.child_by_field_name("arguments") {
                     let mut arg_idx = 0;
-                    for i in 0..args.child_count() {
-                        if let Some(arg) = args.child(i) {
-                            // Skip parentheses and commas
-                            if arg.kind() == "(" || arg.kind() == ")" || arg.kind() == "," {
-                                continue;
-                            }
-
-                            // Check if this is the divisor argument
-                            if arg_idx == macro_info.divisor_param_index {
-                                let arg_text = ast_utils::get_node_text(&arg, source);
-
-                                // Check if divisor is zero literal or a zero-initialized variable
-                                if arg_text == "0" || zero_vars.contains(arg_text) {
-                                    violations.push(RuleViolation {
-                                        rule_id: self.rule_id().to_string(),
-                                        severity: self.severity(),
-                                        message: format!(
-                                            "Macro '{}' called with divisor '{}' that may be zero",
-                                            func_name, arg_text
-                                        ),
-                                        file_path: String::new(),
-                                        line: node.start_position().row + 1,
-                                        column: node.start_position().column + 1,
-                                        suggestion: Some(
-                                            "Check if divisor is not zero before calling division macro".to_string(),
-                                        ),
-                                        ..Default::default()
-                                    });
-                                    return;
-                                }
-                            }
-                            arg_idx += 1;
+                    for arg in args.child_nodes() {
+                        // Skip parentheses and commas
+                        if arg.kind() == "(" || arg.kind() == ")" || arg.kind() == "," {
+                            continue;
                         }
+
+                        // Check if this is the divisor argument
+                        if arg_idx == macro_info.divisor_param_index {
+                            let arg_text = ast_utils::get_node_text(&arg, source);
+
+                            // Check if divisor is zero literal or a zero-initialized variable
+                            if arg_text == "0" || zero_vars.contains(arg_text) {
+                                violations.push(RuleViolation {
+                                    rule_id: self.rule_id().to_string(),
+                                    severity: self.severity(),
+                                    message: format!(
+                                        "Macro '{}' called with divisor '{}' that may be zero",
+                                        func_name, arg_text
+                                    ),
+                                    file_path: String::new(),
+                                    line: node.start_position().row + 1,
+                                    column: node.start_position().column + 1,
+                                    suggestion: Some(
+                                        "Check if divisor is not zero before calling division macro".to_string(),
+                                    ),
+                                    ..Default::default()
+                                });
+                                return;
+                            }
+                        }
+                        arg_idx += 1;
                     }
                 }
             }
@@ -848,43 +833,40 @@ impl Int33C {
         let mut stack = vec![*scope];
 
         while let Some(cur_scope) = stack.pop() {
-            for i in 0..cur_scope.named_child_count() {
-                if let Some(child) = cur_scope.named_child(i) {
-                    let child_line = child.start_position().row;
+            for child in cur_scope.named_child_nodes() {
+                let child_line = child.start_position().row;
 
-                    // Only check statements before the division
-                    if child_line >= div_line {
-                        break;
-                    }
+                // Only check statements before the division
+                if child_line >= div_line {
+                    break;
+                }
 
-                    if child.kind() == "if_statement" {
-                        if let Some(condition) = child.child_by_field_name("condition") {
-                            if self.checks_for_zero(&condition, var_name, source) {
-                                if let Some(consequence) = child.child_by_field_name("consequence")
-                                {
-                                    if self.has_return_or_exit(&consequence, source) {
-                                        return true;
-                                    }
+                if child.kind() == "if_statement" {
+                    if let Some(condition) = child.child_by_field_name("condition") {
+                        if self.checks_for_zero(&condition, var_name, source) {
+                            if let Some(consequence) = child.child_by_field_name("consequence") {
+                                if self.has_return_or_exit(&consequence, source) {
+                                    return true;
                                 }
                             }
                         }
-                        // Queue if-body to find guards at deeper nesting
-                        if let Some(consequence) = child.child_by_field_name("consequence") {
-                            stack.push(consequence);
-                        }
                     }
-
-                    // Queue bare compound statements
-                    if child.kind() == "compound_statement" {
-                        stack.push(child);
+                    // Queue if-body to find guards at deeper nesting
+                    if let Some(consequence) = child.child_by_field_name("consequence") {
+                        stack.push(consequence);
                     }
+                }
 
-                    // Check for do-while loops that validate input
-                    if child.kind() == "do_statement" {
-                        if let Some(condition) = child.child_by_field_name("condition") {
-                            if self.checks_for_zero(&condition, var_name, source) {
-                                return true;
-                            }
+                // Queue bare compound statements
+                if child.kind() == "compound_statement" {
+                    stack.push(child);
+                }
+
+                // Check for do-while loops that validate input
+                if child.kind() == "do_statement" {
+                    if let Some(condition) = child.child_by_field_name("condition") {
+                        if self.checks_for_zero(&condition, var_name, source) {
+                            return true;
                         }
                     }
                 }
@@ -976,23 +958,21 @@ impl Int33C {
         }
 
         // Also recursively check child nodes
-        for i in 0..condition.child_count() {
-            if let Some(child) = condition.child(i) {
-                if child.kind() == "binary_expression" {
-                    if let Some(operator) = ast_utils::get_binary_operator(&child, source) {
-                        if operator == "==" || operator == "!=" {
-                            let left = child.child_by_field_name("left");
-                            let right = child.child_by_field_name("right");
+        for child in condition.child_nodes() {
+            if child.kind() == "binary_expression" {
+                if let Some(operator) = ast_utils::get_binary_operator(&child, source) {
+                    if operator == "==" || operator == "!=" {
+                        let left = child.child_by_field_name("left");
+                        let right = child.child_by_field_name("right");
 
-                            if let (Some(l), Some(r)) = (left, right) {
-                                let left_text = ast_utils::get_node_text(&l, source);
-                                let right_text = ast_utils::get_node_text(&r, source);
+                        if let (Some(l), Some(r)) = (left, right) {
+                            let left_text = ast_utils::get_node_text(&l, source);
+                            let right_text = ast_utils::get_node_text(&r, source);
 
-                                if (left_text == var_name && right_text == "0")
-                                    || (right_text == var_name && left_text == "0")
-                                {
-                                    return true;
-                                }
+                            if (left_text == var_name && right_text == "0")
+                                || (right_text == var_name && left_text == "0")
+                            {
+                                return true;
                             }
                         }
                     }
@@ -1087,11 +1067,7 @@ impl Int33C {
     ) -> bool {
         let div_line = div_node.start_position().row;
 
-        for i in 0..scope.named_child_count() {
-            let child = match scope.named_child(i) {
-                Some(c) => c,
-                None => continue,
-            };
+        for child in scope.named_child_nodes() {
             let child_line = child.start_position().row;
             if child_line >= div_line {
                 break;
@@ -1234,11 +1210,9 @@ impl Int33C {
         // Also handle compound conditions with &&
         if condition.kind() == "binary_expression" || condition.kind() == "parenthesized_expression"
         {
-            for i in 0..condition.named_child_count() {
-                if let Some(child) = condition.named_child(i) {
-                    if Self::is_fabs_guard(&child, var_name, source) {
-                        return true;
-                    }
+            for child in condition.named_child_nodes() {
+                if Self::is_fabs_guard(&child, var_name, source) {
+                    return true;
                 }
             }
         }
@@ -1470,12 +1444,7 @@ impl Int33C {
         let mut stack = vec![*scope];
 
         while let Some(cur_scope) = stack.pop() {
-            for i in 0..cur_scope.named_child_count() {
-                let child = match cur_scope.named_child(i) {
-                    Some(c) => c,
-                    None => continue,
-                };
-
+            for child in cur_scope.named_child_nodes() {
                 match child.kind() {
                     "declaration" => {
                         // Check `int data = EXPR;`
@@ -1618,18 +1587,14 @@ impl Int33C {
 
     /// Check if a declaration assigns to `var_name`.
     fn declaration_assigns_to(decl: &Node, var_name: &str, source: &str) -> bool {
-        for i in 0..decl.named_child_count() {
-            if let Some(child) = decl.named_child(i) {
-                if child.kind() == "init_declarator" {
-                    // Look for the identifier
-                    for j in 0..child.named_child_count() {
-                        if let Some(gc) = child.named_child(j) {
-                            if gc.kind() == "identifier"
-                                && ast_utils::get_node_text(&gc, source) == var_name
-                            {
-                                return true;
-                            }
-                        }
+        for child in decl.named_child_nodes() {
+            if child.kind() == "init_declarator" {
+                // Look for the identifier
+                for gc in child.named_child_nodes() {
+                    if gc.kind() == "identifier"
+                        && ast_utils::get_node_text(&gc, source) == var_name
+                    {
+                        return true;
                     }
                 }
             }
@@ -1643,26 +1608,22 @@ impl Int33C {
         var_name: &str,
         source: &str,
     ) -> Option<Node<'a>> {
-        for i in 0..decl.named_child_count() {
-            if let Some(child) = decl.named_child(i) {
-                if child.kind() == "init_declarator" {
-                    let mut found_name = false;
-                    let mut value_node = None;
-                    for j in 0..child.named_child_count() {
-                        if let Some(gc) = child.named_child(j) {
-                            if gc.kind() == "identifier"
-                                && ast_utils::get_node_text(&gc, source) == var_name
-                            {
-                                found_name = true;
-                            } else if found_name && gc.kind() != "=" {
-                                value_node = Some(gc);
-                                break;
-                            }
-                        }
+        for child in decl.named_child_nodes() {
+            if child.kind() == "init_declarator" {
+                let mut found_name = false;
+                let mut value_node = None;
+                for gc in child.named_child_nodes() {
+                    if gc.kind() == "identifier"
+                        && ast_utils::get_node_text(&gc, source) == var_name
+                    {
+                        found_name = true;
+                    } else if found_name && gc.kind() != "=" {
+                        value_node = Some(gc);
+                        break;
                     }
-                    if found_name {
-                        return value_node;
-                    }
+                }
+                if found_name {
+                    return value_node;
                 }
             }
         }

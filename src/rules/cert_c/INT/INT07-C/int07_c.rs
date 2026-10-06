@@ -25,6 +25,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -68,11 +69,9 @@ impl CertRule for Int07C {
             self.find_plain_char_vars(decl, source, &mut global_vars);
         }
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() != "function_definition" {
-                    self.find_numeric_uses(&child, source, &global_vars, &mut violations);
-                }
+        for child in node.child_nodes() {
+            if child.kind() != "function_definition" {
+                self.find_numeric_uses(&child, source, &global_vars, &mut violations);
             }
         }
 
@@ -96,10 +95,8 @@ fn collect_outside_functions<'a>(node: Node<'a>, kind: &str, out: &mut Vec<Node<
     if node.kind() == kind {
         out.push(node);
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_outside_functions(child, kind, out);
-        }
+    for child in node.child_nodes() {
+        collect_outside_functions(child, kind, out);
     }
 }
 
@@ -139,23 +136,19 @@ impl Int07C {
     /// Check if a declaration/parameter contains a pointer or array declarator.
     /// Used to skip `char *pos` and `char buf[N]` — only flag plain `char c` values.
     fn is_pointer_or_array_declaration(&self, node: &Node) -> bool {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                match child.kind() {
-                    "pointer_declarator" | "array_declarator" => return true,
-                    "init_declarator" => {
-                        for j in 0..child.child_count() {
-                            if let Some(grandchild) = child.child(j) {
-                                if grandchild.kind() == "pointer_declarator"
-                                    || grandchild.kind() == "array_declarator"
-                                {
-                                    return true;
-                                }
-                            }
+        for child in node.child_nodes() {
+            match child.kind() {
+                "pointer_declarator" | "array_declarator" => return true,
+                "init_declarator" => {
+                    for grandchild in child.child_nodes() {
+                        if grandchild.kind() == "pointer_declarator"
+                            || grandchild.kind() == "array_declarator"
+                        {
+                            return true;
                         }
                     }
-                    _ => {}
                 }
+                _ => {}
             }
         }
         false
@@ -301,29 +294,27 @@ impl Int07C {
             // Already handled above
         } else {
             // Recursively check children (for complex expressions)
-            for i in 0..operand.child_count() {
-                if let Some(child) = operand.child(i) {
-                    if child.kind() == "identifier" {
-                        let child_text = get_node_text(&child, source);
-                        if plain_char_vars.contains_key(child_text) {
-                            violations.push(RuleViolation {
-                                rule_id: self.rule_id().to_string(),
-                                message: format!(
-                                    "Variable '{}' of type char used in numeric operation. \
-                                     Use explicit 'signed char' or 'unsigned char' for numeric values.",
-                                    child_text
-                                ),
-                                severity: self.severity(),
-                                line: child.start_position().row + 1,
-                                column: child.start_position().column + 1,
-                                file_path: String::new(),
-                                suggestion: Some(format!(
-                                    "Change declaration of '{}' from 'char' to 'signed char' or 'unsigned char'",
-                                    child_text
-                                )),
-                                requires_manual_review: None,
-                            });
-                        }
+            for child in operand.child_nodes() {
+                if child.kind() == "identifier" {
+                    let child_text = get_node_text(&child, source);
+                    if plain_char_vars.contains_key(child_text) {
+                        violations.push(RuleViolation {
+                            rule_id: self.rule_id().to_string(),
+                            message: format!(
+                                "Variable '{}' of type char used in numeric operation. \
+                                 Use explicit 'signed char' or 'unsigned char' for numeric values.",
+                                child_text
+                            ),
+                            severity: self.severity(),
+                            line: child.start_position().row + 1,
+                            column: child.start_position().column + 1,
+                            file_path: String::new(),
+                            suggestion: Some(format!(
+                                "Change declaration of '{}' from 'char' to 'signed char' or 'unsigned char'",
+                                child_text
+                            )),
+                            requires_manual_review: None,
+                        });
                     }
                 }
             }
@@ -353,13 +344,11 @@ impl Int07C {
 
     /// Extract variable name from declaration
     fn extract_var_name(&self, decl: &Node, source: &str) -> Option<String> {
-        for i in 0..decl.child_count() {
-            if let Some(child) = decl.child(i) {
-                if child.kind() == "init_declarator" {
-                    return self.find_identifier(&child, source);
-                } else if child.kind() == "identifier" {
-                    return Some(get_node_text(&child, source).to_string());
-                }
+        for child in decl.child_nodes() {
+            if child.kind() == "init_declarator" {
+                return self.find_identifier(&child, source);
+            } else if child.kind() == "identifier" {
+                return Some(get_node_text(&child, source).to_string());
             }
         }
         None
@@ -367,11 +356,9 @@ impl Int07C {
 
     /// Extract parameter name from parameter declaration
     fn extract_param_name(&self, param: &Node, source: &str) -> Option<String> {
-        for i in 0..param.child_count() {
-            if let Some(child) = param.child(i) {
-                if child.kind() == "identifier" {
-                    return Some(get_node_text(&child, source).to_string());
-                }
+        for child in param.child_nodes() {
+            if child.kind() == "identifier" {
+                return Some(get_node_text(&child, source).to_string());
             }
         }
         None
@@ -382,11 +369,9 @@ impl Int07C {
         if node.kind() == "identifier" {
             return Some(get_node_text(node, source).to_string());
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(name) = self.find_identifier(&child, source) {
-                    return Some(name);
-                }
+        for child in node.child_nodes() {
+            if let Some(name) = self.find_identifier(&child, source) {
+                return Some(name);
             }
         }
         None
