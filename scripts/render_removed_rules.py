@@ -57,6 +57,13 @@ def load() -> list[dict]:
         return tomllib.load(f).get("removed", [])
 
 
+def one_line(text: str) -> str:
+    """`text` with its whitespace, newlines included, collapsed to single
+    spaces: a reason is one sentence, and a line break would end the table
+    row or the bullet."""
+    return " ".join(text.split())
+
+
 def covered_text(rule: dict) -> str:
     covers = rule.get("covered_by", [])
     if not covers:
@@ -73,7 +80,9 @@ def render_markdown(rules: list[dict]) -> str:
         "|------|------------|-----|---------|",
     ]
     for r in rules:
-        why = f"{LABELS[r['disposition']]}: {r['reason'].strip()}"
+        # A `|` would end the Markdown cell.
+        reason = one_line(r["reason"]).replace("|", "\\|")
+        why = f"{LABELS[r['disposition']]}: {reason}"
         lines.append(f"| {r['id']} | v{r['removed_in']} | {why} | {covered_text(r) or '-'} |")
     return "\n".join(lines)
 
@@ -83,7 +92,8 @@ def render_rst(rules: list[dict]) -> str:
         return NONE_YET
     lines = []
     for r in rules:
-        reason = r["reason"].strip().rstrip(".") + "."
+        # A `|` would open an RST substitution reference.
+        reason = one_line(r["reason"]).rstrip(".").replace("|", "\\|") + "."
         item = f"- **{r['id']}** (removed in v{r['removed_in']}, {LABELS[r['disposition']]}): {reason}"
         if covered_text(r):
             item += f" Now {covered_text(r)}."

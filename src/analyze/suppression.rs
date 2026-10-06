@@ -368,7 +368,10 @@ impl SuppressionManager {
                             toml_path, entry.name
                         ));
                     };
-                    crate::manifest::removed::warn_if_removed(&rule, "A suppression");
+                    crate::manifest::removed::warn_if_removed(
+                        &rule,
+                        &format!("A suppression in {toml_path}"),
+                    );
                     let suppression = Suppression {
                         rule_id: rule,
                         hash,
@@ -379,7 +382,10 @@ impl SuppressionManager {
                 }
                 None => {
                     if let Some(rule) = &entry.rule {
-                        crate::manifest::removed::warn_if_removed(rule, "A suppression");
+                        crate::manifest::removed::warn_if_removed(
+                            rule,
+                            &format!("A suppression in {toml_path}"),
+                        );
                     }
                     let spec = WildcardSpec {
                         file_glob: entry.file_glob.clone().or_else(|| entry.file.clone()),
@@ -438,8 +444,9 @@ impl SuppressionManager {
             });
         }
 
+        let place = format!("A suppression in {file_path}");
         for s in &file_suppressions {
-            crate::manifest::removed::warn_if_removed(&s.rule_id, "A suppression");
+            crate::manifest::removed::warn_if_removed(&s.rule_id, &place);
         }
         if !file_suppressions.is_empty() {
             self.suppressions

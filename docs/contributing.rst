@@ -91,13 +91,17 @@ A rule is removed only on its row in ``docs/design/rule-disposition.md``
    and fix every rule count the ``check-project-facts`` hook reports as
    stale (README.md and docs/ claim the shipped and enabled totals).
 
-6. Update the rule's row in ``docs/design/rule-disposition.md`` to say it is
-   removed, and any design doc or ADR that cites the rule as live (for
-   example ``docs/design/cross-rule-overlap.md``).
+6. Record the removal in the rule's row in
+   ``docs/design/rule-disposition.md``: note it, with the release, in the
+   *Reason / notes* column. Leave the *Disposition* column as the
+   not-shipped disposition the removal rests on; the ``check-removed-rules``
+   hook requires it to start with that label (and, for a covered rule, to
+   name every ``covered_by`` rule). Also update any design doc or ADR that
+   cites the rule as live (for example ``docs/design/cross-rule-overlap.md``).
 
-7. Tag the task ``release-note`` with a ``release-note:`` line saying what
-   users lose and what reports it instead, and ``category: removed``
-   (ADR-0009).
+7. Say in the change's description what users lose and which rules report
+   the construct instead. The maintainer records it as the release note,
+   under ``category: removed`` (ADR-0009).
 
 8. Build and run the full test suite. The pre-commit hooks check that every
    real-world manifest still decides every rule (``check-realworld-manifests``),
