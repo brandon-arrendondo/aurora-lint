@@ -302,6 +302,39 @@ pub fn cap_reached(what: &str) {
     }
 }
 
+/// An analysis reached an iteration cap that real code is known to reach,
+/// because the analysis does not always converge: `what` names it. The
+/// caller stops iterating as before and keeps what it has, so findings are
+/// unchanged, but it is not silent: every occurrence is counted, and the
+/// scan reports the counts as warnings on stderr and in SARIF
+/// ([`take_not_converged`]). ADR-0017 records which analyses are on this
+/// list and why; each one leaves it when its convergence is fixed.
+pub fn not_converged(what: &'static str) {
+    *NOT_CONVERGED
+        .get_or_init(|| Mutex::new(std::collections::BTreeMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(what)
+        .or_insert(0) += 1;
+}
+
+static NOT_CONVERGED: OnceLock<Mutex<std::collections::BTreeMap<&'static str, u64>>> =
+    OnceLock::new();
+
+/// Each [`not_converged`] analysis and how many times it stopped short in
+/// this process, sorted; the counts reset.
+pub fn take_not_converged() -> Vec<(String, u64)> {
+    std::mem::take(
+        &mut *NOT_CONVERGED
+            .get_or_init(|| Mutex::new(std::collections::BTreeMap::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()),
+    )
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect()
+}
+
 /// The most steps any one unit of work has taken in this process, for
 /// measuring how far the busiest real input is from the step budget
 /// (`AURORA_LINT_STEP_STATS=1` prints it after a scan).

@@ -929,6 +929,7 @@ fn run() -> Result<i32> {
     let macro_gap_report = results.macro_gaps;
     let failures = results.failures;
     let abandoned_rules = results.abandoned_rules;
+    let not_converged = results.not_converged;
 
     // Post-analysis filtering
     if let Some(ref min_sev) = min_severity {
@@ -966,6 +967,7 @@ fn run() -> Result<i32> {
             export::Incomplete {
                 failures: &failures,
                 abandoned_rules: &abandoned_rules,
+                not_converged: &not_converged,
             },
         )?;
         println!(
@@ -1017,6 +1019,15 @@ fn run() -> Result<i32> {
                 json_path
             );
         }
+    }
+
+    // Known non-convergence (ADR-0017): not an incomplete scan, but never
+    // silent either.
+    for (what, n) in &not_converged {
+        eprintln!(
+            "Warning: {what} did not converge {n} time(s); results there may be incomplete \
+             (a known issue, see docs/error-handling.rst)"
+        );
     }
 
     // A crash or a bound (analyze::containment, ADR-0017) leaves every other

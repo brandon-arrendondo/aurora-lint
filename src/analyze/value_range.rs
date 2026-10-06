@@ -1480,8 +1480,9 @@ fn analyze_value_ranges_capped(
             // the truth, and a range that is too narrow proves things that
             // are false (a bound check "always passes", a divisor "is never
             // zero"). No ranges is the sound answer: what the block limit
-            // above gives a function too large to analyse.
-            crate::analyze::containment::cap_reached("value-range analysis");
+            // above gives a function too large to analyse. It costs
+            // precision, not completeness, so it is a warning (ADR-0017).
+            crate::analyze::containment::not_converged("value-range analysis");
             return empty_range_result();
         }
 

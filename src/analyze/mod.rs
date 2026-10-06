@@ -107,6 +107,10 @@ pub struct AnalysisResults {
     /// [`containment::ABANDON_AFTER_FILES`] files; none of their findings are
     /// in `violations` or `suppressed`.
     pub abandoned_rules: Vec<String>,
+    /// Analyses known not to converge on some code that stopped short in
+    /// this scan, with how often ([`containment::not_converged`]): reported
+    /// as warnings, not as an incomplete scan.
+    pub not_converged: Vec<(String, u64)>,
 }
 
 /// Which files a scan leaves out, as path globs relative to the scanned root
@@ -209,6 +213,9 @@ pub fn analyze_project(
     crate::settings::memory::declare(settings.memory.clone())?;
     // So does a declared closed program, which closes caller sets there.
     crate::settings::closure::declare(settings.flag("closed_program"))?;
+
+    // A fresh count of analyses that stop short (`containment::not_converged`).
+    let _ = containment::take_not_converged();
 
     // Load or compute cross-file context (prescan, includes, optional cache save)
     let mut context = load_project_context(
@@ -375,6 +382,7 @@ pub fn analyze_project(
             macro_gaps,
             failures,
             abandoned_rules,
+            not_converged: containment::take_not_converged(),
         });
     }
 
@@ -440,6 +448,7 @@ pub fn analyze_project(
         macro_gaps,
         failures,
         abandoned_rules,
+        not_converged: containment::take_not_converged(),
     })
 }
 
@@ -1614,6 +1623,7 @@ mod tests {
             macro_gaps: None,
             failures: vec![],
             abandoned_rules: vec![],
+            not_converged: vec![],
         };
         assert!(results.violations.is_empty());
         assert!(results.suppressed.is_empty());

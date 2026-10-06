@@ -1992,7 +1992,9 @@ pub fn analyze_init_states_with_statics(
         iterations += 1;
         crate::analyze::containment::checkpoint();
         if iterations > max_iterations {
-            crate::analyze::containment::cap_reached("the initialization-state worklist");
+            // Known not to converge on some real code (ADR-0017): counted and
+            // reported as a warning, results kept as before.
+            crate::analyze::containment::not_converged("the initialization-state worklist");
             break;
         }
 

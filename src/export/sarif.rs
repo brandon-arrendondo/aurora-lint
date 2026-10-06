@@ -180,8 +180,19 @@ fn invocation(incomplete: super::Incomplete<'_>) -> serde_json::Value {
             "associatedRule": { "id": rule },
         })
     }));
+    let successful = notifications.is_empty();
+    notifications.extend(incomplete.not_converged.iter().map(|(what, n)| {
+        serde_json::json!({
+            "level": "warning",
+            "descriptor": { "id": "aurora-lint/not-converged" },
+            "message": { "text": format!(
+                "{what} did not converge {n} time(s); results there may be incomplete \
+                 (a known issue, ADR-0017)"
+            ) },
+        })
+    }));
     serde_json::json!({
-        "executionSuccessful": notifications.is_empty(),
+        "executionSuccessful": successful,
         "toolExecutionNotifications": notifications,
     })
 }

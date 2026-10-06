@@ -23,6 +23,9 @@ pub struct Incomplete<'a> {
     pub failures: &'a [crate::analyze::containment::ScanFailure],
     /// Rules abandoned for the scan, whose findings are all withheld.
     pub abandoned_rules: &'a [String],
+    /// Analyses known not to converge that stopped short, with how often:
+    /// warnings, which leave the run successful.
+    pub not_converged: &'a [(String, u64)],
 }
 
 /// Write `violations` (and, for SARIF, `suppressed`) to `export_path`,
