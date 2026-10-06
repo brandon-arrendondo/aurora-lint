@@ -495,9 +495,10 @@ Status of the 16 proposals at the end of this doc, against `72b8f734`:
 - **Verdict: looser.**
 - **The attack:** the 2026-09-23 test, "could an independent person reach
   this with the pinned SHA and the public tool?", is weaker than it sounds.
-  Triage is the expensive step. Effective-FP rates of tens of percent are
-  normal [Tricorder; C&B], and picking actionable warnings out of raw output
-  is a research problem in itself [Kang22]. A published TP row on a
+  Triage is the expensive step. Tricorder holds code-review analyzers to an
+  effective-FP rate below 10% [Tricorder], only 47% of Christakis & Bird's
+  respondents accept a rate as high as 15% [C&B], and picking actionable
+  warnings out of raw output is a research problem in itself [Kang22]. A published TP row on a
   memory-safety rule is a *filtered* pointer at a real defect in shipping
   code, not a restatement of tool output. The 2026-09-20 clarification ("a
   label is not a vulnerability claim") addresses severity *language*, not
