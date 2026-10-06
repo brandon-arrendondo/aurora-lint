@@ -277,7 +277,8 @@ The benchmark runner scans curl, hostap, mosquitto, sqlite and valkey
 against these host headers, with aurora-lint as with cppcheck and clang-tidy.
 The benchmark node carries every one of them except ``libnl-genl-3-dev``;
 scanning against the node's headers plus that package reproduced its hostap
-findings key for key, so the extra package moves nothing. Which of them are present, not only their versions, changes findings: see
+findings key for key, so the extra package moves nothing. Which of them are
+present, not only their versions, changes findings: see
 *What another machine reproduces* in :doc:`reproducing-published-numbers`.
 That is expected, not a defect to engineer away. Official figures come from
 the benchmark node alone, on its own headers, and the maintainer records that

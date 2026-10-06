@@ -232,9 +232,9 @@ cppcheck/clang-tidy baseline yet; ``ventoy`` is the Win32 oracle,
 ``Ventoy2Disk/Ventoy2Disk/`` only; aurora-lint scans it against the pinned
 Windows SDK/CRT header tree, which must be provisioned first -- see
 :doc:`benchmark-setup` -- while cppcheck and clang-tidy still run without
-``<windows.h>``; aurora-lint likewise scans ``curl``, ``hostap``,
-``mosquitto``, ``sqlite`` and ``valkey`` against a pinned Debian 12
-``/usr/include`` instead of the host's, also provisioned first)
+``<windows.h>``; ``curl``, ``hostap``, ``mosquitto``, ``sqlite`` and
+``valkey`` are scanned against the host's own ``/usr/include`` unless
+``--header-tree`` opts in to a pinned Debian 12 tree, below)
 
 .. note::
 
