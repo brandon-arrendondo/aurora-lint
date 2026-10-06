@@ -258,7 +258,6 @@ release sections are curated by hand and the generator never touches them.
 | `docs/adr/*.md` | Architectural Decision Records — settled policy questions, not in the Sphinx toctree. **Read before proposing to change a rule's core behavior, disable/deprioritize a rule off a benchmark result, or otherwise relitigate something already decided.** Unlike `docs/design/`, these don't go stale — read the index at `docs/adr/README.md` first. |
 | `docs/design/*.md` | Scoping docs, not in the Sphinx toctree — read directly. **Their "Status" headers go stale once work ships**; ask the maintainer for current status instead, and check whether the feature needs a mention in `docs/cli-usage.rst`/`docs/architecture.rst`. |
 | `docs/design/internal-capability-catalog.md` | Catalog of every reusable primitive in `src/utility/cert_c/*.rs` and `src/analyze/*.rs`. **Read before writing any new AST/text heuristic.** |
-| `docs/design/gate-status-sop.md` | Weekly read on distance to the maintenance-mode gate and a publishable paper. Run it *here* — its table says which check lives in which repo. |
 | `docs/design/realworld-corpus-scope.md` | Per-codebase oracle scope: which trees count as the shipped product and why. **Read its project section before batching a delta-adjudication or changing a runner `--exclude`.** |
 | `../sqc_paper/` | The paper, in its own repo. Numbers in it must trace to Postgres via `benchmarking_db`. Its backlog and figure generator went with it. |
 
