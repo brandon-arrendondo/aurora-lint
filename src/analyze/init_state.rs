@@ -720,66 +720,68 @@ fn process_declaration(
     }
 }
 
-/// Classify an initializer expression to determine init state.
+/// The call an initializer is, seen through parentheses and casts:
+/// `(char *)(malloc(n))` is the `malloc(n)` call. `None` for anything else, so
+/// a string literal or comment that merely spells an allocator is no call.
+fn allocation_call<'t>(value: &Node<'t>) -> Option<Node<'t>> {
+    let mut node = *value;
+    loop {
+        match node.kind() {
+            "parenthesized_expression" => {
+                node = (0..node.named_child_count())
+                    .filter_map(|i| node.named_child(i))
+                    .find(|c| c.kind() != "comment")?;
+            }
+            "cast_expression" => node = node.child_by_field_name("value")?,
+            "call_expression" => return Some(node),
+            _ => return None,
+        }
+    }
+}
+
+/// The name a call's callee is written as, when it is a plain identifier
+/// (parentheses around it allowed). A member or computed callee has none.
+fn callee_identifier<'s>(call: &Node, source: &'s str) -> Option<&'s str> {
+    let mut callee = call.child_by_field_name("function")?;
+    while callee.kind() == "parenthesized_expression" {
+        callee = callee.named_child(0)?;
+    }
+    if callee.kind() != "identifier" {
+        return None;
+    }
+    callee.utf8_text(source.as_bytes()).ok()
+}
+
+/// Classify an initializer expression to determine init state. Only a call
+/// whose callee is an allocator by name (`call_roles::allocator_contract`,
+/// `alloca`, a realloc wrapper the prescan found) allocates; allocator names
+/// inside a string literal or comment never do.
 fn classify_initializer(value: &Node, source: &str, config: &InitAnalysisConfig) -> InitState {
-    let text = value.utf8_text(source.as_bytes()).unwrap_or("");
-
-    // Check for malloc/calloc/alloca patterns
-    if value.kind() == "call_expression" {
-        if let Some(func) = value.child_by_field_name("function") {
-            let func_name = func.utf8_text(source.as_bytes()).unwrap_or("");
-            match func_name {
-                "calloc" => return InitState::MallocInitialized,
-                "malloc" | "alloca" | "ALLOCA" => return InitState::MallocUninitialized,
-                "realloc" => return InitState::MallocUninitialized,
-                _ => {
-                    // Check realloc wrapper functions (identified by pre-scan)
-                    if config.realloc_wrapper_fns.contains(func_name) {
-                        return InitState::MallocUninitialized;
-                    }
-                }
-            }
-        }
+    let Some(call) = allocation_call(value) else {
+        return InitState::Initialized;
+    };
+    let Some(name) = callee_identifier(&call, source) else {
+        return InitState::Initialized;
+    };
+    match name {
+        "alloca" | "ALLOCA" => return InitState::MallocUninitialized,
+        "zalloc" => return InitState::MallocInitialized,
+        _ => {}
     }
-
-    // Cast expressions: (type *)malloc(...)
-    if value.kind() == "cast_expression" {
-        for child in value.child_nodes() {
-            if child.kind() == "call_expression" {
-                return classify_initializer(&child, source, config);
-            }
-        }
+    use crate::settings::AllocatorContract as C;
+    match crate::utility::cert_c::call_roles::allocator_contract(name) {
+        Some(C::Calloc) => InitState::MallocInitialized,
+        Some(C::Malloc | C::AlignedAlloc | C::Realloc) => InitState::MallocUninitialized,
+        Some(C::Strdup | C::Strndup) => InitState::Initialized,
+        None if config.realloc_wrapper_fns.contains(name) => InitState::MallocUninitialized,
+        None => InitState::Initialized,
     }
-
-    // Check for text-based malloc patterns (macro wrappers)
-    if text.contains("malloc(") || text.contains("alloca(") || text.contains("ALLOCA(") {
-        return InitState::MallocUninitialized;
-    }
-    if text.contains("calloc(") || text.contains("zalloc(") {
-        return InitState::MallocInitialized;
-    }
-    if text.contains("realloc(") {
-        return InitState::MallocUninitialized;
-    }
-
-    InitState::Initialized
 }
 
 /// Extract element count from `malloc(N * sizeof(T))` / `ALLOCA(N * sizeof(T))`.
 /// Returns the number of elements allocated (N), or None if not determinable.
 fn extract_allocation_count(value: &Node, source: &str) -> Option<usize> {
-    // Unwrap cast expressions: (int *)ALLOCA(...)
-    let inner = if value.kind() == "cast_expression" {
-        value.child_by_field_name("value")?
-    } else {
-        *value
-    };
-
-    if inner.kind() != "call_expression" {
-        // Text-based fallback for macro wrappers
-        let text = inner.utf8_text(source.as_bytes()).ok()?;
-        return extract_allocation_count_from_text(text);
-    }
+    let inner = allocation_call(value)?;
 
     let func = inner.child_by_field_name("function")?;
     let func_name = func.utf8_text(source.as_bytes()).ok()?;
@@ -817,29 +819,6 @@ fn extract_allocation_count(value: &Node, source: &str) -> Option<usize> {
                 return if val > 0 { Some(val as usize) } else { None };
             }
         }
-    }
-    None
-}
-
-/// Extract allocation count from text representation (for macro wrappers).
-fn extract_allocation_count_from_text(text: &str) -> Option<usize> {
-    // Match patterns like ALLOCA(10*sizeof(int)) or malloc(10 * sizeof(int))
-    let inner = if let Some(start) = text.find('(') {
-        // Find the matching argument
-        text.get(start + 1..text.rfind(')')?)?
-    } else {
-        return None;
-    };
-    // Look for N*sizeof or N * sizeof
-    if let Some(sizeof_pos) = inner.find("sizeof") {
-        let before = inner[..sizeof_pos].trim().trim_end_matches('*').trim();
-        let macros: HashMap<String, i64> = HashMap::new();
-        // Try to parse the count as a simple integer or expression
-        if let Ok(val) = before.parse::<i64>() {
-            return if val > 0 { Some(val as usize) } else { None };
-        }
-        // Try parenthesized expression like (10/2)
-        let _ = macros; // text-based fallback doesn't use AST evaluation
     }
     None
 }
