@@ -327,9 +327,11 @@ MCP server itself with <code class="docutils literal notranslate"><span class="p
 playbook does not run for you). Point the venv at an existing/shared one
 instead with <code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">dev_venv=&lt;path&gt;</span></code>, e.g. <code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">dev_venv=~/venvs/shared</span></code>.</p>
 <p>It also installs and schedules a disk-guard cron (<code class="docutils literal notranslate"><span class="pre">cargo-sweep</span></code> +
-<code class="docutils literal notranslate"><span class="pre">scripts/cargo-target-gc.sh</span></code>, nightly at 03:30) that caps <code class="docutils literal notranslate"><span class="pre">target/</span></code>
+<code class="docutils literal notranslate"><span class="pre">scripts/cargo-target-gc.sh</span></code>, hourly) that caps <code class="docutils literal notranslate"><span class="pre">target/</span></code>
 growth – skip it on a node with plenty of headroom with
-<code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">install_disk_guard=false</span></code>. This exists because two otherwise
+<code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">install_disk_guard=false</span></code>. The script runs on macOS too (no
+<code class="docutils literal notranslate"><span class="pre">flock</span></code> there; it skips that one check), so a Mac node can take the same
+<code class="docutils literal notranslate"><span class="pre">crontab</span></code> line by hand, listing each worktree it builds in. This exists because two otherwise
 identically-provisioned dev nodes were found to have diverged on exactly
 this (2026-08-31): one had the cron, one didn’t, and the one without it had
 an unbounded <code class="docutils literal notranslate"><span class="pre">target/</span></code> and a manually-patched <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code> disabling
