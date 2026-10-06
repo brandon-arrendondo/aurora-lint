@@ -75,9 +75,10 @@ A rule is removed only on its row in ``docs/design/rule-disposition.md``
 4. Add a ``[[removed]]`` entry to ``rules_templates/removed-rules.toml``, in
    id order (the loader refuses an unsorted table, so parallel removals don't
    all conflict at the end of the file). ``removed_in`` is the release the
-   removal ships in, set up front; ``disposition`` and ``covered_by`` must
-   agree with the rule's disposition row, and every ``covered_by`` rule must
-   still ship (a test checks it against the registry).
+   removal ships in, set up front; ``disposition``, ``covered_by`` and (for
+   a check moved to the CWE ruleset) ``moved_to`` must agree with the rule's
+   disposition row, and every ``covered_by`` rule must still ship (a test
+   checks it against the registry).
 
 5. Regenerate what is derived from the rule set:
 
@@ -95,8 +96,8 @@ A rule is removed only on its row in ``docs/design/rule-disposition.md``
    ``docs/design/rule-disposition.md``: note it, with the release, in the
    *Reason / notes* column. Leave the *Disposition* column as the
    not-shipped disposition the removal rests on; the ``check-removed-rules``
-   hook requires it to start with that label (and, for a covered rule, to
-   name every ``covered_by`` rule). Also update any design doc or ADR that
+   hook requires it to start with that label (and to name every
+   ``covered_by`` rule, and the ``moved_to`` CWE). Also update any design doc or ADR that
    cites the rule as live (for example ``docs/design/cross-rule-overlap.md``).
 
 7. Say in the change's description what users lose and which rules report

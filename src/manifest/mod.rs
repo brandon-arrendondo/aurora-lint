@@ -689,6 +689,7 @@ reason = "x"
             disposition: Disposition::Deprecated,
             reason: "CERT merged it.".into(),
             covered_by: vec!["ERR33-C".into()],
+            moved_to: None,
         };
         assert!(rule.warning().contains("; replaced by ERR33-C."));
     }

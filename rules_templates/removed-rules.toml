@@ -21,12 +21,20 @@
 #   id = "ERR00-C"
 #   removed_in = "0.7.0"              # the release the removal ships in:
 #                                     # the target release, set up front
-#   disposition = "covered"           # ADR-0013 Decision 2, one of:
+#   disposition = "covered"           # ADR-0013 Decisions 2 and 9, one of:
 #                                     #   unenforceable, fails-criterion,
-#                                     #   covered, deprecated
+#                                     #   covered, deprecated,
+#                                     #   moved-to-cwe (not a CERT C id; the
+#                                     #     check stays, in the CWE ruleset),
+#                                     #   not-cert-c (a CERT C++ guideline
+#                                     #     shipped under a C id)
 #   reason = "..."                    # one sentence, for users
 #   covered_by = ["ERR33-C", "EXP12-C"]
-#                                     # required for "covered"; for
-#                                     # "deprecated", the successor if any
+#                                     # required for "covered" and
+#                                     # "not-cert-c"; for "deprecated", the
+#                                     # successor if any; refused for
+#                                     # "moved-to-cwe"
+#   moved_to = "CWE-327"              # required for "moved-to-cwe", and
+#                                     # refused for any other disposition
 #
 # No rule has been removed yet.

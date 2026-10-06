@@ -37,16 +37,22 @@ LABELS = {
     "fails-criterion": "fails the criterion",
     "covered": "covered by another rule",
     "deprecated": "deprecated by CERT",
+    "moved-to-cwe": "moved to CWE ruleset",
+    "not-cert-c": "not a CERT C guideline (C++ id)",
 }
 
 # How rule-disposition.md's disposition column begins for each: it names
-# the covering rules ("covered by ERR33-C, EXP12-C") or the successor
-# ("deprecated by CERT (successor INT02-C)") in place of the generic label.
+# the covering rules ("covered by ERR33-C, EXP12-C"), the successor
+# ("deprecated by CERT (successor INT02-C)"), the CWE ("moved to CWE ruleset
+# (CWE-327)") or, for a C++ id, the CERT C rules covering it ("not a CERT C
+# guideline (C++ id; covered by FIO42-C)") in place of the generic label.
 ROW_PREFIX = {
     "unenforceable": "unenforceable",
     "fails-criterion": "fails the criterion",
     "covered": "covered by ",
     "deprecated": "deprecated by CERT",
+    "moved-to-cwe": "moved to CWE ruleset",
+    "not-cert-c": "not a CERT C guideline (C++ id",
 }
 
 NONE_YET = "No rule has been removed yet."
@@ -65,6 +71,9 @@ def one_line(text: str) -> str:
 
 
 def covered_text(rule: dict) -> str:
+    """What reports the construct now, as src/manifest/removed.rs words it."""
+    if "moved_to" in rule:
+        return f"reported as {rule['moved_to']} in the CWE ruleset"
     covers = rule.get("covered_by", [])
     if not covers:
         return ""
@@ -136,6 +145,9 @@ def disposition_problems(rules: list[dict]) -> list[str]:
             problems.append(
                 f"{r['id']}: covered_by names {', '.join(missing)}, which {where}'s row '{got}' does not"
             )
+        cwe = r.get("moved_to")
+        if cwe and not re.search(rf"\b{re.escape(cwe)}\b", got):
+            problems.append(f"{r['id']}: moved_to names {cwe}, which {where}'s row '{got}' does not")
     return problems
 
 

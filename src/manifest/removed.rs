@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 /// Why a rule is not shipped: the not-shipped dispositions of ADR-0013
-/// Decision 2.
+/// Decisions 2 and 9.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Disposition {
@@ -25,6 +25,12 @@ pub enum Disposition {
     Covered,
     /// CERT deprecated or merged the guideline.
     Deprecated,
+    /// Not a CERT C identifier: the check is kept, reported under the CWE
+    /// ruleset by the CWE it names (Decision 9).
+    MovedToCwe,
+    /// A CERT C++ guideline shipped under a C id, removed as covered by its
+    /// CERT C equivalent (Decision 9).
+    NotCertC,
 }
 
 impl Disposition {
@@ -35,6 +41,8 @@ impl Disposition {
             Disposition::FailsCriterion => "fails the criterion",
             Disposition::Covered => "covered by another rule",
             Disposition::Deprecated => "deprecated by CERT",
+            Disposition::MovedToCwe => "moved to CWE ruleset",
+            Disposition::NotCertC => "not a CERT C guideline (C++ id)",
         }
     }
 }
@@ -52,9 +60,15 @@ pub struct RemovedRule {
     /// One sentence, written for users.
     pub reason: String,
     /// The rules that report the construct instead: required when the
-    /// disposition is `covered`, the successor (if any) when `deprecated`.
+    /// disposition is `covered` or `not-cert-c`, the successor (if any) when
+    /// `deprecated`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub covered_by: Vec<String>,
+    /// The CWE the check is reported under in the CWE ruleset, e.g.
+    /// `CWE-327`: required when the disposition is `moved-to-cwe`, and only
+    /// then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_to: Option<String>,
 }
 
 impl RemovedRule {
@@ -72,6 +86,9 @@ impl RemovedRule {
                 _ => "covered by",
             };
             text.push_str(&format!("; {verb} {}", self.covered_by.join(", ")));
+        }
+        if let Some(cwe) = &self.moved_to {
+            text.push_str(&format!("; reported as {cwe} in the CWE ruleset"));
         }
         text
     }
@@ -117,7 +134,8 @@ struct RemovedTable {
 }
 
 /// Parse and check a removed-rules table: every field set, ids unique and
-/// sorted, and a `covered` entry naming what covers it. Sorted, so that
+/// sorted, a `covered` or `not-cert-c` entry naming what covers it, and a
+/// `moved-to-cwe` entry, and no other, naming its CWE. Sorted, so that
 /// removals on parallel branches each add their entry in its own place
 /// instead of all at the end of the file.
 pub fn parse_removed_rules(content: &str) -> Result<Vec<RemovedRule>, String> {
@@ -146,14 +164,54 @@ pub fn parse_removed_rules(content: &str) -> Result<Vec<RemovedRule>, String> {
                 rule.id
             ));
         }
-        if rule.disposition == Disposition::Covered && rule.covered_by.is_empty() {
+        let needs_cover = matches!(
+            rule.disposition,
+            Disposition::Covered | Disposition::NotCertC
+        );
+        if needs_cover && rule.covered_by.is_empty() {
             return Err(format!(
-                "removed rule {} is 'covered' but names no covering rule",
+                "removed rule {} is '{}' but names no covering rule",
+                rule.id,
+                rule.disposition.label()
+            ));
+        }
+        let moved = rule.disposition == Disposition::MovedToCwe;
+        match &rule.moved_to {
+            None if moved => {
+                return Err(format!(
+                    "removed rule {} is 'moved to CWE ruleset' but names no moved_to CWE",
+                    rule.id
+                ));
+            }
+            Some(_) if !moved => {
+                return Err(format!(
+                    "removed rule {} has moved_to but is '{}', not 'moved to CWE ruleset'",
+                    rule.id,
+                    rule.disposition.label()
+                ));
+            }
+            Some(cwe) if !is_cwe_id(cwe) => {
+                return Err(format!(
+                    "removed rule {}: moved_to is '{cwe}', not a CWE id like CWE-327",
+                    rule.id
+                ));
+            }
+            _ => {}
+        }
+        if moved && !rule.covered_by.is_empty() {
+            return Err(format!(
+                "removed rule {} is 'moved to CWE ruleset': it names its CWE in moved_to, not covered_by",
                 rule.id
             ));
         }
     }
     Ok(table.removed)
+}
+
+/// `CWE-` followed by digits.
+fn is_cwe_id(id: &str) -> bool {
+    id.strip_prefix("CWE-")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 const REMOVED_RULES_TOML: &str = include_str!("../../rules_templates/removed-rules.toml");
@@ -276,5 +334,57 @@ mod tests {
         assert!(err.contains("was removed too"), "{err}");
         let fine = parse_removed_rules(&rule("ERR00-C", "covered", &["ERR33-C"])).unwrap();
         check_against_shipped(&fine, &shipped).unwrap();
+    }
+
+    #[test]
+    fn a_cpp_id_needs_a_covering_rule_and_says_it_is_not_cert_c() {
+        let err = parse_removed_rules(&rule("FIO51-C", "not-cert-c", &[])).unwrap_err();
+        assert!(err.contains("names no covering rule"), "{err}");
+        let removed = parse_removed_rules(&rule("FIO51-C", "not-cert-c", &["FIO42-C"])).unwrap();
+        assert_eq!(
+            removed[0].warning_line(),
+            "FIO51-C    removed in v0.7.0 (not a CERT C guideline (C++ id)): r; covered by FIO42-C"
+        );
+    }
+
+    #[test]
+    fn a_check_moved_to_the_cwe_ruleset_names_its_cwe() {
+        let moved = |disposition: &str, moved_to: &str, covered_by: &[&str]| {
+            format!(
+                "{}moved_to = \"{moved_to}\"\n",
+                rule("MSC42-C", disposition, covered_by)
+            )
+        };
+        let removed = parse_removed_rules(&moved("moved-to-cwe", "CWE-327", &[])).unwrap();
+        assert_eq!(
+            removed[0].warning(),
+            "MSC42-C was removed in v0.7.0 (moved to CWE ruleset): r; reported as CWE-327 \
+             in the CWE ruleset. Its configuration block is ignored."
+        );
+        for (toml, expect) in [
+            (
+                rule("MSC42-C", "moved-to-cwe", &[]),
+                "names no moved_to CWE",
+            ),
+            (moved("moved-to-cwe", "327", &[]), "not a CWE id"),
+            (moved("moved-to-cwe", "CWE-", &[]), "not a CWE id"),
+            (
+                moved("unenforceable", "CWE-327", &[]),
+                "not 'moved to CWE ruleset'",
+            ),
+            (
+                moved("moved-to-cwe", "CWE-327", &["MSC41-C"]),
+                "not covered_by",
+            ),
+        ] {
+            let err = parse_removed_rules(&toml).unwrap_err();
+            assert!(err.contains(expect), "{toml}: {err}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_disposition_is_refused() {
+        let err = parse_removed_rules(&rule("MSC42-C", "moved", &[])).unwrap_err();
+        assert!(err.contains("unknown variant"), "{err}");
     }
 }
