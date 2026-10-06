@@ -118,12 +118,6 @@ Barr Group says its standard "was developed to minimize bugs in firmware by
 focusing on practical rules that keep bugs out", and that in BARR-C:2018 "the
 stylistic coding rules have been fully harmonized with MISRA C: 2012"
 (barrgroup.com, *Embedded C Coding Standard*).
-Key embedded-specific areas:
-
-- Proper use of the ``volatile`` keyword for hardware registers and ISR-accessed variables.
-- File naming and organization conventions.
-- Comment standards.
-- Specific brace placement rules selected to reduce bugs.
 
 Candidate Rules for Implementation
 ====================================

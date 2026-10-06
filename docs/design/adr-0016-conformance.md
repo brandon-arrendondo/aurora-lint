@@ -108,7 +108,7 @@ the source before its edit and landed as its own commit.
 | ~~AEA ~417~~ | Padioleau's ~96% has no reference, and is a parse-success rate, not an error rate. **Fixed:** `022295eb` (reference added; the figure stays flagged unverified, full text unreachable). | 1 | done |
 | ~~AEA reference list (~1133–1161)~~ | Many entries are bare URLs or partial (no authors, title, venue or DOI); Soundiness lacks its venue; Bodik's venue is ESEC/FSE '97; Tartler can now be marked checked. **Fixed:** `da3fd5c2`. | 1 | done |
 | AEA ~996, ~515 | Lipp et al. §5.1 (the four-scenario reading of the 47–80% range; the abstract, which was read, gives the range) and the ACM badging page could not be reached in this pass (bot wall, paywall, 403). The ACM claim already carries an "unverified" note; the Lipp §5.1 reading is recorded as checked in an earlier pass and matches `docs/bibliography.rst`. No text changed. | 1 | open: re-check when reachable |
-| `docs/future-rulesets.rst` BARR-C "Key embedded-specific areas" | The four bullets (volatile, file naming, comments, braces) are not on Barr Group's page that the rest of the paragraph now quotes; they would need the standard's own text. | 1 | open: check against BARR-C:2018 or remove |
+| ~~`docs/future-rulesets.rst` BARR-C "Key embedded-specific areas"~~ | The four bullets (volatile, file naming, comments, braces) are not on Barr Group's page that the rest of the paragraph quotes, and the standard's own text was not available to check them. **Fixed:** removed; the section now cites only Barr Group's public page. | 1 | done |
 
 | where | what | cond | fix |
 |---|---|---|---|
