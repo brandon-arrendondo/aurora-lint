@@ -31,6 +31,7 @@ use crate::analyze::{const_eval, init_state};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::guard_dominance::strip_arg_wrappers;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -296,10 +297,8 @@ impl FormatStringAnalyzer {
             }
             return;
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.scan_functions_for_taint(&child, source);
-            }
+        for child in node.child_nodes() {
+            self.scan_functions_for_taint(&child, source);
         }
     }
 
@@ -339,19 +338,15 @@ impl FormatStringAnalyzer {
                         _ => {}
                     }
                 }
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        self.taint_flow_pass(&child, source);
-                    }
+                for child in node.child_nodes() {
+                    self.taint_flow_pass(&child, source);
                 }
                 return;
             }
             _ => {}
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.taint_flow_pass(&child, source);
-            }
+        for child in node.child_nodes() {
+            self.taint_flow_pass(&child, source);
         }
     }
 
@@ -458,18 +453,16 @@ impl FormatStringAnalyzer {
         // Look for function parameters and track them with positions
         if let Some(params) = declarator.child_by_field_name("parameters") {
             let mut param_idx = 0;
-            for i in 0..params.child_count() {
-                if let Some(param) = params.child(i) {
-                    if param.kind() == "parameter_declaration" {
-                        if let Some(param_declarator) = param.child_by_field_name("declarator") {
-                            let param_name = self.get_variable_name(&param_declarator, source);
-                            // Mark as function parameter (potentially tainted)
-                            self.function_parameters.insert(param_name.clone());
-                            // Track parameter position for inter-procedural taint
-                            self.param_positions.insert(param_name, param_idx);
-                        }
-                        param_idx += 1;
+            for param in params.child_nodes() {
+                if param.kind() == "parameter_declaration" {
+                    if let Some(param_declarator) = param.child_by_field_name("declarator") {
+                        let param_name = self.get_variable_name(&param_declarator, source);
+                        // Mark as function parameter (potentially tainted)
+                        self.function_parameters.insert(param_name.clone());
+                        // Track parameter position for inter-procedural taint
+                        self.param_positions.insert(param_name, param_idx);
                     }
+                    param_idx += 1;
                 }
             }
         }
@@ -482,15 +475,13 @@ impl FormatStringAnalyzer {
     fn get_param_names(&self, declarator: &Node, source: &str) -> Vec<String> {
         let mut names = Vec::new();
         if let Some(params) = declarator.child_by_field_name("parameters") {
-            for i in 0..params.child_count() {
-                if let Some(param) = params.child(i) {
-                    if param.kind() == "parameter_declaration" {
-                        if let Some(param_declarator) = param.child_by_field_name("declarator") {
-                            names.push(self.get_variable_name(&param_declarator, source));
-                        } else {
-                            // Keep positional alignment for unnamed parameters.
-                            names.push(String::new());
-                        }
+            for param in params.child_nodes() {
+                if param.kind() == "parameter_declaration" {
+                    if let Some(param_declarator) = param.child_by_field_name("declarator") {
+                        names.push(self.get_variable_name(&param_declarator, source));
+                    } else {
+                        // Keep positional alignment for unnamed parameters.
+                        names.push(String::new());
                     }
                 }
             }
@@ -502,18 +493,16 @@ impl FormatStringAnalyzer {
         // Look for main function parameters (argc, argv)
         if let Some(params) = declarator.child_by_field_name("parameters") {
             let mut param_count = 0;
-            for i in 0..params.child_count() {
-                if let Some(param) = params.child(i) {
-                    if param.kind() == "parameter_declaration" {
-                        if param_count == 1 {
-                            // Second parameter is argv
-                            if let Some(declarator) = param.child_by_field_name("declarator") {
-                                let param_name = self.get_variable_name(&declarator, source);
-                                self.user_input_vars.insert(param_name);
-                            }
+            for param in params.child_nodes() {
+                if param.kind() == "parameter_declaration" {
+                    if param_count == 1 {
+                        // Second parameter is argv
+                        if let Some(declarator) = param.child_by_field_name("declarator") {
+                            let param_name = self.get_variable_name(&declarator, source);
+                            self.user_input_vars.insert(param_name);
                         }
-                        param_count += 1;
                     }
+                    param_count += 1;
                 }
             }
         }
@@ -560,10 +549,8 @@ impl FormatStringAnalyzer {
                     }
                 }
                 // Unknown condition: fall through to normal recursive processing
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        self.analyze_node(&child, source, violations);
-                    }
+                for child in node.child_nodes() {
+                    self.analyze_node(&child, source, violations);
                 }
                 return;
             }
@@ -571,38 +558,34 @@ impl FormatStringAnalyzer {
         }
 
         // Recursively process child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.analyze_node(&child, source, violations);
-            }
+        for child in node.child_nodes() {
+            self.analyze_node(&child, source, violations);
         }
     }
 
     fn process_declaration(&mut self, node: &Node, source: &str) {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(declarator) = child.child_by_field_name("declarator") {
-                        let var_name = self.get_variable_name(&declarator, source);
+        for child in node.child_nodes() {
+            if child.kind() == "init_declarator" {
+                if let Some(declarator) = child.child_by_field_name("declarator") {
+                    let var_name = self.get_variable_name(&declarator, source);
 
-                        if let Some(value) = child.child_by_field_name("value") {
-                            if self.is_user_input_source(&value, source) {
+                    if let Some(value) = child.child_by_field_name("value") {
+                        if self.is_user_input_source(&value, source) {
+                            self.user_input_vars.insert(var_name);
+                        } else if self.is_safe_value(&value, source) {
+                            self.safe_vars.insert(var_name);
+                        } else if value.kind() == "identifier" {
+                            let source_var = ast_utils::get_node_text_owned(&value, source);
+                            if self.user_input_vars.contains(&source_var)
+                                || self.tainted_globals.contains(&source_var)
+                            {
                                 self.user_input_vars.insert(var_name);
-                            } else if self.is_safe_value(&value, source) {
+                            } else if self.safe_vars.contains(&source_var) {
                                 self.safe_vars.insert(var_name);
-                            } else if value.kind() == "identifier" {
-                                let source_var = ast_utils::get_node_text_owned(&value, source);
-                                if self.user_input_vars.contains(&source_var)
-                                    || self.tainted_globals.contains(&source_var)
-                                {
-                                    self.user_input_vars.insert(var_name);
-                                } else if self.safe_vars.contains(&source_var) {
-                                    self.safe_vars.insert(var_name);
-                                }
-                            } else if value.kind() == "call_expression" {
-                                if self.call_returns_tainted_data(&value, source) {
-                                    self.user_input_vars.insert(var_name);
-                                }
+                            }
+                        } else if value.kind() == "call_expression" {
+                            if self.call_returns_tainted_data(&value, source) {
+                                self.user_input_vars.insert(var_name);
                             }
                         }
                     }
@@ -782,11 +765,9 @@ impl FormatStringAnalyzer {
             "call_expression" => self.is_user_input_source(arg, source),
             _ => {
                 // Recursively check children
-                for i in 0..arg.child_count() {
-                    if let Some(child) = arg.child(i) {
-                        if self.is_tainted_argument(&child, source) {
-                            return true;
-                        }
+                for child in arg.child_nodes() {
+                    if self.is_tainted_argument(&child, source) {
+                        return true;
                     }
                 }
                 false
@@ -808,11 +789,9 @@ impl FormatStringAnalyzer {
             }
             "parenthesized_expression" => {
                 // (data + offset) → recurse into contents
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if !matches!(child.kind(), "(" | ")") {
-                            return self.get_base_variable(&child, source);
-                        }
+                for child in node.child_nodes() {
+                    if !matches!(child.kind(), "(" | ")") {
+                        return self.get_base_variable(&child, source);
                     }
                 }
                 None
@@ -844,11 +823,9 @@ impl FormatStringAnalyzer {
             }
             _ => {
                 // For any other node type, try to find an identifier child
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "identifier" {
-                            return Some(ast_utils::get_node_text_owned(&child, source));
-                        }
+                for child in node.child_nodes() {
+                    if child.kind() == "identifier" {
+                        return Some(ast_utils::get_node_text_owned(&child, source));
                     }
                 }
                 None
@@ -940,11 +917,9 @@ impl FormatStringAnalyzer {
             "call_expression" => self.call_returns_tainted_data(expr, source),
             _ => {
                 // Recursively check children
-                for i in 0..expr.child_count() {
-                    if let Some(child) = expr.child(i) {
-                        if self.expression_contains_taint(&child, source) {
-                            return true;
-                        }
+                for child in expr.child_nodes() {
+                    if self.expression_contains_taint(&child, source) {
+                        return true;
                     }
                 }
                 false
@@ -1282,11 +1257,9 @@ impl FormatStringAnalyzer {
             "binary_expression" => {
                 // These could involve string operations, need deeper inspection
                 // For now, check if any child is potentially unsafe
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if self.is_potentially_unsafe_format_string(&child, source) {
-                            return true;
-                        }
+                for child in node.child_nodes() {
+                    if self.is_potentially_unsafe_format_string(&child, source) {
+                        return true;
                     }
                 }
                 false
@@ -1388,15 +1361,13 @@ impl FormatStringAnalyzer {
                 }
             }
             _ => {
-                for i in 0..declarator.child_count() {
-                    if let Some(child) = declarator.child(i) {
-                        if child.kind() == "identifier" {
-                            return ast_utils::get_node_text_owned(&child, source);
-                        }
-                        let nested_name = self.get_function_name(&child, source);
-                        if nested_name != "unknown" {
-                            return nested_name;
-                        }
+                for child in declarator.child_nodes() {
+                    if child.kind() == "identifier" {
+                        return ast_utils::get_node_text_owned(&child, source);
+                    }
+                    let nested_name = self.get_function_name(&child, source);
+                    if nested_name != "unknown" {
+                        return nested_name;
                     }
                 }
                 "unknown".to_string()
@@ -1408,15 +1379,13 @@ impl FormatStringAnalyzer {
         match declarator.kind() {
             "identifier" => ast_utils::get_node_text_owned(declarator, source),
             "pointer_declarator" | "array_declarator" => {
-                for i in 0..declarator.child_count() {
-                    if let Some(child) = declarator.child(i) {
-                        if child.kind() == "identifier" {
-                            return ast_utils::get_node_text_owned(&child, source);
-                        }
-                        let nested_name = self.get_variable_name(&child, source);
-                        if nested_name != "unknown" {
-                            return nested_name;
-                        }
+                for child in declarator.child_nodes() {
+                    if child.kind() == "identifier" {
+                        return ast_utils::get_node_text_owned(&child, source);
+                    }
+                    let nested_name = self.get_variable_name(&child, source);
+                    if nested_name != "unknown" {
+                        return nested_name;
                     }
                 }
                 "unknown".to_string()

@@ -25,6 +25,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::BTreeMap;
 use tree_sitter::Node;
@@ -77,10 +78,8 @@ impl Fio22CChecker {
             }
             _ => {
                 // Recursively check children
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        self.check_node(&child, source, violations);
-                    }
+                for child in node.child_nodes() {
+                    self.check_node(&child, source, violations);
                 }
             }
         }
@@ -121,10 +120,8 @@ impl Fio22CChecker {
     /// Push a node's children onto `stack` in reverse order, so popping the
     /// stack visits them in original left-to-right document order.
     fn push_children_reversed<'a>(node: &Node<'a>, stack: &mut Vec<Node<'a>>) {
-        for i in (0..node.child_count()).rev() {
-            if let Some(child) = node.child(i) {
-                stack.push(child);
-            }
+        for child in node.child_nodes().collect::<Vec<_>>().into_iter().rev() {
+            stack.push(child);
         }
     }
 
@@ -252,11 +249,9 @@ impl Fio22CChecker {
                 if func_name == "fclose" || func_name == "close" {
                     // Extract the argument (the file variable being closed)
                     if let Some(args) = call.child_by_field_name("arguments") {
-                        for i in 0..args.child_count() {
-                            if let Some(arg) = args.child(i) {
-                                if arg.kind() == "identifier" {
-                                    return Some(get_node_text(&arg, source).to_string());
-                                }
+                        for arg in args.child_nodes() {
+                            if arg.kind() == "identifier" {
+                                return Some(get_node_text(&arg, source).to_string());
                             }
                         }
                     }
@@ -278,11 +273,9 @@ impl Fio22CChecker {
                     if call_text.contains("FD_CLOEXEC") || call_text.contains("F_SETFD") {
                         // Extract the file descriptor argument (first arg)
                         if let Some(args) = call.child_by_field_name("arguments") {
-                            for i in 0..args.child_count() {
-                                if let Some(arg) = args.child(i) {
-                                    if arg.kind() == "identifier" {
-                                        return Some(get_node_text(&arg, source).to_string());
-                                    }
+                            for arg in args.child_nodes() {
+                                if arg.kind() == "identifier" {
+                                    return Some(get_node_text(&arg, source).to_string());
                                 }
                             }
                         }
@@ -325,12 +318,10 @@ impl Fio22CChecker {
     fn extract_assigned_variable(&self, node: &Node, source: &str) -> Option<String> {
         // For declarations: FILE *fp = fopen(...)
         if node.kind() == "declaration" {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "init_declarator" {
-                        if let Some(declarator) = child.child_by_field_name("declarator") {
-                            return self.extract_identifier_from_declarator(&declarator, source);
-                        }
+            for child in node.child_nodes() {
+                if child.kind() == "init_declarator" {
+                    if let Some(declarator) = child.child_by_field_name("declarator") {
+                        return self.extract_identifier_from_declarator(&declarator, source);
                     }
                 }
             }
