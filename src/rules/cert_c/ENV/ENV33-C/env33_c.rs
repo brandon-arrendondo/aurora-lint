@@ -43,6 +43,16 @@
 //! - Resolves macro aliases (#define SYSTEM system) via project context
 //! - These functions are inherently risky and should be avoided
 //! - Suggest safer alternatives like exec() family functions
+//!
+//! ## Presets
+//! - `system(NULL)`, which only asks whether a command processor exists, is
+//!   never reported (CERT ENV33-C-EX1).
+//! - The strict policy reports every other call, as CERT's page is written
+//!   (ADR-0001).
+//! - The default policy also withholds a call whose command no untrusted
+//!   input can reach: the named option
+//!   `env33_locally_constructed_command_allowed` (ADR-0015 Decision 7;
+//!   `docs/options.rst`).
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg;
@@ -51,6 +61,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::Severity;
+use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -68,7 +79,14 @@ pub struct Env33C {
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// Reverse call graph: callee_name → caller names.
     callers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
+    /// `env33_locally_constructed_command_allowed` decides whether a command
+    /// no untrusted input reaches is reported.
+    settings: RefCell<Arc<AnalysisSettings>>,
 }
+
+/// The option that withholds a report on a command no untrusted input
+/// reaches (`settings::OPTIONS`).
+const LOCALLY_CONSTRUCTED_OPTION: &str = "env33_locally_constructed_command_allowed";
 
 impl Env33C {
     pub fn new() -> Self {
@@ -78,6 +96,7 @@ impl Env33C {
             current_aliases: RefCell::new(HashMap::new()),
             function_summaries: RefCell::default(),
             callers: RefCell::default(),
+            settings: RefCell::new(Arc::new(AnalysisSettings::default())),
         }
     }
 }
@@ -111,6 +130,10 @@ impl CertRule for Env33C {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
 
         *self.callers.borrow_mut() = context.callers.clone();
+    }
+
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        *self.settings.borrow_mut() = Arc::clone(settings);
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -167,13 +190,15 @@ impl Env33C {
                 let resolved = self.resolve_name(&func_name);
 
                 if self.is_dangerous_function(&resolved) {
-                    // Check if the call can be suppressed:
-                    // 1. Direct string literal argument → safe (no injection possible)
-                    // 2. Local variable in a function with no tainted input sources → safe
-                    // 3. Function parameter → keep flagging (caller may pass tainted data)
-                    if self.is_safe_command_call(&call, source) {
-                        // Skip — command is built from constants with no external input
-                    } else {
+                    // `system(NULL)` only asks whether a command processor
+                    // exists (CERT ENV33-C-EX1): never reported.
+                    // A command no untrusted input reaches is reported only
+                    // when `env33_locally_constructed_command_allowed` is
+                    // off, as under the strict policy (ADR-0001).
+                    let withheld = Self::asks_for_command_processor(&resolved, &call, source)
+                        || (self.settings.borrow().flag(LOCALLY_CONSTRUCTED_OPTION)
+                            && self.is_safe_command_call(&call, source));
+                    if !withheld {
                         let suggestion = match resolved.as_str() {
                             "system" => "Use the exec() family of functions (execl, execv, etc.) instead, which provide better control and security",
                             "popen" | "_popen" => "Use pipe() and fork() with exec() family functions for better security",
@@ -208,7 +233,27 @@ impl Env33C {
         }
     }
 
+    /// `system(NULL)`, or with any other null pointer constant: the call
+    /// that only asks whether a command processor is available (CERT
+    /// ENV33-C-EX1). `popen` has no such form.
+    fn asks_for_command_processor(resolved: &str, call: &Node, source: &str) -> bool {
+        resolved == "system"
+            && call
+                .child_by_field_name("arguments")
+                .and_then(|args| {
+                    let mut cursor = args.walk();
+                    let first = args
+                        .named_children(&mut cursor)
+                        .find(|a| a.kind() != "comment");
+                    first
+                })
+                .is_some_and(|arg| {
+                    crate::analyze::side_effects::is_null_pointer_constant(&arg, source)
+                })
+    }
+
     /// Check if a system()/popen() call is safe (no tainted input flows to the command).
+    /// Consulted only under `env33_locally_constructed_command_allowed`.
     ///
     /// Returns true (safe, suppress) when the argument is a local variable in a
     /// function that has no tainted input sources AND no pointer/string parameters

@@ -167,7 +167,10 @@ const CONFORMING_LIBCS: &[Libc] = &[
 /// value their source derives. Each was added after runs had already been
 /// recorded, so settings that merely take the implied value keep the hash
 /// those runs carry.
-const HASHED_ONLY_WHEN_OVERRIDDEN: &[&str] = &["library_macros_evaluate_once"];
+const HASHED_ONLY_WHEN_OVERRIDDEN: &[&str] = &[
+    "library_macros_evaluate_once",
+    "env33_locally_constructed_command_allowed",
+];
 
 /// The value `o` takes from its source before any override.
 fn derived_value(
@@ -255,6 +258,28 @@ pub static OPTIONS: &[OptionSpec] = &[
                 Rule 13.5 flag only callees they can show are impure. clang-tidy's \
                 bugprone-assert-side-effect ignores calls by default. PC-lint and Parasoft's \
                 CERT_C-PRE31-c count every call, as the strict policy does.",
+    },
+    OptionSpec {
+        name: "env33_locally_constructed_command_allowed",
+        axis: Axis::Policy,
+        scope: Scope::RuleSpecific("ENV33-C"),
+        source: Source::Policy {
+            default: true,
+            strict: false,
+        },
+        oracle_tag: "command-untainted",
+        summary: "ENV33-C: a call to system(), popen() or an equivalent is not reported when \
+                  the command is not a string literal and no untrusted input can reach it: \
+                  the calling function reads none (no recv, fgets, getenv, read and the like) \
+                  and either takes no pointer or array parameter, or is static with its \
+                  address never taken and every caller, up to ones taking no parameters, \
+                  reads none and returns no tainted value (closed_program does not widen \
+                  this: ADR-0011). Off, every call is reported as CERT's page is written. \
+                  system(NULL) (CERT EX1) is not reported under either value.",
+        basis: "Taint-tracking command-injection checkers report a command only when untrusted \
+                data reaches it: CodeQL's cpp/command-line-injection. clang-tidy's \
+                cert-env33-c reports every call except system(NULL), as the strict policy \
+                does (ADR-0001).",
     },
     OptionSpec {
         name: "closed_program",
