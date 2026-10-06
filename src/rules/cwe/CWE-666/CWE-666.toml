@@ -1,0 +1,25 @@
+[metadata]
+id = "CWE-666"
+type = "weakness"
+category = "CWE"
+number = 666
+title = "Operation on a resource in the wrong phase of its lifetime (socket operation ordering)"
+description = """
+Socket lifecycle operations must follow the correct order:
+socket() → bind() → listen() → accept().
+Calling accept() before listen() or bind(), or listen() before bind(),
+results in undefined behavior or silent failure.
+"""
+severity = "High"
+likelihood = "Probable"
+priority = "P6"
+level = "L2"
+cert_version = "Custom"
+last_modified = "Apr 01, 2026"
+
+[rules.cwe.CWE-666]
+enabled = true
+
+[references]
+wiki = "https://cwe.mitre.org/data/definitions/666.html"
+cwe = ["CWE-666"]

@@ -1,0 +1,25 @@
+[metadata]
+id = "CWE-327"
+type = "weakness"
+category = "CWE"
+number = 327
+title = "Use of a broken or risky cryptographic algorithm"
+description = """
+Using deprecated or weak cryptographic algorithms such as DES, 3DES, RC2, RC4,
+or RC5 exposes encrypted data to feasible brute-force or cryptanalytic attacks.
+Programs should use modern, approved algorithms such as AES-128 or AES-256
+instead. This applies to key derivation, encryption, and decryption operations.
+"""
+severity = "High"
+likelihood = "Probable"
+priority = "P6"
+level = "L2"
+cert_version = "Custom"
+last_modified = "Apr 01, 2026"
+
+[rules.cwe.CWE-327]
+enabled = true
+
+[references]
+wiki = "https://cwe.mitre.org/data/definitions/327.html"
+cwe = ["CWE-327"]

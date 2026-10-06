@@ -100,7 +100,7 @@ class TestCweEntriesAreJulietCwes(unittest.TestCase):
             if d.is_dir() and any(d.rglob("*.c")):
                 with_c.add("CWE-" + d.name.split("_")[0][3:])
         bad = []
-        for toml_path in sorted((REPO / "src" / "rules" / "cert_c").rglob("*-C.toml")):
+        for toml_path in [p for p in gen.rule_toml_paths(REPO) if p.name != "rules-all.toml"]:
             refs = tomllib.loads(toml_path.read_text()).get("references", {})
             bad += [f"{toml_path.stem}: {c}" for c in refs.get("cwe", []) if c not in with_c]
         self.assertEqual(bad, [])

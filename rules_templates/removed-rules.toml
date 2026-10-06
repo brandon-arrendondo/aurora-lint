@@ -37,4 +37,24 @@
 #   moved_to = "CWE-327"              # required for "moved-to-cwe", and
 #                                     # refused for any other disposition
 #
-# No rule has been removed yet.
+
+[[removed]]
+id = "MSC42-C"
+removed_in = "0.7.0"
+disposition = "moved-to-cwe"
+reason = "MSC42-C is not a CERT C identifier; the weak-cipher check is unchanged"
+moved_to = "CWE-327"
+
+[[removed]]
+id = "POS55-C"
+removed_in = "0.7.0"
+disposition = "moved-to-cwe"
+reason = "CERT C never published a POS55-C; the socket-ordering check is unchanged"
+moved_to = "CWE-666"
+
+[[removed]]
+id = "WIN05-C"
+removed_in = "0.7.0"
+disposition = "moved-to-cwe"
+reason = "CERT C never published a WIN05-C; the check is unchanged"
+moved_to = "CWE-428"

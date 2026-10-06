@@ -5,6 +5,9 @@
 /// BISSELL-specific rules (`BRULE-###`) beyond the CERT C standard set.
 pub mod brules;
 mod cert_c;
+/// The CWE ruleset (`CWE-###`): detectors for a weakness CERT C has no
+/// identifier for, reported under the weakness's CWE id.
+pub mod cwe;
 /// `--list-rules`: shipped and removed rules.
 pub mod listing;
 
@@ -14,7 +17,8 @@ use crate::analyze::value_range::RangeAnalysisResult;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
-/// One CERT C rule or BISSELL-specific rule (`BRULE-###`) checker.
+/// One CERT C rule, BISSELL-specific rule (`BRULE-###`) or CWE-ruleset rule
+/// (`CWE-###`) checker.
 pub trait CertRule {
     /// This rule's identifier (e.g. `"ARR30-C"`).
     fn rule_id(&self) -> &'static str;

@@ -156,6 +156,12 @@ ENABLED_PATTERNS = [
     r"(\d{3})\s+enabled\s*/\s*\d+\s+implemented",
     r"rules,\s+(\d{3})\s+enabled by default",
 ]
+# The CWE ruleset is counted on its own: its rules are not CERT C rules, so
+# they are in none of the counts above.
+CWE_PATTERNS = [
+    r"(\d+)\s+CWE[- ]ruleset rules?",
+    r"CWE ruleset(?: of|:)\s+(\d+)\s+rules?",
+]
 IMPLEMENTED_PATTERNS = [
     r"(\d{3})\s+rules? (?:are )?implemented",
     r"\((\d{3})\s+implemented\)",
@@ -177,6 +183,17 @@ def manifest_counts(text: str) -> tuple[int, int]:
         r"^\[rules\.cert_c\.([A-Z]+[0-9]+-C)\]\n((?:(?!^\[).*\n)*)", text, re.M)
     if not blocks:
         raise SystemExit(f"no [rules.cert_c.*] blocks found in {MANIFEST}")
+    enabled = sum(
+        1 for _, body in blocks
+        if re.search(r"^\s*enabled\s*=\s*true", body, re.M))
+    return len(blocks), enabled
+
+
+def cwe_counts(text: str) -> tuple[int, int]:
+    """[rules.cwe.<ID>] blocks in the default manifest, and how many of
+    them are enabled."""
+    blocks = re.findall(
+        r"^\[rules\.cwe\.(CWE-[0-9]+)\]\n((?:(?!^\[).*\n)*)", text, re.M)
     enabled = sum(
         1 for _, body in blocks
         if re.search(r"^\s*enabled\s*=\s*true", body, re.M))
@@ -236,12 +253,15 @@ def git_head() -> str:
 
 def export_facts() -> dict:
     tracked, enabled = manifest_counts(MANIFEST.read_text())
+    cwe_total, cwe_enabled = cwe_counts(MANIFEST.read_text())
     macro_rules = macro_expand_consumers()
     return {
         "source_commit": git_head(),
         "rules_total": tracked,
         "rules_enabled": enabled,
         "rules_disabled": tracked - enabled,
+        "cwe_rules_total": cwe_total,
+        "cwe_rules_enabled": cwe_enabled,
         "rules_removed": len(removed_rule_ids()),
         "rules_removed_ids": removed_rule_ids(),
         "macro_expand_rule_count": len(macro_rules),
@@ -254,9 +274,11 @@ def export_facts() -> dict:
 
 def lint() -> int:
     tracked, enabled = manifest_counts(MANIFEST.read_text())
+    _, cwe_enabled = cwe_counts(MANIFEST.read_text())
     print(f"{MANIFEST.relative_to(ROOT)}: "
           f"{tracked} tracked, {enabled} enabled by default (== implemented, "
-          f"per this project's convention -- see the module docstring)")
+          f"per this project's convention -- see the module docstring); "
+          f"{cwe_enabled} CWE-ruleset rule(s) enabled")
 
     # A removed rule is gone from the tool, so a block for it here would put
     # it back in both counts while the loader drops it with a warning.
@@ -280,7 +302,8 @@ def lint() -> int:
             for pats, expect, what in (
                     (TRACKED_PATTERNS, tracked, "tracked"),
                     (ENABLED_PATTERNS, enabled, "enabled"),
-                    (IMPLEMENTED_PATTERNS, enabled, "implemented")):
+                    (IMPLEMENTED_PATTERNS, enabled, "implemented"),
+                    (CWE_PATTERNS, cwe_enabled, "CWE-ruleset")):
                 for pat in pats:
                     for m in re.finditer(pat, line, re.M):
                         checked += 1

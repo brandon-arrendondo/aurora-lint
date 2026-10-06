@@ -63,9 +63,10 @@ or more; the JPL standard below later combined them with MISRA-C:2004.
    ``BRULE-065`` (no excessive pointer indirection) flags a declaration with
    more than two levels of pointer indirection. That is the JPL standard's
    threshold (D-60411 Rule 26, from MISRA-C:2004 Rule 17.5), not rule 9's
-   stricter one level. They are the only non-CERT-C
-   rules aurora-lint ships, and they are enabled through
-   ``src/rules/brules/rules-all.toml`` rather than the CERT C manifests. The
+   stricter one level. They and the CWE ruleset (``src/rules/cwe/``) are the
+   only non-CERT-C rules aurora-lint ships. They are enabled through
+   ``src/rules/brules/rules-all.toml`` rather than the CERT C manifests,
+   while the CWE ruleset is part of the default manifest. The
    rest of the Power of Ten remains a candidate: rules 1, 2, 4, 6 and 8 are
    plausibly checkable with the AST and CFG infrastructure already here, while
    5 (assertion density) and 10 (build flags) are not really analyzer rules at

@@ -231,9 +231,9 @@ pub fn find_removed(id: &str) -> Option<&'static RemovedRule> {
 }
 
 /// Check `removed` against the rules the tool ships: a removed rule is not
-/// also shipped, and every rule a `covered_by` names is shipped, so a typo
-/// or a rule removed in its turn is caught rather than published as the
-/// replacement.
+/// also shipped, and every rule a `covered_by` or `moved_to` names is
+/// shipped, so a typo or a rule removed in its turn is caught rather than
+/// published as the replacement.
 pub fn check_against_shipped(
     removed: &[RemovedRule],
     shipped: &std::collections::HashSet<&str>,
@@ -254,6 +254,14 @@ pub fn check_against_shipped(
                 };
                 return Err(format!(
                     "removed rule {} is covered by {cover}, which {what}",
+                    rule.id
+                ));
+            }
+        }
+        if let Some(target) = &rule.moved_to {
+            if !shipped.contains(target.as_str()) {
+                return Err(format!(
+                    "removed rule {} moved to {target}, which is not a rule the tool ships",
                     rule.id
                 ));
             }
@@ -380,6 +388,18 @@ mod tests {
             let err = parse_removed_rules(&toml).unwrap_err();
             assert!(err.contains(expect), "{toml}: {err}");
         }
+    }
+
+    #[test]
+    fn a_move_to_a_rule_that_is_not_shipped_is_refused() {
+        let toml = format!(
+            "{}moved_to = \"CWE-328\"\n",
+            rule("MSC42-C", "moved-to-cwe", &[])
+        );
+        let removed = parse_removed_rules(&toml).unwrap();
+        let shipped: std::collections::HashSet<&str> = ["CWE-327"].into_iter().collect();
+        let err = check_against_shipped(&removed, &shipped).unwrap_err();
+        assert!(err.contains("moved to CWE-328, which is not"), "{err}");
     }
 
     #[test]

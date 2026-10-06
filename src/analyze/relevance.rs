@@ -328,23 +328,25 @@ pub fn generate_manifest_toml(base: &RuleManifest, profile: &ProjectProfile) -> 
         base.metadata.cert_version
     ));
 
-    let mut rule_ids: Vec<&String> = base
+    let mut rule_ids: Vec<(&String, &str)> = base
         .rules
-        .cert_c
-        .keys()
-        .chain(base.rules.brules.keys())
+        .families()
+        .into_iter()
+        .flat_map(|(family, rules)| rules.keys().map(move |id| (id, family)))
         .collect();
     rule_ids.sort();
-    rule_ids.dedup();
+    rule_ids.dedup_by(|a, b| a.0 == b.0);
 
-    for rule_id in rule_ids {
+    for (rule_id, family) in rule_ids {
         let Some(config) = base.get_rule(rule_id) else {
             continue;
         };
 
         let (enabled, comment) = gate_rule(rule_id, config.enabled, profile);
 
-        out.push_str("\n[rules.cert_c.");
+        out.push_str("\n[rules.");
+        out.push_str(family);
+        out.push('.');
         out.push_str(rule_id);
         out.push_str("]\n");
         out.push_str("enabled = ");

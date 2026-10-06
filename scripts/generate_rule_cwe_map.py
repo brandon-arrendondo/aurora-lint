@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Generate a mapping between CERT C rule IDs and CWE IDs from TOML metadata.
+Generate a mapping between rule IDs and CWE IDs from TOML metadata.
 
-Walks src/rules/cert_c/**/*.toml, extracts [metadata].id and its two CWE
+Walks the rule TOMLs of every ruleset the default manifest ships
+(src/rules/cert_c/ and the CWE ruleset, src/rules/cwe/), extracts [metadata].id and its two CWE
 lists, and produces data/rule_cwe_map.json with forward and reverse mappings.
 
 - [references].cwe: CWEs whose Juliet test cases exercise what the rule checks
@@ -39,8 +40,32 @@ def _normalize(cwes: list[str]) -> list[str]:
     return normalized
 
 
+# The rulesets whose rules the default manifest ships, by the family name
+# their manifest blocks are written under (`[rules.<family>.<ID>]`).
+RULESETS = ("cert_c", "cwe")
+
+
+def rule_toml_paths(project_dir: Path) -> list[Path]:
+    """Every rule TOML of every ruleset in RULESETS."""
+    return sorted(
+        path
+        for ruleset in RULESETS
+        for path in (project_dir / "src" / "rules" / ruleset).rglob("*.toml"))
+
+
+def rule_families(project_dir: Path) -> dict[str, str]:
+    """Each rule id's family, read from its TOML's [rules.<family>] table."""
+    families = {}
+    for toml_path in rule_toml_paths(project_dir):
+        with open(toml_path, "rb") as f:
+            rules = tomllib.load(f).get("rules", {})
+        for family, ids in rules.items():
+            for rule_id in ids:
+                families.setdefault(rule_id, family)
+    return families
+
+
 def generate_map(project_dir: Path) -> dict:
-    toml_dir = project_dir / "src" / "rules" / "cert_c"
     rule_to_cwes: dict[str, list[str]] = {}
     cwe_to_rules: dict[str, list[str]] = defaultdict(list)
     rule_to_related: dict[str, list[str]] = {}
@@ -48,7 +73,7 @@ def generate_map(project_dir: Path) -> dict:
     toml_count = 0
     rules_with_cwe = 0
 
-    for toml_path in sorted(toml_dir.rglob("*.toml")):
+    for toml_path in rule_toml_paths(project_dir):
         toml_count += 1
         try:
             with open(toml_path, "rb") as f:
@@ -103,6 +128,7 @@ def generate_cwe_manifests(project_dir: Path, cwe_to_rules: dict[str, list[str]]
     """
     manifest_dir = project_dir / "rules_templates" / "cwe"
     manifest_dir.mkdir(parents=True, exist_ok=True)
+    families = rule_families(project_dir)
 
     # A CWE with no mapped rule left must lose its manifest, or fast mode keeps
     # running the rules it used to map.
@@ -121,7 +147,7 @@ def generate_cwe_manifests(project_dir: Path, cwe_to_rules: dict[str, list[str]]
             f'',
         ]
         for rule in sorted(rules):
-            lines.append(f'[rules.cert_c."{rule}"]')
+            lines.append(f'[rules.{families.get(rule, "cert_c")}."{rule}"]')
             lines.append(f'enabled = true')
             lines.append(f'')
 

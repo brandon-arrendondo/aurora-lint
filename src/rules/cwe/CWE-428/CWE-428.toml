@@ -1,0 +1,28 @@
+[metadata]
+id = "CWE-428"
+type = "weakness"
+category = "CWE"
+number = 428
+title = "Unquoted search path or element"
+description = """
+Programs should follow the principle of least privilege. On Windows, this means:
+(1) Executable paths in CreateProcess must be quoted when they contain spaces,
+to prevent path interception attacks where an attacker places a malicious
+executable at an ambiguous path (e.g., C:\\Program.exe).
+(2) Registry operations should use HKEY_CURRENT_USER instead of
+HKEY_LOCAL_MACHINE when possible, as HKEY_LOCAL_MACHINE requires
+administrator privileges and violates least privilege.
+"""
+severity = "High"
+likelihood = "Probable"
+priority = "P6"
+level = "L2"
+cert_version = "Custom"
+last_modified = "Apr 01, 2026"
+
+[rules.cwe.CWE-428]
+enabled = true
+
+[references]
+wiki = "https://cwe.mitre.org/data/definitions/428.html"
+cwe = ["CWE-272"]

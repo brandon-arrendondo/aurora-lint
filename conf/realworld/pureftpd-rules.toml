@@ -738,9 +738,6 @@ enabled = true
 [rules.cert_c.MSC41-C]
 enabled = true
 
-[rules.cert_c.MSC42-C]
-enabled = true
-
 [rules.cert_c.POS01-C]
 enabled = true
 
@@ -799,9 +796,6 @@ enabled = true
 enabled = true
 
 [rules.cert_c.POS54-C]
-enabled = true
-
-[rules.cert_c.POS55-C]
 enabled = true
 
 [rules.cert_c.PRE00-C]
@@ -936,8 +930,16 @@ enabled = true
 [rules.cert_c.WIN04-C]
 enabled = true
 
-[rules.cert_c.WIN05-C]
+[rules.cert_c.WIN30-C]
 enabled = true
 
-[rules.cert_c.WIN30-C]
+# The CWE ruleset (src/rules/cwe/).
+
+[rules.cwe.CWE-327]
+enabled = true
+
+[rules.cwe.CWE-428]
+enabled = true
+
+[rules.cwe.CWE-666]
 enabled = true

@@ -36,6 +36,15 @@
     "CON43-C": [
       "CWE-366"
     ],
+    "CWE-327": [
+      "CWE-327"
+    ],
+    "CWE-428": [
+      "CWE-272"
+    ],
+    "CWE-666": [
+      "CWE-666"
+    ],
     "DCL10-C": [
       "CWE-685"
     ],
@@ -240,12 +249,6 @@
       "CWE-259",
       "CWE-321"
     ],
-    "MSC42-C": [
-      "CWE-327"
-    ],
-    "POS55-C": [
-      "CWE-666"
-    ],
     "SIG30-C": [
       "CWE-479"
     ],
@@ -266,9 +269,6 @@
     ],
     "WIN00-C": [
       "CWE-114"
-    ],
-    "WIN05-C": [
-      "CWE-272"
     ]
   },
   "cwe_to_rules": {
@@ -355,13 +355,13 @@
       "MSC41-C"
     ],
     "CWE-272": [
-      "WIN05-C"
+      "CWE-428"
     ],
     "CWE-321": [
       "MSC41-C"
     ],
     "CWE-327": [
-      "MSC42-C"
+      "CWE-327"
     ],
     "CWE-338": [
       "MSC30-C"
@@ -493,7 +493,7 @@
       "EXP33-C"
     ],
     "CWE-666": [
-      "POS55-C"
+      "CWE-666"
     ],
     "CWE-667": [
       "CON01-C"
@@ -1064,7 +1064,7 @@
     ]
   },
   "stats": {
-    "toml_count": 312,
+    "toml_count": 313,
     "rules_with_cwe": 73,
     "unique_cwes": 79,
     "rules_with_related_cwe": 120

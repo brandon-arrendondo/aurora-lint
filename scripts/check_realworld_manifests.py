@@ -27,7 +27,7 @@ WHAT IT CHECKS
 
 Against the rule ids in ``rules_templates/rules-all.toml``:
 
-1. **Missing** -- a rule with no ``[rules.cert_c.<ID>]`` block in a real-world
+1. **Missing** -- a rule with no ``[rules.cert_c.<ID>]`` (or ``[rules.cwe.<ID>]``) block in a real-world
    manifest. This is the defect above: adding a rule under ``src/rules/cert_c/``
    fails this check until every manifest carries a decision for it, which is
    also how a new rule stops being silently dark on the real-world suite.
@@ -70,7 +70,9 @@ BASE = ROOT / "rules_templates" / "rules-all.toml"
 REALWORLD_DIR = ROOT / "conf" / "realworld"
 REMOVED = ROOT / "rules_templates" / "removed-rules.toml"
 
-BLOCK_RE = re.compile(r"^\[rules\.cert_c\.([A-Z]+[0-9]+-C)\]\s*$")
+# Every rule family the default manifest ships: CERT C and the CWE ruleset.
+FAMILIES = ("cert_c", "cwe")
+BLOCK_RE = re.compile(r"^\[rules\.(?:cert_c\.([A-Z]+[0-9]+-C)|cwe\.(CWE-[0-9]+))\]\s*$")
 DISABLED_RE = re.compile(r"^\s*enabled\s*=\s*false")
 
 
@@ -84,7 +86,8 @@ def removed_rules() -> dict[str, dict]:
 
 def rule_ids(path: Path) -> set[str]:
     with path.open("rb") as fh:
-        return set(tomllib.load(fh).get("rules", {}).get("cert_c", {}))
+        rules = tomllib.load(fh).get("rules", {})
+    return {rule_id for family in FAMILIES for rule_id in rules.get(family, {})}
 
 
 DATA_MODELS = {"iso", "ilp32", "lp64", "llp64"}
@@ -106,7 +109,7 @@ def undocumented_disables(path: Path) -> list[str]:
     above the block header -- all three are used in the existing manifests.
     """
     lines = path.read_text().splitlines()
-    starts = [(i, m.group(1)) for i, ln in enumerate(lines)
+    starts = [(i, m.group(1) or m.group(2)) for i, ln in enumerate(lines)
               if (m := BLOCK_RE.match(ln))]
 
     bad = []
@@ -163,7 +166,7 @@ def main() -> int:
     base_ids = rule_ids(BASE)
     removed = removed_rules()
     if not base_ids:
-        print(f"no [rules.cert_c.*] blocks in {BASE}", file=sys.stderr)
+        print(f"no [rules.cert_c.*] or [rules.cwe.*] blocks in {BASE}", file=sys.stderr)
         return 1
 
     manifests = sorted(REALWORLD_DIR.glob("*-rules.toml"))

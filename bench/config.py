@@ -107,7 +107,8 @@ CWE_SUBSET_RUN_SUFFIX = "cwe"
 
 
 def load_rule_ids() -> set[str]:
-    """Every CERT-C rule id sqc can emit, from rules-all.toml's section keys.
+    """Every rule id sqc can emit, from rules-all.toml's section keys: the
+    CERT C rules and the CWE ruleset's.
 
     This is the full IMPLEMENTED set, not the currently-enabled subset: a rule
     disabled in the default manifest is still one a run can be configured to
@@ -116,7 +117,8 @@ def load_rule_ids() -> set[str]:
     """
     import tomllib
     with RULES_ALL_TOML.open("rb") as f:
-        return set(tomllib.load(f)["rules"]["cert_c"])
+        rules = tomllib.load(f)["rules"]
+    return set(rules["cert_c"]) | set(rules.get("cwe", {}))
 
 
 def opam_wrap(argv: list[str]) -> list[str]:

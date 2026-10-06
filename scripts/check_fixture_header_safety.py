@@ -8,7 +8,7 @@ this repo owns the fixtures but not ADR-0007 or the disclosure-safety
 policy (that's benchmark_adjudication's scripts/validate.py). This is a
 one-off audit pass, run by hand.
 
-Scope: `src/rules/cert_c/**/tests/**/*.c`, the actual per-rule fixture
+Scope: `src/rules/{cert_c,cwe,brules}/**/tests/**/*.c`, the actual per-rule fixture
 files (`tests/fixtures/**` is CLI-runner plumbing with no descriptive
 comments and isn't scanned).
 
@@ -38,7 +38,12 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-FIXTURE_GLOB = "src/rules/cert_c/*/*/tests/**/*.c"
+# CERT C has a category level; the CWE ruleset and brules are flat.
+FIXTURE_GLOBS = (
+    "src/rules/cert_c/*/*/tests/**/*.c",
+    "src/rules/cwe/*/tests/**/*.c",
+    "src/rules/brules/*/tests/**/*.c",
+)
 
 ATTRIBUTE_STRIP_RE = re.compile(r"\[\[\s*(?:reproducible|unsequenced)\s*\]\]")
 RULE_TITLE_LINE_RE = re.compile(r"^\s*\*\s*Rule:\s*[A-Z]+[0-9]+-C\s*-.*$", re.M)
@@ -96,7 +101,7 @@ def main() -> None:
     total = 0
     hit_files: list[tuple[Path, set[str]]] = []
 
-    for path in sorted(REPO_ROOT.glob(FIXTURE_GLOB)):
+    for path in sorted(p for g in FIXTURE_GLOBS for p in REPO_ROOT.glob(g)):
         total += 1
         source = path.read_text(errors="replace")
         if is_wiki_sourced(path, source):

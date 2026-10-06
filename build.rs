@@ -42,6 +42,8 @@ struct ValidatedRulesTable {
     cert_c: HashMap<String, ValidatedRuleConfig>,
     #[serde(default)]
     brules: HashMap<String, ValidatedRuleConfig>,
+    #[serde(default)]
+    cwe: HashMap<String, ValidatedRuleConfig>,
 }
 
 #[derive(Deserialize)]
@@ -89,7 +91,7 @@ fn main() {
 
     // Keep the distributed rules_templates/ manifests (the CLI's embedded
     // built-in default, and the real-world benchmark's manifest) in sync
-    // with src/rules/cert_c/rules-all.toml. Without this, newly added rules
+    // with src/rules/{cert_c,cwe}/rules-all.toml. Without this, newly added rules
     // silently never run for end users or in the real-world benchmark even
     // though they build and pass their own tests -- this exact drift went
     // unnoticed from v0.3.51 through v0.4.139 (26 rules missing).
@@ -141,7 +143,12 @@ fn validate_rule_manifest(path: &std::path::Path, content: &str) -> Result<()> {
         .file_stem()
         .and_then(|s| s.to_str())
         .ok_or_else(|| anyhow::anyhow!("Invalid manifest file name: {}", path.display()))?;
-    let ids: Vec<&String> = table.cert_c.keys().chain(table.brules.keys()).collect();
+    let ids: Vec<&String> = table
+        .cert_c
+        .keys()
+        .chain(table.brules.keys())
+        .chain(table.cwe.keys())
+        .collect();
     match ids.as_slice() {
         [id] if **id == *stem => Ok(()),
         [id] => anyhow::bail!(
@@ -324,7 +331,7 @@ fn generate_rules_all_toml() -> Result<()> {
 }
 
 /// Regenerate `rules_templates/rules-all.toml` from the just-generated
-/// `src/rules/cert_c/rules-all.toml`. It is `include_str!`'d into the
+/// `src/rules/cert_c/rules-all.toml` and `src/rules/cwe/rules-all.toml`. It is `include_str!`'d into the
 /// aurora-lint binary as its built-in default manifest (`src/main.rs:
 /// DEFAULT_MANIFEST_TOML`) and is also the full-mode Juliet manifest
 /// (`bench/config.py: MANIFEST_JULIET_FULL`), so generating it here keeps both
@@ -358,7 +365,22 @@ fn sync_rules_templates() -> Result<()> {
     let body_start = src_content.find("[rules.").ok_or_else(|| {
         anyhow::anyhow!("{} has no [rules.*] section to extract", src_path.display())
     })?;
-    let body = &src_content[body_start..];
+    let mut body = src_content[body_start..].to_string();
+
+    // The CWE ruleset ships enabled by default alongside CERT C: its rules
+    // are detectors that moved out of `cert_c` when their ids turned out not
+    // to be CERT C's, and moving them must not switch them off. (`brules`
+    // stays opt-in, so it is not appended.)
+    let cwe_path = PathBuf::from("src/rules/cwe/rules-all.toml");
+    if let Ok(cwe_content) = fs::read_to_string(&cwe_path) {
+        if let Some(start) = cwe_content.find("[rules.") {
+            if !body.ends_with("\n\n") {
+                body.push('\n');
+            }
+            body.push_str(&cwe_content[start..]);
+        }
+        println!("cargo:rerun-if-changed={}", cwe_path.display());
+    }
 
     const HEADER: &str = "[metadata]\nname = \"CERT C Rules Configuration\"\nversion = \"1.0.0\"\ndescription = \"Configuration for CERT C coding standards compliance checking\"\ncert_version = \"2016\"\n\n";
 
@@ -383,11 +405,13 @@ fn generate_integration_tests() -> Result<()> {
     let mut rule_modules = Vec::new();
 
     generate_cert_c_tests(&tests_dir, &mut rule_modules)?;
-    generate_brules_tests(&tests_dir, &mut rule_modules)?;
+    generate_flat_ruleset_tests("brules", &tests_dir, &mut rule_modules)?;
+    generate_flat_ruleset_tests("cwe", &tests_dir, &mut rule_modules)?;
     write_main_integration_file(&out_dir_path, &mut rule_modules)?;
 
     println!("cargo:rerun-if-changed=src/rules/cert_c");
     println!("cargo:rerun-if-changed=src/rules/brules");
+    println!("cargo:rerun-if-changed=src/rules/cwe");
     println!("Generated {} per-rule test files", rule_modules.len());
     Ok(())
 }
@@ -489,27 +513,28 @@ fn generate_cert_c_tests(
     Ok(())
 }
 
-/// Walk `src/rules/brules/RULE-ID` directories (flat, no category level) and emit
-/// per-rule test files.
-fn generate_brules_tests(
+/// Walk `src/rules/<ruleset>/RULE-ID` directories (flat, no category level,
+/// as `brules` and `cwe` are) and emit per-rule test files.
+fn generate_flat_ruleset_tests(
+    ruleset: &str,
     tests_dir: &std::path::Path,
     rule_modules: &mut Vec<String>,
 ) -> Result<()> {
-    let brules_dir = PathBuf::from("src/rules/brules");
-    if !brules_dir.exists() {
+    let ruleset_dir = PathBuf::from("src/rules").join(ruleset);
+    if !ruleset_dir.exists() {
         return Ok(());
     }
-    let Ok(brule_entries) = fs::read_dir(&brules_dir) else {
+    let Ok(rule_entries) = fs::read_dir(&ruleset_dir) else {
         return Ok(());
     };
 
-    for brule_entry in brule_entries {
-        let brule_entry = match brule_entry {
+    for rule_entry in rule_entries {
+        let rule_entry = match rule_entry {
             Ok(entry) => entry,
             Err(_) => continue,
         };
 
-        let rule_path = brule_entry.path();
+        let rule_path = rule_entry.path();
         if !rule_path.is_dir() {
             continue;
         }
@@ -519,7 +544,7 @@ fn generate_brules_tests(
             None => continue,
         };
 
-        let rule_base_path = format!("src/rules/brules/{}", rule_id);
+        let rule_base_path = format!("src/rules/{}/{}", ruleset, rule_id);
         let rule_tests_dir = rule_path.join("tests");
         if !rule_tests_dir.exists() {
             continue;

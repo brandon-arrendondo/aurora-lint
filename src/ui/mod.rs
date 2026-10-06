@@ -246,7 +246,12 @@ impl TerminalUI {
         let mut grouped: HashMap<String, Vec<(String, RuleConfig)>> = HashMap::new();
 
         // Group rules by category (prefix)
-        for (rule_id, config) in &manifest.rules.cert_c {
+        for (rule_id, config) in manifest
+            .rules
+            .families()
+            .into_iter()
+            .flat_map(|(_, rules)| rules.iter())
+        {
             let category = rule_category(rule_id);
             grouped
                 .entry(category)
@@ -292,7 +297,12 @@ impl TerminalUI {
         let mut groups = HashMap::new();
 
         // Initialize all groups as collapsed
-        for rule_id in manifest.rules.cert_c.keys() {
+        for rule_id in manifest
+            .rules
+            .families()
+            .into_iter()
+            .flat_map(|(_, rules)| rules.keys())
+        {
             let category = rule_category(rule_id);
             groups.entry(category).or_insert(false);
         }
@@ -1297,7 +1307,12 @@ impl TerminalUI {
             Line::from("CERT C static analyzer"),
             Line::from(format!(
                 "Total Rules: {} | Tab: Configuration",
-                self.manifest.rules.cert_c.len()
+                self.manifest
+                    .rules
+                    .families()
+                    .iter()
+                    .map(|(_, rules)| rules.len())
+                    .sum::<usize>()
             )),
         ])
         .style(Style::default().fg(Color::White))

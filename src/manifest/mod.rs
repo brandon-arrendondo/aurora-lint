@@ -75,6 +75,39 @@ pub struct RuleNamespaces {
     /// BISSELL-specific rules (`BRULE-###`), keyed by rule ID.
     #[serde(default)]
     pub brules: HashMap<String, RuleConfig>,
+    /// The CWE ruleset (`CWE-327`, ...): detectors for a weakness CERT C has
+    /// no identifier for, reported under the weakness's own CWE id.
+    #[serde(default)]
+    pub cwe: HashMap<String, RuleConfig>,
+}
+
+impl RuleNamespaces {
+    /// Each family's name, as written in `[rules.<family>.<ID>]`, with its
+    /// rules, in a fixed order.
+    pub fn families(&self) -> [(&'static str, &HashMap<String, RuleConfig>); 3] {
+        [
+            ("cert_c", &self.cert_c),
+            ("brules", &self.brules),
+            ("cwe", &self.cwe),
+        ]
+    }
+
+    /// [`families`](Self::families), mutably.
+    pub fn families_mut(&mut self) -> [(&'static str, &mut HashMap<String, RuleConfig>); 3] {
+        [
+            ("cert_c", &mut self.cert_c),
+            ("brules", &mut self.brules),
+            ("cwe", &mut self.cwe),
+        ]
+    }
+
+    /// The family `rule_id` is configured under, if any.
+    pub fn family_of(&self, rule_id: &str) -> Option<&'static str> {
+        self.families()
+            .into_iter()
+            .find(|(_, rules)| rules.contains_key(rule_id))
+            .map(|(family, _)| family)
+    }
 }
 
 /// Identifying metadata for a manifest, independent of which rules it configures.
@@ -179,11 +212,8 @@ pub enum RuleCategory {
 
 /// Ids registered under `cert_c` that are not CERT C identifiers, so have no
 /// rule/recommendation standing: `CON50-C`, `FIO50-C` and `FIO51-C` are CERT
-/// C++ ids, and `MSC42-C`, `POS55-C` and `WIN05-C` are not numbers in the
-/// CERT C standard at all.
-pub const NON_CERT_C_IDS: &[&str] = &[
-    "CON50-C", "FIO50-C", "FIO51-C", "MSC42-C", "POS55-C", "WIN05-C",
-];
+/// C++ ids.
+pub const NON_CERT_C_IDS: &[&str] = &["CON50-C", "FIO50-C", "FIO51-C"];
 
 impl RuleCategory {
     /// The category CERT C's own numbering assigns `id`: within each
@@ -318,8 +348,9 @@ impl RuleManifest {
     /// neither run nor reported as unimplemented.
     fn drop_removed(&mut self, removed: &[RemovedRule]) {
         for rule in removed {
-            self.rules.cert_c.remove(&rule.id);
-            self.rules.brules.remove(&rule.id);
+            for (_, rules) in self.rules.families_mut() {
+                rules.remove(&rule.id);
+            }
         }
     }
 
@@ -390,10 +421,7 @@ impl RuleManifest {
             self.metadata.cert_version
         ));
 
-        for (family, rules) in [
-            ("cert_c", &self.rules.cert_c),
-            ("brules", &self.rules.brules),
-        ] {
+        for (family, rules) in self.rules.families() {
             let mut ids: Vec<&String> = rules.keys().collect();
             ids.sort();
             for id in ids {
@@ -413,30 +441,30 @@ impl RuleManifest {
         out
     }
 
-    /// Every rule ID/config pair across both namespaces with `enabled = true`.
+    /// Every rule ID/config pair across every namespace with `enabled = true`.
     pub fn enabled_rules(&self) -> impl Iterator<Item = (&String, &RuleConfig)> {
         self.rules
             .cert_c
             .iter()
             .chain(self.rules.brules.iter())
+            .chain(self.rules.cwe.iter())
             .filter(|(_, config)| config.enabled)
     }
 
-    /// The config for `rule_id`, checked against both namespaces.
+    /// The config for `rule_id`, checked against every namespace.
     pub fn get_rule(&self, rule_id: &str) -> Option<&RuleConfig> {
         self.rules
-            .cert_c
-            .get(rule_id)
-            .or_else(|| self.rules.brules.get(rule_id))
+            .families()
+            .into_iter()
+            .find_map(|(_, rules)| rules.get(rule_id))
     }
 
-    /// Mutable access to the config for `rule_id`, checked against both namespaces.
+    /// Mutable access to the config for `rule_id`, checked against every namespace.
     pub fn get_rule_mut(&mut self, rule_id: &str) -> Option<&mut RuleConfig> {
-        if self.rules.cert_c.contains_key(rule_id) {
-            self.rules.cert_c.get_mut(rule_id)
-        } else {
-            self.rules.brules.get_mut(rule_id)
-        }
+        self.rules
+            .families_mut()
+            .into_iter()
+            .find_map(|(_, rules)| rules.get_mut(rule_id))
     }
 
     /// Disables every rule not named in `rule_ids` (e.g. from `--rules`),
@@ -449,11 +477,10 @@ impl RuleManifest {
     /// `--rules` semantics (it never ran, so it never appeared in the
     /// post-analysis filter's output either).
     pub fn restrict_to(&mut self, rule_ids: &std::collections::HashSet<String>) {
-        for (id, config) in self.rules.cert_c.iter_mut() {
-            config.enabled = config.enabled && rule_ids.contains(id);
-        }
-        for (id, config) in self.rules.brules.iter_mut() {
-            config.enabled = config.enabled && rule_ids.contains(id);
+        for (_, rules) in self.rules.families_mut() {
+            for (id, config) in rules.iter_mut() {
+                config.enabled = config.enabled && rule_ids.contains(id);
+            }
         }
     }
 }
@@ -491,6 +518,7 @@ impl Default for RuleManifest {
             rules: RuleNamespaces {
                 cert_c: cert_c_rules,
                 brules: HashMap::new(),
+                cwe: HashMap::new(),
             },
             profile: None,
             policy: None,
@@ -590,7 +618,7 @@ category = "Recommendation"
     fn from_cert_id_rejects_non_cert_ids() {
         for id in [
             "FIO50-C",
-            "WIN05-C",
+            "CWE-428",
             "BRULE-065",
             "ARR30",
             "ARR3-C",

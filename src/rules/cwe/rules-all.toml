@@ -1,0 +1,17 @@
+# Auto-generated file - do not edit directly
+# Generated from individual rule manifests in cwe
+# To modify, edit the individual TOML files and rebuild
+# Full metadata is in individual rule TOML files
+
+[rules.cwe.CWE-327]
+enabled = true
+
+
+[rules.cwe.CWE-428]
+enabled = true
+
+
+[rules.cwe.CWE-666]
+enabled = true
+
+
