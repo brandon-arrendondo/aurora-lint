@@ -190,7 +190,7 @@ impl CertRule for Flp02C {
 
     fn check(&self, root: &Node, source: &str) -> Vec<RuleViolation> {
         let visible = self.visible.borrow();
-        let env = TypeEnv::visible(&visible, self.data_model.get());
+        let env = TypeEnv::visible(&visible, self.data_model.get()).in_tree(*root);
         let mut violations = Vec::new();
         for n in query::find_descendants_of_kind(*root, "binary_expression") {
             self.check_float_equality(&n, source, &env, &mut violations);

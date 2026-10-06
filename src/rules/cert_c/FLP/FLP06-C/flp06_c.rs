@@ -43,7 +43,7 @@ impl CertRule for Flp06C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let visible = self.visible.borrow();
-        let env = TypeEnv::visible(&visible, self.data_model.get());
+        let env = TypeEnv::visible(&visible, self.data_model.get()).in_tree(*node);
         let mut violations = Vec::new();
         for decl in lang_parsing_substrate::query::find_descendants_of_kind(*node, "declaration") {
             self.check_declaration(&decl, source, &env, &mut violations);

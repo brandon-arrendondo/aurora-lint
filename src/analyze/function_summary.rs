@@ -5473,9 +5473,11 @@ fn credit_credential_facts(
     let mut sequence: Vec<(usize, String, bool)> = Vec::new();
     // Each parameter keyed like `arg_object`, so a shadowing local of the
     // same spelling is not taken for the parameter.
+    // Identifiers resolve against the translation unit, found once here.
+    let root = crate::utility::cert_c::ast_utils::tree_root(func_node);
     let param_keys: Vec<Option<String>> = parameter_identifiers(func_node)
         .iter()
-        .map(|id| id.map(|id| object_key(&id, source)))
+        .map(|id| id.map(|id| object_key(&root, &id, source)))
         .collect();
     // Jump facts once per function. A function the parser nested inside this
     // one would make a call's innermost function another node, so that case
@@ -5509,7 +5511,7 @@ fn credit_credential_facts(
         // block a return names.
         let arg_object = |i: usize| -> Option<String> {
             let a = init_state::strip_arg_casts(args.get(i)?);
-            (a.kind() == "identifier").then(|| object_key(&a, source))
+            (a.kind() == "identifier").then(|| object_key(&root, &a, source))
         };
 
         if credential_sinks::has_conditional_sink_row(&name) {
@@ -5571,7 +5573,7 @@ fn credit_credential_facts(
             .insert(*idx, vec![callees.clone()]);
     }
 
-    credit_returns_locked(body, source, &locks, &handed, summary);
+    credit_returns_locked(&root, body, source, &locks, &handed, summary);
 }
 
 /// `returns_locked`: every block the body allocates and returns is
@@ -5583,6 +5585,7 @@ fn credit_credential_facts(
 /// project lock wrapper -- becomes a clause of
 /// `returns_locked_obligations`.
 fn credit_returns_locked(
+    root: &Node,
     body: &Node,
     source: &str,
     locks: &[(String, Node)],
@@ -5593,7 +5596,7 @@ fn credit_returns_locked(
     use lang_parsing_substrate::query;
 
     let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-    let allocations: Vec<(String, Node, String, bool)> = plain_assignments(body, source)
+    let allocations: Vec<(String, Node, String, bool)> = plain_assignments(root, body, source)
         .into_iter()
         .filter_map(|(target, value)| {
             let v = init_state::strip_arg_casts(&value);
@@ -5632,7 +5635,7 @@ fn credit_returns_locked(
                 }
             }
             "identifier" => {
-                let t = object_key(&e, source);
+                let t = object_key(root, &e, source);
                 let reaching: Vec<&(String, Node, String, bool)> = allocations
                     .iter()
                     .filter(|(var, a, _, _)| *var == t && a.start_byte() < r.start_byte())
@@ -5710,10 +5713,13 @@ fn parameter_identifiers<'a>(func_node: &Node<'a>) -> Vec<Option<Node<'a>>> {
 
 /// The object an identifier occurrence names, as a key: its resolved
 /// declarator's position (ADR-0006: a shadowing inner `p` is another object),
-/// or the spelling when nothing in scope declares it.
-fn object_key(ident: &Node, source: &str) -> String {
+/// or the spelling when nothing in scope declares it. `root` is the tree's
+/// root, which the resolver descends from instead of climbing per identifier.
+fn object_key<'a>(root: &Node<'a>, ident: &Node<'a>, source: &str) -> String {
     let name = ident.utf8_text(source.as_bytes()).unwrap_or("");
-    match crate::utility::cert_c::ast_utils::resolve_identifier_declarator(ident, name, source) {
+    match crate::utility::cert_c::ast_utils::resolve_identifier_declarator_in(
+        root, ident, name, source,
+    ) {
         Some((_, declarator)) => format!("@{}", declarator.start_byte()),
         None => name.to_string(),
     }
@@ -5721,7 +5727,11 @@ fn object_key(ident: &Node, source: &str) -> String {
 
 /// `(target object, value)` for every plain `x = value` and `T *x = value`
 /// in `body`, the target keyed by [`object_key`].
-fn plain_assignments<'a>(body: &Node<'a>, source: &str) -> Vec<(String, Node<'a>)> {
+fn plain_assignments<'a>(
+    root: &Node<'a>,
+    body: &Node<'a>,
+    source: &str,
+) -> Vec<(String, Node<'a>)> {
     use lang_parsing_substrate::query;
 
     let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
@@ -5736,7 +5746,7 @@ fn plain_assignments<'a>(body: &Node<'a>, source: &str) -> Vec<(String, Node<'a>
             a.child_by_field_name("right"),
         ) {
             if l.kind() == "identifier" {
-                out.push((object_key(&l, source), r));
+                out.push((object_key(root, &l, source), r));
             }
         }
     }
@@ -5750,7 +5760,7 @@ fn plain_assignments<'a>(body: &Node<'a>, source: &str) -> Vec<(String, Node<'a>
             })
             .or_else(|| (decl.kind() == "identifier").then_some(decl));
             if let Some(ident) = ident {
-                out.push((object_key(&ident, source), v));
+                out.push((object_key(root, &ident, source), v));
             }
         }
     }

@@ -377,7 +377,7 @@ impl CertRule for Int30C {
             overflow_helpers::collect_function_return_types(node, source);
 
         let visible = self.visible.borrow();
-        let env = TypeEnv::visible(&visible, self.data_model.get());
+        let env = TypeEnv::visible(&visible, self.data_model.get()).in_tree(*node);
         self.check_node(node, source, &mut violations, &type_map, &env);
 
         // `check_allocation_size_wrap` reports the size ARGUMENT of a call;
@@ -521,7 +521,7 @@ impl Int30C {
         // ptrdiff_t computation; neither is the unsigned integer wrap this
         // rule detects. Forming an out-of-bounds pointer is ARR30-C's
         // concern.
-        if self.is_pointer_arithmetic(node, source, type_map) {
+        if self.is_pointer_arithmetic(node, source, type_map, env.root()) {
             return;
         }
 
@@ -552,7 +552,7 @@ impl Int30C {
         }
 
         // See check_binary_operation: `buf += readnb` advances a pointer.
-        if self.is_pointer_arithmetic(node, source, type_map) {
+        if self.is_pointer_arithmetic(node, source, type_map, env.root()) {
             return;
         }
 
@@ -570,15 +570,16 @@ impl Int30C {
     /// Best-effort: is this expression pointer arithmetic rather than integer
     /// arithmetic? Delegates to the shared [`pointer_typing`] engine, supplying
     /// INT30-C's struct field map and this file's pointer facts.
-    fn is_pointer_arithmetic(
+    fn is_pointer_arithmetic<'a>(
         &self,
-        node: &Node,
+        node: &Node<'a>,
         source: &str,
         type_map: &HashMap<String, String>,
+        root: Option<&Node<'a>>,
     ) -> bool {
         let sft = self.struct_field_types.borrow();
         let facts = self.pointer_facts.borrow();
-        pointer_typing::is_pointer_arithmetic(node, source, type_map, &sft, &facts)
+        pointer_typing::is_pointer_arithmetic_in(root, node, source, type_map, &sft, &facts)
     }
 
     /// True if `node`'s left or right operand is float-typed, making this a
@@ -1631,7 +1632,7 @@ impl Int30C {
                 if !matches!(op, "+" | "-" | "*" | "<<") {
                     return recurse(&left) || recurse(&right);
                 }
-                if self.is_pointer_arithmetic(node, source, type_map) {
+                if self.is_pointer_arithmetic(node, source, type_map, None) {
                     return false;
                 }
                 self.is_unsigned_type(&self.infer_type(node, source, type_map))

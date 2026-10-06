@@ -1056,7 +1056,7 @@ impl CertRule for Flp03C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
         let visible = self.visible.borrow();
-        let env = TypeEnv::visible(&visible, self.data_model.get());
+        let env = TypeEnv::visible(&visible, self.data_model.get()).in_tree(*node);
         self.check_node(node, source, &mut violations, &env);
         violations
     }

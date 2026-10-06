@@ -125,6 +125,20 @@ pub fn expr_is_pointer(
     struct_field_types: &StructFieldTypes,
     facts: &PointerFacts,
 ) -> bool {
+    pointer_value(None, node, source, type_map, struct_field_types, facts)
+}
+
+/// [`expr_is_pointer`], resolving identifiers by descending from `root` when
+/// it is given: the root of `node`'s tree, which the resolver otherwise
+/// reaches by a `Node::parent` climb per identifier. The same answer.
+fn pointer_value<'a>(
+    root: Option<&Node<'a>>,
+    node: &Node<'a>,
+    source: &str,
+    type_map: &std::collections::HashMap<String, String>,
+    struct_field_types: &StructFieldTypes,
+    facts: &PointerFacts,
+) -> bool {
     match node.kind() {
         "identifier" => {
             let name = ast_utils::get_node_text(node, source);
@@ -135,7 +149,11 @@ pub fn expr_is_pointer(
             // Resolve the occurrence to its own declarator (ADR-0006): the
             // declarator's kind says whether the name decays to a pointer
             // here, for a local, a parameter or a file-scope variable alike.
-            match ast_utils::resolve_identifier_declarator(node, name, source) {
+            let resolved = match root {
+                Some(root) => ast_utils::resolve_identifier_declarator_in(root, node, name, source),
+                None => ast_utils::resolve_identifier_declarator(node, name, source),
+            };
+            match resolved {
                 // The map spelling says pointer only for a pointer declarator;
                 // the declarator's own kind covers the array that decays.
                 Some((decl, declarator)) => {
@@ -165,7 +183,7 @@ pub fn expr_is_pointer(
         },
         "parenthesized_expression" => node
             .named_child(0)
-            .is_some_and(|c| expr_is_pointer(&c, source, type_map, struct_field_types, facts)),
+            .is_some_and(|c| pointer_value(root, &c, source, type_map, struct_field_types, facts)),
         "call_expression" => match node.child_by_field_name("function") {
             Some(f) => facts
                 .pointer_returning_functions
@@ -191,8 +209,9 @@ pub fn expr_is_pointer(
             ) else {
                 return false;
             };
-            let left_ptr = expr_is_pointer(&left, source, type_map, struct_field_types, facts);
-            let right_ptr = expr_is_pointer(&right, source, type_map, struct_field_types, facts);
+            let left_ptr = pointer_value(root, &left, source, type_map, struct_field_types, facts);
+            let right_ptr =
+                pointer_value(root, &right, source, type_map, struct_field_types, facts);
             match op.as_str() {
                 // `ptr + int` (either order) is a pointer; `ptr + ptr` is not C.
                 "+" => left_ptr != right_ptr,
@@ -225,10 +244,26 @@ pub fn is_pointer_arithmetic(
     struct_field_types: &StructFieldTypes,
     facts: &PointerFacts,
 ) -> bool {
-    if expr_is_pointer(node, source, type_map, struct_field_types, facts) {
+    is_pointer_arithmetic_in(None, node, source, type_map, struct_field_types, facts)
+}
+
+/// [`is_pointer_arithmetic`] given `root`, the root of `node`'s tree when the
+/// caller has it, so identifiers resolve by one descent from it rather than a
+/// `Node::parent` climb each. The same answer.
+pub fn is_pointer_arithmetic_in<'a>(
+    root: Option<&Node<'a>>,
+    node: &Node<'a>,
+    source: &str,
+    type_map: &std::collections::HashMap<String, String>,
+    struct_field_types: &StructFieldTypes,
+    facts: &PointerFacts,
+) -> bool {
+    if pointer_value(root, node, source, type_map, struct_field_types, facts) {
         return true;
     }
-    let recurse = |n: &Node| is_pointer_arithmetic(n, source, type_map, struct_field_types, facts);
+    let recurse = |n: &Node<'a>| {
+        is_pointer_arithmetic_in(root, n, source, type_map, struct_field_types, facts)
+    };
     match node.kind() {
         "binary_expression" => {
             if !matches!(

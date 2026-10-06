@@ -251,6 +251,8 @@ pub struct TypeEnv<'a> {
     /// `name -> return type` for the functions this file defines; see
     /// [`file_function_type`].
     file_functions: OnceCell<HashMap<String, Option<CType>>>,
+    /// The file's tree root, when the caller has it; see [`TypeEnv::in_tree`].
+    root: Option<Node<'a>>,
 }
 
 impl<'a> TypeEnv<'a> {
@@ -269,7 +271,25 @@ impl<'a> TypeEnv<'a> {
             struct_aliases,
             model,
             file_functions: OnceCell::new(),
+            root: None,
         }
+    }
+
+    /// This environment, resolving identifiers by descending from `root`, the
+    /// root of the tree they are in, instead of climbing from each one with
+    /// `Node::parent` (O(depth) a step). The answers are the same. A node that
+    /// is not a tree's root is ignored, since only the translation unit
+    /// gives the same file-scope lookup.
+    pub fn in_tree(mut self, root: Node<'a>) -> Self {
+        if root.parent().is_none() {
+            self.root = Some(root);
+        }
+        self
+    }
+
+    /// The tree root given to [`TypeEnv::in_tree`], if any.
+    pub fn root(&self) -> Option<&Node<'a>> {
+        self.root.as_ref()
     }
 
     /// An environment over what one file sees, under `model` (the settings'
@@ -561,7 +581,10 @@ pub fn declarator_type(
 /// `None` when the occurrence does not resolve to a declaration in this file.
 pub fn declared_type(ident: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
     let name = get_node_text(ident, source);
-    let (decl, declarator) = ast_utils::resolve_identifier_declarator(ident, name, source)?;
+    let (decl, declarator) = match &env.root {
+        Some(root) => ast_utils::resolve_identifier_declarator_in(root, ident, name, source)?,
+        None => ast_utils::resolve_identifier_declarator(ident, name, source)?,
+    };
     // A declarator with no pointer, array or function level leaves the
     // specifier type; an unknown specifier leaves it unknown.
     apply_declarator(classify_specifiers(&decl, source, env), &declarator)

@@ -5215,9 +5215,39 @@ fn collect_calls_with_locals(
     callsite_field_args: &mut HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
     callsite_pointee_args: &mut HashMap<String, Vec<Vec<NullState>>>,
 ) {
+    collect_calls_with_locals_under(
+        node,
+        &mut Vec::new(),
+        source,
+        local_states,
+        writes,
+        callsite_args,
+        callsite_field_args,
+        callsite_pointee_args,
+    );
+}
+
+/// [`collect_calls_with_locals`] carrying the walk's own ancestors, outermost
+/// first, so a call's dominating conditions come from that stack instead of a
+/// `parent()` climb per call (see [`guard_dominance::SiteAncestors`]).
+#[allow(clippy::too_many_arguments)]
+fn collect_calls_with_locals_under<'a>(
+    node: &Node<'a>,
+    stack: &mut Vec<Node<'a>>,
+    source: &str,
+    local_states: &HashMap<String, NullState>,
+    writes: &guard_dominance::WriteIndex,
+    callsite_args: &mut HashMap<String, Vec<Vec<NullState>>>,
+    callsite_field_args: &mut HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
+    callsite_pointee_args: &mut HashMap<String, Vec<Vec<NullState>>>,
+) {
     if node.kind() == "call_expression" {
+        let site = guard_dominance::SiteAncestors::from_chain(
+            *node,
+            stack.iter().rev().copied().collect(),
+        );
         collect_call_expression_locals(
-            node,
+            &site,
             source,
             local_states,
             writes,
@@ -5227,25 +5257,27 @@ fn collect_calls_with_locals(
         );
     }
 
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_calls_with_locals(
-                &child,
-                source,
-                local_states,
-                writes,
-                callsite_args,
-                callsite_field_args,
-                callsite_pointee_args,
-            );
-        }
+    stack.push(*node);
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_calls_with_locals_under(
+            &child,
+            stack,
+            source,
+            local_states,
+            writes,
+            callsite_args,
+            callsite_field_args,
+            callsite_pointee_args,
+        );
     }
+    stack.pop();
 }
 
 /// Record per-argument null/field/pointee states for a single call site,
 /// keyed by callee name.
 fn collect_call_expression_locals(
-    call: &Node,
+    site: &guard_dominance::SiteAncestors,
     source: &str,
     local_states: &HashMap<String, NullState>,
     writes: &guard_dominance::WriteIndex,
@@ -5253,6 +5285,7 @@ fn collect_call_expression_locals(
     callsite_field_args: &mut HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
     callsite_pointee_args: &mut HashMap<String, Vec<Vec<NullState>>>,
 ) {
+    let call = site.site();
     let Some(function) = call.child_by_field_name("function") else {
         return;
     };
@@ -5277,15 +5310,14 @@ fn collect_call_expression_locals(
     // Every argument sits inside the call, so the set is the same whichever
     // argument is the site.
     let mut dominators: Option<Vec<(Node, Option<bool>)>> = None;
-    for i in 0..args_node.child_count() {
-        let Some(arg) = args_node.child(i) else {
-            continue;
-        };
+    let args_site = site.child(args_node);
+    let mut cursor = args_node.walk();
+    for arg in args_node.children(&mut cursor) {
         if matches!(arg.kind(), "," | "(" | ")") {
             continue;
         }
         arg_states.push(infer_call_arg_state(
-            &arg,
+            &args_site.child(arg),
             source,
             local_states,
             &mut dominators,
@@ -5326,12 +5358,13 @@ fn collect_call_expression_locals(
 /// Infer a call argument's null state: literal-level inference first, then
 /// fall back to the local-variable state table for plain identifiers.
 fn infer_call_arg_state<'a>(
-    arg: &Node<'a>,
+    site: &guard_dominance::SiteAncestors<'a>,
     source: &str,
     local_states: &HashMap<String, NullState>,
     dominators: &mut Option<Vec<(Node<'a>, Option<bool>)>>,
     writes: &guard_dominance::WriteIndex,
 ) -> NullState {
+    let arg = &site.site();
     let state = function_summary::infer_arg_null_state(arg, source);
     if state != NullState::Unknown {
         return state;
@@ -5343,7 +5376,7 @@ fn infer_call_arg_state<'a>(
         // `it = NULL; ... it = iter_init(); release(it);` reads NULL there.
         // The assignment dominating this argument, when there is one, is the
         // value actually passed -- Unknown included.
-        let reaching = guard_dominance::dominating_assignment(name, arg, source, writes);
+        let reaching = guard_dominance::dominating_assignment_in(name, site, source, writes);
         let tabled = match reaching {
             Some(write) => dominating_assignment_state(&write, name, source),
             None => local_states
@@ -5355,8 +5388,9 @@ fn infer_call_arg_state<'a>(
         // Ask at this argument's own position before letting a maybe-null
         // state vote, counting only guards evaluated after the write.
         if tabled != NullState::NotNull {
-            let dominators = dominators
-                .get_or_insert_with(|| guard_dominance::dominating_conditions_with_branches(arg));
+            let dominators = dominators.get_or_insert_with(|| {
+                guard_dominance::dominating_conditions_with_branches_in(site)
+            });
             let after_write = reaching.map_or(0, |w| w.statement.end_byte());
             let later: Vec<(Node, Option<bool>)> = dominators
                 .iter()

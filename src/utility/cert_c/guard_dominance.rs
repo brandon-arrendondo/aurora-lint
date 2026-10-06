@@ -108,6 +108,20 @@ pub fn has_dominating_comparison_in(
 /// argument before an `invoke`-style callee written to trust it) needs in
 /// order not to read the callee's parameter as unvalidated.
 pub fn call_arg_guards(call_node: &Node, source: &str) -> Vec<bool> {
+    call_arg_guards_from(call_node, source, || dominating_conditions(call_node))
+}
+
+/// [`call_arg_guards`] with the call's ancestors already in hand.
+pub fn call_arg_guards_in(call: &SiteAncestors, source: &str) -> Vec<bool> {
+    call_arg_guards_from(&call.site, source, || dominating_conditions_in(call))
+}
+
+fn call_arg_guards_from<'a>(
+    call_node: &Node<'a>,
+    source: &str,
+    dominating: impl FnOnce() -> Vec<Node<'a>>,
+) -> Vec<bool> {
+    let mut dominating = Some(dominating);
     let Some(arg_list) = call_node.child_by_field_name("arguments") else {
         return Vec::new();
     };
@@ -127,7 +141,9 @@ pub fn call_arg_guards(call_node: &Node, source: &str) -> Vec<bool> {
         guards.push(
             inner.kind() == "identifier"
                 && has_dominating_comparison_in(
-                    conditions.get_or_insert_with(|| dominating_conditions(call_node)),
+                    conditions.get_or_insert_with(|| {
+                        dominating.take().expect("conditions are collected once")()
+                    }),
                     &get_node_text(&inner, source),
                     source,
                     ComparisonKind::Any,
@@ -152,20 +168,33 @@ pub fn collect_call_arg_guards(
     source: &str,
     out: &mut std::collections::HashMap<String, Vec<Vec<bool>>>,
 ) {
+    collect_call_arg_guards_under(node, &mut Vec::new(), source, out);
+}
+
+/// [`collect_call_arg_guards`] carrying the walk's own ancestors, outermost
+/// first, for [`call_arg_guards_in`].
+fn collect_call_arg_guards_under<'a>(
+    node: &Node<'a>,
+    stack: &mut Vec<Node<'a>>,
+    source: &str,
+    out: &mut std::collections::HashMap<String, Vec<Vec<bool>>>,
+) {
     if node.kind() == "call_expression" {
         if let Some(callee) = node.child_by_field_name("function") {
             if callee.kind() == "identifier" {
+                let site = SiteAncestors::from_chain(*node, stack.iter().rev().copied().collect());
                 out.entry(get_node_text(&callee, source).to_string())
                     .or_default()
-                    .push(call_arg_guards(node, source));
+                    .push(call_arg_guards_in(&site, source));
             }
         }
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_call_arg_guards(&child, source, out);
-        }
+    stack.push(*node);
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_call_arg_guards_under(&child, stack, source, out);
     }
+    stack.pop();
 }
 
 /// Peel parentheses and casts off a call argument, so `f((word_t)index)` reads
@@ -208,6 +237,107 @@ pub fn dominating_conditions<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
     conditions
 }
 
+/// `site`'s ancestors, held so the questions in this module can walk outward
+/// from it without a `Node::parent` call per level.
+///
+/// `parent()` is not a pointer hop: tree-sitter recovers it by descending from
+/// the root, so a climb costs O(depth) per level and O(depth²) to the
+/// function. An `else if` chain nests each arm inside the one before, so a
+/// function's depth grows with its length and asking at every call site makes
+/// it cubic. One descent from a root ([`SiteAncestors::new`]) or the stack of a
+/// walk that is already descending ([`SiteAncestors::from_chain`]) gives the
+/// same ancestors at O(depth) once.
+///
+/// The `_in` functions taking one answer exactly as their climbing namesakes
+/// do; above the node the chain was built from they climb with `parent()`
+/// like those.
+#[derive(Debug, Clone)]
+pub struct SiteAncestors<'a> {
+    site: Node<'a>,
+    /// `site`'s parent first, outward to the node the chain was built from.
+    chain: Vec<Node<'a>>,
+}
+
+impl<'a> SiteAncestors<'a> {
+    /// The ancestors of `site` from one descent of `root`, which holds it;
+    /// `None` when it does not.
+    pub fn new(root: &Node<'a>, site: &Node<'a>) -> Option<Self> {
+        let mut chain = crate::utility::cert_c::ast_utils::ancestors_from_root(root, site)?;
+        chain.reverse();
+        if site.id() != root.id() {
+            chain.push(*root);
+        }
+        Some(Self { site: *site, chain })
+    }
+
+    /// From ancestors the caller already holds, innermost first: `chain[0]`
+    /// is `site`'s parent and each next node the parent of the one before.
+    pub fn from_chain(site: Node<'a>, chain: Vec<Node<'a>>) -> Self {
+        Self { site, chain }
+    }
+
+    /// The same for `child`, a child of this site.
+    pub fn child(&self, child: Node<'a>) -> Self {
+        let mut chain = Vec::with_capacity(self.chain.len() + 1);
+        chain.push(self.site);
+        chain.extend_from_slice(&self.chain);
+        Self { site: child, chain }
+    }
+
+    /// The node these are the ancestors of.
+    pub fn site(&self) -> Node<'a> {
+        self.site
+    }
+
+    /// `site`'s ancestors innermost first: the held chain, then whatever lies
+    /// above it by `parent()`, lazily.
+    fn ancestors(&self) -> impl Iterator<Item = Node<'a>> + '_ {
+        let top = self.chain.last().copied().unwrap_or(self.site);
+        self.chain
+            .iter()
+            .copied()
+            .chain(std::iter::successors(Some(top), |n| n.parent()).skip(1))
+    }
+}
+
+/// `site`'s ancestors innermost first, each by `parent()`, lazily.
+fn climb<'a>(site: &Node<'a>) -> impl Iterator<Item = Node<'a>> {
+    std::iter::successors(Some(*site), |n| n.parent()).skip(1)
+}
+
+/// [`dominating_conditions`] with the ancestors already in hand.
+pub fn dominating_conditions_in<'a>(site: &SiteAncestors<'a>) -> Vec<Node<'a>> {
+    let mut conditions: Vec<Node<'a>> = enclosing_conditions_from(&site.site, site.ancestors())
+        .into_iter()
+        .map(|(cond, _)| cond)
+        .collect();
+    conditions.extend(preceding_if_conditions_from(&site.site, site.ancestors()));
+    conditions
+}
+
+/// [`dominating_conditions_with_branches`] with the ancestors already in
+/// hand. An enclosing condition's statement is one of those ancestors, so its
+/// branch is read without the `parent()` call
+/// [`dominating_condition_branch`] would make for it.
+pub fn dominating_conditions_with_branches_in<'a>(
+    site: &SiteAncestors<'a>,
+) -> Vec<(Node<'a>, Option<bool>)> {
+    let at = site.site;
+    let mut out: Vec<(Node<'a>, Option<bool>)> = enclosing_conditions_from(&at, site.ancestors())
+        .into_iter()
+        .map(|(cond, owner)| (cond, condition_branch_under(&owner, &at)))
+        .collect();
+    out.extend(
+        preceding_if_conditions_from(&at, site.ancestors())
+            .into_iter()
+            .map(|cond| {
+                let branch = dominating_condition_branch(&cond, &at);
+                (cond, branch)
+            }),
+    );
+    out
+}
+
 /// [`dominating_conditions`] with each condition's
 /// [`dominating_condition_branch`] for `site` resolved alongside it.
 ///
@@ -231,10 +361,21 @@ pub fn dominating_conditions_with_branches<'a>(site: &Node<'a>) -> Vec<(Node<'a>
 /// A `do`-`while` condition is deliberately excluded: it runs *after* the body,
 /// so it establishes nothing on the first iteration.
 fn enclosing_conditions<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
-    let mut conditions = Vec::new();
-    let mut current = *site;
+    enclosing_conditions_from(site, climb(site))
+        .into_iter()
+        .map(|(cond, _)| cond)
+        .collect()
+}
 
-    while let Some(parent) = current.parent() {
+/// [`enclosing_conditions`] over `site`'s `ancestors` (innermost first), each
+/// condition paired with the ancestor it is a child of.
+fn enclosing_conditions_from<'a>(
+    site: &Node<'a>,
+    ancestors: impl Iterator<Item = Node<'a>>,
+) -> Vec<(Node<'a>, Node<'a>)> {
+    let mut conditions = Vec::new();
+
+    for parent in ancestors {
         match parent.kind() {
             // The condition holds throughout the body/branches. `else if` is
             // an `if_statement` inside an `else_clause`, so walking up from a
@@ -250,7 +391,7 @@ fn enclosing_conditions<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
                 if let Some(cond) = parent.child_by_field_name("condition") {
                     // A site inside the condition itself is not governed by it.
                     if !spans(&cond, site) {
-                        conditions.push(cond);
+                        conditions.push((cond, parent));
                     }
                 }
             }
@@ -267,7 +408,7 @@ fn enclosing_conditions<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
                         parent.child_by_field_name("right"),
                     ) {
                         if spans(&right, site) {
-                            conditions.push(left);
+                            conditions.push((left, parent));
                         }
                     }
                 }
@@ -275,7 +416,6 @@ fn enclosing_conditions<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
             "function_definition" => break,
             _ => {}
         }
-        current = parent;
     }
 
     conditions
@@ -547,15 +687,29 @@ fn normalized_text(node: &Node, source: &str) -> String {
 /// `if` *body*, or nested in a preceding `switch` — those may not have run.
 /// Same AST approximation, and same caveats, as the rest of this module.
 pub fn has_dominating_dereference(var: &str, site: &Node, source: &str) -> bool {
-    if enclosing_conditions(site)
+    has_dominating_dereference_from(var, site, source, || climb(site))
+}
+
+/// [`has_dominating_dereference`] with the ancestors already in hand.
+pub fn has_dominating_dereference_in(var: &str, site: &SiteAncestors, source: &str) -> bool {
+    has_dominating_dereference_from(var, &site.site, source, || site.ancestors())
+}
+
+fn has_dominating_dereference_from<'a, I: Iterator<Item = Node<'a>>>(
+    var: &str,
+    site: &Node<'a>,
+    source: &str,
+    ancestors: impl Fn() -> I,
+) -> bool {
+    if enclosing_conditions_from(site, ancestors())
         .iter()
-        .any(|cond| subtree_dereferences_var(cond, var, source))
+        .any(|(cond, _)| subtree_dereferences_var(cond, var, source))
     {
         return true;
     }
 
     let mut current = *site;
-    while let Some(parent) = current.parent() {
+    for parent in ancestors() {
         if BLOCK_LIKE_KINDS.contains(&parent.kind()) {
             let mut cursor = parent.walk();
             for stmt in parent.named_children(&mut cursor) {
@@ -611,9 +765,29 @@ pub fn dominating_assignment<'a>(
     source: &str,
     index: &WriteIndex,
 ) -> Option<DominatingAssignment<'a>> {
+    dominating_assignment_from(var, site, source, index, climb(site))
+}
+
+/// [`dominating_assignment`] with the ancestors already in hand.
+pub fn dominating_assignment_in<'a>(
+    var: &str,
+    site: &SiteAncestors<'a>,
+    source: &str,
+    index: &WriteIndex,
+) -> Option<DominatingAssignment<'a>> {
+    dominating_assignment_from(var, &site.site, source, index, site.ancestors())
+}
+
+fn dominating_assignment_from<'a>(
+    var: &str,
+    site: &Node<'a>,
+    source: &str,
+    index: &WriteIndex,
+    ancestors: impl Iterator<Item = Node<'a>>,
+) -> Option<DominatingAssignment<'a>> {
     let mut loops: Vec<Node<'a>> = Vec::new();
     let mut current = *site;
-    while let Some(parent) = current.parent() {
+    for parent in ancestors {
         match parent.kind() {
             "function_definition" | "labeled_statement" => return None,
             "for_statement" | "while_statement" | "do_statement" => loops.push(parent),
@@ -900,10 +1074,18 @@ const BLOCK_LIKE_KINDS: &[&str] = &[
 /// a preceding `if`'s own body does not reach `site`, and a preceding loop's
 /// condition is false by the time the loop exits — neither is validation.
 fn preceding_if_conditions<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
+    preceding_if_conditions_from(site, climb(site))
+}
+
+/// [`preceding_if_conditions`] over `site`'s `ancestors`, innermost first.
+fn preceding_if_conditions_from<'a>(
+    site: &Node<'a>,
+    ancestors: impl Iterator<Item = Node<'a>>,
+) -> Vec<Node<'a>> {
     let mut conditions = Vec::new();
     let mut current = *site;
 
-    while let Some(parent) = current.parent() {
+    for parent in ancestors {
         if BLOCK_LIKE_KINDS.contains(&parent.kind()) {
             let mut cursor = parent.walk();
             for stmt in parent.named_children(&mut cursor) {
@@ -1589,7 +1771,13 @@ pub fn always_diverges(stmt: &Node) -> bool {
 /// - **A `switch`.** The governing relation is the case label, not the
 ///   condition's truthiness.
 pub fn dominating_condition_branch(cond: &Node, site: &Node) -> Option<bool> {
-    let parent = cond.parent()?;
+    condition_branch_under(&cond.parent()?, site)
+}
+
+/// [`dominating_condition_branch`] for a condition whose parent, `parent`, is
+/// already known.
+fn condition_branch_under(parent: &Node, site: &Node) -> Option<bool> {
+    let parent = *parent;
     match parent.kind() {
         "if_statement" | "conditional_expression" => {
             if parent
@@ -3263,6 +3451,121 @@ mod tests {
              }\n\
          }\n",
     ];
+
+    /// Each `_in` variant answers exactly as its climbing namesake, at every
+    /// identifier and call of every equivalence source, whether the
+    /// ancestors come from a descent of the root or of the function.
+    #[test]
+    fn site_ancestors_answer_as_the_climb_does() {
+        let mut sites_with_conditions = 0;
+        let mut derefs_seen = 0;
+        let mut assignments_seen = 0;
+        for src in EQUIVALENCE_SOURCES {
+            let tree = parse_c_code(src);
+            let root = tree.root_node();
+            let sites = query::find_descendants(root, |n| {
+                matches!(
+                    n.kind(),
+                    "identifier" | "call_expression" | "binary_expression"
+                )
+            });
+            assert!(!sites.is_empty());
+            for site in &sites {
+                let func = find_containing_function_for_test(site);
+                let mut builders =
+                    vec![SiteAncestors::new(&root, site).expect("site is under the root")];
+                if let Some(f) = func {
+                    builders
+                        .push(SiteAncestors::new(&f, site).expect("site is under its function"));
+                }
+                let ids = |v: Vec<Node>| v.iter().map(|n| n.id()).collect::<Vec<_>>();
+                if !dominating_conditions(site).is_empty() {
+                    sites_with_conditions += 1;
+                }
+                for anc in &builders {
+                    assert_eq!(
+                        ids(dominating_conditions(site)),
+                        ids(dominating_conditions_in(anc)),
+                        "{src}"
+                    );
+                    let with = |v: Vec<(Node, Option<bool>)>| {
+                        v.iter().map(|(n, b)| (n.id(), *b)).collect::<Vec<_>>()
+                    };
+                    assert_eq!(
+                        with(dominating_conditions_with_branches(site)),
+                        with(dominating_conditions_with_branches_in(anc)),
+                        "{src}"
+                    );
+                    for var in ["p", "q", "r", "x"] {
+                        let deref = has_dominating_dereference(var, site, src);
+                        derefs_seen += usize::from(deref);
+                        assert_eq!(
+                            deref,
+                            has_dominating_dereference_in(var, anc, src),
+                            "{var} in {src}"
+                        );
+                        if let Some(body) = func.and_then(|f| f.child_by_field_name("body")) {
+                            let index = WriteIndex::new(&body, src);
+                            let stmt =
+                                |a: Option<DominatingAssignment>| a.map(|a| a.statement.id());
+                            let climbed = stmt(dominating_assignment(var, site, src, &index));
+                            assignments_seen += usize::from(climbed.is_some());
+                            assert_eq!(
+                                climbed,
+                                stmt(dominating_assignment_in(var, anc, src, &index)),
+                                "{var} in {src}"
+                            );
+                        }
+                    }
+                    if site.kind() == "call_expression" {
+                        assert_eq!(
+                            call_arg_guards(site, src),
+                            call_arg_guards_in(anc, src),
+                            "{src}"
+                        );
+                    }
+                }
+            }
+        }
+        // Not vacuous: the sources exercise each relation.
+        assert!(sites_with_conditions > 20, "{sites_with_conditions}");
+        assert!(
+            derefs_seen > 0 && assignments_seen > 0,
+            "{derefs_seen} {assignments_seen}"
+        );
+        let nested = parse_c_code(EQUIVALENCE_SOURCES[3]);
+        assert!(
+            query::find_descendants_of_kind(nested.root_node(), "function_definition")
+                .iter()
+                .any(|f| f.parent().is_some_and(|p| p.kind() == "compound_statement")),
+            "the last source nests a function in a block"
+        );
+    }
+
+    /// `collect_call_arg_guards` carries its walk's stack as each call's
+    /// ancestors; the result is what asking every call on its own gives.
+    #[test]
+    fn collected_call_arg_guards_match_per_call_answers() {
+        for src in EQUIVALENCE_SOURCES {
+            let tree = parse_c_code(src);
+            let mut collected = std::collections::HashMap::new();
+            collect_call_arg_guards(&tree.root_node(), src, &mut collected);
+            let mut expected: std::collections::HashMap<String, Vec<Vec<bool>>> =
+                std::collections::HashMap::new();
+            let mut calls = query::find_descendants_of_kind(tree.root_node(), "call_expression");
+            calls.sort_by_key(|c| c.start_byte());
+            for call in calls {
+                let callee = call.child_by_field_name("function").unwrap();
+                if callee.kind() == "identifier" {
+                    expected
+                        .entry(get_node_text(&callee, src).to_string())
+                        .or_default()
+                        .push(call_arg_guards(&call, src));
+                }
+            }
+            assert_eq!(collected, expected, "{src}");
+        }
+    }
 
     /// `always_executes_in` answers as `always_executes` for every node whose
     /// innermost function is the one its facts were taken from -- across a

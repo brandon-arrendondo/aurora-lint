@@ -1853,6 +1853,11 @@ fn apply_edge_refinement(
         None => return state,
     };
 
+    // The condition's ancestors, from one descent of `body` and only if a
+    // dominating-dereference question is asked.
+    let mut cond_site: Option<Option<crate::utility::cert_c::guard_dominance::SiteAncestors>> =
+        None;
+
     // Parse condition for null-check info (all vars in compound conditions)
     for info in parse_all_null_conditions(&cond_node, source) {
         let refined_state = if is_true {
@@ -1910,12 +1915,15 @@ fn apply_edge_refinement(
         if introduces_null
             && current != NullState::DefinitelyNull
             && (proven_nonnull_params.contains(&info.var_name)
-                || (first_site_only
-                    && crate::utility::cert_c::guard_dominance::has_dominating_dereference(
-                        &info.var_name,
-                        &cond_node,
-                        source,
-                    )))
+                || (first_site_only && {
+                    use crate::utility::cert_c::guard_dominance::{
+                        has_dominating_dereference, has_dominating_dereference_in, SiteAncestors,
+                    };
+                    match cond_site.get_or_insert_with(|| SiteAncestors::new(body, &cond_node)) {
+                        Some(site) => has_dominating_dereference_in(&info.var_name, site, source),
+                        None => has_dominating_dereference(&info.var_name, &cond_node, source),
+                    }
+                }))
         {
             continue;
         }
