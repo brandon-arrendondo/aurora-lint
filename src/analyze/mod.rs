@@ -199,6 +199,8 @@ pub fn analyze_project(
     // Declared allocators and deallocators reach the function summaries
     // prescan builds, so they are installed first.
     crate::settings::memory::declare(settings.memory.clone())?;
+    // So does a declared closed program, which closes caller sets there.
+    crate::settings::closure::declare(settings.flag("closed_program"))?;
 
     // Load or compute cross-file context (prescan, includes, optional cache save)
     let mut context = load_project_context(
@@ -464,6 +466,12 @@ fn load_project_context(
         // any of them. No implicit value is registered, so a cache built when
         // the data model alone decided them is refused rather than guessed.
         ("int_facts".to_string(), data_model.fingerprint()),
+        // A declared closed program closes caller sets, which the caller-set
+        // proofs aggregated into the summaries read.
+        (
+            "closed_program".to_string(),
+            crate::settings::closure::declared().to_string(),
+        ),
     ]);
 
     let mut context = if let Some(cache_path) = load_prescan {
@@ -1108,6 +1116,9 @@ pub(crate) fn compute_vra_if_needed(
             source,
             &mut value_position_identifiers,
         );
+        if crate::settings::closure::declared() {
+            function_summary::close_declared_caller_sets(&mut file_summaries);
+        }
         prescan::mark_address_taken(&mut file_summaries, &value_position_identifiers);
         for (name, summary) in file_summaries.iter_mut() {
             if prescan_summaries.get(name).is_some_and(|s| s.address_taken) {

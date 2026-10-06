@@ -2412,6 +2412,99 @@ fn callers_walk_reads_the_static_caller_it_reached() {
     );
 }
 
+/// ENV33-C lines reported in `closed_program_callers/sink.c`, the project
+/// prescanned whole, optionally declared a closed program.
+fn env33_closed_program_lines(closed_program: bool) -> Vec<u64> {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let project = fixtures().join("closed_program_callers");
+    let sink = project.join("sink.c");
+    let manifest = manifest_env33();
+    let setting = format!("closed_program={closed_program}");
+    let (code, _, _) = run_aurora_lint(&[
+        sink.to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "-d",
+        project.to_str().unwrap(),
+        "--set",
+        &setting,
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    let mut lines: Vec<u64> = violations
+        .iter()
+        .filter(|v| v["rule_id"] == "ENV33-C")
+        .map(|v| v["line"].as_u64().unwrap())
+        .collect();
+    lines.sort_unstable();
+    lines
+}
+
+/// Undeclared, a non-static sink's in-tree callers are not all of its
+/// callers (ADR-0011), so a clean one proves nothing and every sink is
+/// reported.
+#[test]
+fn an_exported_sinks_clean_caller_proves_nothing_unless_the_program_is_closed() {
+    assert_eq!(env33_closed_program_lines(false), vec![9, 14, 19]);
+}
+
+/// Declared a closed program, the in-tree callers are all of them, so
+/// run_fixed's clean caller proves its command safe. run_by_pointer's
+/// address is stored, so a call through the pointer is one no scan
+/// collects; run_arg is reached from main, which the environment calls.
+/// Both stay reported.
+#[test]
+fn a_closed_program_closes_an_exported_sinks_caller_set() {
+    assert_eq!(env33_closed_program_lines(true), vec![14, 19]);
+}
+
+/// The caller-set proofs aggregated into a prescan cache depend on the
+/// declaration, so a cache built under one is refused under the other.
+#[test]
+fn a_prescan_cache_is_refused_under_the_other_closed_program_declaration() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("prescan.bin");
+    let out = dir.path().join("out.json");
+    let project = fixtures().join("closed_program_callers");
+    let sink = project.join("sink.c");
+    let manifest = manifest_env33();
+    let run = |extra: &[&str]| {
+        let mut args = vec![
+            sink.to_str().unwrap(),
+            "-m",
+            manifest.to_str().unwrap(),
+            "-e",
+            out.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        run_aurora_lint(&args)
+    };
+    let (code, _, _) = run(&[
+        "-d",
+        project.to_str().unwrap(),
+        "--save-prescan",
+        cache.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    let (code, _, _) = run(&["--load-prescan", cache.to_str().unwrap()]);
+    assert_eq!(code, 0, "the same declaration reads the cache");
+    let (code, stdout, stderr) = run(&[
+        "--load-prescan",
+        cache.to_str().unwrap(),
+        "--set",
+        "closed_program=true",
+    ]);
+    assert_ne!(code, 0, "{stdout}{stderr}");
+    assert!(
+        format!("{stdout}{stderr}").contains("closed_program"),
+        "{stdout}{stderr}"
+    );
+}
+
 /// The same shape with the taint on the caller the walk reaches and none on
 /// the unrelated same-named static: flagged. A walk that read the wrong
 /// definition, or pooled both, could not tell these two projects apart.

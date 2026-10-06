@@ -121,7 +121,11 @@ TP. That holds even when it is almost certainly harmless in practice.
   sites prove nothing there, because the callers that matter are outside the
   corpus. Treating a library's own in-tree callers as its full caller set is
   a common trap for analysis tools. It is part of why libcrc, which is only
-  a library, is in the corpus.
+  a library, is in the corpus. The converse is a scan its user declares a
+  closed program (the `closed_program` option, `docs/options.rst`): nothing
+  outside the scanned files calls into it, so their call sites are the
+  caller set of every function but `main`, under the address-escape
+  condition below. That is a declaration, never inferred (ADR-0015).
 - **A static function is closed only while its address stays inside the
   scanned source.** Internal linkage closes the caller set only if the
   function's address doesn't escape. A static stored in an ops table,

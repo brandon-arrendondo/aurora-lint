@@ -1224,6 +1224,12 @@ fn prescan_file_list(
     // unit, so a file-qualified one is judged by its own file's references,
     // unless some file `#include`s that `.c` file. A header's static and a
     // bare-keyed one keep the pooled set.
+    // A declared closed program closes every external function's caller set
+    // too (`closed_program`), before the address-escape half withdraws it
+    // from the ones whose address is taken.
+    if crate::settings::closure::declared() {
+        function_summary::close_declared_caller_sets(&mut function_summaries);
+    }
     mark_address_taken_scoped(
         &mut function_summaries,
         &value_position_identifiers,
@@ -1915,9 +1921,10 @@ fn unwrap_to_identifier(node: Node<'_>) -> Option<Node<'_>> {
     }
 }
 
-/// Set `address_taken` on every internally-linked summary whose name
-/// `value_position_identifiers` (from [`collect_value_position_identifiers`])
-/// mentions as a value, so [`FunctionSummary::caller_set_is_closed`] stops
+/// Set `address_taken` on every summary with a closed caller set (internal
+/// linkage, or closed by declaration: [`function_summary::close_declared_caller_sets`])
+/// whose name `value_position_identifiers` (from
+/// [`collect_value_position_identifiers`]) mentions as a value, so [`FunctionSummary::caller_set_is_closed`] stops
 /// treating its collected call sites as all of them. A key qualified by its
 /// defining file is matched on its bare name.
 pub(crate) fn mark_address_taken(
@@ -1944,7 +1951,11 @@ pub(crate) fn mark_address_taken_scoped(
     included_c_files: &HashSet<String>,
 ) {
     for (key, summary) in summaries.iter_mut() {
-        if !summary.has_internal_linkage {
+        // Only a closed caller set has anything to withdraw: a `static`
+        // function's, or, in a declared closed program, an external one's.
+        // Such a function has a bare key, and any file may take its address,
+        // so it is judged by the pooled names.
+        if !summary.has_internal_linkage && !summary.caller_set_closed_by_declaration {
             continue;
         }
         let (file, bare) = match key.split_once('\0') {
@@ -8927,6 +8938,36 @@ no_mem:
                  (address_taken = {address_taken})"
             );
         }
+    }
+
+    /// A declared closed program closes an external function's caller set,
+    /// never `main`'s, and taking the function's address in any file opens
+    /// it again. Undeclared, the address pass leaves an external function
+    /// alone, as it always did: it was open already.
+    #[test]
+    fn a_declared_closed_program_closes_external_caller_sets_but_not_mains() {
+        let external = || FunctionSummary {
+            has_internal_linkage: false,
+            ..Default::default()
+        };
+        let mut summaries = HashMap::from([
+            ("called".to_string(), external()),
+            ("stored".to_string(), external()),
+            ("main".to_string(), external()),
+        ]);
+        let stored_somewhere = HashSet::from(["stored".to_string()]);
+
+        let mut undeclared = summaries.clone();
+        mark_address_taken(&mut undeclared, &stored_somewhere);
+        assert!(undeclared.values().all(|s| !s.caller_set_is_closed()));
+        assert!(!undeclared["stored"].address_taken);
+
+        function_summary::close_declared_caller_sets(&mut summaries);
+        mark_address_taken(&mut summaries, &stored_somewhere);
+        assert!(summaries["called"].caller_set_is_closed());
+        assert!(summaries["stored"].address_taken);
+        assert!(!summaries["stored"].caller_set_is_closed());
+        assert!(!summaries["main"].caller_set_is_closed());
     }
 
     #[test]

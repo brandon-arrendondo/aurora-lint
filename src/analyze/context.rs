@@ -732,8 +732,13 @@ impl ProjectContext {
 /// so an older cache was built leaving nothing out. The integer facts the
 /// macro constants are resolved with (`int_facts`) have no implicit value: a
 /// cache from before they were recorded took them from a data model alone.
-pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] =
-    &[("include_names", "exact"), ("prescan_scope", "")];
+/// Before `closed_program` was recorded no caller set was closed by
+/// declaration.
+pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
+    ("include_names", "exact"),
+    ("prescan_scope", ""),
+    ("closed_program", "false"),
+];
 
 /// Version of the prescan cache's serialized layout. Bump it with any change
 /// to a serialized field of [`ProjectContext`] (or of a type it holds), or to

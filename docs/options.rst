@@ -54,12 +54,12 @@ Environment contracts
 ---------------------
 
 ``closed_program``
-   The scanned files are the whole program: nothing outside them links against it, dlopens it, or loads into it. Then a non-static, non-const global that no scanned file writes, and a non-static function that only returns a literal, are constants EXP33-C may fold to prune a branch. Undeclared, another translation unit may write the global or interpose the function, so neither is folded.
+   The scanned files are the whole program: nothing outside them links against it, dlopens it, or loads into it. Then a non-static function's call sites in the scanned files are all of its call sites, so what every one of them passes proves a fact about its parameter, as it does for a static function: a value range, a buffer size, a non-null pointer, an untainted argument. As for a static function, the proof needs at least one call site and no use of the function's address anywhere in the scanned files, and main stays open. And a non-static, non-const global that no scanned file writes, and a non-static function that only returns a literal, are constants EXP33-C may fold to prune a branch. Undeclared, another translation unit may call the function, write the global or interpose the function, so none of this holds.
 
    - Default preset: ``false``; strict preset: ``false``
-   - Scope: EXP33-C
+   - Scope: contract
    - Oracle tag: ``contract:closed_program``
-   - Basis: ADR-0011: libraries count as external, and an executable that exports its symbols (-rdynamic, dlopen'ed plugins) is a library too, so in-tree writes prove nothing about a global with external linkage. C11 6.2.2p2: every declaration of an identifier with external linkage, in any translation unit, denotes the same object. Declared by the user, never assumed: a Juliet testcase set is a closed program; a library is not.
+   - Basis: ADR-0011: libraries count as external, and an executable that exports its symbols (-rdynamic, dlopen'ed plugins) is a library too, so in-tree callers and writes prove nothing about a function or global with external linkage; a closed set of call sites, all passing a safe argument, is proof (basis 3). C11 6.2.2p2: every declaration of an identifier with external linkage, in any translation unit, denotes the same object. Declared by the user, never assumed: a Juliet testcase set is a closed program; a library is not.
 
 ``free_null_is_noop``
    free(NULL) does nothing.

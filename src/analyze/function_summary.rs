@@ -557,6 +557,14 @@ pub struct FunctionSummary {
     /// the prescanned call sites are provably all of them.
     #[serde(default)]
     pub has_internal_linkage: bool,
+    /// A declared closed program (`closed_program`) makes the scanned files
+    /// the whole program, so a function with external linkage has no caller
+    /// outside them either: what [`Self::has_internal_linkage`] says of a
+    /// `static` function, said of this one by declaration. Set by
+    /// [`close_declared_caller_sets`], never for `main`, which the execution
+    /// environment calls.
+    #[serde(default)]
+    pub caller_set_closed_by_declaration: bool,
     /// This function's name is mentioned somewhere as a VALUE rather than
     /// called directly: `&handler`, `{ .cb = handler }`, `register(handler)`.
     ///
@@ -928,12 +936,14 @@ impl FunctionSummary {
     /// about the parameter rather than about today's callers (ADR-0011,
     /// "checks made by every caller count").
     ///
-    /// Two things have to hold. The function has internal linkage, so no
-    /// translation unit the scan never saw can call it -- a non-static
-    /// function is open whether or not a header declares it, since a library
-    /// exports it and `-rdynamic` exports it from an executable. And its
-    /// address stays inside the scanned source (`address_taken` is false), so
-    /// no call is made through a stored pointer by code that never names it.
+    /// Two things have to hold. No translation unit the scan never saw can
+    /// call it: the function has internal linkage, or the user declared the
+    /// scanned files a closed program (`caller_set_closed_by_declaration`).
+    /// Undeclared, a non-static function is open whether or not a header
+    /// declares it, since a library exports it and `-rdynamic` exports it
+    /// from an executable. And its address stays inside the scanned source
+    /// (`address_taken` is false), so no call is made through a stored
+    /// pointer by code that never names it.
     ///
     /// This is the gate every caller-set proof goes through: a constant every
     /// caller passes, a minimum buffer size, "no caller passes taint", "every
@@ -941,7 +951,7 @@ impl FunctionSummary {
     /// says nothing about how many call sites there are; a proof also needs
     /// at least one, which each aggregation checks for itself.
     pub fn caller_set_is_closed(&self) -> bool {
-        self.has_internal_linkage && !self.address_taken
+        (self.has_internal_linkage || self.caller_set_closed_by_declaration) && !self.address_taken
     }
 }
 
@@ -1719,6 +1729,26 @@ fn declares_no_params(func_node: &Node, source: &str) -> bool {
                 && only.named_child_count() == 1
         }
         _ => false,
+    }
+}
+
+/// Close the caller set of every function with external linkage in
+/// `summaries`, for a declared closed program (`closed_program`, ADR-0011):
+/// the scanned files are the whole program, so a non-static function's
+/// collected call sites are all of them, as a `static` function's are.
+///
+/// Run before [`crate::analyze::prescan::mark_address_taken`], which then
+/// withdraws the closure from each one whose address the scanned source
+/// takes, and before any caller-set aggregation reads it. A key qualified by
+/// its defining file is a `static` and needs nothing. `main` stays open: the
+/// execution environment calls it, with arguments no scanned call site
+/// passes, and a recursive call in the tree must not stand for them.
+pub fn close_declared_caller_sets(summaries: &mut HashMap<String, FunctionSummary>) {
+    for (key, summary) in summaries.iter_mut() {
+        let bare = key.split_once('\0').map_or(key.as_str(), |(_, n)| n);
+        if !summary.has_internal_linkage && bare != "main" {
+            summary.caller_set_closed_by_declaration = true;
+        }
     }
 }
 
