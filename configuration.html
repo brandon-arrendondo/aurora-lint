@@ -53,6 +53,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#scope">Scope</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#supported-cert-c-rules">Supported CERT C Rules</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#strict-vs-relaxed-onboarding">Strict vs. Relaxed Onboarding</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#removed-rules">Removed rules</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#tracked-but-not-implemented">Tracked but not implemented</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#enabled-but-out-of-scope">Enabled but out of scope</a></li>
 </ul>
@@ -594,6 +595,20 @@ match its assumptions. A data-driven relaxed starter, generated from
 aggregate real-world precision across this project’s own benchmark corpus
 rather than hand-picked, is tracked as a follow-up rather than shipped
 speculatively here.</p>
+</section>
+<section id="removed-rules">
+<h2>Removed rules<a class="headerlink" href="#removed-rules" title="Link to this heading"></a></h2>
+<p>A rule aurora-lint no longer ships (ADR-0013: it is unenforceable, fails the
+shipping criterion, is covered by another rule, or CERT deprecated it) is
+removed from the tool, not disabled. A configuration written for an older
+release may still have a <code class="docutils literal notranslate"><span class="pre">[rules.cert_c.&lt;ID&gt;]</span></code> block for it. That
+configuration still loads: aurora-lint prints one warning naming the release
+that removed the rule, why, and which rules cover it, and ignores the block.
+<code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--list-rules</span></code> lists every shipped rule, then every removed
+rule with its reason (<code class="docutils literal notranslate"><span class="pre">--list-rules</span> <span class="pre">json</span></code> for tooling). The list is kept in
+<code class="docutils literal notranslate"><span class="pre">rules_templates/removed-rules.toml</span></code>.</p>
+<p>The rules removed so far:</p>
+<p>No rule has been removed yet.</p>
 </section>
 <section id="tracked-but-not-implemented">
 <h2>Tracked but not implemented<a class="headerlink" href="#tracked-but-not-implemented" title="Link to this heading"></a></h2>

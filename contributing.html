@@ -62,6 +62,7 @@
 <li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Contributing</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#adding-a-new-cert-c-rule">Adding a New CERT C Rule</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#removing-a-rule">Removing a Rule</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#build-requirements">Build Requirements</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#invoke-tasks">Invoke Tasks</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#publishing-a-release-s-documentation">Publishing a Release’s Documentation</a></li>
@@ -144,6 +145,54 @@ and <code class="docutils literal notranslate"><span class="pre">tests/pass/</sp
 </pre></div>
 </div>
 </li>
+</ol>
+</section>
+<section id="removing-a-rule">
+<h2>Removing a Rule<a class="headerlink" href="#removing-a-rule" title="Link to this heading"></a></h2>
+<p>A rule is removed only on its row in <code class="docutils literal notranslate"><span class="pre">docs/design/rule-disposition.md</span></code>
+(ADR-0013): a not-shipped disposition, ruled. Each removal is its own change
+(Decision 5), and “not shipped” means gone from the tool, not disabled
+(Decision 4). In that one change:</p>
+<ol class="arabic">
+<li><p>Check that the covering rule already reports the construct (Decision 5):
+run it on the removed rule’s <code class="docutils literal notranslate"><span class="pre">fail</span></code> fixtures and CERT’s noncompliant
+examples. If it doesn’t, the removal waits for that coverage to land.</p></li>
+<li><p>Delete the rule directory <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/CATEGORY/RULE-ID/</span></code> (the
+implementation, its <code class="docutils literal notranslate"><span class="pre">.toml</span></code> and its <code class="docutils literal notranslate"><span class="pre">tests/</span></code> fixtures) and its
+registration in <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/mod.rs</span></code>.</p></li>
+<li><p>Delete its block from <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code> and from every
+<code class="docutils literal notranslate"><span class="pre">conf/realworld/*-rules.toml</span></code>.</p></li>
+<li><p>Add a <code class="docutils literal notranslate"><span class="pre">[[removed]]</span></code> entry to <code class="docutils literal notranslate"><span class="pre">rules_templates/removed-rules.toml</span></code>, in
+id order (the loader refuses an unsorted table, so parallel removals don’t
+all conflict at the end of the file). <code class="docutils literal notranslate"><span class="pre">removed_in</span></code> is the release the
+removal ships in, set up front; <code class="docutils literal notranslate"><span class="pre">disposition</span></code> and <code class="docutils literal notranslate"><span class="pre">covered_by</span></code> must
+agree with the rule’s disposition row, and every <code class="docutils literal notranslate"><span class="pre">covered_by</span></code> rule must
+still ship (a test checks it against the registry).</p></li>
+<li><p>Regenerate what is derived from the rule set:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">python3</span> <span class="n">scripts</span><span class="o">/</span><span class="n">generate_rule_cwe_map</span><span class="o">.</span><span class="n">py</span>   <span class="c1"># data/rule_cwe_map.json</span>
+<span class="n">python3</span> <span class="n">scripts</span><span class="o">/</span><span class="n">render_removed_rules</span><span class="o">.</span><span class="n">py</span>    <span class="c1"># README.md and docs/configuration.rst</span>
+</pre></div>
+</div>
+<p>Delete the rule’s key from <code class="docutils literal notranslate"><span class="pre">data/wiki_fixture_staleness.json</span></code> (its
+fixtures are gone; don’t rerun that audit, which fetches CERT’s wiki),
+and fix every rule count the <code class="docutils literal notranslate"><span class="pre">check-project-facts</span></code> hook reports as
+stale (README.md and docs/ claim the shipped and enabled totals).</p>
+</li>
+<li><p>Record the removal in the rule’s row in
+<code class="docutils literal notranslate"><span class="pre">docs/design/rule-disposition.md</span></code>: note it, with the release, in the
+<em>Reason / notes</em> column. Leave the <em>Disposition</em> column as the
+not-shipped disposition the removal rests on; the <code class="docutils literal notranslate"><span class="pre">check-removed-rules</span></code>
+hook requires it to start with that label (and, for a covered rule, to
+name every <code class="docutils literal notranslate"><span class="pre">covered_by</span></code> rule). Also update any design doc or ADR that
+cites the rule as live (for example <code class="docutils literal notranslate"><span class="pre">docs/design/cross-rule-overlap.md</span></code>).</p></li>
+<li><p>Say in the change’s description what users lose and which rules report
+the construct instead. The maintainer records it as the release note,
+under <code class="docutils literal notranslate"><span class="pre">category:</span> <span class="pre">removed</span></code> (ADR-0009).</p></li>
+<li><p>Build and run the full test suite. The pre-commit hooks check that every
+real-world manifest still decides every rule (<code class="docutils literal notranslate"><span class="pre">check-realworld-manifests</span></code>),
+that the not-shipped list is current and agrees with the disposition
+table (<code class="docutils literal notranslate"><span class="pre">check-removed-rules</span></code>), and that the rule counts hold
+(<code class="docutils literal notranslate"><span class="pre">check-project-facts</span></code>).</p></li>
 </ol>
 </section>
 <section id="build-requirements">

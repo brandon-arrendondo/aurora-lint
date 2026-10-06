@@ -113,6 +113,9 @@ Full Command Reference
                                        and every integer fact with its source (cli,
                                        config, data-model:NAME, iso-floor, unknown), then
                                        exit [text, json, rst]
+          --list-rules [<FORMAT>]      List every rule the tool ships and whether the
+                                       configuration enables it, then the rules it no
+                                       longer ships and why, then exit [text, json]
           --check-config               Resolve the settings from the manifest and the
                                        command line exactly as a scan would, validate
                                        them, and exit without scanning: "configuration
