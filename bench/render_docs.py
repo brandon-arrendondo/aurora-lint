@@ -283,6 +283,25 @@ def _basis_cell(overall: dict) -> str:
     return f"`{basis}`" + (f" (definitions `{version}`)" if version else "")
 
 
+def realworld_run_citation(realworld_run_id) -> str:
+    """How the highlights cite the real-world run: "run #265" for one run,
+    "runs 402-409 (one per settings group)" for a release whose scans split
+    across settings groups and so produced one run per group.
+
+    A set arrives as a sequence of run ids (a tuple or list). A range is
+    written only when the ids are consecutive, so it can never be read as
+    including a run outside the set; otherwise they are listed.
+    """
+    if isinstance(realworld_run_id, (tuple, list)):
+        ids = sorted({int(i) for i in realworld_run_id})
+        if len(ids) > 1:
+            label = (f"{ids[0]}-{ids[-1]}" if ids[-1] - ids[0] == len(ids) - 1
+                     else ",".join(str(i) for i in ids))
+            return f"runs {label} (one per settings group)"
+        realworld_run_id = ids[0]
+    return f"run #{realworld_run_id}"
+
+
 def render_readme_highlights(db: BenchDBLike, juliet_run_id: str,
                              realworld_run_id: int, rw_score: dict) -> str:
     juliet = db.get_run_summary(juliet_run_id)
@@ -310,7 +329,8 @@ def render_readme_highlights(db: BenchDBLike, juliet_run_id: str,
         f"| **Per-File Detection** | {ca['per_file_rate_pct']}% "
         f"({ca['per_file_detected']:,} / {ca['per_file_total']:,} files) |",
         f"| **Real-World Precision / Recall (vs. known TPs)** | {overall['precision_pct']}% / "
-        f"{overall['recall_pct']}% (v{rw_run['sqc_version']}, run #{realworld_run_id}, "
+        f"{overall['recall_pct']}% (v{rw_run['sqc_version']}, "
+        f"{realworld_run_citation(realworld_run_id)}, "
         f"{coverage_pct}% label coverage) |",
         f"| **Real-World Projects** | {', '.join(projects)} |",
         f"| **Basis** | {_basis_cell(overall)} |",
