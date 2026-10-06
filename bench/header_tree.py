@@ -7,16 +7,22 @@ headers a Linux node does not have at all. The Debian tree (the 'debs'
 section further down) stands in for the host's own /usr/include on the
 corpora whose runner config passes -I /usr/include (curl, hostap,
 mosquitto, sqlite, valkey): which -dev packages a host happens to have
-installed, not only their versions, moves those corpora's findings, so an
-official or A/B scan reads one pinned set instead. A tree that 'replaces'
-a prefix rewrites the corpus's own -I flags into the tree
+installed, not only their versions, moves those corpora's findings, so a
+run that must not depend on the host can read one pinned set instead. A
+tree that 'replaces' a prefix rewrites the corpus's own -I flags into the tree
 (substitute_includes); a tree without one appends its include_dirs.
 
 Trees can be declared inline on a corpus (ventoy) or once in the top-level
-'header_trees' map and named by id from each corpus that uses them.
-`realworld-run --header-tree ID` scans the host-header corpora against
-another named tree that replaces the same prefix; such a run gets its own
-run id, so an environment comparison never overwrites the default run.
+'header_trees' map. ventoy's tree is required: no host has the Windows
+headers, so the runner refuses to scan it without the tree. The Debian
+trees are OPT-IN. A corpus whose runner config reads the host's headers
+names that prefix under 'host_headers', and by default it is scanned
+against the host's own /usr/include, as official runs are (the benchmark
+node's headers are its environment of record; docs/adr/0004).
+`realworld-run --header-tree ID` scans those corpora against a named tree
+that replaces the same prefix instead, to reproduce another node's
+environment or to take the host out of an A/B; such a run gets its own
+run id (-hdr-ID), so it never overwrites the default run.
 
 Why this exists: ventoy is the suite's Win32 corpus, and a Linux node has no
 <windows.h>. Scanned without one, aurora-lint still parses Ventoy2Disk, but
@@ -83,14 +89,13 @@ def trees_root(bench_root=None) -> Path:
 
 
 # Names a tree in the top-level 'header_trees' map to scan the host-header
-# corpora against instead of their declared one (`realworld-run
-# --header-tree`). Only a tree that replaces the same -I prefix may stand in.
+# corpora against instead of the host's own headers (`realworld-run
+# --header-tree`). Only a tree that replaces the corpus's 'host_headers'
+# prefix may stand in.
 HOST_TREE_ENV = "SQC_BENCH_HEADER_TREE"
 
-# The --header-tree value that opts out: scan against this host's own
-# /usr/include, as before pinned trees existed. Hosts differ, and a scan on
-# one must still be possible; it gets its own run id and says so in its
-# provenance, so it is never mistaken for a pinned-tree run.
+# The tree id of the default: this host's own headers. Accepted as a
+# --header-tree value too, meaning the same as passing none.
 HOST = "host"
 
 
@@ -107,40 +112,49 @@ def tree_spec(tree_id: str, data=None) -> dict:
     return trees[tree_id]
 
 
-def resolve(decl, data=None, override=None):
+def host_spec(prefix: str) -> dict:
+    """The spec of a scan against this host's own headers under `prefix`."""
+    return {"id": HOST, "host": True, "replaces": prefix, "hashed_dirs": [],
+            "manifest_sha256": None, "include_dirs": [],
+            "fetch": {"kind": "host"}}
+
+
+def resolve(decl, data=None):
     """A corpus's 'header_tree' declaration as a spec dict, or None.
 
     A dict is the spec itself (ventoy's Windows tree). A string names an
-    entry of the top-level 'header_trees' map, which several corpora can
-    share (the Debian tree the -I /usr/include corpora scan against).
-    `override` swaps a string reference for another named tree that
-    replaces the same -I prefix; an inline spec is never overridden."""
+    entry of the top-level 'header_trees' map."""
     if decl is None or isinstance(decl, dict):
         return decl
-    data = data or _repos()
-    spec = tree_spec(decl, data)
-    if override == HOST:
-        return {"id": HOST, "host": True, "replaces": spec.get("replaces"),
-                "hashed_dirs": [], "manifest_sha256": None, "include_dirs": [],
-                "fetch": {"kind": "host"}}
-    if override and override != decl:
-        alt = tree_spec(override, data)
-        if alt.get("replaces") != spec.get("replaces"):
-            raise ValueError(f"header tree '{override}' cannot stand in for "
-                             f"'{decl}': they replace different -I prefixes")
-        return alt
-    return spec
+    return tree_spec(decl, data)
 
 
 def spec_for(project: str, override=None):
-    """The header tree `project` scans against, or None if it scans against
-    the host's own headers. `override` defaults to $SQC_BENCH_HEADER_TREE."""
+    """The header tree `project` scans against, or None if it reads no
+    system headers the runner knows of.
+
+    A declared 'header_tree' is always used. A corpus that reads the host's
+    headers ('host_headers') gets the host spec, or the named tree
+    `override` (default $SQC_BENCH_HEADER_TREE), which must replace the same
+    prefix."""
     if override is None:
         override = os.environ.get(HOST_TREE_ENV) or None
     data = _repos()
     for entry in data["repos"]:
-        if entry["name"] == project:
-            return resolve(entry.get("header_tree"), data, override)
+        if entry["name"] != project:
+            continue
+        if entry.get("header_tree"):
+            return resolve(entry["header_tree"], data)
+        prefix = entry.get("host_headers")
+        if not prefix:
+            return None
+        if not override or override == HOST:
+            return host_spec(prefix)
+        alt = tree_spec(override, data)
+        if alt.get("replaces") != prefix:
+            raise ValueError(f"header tree '{override}' replaces "
+                             f"{alt.get('replaces')}, not {project}'s {prefix}")
+        return alt
     return None
 
 
@@ -474,24 +488,26 @@ def fix_hint(project: str) -> str:
     spec = spec_for(project)
     if spec and spec["fetch"].get("kind") == "debs":
         return (f"provision it with: python -m bench.header_tree fetch {spec['id']}   "
-                f"(or the playbook's --tags header-trees; corpus '{project}', "
-                f"see docs/benchmark-setup.rst)")
+                f"(see docs/benchmark-setup.rst), or drop --header-tree to scan "
+                f"against this host's own headers")
     return (f"provision it with: ansible-playbook playbooks/setup-benchmark-repos.yml "
             f"-i 'localhost,' -c local -e accept_microsoft_license=true "
             f"--tags header-trees   (corpus '{project}'; see docs/benchmark-setup.rst)")
 
 
 def _spec_arg(name: str):
-    """A CLI argument naming either a corpus or a tree in 'header_trees'."""
+    """A CLI argument naming either a tree in 'header_trees' or a corpus that
+    declares one."""
     data = _repos()
     if name in data.get("header_trees", {}):
         return tree_spec(name, data)
-    return spec_for(name)
+    spec = spec_for(name, override="")
+    return None if spec is None or spec.get("host") else spec
 
 
 def main(argv=None) -> int:
     """`python -m bench.header_tree verify NAME` exits 0 if the tree NAME
-    names (a corpus's declared tree, or a tree id) is present with the
+    names (a tree id, or a corpus that declares a tree) is present with the
     declared hash, 1 otherwise;
     `python -m bench.header_tree hash NAME DIR` prints the manifest hash of
     the tree at DIR over NAME's hashed_dirs -- the value to declare when
@@ -511,7 +527,10 @@ def main(argv=None) -> int:
         return 0
     spec = _spec_arg(args[1])
     if spec is None:
-        print(f"{args[1]}: no header tree declared in {REPOS_JSON}")
+        trees = ", ".join(sorted(_repos().get("header_trees", {}))) or "none"
+        print(f"{args[1]}: no header tree declared in {REPOS_JSON} (a corpus "
+              f"that reads host headers declares none: name a tree, one of "
+              f"{trees})")
         return 2
     if args[0] == "hash":
         if len(args) != 3:

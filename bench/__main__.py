@@ -73,8 +73,8 @@ def cmd_realworld_run(args):
             print(f"Unknown codebase '{cb}'. Must be one of: {', '.join(sorted(CODEBASES))}")
             return
 
-    # A named header tree stands in for the declared one on every corpus that
-    # scans against host headers; it must exist and replace the same prefix.
+    # A named header tree stands in for the host's own headers on every
+    # corpus that reads them; it must exist and replace the same prefix.
     # The runner gives such a scan its own run identity.
     if args.header_tree:
         import os
@@ -83,11 +83,11 @@ def cmd_realworld_run(args):
             alt = ({"replaces": True} if args.header_tree == HOST
                    else tree_spec(args.header_tree))
         except KeyError as e:
-            print(f"--header-tree: {e.args[0]} (or 'host' for this host's own headers)")
+            print(f"--header-tree: {e.args[0]}")
             raise SystemExit(2)
         if not alt.get("replaces"):
             print(f"--header-tree: '{args.header_tree}' does not replace host "
-                  "headers, so it cannot stand in for a corpus's declared tree")
+                  "headers, so it cannot stand in for them")
             raise SystemExit(2)
         os.environ[HOST_TREE_ENV] = args.header_tree
 
@@ -1234,8 +1234,8 @@ def main():
     p_rw_run.add_argument("--header-tree", default=None, metavar="ID",
                           help="sqc only: scan the corpora that read host headers "
                                "against this tree from data/benchmark_repos.json's "
-                               "header_trees instead of their declared one, or "
-                               "against this host's own /usr/include with 'host'; "
+                               "header_trees instead of this host's own "
+                               "/usr/include (the default, also named 'host'); "
                                "the run gets its own id (-hdr-ID)")
     p_rw_run.set_defaults(func=cmd_realworld_run)
 

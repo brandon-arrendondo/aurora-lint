@@ -95,17 +95,20 @@
     "corpus-check verifies it. Field meanings and the hash definition:",
     "bench/header_tree.py. Provisioning: playbooks/setup-benchmark-repos.yml.",
     "",
-    "'header_trees': trees declared once and named by id from each corpus that",
-    "uses them. The corpora whose runner config passes -I /usr/include (curl,",
-    "hostap, mosquitto, sqlite, valkey) scan against a pinned Debian 12",
-    "/usr/include instead of the host's own: which -dev packages a host has",
-    "installed, not only their versions, moves their findings. Its packages",
-    "are each corpus's declared dependencies (plus libc and kernel headers),",
-    "pinned by version and .deb sha256 at snapshot.debian.org, so every node",
-    "unpacks the same tree without dpkg (python -m bench.header_tree fetch).",
-    "The 'benchmark-node' tree is the header set the v0.6.0 citation runs",
-    "were scanned against, kept for measuring what the change of environment",
-    "alone moves (realworld-run --header-tree); it is not used by default."
+    "'host_headers': the prefix a corpus's runner config reads from the host",
+    "(-I /usr/include: curl, hostap, mosquitto, sqlite, valkey). By default",
+    "those corpora are scanned against this host's own headers, as official",
+    "runs are on the benchmark node (docs/adr/0004), and each scan records",
+    "that in its provenance.",
+    "",
+    "'header_trees': opt-in pinned replacements for the host's /usr/include,",
+    "for reproducing another node's environment or taking the host out of",
+    "an A/B (realworld-run --header-tree ID, which gets its own run id). The",
+    "packages are pinned by version and .deb sha256 at snapshot.debian.org,",
+    "so every node unpacks the same tree without dpkg (python -m",
+    "bench.header_tree fetch ID). The 'declared' tree holds each corpus's",
+    "declared dependencies plus libc and kernel headers; the 'benchmark-node'",
+    "tree is the header set the v0.6.0 citation runs were scanned against."
   ],
   "header_trees": {
     "debian12-declared-3af9978e": {
@@ -1246,7 +1249,7 @@
     },
     {
       "name": "sqlite",
-      "header_tree": "debian12-declared-3af9978e",
+      "host_headers": "/usr/include",
       "repo": "https://github.com/sqlite/sqlite.git",
       "version": "b1a73ba34d05b32007315e4065c6468cc638e3af",
       "primary_build_config": {
@@ -1278,7 +1281,7 @@
     },
     {
       "name": "mosquitto",
-      "header_tree": "debian12-declared-3af9978e",
+      "host_headers": "/usr/include",
       "repo": "https://github.com/eclipse-mosquitto/mosquitto.git",
       "version": "d3ee5c5ca62c0fa4983308c6fff558ee978e878c",
       "primary_build_config": {
@@ -1300,7 +1303,7 @@
     },
     {
       "name": "curl",
-      "header_tree": "debian12-declared-3af9978e",
+      "host_headers": "/usr/include",
       "repo": "https://github.com/curl/curl.git",
       "version": "3e198f75861cc2e12daf299689e145949dddd19b",
       "primary_build_config": {
@@ -1329,7 +1332,7 @@
     },
     {
       "name": "hostap",
-      "header_tree": "debian12-declared-3af9978e",
+      "host_headers": "/usr/include",
       "repo": "https://git.w1.fi/hostap.git",
       "version": "dcee60436390dd34731560657c4257c3b4c839a6",
       "primary_build_config": {
@@ -1458,7 +1461,7 @@
     },
     {
       "name": "valkey",
-      "header_tree": "debian12-declared-3af9978e",
+      "host_headers": "/usr/include",
       "repo": "https://github.com/valkey-io/valkey.git",
       "version": "7f1dffedff6de73058b2c2a389422b6ecd56c8fb",
       "primary_build_config": {

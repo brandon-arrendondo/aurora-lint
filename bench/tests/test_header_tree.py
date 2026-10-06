@@ -141,6 +141,13 @@ class TestRunner(unittest.TestCase):
                 rr._verified_header_tree("ventoy")
         self.assertIn("bbbbbbbbbbbb", str(cm.exception))
 
+    def test_only_a_tree_standing_in_for_host_headers_changes_the_run_id(self):
+        self.assertEqual(rr._header_tree_suffix(None), "")
+        self.assertEqual(rr._header_tree_suffix(header_tree.host_spec("/usr/include")), "")
+        self.assertEqual(rr._header_tree_suffix(_spec("win", "0" * 64)), "")
+        self.assertEqual(rr._header_tree_suffix({"id": "deb", "replaces": "/usr/include"}),
+                         "-hdr-deb")
+
     def test_header_includes_come_after_the_codebase_includes(self):
         cfg = {"path": Path("/cb"), "sqc": {"manifest": rr.CODEBASES["ventoy"]["sqc"]["manifest"],
                                             "includes": ["-I", "{path}/inc"]}}
@@ -371,36 +378,59 @@ class TestFetchDebs(unittest.TestCase):
 
 class TestSharedTrees(unittest.TestCase):
     DATA = {"header_trees": {
-        "host-a": {"id": "host-a", "replaces": "/usr/include"},
-        "host-b": {"id": "host-b", "replaces": "/usr/include"},
-        "other": {"id": "other", "replaces": "/opt/include"}}}
+                "deb-a": {"id": "deb-a", "replaces": "/usr/include"},
+                "other": {"id": "other", "replaces": "/opt/include"}},
+            "repos": [
+                {"name": "hosty", "host_headers": "/usr/include"},
+                {"name": "win", "header_tree": _spec("win-tree", "0" * 64)},
+                {"name": "plain"}]}
+
+    def setUp(self):
+        p = mock.patch.object(header_tree, "_repos", return_value=self.DATA)
+        p.start()
+        self.addCleanup(p.stop)
+        e = mock.patch.dict("os.environ")
+        e.start()
+        self.addCleanup(e.stop)
+        os.environ.pop(header_tree.HOST_TREE_ENV, None)
 
     def test_a_string_names_a_shared_tree(self):
-        self.assertEqual(header_tree.resolve("host-a", self.DATA)["id"], "host-a")
-
-    def test_an_override_replacing_the_same_prefix_stands_in(self):
-        self.assertEqual(header_tree.resolve("host-a", self.DATA, "host-b")["id"], "host-b")
-
-    def test_an_override_for_another_prefix_is_refused(self):
-        with self.assertRaises(ValueError):
-            header_tree.resolve("host-a", self.DATA, "other")
+        self.assertEqual(header_tree.resolve("deb-a", self.DATA)["id"], "deb-a")
 
     def test_an_unknown_tree_is_refused(self):
         with self.assertRaises(KeyError):
             header_tree.resolve("nope", self.DATA)
 
-    def test_host_opts_out_to_the_hosts_own_headers(self):
-        spec = header_tree.resolve("host-a", self.DATA, header_tree.HOST)
+    def test_host_headers_are_the_default(self):
+        spec = header_tree.spec_for("hosty")
         self.assertEqual(spec["id"], header_tree.HOST)
         self.assertEqual(header_tree.check(spec)["status"], header_tree.OK)
         includes = ["-I", "/usr/include", "-I", "/usr/include/libnl3"]
         self.assertEqual(header_tree.substitute_includes(spec, includes), includes)
         self.assertEqual(header_tree.provenance(spec),
                          {"id": "host", "host": True, "replaces": "/usr/include"})
+        self.assertEqual(header_tree.spec_for("hosty", header_tree.HOST), spec)
 
-    def test_an_inline_spec_is_never_overridden(self):
-        inline = _spec("ventoy-tree", "0" * 64)
-        self.assertIs(header_tree.resolve(inline, self.DATA, "host-b"), inline)
+    def test_a_named_tree_replacing_the_same_prefix_is_opted_into(self):
+        self.assertEqual(header_tree.spec_for("hosty", "deb-a")["id"], "deb-a")
+        os.environ[header_tree.HOST_TREE_ENV] = "deb-a"
+        self.assertEqual(header_tree.spec_for("hosty")["id"], "deb-a")
+
+    def test_a_tree_for_another_prefix_is_refused(self):
+        with self.assertRaises(ValueError):
+            header_tree.spec_for("hosty", "other")
+
+    def test_a_declared_tree_is_never_overridden(self):
+        self.assertEqual(header_tree.spec_for("win", "deb-a")["id"], "win-tree")
+
+    def test_a_corpus_without_system_headers_has_no_tree(self):
+        self.assertIsNone(header_tree.spec_for("plain", "deb-a"))
+
+    def test_the_cli_names_trees_not_host_header_corpora(self):
+        self.assertEqual(header_tree._spec_arg("deb-a")["id"], "deb-a")
+        self.assertEqual(header_tree._spec_arg("win")["id"], "win-tree")
+        self.assertIsNone(header_tree._spec_arg("hosty"))
+        self.assertEqual(header_tree.main(["verify", "hosty"]), 2)
 
 
 class TestSubstituteIncludes(unittest.TestCase):
@@ -432,18 +462,27 @@ class TestSubstituteIncludes(unittest.TestCase):
 
 
 class TestHostHeaderDeclaration(unittest.TestCase):
-    """Every corpus that scans with -I /usr/include names a declared Debian
-    tree that replaces it, and every declared 'debs' tree pins each package
-    by version, file, snapshot URL and sha256."""
+    """Every corpus that scans with -I /usr/include says so ('host_headers'),
+    so --header-tree can stand a tree in for it, and every 'debs' tree pins
+    each package by version, file, snapshot URL and sha256."""
 
-    def test_corpora_reading_host_headers_name_a_replacing_tree(self):
+    def test_corpora_reading_host_headers_declare_the_prefix(self):
+        entries = {e["name"]: e for e in header_tree._repos()["repos"]}
         for name, cfg in rr.CODEBASES.items():
             incs = cfg["sqc"].get("includes", [])
-            if any(v == "/usr/include" or str(v).startswith("/usr/include/") for v in incs):
-                with self.subTest(corpus=name):
-                    spec = header_tree.spec_for(name, override="")
-                    self.assertIsNotNone(spec)
-                    self.assertEqual(spec.get("replaces"), "/usr/include")
+            reads = any(v == "/usr/include" or str(v).startswith("/usr/include/")
+                        for v in incs)
+            with self.subTest(corpus=name):
+                self.assertEqual(entries[name].get("host_headers"),
+                                 "/usr/include" if reads else None)
+
+    def test_host_header_corpora_scan_the_host_by_default(self):
+        with mock.patch.dict("os.environ"):
+            os.environ.pop(header_tree.HOST_TREE_ENV, None)
+            for e in header_tree._repos()["repos"]:
+                if e.get("host_headers"):
+                    with self.subTest(corpus=e["name"]):
+                        self.assertTrue(header_tree.spec_for(e["name"])["host"])
 
     def test_debs_trees_pin_every_package(self):
         trees = header_tree._repos().get("header_trees", {})

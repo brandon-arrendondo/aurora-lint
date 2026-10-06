@@ -223,9 +223,9 @@ def check_repo(entry, bench_root=None):
     }
     if entry.get("header_tree"):
         from bench.header_tree import check, resolve
-        # A string names a shared tree in the top-level 'header_trees' map.
-        res["header_tree"] = check(resolve(entry["header_tree"], override=""),
-                                   bench_root)
+        # Only a declared tree is required. The opt-in trees a host-header
+        # corpus can scan against (realworld-run --header-tree) are not.
+        res["header_tree"] = check(resolve(entry["header_tree"]), bench_root)
 
     if not path.is_dir():
         res["status"] = "MISSING"

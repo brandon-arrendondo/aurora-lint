@@ -797,10 +797,11 @@ def _build_sqc_cmd(cfg: dict, results_dir: Path, run_id: str,
 
 
 def _verified_header_tree(codebase: str):
-    """The pinned header tree `codebase` declares (bench/header_tree.py), or
-    None if it declares none. Raises if the tree is missing or its manifest
-    hash does not match: scanning without it would record header-less
-    findings under the same run identity as the real ones."""
+    """The header tree `codebase` scans against (bench/header_tree.py): its
+    declared tree, the tree --header-tree names, the host's own headers, or
+    None if it reads no system headers. Raises if a tree is missing or its
+    manifest hash does not match: scanning without it would record
+    header-less findings under that tree's run identity."""
     from bench import header_tree
     spec = header_tree.spec_for(codebase)
     if spec is None:
@@ -810,14 +811,22 @@ def _verified_header_tree(codebase: str):
         detail = ("is missing" if res["status"] == header_tree.MISSING
                   else f"has manifest hash {res['actual'][:12]}, expected "
                        f"{res['expected'][:12]}")
-        opt_out = ("\nTo scan against this host's own headers instead, pass "
-                   "--header-tree host (a run id of its own; not comparable "
-                   "with pinned-tree runs)." if spec.get("replaces") else "")
         raise FileNotFoundError(
             f"header tree {res['path']} {detail}.\n"
             f"{codebase} is scanned against pinned system headers; "
-            + header_tree.fix_hint(codebase) + opt_out)
+            + header_tree.fix_hint(codebase))
     return spec
+
+
+def _header_tree_suffix(spec) -> str:
+    """The run-id suffix for scanning against `spec`. A pinned tree in place
+    of the host's headers (`--header-tree`) is a different environment: it
+    gets its own run identity, so its findings never land under the default
+    run's id. The host's own headers and a corpus's declared tree are the
+    default and add nothing."""
+    if spec and spec.get("replaces") and not spec.get("host"):
+        return f"-hdr-{spec['id']}"
+    return ""
 
 
 def _build_cppcheck_cmd(cfg: dict) -> list[str]:
@@ -1627,14 +1636,7 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
             extra_args=_expand(cfg["sqc"].get("extra_args", []), str(cfg["path"])))
         suffix = settings_run_suffix(settings).lstrip("-")
         variant = f"{variant}-{suffix}" if variant else suffix
-        # A scan against a header tree other than the corpus's declared one
-        # (`--header-tree`) is a different environment: give it its own run
-        # identity, so its findings never land under the default run's id.
-        if header_spec:
-            from bench.header_tree import spec_for
-            declared = spec_for(codebase, override="")
-            if declared and declared["id"] != header_spec["id"]:
-                variant = f"{variant}-hdr-{header_spec['id']}"
+        variant += _header_tree_suffix(header_spec)
 
     version = _get_tool_version(tool)
     sha = _get_git_sha()

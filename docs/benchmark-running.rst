@@ -376,15 +376,19 @@ ingest starts, so a caller that ingests the exports somewhere else reads the
 names instead of predicting them. Write it outside ``results/realworld/``: an
 export directory's ``*.json`` files are read as scan results.
 
-``--header-tree ID`` scans the corpora that read system headers (curl,
-hostap, mosquitto, sqlite, valkey) against another tree from
-``header_trees`` in ``data/benchmark_repos.json`` instead of their declared
-one, for measuring what a change of header environment alone moves. The
-tree must be provisioned (``python3 -m bench.header_tree fetch ID``), and the
-scans land under a run id of their own (``...-hdr-ID``), never under the
-default run's. ``--header-tree host`` scans them against this host's own
-``/usr/include`` instead (``...-hdr-host``). Comparing the declared tree
-with the benchmark-node tree measures the whole environment change: the
+By default the corpora that read system headers (curl, hostap, mosquitto,
+sqlite, valkey) are scanned against this host's own ``/usr/include``, and
+each scan records ``host`` as its header tree. That is right for an A/B on
+one machine, where both arms share the host; a local run's figures are its
+own, and official ones come from the benchmark node alone
+(``docs/adr/0004-postgres-is-the-single-source-of-truth.md``).
+``--header-tree ID`` opts in to scanning those corpora against a pinned tree
+from ``header_trees`` in ``data/benchmark_repos.json`` instead, to reproduce
+another machine's header environment or take the host out of a comparison.
+The tree must be provisioned (``python3 -m bench.header_tree fetch ID``), and
+the scans land under a run id of their own (``...-hdr-ID``), never under the
+default run's. ``--header-tree host`` is the default spelled out. A
+comparison between two header environments measures the whole change: the
 package set and the include search path differ at once (see
 :doc:`benchmark-setup`).
 

@@ -530,13 +530,14 @@ reproducer will not guess:
    105 of the 108 keys, were not then among the packages
    :doc:`benchmark-setup` installs.
 
-   After ``v0.6.0`` the benchmark runner stopped reading the host's headers
-   for these five corpora: it scans them against a pinned Debian header
-   tree (*Debian System Headers* in :doc:`benchmark-setup`), the same on
-   every machine. Default runs of them from then on are therefore not key
-   for key comparable with ``v0.6.0``'s. To reproduce ``v0.6.0``'s figures
-   for these five, scan against the benchmark node's exact header set
-   instead: ``python -m bench realworld-run --header-tree
+   So a run on another machine reads that machine's headers, and its
+   figures for these five corpora are its own: official figures are the
+   benchmark node's, on the node's headers
+   (``docs/adr/0004-postgres-is-the-single-source-of-truth.md``). To
+   reproduce ``v0.6.0``'s figures for these five on another machine, opt in
+   to the benchmark node's exact header set, pinned as a tree (*Debian
+   System Headers* in :doc:`benchmark-setup`):
+   ``python -m bench realworld-run --header-tree
    debian12-benchmark-node-3e6c8a2b`` (fetch it first with
    ``python3 -m bench.header_tree fetch debian12-benchmark-node-3e6c8a2b``).
    Scanned that way with the ``v0.6.0`` binary, all five match the
