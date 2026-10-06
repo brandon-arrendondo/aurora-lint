@@ -43,6 +43,10 @@ struct UnclosedCallInfo {
 }
 
 impl CertRule for Pre32C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "PRE32-C"
     }

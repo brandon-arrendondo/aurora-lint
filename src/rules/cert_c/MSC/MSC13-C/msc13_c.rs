@@ -620,6 +620,10 @@ impl Msc13C {
 }
 
 impl CertRule for Msc13C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "MSC13-C"
     }

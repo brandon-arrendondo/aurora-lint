@@ -59,6 +59,10 @@ impl Fio42C {
 }
 
 impl CertRule for Fio42C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "FIO42-C"
     }

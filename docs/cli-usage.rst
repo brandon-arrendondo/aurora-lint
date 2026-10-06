@@ -347,6 +347,17 @@ findings::
 
     aurora-lint src/ -d src/ -I include/ -I /usr/include --report-headers headers.json
 
+Each finding that may depend on a missing header says so. A rule that reads
+facts headers supply (function declarations, macros and macro constants,
+summaries of functions a header defines, struct layouts) and reports in a
+file whose ``#include`` graph reaches a header the scan could not find carries
+the names of those headers: ``missing_headers`` in the JSON export,
+``properties.missingHeaders`` in SARIF, and a ``note: may depend on header(s)
+the scan could not find`` line with ``-v``. It says *may*: the rule could have
+needed something those headers declare, not that it did. A finding without
+the marker did not depend on any missing header, so comparing two hosts'
+exports separates the findings a header explains from the ones it cannot.
+
 None of this changes a finding.
 
 Seeing Where the Engine Is Blind

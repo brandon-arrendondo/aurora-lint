@@ -952,6 +952,7 @@ fn run() -> Result<i32> {
     let abandoned_rules = results.abandoned_rules;
     let not_converged = results.not_converged;
     let include_report = results.include_report;
+    let header_dependence = results.header_dependence;
 
     // Headers the scan could not find change what rules can see, so they are
     // loud: one stderr line whenever a live #include did not resolve, every
@@ -993,6 +994,14 @@ fn run() -> Result<i32> {
         if let Some(ref hint) = v.suggestion {
             println!("  note: {}", hint);
         }
+        if verbosity >= 1 {
+            if let Some(missing) = header_dependence.of(&v.rule_id, &v.file_path) {
+                println!(
+                    "  note: may depend on header(s) the scan could not find: {}",
+                    missing.join(", ")
+                );
+            }
+        }
     }
 
     // Export to file if requested (includes both active and suppressed violations)
@@ -1007,7 +1016,10 @@ fn run() -> Result<i32> {
                 abandoned_rules: &abandoned_rules,
                 not_converged: &not_converged,
             },
-            &include_report,
+            export::Headers {
+                report: Some(&include_report),
+                dependence: Some(&header_dependence),
+            },
         )?;
         println!(
             "Exported {} violations ({} suppressed) to: {}",

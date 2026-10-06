@@ -117,6 +117,8 @@ pub struct AnalysisResults {
     /// What `#include` resolution could and could not see
     /// ([`context::IncludeReport`]): reported, never a finding.
     pub include_report: std::sync::Arc<context::IncludeReport>,
+    /// Which findings may depend on a header the scan could not find.
+    pub header_dependence: context::HeaderDependence,
 }
 
 /// Which files a scan leaves out, as path globs relative to the scanned root
@@ -392,6 +394,8 @@ pub fn analyze_project(
             reporter.report_complete(violations.len());
         }
 
+        let header_dependence =
+            header_dependence(&registry, manifest, &context, &violations, &suppressed);
         return Ok(AnalysisResults {
             violations,
             suppressed,
@@ -400,6 +404,7 @@ pub fn analyze_project(
             abandoned_rules,
             not_converged: containment::take_not_converged(),
             include_report: std::sync::Arc::clone(&context.include_report),
+            header_dependence,
         });
     }
 
@@ -466,6 +471,8 @@ pub fn analyze_project(
         reporter.report_complete(violations.len());
     }
 
+    let header_dependence =
+        header_dependence(&registry, manifest, &context, &violations, &suppressed);
     Ok(AnalysisResults {
         violations,
         suppressed,
@@ -474,7 +481,39 @@ pub fn analyze_project(
         abandoned_rules,
         not_converged: containment::take_not_converged(),
         include_report: std::sync::Arc::clone(&context.include_report),
+        header_dependence,
     })
+}
+
+/// [`context::HeaderDependence`] for this scan: the enabled rules that read
+/// header-supplied facts, and the files their findings are in.
+fn header_dependence(
+    registry: &RuleRegistry,
+    manifest: &RuleManifest,
+    context: &context::ProjectContext,
+    violations: &[RuleViolation],
+    suppressed: &[SuppressedViolation],
+) -> context::HeaderDependence {
+    let rules: std::collections::BTreeSet<String> = manifest
+        .enabled_rules()
+        .filter(|(rule_id, _)| {
+            registry
+                .get_rule(rule_id)
+                .is_some_and(|r| r.reads_header_facts())
+        })
+        .map(|(rule_id, _)| rule_id.to_string())
+        .collect();
+    let files = violations
+        .iter()
+        .chain(suppressed.iter().map(|s| &s.violation))
+        .filter(|v| rules.contains(&v.rule_id))
+        .map(|v| v.file_path.as_str());
+    context::HeaderDependence::build(
+        rules.clone(),
+        files,
+        &context.include_report,
+        &context.include_edges,
+    )
 }
 
 /// Drop every finding of a rule the scan abandoned (`containment`), active
@@ -1675,6 +1714,7 @@ mod tests {
             abandoned_rules: vec![],
             not_converged: vec![],
             include_report: Default::default(),
+            header_dependence: Default::default(),
         };
         assert!(results.violations.is_empty());
         assert!(results.suppressed.is_empty());

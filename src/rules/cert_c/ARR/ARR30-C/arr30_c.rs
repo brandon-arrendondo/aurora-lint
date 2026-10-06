@@ -227,6 +227,10 @@ const BOUND_NAME_SUBSTRINGS: &[&str] = &["size", "length", "count"];
 const BOUND_NAME_SUBSTRINGS_WITH_LEN: &[&str] = &["size", "length", "count", "len"];
 
 impl CertRule for Arr30C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
         self.data_model.set(settings.facts);
     }

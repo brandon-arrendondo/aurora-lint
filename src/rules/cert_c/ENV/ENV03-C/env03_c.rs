@@ -128,6 +128,10 @@ impl Default for Env03C {
 }
 
 impl CertRule for Env03C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "ENV03-C"
     }

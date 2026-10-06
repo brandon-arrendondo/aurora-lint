@@ -1960,6 +1960,10 @@ fn ends_a_statement(line: &str) -> bool {
 }
 
 impl CertRule for Msc12C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "MSC12-C"
     }

@@ -128,6 +128,10 @@ impl Api00C {
 }
 
 impl CertRule for Api00C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "API00-C"
     }

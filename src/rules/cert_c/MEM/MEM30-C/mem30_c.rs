@@ -75,6 +75,10 @@ impl Mem30C {
 }
 
 impl CertRule for Mem30C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "MEM30-C"
     }

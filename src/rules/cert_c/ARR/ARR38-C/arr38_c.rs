@@ -68,6 +68,10 @@ struct PointerOffsetInfo {
 }
 
 impl CertRule for Arr38C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "ARR38-C"
     }

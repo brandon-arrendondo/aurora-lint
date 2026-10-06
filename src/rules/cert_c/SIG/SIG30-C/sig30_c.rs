@@ -61,6 +61,10 @@ impl Default for Sig30C {
 }
 
 impl CertRule for Sig30C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "SIG30-C"
     }

@@ -206,6 +206,74 @@ impl IncludeReport {
     }
 }
 
+/// Which findings may depend on a header the scan could not find: those of a
+/// rule that reads header-supplied facts (`CertRule::reads_header_facts`) in
+/// a file whose include graph reaches a live `#include` that resolved to no
+/// file. "May": the rule could have needed something that header would have
+/// supplied, not proof that it did. It turns "is this finding header-driven?"
+/// into a grep over two hosts' exports instead of an A/B.
+#[derive(Debug, Default, Clone)]
+pub struct HeaderDependence {
+    /// The enabled rules that read header-supplied facts.
+    pub rules: std::collections::BTreeSet<String>,
+    /// A finding's `file_path` -> the missing headers (spellings, sorted)
+    /// its include graph reaches; only files with such a finding.
+    pub by_file: BTreeMap<String, Arc<[String]>>,
+}
+
+impl HeaderDependence {
+    /// The missing headers the finding of `rule_id` in `file_path` may
+    /// depend on, or `None`.
+    pub fn of(&self, rule_id: &str, file_path: &str) -> Option<&[String]> {
+        if !self.rules.contains(rule_id) {
+            return None;
+        }
+        self.by_file.get(file_path).map(|headers| &headers[..])
+    }
+
+    /// Build it for `files` (the `file_path`s of the findings of `rules`):
+    /// for each, the live unresolved `#include`s of every file in its
+    /// include closure ([`IncludeClosure::of`]), or of the file alone when
+    /// the graph has no edge out of it.
+    pub fn build<'a>(
+        rules: std::collections::BTreeSet<String>,
+        files: impl IntoIterator<Item = &'a str>,
+        report: &IncludeReport,
+        edges: &HashMap<String, Vec<String>>,
+    ) -> Self {
+        let mut by_file = BTreeMap::new();
+        let mut live: HashMap<&str, Vec<&str>> = HashMap::new();
+        for u in report.live() {
+            live.entry(u.includer.as_str())
+                .or_default()
+                .push(&u.spelling);
+        }
+        if !live.is_empty() && !rules.is_empty() {
+            for file in files {
+                if by_file.contains_key(file) {
+                    continue;
+                }
+                let path = Path::new(file);
+                let reached: Vec<String> = match IncludeClosure::of(edges, path) {
+                    Some(closure) => closure.files.into_iter().collect(),
+                    None => vec![crate::analyze::compile_commands::real_path(path)],
+                };
+                let missing: std::collections::BTreeSet<&str> = reached
+                    .iter()
+                    .filter_map(|f| live.get(f.as_str()))
+                    .flatten()
+                    .copied()
+                    .collect();
+                if !missing.is_empty() {
+                    let missing: Vec<String> = missing.into_iter().map(String::from).collect();
+                    by_file.insert(file.to_string(), Arc::from(missing));
+                }
+            }
+        }
+        Self { rules, by_file }
+    }
+}
+
 /// What one translation unit may include: [`IncludeClosure::of`].
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct IncludeClosure {

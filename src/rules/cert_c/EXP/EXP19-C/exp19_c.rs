@@ -141,6 +141,10 @@ fn is_braced(body: Node, source: &str, macros: &Macros<'_>) -> bool {
 }
 
 impl CertRule for Exp19C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "EXP19-C"
     }

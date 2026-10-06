@@ -83,6 +83,15 @@ pub trait CertRule {
         None
     }
 
+    /// Whether this rule reads facts that resolved headers supply: function
+    /// declarations, object-like and function-like macros, macro constants,
+    /// summaries of functions a header defines, or struct tables. A finding
+    /// of such a rule may depend on a header the scan could not find, and
+    /// the exports mark it so (`HeaderDependence`). Default: no.
+    fn reads_header_facts(&self) -> bool {
+        false
+    }
+
     /// Inject the policy and environment settings (ADR-0015) this run
     /// analyzes under. Called for every enabled rule on every file, whether
     /// or not cross-file context exists. Default is a no-op; a rule that

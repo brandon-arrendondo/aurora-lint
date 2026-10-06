@@ -724,6 +724,10 @@ const WIDE_TYPES: &[&str] = &[
 ];
 
 impl CertRule for Int31C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "INT31-C"
     }

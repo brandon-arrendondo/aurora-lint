@@ -28,6 +28,24 @@ pub struct Incomplete<'a> {
     pub not_converged: &'a [(String, u64)],
 }
 
+/// What a scan's `#include` resolution could not see, for an export: the
+/// run's report and which findings may depend on it. Both are optional; an
+/// export without them says nothing about headers.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Headers<'a> {
+    /// The run's [`IncludeReport`](crate::analyze::context::IncludeReport).
+    pub report: Option<&'a crate::analyze::context::IncludeReport>,
+    /// Which findings may depend on a header the scan could not find.
+    pub dependence: Option<&'a crate::analyze::context::HeaderDependence>,
+}
+
+impl Headers<'_> {
+    /// The missing headers a finding may depend on, or `None`.
+    pub fn of(&self, v: &RuleViolation) -> Option<&[String]> {
+        self.dependence?.of(&v.rule_id, &v.file_path)
+    }
+}
+
 /// Write `violations` (and, for SARIF, `suppressed`) to `export_path`,
 /// dispatching on its extension: `.sarif`/`.sarif.json` for SARIF 2.1.0, or
 /// `.json` for a plain array of violation objects.
@@ -40,7 +58,7 @@ pub fn export_all_violations(
     export_path: &str,
     settings: &AnalysisSettings,
     incomplete: Incomplete<'_>,
-    headers: &crate::analyze::context::IncludeReport,
+    headers: Headers<'_>,
 ) -> Result<()> {
     if export_path.ends_with(".sarif") || export_path.ends_with(".sarif.json") {
         return export_all_violations_to_sarif(
@@ -53,7 +71,7 @@ pub fn export_all_violations(
         );
     }
     if export_path.ends_with(".json") {
-        return export_all_violations_to_json(violations, export_path);
+        return export_all_violations_to_json(violations, export_path, headers);
     }
     bail!(
         "unsupported export format for '{export_path}': use .sarif (or .json); \

@@ -108,6 +108,10 @@ impl Default for Env33C {
 }
 
 impl CertRule for Env33C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "ENV33-C"
     }

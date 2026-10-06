@@ -64,6 +64,10 @@ pub struct Exp14C {
 }
 
 impl CertRule for Exp14C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "EXP14-C"
     }

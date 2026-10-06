@@ -541,6 +541,10 @@ fn has_statement_child(node: &Node) -> bool {
 }
 
 impl CertRule for Msc37C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "MSC37-C"
     }

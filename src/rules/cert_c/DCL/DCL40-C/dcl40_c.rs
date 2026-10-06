@@ -450,6 +450,10 @@ impl Default for Dcl40C {
 }
 
 impl CertRule for Dcl40C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "DCL40-C"
     }

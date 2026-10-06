@@ -45,6 +45,10 @@ impl Default for Pre30C {
 }
 
 impl CertRule for Pre30C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "PRE30-C"
     }

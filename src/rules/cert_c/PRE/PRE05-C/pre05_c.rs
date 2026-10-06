@@ -118,6 +118,10 @@ impl Default for Pre05C {
 }
 
 impl CertRule for Pre05C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "PRE05-C"
     }

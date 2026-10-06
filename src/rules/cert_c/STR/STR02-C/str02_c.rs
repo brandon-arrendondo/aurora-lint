@@ -1195,6 +1195,10 @@ fn strip_casts(s: &str) -> &str {
 }
 
 impl CertRule for Str02C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "STR02-C"
     }

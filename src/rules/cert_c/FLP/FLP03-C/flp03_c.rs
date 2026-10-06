@@ -1025,6 +1025,10 @@ impl Flp03C {
 }
 
 impl CertRule for Flp03C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "FLP03-C"
     }

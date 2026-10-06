@@ -152,6 +152,10 @@ impl Exp34C {
 }
 
 impl CertRule for Exp34C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "EXP34-C"
     }

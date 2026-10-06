@@ -46,6 +46,10 @@ impl Default for Exp36C {
 }
 
 impl CertRule for Exp36C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "EXP36-C"
     }

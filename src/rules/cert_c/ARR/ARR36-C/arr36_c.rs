@@ -45,6 +45,10 @@ impl Arr36C {
 }
 
 impl CertRule for Arr36C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "ARR36-C"
     }

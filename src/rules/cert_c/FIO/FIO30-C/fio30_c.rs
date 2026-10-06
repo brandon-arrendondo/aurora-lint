@@ -65,6 +65,10 @@ impl Fio30C {
 }
 
 impl CertRule for Fio30C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.project_macro_aliases.borrow_mut() = context.macro_aliases.clone();

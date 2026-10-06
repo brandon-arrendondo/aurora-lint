@@ -419,6 +419,10 @@ impl Dcl31C {
 }
 
 impl CertRule for Dcl31C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "DCL31-C"
     }

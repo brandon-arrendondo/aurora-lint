@@ -75,6 +75,10 @@ pub struct Int16C {
 }
 
 impl CertRule for Int16C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "INT16-C"
     }

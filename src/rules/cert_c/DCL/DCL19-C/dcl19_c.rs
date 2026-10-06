@@ -38,6 +38,10 @@ impl DCL19C {
 }
 
 impl CertRule for DCL19C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "DCL19-C"
     }

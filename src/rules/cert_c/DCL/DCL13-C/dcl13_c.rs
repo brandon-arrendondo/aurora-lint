@@ -39,6 +39,10 @@ impl Default for Dcl13C {
 }
 
 impl CertRule for Dcl13C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "DCL13-C"
     }

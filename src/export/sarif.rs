@@ -77,6 +77,7 @@ fn violation_to_sarif_result(
     v: &RuleViolation,
     rule_index: &BTreeMap<&str, usize>,
     artifacts: &BTreeMap<&str, ArtifactInfo>,
+    headers: super::Headers<'_>,
 ) -> serde_json::Value {
     let idx = rule_index.get(v.rule_id.as_str()).copied().unwrap_or(0);
     let artifact = artifacts.get(v.file_path.as_str());
@@ -120,9 +121,11 @@ fn violation_to_sarif_result(
         // rule couldn't confidently decide" field, so a consuming SARIF
         // viewer sees this in properties rather than losing the signal
         // entirely (the CLI's own "severity?" marker is stdout-only).
-        result["properties"] = serde_json::json!({
-            "requiresManualReview": true
-        });
+        result["properties"]["requiresManualReview"] = serde_json::json!(true);
+    }
+    if let Some(missing) = headers.of(v) {
+        // May, not does: the rule reads facts these headers would supply.
+        result["properties"]["missingHeaders"] = serde_json::json!(missing);
     }
     result
 }
@@ -136,10 +139,7 @@ fn violation_to_sarif_result(
 /// Headers the scan could not find are a `note`, not an error: a missing
 /// header is a difference in the scan's input, not an incomplete scan, so it
 /// leaves `executionSuccessful` alone (ADR-0017).
-fn invocation(
-    incomplete: super::Incomplete<'_>,
-    headers: &crate::analyze::context::IncludeReport,
-) -> serde_json::Value {
+fn invocation(incomplete: super::Incomplete<'_>, headers: super::Headers<'_>) -> serde_json::Value {
     use crate::analyze::containment::{Cause, Stage};
     let mut notifications: Vec<serde_json::Value> = incomplete
         .failures
@@ -201,7 +201,7 @@ fn invocation(
             ) },
         })
     }));
-    if let Some(summary) = headers.summary_line() {
+    if let Some(summary) = headers.report.and_then(|r| r.summary_line()) {
         notifications.push(serde_json::json!({
             "level": "note",
             "descriptor": { "id": "aurora-lint/headers-not-found" },
@@ -228,7 +228,7 @@ pub fn export_all_violations_to_sarif(
     sarif_path: &str,
     settings: &AnalysisSettings,
     incomplete: super::Incomplete<'_>,
-    headers: &crate::analyze::context::IncludeReport,
+    headers: super::Headers<'_>,
 ) -> Result<()> {
     // Collect unique rules from both active and suppressed violations
     let mut rules_map: BTreeMap<String, &RuleViolation> = BTreeMap::new();
@@ -276,12 +276,13 @@ pub fn export_all_violations_to_sarif(
     // Build results: active violations
     let mut results_array: Vec<serde_json::Value> = violations
         .iter()
-        .map(|v| violation_to_sarif_result(v, &rule_index, &artifact_infos))
+        .map(|v| violation_to_sarif_result(v, &rule_index, &artifact_infos, headers))
         .collect();
 
     // Append suppressed violations with SARIF suppressions array
     for s in suppressed {
-        let mut result = violation_to_sarif_result(&s.violation, &rule_index, &artifact_infos);
+        let mut result =
+            violation_to_sarif_result(&s.violation, &rule_index, &artifact_infos, headers);
         result["suppressions"] = serde_json::json!([{
             "kind": "inSource",
             "justification": s.justification
@@ -310,12 +311,12 @@ pub fn export_all_violations_to_sarif(
                 "aurora-lint/settings": settings.to_json(),
                 // What #include resolution could not see, so two hosts'
                 // reports diff to the cause of a header-driven difference.
-                "aurora-lint/headers": {
-                    "searchPaths": headers.search_paths,
-                    "forcedIncludes": headers.forced_includes,
-                    "unresolved": headers.unresolved,
-                    "outsideHeaderCount": headers.outside_headers.len(),
-                }
+                "aurora-lint/headers": headers.report.map(|r| serde_json::json!({
+                    "searchPaths": r.search_paths,
+                    "forcedIncludes": r.forced_includes,
+                    "unresolved": r.unresolved,
+                    "outsideHeaderCount": r.outside_headers.len(),
+                }))
             }
         }]
     });

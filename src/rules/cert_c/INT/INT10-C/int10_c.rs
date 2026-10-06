@@ -99,6 +99,10 @@ impl Int10C {
 }
 
 impl CertRule for Int10C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
         self.data_model.set(settings.facts);
     }

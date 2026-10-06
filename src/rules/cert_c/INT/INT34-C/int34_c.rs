@@ -84,6 +84,10 @@ impl Int34C {
 }
 
 impl CertRule for Int34C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "INT34-C"
     }

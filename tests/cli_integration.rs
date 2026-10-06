@@ -310,6 +310,77 @@ fn missing_headers_are_reported_on_stderr_in_sarif_and_on_request() {
     );
 }
 
+/// A finding of a rule that reads header-supplied facts, in a file whose
+/// includes reach a header the scan could not find, says it may depend on
+/// it; one whose headers all resolved carries no marker.
+#[test]
+fn a_finding_that_may_depend_on_a_missing_header_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let proj = dir.path().join("proj");
+    let sys = dir.path().join("sys");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::create_dir_all(&sys).unwrap();
+    std::fs::write(sys.join("lib.h"), "int lib_init(void);\n").unwrap();
+    std::fs::write(
+        proj.join("a.c"),
+        "#include <lib.h>\n#include <missing_dep.h>\n\
+         int main(void) { lib_init(); return dep_init(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("b.c"),
+        "#include <lib.h>\nint b(void) { return other_undeclared(); }\n",
+    )
+    .unwrap();
+    let manifest = manifest_dcl31();
+    let json = dir.path().join("out.json");
+    let sarif = dir.path().join("out.sarif");
+    for out in [&json, &sarif] {
+        let (code, _, stderr) = run_aurora_lint(&[
+            proj.to_str().unwrap(),
+            "-d",
+            proj.to_str().unwrap(),
+            "-I",
+            sys.to_str().unwrap(),
+            "-m",
+            manifest.to_str().unwrap(),
+            "-e",
+            out.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+    }
+
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+    let marker = |file: &str| {
+        let row = rows
+            .iter()
+            .find(|r| r["file"].as_str().unwrap().ends_with(file))
+            .unwrap_or_else(|| panic!("no finding in {file}: {rows:?}"));
+        assert_eq!(row["rule_id"], "DCL31-C");
+        row.get("missing_headers").cloned()
+    };
+    assert_eq!(marker("a.c"), Some(serde_json::json!(["missing_dep.h"])));
+    assert_eq!(marker("b.c"), None);
+
+    let sarif: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&sarif).unwrap()).unwrap();
+    let results = sarif["runs"][0]["results"].as_array().unwrap();
+    let a = results
+        .iter()
+        .find(|r| {
+            r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+                .as_str()
+                .unwrap()
+                .ends_with("a.c")
+        })
+        .unwrap();
+    assert_eq!(
+        a["properties"]["missingHeaders"],
+        serde_json::json!(["missing_dep.h"])
+    );
+}
+
 // ─── Policy and environment settings ─────────────────────────────────────────
 
 /// Export `violation.c` as SARIF with `args` appended; return the run's

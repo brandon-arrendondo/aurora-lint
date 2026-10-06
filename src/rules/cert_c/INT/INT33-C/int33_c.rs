@@ -74,6 +74,10 @@ struct DivisionMacro {
 }
 
 impl CertRule for Int33C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "INT33-C"
     }

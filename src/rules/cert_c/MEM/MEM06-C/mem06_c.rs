@@ -81,6 +81,10 @@ pub struct Mem06C {
 }
 
 impl CertRule for Mem06C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn rule_id(&self) -> &'static str {
         "MEM06-C"
     }

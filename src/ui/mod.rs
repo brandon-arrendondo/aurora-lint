@@ -2397,7 +2397,7 @@ impl TerminalUI {
             &path.to_string_lossy(),
             &self.settings,
             Default::default(),
-            &Default::default(),
+            Default::default(),
         )
     }
 

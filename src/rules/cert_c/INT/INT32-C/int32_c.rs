@@ -186,6 +186,10 @@ impl Int32C {
 }
 
 impl CertRule for Int32C {
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
         self.data_model.set(settings.facts);
     }
