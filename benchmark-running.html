@@ -359,9 +359,9 @@ cppcheck/clang-tidy baseline yet; <code class="docutils literal notranslate"><sp
 <code class="docutils literal notranslate"><span class="pre">Ventoy2Disk/Ventoy2Disk/</span></code> only; aurora-lint scans it against the pinned
 Windows SDK/CRT header tree, which must be provisioned first – see
 <a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a> – while cppcheck and clang-tidy still run without
-<code class="docutils literal notranslate"><span class="pre">&lt;windows.h&gt;</span></code>; aurora-lint likewise scans <code class="docutils literal notranslate"><span class="pre">curl</span></code>, <code class="docutils literal notranslate"><span class="pre">hostap</span></code>,
-<code class="docutils literal notranslate"><span class="pre">mosquitto</span></code>, <code class="docutils literal notranslate"><span class="pre">sqlite</span></code> and <code class="docutils literal notranslate"><span class="pre">valkey</span></code> against a pinned Debian 12
-<code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> instead of the host’s, also provisioned first)</p>
+<code class="docutils literal notranslate"><span class="pre">&lt;windows.h&gt;</span></code>; <code class="docutils literal notranslate"><span class="pre">curl</span></code>, <code class="docutils literal notranslate"><span class="pre">hostap</span></code>, <code class="docutils literal notranslate"><span class="pre">mosquitto</span></code>, <code class="docutils literal notranslate"><span class="pre">sqlite</span></code> and
+<code class="docutils literal notranslate"><span class="pre">valkey</span></code> are scanned against the host’s own <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> unless
+<code class="docutils literal notranslate"><span class="pre">--header-tree</span></code> opts in to a pinned Debian 12 tree, below)</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>Remote-host execution (SSH) and background/concurrent run tracking
@@ -491,15 +491,19 @@ settings and settings hash, and the codebases scanned into it – before the
 ingest starts, so a caller that ingests the exports somewhere else reads the
 names instead of predicting them. Write it outside <code class="docutils literal notranslate"><span class="pre">results/realworld/</span></code>: an
 export directory’s <code class="docutils literal notranslate"><span class="pre">*.json</span></code> files are read as scan results.</p>
-<p><code class="docutils literal notranslate"><span class="pre">--header-tree</span> <span class="pre">ID</span></code> scans the corpora that read system headers (curl,
-hostap, mosquitto, sqlite, valkey) against another tree from
-<code class="docutils literal notranslate"><span class="pre">header_trees</span></code> in <code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code> instead of their declared
-one, for measuring what a change of header environment alone moves. The
-tree must be provisioned (<code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">-m</span> <span class="pre">bench.header_tree</span> <span class="pre">fetch</span> <span class="pre">ID</span></code>), and the
-scans land under a run id of their own (<code class="docutils literal notranslate"><span class="pre">...-hdr-ID</span></code>), never under the
-default run’s. <code class="docutils literal notranslate"><span class="pre">--header-tree</span> <span class="pre">host</span></code> scans them against this host’s own
-<code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> instead (<code class="docutils literal notranslate"><span class="pre">...-hdr-host</span></code>). Comparing the declared tree
-with the benchmark-node tree measures the whole environment change: the
+<p>By default the corpora that read system headers (curl, hostap, mosquitto,
+sqlite, valkey) are scanned against this host’s own <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code>, and
+each scan records <code class="docutils literal notranslate"><span class="pre">host</span></code> as its header tree. That is right for an A/B on
+one machine, where both arms share the host; a local run’s figures are its
+own, and official ones come from the benchmark node alone
+(<code class="docutils literal notranslate"><span class="pre">docs/adr/0004-postgres-is-the-single-source-of-truth.md</span></code>).
+<code class="docutils literal notranslate"><span class="pre">--header-tree</span> <span class="pre">ID</span></code> opts in to scanning those corpora against a pinned tree
+from <code class="docutils literal notranslate"><span class="pre">header_trees</span></code> in <code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code> instead, to reproduce
+another machine’s header environment or take the host out of a comparison.
+The tree must be provisioned (<code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">-m</span> <span class="pre">bench.header_tree</span> <span class="pre">fetch</span> <span class="pre">ID</span></code>), and
+the scans land under a run id of their own (<code class="docutils literal notranslate"><span class="pre">...-hdr-ID</span></code>), never under the
+default run’s. <code class="docutils literal notranslate"><span class="pre">--header-tree</span> <span class="pre">host</span></code> is the default spelled out. A
+comparison between two header environments measures the whole change: the
 package set and the include search path differ at once (see
 <a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a>).</p>
 <p>Typical real-world workflow:</p>

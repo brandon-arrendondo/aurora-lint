@@ -273,16 +273,20 @@ per-project subset your codebase needs:
     # x86_64 hosts only: the package exists only on amd64
     sudo apt-get install -y libc6-dev-i386
 
-The benchmark runner's aurora-lint scans of curl, hostap, mosquitto, sqlite
-and valkey do not read these: they scan against a pinned Debian header tree
-(*Debian System Headers*, below). These packages serve cppcheck and
-clang-tidy, a runner scan with ``--header-tree host``, and any scan outside
-the runner. The benchmark node carries every one of them except
-``libnl-genl-3-dev``; scanning against the node's headers plus that package
-reproduced its hostap findings key for key, so the extra package moves
-nothing. Which of the others are present, not only their versions, changes
-findings: see *What another machine reproduces* in
-:doc:`reproducing-published-numbers`.
+The benchmark runner scans curl, hostap, mosquitto, sqlite and valkey
+against these host headers, with aurora-lint as with cppcheck and clang-tidy.
+The benchmark node carries every one of them except ``libnl-genl-3-dev``;
+scanning against the node's headers plus that package reproduced its hostap
+findings key for key, so the extra package moves nothing. Which of them are
+present, not only their versions, changes findings: see
+*What another machine reproduces* in :doc:`reproducing-published-numbers`.
+That is expected, not a defect to engineer away. Official figures come from
+the benchmark node alone, on its own headers, and the maintainer records that
+node's header packages; a run on any other machine is for A/B comparison
+during development and is not citable on its own
+(``docs/adr/0004-postgres-is-the-single-source-of-truth.md``). For a run that
+must not depend on the host, the pinned trees in *Debian System Headers*
+below are an opt-in.
 
 Per-project breakdown, for reference (installing the one-liner above already
 covers all of these):
@@ -310,9 +314,8 @@ covers all of these):
       libgcrypt20-dev libpcap-dev libwolfssl-dev libtomcrypt-dev
 
     # the benchmark node's multilib layout: puts sys/, bits/ and asm/ directly
-    # under /usr/include, which a host-header scan (cppcheck, clang-tidy,
-    # --header-tree host) then reaches. amd64 only; an arm64 host has no
-    # equivalent
+    # under /usr/include, which every host-header scan then reaches. amd64
+    # only; an arm64 host has no equivalent
     sudo apt-get install -y libc6-dev-i386
 
 Windows SDK and CRT Headers (ventoy)
@@ -365,54 +368,56 @@ subdirectories), so their findings depend on the host: on which ``-dev``
 packages it has installed, not only on their versions. A second machine's
 run of one release differed from the benchmark node's by about a hundred
 keys, every one traced to a header package (see *What another machine
-reproduces* in :doc:`reproducing-published-numbers`). So the benchmark
-runner scans them against a pinned Debian 12 ``/usr/include`` instead of the
-host's.
+reproduces* in :doc:`reproducing-published-numbers`). By default the runner
+scans them against the host's own headers all the same, and records that in
+each scan's ``.meta.json`` sidecar (``header_tree``: ``{"id": "host", ...}``):
+official figures are the benchmark node's, on that node's headers, and a
+local run is for A/B comparison on one machine, where both arms share the
+host (``docs/adr/0004-postgres-is-the-single-source-of-truth.md``).
 
-The tree is declared once in ``data/benchmark_repos.json`` under
-``header_trees`` and named by id from each of the five corpora. Its
-packages are each corpus's declared dependencies (OpenSSL, zlib, SQLite, Tcl
-and ICU for sqlite; CUnit and cJSON for mosquitto; mbed TLS, GnuTLS and c-ares
-for curl; libgcrypt, libpcap, libnl, D-Bus, wolfSSL and libtomcrypt for
-hostap) plus the C library and kernel headers, each pinned by version and by
-the sha256 of its ``.deb`` at ``snapshot.debian.org``. The runner rewrites
-every ``-I /usr/include...`` into the tree, and puts the tree's multiarch
-directory (``usr/include/x86_64-linux-gnu``) first, in a compiler's search
-order. Fetching needs Python 3 and the network, not ``dpkg``, so a macOS,
-Fedora or FreeBSD node unpacks the same tree a Debian one does:
+Pinned Debian 12 ``/usr/include`` trees are an opt-in reproduction aid, for
+when a run must not depend on the host: reproducing the benchmark node's
+environment on another machine, or comparing machines.
+``python -m bench realworld-run --header-tree <id>`` scans the five corpora
+against one, under a run id of its own (``-hdr-<id>``), so its findings never
+land under the default run's. ``--header-tree host`` is the default spelled
+out. The trees are declared in ``data/benchmark_repos.json`` under
+``header_trees``; the five corpora name the prefix they read from the host
+(``host_headers``), which a tree must replace to stand in for it:
+
+* ``debian12-declared-*``: each corpus's declared dependencies (OpenSSL,
+  zlib, SQLite, Tcl and ICU for sqlite; CUnit and cJSON for mosquitto;
+  mbed TLS, GnuTLS and c-ares for curl; libgcrypt, libpcap, libnl, D-Bus,
+  wolfSSL and libtomcrypt for hostap) plus the C library and kernel headers.
+* ``debian12-benchmark-node-*``: the header packages the benchmark node had
+  when the ``v0.6.0`` figures were measured. Scanning against it reproduced
+  those runs key for key on another machine.
+
+Each package is pinned by version and by the sha256 of its ``.deb`` at
+``snapshot.debian.org``. The runner rewrites every ``-I /usr/include...``
+into the tree and puts the tree's own include directories (the declared
+tree's multiarch ``usr/include/x86_64-linux-gnu``) first, in a compiler's
+search order. Fetching needs Python 3 and the network, not ``dpkg``, so a
+macOS, Fedora or FreeBSD node unpacks the same tree a Debian one does.
+Nothing fetches a tree by default; ask for it by id:
 
 .. code-block:: bash
 
-    python3 -m bench.header_tree fetch curl     # any of the five; one shared tree
+    python3 -m bench.header_tree fetch debian12-declared-3af9978e
 
-or the playbook's ``--tags header-trees`` step, which fetches it with no
-license flag. It keeps about 30 MB under ``$SQC_BENCH_ROOT/header-trees/<id>/``
-and a cache of the ``.deb`` files beside it. As with ventoy, ``corpus-check``
-reports a missing or mismatched tree, ``realworld-run`` refuses to scan
-without it, and each scan records the tree in its ``.meta.json`` sidecar.
+or through the playbook, with
+``--tags header-trees -e debian_header_trees=<id>[,<id>]`` (no license flag).
+A tree takes about 30 MB under ``$SQC_BENCH_ROOT/header-trees/<id>/``, plus a
+cache of its ``.deb`` files beside it. ``corpus-check`` does not require
+one. ``realworld-run --header-tree <id>`` refuses to scan against a tree
+that is missing or whose hash differs from the pin.
 
-The host packages listed above still matter for everything else: cppcheck
-and clang-tidy read the host's ``/usr/include``, and so does a scan you run
-outside the benchmark runner.
-
-A second tree, ``debian12-benchmark-node-*``, holds the header packages the
-benchmark node had when the ``v0.6.0`` figures were measured. It is not used
-by default. ``python -m bench realworld-run --header-tree <id>`` scans the
-five corpora against it (fetch it first with
-``python3 -m bench.header_tree fetch <id>``), under a run id of its own, to
-measure how much of a change between releases is the change of environment
-rather than of code. Read that comparison as the whole environment change,
-not one part of it: the two trees differ in their package sets *and* in how
-``<sys/...>`` and ``<bits/...>`` are found (the declared tree searches its
-multiarch directory first; the benchmark-node tree has none on the search
-path and reaches those headers through the multilib links under
-``/usr/include``, as the node itself did).
-
-``--header-tree host`` scans the five corpora against this host's own
-``/usr/include``, as the runner did before the tree existed, under a run id
-of its own (``-hdr-host``) and with ``host`` as the recorded tree. Use it
-where the tree cannot be fetched, or to see what a particular host's
-headers do; its findings are not comparable with a pinned-tree run.
+Read a comparison between two trees, or between a tree and the host, as the
+whole environment change, not one part of it: the two trees differ in their
+package sets *and* in how ``<sys/...>`` and ``<bits/...>`` are found (the
+declared tree searches its multiarch directory first; the benchmark-node
+tree has none on the search path and reaches those headers through the
+multilib links under ``/usr/include``, as the node itself did).
 
 A run with ``--compile-commands`` also passes the compile database's own
 ``-I`` paths, which are not rewritten into the tree.
@@ -420,7 +425,7 @@ A run with ``--compile-commands`` also passes the compile database's own
 To re-pin, list the packages as ``PACKAGE=VERSION`` and run
 ``python3 -m bench.header_tree pin PKG=VER ...``, which prints the ``debs``
 entries (file, snapshot URL, sha256). Unpack them, print the tree's hash with
-``python3 -m bench.header_tree hash <corpus> <tree-dir>``, and declare a new
+``python3 -m bench.header_tree hash <old-id> <tree-dir>``, and declare a new
 ``id`` and hash; a changed tree changes findings, so re-pin at a release
 boundary and measure the change.
 

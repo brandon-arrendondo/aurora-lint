@@ -662,13 +662,14 @@ machines as they stood, and the other five do once the scan sees the
 same header packages. c-ares, multilib and libtomcrypt, which account for
 105 of the 108 keys, were not then among the packages
 <a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a> installs.</p>
-<p>After <code class="docutils literal notranslate"><span class="pre">v0.6.0</span></code> the benchmark runner stopped reading the host’s headers
-for these five corpora: it scans them against a pinned Debian header
-tree (<em>Debian System Headers</em> in <a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a>), the same on
-every machine. Default runs of them from then on are therefore not key
-for key comparable with <code class="docutils literal notranslate"><span class="pre">v0.6.0</span></code>’s. To reproduce <code class="docutils literal notranslate"><span class="pre">v0.6.0</span></code>’s figures
-for these five, scan against the benchmark node’s exact header set
-instead: <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">realworld-run</span> <span class="pre">--header-tree</span>
+<p>So a run on another machine reads that machine’s headers, and its
+figures for these five corpora are its own: official figures are the
+benchmark node’s, on the node’s headers
+(<code class="docutils literal notranslate"><span class="pre">docs/adr/0004-postgres-is-the-single-source-of-truth.md</span></code>). To
+reproduce <code class="docutils literal notranslate"><span class="pre">v0.6.0</span></code>’s figures for these five on another machine, opt in
+to the benchmark node’s exact header set, pinned as a tree (<em>Debian
+System Headers</em> in <a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a>):
+<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">realworld-run</span> <span class="pre">--header-tree</span>
 <span class="pre">debian12-benchmark-node-3e6c8a2b</span></code> (fetch it first with
 <code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">-m</span> <span class="pre">bench.header_tree</span> <span class="pre">fetch</span> <span class="pre">debian12-benchmark-node-3e6c8a2b</span></code>).
 Scanned that way with the <code class="docutils literal notranslate"><span class="pre">v0.6.0</span></code> binary, all five match the
