@@ -339,7 +339,7 @@ and <code class="docutils literal notranslate"><span class="pre">-D</span></code
 <h2>Real-World Benchmark<a class="headerlink" href="#real-world-benchmark" title="Link to this heading"></a></h2>
 <p>Local and sequential, by design: one person running one benchmark in their
 own terminal, against their own SQLite DB. See <code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code>.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-run<span class="w"> </span><span class="o">[</span>--tool<span class="w"> </span>sqc,cppcheck,clang-tidy<span class="o">]</span><span class="w"> </span><span class="o">[</span>--codebase<span class="w"> </span>C,C<span class="o">]</span><span class="w"> </span><span class="o">[</span>--compile-commands<span class="o">]</span><span class="w"> </span><span class="o">[</span>--profile<span class="w"> </span>P<span class="o">]</span><span class="w"> </span><span class="o">[</span>--dirs-out<span class="w"> </span>PATH<span class="o">]</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-run<span class="w"> </span><span class="o">[</span>--tool<span class="w"> </span>sqc,cppcheck,clang-tidy<span class="o">]</span><span class="w"> </span><span class="o">[</span>--codebase<span class="w"> </span>C,C<span class="o">]</span><span class="w"> </span><span class="o">[</span>--compile-commands<span class="o">]</span><span class="w"> </span><span class="o">[</span>--profile<span class="w"> </span>P<span class="o">]</span><span class="w"> </span><span class="o">[</span>--dirs-out<span class="w"> </span>PATH<span class="o">]</span><span class="w"> </span><span class="o">[</span>--header-tree<span class="w"> </span>ID<span class="o">]</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld<span class="w"> </span><span class="o">[</span>RUN<span class="o">]</span><span class="w"> </span><span class="o">[</span>--compare<span class="w"> </span>BASE<span class="o">]</span><span class="w">   </span><span class="c1"># FP dashboard</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-runs<span class="w">                     </span><span class="c1"># list runs</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-score<span class="w"> </span><span class="o">[</span>RUN<span class="o">]</span><span class="w">               </span><span class="c1"># measured precision/recall</span>
@@ -356,8 +356,12 @@ step, no polling.</p>
 <code class="docutils literal notranslate"><span class="pre">lua</span></code>, <code class="docutils literal notranslate"><span class="pre">raylib</span></code>, <code class="docutils literal notranslate"><span class="pre">pureftpd</span></code>, <code class="docutils literal notranslate"><span class="pre">sel4</span></code>, <code class="docutils literal notranslate"><span class="pre">mbedtls</span></code>, <code class="docutils literal notranslate"><span class="pre">valkey</span></code>, <code class="docutils literal notranslate"><span class="pre">ventoy</span></code>
 (aurora-lint-only for <code class="docutils literal notranslate"><span class="pre">pureftpd</span></code>, <code class="docutils literal notranslate"><span class="pre">sel4</span></code>, <code class="docutils literal notranslate"><span class="pre">mbedtls</span></code> and <code class="docutils literal notranslate"><span class="pre">valkey</span></code> — no
 cppcheck/clang-tidy baseline yet; <code class="docutils literal notranslate"><span class="pre">ventoy</span></code> is the Win32 oracle,
-<code class="docutils literal notranslate"><span class="pre">Ventoy2Disk/Ventoy2Disk/</span></code> only, and <code class="docutils literal notranslate"><span class="pre">&lt;windows.h&gt;</span></code> is unresolved on a
-Linux node for every tool alike)</p>
+<code class="docutils literal notranslate"><span class="pre">Ventoy2Disk/Ventoy2Disk/</span></code> only; aurora-lint scans it against the pinned
+Windows SDK/CRT header tree, which must be provisioned first – see
+<a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a> – while cppcheck and clang-tidy still run without
+<code class="docutils literal notranslate"><span class="pre">&lt;windows.h&gt;</span></code>; aurora-lint likewise scans <code class="docutils literal notranslate"><span class="pre">curl</span></code>, <code class="docutils literal notranslate"><span class="pre">hostap</span></code>,
+<code class="docutils literal notranslate"><span class="pre">mosquitto</span></code>, <code class="docutils literal notranslate"><span class="pre">sqlite</span></code> and <code class="docutils literal notranslate"><span class="pre">valkey</span></code> against a pinned Debian 12
+<code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> instead of the host’s, also provisioned first)</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>Remote-host execution (SSH) and background/concurrent run tracking
@@ -487,6 +491,17 @@ settings and settings hash, and the codebases scanned into it – before the
 ingest starts, so a caller that ingests the exports somewhere else reads the
 names instead of predicting them. Write it outside <code class="docutils literal notranslate"><span class="pre">results/realworld/</span></code>: an
 export directory’s <code class="docutils literal notranslate"><span class="pre">*.json</span></code> files are read as scan results.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--header-tree</span> <span class="pre">ID</span></code> scans the corpora that read system headers (curl,
+hostap, mosquitto, sqlite, valkey) against another tree from
+<code class="docutils literal notranslate"><span class="pre">header_trees</span></code> in <code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code> instead of their declared
+one, for measuring what a change of header environment alone moves. The
+tree must be provisioned (<code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">-m</span> <span class="pre">bench.header_tree</span> <span class="pre">fetch</span> <span class="pre">ID</span></code>), and the
+scans land under a run id of their own (<code class="docutils literal notranslate"><span class="pre">...-hdr-ID</span></code>), never under the
+default run’s. <code class="docutils literal notranslate"><span class="pre">--header-tree</span> <span class="pre">host</span></code> scans them against this host’s own
+<code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> instead (<code class="docutils literal notranslate"><span class="pre">...-hdr-host</span></code>). Comparing the declared tree
+with the benchmark-node tree measures the whole environment change: the
+package set and the include search path differ at once (see
+<a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a>).</p>
 <p>Typical real-world workflow:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-run<span class="w"> </span>--tool<span class="w"> </span>sqc<span class="w">                  </span><span class="c1"># blocks until every codebase is done</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld<span class="w"> </span>latest<span class="w">                   </span><span class="c1"># view results</span>

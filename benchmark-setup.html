@@ -67,6 +67,8 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#juliet-test-suite-setup">Juliet Test Suite Setup</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#third-party-library-headers">Third-Party Library Headers</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#windows-sdk-and-crt-headers-ventoy">Windows SDK and CRT Headers (ventoy)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#debian-system-headers-curl-hostap-mosquitto-sqlite-valkey">Debian System Headers (curl, hostap, mosquitto, sqlite, valkey)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#per-project-include-paths">Per-Project Include Paths</a></li>
 </ul>
 </li>
@@ -374,11 +376,16 @@ per-project subset your codebase needs:</p>
 sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>libc6-dev-i386
 </pre></div>
 </div>
-<p>The benchmark node carries every one of these except <code class="docutils literal notranslate"><span class="pre">libnl-genl-3-dev</span></code>;
-scanning against the node’s headers plus that package reproduced its hostap
-findings key for key, so the extra package moves nothing. Which of the
-others are present, not only their versions, changes findings: see <em>What
-another machine reproduces</em> in <a class="reference internal" href="reproducing-published-numbers.html"><span class="doc">Reproducing the Published Numbers</span></a>.</p>
+<p>The benchmark runner’s aurora-lint scans of curl, hostap, mosquitto, sqlite
+and valkey do not read these: they scan against a pinned Debian header tree
+(<em>Debian System Headers</em>, below). These packages serve cppcheck and
+clang-tidy, a runner scan with <code class="docutils literal notranslate"><span class="pre">--header-tree</span> <span class="pre">host</span></code>, and any scan outside
+the runner. The benchmark node carries every one of them except
+<code class="docutils literal notranslate"><span class="pre">libnl-genl-3-dev</span></code>; scanning against the node’s headers plus that package
+reproduced its hostap findings key for key, so the extra package moves
+nothing. Which of the others are present, not only their versions, changes
+findings: see <em>What another machine reproduces</em> in
+<a class="reference internal" href="reproducing-published-numbers.html"><span class="doc">Reproducing the Published Numbers</span></a>.</p>
 <p>Per-project breakdown, for reference (installing the one-liner above already
 covers all of these):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Core dependencies (covers most projects)</span>
@@ -402,11 +409,106 @@ sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w
 <span class="w">  </span>libgcrypt20-dev<span class="w"> </span>libpcap-dev<span class="w"> </span>libwolfssl-dev<span class="w"> </span>libtomcrypt-dev
 
 <span class="c1"># the benchmark node&#39;s multilib layout: puts sys/, bits/ and asm/ directly</span>
-<span class="c1"># under /usr/include, which -I /usr/include then reaches (curl, hostap,</span>
-<span class="c1"># mosquitto, sqlite, valkey). amd64 only; an arm64 host has no equivalent</span>
+<span class="c1"># under /usr/include, which a host-header scan (cppcheck, clang-tidy,</span>
+<span class="c1"># --header-tree host) then reaches. amd64 only; an arm64 host has no</span>
+<span class="c1"># equivalent</span>
 sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>libc6-dev-i386
 </pre></div>
 </div>
+<section id="windows-sdk-and-crt-headers-ventoy">
+<h3>Windows SDK and CRT Headers (ventoy)<a class="headerlink" href="#windows-sdk-and-crt-headers-ventoy" title="Link to this heading"></a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">ventoy</span></code> is Win32 code, so a Linux or macOS node has none of its system
+headers. Without <code class="docutils literal notranslate"><span class="pre">&lt;windows.h&gt;</span></code> every Win32 call is an undeclared identifier:
+the scan reports several hundred DCL31-C findings that describe the node, not
+the code, and API00-C and INT30-C see different code too. So ventoy is scanned
+against a pinned tree of the Windows SDK and MSVC CRT headers, declared in
+<code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code> (<code class="docutils literal notranslate"><span class="pre">header_tree</span></code>) next to its commit pin: the
+exact <a class="reference external" href="https://github.com/Jake-Shadle/xwin">xwin</a> versions that produce it,
+and a manifest hash over the header files (definition in
+<code class="docutils literal notranslate"><span class="pre">bench/header_tree.py</span></code>). The tree was pinned after a scan against it gave
+findings identical to a scan against a native Visual Studio installation of
+the same SDK and CRT.</p>
+<p>The headers are Microsoft’s. Fetching them accepts Microsoft’s license terms
+for the Windows SDK and the MSVC CRT, so the playbook only does it when you
+say so:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ansible-playbook<span class="w"> </span>playbooks/setup-benchmark-repos.yml<span class="w"> </span>-i<span class="w"> </span><span class="s2">&quot;localhost,&quot;</span><span class="w"> </span>-c<span class="w"> </span><span class="nb">local</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">accept_microsoft_license</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>--tags<span class="w"> </span>header-trees
+</pre></div>
+</div>
+<p>(<code class="docutils literal notranslate"><span class="pre">setup-benchmark-repos-macos.yml</span></code> on macOS; the step is the same.) It
+installs the pinned xwin with <code class="docutils literal notranslate"><span class="pre">cargo</span></code> if needed, downloads about 120 MiB,
+keeps the headers (about 370 MB) under
+<code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT/header-trees/&lt;id&gt;/</span></code>, and fails if their hash differs from
+the pin. Each machine fetches its own copy: never commit the tree or copy it
+between machines.</p>
+<p><code class="docutils literal notranslate"><span class="pre">corpus-check</span></code> reports the tree as <code class="docutils literal notranslate"><span class="pre">MISSING</span></code> or <code class="docutils literal notranslate"><span class="pre">MISMATCH</span></code> like a
+drifted commit, and <code class="docutils literal notranslate"><span class="pre">realworld-run</span></code> refuses to scan ventoy without a
+matching tree rather than produce header-less findings. Each scan records the
+tree it used (<code class="docutils literal notranslate"><span class="pre">header_tree</span></code>) in its <code class="docutils literal notranslate"><span class="pre">.meta.json</span></code> sidecar. cppcheck and
+clang-tidy are not given the tree: their ventoy baselines remain header-less.</p>
+<p>To re-pin (a new SDK or CRT), change the <code class="docutils literal notranslate"><span class="pre">fetch</span></code> versions and the <code class="docutils literal notranslate"><span class="pre">id</span></code>,
+fetch the tree, print its hash with
+<code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">-m</span> <span class="pre">bench.header_tree</span> <span class="pre">hash</span> <span class="pre">ventoy</span> <span class="pre">&lt;tree-dir&gt;</span></code>, confirm the findings
+match a native-header scan, and only then declare the new hash.</p>
+</section>
+<section id="debian-system-headers-curl-hostap-mosquitto-sqlite-valkey">
+<h3>Debian System Headers (curl, hostap, mosquitto, sqlite, valkey)<a class="headerlink" href="#debian-system-headers-curl-hostap-mosquitto-sqlite-valkey" title="Link to this heading"></a></h3>
+<p>These five corpora pass <code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include</span></code> (and a few of its
+subdirectories), so their findings depend on the host: on which <code class="docutils literal notranslate"><span class="pre">-dev</span></code>
+packages it has installed, not only on their versions. A second machine’s
+run of one release differed from the benchmark node’s by about a hundred
+keys, every one traced to a header package (see <em>What another machine
+reproduces</em> in <a class="reference internal" href="reproducing-published-numbers.html"><span class="doc">Reproducing the Published Numbers</span></a>). So the benchmark
+runner scans them against a pinned Debian 12 <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> instead of the
+host’s.</p>
+<p>The tree is declared once in <code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code> under
+<code class="docutils literal notranslate"><span class="pre">header_trees</span></code> and named by id from each of the five corpora. Its
+packages are each corpus’s declared dependencies (OpenSSL, zlib, SQLite, Tcl
+and ICU for sqlite; CUnit and cJSON for mosquitto; mbed TLS, GnuTLS and c-ares
+for curl; libgcrypt, libpcap, libnl, D-Bus, wolfSSL and libtomcrypt for
+hostap) plus the C library and kernel headers, each pinned by version and by
+the sha256 of its <code class="docutils literal notranslate"><span class="pre">.deb</span></code> at <code class="docutils literal notranslate"><span class="pre">snapshot.debian.org</span></code>. The runner rewrites
+every <code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include...</span></code> into the tree, and puts the tree’s multiarch
+directory (<code class="docutils literal notranslate"><span class="pre">usr/include/x86_64-linux-gnu</span></code>) first, in a compiler’s search
+order. Fetching needs Python 3 and the network, not <code class="docutils literal notranslate"><span class="pre">dpkg</span></code>, so a macOS,
+Fedora or FreeBSD node unpacks the same tree a Debian one does:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python3<span class="w"> </span>-m<span class="w"> </span>bench.header_tree<span class="w"> </span>fetch<span class="w"> </span>curl<span class="w">     </span><span class="c1"># any of the five; one shared tree</span>
+</pre></div>
+</div>
+<p>or the playbook’s <code class="docutils literal notranslate"><span class="pre">--tags</span> <span class="pre">header-trees</span></code> step, which fetches it with no
+license flag. It keeps about 30 MB under <code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT/header-trees/&lt;id&gt;/</span></code>
+and a cache of the <code class="docutils literal notranslate"><span class="pre">.deb</span></code> files beside it. As with ventoy, <code class="docutils literal notranslate"><span class="pre">corpus-check</span></code>
+reports a missing or mismatched tree, <code class="docutils literal notranslate"><span class="pre">realworld-run</span></code> refuses to scan
+without it, and each scan records the tree in its <code class="docutils literal notranslate"><span class="pre">.meta.json</span></code> sidecar.</p>
+<p>The host packages listed above still matter for everything else: cppcheck
+and clang-tidy read the host’s <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code>, and so does a scan you run
+outside the benchmark runner.</p>
+<p>A second tree, <code class="docutils literal notranslate"><span class="pre">debian12-benchmark-node-*</span></code>, holds the header packages the
+benchmark node had when the <code class="docutils literal notranslate"><span class="pre">v0.6.0</span></code> figures were measured. It is not used
+by default. <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">realworld-run</span> <span class="pre">--header-tree</span> <span class="pre">&lt;id&gt;</span></code> scans the
+five corpora against it (fetch it first with
+<code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">-m</span> <span class="pre">bench.header_tree</span> <span class="pre">fetch</span> <span class="pre">&lt;id&gt;</span></code>), under a run id of its own, to
+measure how much of a change between releases is the change of environment
+rather than of code. Read that comparison as the whole environment change,
+not one part of it: the two trees differ in their package sets <em>and</em> in how
+<code class="docutils literal notranslate"><span class="pre">&lt;sys/...&gt;</span></code> and <code class="docutils literal notranslate"><span class="pre">&lt;bits/...&gt;</span></code> are found (the declared tree searches its
+multiarch directory first; the benchmark-node tree has none on the search
+path and reaches those headers through the multilib links under
+<code class="docutils literal notranslate"><span class="pre">/usr/include</span></code>, as the node itself did).</p>
+<p><code class="docutils literal notranslate"><span class="pre">--header-tree</span> <span class="pre">host</span></code> scans the five corpora against this host’s own
+<code class="docutils literal notranslate"><span class="pre">/usr/include</span></code>, as the runner did before the tree existed, under a run id
+of its own (<code class="docutils literal notranslate"><span class="pre">-hdr-host</span></code>) and with <code class="docutils literal notranslate"><span class="pre">host</span></code> as the recorded tree. Use it
+where the tree cannot be fetched, or to see what a particular host’s
+headers do; its findings are not comparable with a pinned-tree run.</p>
+<p>A run with <code class="docutils literal notranslate"><span class="pre">--compile-commands</span></code> also passes the compile database’s own
+<code class="docutils literal notranslate"><span class="pre">-I</span></code> paths, which are not rewritten into the tree.</p>
+<p>To re-pin, list the packages as <code class="docutils literal notranslate"><span class="pre">PACKAGE=VERSION</span></code> and run
+<code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">-m</span> <span class="pre">bench.header_tree</span> <span class="pre">pin</span> <span class="pre">PKG=VER</span> <span class="pre">...</span></code>, which prints the <code class="docutils literal notranslate"><span class="pre">debs</span></code>
+entries (file, snapshot URL, sha256). Unpack them, print the tree’s hash with
+<code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">-m</span> <span class="pre">bench.header_tree</span> <span class="pre">hash</span> <span class="pre">&lt;corpus&gt;</span> <span class="pre">&lt;tree-dir&gt;</span></code>, and declare a new
+<code class="docutils literal notranslate"><span class="pre">id</span></code> and hash; a changed tree changes findings, so re-pin at a release
+boundary and measure the change.</p>
+</section>
 <section id="per-project-include-paths">
 <h3>Per-Project Include Paths<a class="headerlink" href="#per-project-include-paths" title="Link to this heading"></a></h3>
 <p>The real-world runner passes these automatically via the <code class="docutils literal notranslate"><span class="pre">includes</span></code> field in

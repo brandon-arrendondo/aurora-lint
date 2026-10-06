@@ -273,11 +273,16 @@ per-project subset your codebase needs:
     # x86_64 hosts only: the package exists only on amd64
     sudo apt-get install -y libc6-dev-i386
 
-The benchmark node carries every one of these except ``libnl-genl-3-dev``;
-scanning against the node's headers plus that package reproduced its hostap
-findings key for key, so the extra package moves nothing. Which of the
-others are present, not only their versions, changes findings: see *What
-another machine reproduces* in :doc:`reproducing-published-numbers`.
+The benchmark runner's aurora-lint scans of curl, hostap, mosquitto, sqlite
+and valkey do not read these: they scan against a pinned Debian header tree
+(*Debian System Headers*, below). These packages serve cppcheck and
+clang-tidy, a runner scan with ``--header-tree host``, and any scan outside
+the runner. The benchmark node carries every one of them except
+``libnl-genl-3-dev``; scanning against the node's headers plus that package
+reproduced its hostap findings key for key, so the extra package moves
+nothing. Which of the others are present, not only their versions, changes
+findings: see *What another machine reproduces* in
+:doc:`reproducing-published-numbers`.
 
 Per-project breakdown, for reference (installing the one-liner above already
 covers all of these):
@@ -305,9 +310,119 @@ covers all of these):
       libgcrypt20-dev libpcap-dev libwolfssl-dev libtomcrypt-dev
 
     # the benchmark node's multilib layout: puts sys/, bits/ and asm/ directly
-    # under /usr/include, which -I /usr/include then reaches (curl, hostap,
-    # mosquitto, sqlite, valkey). amd64 only; an arm64 host has no equivalent
+    # under /usr/include, which a host-header scan (cppcheck, clang-tidy,
+    # --header-tree host) then reaches. amd64 only; an arm64 host has no
+    # equivalent
     sudo apt-get install -y libc6-dev-i386
+
+Windows SDK and CRT Headers (ventoy)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``ventoy`` is Win32 code, so a Linux or macOS node has none of its system
+headers. Without ``<windows.h>`` every Win32 call is an undeclared identifier:
+the scan reports several hundred DCL31-C findings that describe the node, not
+the code, and API00-C and INT30-C see different code too. So ventoy is scanned
+against a pinned tree of the Windows SDK and MSVC CRT headers, declared in
+``data/benchmark_repos.json`` (``header_tree``) next to its commit pin: the
+exact `xwin <https://github.com/Jake-Shadle/xwin>`_ versions that produce it,
+and a manifest hash over the header files (definition in
+``bench/header_tree.py``). The tree was pinned after a scan against it gave
+findings identical to a scan against a native Visual Studio installation of
+the same SDK and CRT.
+
+The headers are Microsoft's. Fetching them accepts Microsoft's license terms
+for the Windows SDK and the MSVC CRT, so the playbook only does it when you
+say so:
+
+.. code-block:: bash
+
+    ansible-playbook playbooks/setup-benchmark-repos.yml -i "localhost," -c local \
+      -e accept_microsoft_license=true --tags header-trees
+
+(``setup-benchmark-repos-macos.yml`` on macOS; the step is the same.) It
+installs the pinned xwin with ``cargo`` if needed, downloads about 120 MiB,
+keeps the headers (about 370 MB) under
+``$SQC_BENCH_ROOT/header-trees/<id>/``, and fails if their hash differs from
+the pin. Each machine fetches its own copy: never commit the tree or copy it
+between machines.
+
+``corpus-check`` reports the tree as ``MISSING`` or ``MISMATCH`` like a
+drifted commit, and ``realworld-run`` refuses to scan ventoy without a
+matching tree rather than produce header-less findings. Each scan records the
+tree it used (``header_tree``) in its ``.meta.json`` sidecar. cppcheck and
+clang-tidy are not given the tree: their ventoy baselines remain header-less.
+
+To re-pin (a new SDK or CRT), change the ``fetch`` versions and the ``id``,
+fetch the tree, print its hash with
+``python3 -m bench.header_tree hash ventoy <tree-dir>``, confirm the findings
+match a native-header scan, and only then declare the new hash.
+
+Debian System Headers (curl, hostap, mosquitto, sqlite, valkey)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+These five corpora pass ``-I /usr/include`` (and a few of its
+subdirectories), so their findings depend on the host: on which ``-dev``
+packages it has installed, not only on their versions. A second machine's
+run of one release differed from the benchmark node's by about a hundred
+keys, every one traced to a header package (see *What another machine
+reproduces* in :doc:`reproducing-published-numbers`). So the benchmark
+runner scans them against a pinned Debian 12 ``/usr/include`` instead of the
+host's.
+
+The tree is declared once in ``data/benchmark_repos.json`` under
+``header_trees`` and named by id from each of the five corpora. Its
+packages are each corpus's declared dependencies (OpenSSL, zlib, SQLite, Tcl
+and ICU for sqlite; CUnit and cJSON for mosquitto; mbed TLS, GnuTLS and c-ares
+for curl; libgcrypt, libpcap, libnl, D-Bus, wolfSSL and libtomcrypt for
+hostap) plus the C library and kernel headers, each pinned by version and by
+the sha256 of its ``.deb`` at ``snapshot.debian.org``. The runner rewrites
+every ``-I /usr/include...`` into the tree, and puts the tree's multiarch
+directory (``usr/include/x86_64-linux-gnu``) first, in a compiler's search
+order. Fetching needs Python 3 and the network, not ``dpkg``, so a macOS,
+Fedora or FreeBSD node unpacks the same tree a Debian one does:
+
+.. code-block:: bash
+
+    python3 -m bench.header_tree fetch curl     # any of the five; one shared tree
+
+or the playbook's ``--tags header-trees`` step, which fetches it with no
+license flag. It keeps about 30 MB under ``$SQC_BENCH_ROOT/header-trees/<id>/``
+and a cache of the ``.deb`` files beside it. As with ventoy, ``corpus-check``
+reports a missing or mismatched tree, ``realworld-run`` refuses to scan
+without it, and each scan records the tree in its ``.meta.json`` sidecar.
+
+The host packages listed above still matter for everything else: cppcheck
+and clang-tidy read the host's ``/usr/include``, and so does a scan you run
+outside the benchmark runner.
+
+A second tree, ``debian12-benchmark-node-*``, holds the header packages the
+benchmark node had when the ``v0.6.0`` figures were measured. It is not used
+by default. ``python -m bench realworld-run --header-tree <id>`` scans the
+five corpora against it (fetch it first with
+``python3 -m bench.header_tree fetch <id>``), under a run id of its own, to
+measure how much of a change between releases is the change of environment
+rather than of code. Read that comparison as the whole environment change,
+not one part of it: the two trees differ in their package sets *and* in how
+``<sys/...>`` and ``<bits/...>`` are found (the declared tree searches its
+multiarch directory first; the benchmark-node tree has none on the search
+path and reaches those headers through the multilib links under
+``/usr/include``, as the node itself did).
+
+``--header-tree host`` scans the five corpora against this host's own
+``/usr/include``, as the runner did before the tree existed, under a run id
+of its own (``-hdr-host``) and with ``host`` as the recorded tree. Use it
+where the tree cannot be fetched, or to see what a particular host's
+headers do; its findings are not comparable with a pinned-tree run.
+
+A run with ``--compile-commands`` also passes the compile database's own
+``-I`` paths, which are not rewritten into the tree.
+
+To re-pin, list the packages as ``PACKAGE=VERSION`` and run
+``python3 -m bench.header_tree pin PKG=VER ...``, which prints the ``debs``
+entries (file, snapshot URL, sha256). Unpack them, print the tree's hash with
+``python3 -m bench.header_tree hash <corpus> <tree-dir>``, and declare a new
+``id`` and hash; a changed tree changes findings, so re-pin at a release
+boundary and measure the change.
 
 Per-Project Include Paths
 ~~~~~~~~~~~~~~~~~~~~~~~~~
