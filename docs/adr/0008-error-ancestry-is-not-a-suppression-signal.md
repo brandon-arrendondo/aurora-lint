@@ -155,5 +155,5 @@ most of it directly.
   health and finding quality are only loosely coupled: lua has a parse error in
   48 of 58 files and 4 ERROR-ancestor findings; ventoy has 4 damaged files and
   none.
-- Credit: measured by dev-180 under that audit, from the population EXP02-C's
+- Credit: found in testing, measured under that audit, from the population EXP02-C's
   own earlier finding first exposed.

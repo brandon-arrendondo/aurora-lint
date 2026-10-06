@@ -111,5 +111,5 @@ misses by design compared with real codebases (Brandon, 2026-09-25).
   misfire-shaped problem regardless of which direction it moves the
   finding count.
 - Credit: this distinction and the caution about loosening real semantics
-  came out of dev-180's own catch, the same day ADR-0002 was written —
-  worth stating explicitly rather than learned per-agent per-session.
+  were found in development, the same day ADR-0002 was written — worth
+  stating explicitly rather than relearned case by case.

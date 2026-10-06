@@ -132,6 +132,6 @@ reaches the question of proof (Brandon, 2026-09-25).
 - This doesn't mean every rule needs full type inference before it can
   ship — it means the honest fallback for "I can't resolve this
   occurrence" is silence, not a guess keyed on spelling.
-- Credit: pattern identified by dev-180 across EXP05-C, INT02-C, and
+- Credit: pattern found in development across EXP05-C, INT02-C, and
   INT16-C in the same session that produced ADR-0001/0002; the tag-level
   extension came out of INT02-C's recall work in the same session.
