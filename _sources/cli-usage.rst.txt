@@ -621,5 +621,11 @@ Code    Meaning
 ======  ==========================================================================
 ``0``   Success (no violations, or none meeting the failure threshold)
 ``1``   Violations found (when ``--fail-on-violation`` or ``--fail-on-severity`` is set)
-``2``   Analysis error (invalid path, bad manifest, invalid suppression file, parse failure)
+``2``   The scan could not run (invalid path, bad manifest, invalid suppression file)
+``3``   The scan is incomplete: a rule or file crashed or ran out of its budget.
+        Takes precedence over ``1``, with or without ``--fail-on-*``.
 ======  ==========================================================================
+
+What a failure costs, how it is reported (stderr and SARIF), the
+``--rule-step-limit`` / ``--rule-time-limit`` budgets, the ``--max-file-size``
+input guard, and what CI should do with ``3``: :doc:`error-handling`.

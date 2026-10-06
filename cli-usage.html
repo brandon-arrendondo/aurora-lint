@@ -64,6 +64,7 @@
 <li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
 <li class="toctree-l1"><a class="reference internal" href="options.html">Policy and Environment Options</a></li>
 <li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="error-handling.html">Error Handling and Exit Codes</a></li>
 <li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
 <li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
 <li class="toctree-l1"><a class="reference internal" href="tool-comparison.html">Comparison To Other Tools</a></li>
@@ -706,10 +707,17 @@ never overwritten by this flag.</p>
 <td><p>Violations found (when <code class="docutils literal notranslate"><span class="pre">--fail-on-violation</span></code> or <code class="docutils literal notranslate"><span class="pre">--fail-on-severity</span></code> is set)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">2</span></code></p></td>
-<td><p>Analysis error (invalid path, bad manifest, invalid suppression file, parse failure)</p></td>
+<td><p>The scan could not run (invalid path, bad manifest, invalid suppression file)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">3</span></code></p></td>
+<td><p>The scan is incomplete: a rule or file crashed or ran out of its budget.
+Takes precedence over <code class="docutils literal notranslate"><span class="pre">1</span></code>, with or without <code class="docutils literal notranslate"><span class="pre">--fail-on-*</span></code>.</p></td>
 </tr>
 </tbody>
 </table>
+<p>What a failure costs, how it is reported (stderr and SARIF), the
+<code class="docutils literal notranslate"><span class="pre">--rule-step-limit</span></code> / <code class="docutils literal notranslate"><span class="pre">--rule-time-limit</span></code> budgets, the <code class="docutils literal notranslate"><span class="pre">--max-file-size</span></code>
+input guard, and what CI should do with <code class="docutils literal notranslate"><span class="pre">3</span></code>: <a class="reference internal" href="error-handling.html"><span class="doc">Error Handling and Exit Codes</span></a>.</p>
 </section>
 </section>
 

@@ -1,0 +1,339 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Error Handling and Exit Codes &mdash; aurora-lint  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Interactive Console UI" href="interactive-ui.html" />
+    <link rel="prev" title="CI/CD Integration" href="cicd-integration.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            aurora-lint
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="options.html">Policy and Environment Options</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Error Handling and Exit Codes</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#exit-codes">Exit codes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#what-fails-and-what-it-costs">What fails, and what it costs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#files-that-are-not-source">Files that are not source</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#crashes-and-bounds">Crashes and bounds</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#how-failures-are-reported">How failures are reported</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#what-ci-should-do">What CI should do</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#limits-of-this-guarantee">Limits of this guarantee</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tool-comparison.html">Comparison To Other Tools</a></li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="licensing.html">Licensing and content provenance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">aurora-lint</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Error Handling and Exit Codes</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/error-handling.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="error-handling-and-exit-codes">
+<h1>Error Handling and Exit Codes<a class="headerlink" href="#error-handling-and-exit-codes" title="Link to this heading"></a></h1>
+<p>aurora-lint aims never to crash and never to run away, but it cannot
+guarantee either. It is tested against the Juliet suite and a set of real
+code bases, and real code eventually contains something no test covered.
+This page explains what happens when a part of the analysis fails, how that
+shows up in the output and the exit code, and what a CI pipeline should do
+with it. The policy is recorded in <code class="docutils literal notranslate"><span class="pre">docs/adr/0017-graceful-failure.md</span></code>.</p>
+<p>The short version: a failure costs the one rule on the one file where it
+happened, it is always reported, and it never passes as a clean scan.</p>
+<section id="exit-codes">
+<h2>Exit codes<a class="headerlink" href="#exit-codes" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Code</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
+<td><p>The scan completed. No finding reached a <code class="docutils literal notranslate"><span class="pre">--fail-on-*</span></code> threshold
+(or none was set).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
+<td><p>The scan completed, and a finding reached <code class="docutils literal notranslate"><span class="pre">--fail-on-violation</span></code> or
+<code class="docutils literal notranslate"><span class="pre">--fail-on-severity</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">2</span></code></p></td>
+<td><p>The scan could not run: a usage or configuration error, such as a bad
+path, an invalid manifest or suppression file, or an unknown option.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">3</span></code></p></td>
+<td><p>The scan completed but is <strong>incomplete</strong>: some part of the analysis
+crashed or ran out of its budget. The findings it did produce are
+printed and exported; the ones the failed part would have produced
+are missing.</p></td>
+</tr>
+</tbody>
+</table>
+<p><code class="docutils literal notranslate"><span class="pre">3</span></code> takes precedence over <code class="docutils literal notranslate"><span class="pre">1</span></code>, and is returned whether or not a
+<code class="docutils literal notranslate"><span class="pre">--fail-on-*</span></code> option is set. A scan with a rule missing is never reported
+as clean.</p>
+</section>
+<section id="what-fails-and-what-it-costs">
+<h2>What fails, and what it costs<a class="headerlink" href="#what-fails-and-what-it-costs" title="Link to this heading"></a></h2>
+<p>The analysis runs in units of work, and each is contained on its own:</p>
+<ul class="simple">
+<li><p><strong>One rule on one file.</strong> If a rule fails on a file, its findings for
+that file are dropped. Every other rule’s findings for that file, and all
+findings in other files, stand.</p></li>
+<li><p><strong>One file.</strong> If reading, parsing or analysing a file fails outside any
+one rule, that file contributes no findings.</p></li>
+<li><p><strong>One input file that is not source</strong> (see below): skipped before it is
+parsed.</p></li>
+<li><p><strong>One file’s prescan.</strong> If collecting a file’s cross-file facts (function
+summaries, macros, declared allocators) fails, those facts are missing.
+That can change findings in <em>other</em> files, in either direction, which is
+why it is reported as its own stage. An incomplete prescan is never saved
+with <code class="docutils literal notranslate"><span class="pre">--save-prescan</span></code>.</p></li>
+</ul>
+<p>A rule that fails on <strong>three</strong> different files in one scan is <strong>abandoned</strong>
+(and reported once, as abandoned, rather than once per file it reached):
+it is skipped for the rest of the scan and <em>all</em> of its findings are
+withheld, including those from files where it succeeded. A rule failing that
+often cannot be trusted on this code base, and withholding all of its
+findings keeps the output the same however the parallel scan happened to
+order the work.</p>
+</section>
+<section id="files-that-are-not-source">
+<h2>Files that are not source<a class="headerlink" href="#files-that-are-not-source" title="Link to this heading"></a></h2>
+<p>aurora-lint picks files by extension, so anything named <code class="docutils literal notranslate"><span class="pre">.c</span></code> or <code class="docutils literal notranslate"><span class="pre">.h</span></code> is
+offered to the parser. Before parsing, each file is checked:</p>
+<ul class="simple">
+<li><p><strong>too large</strong>: larger than <code class="docutils literal notranslate"><span class="pre">--max-file-size</span></code> MiB (default 64; <code class="docutils literal notranslate"><span class="pre">0</span></code>
+removes the limit). The largest real C files are amalgamations and SDK
+headers of about 10 MiB, so the default refuses only something that is not
+ordinary source.</p></li>
+<li><p><strong>not source text</strong>: the file starts like a binary or an archive (ELF,
+PE, Mach-O, zip, gzip, xz, 7z, zstd, tar, PDF, an image, and so on), or
+its first 8 KiB has too many NUL, control or invalid-UTF-8 bytes to be
+text. This is a heuristic, tuned so that real C source is never refused.
+A path that is not a regular readable file (a FIFO, a device) is refused
+the same way, since reading it could block.
+Files with a UTF-16 byte-order mark are text and are read normally, and
+empty files are fine.</p></li>
+</ul>
+<p>A refused file is <strong>skipped and reported</strong>, never parsed, and the scan exits
+<code class="docutils literal notranslate"><span class="pre">3</span></code>:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Error: input skipped (not source text): build/blob.c: looks like binary data (Elf, application/x-executable)
+Error: input skipped (too large): gen/table.c: 80 MiB is over --max-file-size 64 MiB
+</pre></div>
+</div>
+<p>If the file belongs in the tree but is not source, leave it out of the scan
+with <code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code>. Excluded files are not reported. Files over 8 MiB are
+analysed one at a time, so that several of them are never in memory at once.</p>
+</section>
+<section id="crashes-and-bounds">
+<h2>Crashes and bounds<a class="headerlink" href="#crashes-and-bounds" title="Link to this heading"></a></h2>
+<p>A unit of work stops for one of four reasons, each reported the same way:</p>
+<ul class="simple">
+<li><p><strong>crashed</strong>: an internal error (a Rust panic). Always an aurora-lint
+bug; please report it with the message and the <code class="docutils literal notranslate"><span class="pre">[at</span> <span class="pre">...]</span></code> location.</p></li>
+<li><p><strong>step limit</strong>: the unit reached its step budget, <code class="docutils literal notranslate"><span class="pre">--rule-step-limit</span></code>
+(default 50,000,000). Steps are counted at the loops whose length the
+input decides, so the budget is deterministic: the same input stops at
+the same point on any machine. The default is far above anything the
+benchmark corpora reach, so hitting it means a runaway or an input far
+larger than anything measured.</p></li>
+<li><p><strong>time limit</strong>: the unit ran longer than <code class="docutils literal notranslate"><span class="pre">--rule-time-limit</span></code> seconds
+(default 300). This is the backstop for what a step count cannot see.</p></li>
+<li><p><strong>analysis cap</strong>: an analysis reached an iteration cap past which its
+results would not have converged.</p></li>
+</ul>
+<p>Two analyses can stop short of converging, and each is reported as a
+warning after the findings and a SARIF <code class="docutils literal notranslate"><span class="pre">warning</span></code> notification, without
+changing the exit code:</p>
+<ul class="simple">
+<li><p>the <strong>value-range analysis</strong>. If it reaches its cap, that function gets no
+value ranges at all: a sound fallback, which only costs precision (checks
+that a range would have proven safe are reported).</p></li>
+<li><p>the <strong>initialization-state analysis</strong>, which is known not to converge on
+some real code. It keeps what it has, as it always did, until its
+convergence is fixed.</p></li>
+</ul>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Warning: value-range analysis did not converge 1 time(s); results there may be incomplete (a known issue, see docs/error-handling.rst)
+</pre></div>
+</div>
+<p>Stopping early is never treated as “nothing found”. An analysis that is cut
+short has not shown that the code is safe, so treating it as safe would be
+unsound. That is why a bound is reported exactly like a crash.</p>
+<p>As a last resort, if a unit of work is still running at twice its time limit
+(and at least a minute past it), aurora-lint names it on stderr and exits
+<code class="docutils literal notranslate"><span class="pre">3</span></code> without writing findings. This only happens for a loop that never
+reaches a step checkpoint. It is always a bug.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--rule-step-limit</span> <span class="pre">0</span></code> and <code class="docutils literal notranslate"><span class="pre">--rule-time-limit</span> <span class="pre">0</span></code> remove the limits, if you
+would rather wait for an unusually large input than have it reported.</p>
+</section>
+<section id="how-failures-are-reported">
+<h2>How failures are reported<a class="headerlink" href="#how-failures-are-reported" title="Link to this heading"></a></h2>
+<p>On stderr, after the findings, there is one line per failure, then a
+summary:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Error: rule failure (crashed): MEM35-C: src/pool.c: begin &gt; end (16 &gt; 11) when slicing ... [at src/rules/cert_c/MEM/MEM35-C/mem35_c.rs:180:50]
+Error: rule failure (step limit): INT30-C: src/big.c: stopped after 50000000 steps (--rule-step-limit) [at ...]
+Error: file failure (crashed): src/odd.c: ... [at ...]
+Error: prescan failure (crashed): include/util.h: ... [at ...]
+Error: rule abandoned: MEM35-C: failed on 3 or more files; none of its findings are reported
+Error: scan INCOMPLETE: 4 unit(s) of work did not finish in 4 file(s) (rules INT30-C, MEM35-C); ...
+</pre></div>
+</div>
+<p>The line formats are stable enough to parse.</p>
+<p>In a <strong>SARIF</strong> export, the run’s <code class="docutils literal notranslate"><span class="pre">invocations[0]</span></code> has
+<code class="docutils literal notranslate"><span class="pre">executionSuccessful:</span> <span class="pre">false</span></code>, and each failure and abandoned rule is a
+<code class="docutils literal notranslate"><span class="pre">toolExecutionNotifications</span></code> entry at level <code class="docutils literal notranslate"><span class="pre">error</span></code>. Each entry carries:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">descriptor.id</span></code>: <code class="docutils literal notranslate"><span class="pre">aurora-lint/incomplete/rule</span></code>, <code class="docutils literal notranslate"><span class="pre">.../file</span></code>,
+<code class="docutils literal notranslate"><span class="pre">.../prescan</span></code> or <code class="docutils literal notranslate"><span class="pre">aurora-lint/rule-abandoned</span></code>;</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">associatedRule</span></code> and the file’s location;</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">properties.stage</span></code>, <code class="docutils literal notranslate"><span class="pre">properties.cause</span></code> and
+<code class="docutils literal notranslate"><span class="pre">properties.sourceLocation</span></code>.</p></li>
+</ul>
+<p>Code-scanning dashboards show these as tool errors. A complete scan has
+<code class="docutils literal notranslate"><span class="pre">executionSuccessful:</span> <span class="pre">true</span></code> and no notifications.</p>
+<p>The <strong>JSON</strong> export is a list of findings only and does not change; for a
+JSON consumer, the exit code is what says the list is incomplete.</p>
+</section>
+<section id="what-ci-should-do">
+<h2>What CI should do<a class="headerlink" href="#what-ci-should-do" title="Link to this heading"></a></h2>
+<ul>
+<li><p>Treat <code class="docutils literal notranslate"><span class="pre">3</span></code> as a failed job, separately from findings. The usual shell
+check, “fail on any nonzero status”, already does. A script that tests
+for exactly <code class="docutils literal notranslate"><span class="pre">1</span></code> should handle <code class="docutils literal notranslate"><span class="pre">3</span></code> too:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aurora-lint<span class="w"> </span>.<span class="w"> </span>-d<span class="w"> </span>.<span class="w"> </span>--fail-on-severity<span class="w"> </span>High<span class="w"> </span>--export<span class="w"> </span>results.sarif
+<span class="k">case</span><span class="w"> </span><span class="nv">$?</span><span class="w"> </span><span class="k">in</span>
+<span class="w">  </span><span class="m">0</span><span class="o">)</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;clean&quot;</span><span class="w"> </span><span class="p">;;</span>
+<span class="w">  </span><span class="m">1</span><span class="o">)</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;findings at or above High&quot;</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="p">;;</span>
+<span class="w">  </span><span class="m">3</span><span class="o">)</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;scan incomplete: see the &#39;Error:&#39; lines above&quot;</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="p">;;</span>
+<span class="w">  </span>*<span class="o">)</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;aurora-lint could not run&quot;</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="p">;;</span>
+<span class="k">esac</span>
+</pre></div>
+</div>
+</li>
+<li><p>Keep the SARIF upload step running when the scan exits <code class="docutils literal notranslate"><span class="pre">3</span></code>, for example
+with <code class="docutils literal notranslate"><span class="pre">if:</span> <span class="pre">always()</span></code> in GitHub Actions, so the findings that were
+produced still reach the dashboard alongside the tool error.</p></li>
+<li><p>Report a <code class="docutils literal notranslate"><span class="pre">crashed</span></code> line upstream. A <code class="docutils literal notranslate"><span class="pre">step</span> <span class="pre">limit</span></code> or <code class="docutils literal notranslate"><span class="pre">time</span> <span class="pre">limit</span></code> on
+unusually large generated code can be raised with <code class="docutils literal notranslate"><span class="pre">--rule-step-limit</span></code> /
+<code class="docutils literal notranslate"><span class="pre">--rule-time-limit</span></code>. Raise it in the job, not by ignoring status <code class="docutils literal notranslate"><span class="pre">3</span></code>.</p></li>
+</ul>
+</section>
+<section id="limits-of-this-guarantee">
+<h2>Limits of this guarantee<a class="headerlink" href="#limits-of-this-guarantee" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>A stack overflow aborts the process outright and cannot be contained.
+Analysis threads run on a large stack (16 MiB) so that deeply nested code
+does not reach it.</p></li>
+<li><p>Many internal analyses bound their own work by design. When a bound
+degrades to a <em>sound</em> approximation (for example widening a value range
+to the whole type, or “not proven, so report”), that is the analysis
+working as intended and is not reported. A small number of older bounds
+still stop silently. They are listed in
+<code class="docutils literal notranslate"><span class="pre">docs/design/analysis-bounds-inventory.md</span></code>, and each is being converted
+either to a sound fallback or to a reported bound.</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="cicd-integration.html" class="btn btn-neutral float-left" title="CI/CD Integration" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="interactive-ui.html" class="btn btn-neutral float-right" title="Interactive Console UI" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025-2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
