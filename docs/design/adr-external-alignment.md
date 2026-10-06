@@ -360,8 +360,10 @@ Status of the 16 proposals at the end of this doc, against `72b8f734`:
   code" (its example: "Tool confuses a function call with a variable name")
   apart from "true but insignificant" and "true quality weakness"
   [SATE-IV].
-- **Tricorder** separates an analyzer FP from an *effective* FP, "any report
-  that they did not want to see" [Tricorder].
+- **Tricorder** separates an analyzer FP, "an incorrect report produced by
+  their analysis tool", from an *effective* FP, "any report from the tool
+  where a user chooses not to take action to resolve the report"
+  [Tricorder].
 - **Kang et al.** show heuristic "actionable" oracles disagree with human
   ones [Kang22], which supports an oracle kept on correctness.
 - **CERT** calls the judgment case a true positive with a deviation
