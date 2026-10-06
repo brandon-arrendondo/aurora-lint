@@ -2056,21 +2056,21 @@ pub fn resolve_field_expression_type(
         std::collections::HashMap<String, String>,
     >,
 ) -> Option<String> {
-    let (struct_name, field_name) =
-        resolve_field_owner(node, source, type_map, struct_field_types)?;
+    let struct_name = resolve_field_container(node, source, type_map, struct_field_types)?;
+    let field_name = node
+        .child_by_field_name("field")?
+        .utf8_text(source.as_bytes())
+        .ok()?;
     struct_field_types
         .get(&struct_name)
-        .and_then(|fields| fields.get(&field_name))
+        .and_then(|fields| fields.get(field_name))
         .cloned()
 }
 
-/// The struct a `field_expression` reads a member of, and the member's name:
-/// `(struct_name, field_name)`, the key a `struct_field_types`-shaped table
-/// files the member under. Steps 1-3 of [`resolve_field_expression_type`],
-/// for a caller that looks the member up in a different table (the
-/// declarator shapes, say). `None` when the base's type does not resolve or
-/// or names no struct. The struct need not have an entry in any table.
-pub fn resolve_field_owner(
+/// The struct whose member the `field_expression` `node` reads: the struct
+/// the type of `node`'s base names (`wpa_supplicant` for
+/// `wpa_s->sme`, with `wpa_s` declared `struct wpa_supplicant *`).
+pub fn resolve_field_container(
     node: &Node,
     source: &str,
     type_map: &std::collections::HashMap<String, String>,
@@ -2078,9 +2078,7 @@ pub fn resolve_field_owner(
         String,
         std::collections::HashMap<String, String>,
     >,
-) -> Option<(String, String)> {
-    let field_node = node.child_by_field_name("field")?;
-    let field_name = field_node.utf8_text(source.as_bytes()).ok()?;
+) -> Option<String> {
     let argument = node.child_by_field_name("argument")?;
 
     // Resolve the struct type of the argument. Supports chained access
@@ -2104,8 +2102,7 @@ pub fn resolve_field_owner(
         _ => return None,
     };
 
-    let struct_name = extract_struct_name_from_type(&base_type)?;
-    Some((struct_name.to_string(), field_name.to_string()))
+    extract_struct_name_from_type(&base_type).map(str::to_string)
 }
 
 /// Result of inspecting a `struct_specifier` for packed-ness.

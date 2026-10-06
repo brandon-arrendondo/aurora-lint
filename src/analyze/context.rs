@@ -431,6 +431,13 @@ pub struct ProjectContext {
     /// ` *`, so an array field reads as its element type and `double **p` as
     /// `double *`. Other rules read that spelling as it is, so it keeps it;
     /// this is what a consumer needs to type the field exactly.
+    ///
+    /// It also files what `struct_field_types` does not hold, so that table's
+    /// readers are unmoved: a member inside a preprocessor block of the body,
+    /// under the struct's own key, and the members of a named member's
+    /// anonymous struct (`struct { u8 ie[1500]; } sme;`) under
+    /// `"Owner.sme"`. A member declared differently in the arms of a
+    /// conditional has the shape `"?"`.
     #[serde(default)]
     pub struct_field_shapes: Arc<HashMap<String, HashMap<String, String>>>,
     /// Struct/union typedef aliases: `alias name -> the tag name its fields

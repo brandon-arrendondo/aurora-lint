@@ -6350,9 +6350,70 @@ fn collect_from_struct_specifier(
         let (fields, field_shapes) = extract_struct_fields(&body, source);
         if !fields.is_empty() {
             struct_field_types.insert(name.clone(), fields);
-            shapes.insert(name, field_shapes);
+            shapes.insert(name.clone(), field_shapes);
+        }
+        file_guarded_and_nested_member_shapes(&body, source, &name, shapes);
+    }
+}
+
+/// File the member shapes `extract_struct_fields` does not reach, in `shapes`
+/// only -- `struct_field_types` and what reads it stay as they were:
+///
+/// * a member inside a preprocessor block of the body (`#ifdef CONFIG_SME`
+///   around `u8 ie[1500];`) is filed under `owner`;
+/// * the members of an anonymous struct or union that is itself a named
+///   member (`struct { u8 ie[1500]; } sme;`) are filed under
+///   `"{owner}.sme"`, and so on for each level, so `wpa_s->sme.ie` resolves
+///   to a shape without the anonymous struct having a name.
+///
+/// A member whose declarations disagree between the arms of a preprocessor
+/// conditional gets the shape `"?"`, which says nothing about the member: the
+/// reader must not pick an arm.
+fn file_guarded_and_nested_member_shapes(
+    body: &Node,
+    source: &str,
+    owner: &str,
+    shapes: &mut FieldTable,
+) {
+    for decl in member_declarations(body) {
+        if let Some((name, _, shape)) = extract_field_decl(&decl, source) {
+            let filed = shapes.entry(owner.to_string()).or_default();
+            match filed.get(&name) {
+                Some(existing) if *existing != shape => {
+                    filed.insert(name.clone(), "?".to_string());
+                }
+                Some(_) => {}
+                None => {
+                    filed.insert(name.clone(), shape.clone());
+                }
+            }
+            if matches!(shape.as_str(), "" | "*") {
+                if let Some(inner) = find_anonymous_inner_body(&decl) {
+                    let nested = format!("{owner}.{name}");
+                    file_guarded_and_nested_member_shapes(&inner, source, &nested, shapes);
+                }
+            }
+        } else if let Some(inner) = find_anonymous_inner_body(&decl) {
+            // An anonymous member with no name of its own: its members are
+            // the owner's.
+            file_guarded_and_nested_member_shapes(&inner, source, owner, shapes);
         }
     }
+}
+
+/// Every `field_declaration` of a struct body, those inside the body's
+/// preprocessor blocks (`#ifdef`/`#if`/`#else` arms, nested) included.
+fn member_declarations<'t>(body: &Node<'t>) -> Vec<Node<'t>> {
+    let mut out = Vec::new();
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        match child.kind() {
+            "field_declaration" => out.push(child),
+            k if k.starts_with("preproc_") => out.extend(member_declarations(&child)),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Extract fields from a `type_definition` containing a struct specifier.
@@ -6395,8 +6456,9 @@ fn collect_from_typedef(
                     let (fields, field_shapes) = extract_struct_fields(&body, source);
                     if !fields.is_empty() {
                         struct_field_types.insert(alias.clone(), fields);
-                        shapes.insert(alias, field_shapes);
+                        shapes.insert(alias.clone(), field_shapes);
                     }
+                    file_guarded_and_nested_member_shapes(&body, source, &alias, shapes);
                 }
             }
         }

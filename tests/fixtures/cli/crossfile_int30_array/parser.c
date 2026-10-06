@@ -24,3 +24,18 @@ size_t ambiguous(size_t n)
 {
     return shared + n;
 }
+
+#include "supplicant.h"
+
+/* An array member of an anonymous struct, itself under an #ifdef, in a
+ * struct this file receives through a header. */
+unsigned char *append_ie(struct supplicant *s, size_t extra)
+{
+    return s->sme.assoc_req_ie + extra;
+}
+
+/* An integer member of the same anonymous struct is still a sum. */
+size_t ie_end(struct supplicant *s, size_t extra)
+{
+    return s->sme.assoc_req_ie_len + extra;
+}

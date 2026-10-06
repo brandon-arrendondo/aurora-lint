@@ -5525,4 +5525,12 @@ fn crossfile_header_array_plus_integer_is_not_an_unsigned_sum() {
         lines.contains(&25),
         "`shared` is not known to be an array: {lines:?}"
     );
+    assert!(
+        !lines.contains(&34),
+        "s->sme.assoc_req_ie is an array member of an anonymous struct: {lines:?}"
+    );
+    assert!(
+        lines.contains(&40),
+        "an integer member of the anonymous struct is still a sum: {lines:?}"
+    );
 }
